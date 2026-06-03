@@ -57,3 +57,6 @@ secrets/
 *.pem
 *.key
 !*.example
+
+# Design handoff bundle (kept local, not tracked in git)
+redesign-pguard/
