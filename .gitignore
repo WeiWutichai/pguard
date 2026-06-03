@@ -1,0 +1,59 @@
+# Build artifacts
+target/
+build/
+dist/
+out/
+.next/
+*.dSYM/
+
+# Dependency caches
+node_modules/
+.pub-cache/
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub/
+Cargo.lock
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.iml
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.thumbnail
+
+# Logs
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+*.lcov
+target/coverage/
+
+# Claude scratch
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+.claude/agent-memory/*/scratch/
+
+# Generated code from OpenAPI (commit only source specs)
+packages/shared-rust/src/generated/
+packages/shared-events/src/generated/
+apps/mobile/lib/api/generated/
+apps/web-admin/src/api/generated/
+
+# Local secrets
+secrets/
+*.pem
+*.key
+!*.example

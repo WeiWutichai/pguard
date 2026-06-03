@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — รีวิว</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .stars-sm { display:inline-flex; gap:2px; }
+  .stars-sm svg { width:14px; height:14px; }
+  .catbar { display:flex; align-items:center; gap:12px; margin-bottom:12px; }
+  .catbar .lbl { width:130px; font-size:13px; color:var(--text); flex:none; }
+  .catbar .track { flex:1; height:8px; border-radius:4px; background:var(--bg-sunken); overflow:hidden; }
+  .catbar .fill { height:100%; background:var(--amber-400); border-radius:4px; }
+  .catbar .val { font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--text-strong); width:32px; text-align:right; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'reviews',title:'รีวิว',titleEn:'Reviews',sub:'คะแนนและความคิดเห็นจากลูกค้า',subEn:'Customer ratings & feedback'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--amber-100);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg></div></div><div class="v">4.87</div><div class="k"><span data-th>คะแนนเฉลี่ย</span><span data-en lang-hide>Avg rating</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--info-bg);color:var(--info)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div></div><div class="v">12,840</div><div class="k"><span data-th>รีวิวทั้งหมด</span><span data-en lang-hide>Total reviews</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--bg-sunken);color:var(--text-muted)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9.9 4.2A9.5 9.5 0 0 1 12 4c7 0 10 8 10 8a18 18 0 0 1-2.3 3.4M6.6 6.6A18 18 0 0 0 2 12s3 8 10 8a9.5 9.5 0 0 0 4-.9M1 1l22 22"/></svg></div></div><div class="v">38</div><div class="k"><span data-th>ถูกซ่อน</span><span data-en lang-hide>Hidden</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--success-bg);color:var(--success)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v6l4 2"/><circle cx="12" cy="14" r="8"/></svg></div><span class="delta up">+248</span></div><div class="v">312</div><div class="k"><span data-th>รีวิวเดือนนี้</span><span data-en lang-hide>This month</span></div></div>
+      </div>
+
+      <div class="filters" id="filters">
+        <span class="chip-f on" data-r="all"><span data-th>ทุกคะแนน</span><span data-en lang-hide>All ratings</span></span>
+        <span class="chip-f" data-r="5">5★</span><span class="chip-f" data-r="4">4★</span><span class="chip-f" data-r="3">3★</span><span class="chip-f" data-r="2">2★</span><span class="chip-f" data-r="1">1★</span>
+        <span style="width:1px;height:24px;background:var(--border);margin:0 4px"></span>
+        <span class="chip-f on" data-v="all"><span data-th>ทั้งหมด</span><span data-en lang-hide>All</span></span>
+        <span class="chip-f" data-v="visible"><span data-th>แสดง</span><span data-en lang-hide>Visible</span></span>
+        <span class="chip-f" data-v="hidden"><span data-th>ซ่อน</span><span data-en lang-hide>Hidden</span></span>
+        <div class="spacer"></div>
+        <div class="search-sm"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="ค้นหา…"></div>
+      </div>
+
+      <div class="panel">
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th data-th>เจ้าหน้าที่</th><th data-en lang-hide>Guard</th><th data-th>ลูกค้า</th><th data-th>คะแนน</th><th data-th>ความคิดเห็น</th><th data-th>วันที่</th><th data-th>แสดง</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- review detail modal -->
+<div class="overlay" id="mRev">
+  <div class="modal">
+    <div class="modal-head"><h3><span data-th>รายละเอียดรีวิว</span><span data-en lang-hide>Review detail</span></h3>
+      <div class="x" onclick="pg.close('#mRev')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div></div>
+    <div class="modal-body">
+      <div class="cell-user" style="margin-bottom:18px"><div class="av" style="width:46px;height:46px;font-size:16px" id="mRevAv">ณฐ</div>
+        <div><div class="nm" style="font-size:16px" id="mRevG">ณัฐพล วงศ์ดี</div><div class="sub"><span data-th>รีวิวโดย</span><span data-en lang-hide>by</span> <span id="mRevC">นภาพร ศรีสุข</span> · 3 มิ.ย. 2026</div></div>
+        <div style="margin-left:auto;text-align:right"><div style="font-family:var(--font-mono);font-size:24px;font-weight:600;color:var(--text-strong)" id="mRevR">5.0</div><div class="stars-sm" style="color:var(--amber-400)"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg><svg viewBox="0 0 24 24" fill="currentColor"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg></div></div>
+      </div>
+      <div style="background:var(--bg-sunken);border-radius:12px;padding:14px 16px;font-size:14.5px;color:var(--text);margin-bottom:20px;line-height:1.6">"ดูแลดีมาก รายงานทุกชั่วโมงพร้อมรูป ตรงต่อเวลา รู้สึกอุ่นใจมากครับ"</div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:14px"><span data-th>คะแนนแยกหมวด</span><span data-en lang-hide>Category breakdown</span></div>
+      <div class="catbar"><span class="lbl"><span data-th>ภาพรวม</span><span data-en lang-hide>Overall</span></span><span class="track"><span class="fill" style="width:100%"></span></span><span class="val">5.0</span></div>
+      <div class="catbar"><span class="lbl"><span data-th>ตรงเวลา</span><span data-en lang-hide>Punctuality</span></span><span class="track"><span class="fill" style="width:100%"></span></span><span class="val">5.0</span></div>
+      <div class="catbar"><span class="lbl"><span data-th>มืออาชีพ</span><span data-en lang-hide>Professionalism</span></span><span class="track"><span class="fill" style="width:96%"></span></span><span class="val">4.8</span></div>
+      <div class="catbar"><span class="lbl"><span data-th>การสื่อสาร</span><span data-en lang-hide>Communication</span></span><span class="track"><span class="fill" style="width:100%"></span></span><span class="val">5.0</span></div>
+      <div class="catbar" style="margin-bottom:0"><span class="lbl"><span data-th>การแต่งกาย</span><span data-en lang-hide>Appearance</span></span><span class="track"><span class="fill" style="width:96%"></span></span><span class="val">4.8</span></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn danger-ghost" onclick="pg.close('#mRev');pg.toast('ซ่อนรีวิวแล้ว',false)"><span data-th>ซ่อนรีวิว</span><span data-en lang-hide>Hide review</span></button>
+      <button class="btn secondary" onclick="pg.close('#mRev')"><span data-th>ปิด</span><span data-en lang-hide>Close</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  function stars(n){let s='<span class="stars-sm" style="color:var(--amber-400)">';for(let i=0;i<5;i++)s+=`<svg viewBox="0 0 24 24" fill="${i<n?'currentColor':'none'}" stroke="${i<n?'none':'var(--border-strong)'}" stroke-width="2"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg>`;return s+'</span>';}
+  const R=[
+    ['ณฐ','ณัฐพล วงศ์ดี','นภาพร ศรีสุข',5,'ดูแลดีมาก รายงานทุกชั่วโมงพร้อมรูป','3 มิ.ย.','visible'],
+    ['สม','สมชาย กิตติพงษ์','คุณวิชัย ส.',5,'ตรงเวลา สุภาพ มืออาชีพมากครับ','3 มิ.ย.','visible'],
+    ['ธร','ธีรศักดิ์ มั่นคง','คอนโด ไอดีโอ',4,'ดีครับ แต่มาช้าไป 10 นาที','2 มิ.ย.','visible'],
+    ['พช','พิชัย สมบูรณ์','คุณนิดา ป.',2,'รายงานไม่ครบ ข้ามไป 2 รอบ','2 มิ.ย.','hidden'],
+    ['สร','สุริยา จันทร์','คุณสมหญิง ก.',5,'ประทับใจมาก แนะนำเลย','1 มิ.ย.','visible'],
+    ['มน','มานพ บุญมา','คอนโด ลุมพินี',3,'พอใช้ได้ ปานกลาง','1 มิ.ย.','visible'],
+  ];
+  function render(){
+    document.getElementById('rows').innerHTML = R.map(([av,g,c,r,txt,date,vis],i)=>`
+      <tr data-r="${r}" data-v="${vis}" onclick="openRev(${i})">
+        <td colspan="2"><div class="cell-user"><div class="av">${av}</div><div class="nm">${g}</div></div></td>
+        <td class="muted">${c}</td>
+        <td>${stars(r)}</td>
+        <td class="muted" style="max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">"${txt}"</td>
+        <td class="mono muted">${date}</td>
+        <td onclick="event.stopPropagation()"><button class="tgl ${vis==='visible'?'on':''}" onclick="toggleVis(this,${i})"></button></td>
+      </tr>`).join('');
+    if(window.pg)pg.relabel();
+  }
+  render();
+  function openRev(i){const r=R[i];document.getElementById('mRevAv').textContent=r[0];document.getElementById('mRevG').textContent=r[1];document.getElementById('mRevC').textContent=r[2];document.getElementById('mRevR').textContent=r[3].toFixed(1);pg.open('#mRev');}
+  window.openRev=openRev;
+  function toggleVis(btn,i){btn.classList.toggle('on');const on=btn.classList.contains('on');R[i][6]=on?'visible':'hidden';btn.closest('tr').dataset.v=R[i][6];pg.toast(on?'แสดงรีวิวแล้ว':'ซ่อนรีวิวแล้ว',on);}
+  window.toggleVis=toggleVis;
+
+  let fr='all',fv='all';
+  document.getElementById('filters').addEventListener('click',e=>{const c=e.target.closest('.chip-f');if(!c)return;
+    if(c.dataset.r!==undefined){document.querySelectorAll('.chip-f[data-r]').forEach(x=>x.classList.toggle('on',x===c));fr=c.dataset.r;}
+    if(c.dataset.v!==undefined){document.querySelectorAll('.chip-f[data-v]').forEach(x=>x.classList.toggle('on',x===c));fv=c.dataset.v;}
+    document.querySelectorAll('#rows tr').forEach(tr=>tr.style.display=((fr==='all'||tr.dataset.r===fr)&&(fv==='all'||tr.dataset.v===fv))?'':'none');
+  });
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

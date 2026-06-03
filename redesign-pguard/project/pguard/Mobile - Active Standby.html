@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard — Active Standby</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="proto/app.css">
+<link rel="stylesheet" href="mobile-canvas.css">
+<style>
+  /* ============ standby card ============ */
+  .sb { border-radius:20px; overflow:hidden; box-shadow:var(--sh-md); border:1px solid var(--border); background:var(--bg-surface); }
+  .sb-head { display:flex; align-items:center; gap:10px; padding:12px 16px; color:#fff; }
+  .sb-head .hi { width:30px; height:30px; border-radius:9px; background:rgba(255,255,255,.2); display:flex; align-items:center; justify-content:center; flex:none; }
+  .sb-head .ht { font-size:14px; font-weight:600; flex:1; }
+  .sb-head .grip { width:30px; height:4px; border-radius:2px; background:rgba(255,255,255,.4); }
+  .sb-head .cd { font-family:var(--font-mono); font-size:12px; font-weight:600; background:rgba(255,255,255,.22); padding:3px 9px; border-radius:999px; }
+  /* tints */
+  .t-green .sb-head { background:var(--green-800); }
+  .t-amber .sb-head { background:var(--amber-600); }
+  .t-blue .sb-head { background:#1F5FC2; }
+  .t-sand .sb-head { background:#C26A1E; }
+  .sb-body { padding:14px 16px; }
+  .sb-cust { display:flex; align-items:center; gap:11px; }
+  .sb-cust .av { width:42px; height:42px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-weight:600; font-family:var(--font-latin); font-size:14px; background:var(--green-100); color:var(--green-800); position:relative; }
+  [data-theme="dark"] .sb-cust .av { background:var(--green-800); color:var(--green-100); }
+  .sb-cust .av .rb { position:absolute; bottom:-2px; right:-2px; width:16px; height:16px; border-radius:50%; background:var(--success); border:2px solid var(--bg-surface); display:flex; align-items:center; justify-content:center; }
+  .sb-cust .nm { font-size:15px; font-weight:600; color:var(--text-strong); }
+  .sb-cust .meta { font-size:12px; color:var(--text-muted); margin-top:1px; display:flex; gap:6px; align-items:center; }
+  .sb-cust .fee { margin-left:auto; text-align:right; }
+  .sb-cust .fee .v { font-family:var(--font-mono); font-size:16px; font-weight:600; color:var(--text-strong); }
+  .sb-cust .fee .l { font-size:10.5px; color:var(--text-faint); }
+  .sb-line { font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; gap:7px; margin-top:10px; }
+  .sb-line svg { flex:none; }
+  .sb-line .ell { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .sb-mini-map { height:50px; border-radius:11px; margin-top:11px; position:relative; overflow:hidden; background:#E7ECE7; }
+  [data-theme="dark"] .sb-mini-map { background:#0C1310; }
+  .sb-mini-map svg { position:absolute; inset:0; width:100%; height:100%; }
+  .sb-mini-map .gpin { position:absolute; left:38%; top:46%; width:18px; height:18px; border-radius:50% 50% 50% 2px; transform:translate(-50%,-50%) rotate(45deg); background:var(--status-working); border:2px solid #fff; }
+  .sb-mini-map .eta { position:absolute; right:8px; top:50%; transform:translateY(-50%); background:var(--bg-surface); border-radius:999px; padding:3px 10px; font-size:11px; font-weight:600; color:var(--text-strong); box-shadow:var(--sh-sm); }
+  .sb-count { display:flex; align-items:center; gap:14px; margin-top:6px; }
+  .sb-count .big { font-family:var(--font-mono); font-size:28px; font-weight:600; color:var(--text-strong); letter-spacing:-.01em; }
+  .sb-count .lab { font-size:11.5px; color:var(--text-muted); }
+  .sb-bar { height:7px; border-radius:4px; background:var(--bg-sunken); overflow:hidden; margin-top:10px; }
+  .sb-bar .f { height:100%; border-radius:4px; background:var(--brand-int); }
+  .sb-slots { display:flex; gap:5px; margin-top:10px; }
+  .sb-slots .s { flex:1; height:6px; border-radius:3px; background:var(--bg-sunken); }
+  .sb-slots .s.done { background:var(--success); } .sb-slots .s.miss { background:var(--danger); } .sb-slots .s.now { background:var(--amber-500); }
+  .sb-acts { display:flex; gap:8px; margin-top:14px; }
+  .sb-btn { flex:1; padding:11px; border-radius:12px; border:0; font-family:var(--font-thai); font-weight:600; font-size:13.5px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:6px; }
+  .sb-btn.green { background:var(--brand-int); color:#fff; }
+  .sb-btn.amber { background:var(--accent); color:#2A1500; }
+  .sb-btn.ghost { background:var(--bg-sunken); color:var(--text-strong); }
+  .sb-btn.outline { background:transparent; border:1.5px solid var(--border-strong); color:var(--text-strong); }
+  .sb-btn.icon { flex:0 0 auto; width:44px; padding:11px 0; }
+  .sb-btn.amber.pulse { animation:btnpulse 1.8s ease-in-out infinite; }
+  @keyframes btnpulse { 0%,100%{box-shadow:0 0 0 0 rgba(245,158,11,.4)} 50%{box-shadow:0 0 0 8px rgba(245,158,11,0)} }
+  .bell-pulse { animation:bell 1.4s ease-in-out infinite; transform-origin:top center; }
+  @keyframes bell { 0%,60%,100%{transform:rotate(0)} 70%{transform:rotate(12deg)} 80%{transform:rotate(-10deg)} 90%{transform:rotate(6deg)} }
+
+  /* radar mini */
+  .radar-mini { position:relative; width:54px; height:54px; flex:none; }
+  .radar-mini .w { position:absolute; inset:0; margin:auto; width:14px; height:14px; border-radius:50%; border:2px solid var(--brand-int); animation:rm 2s ease-out infinite; }
+  .radar-mini .w:nth-child(2){animation-delay:.7s} .radar-mini .w:nth-child(3){animation-delay:1.4s}
+  @keyframes rm { 0%{width:10px;height:10px;opacity:.7} 100%{width:54px;height:54px;opacity:0} }
+  .radar-mini .core { position:absolute; inset:0; margin:auto; width:12px; height:12px; border-radius:50%; background:var(--info); border:2px solid #fff; }
+
+  /* section label */
+  .grp-label { width:100%; max-width:1400px; margin:24px auto 6px; display:flex; align-items:center; gap:12px; }
+  .grp-label .n { font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--brand-int); }
+  .grp-label h3 { font-size:18px; font-weight:600; color:var(--text-strong); margin:0; }
+  .grp-label .line { flex:1; height:1px; background:var(--border); }
+  .grp-label .desc { font-size:13px; color:var(--text-muted); }
+
+  /* home sticky demo phone — show card pinned at top */
+  .home-demo .home-bg { padding:0 16px; }
+  .home-stick { position:sticky; top:0; z-index:5; padding-top:8px; padding-bottom:6px; background:linear-gradient(var(--bg-surface) 70%,transparent); }
+  .ghost-content { padding:4px 4px 16px; }
+  .ghost-row { height:62px; border-radius:14px; background:var(--bg-sunken); margin-top:10px; }
+  .ghost-row.sm { height:40px; }
+
+  /* pending strip */
+  .pa { display:flex; align-items:center; gap:12px; padding:12px 14px; border-radius:14px; margin-top:8px; cursor:pointer; }
+  .pa .pi { width:34px; height:34px; border-radius:10px; flex:none; display:flex; align-items:center; justify-content:center; }
+  .pa .pt { font-size:13.5px; font-weight:600; color:var(--text-strong); }
+  .pa .ps { font-size:11.5px; color:var(--text-muted); margin-top:1px; }
+  .pa .chev { margin-left:auto; color:var(--text-faint); }
+  .pa.l1 { background:var(--bg-surface); border:1px solid var(--border); }
+  .pa.l2 { background:color-mix(in srgb,var(--bg-surface) 70%,var(--bg-app)); border:1px solid var(--border); opacity:.92; margin-left:8px; margin-right:8px; }
+  .pa.l3 { background:var(--bg-sunken); border:1px solid var(--border); opacity:.84; margin-left:16px; margin-right:16px; }
+
+  /* ===== iOS Live Activity ===== */
+  .ios-wall { background:linear-gradient(165deg,#1a2c40,#0a1018); border-radius:46px; padding:40px 16px 20px; position:relative; overflow:hidden; }
+  .ios-time { text-align:center; color:#fff; }
+  .ios-time .h { font-size:62px; font-weight:600; letter-spacing:-.02em; line-height:1; font-family:var(--font-latin); }
+  .ios-time .d { font-size:15px; opacity:.85; margin-top:2px; }
+  .la-compact { display:flex; align-items:center; gap:11px; background:rgba(20,26,23,.72); backdrop-filter:blur(20px); border-radius:18px; padding:12px 15px; margin-top:24px; border:1px solid rgba(255,255,255,.08); }
+  .la-compact .ic { width:34px; height:34px; border-radius:9px; background:var(--brand-int); display:flex; align-items:center; justify-content:center; flex:none; }
+  .la-compact .t { color:#fff; font-size:13.5px; font-weight:600; }
+  .la-compact .s { color:rgba(255,255,255,.6); font-size:11.5px; margin-top:1px; }
+  .la-compact .eta { margin-left:auto; text-align:right; color:#fff; }
+  .la-compact .eta .v { font-family:var(--font-mono); font-size:16px; font-weight:600; }
+  .la-compact .eta .l { font-size:9.5px; opacity:.6; }
+  .la-expanded { background:rgba(20,26,23,.72); backdrop-filter:blur(20px); border-radius:22px; padding:16px; margin-top:14px; border:1px solid rgba(255,255,255,.08); }
+  .la-row { display:flex; align-items:center; gap:11px; color:#fff; }
+  .la-row .ic { width:38px; height:38px; border-radius:10px; background:var(--brand-int); display:flex; align-items:center; justify-content:center; flex:none; }
+  .la-prog { height:6px; border-radius:3px; background:rgba(255,255,255,.15); overflow:hidden; margin:14px 0 8px; }
+  .la-prog .f { height:100%; background:var(--green-300); border-radius:3px; }
+  .la-foot { display:flex; justify-content:space-between; color:rgba(255,255,255,.7); font-size:11.5px; font-family:var(--font-mono); }
+  .la-actions { display:flex; gap:8px; margin-top:14px; }
+  .la-actions button { flex:1; padding:9px; border-radius:11px; border:0; background:rgba(255,255,255,.15); color:#fff; font-family:var(--font-thai); font-weight:600; font-size:12.5px; cursor:pointer; }
+
+  /* Dynamic Island */
+  .di-wrap { display:flex; flex-direction:column; gap:20px; align-items:center; }
+  .di-phone-top { width:300px; height:130px; background:linear-gradient(165deg,#243a52,#0a1018); border-radius:30px 30px 14px 14px; position:relative; padding-top:14px; display:flex; justify-content:center; }
+  .di-compact { height:37px; background:#000; border-radius:19px; display:inline-flex; align-items:center; gap:8px; padding:0 11px 0 13px; min-width:124px; }
+  .di-compact .dot { width:22px; height:22px; border-radius:50%; background:var(--brand-int); display:flex; align-items:center; justify-content:center; }
+  .di-compact .tx { color:#fff; font-size:12px; font-weight:600; margin-left:auto; font-family:var(--font-mono); }
+  .di-expanded { width:300px; background:#000; border-radius:36px; padding:18px 18px 20px; }
+  .di-expanded .top { display:flex; align-items:center; gap:11px; color:#fff; }
+  .di-expanded .top .ic { width:42px; height:42px; border-radius:12px; background:var(--brand-int); display:flex; align-items:center; justify-content:center; flex:none; }
+  .di-prog { height:6px; border-radius:3px; background:rgba(255,255,255,.18); overflow:hidden; margin:14px 0 8px; }
+  .di-prog .f { height:100%; background:var(--green-300); }
+  .di-actions { display:flex; gap:8px; margin-top:14px; }
+  .di-actions button { flex:1; padding:10px; border-radius:12px; border:0; background:rgba(255,255,255,.16); color:#fff; font-family:var(--font-thai); font-weight:600; font-size:13px; cursor:pointer; }
+
+  /* Android notif */
+  .android-wall { background:linear-gradient(165deg,#2a3340,#12161c); border-radius:38px; padding:34px 14px 20px; }
+  .and-time { text-align:center; color:#fff; }
+  .and-time .h { font-size:54px; font-weight:300; font-family:var(--font-latin); }
+  .and-notif { background:#1e2329; border-radius:24px; padding:14px 16px; margin-top:20px; }
+  .and-head { display:flex; align-items:center; gap:8px; color:rgba(255,255,255,.6); font-size:11.5px; }
+  .and-head .ai { width:18px; height:18px; border-radius:5px; background:var(--brand-int); display:flex; align-items:center; justify-content:center; flex:none; }
+  .and-body { display:flex; gap:12px; margin-top:10px; }
+  .and-body .at { color:#fff; font-size:14px; font-weight:600; }
+  .and-body .as { color:rgba(255,255,255,.65); font-size:12px; margin-top:2px; }
+  .and-prog { height:4px; border-radius:2px; background:rgba(255,255,255,.18); overflow:hidden; margin:12px 0; }
+  .and-prog .f { height:100%; background:var(--green-300); }
+  .and-actions { display:flex; gap:0; border-top:1px solid rgba(255,255,255,.1); margin-top:6px; padding-top:6px; }
+  .and-actions button { flex:1; background:none; border:0; color:var(--green-300); font-family:var(--font-thai); font-weight:600; font-size:13px; padding:10px; cursor:pointer; text-transform:uppercase; letter-spacing:.03em; }
+
+  /* splash frames */
+  .splash-frame { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; background:linear-gradient(165deg,var(--green-700),var(--green-950)); }
+  .splash-frame .grid-dec { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px); background-size:40px 40px; }
+  .splash-frame .found { position:relative; color:#fff; text-align:center; margin-top:22px; }
+  .splash-frame .found .t { font-size:15px; font-weight:600; }
+  .splash-frame .found .s { font-size:12px; opacity:.7; margin-top:3px; }
+  .flying-card { position:absolute; left:24px; right:24px; background:var(--bg-surface); border-radius:16px; box-shadow:var(--sh-xl); padding:13px 15px; display:flex; align-items:center; gap:11px; }
+  .flying-card .fi { width:36px; height:36px; border-radius:10px; background:var(--brand-int); color:#fff; display:flex; align-items:center; justify-content:center; flex:none; }
+  .frame-cap { text-align:center; font-size:11.5px; color:var(--text-muted); margin-top:8px; font-family:var(--font-mono); }
+
+  .empty-hero { text-align:center; padding:36px 24px; }
+  .empty-hero .ei { width:80px; height:80px; border-radius:24px; display:flex; align-items:center; justify-content:center; margin:0 auto 18px; }
+  .empty-hero h2 { font-size:20px; font-weight:600; color:var(--text-strong); margin:0 0 6px; }
+  .empty-hero p { font-size:13.5px; color:var(--text-muted); margin:0 0 18px; line-height:1.5; }
+  .qtiles { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; padding:0 24px; }
+  .qtile { padding:16px 12px; border-radius:14px; border:1.5px solid var(--border); display:flex; flex-direction:column; align-items:center; gap:8px; cursor:pointer; }
+  .qtile svg { color:var(--brand-int); } .qtile span { font-size:12.5px; font-weight:600; color:var(--text); }
+</style>
+</head>
+<body>
+<div class="page-head">
+  <div class="eyebrow">Mobile · Persistent Active-State Surface</div>
+  <h1 data-th>การ์ดงานที่ค้างอยู่ — Resume ใน 1 แตะ</h1><h1 data-en lang-hide>Active Standby Card</h1>
+  <p data-th>การ์ดสถานะงานที่ "ไม่หาย" — แสดงบนหน้าหลัก, Lock Screen Live Activity, Dynamic Island, Android notification และ auto-route จาก splash ครอบคลุม 5 สถานะฝั่งเจ้าหน้าที่ + 6 สถานะฝั่งลูกค้า</p>
+  <p data-en lang-hide>A sticky resume surface across home, Lock Screen Live Activity, Dynamic Island, Android notification, and splash auto-route — 5 guard + 6 hirer states.</p>
+</div>
+
+<!-- ============ GUARD STATES ============ -->
+<div class="grp-label"><span class="n">G</span><h3 data-th>ฝั่งเจ้าหน้าที่ · 5 สถานะ</h3><h3 data-en lang-hide>Guard · 5 states</h3><span class="line"></span><span class="desc" data-th>compact card variants</span></div>
+<div class="canvas">
+
+  <!-- G1 pending acceptance -->
+  <div class="col"><div class="lab"><span class="tag">G1</span><h2 data-th>งานใหม่รอตอบรับ</h2><h2 data-en lang-hide>Pending acceptance</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px">
+        <div class="sb t-amber">
+          <div class="sb-head"><span class="hi bell-pulse"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></span><span class="ht" data-th>งานใหม่รอตอบรับ</span><span class="ht" data-en lang-hide>New job</span><span class="cd">4:23</span></div>
+          <div class="sb-body">
+            <div class="sb-cust"><div class="av">นภ</div><div><div class="nm">นภาพร ศรีสุข</div><div class="meta" data-th>รปภ. หมู่บ้าน · วันนี้ 14:00</div><div class="meta" data-en lang-hide>Village · today 14:00</div></div><div class="fee"><div class="v">฿1,840</div><div class="l">8 ชม.</div></div></div>
+            <div class="sb-line"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 11l19-9-9 19-2-8z"/></svg>0.8 กม. · ~4 นาที</div>
+            <div class="sb-acts"><button class="sb-btn outline" data-th>ปฏิเสธ</button><button class="sb-btn outline" data-en lang-hide>Decline</button><button class="sb-btn green" style="flex:1.6" data-th>รับงาน</button><button class="sb-btn green" style="flex:1.6;display:none" data-en lang-hide>Accept</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div><div class="ghost-row sm"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- G2 en route -->
+  <div class="col"><div class="lab"><span class="tag">G2</span><h2 data-th>กำลังเดินทาง</h2><h2 data-en lang-hide>En route</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px">
+        <div class="sb t-blue">
+          <div class="sb-head"><span class="hi"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M3 11l19-9-9 19-2-8z"/></svg></span><span class="ht" data-th>กำลังเดินทาง</span><span class="ht" data-en lang-hide>En route</span><span class="grip"></span></div>
+          <div class="sb-body">
+            <div class="sb-cust"><div class="av">นภ</div><div style="min-width:0"><div class="nm">นภาพร ศรีสุข</div><div class="meta ell" style="max-width:150px" data-th>หมู่บ้านลัดดารมย์ ซ.5, บางนา</div></div></div>
+            <div class="sb-mini-map" id="g2map"><div class="gpin"></div><div class="eta">8 นาที</div></div>
+            <div class="sb-acts">
+              <button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M3 11l19-9-9 19-2-8z"/></svg></button>
+              <button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button>
+              <button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg></button>
+              <button class="sb-btn green" style="flex:1.5" data-th>ถึงแล้ว</button><button class="sb-btn green" style="flex:1.5;display:none" data-en lang-hide>Arrived</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- G3 arrived -->
+  <div class="col"><div class="lab"><span class="tag">G3</span><h2 data-th>ถึงที่หมายแล้ว</h2><h2 data-en lang-hide>Arrived</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px">
+        <div class="sb t-green">
+          <div class="sb-head"><span class="hi"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5"><path d="M20 6 9 17l-5-5"/></svg></span><span class="ht" data-th>ถึงที่หมายแล้ว</span><span class="ht" data-en lang-hide>Arrived</span><span class="cd" data-th>รอ 3 นาที</span><span class="cd" data-en lang-hide style="display:none">3 min</span></div>
+          <div class="sb-body">
+            <div class="sb-cust"><div class="av">นภ</div><div style="min-width:0"><div class="nm">นภาพร ศรีสุข</div><div class="meta ell" style="max-width:170px" data-th>หมู่บ้านลัดดารมย์ ซ.5</div></div></div>
+            <div class="sb-acts"><button class="sb-btn amber pulse" style="flex:1" data-th>เริ่มงาน</button><button class="sb-btn amber pulse" style="flex:1;display:none" data-en lang-hide>Start job</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div><div class="ghost-row sm"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- G4 working -->
+  <div class="col"><div class="lab"><span class="tag">G4</span><h2 data-th>งานกำลังดำเนินอยู่</h2><h2 data-en lang-hide>Working</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px">
+        <div class="sb t-green">
+          <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><span class="ht" data-th>งานกำลังดำเนินอยู่</span><span class="ht" data-en lang-hide>Working</span><span class="cd"><span class="live-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-right:5px;vertical-align:1px"></span>LIVE</span></div>
+          <div class="sb-body">
+            <div class="sb-count"><div><div class="big">3:24:15</div><div class="lab" data-th>เหลือ · จาก 8 ชม.</div><div class="lab" data-en lang-hide>left · of 8 h</div></div></div>
+            <div class="sb-bar"><div class="f" style="width:57%"></div></div>
+            <div class="sb-slots"><span class="s done"></span><span class="s done"></span><span class="s now"></span><span class="s"></span><span class="s"></span></div>
+            <div class="sb-line"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg><span data-th>เช็คอินแล้ว 2/5 · ถัดไป 14:30 น.</span><span data-en lang-hide style="display:none">2/5 done · next 14:30</span></div>
+            <div class="sb-acts"><button class="sb-btn ghost" data-th>รายงาน</button><button class="sb-btn ghost" data-en lang-hide>Report</button><button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button><button class="sb-btn green" style="flex:1.3" data-th>จบงาน</button><button class="sb-btn green" style="flex:1.3;display:none" data-en lang-hide>End</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- G5 pending completion -->
+  <div class="col"><div class="lab"><span class="tag">G5</span><h2 data-th>รอลูกค้าตรวจสอบ</h2><h2 data-en lang-hide>Pending completion</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px">
+        <div class="sb t-sand">
+          <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="ht" data-th>รอลูกค้าตรวจสอบ</span><span class="ht" data-en lang-hide>Awaiting customer</span><span class="grip"></span></div>
+          <div class="sb-body">
+            <div class="sb-cust"><div class="av">นภ</div><div><div class="nm">นภาพร ศรีสุข</div><div class="meta" data-th>ส่งคำขอจบงานเมื่อ 5 นาทีที่แล้ว</div><div class="meta" data-en lang-hide>Completion sent 5 min ago</div></div></div>
+            <div class="sb-line"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--amber-600)" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><span style="color:var(--amber-700)" data-th>auto-approve ใน 25 นาที</span><span style="color:var(--amber-700)" data-en lang-hide style="display:none">auto-approves in 25 min</span></div>
+            <div class="sb-acts"><button class="sb-btn ghost" style="flex:1" data-th>แชตหาลูกค้า</button><button class="sb-btn ghost" style="flex:1;display:none" data-en lang-hide>Chat customer</button></div>
+          </div>
+        </div>
+      </div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div><div class="ghost-row sm"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+</div>
+
+<!-- ============ HIRER STATES ============ -->
+<div class="grp-label"><span class="n">H</span><h3 data-th>ฝั่งลูกค้า · 6 สถานะ</h3><h3 data-en lang-hide>Hirer · 6 states</h3><span class="line"></span></div>
+<div class="canvas">
+
+  <!-- H1 searching -->
+  <div class="col"><div class="lab"><span class="tag">H1</span><h2 data-th>กำลังค้นหา รปภ.</h2><h2 data-en lang-hide>Searching</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-green">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg></span><span class="ht" data-th>กำลังค้นหาเจ้าหน้าที่</span><span class="ht" data-en lang-hide>Searching guards</span><span class="grip"></span></div>
+        <div class="sb-body"><div style="display:flex;align-items:center;gap:14px"><div class="radar-mini"><span class="w"></span><span class="w"></span><span class="w"></span><span class="core"></span></div><div><div style="font-size:14.5px;font-weight:600;color:var(--text-strong)" data-th>พบ 8 คนในรัศมี 5 กม.</div><div style="font-size:14.5px;font-weight:600;color:var(--text-strong);display:none" data-en lang-hide>8 guards within 5 km</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-th>กำลังจับคู่ที่ดีที่สุด…</div></div></div>
+          <div class="sb-acts"><button class="sb-btn outline" style="flex:1" data-th>ยกเลิก</button><button class="sb-btn outline" style="flex:1;display:none" data-en lang-hide>Cancel</button></div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- H2 waiting acceptance -->
+  <div class="col"><div class="lab"><span class="tag">H2</span><h2 data-th>รอเจ้าหน้าที่ตอบรับ</h2><h2 data-en lang-hide>Waiting acceptance</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-blue">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></span><span class="ht" data-th>รอเจ้าหน้าที่ตอบรับ</span><span class="ht" data-en lang-hide>Waiting for guard</span><span class="cd">4:12</span></div>
+        <div class="sb-body"><div class="sb-cust"><div class="av">ณฐ<span class="rb"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span></div><div><div class="nm">ณัฐพล วงศ์ดี</div><div class="meta"><svg width="12" height="12" viewBox="0 0 24 24" fill="var(--amber-400)" stroke="none"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg>4.9 · 188 งาน</div></div></div>
+          <div class="sb-acts"><button class="sb-btn outline" style="flex:1" data-th>ยกเลิก</button><button class="sb-btn outline" style="flex:1;display:none" data-en lang-hide>Cancel</button><button class="sb-btn ghost" style="flex:1.3" data-th>เปลี่ยน รปภ.</button><button class="sb-btn ghost" style="flex:1.3;display:none" data-en lang-hide>Change guard</button></div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- H3 payment pending -->
+  <div class="col"><div class="lab"><span class="tag">H3</span><h2 data-th>ชำระเงินค้าง</h2><h2 data-en lang-hide>Payment pending</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-amber">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span><span class="ht" data-th>ชำระเงินค้าง · ฿1,795</span><span class="ht" data-en lang-hide>Payment due · ฿1,795</span><span class="cd">10:00</span></div>
+        <div class="sb-body"><div class="sb-line" style="margin-top:0"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg><span data-th>ณัฐพล รับงานแล้ว · รปภ. หมู่บ้าน 8 ชม.</span><span data-en lang-hide style="display:none">Nattapon accepted · Village 8h</span></div>
+          <div class="sb-acts"><button class="sb-btn amber pulse" style="flex:1" data-th>ชำระเงินตอนนี้</button><button class="sb-btn amber pulse" style="flex:1;display:none" data-en lang-hide>Pay now</button></div>
+          <div style="text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:8px" data-th>ชำระภายใน 10 นาที มิฉะนั้นงานจะถูกยกเลิก</div>
+          <div style="text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:8px;display:none" data-en lang-hide>Pay within 10 min or the job is cancelled</div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row sm"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- H4 en route -->
+  <div class="col"><div class="lab"><span class="tag">H4</span><h2 data-th>เจ้าหน้าที่กำลังมา</h2><h2 data-en lang-hide>Guard en route</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-blue">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M3 11l19-9-9 19-2-8z"/></svg></span><span class="ht" data-th>กำลังเดินทางมาหาคุณ</span><span class="ht" data-en lang-hide>On the way to you</span><span class="grip"></span></div>
+        <div class="sb-body"><div class="sb-cust"><div class="av">ณฐ</div><div><div class="nm">ณัฐพล วงศ์ดี</div><div class="meta"><svg width="11" height="11" viewBox="0 0 24 24" fill="var(--amber-400)" stroke="none"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg>4.9 · รปภ. ขึ้นทะเบียน</div></div><div class="fee"><div class="v">8</div><div class="l" data-th>นาที</div></div></div>
+          <div class="sb-mini-map" id="h4map"><div class="gpin" style="background:var(--brand-int)"></div><div class="eta" data-th>ถึงใน 8 นาที</div></div>
+          <div class="sb-acts"><button class="sb-btn green" style="flex:1.4" data-th>ติดตาม</button><button class="sb-btn green" style="flex:1.4;display:none" data-en lang-hide>Track</button><button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button><button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg></button></div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- H5 working -->
+  <div class="col"><div class="lab"><span class="tag">H5</span><h2 data-th>งานดำเนินอยู่</h2><h2 data-en lang-hide>Working</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-green">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><span class="ht" data-th>งานดำเนินอยู่</span><span class="ht" data-en lang-hide>Job in progress</span><span class="cd"><span class="live-dot" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:#fff;margin-right:5px;vertical-align:1px"></span>LIVE</span></div>
+        <div class="sb-body"><div class="sb-cust"><div class="av">ณฐ</div><div><div class="nm">ณัฐพล วงศ์ดี</div><div class="meta" data-th>รปภ. หมู่บ้าน</div><div class="meta" data-en lang-hide>Village guard</div></div><div class="fee"><div class="v" style="font-size:14px">3:24:15</div><div class="l" data-th>เหลือ</div></div></div>
+          <div class="sb-slots"><span class="s done"></span><span class="s done"></span><span class="s now"></span><span class="s"></span><span class="s"></span></div>
+          <div class="sb-line"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg><span data-th>รายงานแล้ว 2/5 จุด · ตรงเวลา</span><span data-en lang-hide style="display:none">2/5 reports · on time</span></div>
+          <div class="sb-acts"><button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></button><button class="sb-btn ghost icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg></button><button class="sb-btn green" style="flex:1.6" data-th>ดูรายละเอียด</button><button class="sb-btn green" style="flex:1.6;display:none" data-en lang-hide>Details</button></div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- H6 awaiting review -->
+  <div class="col"><div class="lab"><span class="tag">H6</span><h2 data-th>คำขอจบงาน</h2><h2 data-en lang-hide>Awaiting review</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:16px 0">
+      <div style="padding:0 16px"><div class="sb t-amber">
+        <div class="sb-head"><span class="hi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg></span><span class="ht" data-th>เจ้าหน้าที่ส่งคำขอจบงาน</span><span class="ht" data-en lang-hide>Completion requested</span><span class="grip"></span></div>
+        <div class="sb-body"><div class="sb-cust"><div class="av">ณฐ</div><div><div class="nm">ณัฐพล วงศ์ดี</div><div class="meta" data-th>ทำงานจริง 7.5 ชม. · เช็คอิน 5/5</div><div class="meta" data-en lang-hide>Worked 7.5h · 5/5 check-ins</div></div></div>
+          <div class="sb-acts"><button class="sb-btn green" style="flex:1.6" data-th>ตรวจดูสรุป</button><button class="sb-btn green" style="flex:1.6;display:none" data-en lang-hide>Review summary</button><button class="sb-btn ghost" style="flex:1" data-th>แชต</button><button class="sb-btn ghost" style="flex:1;display:none" data-en lang-hide>Chat</button></div>
+          <div style="text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:8px" data-th>auto-approve ใน 30 นาทีถ้าไม่ตอบ</div>
+          <div style="text-align:center;font-size:11.5px;color:var(--text-muted);margin-top:8px;display:none" data-en lang-hide>Auto-approves in 30 min</div>
+        </div>
+      </div></div>
+      <div class="ghost-content" style="padding:12px 16px"><div class="ghost-row"></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+</div>
+
+<!-- ============ SURFACES ============ -->
+<div class="grp-label"><span class="n">●</span><h3 data-th>พื้นผิวระบบ · Lock Screen · Dynamic Island · Android</h3><h3 data-en lang-hide>System surfaces</h3><span class="line"></span></div>
+<div class="canvas">
+
+  <!-- iOS Live Activity -->
+  <div class="col"><div class="lab"><span class="tag">A</span><h2 data-th>iOS Lock Screen Live Activity</h2><h2 data-en lang-hide>Lock Screen</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen" style="background:#0a1018"><div class="body">
+      <div class="ios-wall" style="border-radius:36px;min-height:100%">
+        <div class="grid-dec" style="position:absolute;inset:0;background-image:linear-gradient(rgba(255,255,255,.04) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.04) 1px,transparent 1px);background-size:40px 40px"></div>
+        <div class="ios-time" style="position:relative"><div class="d" data-th>วันอังคาร 3 มิถุนายน</div><div class="d" data-en lang-hide style="display:none">Tuesday, June 3</div><div class="h">9:41</div></div>
+        <div style="position:relative">
+          <div style="font-size:11px;color:rgba(255,255,255,.5);font-weight:600;margin:20px 4px 6px;text-transform:uppercase;letter-spacing:.06em">Compact</div>
+          <div class="la-compact"><span class="ic"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><div style="flex:1"><div class="t" data-th>งานกำลังดำเนินอยู่</div><div class="t" data-en lang-hide style="display:none">Job in progress</div><div class="s">ณัฐพล · หมู่บ้านลัดดารมย์</div></div><div class="eta"><div class="v">3:24</div><div class="l" data-th>เหลือ</div></div></div>
+          <div style="font-size:11px;color:rgba(255,255,255,.5);font-weight:600;margin:16px 4px 6px;text-transform:uppercase;letter-spacing:.06em">Expanded</div>
+          <div class="la-expanded">
+            <div class="la-row"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><div style="flex:1"><div style="font-size:14px;font-weight:600" data-th>งานกำลังดำเนินอยู่</div><div style="font-size:14px;font-weight:600;display:none" data-en lang-hide>Job in progress</div><div style="font-size:12px;opacity:.6">ณัฐพล วงศ์ดี · เช็คอิน 2/5</div></div><div style="text-align:right"><div style="font-family:var(--font-mono);font-size:18px;font-weight:600">3:24:15</div></div></div>
+            <div class="la-prog"><div class="f" style="width:57%"></div></div>
+            <div class="la-foot"><span>14:00</span><span data-th>เหลือ 3 ชม. 24 น.</span><span>22:00</span></div>
+            <div class="la-actions"><button data-th>แชต</button><button data-th>ติดตาม</button><button data-th>รายละเอียด</button></div>
+          </div>
+        </div>
+      </div>
+    </div></div></div></div>
+  </div>
+
+  <!-- Dynamic Island -->
+  <div class="col" style="width:360px"><div class="lab"><span class="tag">C</span><h2 data-th>Dynamic Island</h2><h2 data-en lang-hide>Dynamic Island</h2></div>
+    <div class="di-wrap">
+      <div style="width:100%"><div style="font-size:11px;color:var(--text-faint);font-weight:600;margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em">Compact (beside camera)</div>
+        <div class="di-phone-top"><div class="di-compact"><span class="dot"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><span class="tx">3:24</span></div></div>
+      </div>
+      <div style="width:100%"><div style="font-size:11px;color:var(--text-faint);font-weight:600;margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em" data-th>Expanded (กดค้าง)</div>
+        <div class="di-expanded">
+          <div class="top"><span class="ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span><div style="flex:1"><div style="font-size:14px;font-weight:600;color:#fff" data-th>งานกำลังดำเนินอยู่</div><div style="font-size:14px;font-weight:600;color:#fff;display:none" data-en lang-hide>Job in progress</div><div style="font-size:12px;color:rgba(255,255,255,.6)">ณัฐพล · เช็คอิน 2/5</div></div><div style="font-family:var(--font-mono);font-size:17px;font-weight:600;color:#fff">3:24:15</div></div>
+          <div class="di-prog"><div class="f" style="width:57%"></div></div>
+          <div class="di-actions"><button data-th>แชต</button><button data-th>ติดตามแผนที่</button></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Android persistent notification -->
+  <div class="col"><div class="lab"><span class="tag">D</span><h2 data-th>Android persistent notification</h2><h2 data-en lang-hide>Android notification</h2></div>
+    <div class="phone"><div class="notch" style="width:0"></div><div class="screen" style="background:#12161c"><div class="body">
+      <div class="android-wall" style="border-radius:36px;min-height:100%">
+        <div class="and-time"><div class="h">9:41</div><div style="opacity:.7;font-size:13px" data-th>วันอังคาร 3 มิ.ย.</div></div>
+        <div class="and-notif">
+          <div class="and-head"><span class="ai"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span>pguard · <span data-th>กำลังทำงาน</span><span data-en lang-hide style="display:none">active</span> · <span style="opacity:.7">ตอนนี้</span></div>
+          <div class="and-body"><div style="flex:1"><div class="at" data-th>งานกำลังดำเนินอยู่ · เหลือ 3:24:15</div><div class="at" data-en lang-hide style="display:none">In progress · 3:24:15 left</div><div class="as" data-th>ณัฐพล · หมู่บ้านลัดดารมย์ · เช็คอิน 2/5</div><div class="as" data-en lang-hide style="display:none">Nattapon · Village · 2/5 check-ins</div></div></div>
+          <div class="and-prog"><div class="f" style="width:57%"></div></div>
+          <div class="and-actions"><button data-th>แชต</button><button data-th>นำทาง</button><button data-th>จบงาน</button></div>
+        </div>
+        <div class="and-notif" style="opacity:.5;margin-top:10px"><div class="and-head"><span class="ai" style="background:var(--amber-500)"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></span>pguard · <span data-th>เตือน</span></div><div class="and-body"><div style="flex:1"><div class="at" style="font-size:13px" data-th>ถึงเวลาเช็คอินรอบที่ 3</div></div></div></div>
+      </div>
+    </div></div></div></div>
+  </div>
+</div>
+
+<!-- ============ SPLASH + PENDING + EMPTY ============ -->
+<div class="grp-label"><span class="n">E</span><h3 data-th>Splash auto-route · Pending actions · Empty</h3><h3 data-en lang-hide>Splash · Pending · Empty</h3><span class="line"></span></div>
+<div class="canvas">
+
+  <!-- splash frame 1 -->
+  <div class="col"><div class="lab"><span class="tag">E1</span><h2 data-th>Splash · พบงานที่ค้าง</h2><h2 data-en lang-hide>Splash detect</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar on-map"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body">
+      <div class="splash-frame"><div class="grid-dec"></div><span id="sp1"></span>
+        <div class="found"><div style="display:flex;justify-content:center;margin-bottom:8px"><span class="spinner" style="width:24px;height:24px;border:3px solid rgba(255,255,255,.25);border-top-color:#fff;border-radius:50%;display:inline-block;animation:spin .9s linear infinite"></span></div><div class="t" data-th>พบงานที่ดำเนินอยู่</div><div class="t" data-en lang-hide style="display:none">Active job found</div><div class="s" data-th>กำลังพาคุณกลับไป…</div><div class="s" data-en lang-hide style="display:none">Taking you back…</div></div>
+      </div>
+      <style>@keyframes spin{to{transform:rotate(360deg)}}</style>
+    </div><div class="home-ind" style="background:#fff"></div></div></div><div class="frame-cap">frame 1 · 0.0s</div></div>
+
+  <!-- splash frame 2 transition -->
+  <div class="col"><div class="lab"><span class="tag">E2</span><h2 data-th>การ์ดบินขึ้นไปปักบนสุด</h2><h2 data-en lang-hide>Card flies to top</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body" style="position:relative;background:var(--bg-app)">
+      <div class="ghost-content" style="padding:60px 16px 0;opacity:.5"><div class="ghost-row"></div><div class="ghost-row sm"></div></div>
+      <div class="flying-card" style="top:100px;transform:scale(.92);opacity:.92"><div class="fi"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div><div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--text-strong)" data-th>งานกำลังดำเนินอยู่</div><div style="font-size:11.5px;color:var(--text-muted)">ณัฐพล · เหลือ 3:24:15</div></div></div>
+      <div style="position:absolute;left:50%;top:46%;transform:translateX(-50%);width:60px;height:60px;border-radius:50%;border:2px dashed var(--border-strong);opacity:.4"></div>
+    </div><div class="home-ind"></div></div><div class="frame-cap">frame 2 · 1.2s · ↑ fly</div></div>
+
+  <!-- pending strip -->
+  <div class="col"><div class="lab"><span class="tag">E3</span><h2 data-th>Pending actions strip</h2><h2 data-en lang-hide>Pending strip</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px" data-th>มีรายการค้าง</div>
+      <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:4px;display:none" data-en lang-hide>To-do</div>
+      <div class="pa l1"><span class="pi" style="background:var(--amber-50);color:var(--amber-700)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/></svg></span><div><div class="pt" data-th>ยังไม่ได้ให้คะแนน 2 งาน</div><div class="pt" data-en lang-hide style="display:none">2 jobs need rating</div><div class="ps" data-th>แตะเพื่อรีวิว</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="pa l2"><span class="pi" style="background:var(--info-bg);color:var(--info)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 2h14v20l-2.8-1.6-2.8 1.6-2.8-1.6-2.8 1.6L5 22z"/></svg></span><div><div class="pt" data-th>มีใบเสร็จ 3 ใบใหม่</div><div class="pt" data-en lang-hide style="display:none">3 new receipts</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="pa l3"><span class="pi" style="background:var(--bg-sunken);color:var(--text-muted)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span><div><div class="pt" data-th>แอดมินส่งประกาศ</div><div class="pt" data-en lang-hide style="display:none">New broadcast</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div style="font-size:11px;color:var(--text-faint);text-align:center;margin-top:14px" data-th>เลื่อนเพื่อดูเพิ่ม · สูงสุด 3 ใบซ้อน</div>
+    </div><div class="home-ind"></div></div></div></div>
+
+  <!-- pending guard variants -->
+  <div class="col"><div class="lab"><span class="tag">E4</span><h2 data-th>Pending (เจ้าหน้าที่)</h2><h2 data-en lang-hide>Pending (guard)</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="padding:14px 16px">
+      <div class="pa l1" style="border-color:color-mix(in srgb,var(--danger) 35%,transparent)"><span class="pi" style="background:var(--danger-bg);color:var(--danger)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></span><div><div class="pt" data-th>เอกสารใกล้หมดอายุ</div><div class="pt" data-en lang-hide style="display:none">Document expiring</div><div class="ps" data-th>ใบ รปภ. หมดอายุใน 14 วัน · อัปโหลดใหม่</div><div class="ps" data-en lang-hide style="display:none">License expires in 14 days</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="pa l1" style="margin-top:10px"><span class="pi" style="background:var(--green-50);color:var(--brand-int)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span><div><div class="pt" data-th>การถอนเงิน ฿8,540 รออนุมัติ</div><div class="pt" data-en lang-hide style="display:none">฿8,540 withdrawal pending</div><div class="ps" data-th>ส่งเมื่อ 2 ชม.ที่แล้ว</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+      <div class="pa l1" style="margin-top:10px"><span class="pi" style="background:var(--info-bg);color:var(--info)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v8M8 12h8"/><circle cx="12" cy="12" r="10"/></svg></span><div><div class="pt" data-th>มีเวอร์ชันใหม่ของแอป</div><div class="pt" data-en lang-hide style="display:none">App update available</div><div class="ps">2.4.2 · bug fixes</div></div><span class="chev"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div>
+    </div><div class="home-ind"></div></div></div></div>
+
+  <!-- empty guard -->
+  <div class="col"><div class="lab"><span class="tag">E5</span><h2 data-th>ว่าง (เจ้าหน้าที่)</h2><h2 data-en lang-hide>Empty (guard)</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div class="empty-hero"><div class="ei" style="background:var(--green-50);color:var(--brand-int)"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/><path d="M9 12l2 2 4-4"/></svg></div>
+        <h2 data-th>พร้อมรับงานใหม่</h2><h2 data-en lang-hide>Ready for new jobs</h2>
+        <p data-th>เปิดสถานะเพื่อให้ลูกค้าใกล้เคียงมองเห็น</p><p data-en lang-hide>Go online so nearby customers can find you</p></div>
+      <div style="margin:0 24px;padding:18px;border-radius:18px;background:var(--bg-surface);border:1px solid var(--border);display:flex;align-items:center;gap:14px">
+        <div style="flex:1"><div style="font-size:15px;font-weight:600;color:var(--text-strong)" data-th>พร้อมรับงาน</div><div style="font-size:15px;font-weight:600;color:var(--text-strong);display:none" data-en lang-hide>Go online</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px" data-th>คุณกำลังออฟไลน์</div><div style="font-size:12px;color:var(--text-muted);margin-top:2px;display:none" data-en lang-hide>You're offline</div></div>
+        <button class="tgl" onclick="this.classList.toggle('on')" style="width:54px;height:32px;border-radius:999px;background:var(--n-300);position:relative;border:0;cursor:pointer;flex:none"></button>
+      </div>
+    </div><div class="home-ind"></div></div></div></div>
+
+  <!-- empty hirer -->
+  <div class="col"><div class="lab"><span class="tag">E6</span><h2 data-th>ว่าง (ลูกค้า)</h2><h2 data-en lang-hide>Empty (hirer)</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div class="empty-hero"><div class="ei" style="background:var(--amber-50);color:var(--amber-700)"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div>
+        <h2 data-th>เริ่มจองงานใหม่</h2><h2 data-en lang-hide>Book a guard</h2>
+        <p data-th>เลือกประเภทสถานที่เพื่อเริ่ม</p><p data-en lang-hide>Pick a place type to start</p></div>
+      <div class="qtiles">
+        <div class="qtile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 21h18M5 21V8l7-5 7 5v13"/></svg><span data-th>หมู่บ้าน</span><span data-en lang-hide>Village</span></div>
+        <div class="qtile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h2M13 7h2M9 11h2M13 11h2"/></svg><span data-th>คอนโด</span><span data-en lang-hide>Condo</span></div>
+        <div class="qtile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 20h20M4 20V8l6 3V8l6 3V4l4 2v14"/></svg><span data-th>โรงงาน</span><span data-en lang-hide>Factory</span></div>
+        <div class="qtile"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 11a9 9 0 0 1 16 0M2 11h20M12 4v3"/></svg><span data-th>อีเวนต์</span><span data-en lang-hide>Event</span></div>
+      </div>
+    </div><div class="home-ind"></div></div></div></div>
+</div>
+
+<script>
+  function miniMap(id){var el=document.getElementById(id);if(!el)return;var s='<svg viewBox="0 0 340 60" preserveAspectRatio="xMidYMid slice"><rect width="340" height="60" fill="var(--m-land,#E7ECE7)"/><g stroke="#fff" stroke-width="5">';for(var y=10;y<60;y+=22)s+='<line x1="0" y1="'+y+'" x2="340" y2="'+y+'"/>';for(var x=20;x<340;x+=40)s+='<line x1="'+x+'" y1="0" x2="'+x+'" y2="60"/>';s+='</g><path d="M30 50 L120 30 L210 38 L320 18" stroke="var(--brand-int)" stroke-width="3" stroke-dasharray="2 7" fill="none" opacity=".7"/></svg>';el.insertAdjacentHTML('afterbegin',s);}
+  miniMap('g2map'); miniMap('h4map');
+  document.getElementById('sp1').innerHTML='<svg width="64" height="68" viewBox="0 0 100 106" fill="none" style="position:relative"><path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="#fff"/><path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="#0E3B2E"/><circle cx="50" cy="46" r="7.5" fill="#30B987"/></svg>';
+  document.querySelectorAll('.tgl.on').forEach(function(t){t.style.background='var(--brand-int)';});
+</script>
+<script src="mobile-canvas.js"></script>
+</body>
+</html>

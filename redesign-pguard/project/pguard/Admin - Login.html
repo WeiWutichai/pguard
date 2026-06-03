@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — เข้าสู่ระบบ</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  body { margin:0; overflow:auto; }
+  .split { display:grid; grid-template-columns:1.05fr 1fr; min-height:100vh; }
+  @media (max-width:900px){ .split{grid-template-columns:1fr} .hero-side{display:none} }
+  /* hero */
+  .hero-side { background:linear-gradient(155deg,var(--green-800),var(--green-950)); color:#fff; padding:56px 60px; display:flex; flex-direction:column; position:relative; overflow:hidden; }
+  .hero-side .lock { display:flex; align-items:center; gap:12px; }
+  .hero-side .wm { font-family:var(--font-latin); font-weight:700; font-size:26px; letter-spacing:-.03em; }
+  .hero-side .wm .p { color:var(--green-300); }
+  .hero-side h2 { font-size:38px; font-weight:600; line-height:1.18; letter-spacing:-.02em; margin:auto 0 18px; max-width:460px; }
+  .hero-side p { font-size:16px; opacity:.8; line-height:1.6; max-width:420px; margin:0; }
+  .hero-side .grid-dec { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px); background-size:42px 42px; opacity:.6; }
+  .hero-side .pins { position:absolute; right:50px; top:120px; }
+  .hero-side .pinmk { position:absolute; width:18px; height:18px; border-radius:50% 50% 50% 2px; transform:rotate(45deg); border:2.5px solid rgba(255,255,255,.9); }
+  .hero-stats { display:flex; gap:30px; margin-top:34px; position:relative; }
+  .hero-stats .n { font-family:var(--font-mono); font-size:24px; font-weight:600; }
+  .hero-stats .l { font-size:12px; opacity:.7; }
+  /* form */
+  .form-side { display:flex; align-items:center; justify-content:center; padding:40px; }
+  .form-card { width:380px; max-width:100%; }
+  .form-card .ft { font-size:25px; font-weight:600; color:var(--text-strong); margin:0 0 6px; letter-spacing:-.01em; }
+  .form-card .fd { font-size:14px; color:var(--text-muted); margin:0 0 28px; }
+  .switcher { position:fixed; top:20px; right:24px; display:flex; gap:8px; z-index:10; }
+  .strength { display:flex; gap:5px; margin-top:8px; }
+  .strength .s { flex:1; height:5px; border-radius:3px; background:var(--bg-sunken); }
+  .strength .s.on { background:var(--success); }
+  .strength .s.mid { background:var(--amber-500); }
+  .remember { display:flex; align-items:center; justify-content:space-between; margin:4px 0 22px; }
+  .cbx { display:flex; align-items:center; gap:9px; font-size:13.5px; color:var(--text); cursor:pointer; }
+  .cbx .box { width:20px; height:20px; border-radius:6px; border:1.5px solid var(--border-strong); display:flex; align-items:center; justify-content:center; }
+  .cbx .box.on { background:var(--brand-int); border-color:var(--brand-int); }
+  .link2 { font-size:13.5px; color:var(--brand-int); font-weight:600; cursor:pointer; text-decoration:none; }
+  .otp-boxes2 { display:flex; gap:10px; justify-content:space-between; margin-bottom:8px; }
+  .otp-b { width:52px; height:60px; border-radius:12px; border:1.5px solid var(--border-strong); display:flex; align-items:center; justify-content:center; font-size:24px; font-weight:600; font-family:var(--font-mono); color:var(--text-strong); background:var(--bg-surface); }
+  .otp-b.active { border-color:var(--brand-int); box-shadow:0 0 0 4px var(--focus-ring); }
+  .succ-ic { width:64px; height:64px; border-radius:50%; background:var(--success-bg); color:var(--success); display:flex; align-items:center; justify-content:center; margin-bottom:20px; }
+  .tabbar { display:flex; gap:6px; margin-bottom:26px; background:var(--bg-sunken); padding:4px; border-radius:var(--r-md); }
+  .tabbar button { flex:1; border:0; background:transparent; font-family:var(--font-thai); font-size:13px; font-weight:600; color:var(--text-muted); padding:8px; border-radius:8px; cursor:pointer; }
+  .tabbar button.on { background:var(--bg-surface); color:var(--text-strong); box-shadow:var(--sh-xs); }
+  .view { display:none; } .view.on { display:block; }
+</style>
+</head>
+<body>
+<div class="switcher">
+  <div class="seg-mini" id="lang"><button data-l="th" class="on">ไทย</button><button data-l="en">EN</button></div>
+  <div class="seg-mini" id="theme"><button data-set="light" class="on">☀</button><button data-set="dark">☾</button></div>
+</div>
+<div class="split">
+  <div class="hero-side">
+    <div class="grid-dec"></div>
+    <div class="lock"><span id="hmark"></span><span class="wm"><span class="p">p</span>guard</span></div>
+    <div class="pins" id="pins"></div>
+    <h2 data-th>ศูนย์สั่งการความปลอดภัย<br>แบบเรียลไทม์</h2>
+    <h2 data-en lang-hide>Real-time security<br>operations center</h2>
+    <p data-th>จัดการเจ้าหน้าที่ งาน การเงิน และแผนที่สดของ รปภ. ทั่วเมือง — ทั้งหมดในที่เดียว</p>
+    <p data-en lang-hide>Manage guards, jobs, payments, and a live city-wide map — all in one place.</p>
+    <div class="hero-stats">
+      <div><div class="n">384</div><div class="l" data-th>เจ้าหน้าที่</div><div class="l" data-en lang-hide>Guards</div></div>
+      <div><div class="n">2,418</div><div class="l" data-th>ลูกค้า</div><div class="l" data-en lang-hide>Customers</div></div>
+      <div><div class="n">99.2%</div><div class="l" data-th>อัปไทม์</div><div class="l" data-en lang-hide>Uptime</div></div>
+    </div>
+  </div>
+
+  <div class="form-side">
+    <div class="form-card">
+      <div class="tabbar" id="tabs">
+        <button data-v="login" class="on" data-th>เข้าสู่ระบบ</button><button data-v="login" class="on" data-en lang-hide style="display:none">Login</button>
+        <button data-v="forgot" data-th>ลืมรหัสผ่าน</button>
+        <button data-v="reset" data-th>ตั้งรหัสใหม่</button>
+        <button data-v="2fa" data-th>2FA</button>
+      </div>
+
+      <!-- LOGIN -->
+      <div class="view on" data-view="login">
+        <h1 class="ft" data-th>ยินดีต้อนรับกลับ</h1><h1 class="ft" data-en lang-hide>Welcome back</h1>
+        <p class="fd" data-th>เข้าสู่ระบบแผงผู้ดูแล pguard</p><p class="fd" data-en lang-hide>Sign in to the pguard admin panel</p>
+        <div class="field"><label data-th>อีเมล</label><label data-en lang-hide>Email</label><input class="input" value="admin@pguard.co.th"></div>
+        <div class="field"><label data-th>รหัสผ่าน</label><label data-en lang-hide>Password</label><input class="input" type="password" value="............"></div>
+        <div class="remember">
+          <label class="cbx"><span class="box on" onclick="this.classList.toggle('on')"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span><span data-th>จดจำฉันไว้</span><span data-en lang-hide>Remember me</span></label>
+          <a class="link2" onclick="show('forgot')" data-th>ลืมรหัสผ่าน?</a><a class="link2" onclick="show('forgot')" data-en lang-hide style="display:none">Forgot password?</a>
+        </div>
+        <button class="btn primary" style="width:100%;padding:13px" onclick="show('2fa')"><span data-th>เข้าสู่ระบบ</span><span data-en lang-hide>Sign in</span></button>
+      </div>
+
+      <!-- FORGOT -->
+      <div class="view" data-view="forgot">
+        <h1 class="ft" data-th>ลืมรหัสผ่าน?</h1><h1 class="ft" data-en lang-hide>Forgot password?</h1>
+        <p class="fd" data-th>กรอกอีเมล เราจะส่งลิงก์รีเซ็ตให้</p><p class="fd" data-en lang-hide>Enter your email and we'll send a reset link</p>
+        <div class="field"><label data-th>อีเมล</label><label data-en lang-hide>Email</label><input class="input" placeholder="you@pguard.co.th" value="admin@pguard.co.th"></div>
+        <button class="btn primary" style="width:100%;padding:13px;margin-bottom:14px" onclick="document.getElementById('forgotSucc').style.display='flex'"><span data-th>ส่งลิงก์รีเซ็ต</span><span data-en lang-hide>Send reset link</span></button>
+        <div id="forgotSucc" style="display:none;align-items:flex-start;gap:11px;background:var(--success-bg);border-radius:12px;padding:14px 16px;font-size:13.5px;color:var(--success);line-height:1.5">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg>
+          <div><span data-th>ส่งลิงก์รีเซ็ตไปยัง admin@pguard.co.th แล้ว · ตรวจสอบกล่องจดหมาย</span><span data-en lang-hide>Reset link sent to admin@pguard.co.th · check your inbox</span></div>
+        </div>
+        <div style="text-align:center;margin-top:18px"><a class="link2" onclick="show('login')" data-th>← กลับไปเข้าสู่ระบบ</a><a class="link2" onclick="show('login')" data-en lang-hide style="display:none">← Back to login</a></div>
+      </div>
+
+      <!-- RESET -->
+      <div class="view" data-view="reset">
+        <h1 class="ft" data-th>ตั้งรหัสผ่านใหม่</h1><h1 class="ft" data-en lang-hide>Set a new password</h1>
+        <p class="fd" data-th>เลือกรหัสที่คาดเดายาก</p><p class="fd" data-en lang-hide>Choose a strong password</p>
+        <div class="field"><label data-th>รหัสผ่านใหม่</label><label data-en lang-hide>New password</label><input class="input" type="password" value="..............">
+          <div class="strength"><span class="s on"></span><span class="s on"></span><span class="s on"></span><span class="s mid"></span></div>
+          <div class="hint" data-th>แข็งแรง · อย่างน้อย 12 ตัวอักษร ผสมตัวเลขและสัญลักษณ์</div><div class="hint" data-en lang-hide>Strong · 12+ chars with numbers & symbols</div>
+        </div>
+        <div class="field"><label data-th>ยืนยันรหัสผ่าน</label><label data-en lang-hide>Confirm password</label><input class="input" type="password" value=".............."></div>
+        <button class="btn primary" style="width:100%;padding:13px" onclick="show('login')"><span data-th>บันทึกและเข้าสู่ระบบ</span><span data-en lang-hide>Save & sign in</span></button>
+      </div>
+
+      <!-- 2FA -->
+      <div class="view" data-view="2fa">
+        <h1 class="ft" data-th>ยืนยันตัวตน 2 ขั้น</h1><h1 class="ft" data-en lang-hide>Two-factor auth</h1>
+        <p class="fd" data-th>กรอกรหัส 6 หลักจากแอป Authenticator</p><p class="fd" data-en lang-hide>Enter the 6-digit code from your Authenticator</p>
+        <div class="otp-boxes2"><div class="otp-b">2</div><div class="otp-b">8</div><div class="otp-b">4</div><div class="otp-b active">1</div><div class="otp-b"></div><div class="otp-b"></div></div>
+        <div class="hint" style="text-align:center;margin-bottom:20px" data-th>รหัสจะหมดอายุใน 0:28</div><div class="hint" style="text-align:center;margin-bottom:20px" data-en lang-hide>Code expires in 0:28</div>
+        <button class="btn primary" style="width:100%;padding:13px;margin-bottom:14px" onclick="pg2.toast('เข้าสู่ระบบสำเร็จ')"><span data-th>ยืนยัน</span><span data-en lang-hide>Verify</span></button>
+        <div style="text-align:center"><a class="link2" onclick="show('login')" data-th>ใช้บัญชีอื่น</a><a class="link2" onclick="show('login')" data-en lang-hide style="display:none">Use another account</a></div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+  const mk=(s,opt)=>{opt=opt||{};return `<svg width="${s}" height="${s*1.04}" viewBox="0 0 100 106" fill="none"><defs><linearGradient id="hm${s}" x1="50" y1="4" x2="50" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#1FA971"/><stop offset="1" stop-color="#0E3B2E"/></linearGradient></defs><path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="${opt.shield||'#fff'}"/><path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="${opt.pin||'#0E3B2E'}"/><circle cx="50" cy="46" r="7.5" fill="${opt.dot||'#30B987'}"/></svg>`;};
+  document.getElementById('hmark').innerHTML=mk(30,{shield:'#fff',pin:'#0E3B2E',dot:'#30B987'});
+  // decorative pins
+  const PC=['#30B987','#F59E0B','#30B987','#EF5C5C','#30B987'];
+  document.getElementById('pins').innerHTML=PC.map((c,i)=>`<div class="pinmk" style="left:${i*36}px;top:${(i%2)*40}px;background:${c}"></div>`).join('');
+
+  function show(v){
+    document.querySelectorAll('.view').forEach(x=>x.classList.toggle('on',x.dataset.view===v));
+    document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.v===v));
+  }
+  document.getElementById('tabs').addEventListener('click',e=>{const b=e.target.closest('button');if(b)show(b.dataset.v);});
+
+  // toast (mini, since no shell)
+  window.pg2={toast:(m,ok=true)=>{const w=document.createElement('div');w.style.cssText='position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:var(--n-900);color:#fff;padding:13px 18px;border-radius:12px;box-shadow:var(--sh-lg);font-size:14px;font-weight:500;z-index:200;display:flex;gap:10px;align-items:center';w.innerHTML=`<span style="width:20px;height:20px;border-radius:50%;background:${ok?'var(--success)':'var(--danger)'};display:flex;align-items:center;justify-content:center"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></span>${m}`;document.body.appendChild(w);setTimeout(()=>{w.style.opacity='0';w.style.transition='.3s';setTimeout(()=>w.remove(),300);},2400);}};
+
+  // lang + theme
+  function setLang(l){document.documentElement.lang=l;localStorage.setItem('pg_lang',l);document.querySelectorAll('#lang button').forEach(b=>b.classList.toggle('on',b.dataset.l===l));document.querySelectorAll('[data-th]').forEach(el=>el.toggleAttribute('lang-hide',l!=='th'));document.querySelectorAll('[data-en]').forEach(el=>el.toggleAttribute('lang-hide',l!=='en'));}
+  function setTheme(t){document.documentElement.setAttribute('data-theme',t);localStorage.setItem('pg_theme',t);document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.dataset.set===t));}
+  document.getElementById('lang').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setLang(b.dataset.l);});
+  document.getElementById('theme').addEventListener('click',e=>{const b=e.target.closest('button');if(b)setTheme(b.dataset.set);});
+  setLang(localStorage.getItem('pg_lang')||'th'); setTheme(localStorage.getItem('pg_theme')||'light');
+</script>
+</body>
+</html>

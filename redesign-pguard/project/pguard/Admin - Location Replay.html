@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — ดูเส้นทางย้อนหลัง</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .replay-grid { display:grid; grid-template-columns:1fr 320px; gap:18px; height:calc(100vh - 62px - 86px); }
+  .map-panel { position:relative; border-radius:var(--r-lg); overflow:hidden; border:1px solid var(--border); background:#E7ECE7; }
+  [data-theme="dark"] .map-panel { background:#0C1310; }
+  .map-panel svg.bg { position:absolute; inset:0; width:100%; height:100%; }
+  .route-line { fill:none; stroke:var(--brand-int); stroke-width:4; stroke-linecap:round; stroke-linejoin:round; }
+  .route-done { fill:none; stroke:var(--amber-500); stroke-width:5; stroke-linecap:round; }
+  .ckpt { fill:var(--success); stroke:#fff; stroke-width:2.5; }
+  .ckpt.miss { fill:var(--danger); }
+  .guard-dot { fill:var(--info); stroke:#fff; stroke-width:3; }
+  .scrubber { position:absolute; left:16px; right:16px; bottom:16px; background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--sh-lg); padding:14px 18px; }
+  .scrub-top { display:flex; align-items:center; gap:14px; margin-bottom:12px; }
+  .play-btn { width:44px; height:44px; border-radius:50%; background:var(--brand-int); color:#fff; border:0; display:flex; align-items:center; justify-content:center; cursor:pointer; flex:none; }
+  .time-now { font-family:var(--font-mono); font-size:15px; font-weight:600; color:var(--text-strong); }
+  .time-range { font-size:11.5px; color:var(--text-muted); }
+  .speed-seg { margin-left:auto; display:inline-flex; background:var(--bg-sunken); border-radius:var(--r-full); padding:3px; }
+  .speed-seg button { border:0; background:transparent; font-family:var(--font-mono); font-size:12px; font-weight:600; color:var(--text-muted); padding:5px 11px; border-radius:var(--r-full); cursor:pointer; }
+  .speed-seg button.on { background:var(--bg-surface); color:var(--text-strong); box-shadow:var(--sh-xs); }
+  .track { position:relative; height:8px; border-radius:4px; background:var(--bg-sunken); cursor:pointer; }
+  .track .fill { position:absolute; left:0; top:0; bottom:0; border-radius:4px; background:var(--brand-int); }
+  .track .head { position:absolute; top:50%; width:16px; height:16px; border-radius:50%; background:#fff; border:3px solid var(--brand-int); transform:translate(-50%,-50%); box-shadow:var(--sh-sm); }
+  .track .mark { position:absolute; top:50%; width:9px; height:9px; border-radius:50%; transform:translate(-50%,-50%); border:2px solid var(--bg-surface); }
+  .side-panel { display:flex; flex-direction:column; gap:14px; overflow-y:auto; }
+  .info-card { background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--r-lg); padding:16px; }
+  .point-row { display:flex; gap:12px; padding:11px 0; border-bottom:1px solid var(--border); }
+  .point-row:last-child { border-bottom:0; }
+  .point-row .pn { width:30px; height:30px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:11px; font-weight:600; }
+  .point-row.now { background:var(--green-50); margin:0 -8px; padding:11px 8px; border-radius:10px; }
+  [data-theme="dark"] .point-row.now { background:rgba(47,192,137,.1); }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'replay',title:'ดูเส้นทางย้อนหลัง',titleEn:'Location Replay',sub:'BK-48280 · กิตติ ร. · โรงงาน ปทุม',subEn:'BK-48280 · Kitti R.'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content" style="padding-bottom:24px">
+      <div class="replay-grid">
+        <div class="map-panel" id="mapPanel">
+          <svg class="bg" id="mapsvg" viewBox="0 0 900 600" preserveAspectRatio="xMidYMid slice"></svg>
+          <svg style="position:absolute;inset:0;width:100%;height:100%" viewBox="0 0 900 600" preserveAspectRatio="xMidYMid slice" id="routeLayer"></svg>
+          <div class="scrubber">
+            <div class="scrub-top">
+              <button class="play-btn" id="playBtn"><svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg></button>
+              <div><div class="time-now" id="timeNow">16:24:08</div><div class="time-range">14:00 – 22:00 · 8 ชม.</div></div>
+              <div class="speed-seg" id="speedSeg"><button class="on">1×</button><button>2×</button><button>4×</button></div>
+              <button class="btn secondary sm" style="margin-left:10px"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg> GeoJSON</button>
+            </div>
+            <div class="track" id="track"><div class="fill" id="trackFill" style="width:55%"></div><div class="head" id="trackHead" style="left:55%"></div>
+              <div class="mark" style="left:5%;background:var(--success)"></div>
+              <div class="mark" style="left:22%;background:var(--success)"></div>
+              <div class="mark" style="left:40%;background:var(--success)"></div>
+              <div class="mark" style="left:58%;background:var(--danger)"></div>
+              <div class="mark" style="left:78%;background:var(--text-faint)"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="side-panel">
+          <div class="info-card">
+            <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:12px" data-th>ตำแหน่งปัจจุบัน (16:24)</div>
+            <div style="display:flex;flex-direction:column;gap:9px">
+              <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>พิกัด</span><span class="muted" data-en lang-hide>Coords</span><span class="mono" style="font-family:var(--font-mono)">14.0721°N, 100.6014°E</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>ความเร็ว</span><span class="muted" data-en lang-hide>Speed</span><span class="mono" style="font-family:var(--font-mono)">0 กม./ชม.</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>ทิศทาง</span><span class="muted" data-en lang-hide>Heading</span><span class="mono" style="font-family:var(--font-mono)">NE · 42°</span></div>
+              <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>ความแม่นยำ GPS</span><span class="muted" data-en lang-hide>GPS acc.</span><span class="mono" style="font-family:var(--font-mono);color:var(--success)">6 ม.</span></div>
+            </div>
+          </div>
+          <div class="info-card" style="flex:1">
+            <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:6px" data-th>จุดเช็คอิน</div>
+            <div id="points"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  // map base
+  let s='';for(let y=20;y<600;y+=48)s+=`<line x1="0" y1="${y}" x2="900" y2="${y}" stroke="#fff" stroke-width="5"/>`;
+  for(let x=30;x<900;x+=56)s+=`<line x1="${x}" y1="0" x2="${x}" y2="600" stroke="#fff" stroke-width="5"/>`;
+  document.getElementById('mapsvg').innerHTML=`<rect width="900" height="600" fill="var(--m-land,#E7ECE7)"/><g>${s}</g>`;
+  if(document.documentElement.getAttribute('data-theme')==='dark')document.querySelector('#mapsvg rect').setAttribute('fill','#0C1310');
+  // route
+  const path='M120 480 L200 420 L280 440 L360 360 L430 380 L500 300 L470 240 L520 180';
+  const pts=[[120,480],[280,440],[430,380],[500,300],[520,180]];
+  let routeSvg=`<path class="route-done" d="M120 480 L200 420 L280 440 L360 360 L430 380 L500 300" />`;
+  routeSvg+=`<path class="route-line" stroke-dasharray="3 10" d="M500 300 L470 240 L520 180" />`;
+  pts.forEach((p,i)=>{const miss=i===3;routeSvg+=`<circle class="ckpt ${miss?'miss':''}" cx="${p[0]}" cy="${p[1]}" r="9"/>`;});
+  routeSvg+=`<circle class="guard-dot" cx="500" cy="300" r="11"/>`;
+  document.getElementById('routeLayer').innerHTML=routeSvg;
+  // points list
+  const PT=[['14:00','เริ่มงาน · เช็คอิน','done','1'],['15:00','ตรวจรอบ 1','done','2'],['16:00','ตรวจรอบ 2','done','3'],['17:00','ตรวจรอบ 3','miss','4'],['18:00','ตรวจรอบ 4','pending','5']];
+  document.getElementById('points').innerHTML=PT.map(([t,lbl,st,n],i)=>{
+    const col=st==='done'?'var(--success)':st==='miss'?'var(--danger)':'var(--text-faint)';
+    const bg=st==='done'?'var(--success-bg)':st==='miss'?'var(--danger-bg)':'var(--bg-sunken)';
+    return `<div class="point-row ${i===2?'now':''}"><div class="pn" style="background:${bg};color:${col}">${st==='done'?'✓':st==='miss'?'!':n}</div><div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--text-strong)">${lbl}</div><div style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono)">${t}${st==='miss'?' · ขาดเช็คอิน':''}</div></div></div>`;
+  }).join('');
+  // play toggle
+  let playing=false;
+  document.getElementById('playBtn').addEventListener('click',function(){
+    playing=!playing;
+    this.innerHTML=playing?'<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14"/><rect x="14" y="5" width="4" height="14"/></svg>':'<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M6 4l14 8-14 8z"/></svg>';
+  });
+  document.getElementById('speedSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;[...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));});
+  document.getElementById('track').addEventListener('click',e=>{const r=e.currentTarget.getBoundingClientRect();const pct=Math.round((e.clientX-r.left)/r.width*100);document.getElementById('trackFill').style.width=pct+'%';document.getElementById('trackHead').style.left=pct+'%';const mins=14*60+Math.round(pct/100*480);document.getElementById('timeNow').textContent=String(Math.floor(mins/60)).padStart(2,'0')+':'+String(mins%60).padStart(2,'0')+':00';});
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

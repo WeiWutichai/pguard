@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — ผู้สมัคร</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<script>window.PAGE={active:'applicants',title:'ผู้สมัคร',titleEn:'Applicants',sub:'อนุมัติเจ้าหน้าที่และลูกค้าใหม่',subEn:'Approve new guards & customers'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+
+      <div class="tabs" id="tabs">
+        <div class="tab on" data-tab="all"><span data-th>ทั้งหมด</span><span data-en lang-hide>All</span><span class="pill">12</span></div>
+        <div class="tab" data-tab="guard"><span data-th>เจ้าหน้าที่ รปภ.</span><span data-en lang-hide>Guards</span><span class="pill">8</span></div>
+        <div class="tab" data-tab="customer"><span data-th>ผู้เรียก รปภ.</span><span data-en lang-hide>Customers</span><span class="pill">4</span></div>
+      </div>
+
+      <div class="kpi-grid" id="kpis">
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--warning-bg);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 7v5l3 2"/></svg></div><span class="delta up">+3</span></div><div class="v">12</div><div class="k"><span data-th>รออนุมัติ</span><span data-en lang-hide>Pending</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--success-bg);color:var(--success)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg></div></div><div class="v">372</div><div class="k"><span data-th>อนุมัติแล้ว (รวม)</span><span data-en lang-hide>Approved total</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--danger-bg);color:var(--danger)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div></div><div class="v">28</div><div class="k"><span data-th>ปฏิเสธ</span><span data-en lang-hide>Rejected</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--info-bg);color:var(--info)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v6l4 2"/><circle cx="12" cy="14" r="8"/></svg></div></div><div class="v">1.4<span style="font-size:15px"> วัน</span></div><div class="k"><span data-th>เวลาอนุมัติเฉลี่ย</span><span data-en lang-hide>Avg. approval time</span></div></div>
+      </div>
+
+      <div class="filters">
+        <span class="chip-f on" data-f="all"><span data-th>ทุกสถานะ</span><span data-en lang-hide>All status</span></span>
+        <span class="chip-f" data-f="pending"><span class="d" style="background:var(--amber-500)"></span><span data-th>รออนุมัติ</span><span data-en lang-hide>Pending</span></span>
+        <span class="chip-f" data-f="approved"><span class="d" style="background:var(--success)"></span><span data-th>อนุมัติแล้ว</span><span data-en lang-hide>Approved</span></span>
+        <span class="chip-f" data-f="rejected"><span class="d" style="background:var(--danger)"></span><span data-th>ปฏิเสธ</span><span data-en lang-hide>Rejected</span></span>
+        <div class="spacer"></div>
+        <div class="search-sm"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="ค้นหาชื่อ / เบอร์โทร…"></div>
+      </div>
+
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="tbl">
+            <thead><tr>
+              <th data-th>ผู้สมัคร</th><th data-en lang-hide>Applicant</th>
+              <th data-th>ประเภท</th><th data-th>วันที่สมัคร</th><th data-th>เอกสาร</th><th data-th>สถานะ</th><th></th>
+            </tr></thead>
+            <tbody id="rows"></tbody>
+          </table>
+        </div>
+        <div class="pagination">
+          <span><span data-th>แสดง 1–12 จาก 12 รายการ</span><span data-en lang-hide>Showing 1–12 of 12</span></span>
+          <div class="pages"><span class="pg on">1</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Applicant modal ===== -->
+<div class="overlay" id="mApp">
+  <div class="modal lg">
+    <div class="modal-head">
+      <div class="cell-user"><div class="av" style="width:44px;height:44px;font-size:16px">สม</div>
+        <div><div class="nm" style="font-size:17px">สมชาย กิตติพงษ์</div><div class="sub" id="mAppSub">เจ้าหน้าที่ รปภ. · สมัคร 2 มิ.ย. 2026</div></div></div>
+      <span class="bdg amber" style="margin-left:8px"><span class="d" style="background:var(--amber-500)"></span><span data-th>รออนุมัติ</span><span data-en lang-hide>Pending</span></span>
+      <div class="x" onclick="pg.close('#mApp')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+    </div>
+    <div class="modal-body">
+      <div class="grid-3" style="margin-bottom:20px">
+        <div class="stat-mini"><div class="k" data-th>เพศ / อายุ</div><div class="k" data-en lang-hide>Gender / Age</div><div class="v" style="font-size:15px;margin-top:3px">ชาย · 34 ปี</div></div>
+        <div class="stat-mini"><div class="k" data-th>ประสบการณ์</div><div class="k" data-en lang-hide>Experience</div><div class="v" style="font-size:15px;margin-top:3px">6 ปี</div></div>
+        <div class="stat-mini"><div class="k" data-th>ที่ทำงานเดิม</div><div class="k" data-en lang-hide>Previous</div><div class="v" style="font-size:15px;margin-top:3px">G4S Thailand</div></div>
+      </div>
+      <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:12px"><span data-th>เอกสาร 5 ใบ</span><span data-en lang-hide>5 Documents</span></div>
+      <div class="doc-grid" id="docs"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn danger-ghost" onclick="pg.close('#mApp');pg.toast('ปฏิเสธผู้สมัครแล้ว',false)"><span data-th>ปฏิเสธ</span><span data-en lang-hide>Reject</span></button>
+      <button class="btn secondary"><span data-th>ขอเอกสารเพิ่ม</span><span data-en lang-hide>Request docs</span></button>
+      <button class="btn primary" onclick="pg.close('#mApp');pg.toast('อนุมัติเจ้าหน้าที่เรียบร้อย')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg><span data-th>อนุมัติ</span><span data-en lang-hide>Approve</span></button>
+    </div>
+  </div>
+</div>
+
+<script>
+  const APPS = [
+    ['สม','สมชาย กิตติพงษ์','guard','เจ้าหน้าที่ รปภ.','2 มิ.ย. 2026','5/5','pending'],
+    ['ณฐ','ณัฐพล วงศ์ดี','guard','เจ้าหน้าที่ รปภ.','2 มิ.ย. 2026','5/5','pending'],
+    ['นภ','นภาพร ศรีสุข','customer','ผู้เรียก รปภ.','1 มิ.ย. 2026','—','pending'],
+    ['อช','อนุชา ปัญญา','guard','เจ้าหน้าที่ รปภ.','1 มิ.ย. 2026','4/5','pending'],
+    ['บจ','บจก. ไทยพัฒนา','customer','ผู้เรียก รปภ.','31 พ.ค. 2026','—','approved'],
+    ['ธร','ธีรศักดิ์ มั่นคง','guard','เจ้าหน้าที่ รปภ.','30 พ.ค. 2026','5/5','approved'],
+    ['วร','วีระ ทองดี','guard','เจ้าหน้าที่ รปภ.','29 พ.ค. 2026','3/5','rejected'],
+    ['สร','สุริยา จันทร์','guard','เจ้าหน้าที่ รปภ.','29 พ.ค. 2026','5/5','approved'],
+  ];
+  const ST = {pending:['amber','var(--amber-500)','รออนุมัติ','Pending'],approved:['green','var(--success)','อนุมัติแล้ว','Approved'],rejected:['red','var(--danger)','ปฏิเสธ','Rejected']};
+  function rowsHTML(){
+    return APPS.map(([av,nm,type,typeL,date,docs,st],i)=>{
+      const s=ST[st];
+      return `<tr data-type="${type}" data-st="${st}" onclick="openApp(${i})">
+        <td colspan="2"><div class="cell-user"><div class="av">${av}</div><div><div class="nm">${nm}</div><div class="sub mono">ID #${2400+i}</div></div></div></td>
+        <td><span class="bdg ${type==='guard'?'blue':'gray'}">${typeL}</span></td>
+        <td class="mono muted">${date}</td>
+        <td class="mono">${docs}</td>
+        <td><span class="bdg ${s[0]}"><span class="d" style="background:${s[1]}"></span><span data-th>${s[2]}</span><span data-en lang-hide>${s[3]}</span></span></td>
+        <td><div class="row-act"><button class="btn sm secondary"><span data-th>ตรวจสอบ</span><span data-en lang-hide>Review</span></button></div></td>
+      </tr>`;
+    }).join('');
+  }
+  document.getElementById('rows').innerHTML = rowsHTML();
+
+  const DOCS = [['บัตรประชาชน','ID Card','หมดอายุ 2030'],['ใบอนุญาต รปภ.','Security License','หมดอายุ 2027'],['ใบรับรองการฝึก','Training Cert','ออก 2024'],['ใบตรวจประวัติ','Criminal Check','ออก พ.ค. 2026'],['ใบขับขี่','Driver License','หมดอายุ 2028']];
+  document.getElementById('docs').innerHTML = DOCS.map(([th,en,ex])=>`
+    <div class="doc"><div class="thumb"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="4" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="2"/><path d="m3 16 5-3 4 2 3-2 6 4"/></svg><div class="wm">FOR SECURITY<br>USE ONLY</div></div>
+    <div class="meta"><div class="nm" data-th>${th}</div><div class="nm" data-en lang-hide>${en}</div><div class="ex">${ex}</div></div></div>`).join('');
+
+  function openApp(i){ document.getElementById('mAppSub').textContent = (APPS[i][2]==='guard'?'เจ้าหน้าที่ รปภ.':'ผู้เรียก รปภ.')+' · สมัคร '+APPS[i][4]; pg.open('#mApp'); }
+  window.openApp = openApp;
+
+  // tabs + filters
+  let curTab='all', curF='all';
+  function apply(){
+    document.querySelectorAll('#rows tr').forEach(tr=>{
+      const okT = curTab==='all'||tr.dataset.type===curTab;
+      const okF = curF==='all'||tr.dataset.st===curF;
+      tr.style.display = (okT&&okF)?'':'none';
+    });
+  }
+  document.getElementById('tabs').addEventListener('click',e=>{const t=e.target.closest('.tab');if(!t)return;document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.toggle('on',x===t));curTab=t.dataset.tab;apply();});
+  document.querySelector('.filters').addEventListener('click',e=>{const c=e.target.closest('.chip-f');if(!c)return;document.querySelectorAll('.chip-f').forEach(x=>x.classList.toggle('on',x===c));curF=c.dataset.f;apply();});
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — เอกสารใกล้หมดอายุ</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .days-pill { font-family:var(--font-mono); font-size:12px; font-weight:600; padding:3px 10px; border-radius:var(--r-full); }
+  .days-pill.expired { background:var(--danger-bg); color:var(--danger); }
+  .days-pill.soon { background:var(--warning-bg); color:var(--amber-700); }
+  [data-theme="dark"] .days-pill.soon { color:var(--amber-300); }
+  .days-pill.ok { background:var(--success-bg); color:var(--success); }
+  .doc-chip { display:inline-flex; align-items:center; gap:6px; font-size:13px; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'expiring',title:'เอกสารใกล้หมดอายุ',titleEn:'Document Expiry',sub:'แจ้งเตือนเอกสารเจ้าหน้าที่ที่ต้องต่ออายุ',subEn:'Guard documents needing renewal'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="kpi-grid">
+        <div class="kpi" style="border:1px solid color-mix(in srgb,var(--danger) 30%,transparent)"><div class="top"><div class="ic" style="background:var(--danger-bg);color:var(--danger)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg></div></div><div class="v" style="color:var(--danger)">3</div><div class="k"><span data-th>หมดอายุแล้ว</span><span data-en lang-hide>Expired</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--warning-bg);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div></div><div class="v">4</div><div class="k"><span data-th>ใกล้หมดใน 7 วัน</span><span data-en lang-hide>Within 7 days</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--warning-bg);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg></div></div><div class="v">11</div><div class="k"><span data-th>ใกล้หมดใน 30 วัน</span><span data-en lang-hide>Within 30 days</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--info-bg);color:var(--info)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18M7 14l4-4 3 3 5-6"/></svg></div></div><div class="v">28</div><div class="k"><span data-th>ใกล้หมดใน 90 วัน</span><span data-en lang-hide>Within 90 days</span></div></div>
+      </div>
+      <div class="tabs" id="tabs">
+        <div class="tab on" data-t="expired"><span data-th>หมดอายุแล้ว</span><span data-en lang-hide>Expired</span><span class="pill">3</span></div>
+        <div class="tab" data-t="7"><span data-th>ใน 7 วัน</span><span data-en lang-hide>7 days</span><span class="pill">4</span></div>
+        <div class="tab" data-t="30"><span data-th>ใน 30 วัน</span><span data-en lang-hide>30 days</span><span class="pill">11</span></div>
+        <div class="tab" data-t="90"><span data-th>ใน 90 วัน</span><span data-en lang-hide>90 days</span><span class="pill">28</span></div>
+      </div>
+      <div class="filters">
+        <span class="muted" style="font-size:13.5px"><span data-th>เลือก 2 รายการ</span><span data-en lang-hide>2 selected</span></span>
+        <div class="spacer"></div>
+        <button class="btn primary sm" onclick="pg.toast('ส่งการแจ้งเตือนให้เจ้าหน้าที่ 2 คนแล้ว')"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/></svg><span data-th>ส่งเตือนให้อัปโหลดใหม่</span><span data-en lang-hide>Send renewal reminder</span></button>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th style="width:40px"></th><th data-th>เจ้าหน้าที่</th><th data-en lang-hide>Guard</th><th data-th>ประเภทเอกสาร</th><th data-th>วันหมดอายุ</th><th data-th>เหลือ</th><th data-th>เตือนล่าสุด</th><th></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const DOCS={'id':['บัตรประชาชน','ID Card'],'license':['ใบอนุญาต รปภ.','Security License'],'training':['ใบรับรองการฝึก','Training Cert'],'criminal':['ใบตรวจประวัติ','Criminal Check'],'driver':['ใบขับขี่','Driver License']};
+  const E=[
+    ['วร','วีระ ทองดี','criminal','15 พ.ค. 2026',-19,'2 วันก่อน',1],
+    ['ธร','ธีรศักดิ์ มั่นคง','license','28 พ.ค. 2026',-6,'1 วันก่อน',1],
+    ['สห','สมหมาย แข็งขัน','training','01 มิ.ย. 2026',-2,'วันนี้',0],
+    ['กล','กล้า ใจเด็ด','license','08 มิ.ย. 2026',5,'3 วันก่อน',0],
+    ['พน','พนม ยอดเยี่ยม','driver','10 มิ.ย. 2026',7,'5 วันก่อน',0],
+    ['ชย','ชัยวัฒน์ ดี','id','25 มิ.ย. 2026',22,'—',0],
+    ['มต','มิตร สหาย','criminal','30 มิ.ย. 2026',27,'—',0],
+  ];
+  function render(t){
+    const rows=E.filter(e=>t==='expired'?e[4]<0:t==='7'?e[4]>=0&&e[4]<=7:t==='30'?e[4]<=30:e[4]<=90);
+    document.getElementById('rows').innerHTML=rows.map(([av,nm,doc,exp,days,rem,sel])=>{
+      const cls=days<0?'expired':days<=7?'soon':days<=30?'soon':'ok';
+      const txt=days<0?`เกิน ${-days} วัน`:`${days} วัน`;
+      return `<tr><td><div class="cbx" style="width:18px;height:18px;border-radius:5px;border:1.5px solid var(--border-strong);display:flex;align-items:center;justify-content:center;cursor:pointer;${sel?'background:var(--brand-int);border-color:var(--brand-int)':''}" onclick="this.classList.toggle('x')">${sel?'<svg width=11 height=11 viewBox="0 0 24 24" fill=none stroke=#fff stroke-width=3><path d="M20 6 9 17l-5-5"/></svg>':''}</div></td>
+        <td colspan="2"><div class="cell-user"><div class="av">${av}</div><div><div class="nm">${nm}</div><div class="sub mono">ID #${1000+Math.floor(Math.random()*400)}</div></div></div></td>
+        <td><span class="doc-chip"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="${days<0?'var(--danger)':'var(--text-muted)'}" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="10" r="2"/><path d="m3 17 5-3 4 2 6-4"/></svg><span data-th>${DOCS[doc][0]}</span><span data-en lang-hide>${DOCS[doc][1]}</span></span></td>
+        <td class="mono muted">${exp}</td><td><span class="days-pill ${cls}">${txt}</span></td><td class="mono muted">${rem}</td>
+        <td><div class="row-act"><button class="btn sm secondary"><span data-th>เตือน</span><span data-en lang-hide>Remind</span></button></div></td></tr>`;
+    }).join('');
+    if(window.pg)pg.relabel();
+  }
+  render('expired');
+  document.getElementById('tabs').addEventListener('click',e=>{const t=e.target.closest('.tab');if(!t)return;document.querySelectorAll('#tabs .tab').forEach(x=>x.classList.toggle('on',x===t));render(t.dataset.t);});
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

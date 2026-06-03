@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — ลูกค้า</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+</head>
+<body>
+<script>window.PAGE={active:'customers',title:'ลูกค้า',titleEn:'Customers',sub:'ลูกค้าที่อนุมัติแล้ว',subEn:'Approved customers'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--info-bg);color:var(--info)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg></div><span class="delta up">+18</span></div><div class="v">2,418</div><div class="k"><span data-th>ลูกค้าทั้งหมด</span><span data-en lang-hide>Total customers</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--success-bg);color:var(--success)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg></div></div><div class="v">฿1.82M</div><div class="k"><span data-th>ยอดใช้จ่ายรวม (เดือน)</span><span data-en lang-hide>Monthly spend</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--brand-int);color:#fff"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg></div></div><div class="v">8.4K</div><div class="k"><span data-th>การจองทั้งหมด</span><span data-en lang-hide>Total bookings</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--amber-100);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div></div><div class="v">68%</div><div class="k"><span data-th>กลับมาใช้ซ้ำ</span><span data-en lang-hide>Repeat rate</span></div></div>
+      </div>
+      <div class="filters">
+        <span class="chip-f on"><span data-th>ทั้งหมด</span><span data-en lang-hide>All</span></span>
+        <span class="chip-f"><span data-th>บุคคล</span><span data-en lang-hide>Individual</span></span>
+        <span class="chip-f"><span data-th>นิติบุคคล</span><span data-en lang-hide>Company</span></span>
+        <div class="spacer"></div>
+        <div class="search-sm"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="ค้นหาลูกค้า…"></div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table class="tbl">
+          <thead><tr><th data-th>ลูกค้า</th><th data-en lang-hide>Customer</th><th data-th>ที่อยู่</th><th data-th>การจอง</th><th data-th>ใช้จ่ายรวม</th><th data-th>คุณภาพบัญชี</th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table></div>
+        <div class="pagination"><span data-th>แสดง 1–7 จาก 2,418 คน</span><span data-en lang-hide>1–7 of 2,418</span><div class="pages"><span class="pg on">1</span><span class="pg">2</span><span class="pg">…</span><span class="pg">302</span></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const C=[
+    ['นภ','นภาพร ศรีสุข','indiv','หมู่บ้านลัดดารมย์ ซ.5, บางนา',24,'฿42,800','good'],
+    ['บจ','บจก. ไทยพัฒนา','company','โรงงาน ปทุมธานี','148','฿684,000','good'],
+    ['วช','คุณวิชัย สมหวัง','indiv','คอนโด ไอดีโอ สุขุมวิท',12,'฿24,600','good'],
+    ['ลพ','คอนโด ลุมพินี','company','พระราม 4, กรุงเทพฯ',96,'฿448,000','good'],
+    ['นด','คุณนิดา ประเสริฐ','indiv','หมู่บ้านเดอะ ซิตี้, นนทบุรี',6,'฿11,200','watch'],
+    ['สห','คุณสมหญิง การดี','indiv','คอนโด รีเจ้นท์, สาทร',3,'฿5,600','new'],
+    ['อช','คุณอนุชา หาญกล้า','indiv','หมู่บ้านกฤษดา, รังสิต',1,'฿1,840','new'],
+  ];
+  const Q={good:['green','ดี','Good'],watch:['amber','เฝ้าระวัง','Watch'],new:['blue','ใหม่','New']};
+  document.getElementById('rows').innerHTML=C.map(([av,nm,type,addr,bk,spend,q])=>{const s=Q[q];return `
+    <tr>
+      <td colspan="2"><div class="cell-user"><div class="av" style="background:${type==='company'?'var(--amber-100)':'var(--green-100)'};color:${type==='company'?'var(--amber-800)':'var(--green-800)'}">${av}</div><div><div class="nm">${nm}</div><div class="sub"><span class="bdg ${type==='company'?'amber':'gray'}" style="padding:1px 7px"><span data-th>${type==='company'?'นิติบุคคล':'บุคคล'}</span><span data-en lang-hide>${type==='company'?'Company':'Individual'}</span></span></div></div></div></td>
+      <td class="muted" style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${addr}</td>
+      <td class="mono">${bk}</td>
+      <td class="mono strong">${spend}</td>
+      <td><span class="bdg ${s[0]}"><span data-th>${s[1]}</span><span data-en lang-hide>${s[2]}</span></span></td>
+    </tr>`;}).join('');
+  function openCust(i){
+    const c=C[i], s=Q[c[6]];
+    document.getElementById('dAv').textContent=c[0];
+    document.getElementById('dAv').style.background=c[2]==='company'?'var(--amber-100)':'var(--green-100)';
+    document.getElementById('dAv').style.color=c[2]==='company'?'var(--amber-800)':'var(--green-800)';
+    document.getElementById('dNm').textContent=c[1];
+    document.getElementById('dType').innerHTML=`<span class="bdg ${c[2]==='company'?'amber':'gray'}">${c[2]==='company'?'นิติบุคคล':'บุคคล'}</span>`;
+    document.getElementById('dAddr').textContent=c[3];
+    document.getElementById('dBk').textContent=c[4];
+    document.getElementById('dSpend').textContent=c[5];
+    const qb=document.getElementById('dQual'); qb.className='bdg '+s[0]; qb.textContent=s[1];
+    pg.relabel(); pg.open('#dOv'); pg.open('#dwr');
+  }
+  window.openCust=openCust;
+  document.querySelectorAll('#rows tr').forEach((tr,i)=>{tr.style.cursor='pointer';tr.addEventListener('click',()=>openCust(i));});
+</script>
+<!-- customer detail drawer -->
+<div class="drawer-overlay" id="dOv" onclick="pg.close('#dOv');pg.close('#dwr')"></div>
+<aside class="drawer" id="dwr">
+  <div class="drawer-head">
+    <div class="cell-user"><div class="av" id="dAv" style="width:48px;height:48px;font-size:17px">นภ</div><div><div class="nm" style="font-size:18px" id="dNm">นภาพร ศรีสุข</div><div class="sub" id="dType"></div></div></div>
+    <div class="x" onclick="pg.close('#dOv');pg.close('#dwr')" style="cursor:pointer;color:var(--text-faint);margin-left:auto"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+  </div>
+  <div class="drawer-body">
+    <div class="stat-line" style="margin-bottom:16px">
+      <div class="stat-mini"><div class="k"><span data-th>การจอง</span><span data-en lang-hide>Bookings</span></div><div class="v" id="dBk">24</div></div>
+      <div class="stat-mini"><div class="k"><span data-th>ใช้จ่ายรวม</span><span data-en lang-hide>Total spend</span></div><div class="v" id="dSpend" style="font-size:15px;margin-top:4px">฿42,800</div></div>
+    </div>
+    <div class="panel" style="margin-bottom:14px"><div class="panel-body" style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px" data-th>ข้อมูลบัญชี</div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>ที่อยู่</span><span class="muted" data-en lang-hide>Address</span><span style="max-width:230px;text-align:right" id="dAddr">—</span></div>
+        <div style="display:flex;justify-content:space-between;font-size:13.5px"><span class="muted" data-th>คุณภาพบัญชี</span><span class="muted" data-en lang-hide>Quality</span><span class="bdg" id="dQual">ดี</span></div>
+      </div>
+    </div></div>
+    <div class="panel" style="margin-bottom:14px"><div class="panel-body" style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px" data-th>วิธีชำระเงิน</div>
+      <div style="display:flex;align-items:center;gap:11px;font-size:13.5px"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><rect x="2" y="6" width="20" height="14" rx="3"/><path d="M2 10h20"/></svg><span data-th>PromptPay · 081-234-5678</span><span data-en lang-hide>PromptPay · 081-234-5678</span></div>
+    </div></div>
+    <div class="panel"><div class="panel-body" style="padding:14px 16px">
+      <div style="font-size:12px;font-weight:600;color:var(--text-faint);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px" data-th>สถานะการอนุมัติ</div>
+      <div style="display:flex;flex-direction:column;gap:0">
+        <div style="display:flex;gap:11px;align-items:center;padding:7px 0"><div style="width:24px;height:24px;border-radius:50%;background:var(--success);color:#fff;display:flex;align-items:center;justify-content:center;flex:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6"><path d="M20 6 9 17l-5-5"/></svg></div><div style="font-size:13px"><b style="color:var(--text-strong)">อนุมัติแล้ว</b> · 31 พ.ค. 2026</div></div>
+        <div style="display:flex;gap:11px;align-items:center;padding:7px 0"><div style="width:24px;height:24px;border-radius:50%;background:var(--bg-sunken);color:var(--text-muted);display:flex;align-items:center;justify-content:center;flex:none"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div><div style="font-size:13px;color:var(--text-muted)">สมัครสมาชิก · 30 พ.ค. 2026</div></div>
+      </div>
+    </div></div>
+  </div>
+  <div class="drawer-foot">
+    <button class="btn secondary" style="flex:1"><span data-th>ดูประวัติการจอง</span><span data-en lang-hide>Booking history</span></button>
+    <button class="btn danger-ghost" style="flex:1" onclick="pg.toast('ระงับบัญชีลูกค้า',false)"><span data-th>ระงับบัญชี</span><span data-en lang-hide>Suspend</span></button>
+  </div>
+</aside>
+<script src="admin-shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — โปรไฟล์ผู้ดูแล</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .prof-grid { display:grid; grid-template-columns:300px 1fr; gap:20px; align-items:start; }
+  .prof-card { text-align:center; padding:28px 22px; }
+  .prof-av { width:88px; height:88px; border-radius:50%; background:var(--green-100); color:var(--green-800); display:flex; align-items:center; justify-content:center; font-size:32px; font-weight:600; font-family:var(--font-latin); margin:0 auto 16px; }
+  [data-theme="dark"] .prof-av { background:var(--green-800); color:var(--green-100); }
+  .sess-row { display:flex; align-items:center; gap:13px; padding:13px 0; border-bottom:1px solid var(--border); }
+  .sess-row:last-child { border-bottom:0; }
+  .sess-row .si { width:38px; height:38px; border-radius:11px; background:var(--bg-sunken); color:var(--text-muted); display:flex; align-items:center; justify-content:center; flex:none; }
+  .sess-row .sv { font-size:13.5px; font-weight:600; color:var(--text-strong); }
+  .sess-row .ss { font-size:11.5px; color:var(--text-muted); font-family:var(--font-mono); margin-top:1px; }
+  .token-row { display:flex; align-items:center; gap:13px; padding:13px 0; border-bottom:1px solid var(--border); }
+  .token-row:last-child { border-bottom:0; }
+  .token-row .tk { font-family:var(--font-mono); font-size:12.5px; color:var(--text); background:var(--bg-sunken); padding:5px 10px; border-radius:7px; }
+  .feed-mini { display:flex; gap:11px; padding:10px 0; border-bottom:1px solid var(--border); font-size:13px; }
+  .feed-mini:last-child { border-bottom:0; }
+  .feed-mini .fd { width:8px; height:8px; border-radius:50%; flex:none; margin-top:5px; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'profile',title:'โปรไฟล์ผู้ดูแล',titleEn:'Admin Profile',sub:'บัญชี ความปลอดภัย และเซสชัน',subEn:'Account, security & sessions'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="prof-grid">
+        <div>
+          <div class="panel prof-card" style="margin-bottom:18px">
+            <div class="prof-av">วร</div>
+            <div style="font-size:18px;font-weight:600;color:var(--text-strong)">วรรณา รักดี</div>
+            <div style="font-size:13px;color:var(--text-muted);margin-top:2px">admin@pguard.co.th</div>
+            <div style="margin-top:12px"><span class="bdg green"><span class="d" style="background:var(--success)"></span>Operations Lead</span></div>
+            <div style="font-size:11.5px;color:var(--text-faint);margin-top:14px;font-family:var(--font-mono)" data-th>เข้าสู่ระบบล่าสุด · วันนี้ 08:42</div>
+            <div style="font-size:11.5px;color:var(--text-faint);margin-top:14px;font-family:var(--font-mono);display:none" data-en lang-hide>Last login · today 08:42</div>
+          </div>
+          <div class="panel"><div class="panel-body">
+            <div style="font-size:13px;font-weight:600;color:var(--text);margin-bottom:6px"><span data-th>กิจกรรมล่าสุดของฉัน</span><span data-en lang-hide>My recent activity</span></div>
+            <div class="feed-mini"><span class="fd" style="background:var(--success)"></span><div><b style="color:var(--text-strong)">อนุมัติเจ้าหน้าที่</b> สมชาย ก.<div style="font-size:10.5px;color:var(--text-faint);font-family:var(--font-mono)">09:14</div></div></div>
+            <div class="feed-mini"><span class="fd" style="background:var(--amber-500)"></span><div><b style="color:var(--text-strong)">แก้ไขราคา</b> รปภ. คอนโด<div style="font-size:10.5px;color:var(--text-faint);font-family:var(--font-mono)">08:48</div></div></div>
+            <div class="feed-mini"><span class="fd" style="background:var(--info)"></span><div><b style="color:var(--text-strong)">คืนเงิน</b> PG-284851<div style="font-size:10.5px;color:var(--text-faint);font-family:var(--font-mono)">08:30</div></div></div>
+          </div></div>
+        </div>
+        <div>
+          <div class="panel" style="margin-bottom:18px"><div class="panel-body">
+            <div style="font-size:16px;font-weight:600;color:var(--text-strong);margin-bottom:4px"><span data-th>ข้อมูลบัญชี</span><span data-en lang-hide>Account details</span></div>
+            <div style="font-size:13px;color:var(--text-muted);margin-bottom:16px"><span data-th>แก้ไขข้อมูลส่วนตัวและรหัสผ่าน</span><span data-en lang-hide>Edit your details and password</span></div>
+            <div class="field-row"><div class="field"><label data-th>ชื่อ-นามสกุล</label><label data-en lang-hide>Full name</label><input class="input" value="วรรณา รักดี"></div><div class="field"><label data-th>อีเมล</label><label data-en lang-hide>Email</label><input class="input" value="admin@pguard.co.th"></div></div>
+            <div style="display:flex;gap:10px;margin-top:4px"><button class="btn secondary"><span data-th>เปลี่ยนรหัสผ่าน</span><span data-en lang-hide>Change password</span></button><button class="btn primary" onclick="pg.toast('บันทึกข้อมูลแล้ว')"><span data-th>บันทึก</span><span data-en lang-hide>Save</span></button></div>
+          </div></div>
+
+          <div class="panel" style="margin-bottom:18px"><div class="panel-body">
+            <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px"><div><div style="font-size:16px;font-weight:600;color:var(--text-strong)"><span data-th>ยืนยันตัวตน 2 ขั้น (2FA)</span><span data-en lang-hide>Two-factor authentication</span></div><div style="font-size:13px;color:var(--text-muted);margin-top:2px"><span data-th>เพิ่มความปลอดภัยด้วย Authenticator</span><span data-en lang-hide>Extra security via Authenticator app</span></div></div><button class="tgl on" onclick="this.classList.toggle('on')" style="margin-left:auto"></button></div>
+          </div></div>
+
+          <div class="panel" style="margin-bottom:18px"><div class="panel-head"><h3><span data-th>เซสชันที่ใช้งานอยู่</span><span data-en lang-hide>Active sessions</span></h3><button class="btn sm danger-ghost" style="margin-left:auto" onclick="pg.toast('ออกจากระบบทุกอุปกรณ์แล้ว',false)"><span data-th>ออกจากทุกอุปกรณ์</span><span data-en lang-hide>Sign out all</span></button></div>
+            <div class="panel-body" style="padding-top:6px;padding-bottom:6px">
+              <div class="sess-row"><div class="si" style="background:var(--green-50);color:var(--brand-int)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg></div><div style="flex:1"><div class="sv">MacBook Pro · Chrome <span class="bdg green" style="margin-left:6px">เครื่องนี้</span></div><div class="ss">103.21.44.8 · กรุงเทพฯ · ตอนนี้</div></div></div>
+              <div class="sess-row"><div class="si"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/></svg></div><div style="flex:1"><div class="sv">iPhone 15 · pguard app</div><div class="ss">49.228.91.2 · กรุงเทพฯ · 2 ชม.ที่แล้ว</div></div><button class="btn sm secondary"><span data-th>ออก</span><span data-en lang-hide>Revoke</span></button></div>
+              <div class="sess-row"><div class="si"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/></svg></div><div style="flex:1"><div class="sv">Windows · Edge</div><div class="ss">171.5.22.90 · นนทบุรี · เมื่อวาน</div></div><button class="btn sm secondary"><span data-th>ออก</span><span data-en lang-hide>Revoke</span></button></div>
+            </div>
+          </div>
+
+          <div class="panel"><div class="panel-head"><h3><span data-th>API Tokens</span><span data-en lang-hide>API tokens</span></h3><button class="btn sm primary" style="margin-left:auto"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 5v14M5 12h14"/></svg><span data-th>สร้างใหม่</span><span data-en lang-hide>Generate</span></button></div>
+            <div class="panel-body" style="padding-top:6px;padding-bottom:6px">
+              <div class="token-row"><div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--text-strong)">Reporting export</div><div class="tk" style="display:inline-block;margin-top:5px">pg_live_••••••••••8f2a</div></div><div style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono)">สร้าง 12 พ.ค.</div><button class="btn sm danger-ghost"><span data-th>เพิกถอน</span><span data-en lang-hide>Revoke</span></button></div>
+              <div class="token-row"><div style="flex:1"><div style="font-size:13.5px;font-weight:600;color:var(--text-strong)">Webhook integration</div><div class="tk" style="display:inline-block;margin-top:5px">pg_live_••••••••••c104</div></div><div style="font-size:11.5px;color:var(--text-muted);font-family:var(--font-mono)">สร้าง 28 เม.ย.</div><button class="btn sm danger-ghost"><span data-th>เพิกถอน</span><span data-en lang-hide>Revoke</span></button></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="admin-shell.js"></script>
+</body>
+</html>

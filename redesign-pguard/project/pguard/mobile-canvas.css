@@ -1,0 +1,35 @@
+/* pguard — mobile flow canvas (rides on tokens.css + proto/app.css) */
+body { display:block !important; background:var(--bg-app); padding:48px 40px 110px !important; }
+.page-head { max-width:1200px; margin:0 auto 40px; }
+.page-head .eyebrow { font-family:var(--font-latin); font-weight:600; font-size:12px; letter-spacing:.16em; text-transform:uppercase; color:var(--brand-int); }
+.page-head h1 { font-size:32px; font-weight:600; color:var(--text-strong); margin:12px 0 8px; letter-spacing:-.02em; }
+.page-head p { font-size:16px; color:var(--text-muted); margin:0; max-width:680px; line-height:1.6; }
+
+.canvas { display:flex; gap:30px 40px; flex-wrap:wrap; justify-content:center; align-items:flex-start; max-width:1400px; margin:0 auto; }
+.col { width:340px; }
+.col .lab { display:flex; align-items:baseline; gap:9px; margin-bottom:14px; min-height:24px; }
+.col .lab .tag { font-family:var(--font-mono); font-size:11px; font-weight:600; color:#fff; background:var(--green-900); padding:2px 8px; border-radius:999px; flex:none; }
+[data-theme="dark"] .col .lab .tag { background:var(--brand-int); color:#04140D; }
+.col .lab h2 { font-size:16px; font-weight:600; color:var(--text-strong); margin:0; }
+.col .lab .sub { font-size:12.5px; color:var(--text-muted); }
+
+/* static phones: grow to content, show everything */
+.phone { width:340px; height:auto !important; border-radius:46px; padding:11px; }
+.screen { height:auto !important; min-height:640px; border-radius:36px; }
+.notch { width:120px; height:30px; }
+.body { display:block !important; }
+.scroll { overflow:visible !important; min-height:0; }
+.statusbar { height:auto; padding:14px 26px 6px; }
+
+/* section divider in canvas */
+.canvas-section { width:100%; max-width:1400px; margin:18px auto 4px; display:flex; align-items:center; gap:14px; }
+.canvas-section h3 { font-size:18px; font-weight:600; color:var(--text-strong); margin:0; }
+.canvas-section .line { flex:1; height:1px; background:var(--border); }
+
+/* floating toolbar */
+.mtoolbar { position:fixed; bottom:24px; left:50%; transform:translateX(-50%); display:flex; gap:8px; z-index:200; }
+.mseg { display:inline-flex; background:var(--bg-surface); border:1px solid var(--border); border-radius:999px; padding:4px; box-shadow:var(--sh-lg); }
+.mseg button { border:0; background:transparent; font-family:var(--font-latin); font-size:13px; font-weight:600; color:var(--text-muted); padding:8px 15px; border-radius:999px; cursor:pointer; }
+.mseg button.on { background:var(--green-900); color:#fff; }
+[data-theme="dark"] .mseg button.on { background:var(--brand-int); color:#04140D; }
+[lang-hide] { display:none !important; }

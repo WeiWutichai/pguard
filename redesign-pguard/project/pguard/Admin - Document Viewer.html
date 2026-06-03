@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — ตรวจเอกสาร</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .doc-big { display:grid; grid-template-columns:repeat(3,1fr); gap:16px; }
+  .docard { border:1px solid var(--border); border-radius:var(--r-lg); overflow:hidden; background:var(--bg-surface); cursor:pointer; transition:.15s; }
+  .docard:hover { box-shadow:var(--sh-md); transform:translateY(-2px); }
+  .docard .thumb { height:160px; background:linear-gradient(135deg,var(--n-100),var(--n-200)); position:relative; display:flex; align-items:center; justify-content:center; color:var(--text-faint); overflow:hidden; }
+  [data-theme="dark"] .docard .thumb { background:linear-gradient(135deg,#1a221e,#0f1512); }
+  .docard .thumb .wm { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:11px; font-weight:700; color:rgba(120,140,130,.4); transform:rotate(-18deg); letter-spacing:.1em; text-align:center; line-height:1.4; }
+  .docard .meta { padding:13px 15px; }
+  .docard .nm { font-size:14px; font-weight:600; color:var(--text-strong); }
+  .docard .ex { font-size:12px; color:var(--text-muted); margin-top:3px; display:flex; align-items:center; gap:6px; }
+  /* viewer modal */
+  .viewer { position:fixed; inset:0; background:rgba(8,16,12,.9); z-index:200; display:none; flex-direction:column; }
+  .viewer.show { display:flex; }
+  .viewer-top { display:flex; align-items:center; gap:14px; padding:16px 22px; color:#fff; }
+  .viewer-top .vt { font-size:16px; font-weight:600; }
+  .viewer-top .vs { font-size:12.5px; opacity:.7; }
+  .viewer-top .x { margin-left:auto; cursor:pointer; width:40px; height:40px; border-radius:10px; background:rgba(255,255,255,.1); display:flex; align-items:center; justify-content:center; }
+  .viewer-stage { flex:1; display:flex; align-items:center; justify-content:center; overflow:hidden; position:relative; }
+  .doc-img { width:520px; height:340px; background:linear-gradient(135deg,#e8ece9,#d4dcd6); border-radius:8px; position:relative; display:flex; align-items:center; justify-content:center; color:#8a968f; transition:transform .2s; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  .doc-img .wm { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:20px; font-weight:700; color:rgba(120,140,130,.35); transform:rotate(-22deg); letter-spacing:.15em; text-align:center; line-height:1.5; }
+  .doc-img .field-line { position:absolute; height:9px; background:rgba(120,140,130,.3); border-radius:3px; }
+  .viewer-ctrl { display:flex; align-items:center; justify-content:center; gap:10px; padding:18px; }
+  .vc { width:46px; height:46px; border-radius:12px; background:rgba(255,255,255,.12); color:#fff; border:0; display:flex; align-items:center; justify-content:center; cursor:pointer; }
+  .vc:hover { background:rgba(255,255,255,.2); }
+  .vc.wide { width:auto; padding:0 18px; gap:8px; font-family:var(--font-thai); font-weight:600; font-size:14px; }
+  .vc.approve { background:var(--success); } .vc.reject { background:var(--danger); }
+  .zoom-ind { color:#fff; font-family:var(--font-mono); font-size:13px; opacity:.8; min-width:54px; text-align:center; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'applicants',title:'ตรวจเอกสารผู้สมัคร',titleEn:'Document review',sub:'สมชาย กิตติพงษ์ · ผู้สมัครเจ้าหน้าที่ #2400',subEn:'Somchai K. · guard applicant #2400'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="page-intro"><h2 data-th>เอกสาร 5 ใบ</h2><h2 data-en lang-hide>5 documents</h2><p data-th>คลิกเอกสารเพื่อดูแบบเต็มจอ พร้อมซูม หมุน และอนุมัติ/ปฏิเสธรายใบ</p><p data-en lang-hide>Click a document to open the full-screen viewer with zoom, rotate, and per-doc approve/reject.</p></div>
+      <div class="doc-big" id="docs"></div>
+    </div>
+  </div>
+</div>
+
+<div class="viewer" id="viewer">
+  <div class="viewer-top">
+    <div><div class="vt" id="vTitle">บัตรประชาชน</div><div class="vs" id="vSub">ออกโดยกรมการปกครอง · หมดอายุ 2030</div></div>
+    <div class="x" onclick="document.getElementById('viewer').classList.remove('show')"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></div>
+  </div>
+  <div class="viewer-stage">
+    <div class="doc-img" id="docImg">
+      <svg width="60" height="60" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="10" r="2.5"/><path d="m3 18 5-4 3 2 4-3 6 5"/></svg>
+      <div class="field-line" style="top:30px;left:200px;width:120px"></div>
+      <div class="field-line" style="top:48px;left:200px;width:160px"></div>
+      <div class="field-line" style="top:70px;left:200px;width:90px"></div>
+      <div class="wm">FOR SECURITY<br>USE ONLY</div>
+    </div>
+  </div>
+  <div class="viewer-ctrl">
+    <button class="vc" onclick="zoom(-0.2)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3M8 11h6"/></svg></button>
+    <span class="zoom-ind" id="zoomInd">100%</span>
+    <button class="vc" onclick="zoom(0.2)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3M11 8v6M8 11h6"/></svg></button>
+    <button class="vc" onclick="rotate()"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.8-3.4L23 10M1 14l4.7 4.4A9 9 0 0 0 20.5 15"/></svg></button>
+    <div style="width:1px;height:30px;background:rgba(255,255,255,.2);margin:0 6px"></div>
+    <button class="vc wide reject" onclick="pg.toast('ปฏิเสธเอกสารนี้',false);document.getElementById('viewer').classList.remove('show')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M18 6 6 18M6 6l12 12"/></svg><span data-th>ปฏิเสธ</span><span data-en lang-hide>Reject</span></button>
+    <button class="vc wide approve" onclick="pg.toast('อนุมัติเอกสารแล้ว');document.getElementById('viewer').classList.remove('show')"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg><span data-th>อนุมัติ</span><span data-en lang-hide>Approve</span></button>
+  </div>
+</div>
+
+<script>
+  const DOCS=[
+    ['บัตรประชาชน','ID Card','ออกโดยกรมการปกครอง · หมดอายุ 2030','ok'],
+    ['ใบอนุญาต รปภ.','Security License','ขึ้นทะเบียน สตช. · หมดอายุ 2027','ok'],
+    ['ใบรับรองการฝึก','Training Certificate','40 ชม. · ออก 2024','ok'],
+    ['ใบตรวจประวัติอาชญากรรม','Criminal Check','ออก พ.ค. 2026','ok'],
+    ['ใบอนุญาตขับขี่','Driver License','รถยนต์ · หมดอายุ 2028','ok'],
+  ];
+  document.getElementById('docs').innerHTML=DOCS.map(([th,en,sub],i)=>`
+    <div class="docard" onclick="openDoc(${i})">
+      <div class="thumb"><svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4"><rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="10" r="2.5"/><path d="m3 18 5-4 3 2 4-3 6 5"/></svg><div class="wm">FOR SECURITY<br>USE ONLY</div></div>
+      <div class="meta"><div class="nm" data-th>${th}</div><div class="nm" data-en lang-hide>${en}</div><div class="ex"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--success)" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>${sub}</div></div>
+    </div>`).join('');
+  let z=1, r=0;
+  function openDoc(i){document.getElementById('vTitle').textContent=DOCS[i][0];document.getElementById('vSub').textContent=DOCS[i][2];z=1;r=0;apply();document.getElementById('viewer').classList.add('show');}
+  function zoom(d){z=Math.max(0.6,Math.min(2.4,z+d));apply();}
+  function rotate(){r=(r+90)%360;apply();}
+  function apply(){document.getElementById('docImg').style.transform=`scale(${z}) rotate(${r}deg)`;document.getElementById('zoomInd').textContent=Math.round(z*100)+'%';}
+  window.openDoc=openDoc;window.zoom=zoom;window.rotate=rotate;
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

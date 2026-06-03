@@ -1,0 +1,26 @@
+{
+  "hooks": {
+    "pre_tool_use": [
+      {
+        "matcher": "bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-tool.sh \"$TOOL_INPUT\""
+          }
+        ]
+      }
+    ],
+    "post_tool_use": [
+      {
+        "matcher": "write_file|edit_file|str_replace",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-edit.sh \"$TOOL_INPUT_PATH\""
+          }
+        ]
+      }
+    ]
+  }
+}

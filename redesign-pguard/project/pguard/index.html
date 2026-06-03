@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard — ภาพรวมงานออกแบบ</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { margin:0; }
+  .wrap { max-width:1080px; margin:0 auto; padding:60px 28px 110px; }
+  .top { display:flex; align-items:center; gap:13px; margin-bottom:42px; }
+  .top .wm { font-family:var(--font-latin); font-weight:700; letter-spacing:-.03em; font-size:25px; color:var(--text-strong); }
+  .top .wm .p { color:var(--brand-int); }
+  .top .pill { margin-left:auto; font-size:13px; color:var(--text-muted); background:var(--bg-surface); border:1px solid var(--border); padding:8px 15px; border-radius:999px; }
+  .hero h1 { font-size:38px; font-weight:600; letter-spacing:-.025em; color:var(--text-strong); margin:0 0 12px; line-height:1.14; }
+  .hero p { font-size:17px; color:var(--text-muted); max-width:660px; margin:0 0 14px; line-height:1.6; }
+  .counts { display:flex; gap:26px; margin:24px 0 48px; flex-wrap:wrap; }
+  .counts .c { }
+  .counts .n { font-family:var(--font-mono); font-size:28px; font-weight:600; color:var(--brand-int); }
+  .counts .l { font-size:12.5px; color:var(--text-muted); margin-top:2px; }
+  .sec { margin-bottom:40px; }
+  .sec-h { display:flex; align-items:baseline; gap:12px; margin-bottom:16px; }
+  .sec-h .num { font-family:var(--font-mono); font-size:13px; color:var(--brand-int); font-weight:600; }
+  .sec-h h2 { font-size:20px; font-weight:600; color:var(--text-strong); margin:0; }
+  .sec-h .meta { margin-left:auto; font-size:13px; color:var(--text-faint); }
+  .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+  .card { display:flex; gap:13px; align-items:center; text-decoration:none; background:var(--bg-surface); border:1px solid var(--border); border-radius:14px; padding:14px 15px; transition:.16s; color:inherit; }
+  .card:hover { box-shadow:var(--sh-md); transform:translateY(-2px); border-color:var(--border-strong); }
+  .card .ic { width:38px; height:38px; border-radius:11px; flex:none; display:flex; align-items:center; justify-content:center; background:var(--green-50); color:var(--green-700); }
+  [data-theme="dark"] .card .ic { background:rgba(47,192,137,.12); color:var(--brand-int); }
+  .card .ic.amber { background:var(--amber-50); color:var(--amber-700); } [data-theme="dark"] .card .ic.amber { background:rgba(245,158,11,.12); color:var(--amber-400); }
+  .card .t { font-size:14px; font-weight:600; color:var(--text-strong); }
+  .card .d { font-size:11.5px; color:var(--text-muted); margin-top:1px; }
+  .card.feature { grid-column:span 3; padding:18px 20px; background:var(--green-900); border:0; }
+  .card.feature .t, .card.feature .d { color:#fff; } .card.feature .d { opacity:.8; }
+  .card.feature .ic { background:rgba(255,255,255,.16); color:#fff; }
+  .seg { position:fixed; top:22px; right:28px; display:inline-flex; background:var(--bg-sunken); border:1px solid var(--border); border-radius:999px; padding:3px; z-index:50; }
+  .seg button { border:0; background:transparent; font-family:var(--font-latin); font-size:13px; font-weight:600; color:var(--text-muted); padding:7px 14px; border-radius:999px; cursor:pointer; }
+  .seg button.on { background:var(--bg-surface); color:var(--text-strong); box-shadow:var(--sh-xs); }
+  @media (max-width:760px){ .grid{grid-template-columns:1fr} .card.feature{grid-column:span 1} }
+</style>
+</head>
+<body>
+<div class="seg" id="theme"><button data-set="light" class="on">Light</button><button data-set="dark">Dark</button></div>
+<div class="wrap">
+  <div class="top"><span id="logo"></span><span class="wm"><span class="p">p</span>guard</span><span class="pill">Design delivery · v0.4 · full coverage</span></div>
+  <div class="hero">
+    <h1 data-th>ระบบเรียก รปภ. แบบเรียลไทม์<br>งานออกแบบครบทั้งระบบ</h1>
+    <h1 data-en lang-hide style="display:none">Real-time guard dispatch — full system design</h1>
+    <p data-th>รากฐานระบบดีไซน์ · เว็บแอดมิน 14 หน้า · แอปมือถือฝั่งลูกค้าและเจ้าหน้าที่ครบทุก flow — โหมดสว่าง/มืด และสองภาษา ไทย/อังกฤษ ทุกหน้า</p>
+    <div class="counts">
+      <div class="c"><div class="n">23</div><div class="l" data-th>หน้าเว็บแอดมิน</div></div>
+      <div class="c"><div class="n">80+</div><div class="l" data-th>จอมือถือ</div></div>
+      <div class="c"><div class="n">2</div><div class="l" data-th>ภาษา · 2 ธีม</div></div>
+      <div class="c"><div class="n">1</div><div class="l" data-th>ระบบดีไซน์เดียว</div></div>
+    </div>
+    <a href="Coverage Matrix.html" style="display:inline-flex;align-items:center;gap:8px;font-size:14px;font-weight:600;color:var(--brand-int);text-decoration:none;padding:10px 16px;border:1px solid var(--border);border-radius:999px;background:var(--bg-surface)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17 17l1.5 1.5L21 16"/></svg><span data-th>ดู Coverage Matrix — endpoint → screen</span><span data-en lang-hide style="display:none">View Coverage Matrix</span></a>
+  </div>
+
+  <!-- Foundation -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">01</span><h2 data-th>รากฐาน</h2><h2 data-en lang-hide style="display:none">Foundation</h2></div>
+    <div class="grid">
+      <a class="card feature" href="Design System.html"><span class="ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="12" r="2.5"/><circle cx="6.5" cy="12" r="2.5"/><circle cx="10" cy="17.5" r="2.5"/></svg></span><div><div class="t" data-th>ระบบดีไซน์ — สี ตัวอักษร สเปซ คอมโพเนนต์</div><div class="d" data-th>Deep Forest + Amber · IBM Plex Sans Thai · light & dark · TH/EN</div></div></a>
+    </div>
+  </div>
+
+  <!-- Web Admin -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">02</span><h2 data-th>เว็บแอดมิน</h2><h2 data-en lang-hide style="display:none">Web Admin</h2><span class="meta">23 pages</span></div>
+    <div class="grid" id="adminGrid"></div>
+  </div>
+
+  <!-- Auth/System -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">03</span><h2 data-th>เข้าสู่ระบบ & ระบบพื้นฐาน</h2><h2 data-en lang-hide style="display:none">Auth & System</h2></div>
+    <div class="grid" id="authGrid"></div>
+  </div>
+
+  <!-- Mobile Customer -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">04</span><h2 data-th>มือถือ — ฝั่งลูกค้า</h2><h2 data-en lang-hide style="display:none">Mobile — Customer</h2></div>
+    <div class="grid" id="custGrid"></div>
+  </div>
+
+  <!-- Mobile Guard -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">05</span><h2 data-th>มือถือ — ฝั่งเจ้าหน้าที่</h2><h2 data-en lang-hide style="display:none">Mobile — Guard</h2></div>
+    <div class="grid" id="guardGrid"></div>
+  </div>
+
+  <!-- Shared -->
+  <div class="sec">
+    <div class="sec-h"><span class="num">06</span><h2 data-th>มือถือ — ใช้ร่วมกัน &amp; การสื่อสาร</h2><h2 data-en lang-hide style="display:none">Mobile — Shared &amp; Comms</h2></div>
+    <div class="grid" id="sharedGrid"></div>
+  </div>
+</div>
+
+<script>
+  const mk=(s)=>`<svg width="${s}" height="${s*1.04}" viewBox="0 0 100 106" fill="none"><defs><linearGradient id="hg" x1="50" y1="4" x2="50" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#1FA971"/><stop offset="1" stop-color="#0E3B2E"/></linearGradient></defs><path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="url(#hg)"/><path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="#fff"/><circle cx="50" cy="46" r="7.5" fill="#1FA971"/></svg>`;
+  document.getElementById('logo').innerHTML=mk(30);
+  const SI={
+    dash:'<path d="M3 13h8V3H3zM13 21h8V3h-8zM3 21h8v-6H3z"/>',map:'<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2zM9 4v14M15 6v14"/>',users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/>',shield:'<path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/>',star:'<path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/>',wallet:'<rect x="2" y="6" width="20" height="14" rx="3"/><path d="M2 10h20M16 14h2"/>',tag:'<path d="M3 3h7l11 11-7 7L3 10z"/>',jobs:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/>',report:'<path d="M3 3v18h18M7 14l4-4 3 3 5-6"/>',rules:'<path d="M9 3H5a2 2 0 0 0-2 2v4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M15 21h4a2 2 0 0 0 2-2v-4"/>',log:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>',phone:'<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',chat:'<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',cust:'<circle cx="12" cy="7" r="4"/><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>',play:'<path d="M5 3l14 9-14 9z"/>',
+    pulse:'<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',tasks:'<path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>',alert:'<path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',profile:'<circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/>',
+    send:'<path d="M22 2 11 13M22 2l-7 20-4-9-9-4z"/>',route:'<circle cx="6" cy="19" r="3"/><circle cx="18" cy="5" r="3"/><path d="M9 19h6a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h3"/>',doc:'<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="10" r="2"/><path d="m3 17 5-3 4 2 6-4"/>',login:'<path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3"/>',call:'<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',sys:'<rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/>',matrix:'<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M17 17l1.5 1.5L21 16"/>',cancel:'<circle cx="12" cy="12" r="10"/><path d="m15 9-6 6M9 9l6 6"/>',
+  };
+  function cards(grid, items){
+    document.getElementById(grid).innerHTML=items.map(([href,ic,t,d,amber])=>`<a class="card" href="${encodeURI(href)}"><span class="ic ${amber?'amber':''}"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${SI[ic]}</svg></span><div><div class="t">${t}</div><div class="d">${d}</div></div></a>`).join('');
+  }
+  cards('adminGrid',[
+    ['Admin - Dashboard.html','dash','แดชบอร์ด','KPIs · map · alerts'],
+    ['Admin - Operations.html','pulse','ปฏิบัติการสด','live ops + dispute'],
+    ['Web Admin Live Map.html','map','แผนที่สด','live guard map'],
+    ['Admin - Applicants.html','users','ผู้สมัคร','approve + 5 docs'],
+    ['Admin - Guards.html','shield','พนักงาน รปภ.','roster + drawer'],
+    ['Admin - Customers.html','cust','ลูกค้า','spend · drawer'],
+    ['Admin - Reviews.html','star','รีวิว','visibility · categories'],
+    ['Admin - Tasks.html','tasks','จัดการงานทั้งหมด','bulk + calendar'],
+    ['Admin - Bookings.html','jobs','จัดการงาน','lifecycle · assign'],
+    ['Admin - Wallet.html','wallet','กระเป๋าเงิน','refund queue'],
+    ['Admin - Pricing.html','tag','กำหนดราคา','services CRUD'],
+    ['Admin - Calls.html','call','บันทึกการโทร','WebRTC debug'],
+    ['Admin - Chat.html','chat','ตรวจสอบแชต','moderation'],
+    ['Admin - Broadcast.html','send','ส่งการแจ้งเตือน','audience + preview'],
+    ['Admin - Expiring.html','alert','เอกสารใกล้หมดอายุ','expiry tabs'],
+    ['Admin - Recruitment.html','users','สรรหาบุคลากร','pipeline'],
+    ['Admin - Reports.html','report','รายงาน','charts · heatmap'],
+    ['Admin - Automation.html','rules','กฎอัตโนมัติ','rule builder'],
+    ['Admin - Location Replay.html','route','ดูเส้นทางย้อนหลัง','route scrubber'],
+    ['Admin - Document Viewer.html','doc','ตรวจเอกสาร','zoom + approve'],
+    ['Admin - Activity Log.html','log','Activity Log','audit trail'],
+    ['Admin - Settings.html','settings','ตั้งค่า','company · security'],
+    ['Admin - Profile.html','profile','โปรไฟล์ผู้ดูแล','2FA · sessions'],
+  ]);
+  cards('authGrid',[
+    ['Admin - Login.html','login','เว็บแอดมิน — เข้าสู่ระบบ','login · 2FA · reset'],
+    ['Mobile - Auth.html','shield','เข้าสู่ระบบมือถือ','OTP · PIN · lockout'],
+    ['Mobile - Registration.html','users','ลงทะเบียน','guard 4-step + customer'],
+    ['Mobile - System.html','sys','ระบบ & ช่วยเหลือ','splash · perms · recovery'],
+    ['Coverage Matrix.html','matrix','Coverage Matrix','endpoint → screen'],
+  ]);
+  cards('custGrid',[
+    ['Mobile - Customer App.html','phone','แอปลูกค้า (ครบ 14 จอ)','home → tracking → receipt'],
+    ['Mobile - Active Standby.html','pulse','การ์ดงานค้าง (resume)','sticky · Live Activity · DI',1],
+    ['Mobile - More Screens.html','phone','ประวัติจ้าง + ตั้งค่าแอป','hirer history · settings'],
+    ['Mobile Prototype.html','play','Prototype กดได้จริง','9-step interactive flow',1],
+    ['Mobile Hirer Booking.html','phone','จองงาน — 3 แนวทาง','option comparison'],
+  ]);
+  cards('guardGrid',[
+    ['Mobile - Guard App.html','phone','แอปเจ้าหน้าที่ (10 จอ)','dashboard → check-in → earnings'],
+    ['Mobile - Active Standby.html','pulse','การ์ดงานค้าง (resume)','5 guard + 6 hirer states',1],
+    ['Mobile - More Screens.html','wallet','ถอนเงิน · นำทาง · งานที่จบ','withdrawal · nav · status'],
+    ['Mobile Guard.html','shield','แดชบอร์ด + เช็คอิน','focused 2-screen'],
+  ]);
+  cards('sharedGrid',[
+    ['Mobile - Chat.html','chat','แชต','list · thread · read-only'],
+    ['Mobile - Call.html','call','วิดีโอ / เสียงคอล','MediaSoup · 4 states'],
+    ['Mobile - Cancellation.html','cancel','ยกเลิกงาน & Bottom Nav','cancel · FAB navs'],
+  ]);
+
+  document.getElementById('theme').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;document.documentElement.setAttribute('data-theme',b.dataset.set);[...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));localStorage.setItem('pg_theme',b.dataset.set);});
+  const th=localStorage.getItem('pg_theme'); if(th){document.documentElement.setAttribute('data-theme',th);document.querySelectorAll('#theme button').forEach(b=>b.classList.toggle('on',b.dataset.set===th));}
+</script>
+</body>
+</html>

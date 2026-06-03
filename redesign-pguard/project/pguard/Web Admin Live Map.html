@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — แผนที่สด</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { margin:0; overflow:hidden; }
+  .app { display:grid; grid-template-columns:248px 1fr; height:100vh; }
+
+  /* ---------- Sidebar ---------- */
+  .side { background:var(--bg-surface); border-right:1px solid var(--border); display:flex; flex-direction:column; min-height:0; }
+  .side-top { padding:20px 18px 14px; display:flex; align-items:center; gap:10px; }
+  .side-top .wm { font-family:var(--font-latin); font-weight:700; letter-spacing:-.03em; font-size:21px; color:var(--text-strong); }
+  .side-top .wm .p { color:var(--brand-int); }
+  .side-scroll { flex:1; overflow-y:auto; padding:6px 12px 12px; }
+  .nav-group-label { font-family:var(--font-latin); font-size:10.5px; font-weight:600; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--text-faint); padding:14px 10px 6px; }
+  .nav { display:flex; align-items:center; gap:11px; padding:9px 11px; border-radius:var(--r-sm);
+    color:var(--text-muted); font-size:14px; font-weight:500; cursor:pointer; text-decoration:none; position:relative; }
+  .nav:hover { background:var(--bg-sunken); color:var(--text); }
+  .nav span { flex:1; min-width:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .nav.on { background:var(--green-900); color:#fff; }
+  [data-theme="dark"] .nav.on { background:var(--brand-int); color:#04140D; }
+  .nav.on svg { opacity:1; }
+  .nav svg { width:18px; height:18px; flex:none; opacity:.85; }
+  .nav .count { margin-left:auto; font-family:var(--font-mono); font-size:11px; background:var(--bg-sunken);
+    color:var(--text-muted); padding:1px 7px; border-radius:var(--r-full); }
+  .nav.on .count { background:rgba(255,255,255,.2); color:#fff; }
+  [data-theme="dark"] .nav.on .count { background:rgba(0,0,0,.18); color:#04140D; }
+  .nav .badge-dot { margin-left:auto; width:7px; height:7px; border-radius:50%; background:var(--amber-500); }
+  .side-foot { padding:12px; border-top:1px solid var(--border); display:flex; align-items:center; gap:10px; }
+  .side-foot .avatar { width:34px; height:34px; border-radius:50%; background:var(--green-100); color:var(--green-800);
+    display:flex; align-items:center; justify-content:center; font-weight:600; font-family:var(--font-latin); font-size:13px; }
+  [data-theme="dark"] .side-foot .avatar { background:var(--green-800); color:var(--green-100); }
+
+  /* ---------- Main ---------- */
+  .main { display:flex; flex-direction:column; min-width:0; min-height:0; }
+  .topbar { height:62px; border-bottom:1px solid var(--border); background:var(--bg-surface);
+    display:flex; align-items:center; gap:16px; padding:0 22px; flex:none; }
+  .topbar h1 { font-size:19px; font-weight:600; color:var(--text-strong); margin:0; }
+  .topbar .sub { font-size:12.5px; color:var(--text-muted); }
+  .search { display:flex; align-items:center; gap:9px; background:var(--bg-sunken); border:1px solid var(--border);
+    border-radius:var(--r-md); padding:8px 13px; width:280px; color:var(--text-faint); }
+  .search input { border:0; background:transparent; outline:none; font-family:var(--font-thai); font-size:14px;
+    color:var(--text-strong); width:100%; }
+  .icon-btn { width:38px; height:38px; border-radius:var(--r-md); border:1px solid var(--border); background:var(--bg-surface);
+    display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--text-muted); position:relative; }
+  .icon-btn:hover { background:var(--bg-sunken); }
+  .icon-btn .ndot { position:absolute; top:7px; right:8px; width:7px; height:7px; border-radius:50%; background:var(--danger); border:2px solid var(--bg-surface); }
+  .seg-mini { display:inline-flex; background:var(--bg-sunken); border:1px solid var(--border); border-radius:var(--r-full); padding:3px; }
+  .seg-mini button { border:0; background:transparent; font-family:var(--font-latin); font-size:12px; font-weight:600;
+    color:var(--text-muted); padding:6px 12px; border-radius:var(--r-full); cursor:pointer; }
+  .seg-mini button.on { background:var(--bg-surface); color:var(--text-strong); box-shadow:var(--sh-xs); }
+
+  /* ---------- Map stage ---------- */
+  .stage { flex:1; position:relative; min-height:0; overflow:hidden; }
+
+  /* map color tokens */
+  .stage { --m-land:#E7ECE7; --m-block:#F2F5F1; --m-road:#FFFFFF; --m-major:#FBF6E9; --m-water:#BFE0E8; --m-park:#D2E7CC; --m-stroke:#DCE3DB; --m-text:#8A968F; }
+  .stage[data-map="dark"] { --m-land:#0C1310; --m-block:#121C17; --m-road:#1E2A24; --m-major:#293A31; --m-water:#0F2730; --m-park:#13251A; --m-stroke:#1A2620; --m-text:#5C6B62; }
+  .stage[data-map="dark"] { background:var(--m-land); }
+  .mapsvg { position:absolute; inset:0; width:100%; height:100%; background:var(--m-land); }
+
+  /* markers */
+  .mk { position:absolute; transform:translate(-50%,-100%); cursor:pointer; z-index:5; transition:transform .12s; }
+  .mk:hover { z-index:9; }
+  .mk .pinbody { width:34px; height:34px; border-radius:50% 50% 50% 3px; transform:rotate(45deg);
+    display:flex; align-items:center; justify-content:center; box-shadow:var(--sh-md); border:2.5px solid #fff; }
+  [data-theme="dark"] .mk .pinbody { border-color:#0C1310; }
+  .mk .pinbody svg { transform:rotate(-45deg); width:15px; height:15px; }
+  .mk.sel .pinbody { transform:rotate(45deg) scale(1.18); }
+  .mk .pulse { position:absolute; left:50%; top:34%; width:34px; height:34px; border-radius:50%;
+    transform:translate(-50%,-50%); z-index:-1; }
+  .mk.active .pulse { animation:pulse 2.2s ease-out infinite; background:var(--status-active); }
+  @keyframes pulse { 0%{transform:translate(-50%,-50%) scale(.6);opacity:.5} 100%{transform:translate(-50%,-50%) scale(2.6);opacity:0} }
+  .mk .tip { position:absolute; bottom:46px; left:50%; transform:translateX(-50%); white-space:nowrap;
+    background:var(--bg-surface); border:1px solid var(--border); box-shadow:var(--sh-md); border-radius:var(--r-sm);
+    padding:5px 10px; font-size:11.5px; font-weight:600; color:var(--text-strong); opacity:0; pointer-events:none; transition:.14s; }
+  .mk:hover .tip { opacity:1; }
+
+  /* stat chips floating top-left */
+  .stat-row { position:absolute; top:16px; left:16px; display:flex; gap:10px; z-index:12; }
+  .stat-chip { background:var(--bg-surface); border:1px solid var(--border); box-shadow:var(--sh-sm);
+    border-radius:var(--r-md); padding:9px 14px; display:flex; align-items:center; gap:9px; }
+  .stat-chip .d { width:9px; height:9px; border-radius:50%; }
+  .stat-chip .num { font-family:var(--font-mono); font-weight:600; font-size:16px; color:var(--text-strong); }
+  .stat-chip .lab { font-size:12px; color:var(--text-muted); white-space:nowrap; }
+
+  /* map controls */
+  .map-ctrl { position:absolute; right:336px; bottom:18px; display:flex; flex-direction:column; gap:8px; z-index:12; }
+  .map-ctrl button { width:40px; height:40px; border-radius:var(--r-md); border:1px solid var(--border); background:var(--bg-surface);
+    box-shadow:var(--sh-sm); display:flex; align-items:center; justify-content:center; cursor:pointer; color:var(--text); font-size:18px; }
+  .map-ctrl button:hover { background:var(--bg-sunken); }
+  .map-toggle { position:absolute; right:336px; top:16px; z-index:12; }
+
+  /* ---------- Roster panel (right) ---------- */
+  .roster { position:absolute; top:0; right:0; bottom:0; width:320px; background:var(--bg-surface);
+    border-left:1px solid var(--border); display:flex; flex-direction:column; z-index:14; }
+  .roster-head { padding:18px 18px 12px; }
+  .roster-head h2 { font-size:16px; font-weight:600; margin:0 0 3px; color:var(--text-strong); }
+  .roster-head p { font-size:12.5px; color:var(--text-muted); margin:0; }
+  .filter-tabs { display:flex; gap:6px; padding:0 18px 12px; flex-wrap:wrap; }
+  .ftab { font-size:12.5px; font-weight:600; padding:6px 12px; border-radius:var(--r-full); cursor:pointer;
+    background:var(--bg-sunken); color:var(--text-muted); border:1px solid var(--border); display:flex; align-items:center; gap:6px; }
+  .ftab.on { background:var(--green-900); color:#fff; border-color:var(--green-900); }
+  [data-theme="dark"] .ftab.on { background:var(--brand-int); color:#04140D; border-color:var(--brand-int); }
+  .ftab .d { width:7px; height:7px; border-radius:50%; }
+  .roster-list { flex:1; overflow-y:auto; padding:4px 12px 16px; }
+  .gcard { display:flex; gap:12px; padding:12px; border-radius:var(--r-md); cursor:pointer; border:1px solid transparent; }
+  .gcard:hover { background:var(--bg-sunken); }
+  .gcard.sel { background:var(--green-50); border-color:var(--green-200); }
+  [data-theme="dark"] .gcard.sel { background:rgba(47,192,137,.1); border-color:rgba(47,192,137,.3); }
+  .gcard .av { width:44px; height:44px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center;
+    font-weight:600; font-family:var(--font-latin); font-size:15px; position:relative; }
+  .gcard .av .ind { position:absolute; bottom:-1px; right:-1px; width:13px; height:13px; border-radius:50%; border:2.5px solid var(--bg-surface); }
+  .gcard.sel .av .ind { border-color:var(--green-50); }
+  .gcard .info { flex:1; min-width:0; }
+  .gcard .nm { font-size:14px; font-weight:600; color:var(--text-strong); display:flex; align-items:center; gap:7px; }
+  .gcard .nm .verified { color:var(--info); }
+  .gcard .meta { font-size:12px; color:var(--text-muted); margin-top:2px; display:flex; align-items:center; gap:6px; white-space:nowrap; overflow:hidden; }
+  .gcard .nm { white-space:nowrap; }
+  .gcard .meta .dot { width:3px; height:3px; border-radius:50%; background:var(--text-faint); }
+  .gcard .eta { text-align:right; flex:none; min-width:54px; white-space:nowrap; }
+  .gcard .eta .t { font-family:var(--font-mono); font-size:13px; font-weight:600; color:var(--text-strong); }
+  .gcard .eta .l { font-size:10.5px; color:var(--text-faint); }
+
+  /* ---------- Detail card overlay ---------- */
+  .detail { position:absolute; left:16px; bottom:16px; width:330px; background:var(--bg-surface);
+    border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--sh-xl); z-index:13; overflow:hidden; }
+  .detail .dh { padding:16px; display:flex; gap:13px; align-items:flex-start; }
+  .detail .dh .av { width:54px; height:54px; border-radius:14px; flex:none; display:flex; align-items:center;
+    justify-content:center; font-weight:600; font-family:var(--font-latin); font-size:19px; background:var(--green-100); color:var(--green-800); }
+  [data-theme="dark"] .detail .dh .av { background:var(--green-800); color:var(--green-100); }
+  .detail .dh .nm { font-size:17px; font-weight:600; color:var(--text-strong); }
+  .detail .dh .role { font-size:12.5px; color:var(--text-muted); margin-top:1px; }
+  .detail .dh .close { margin-left:auto; cursor:pointer; color:var(--text-faint); }
+  .detail .stats { display:grid; grid-template-columns:repeat(3,1fr); border-top:1px solid var(--border); }
+  .detail .stat { padding:12px; text-align:center; border-right:1px solid var(--border); }
+  .detail .stat:last-child { border-right:0; }
+  .detail .stat .v { font-family:var(--font-mono); font-size:15px; font-weight:600; color:var(--text-strong); }
+  .detail .stat .k { font-size:10.5px; color:var(--text-muted); margin-top:2px; }
+  .detail .job { padding:13px 16px; background:var(--bg-sunken); display:flex; gap:10px; align-items:center; }
+  .detail .job .ic { width:34px; height:34px; border-radius:9px; background:var(--warning-bg); color:var(--amber-600);
+    display:flex; align-items:center; justify-content:center; flex:none; }
+  .detail .job .jt { font-size:13px; font-weight:600; color:var(--text-strong); }
+  .detail .job .js { font-size:11.5px; color:var(--text-muted); }
+  .detail .acts { display:flex; gap:8px; padding:13px 16px; }
+  .detail .acts .btn { flex:1; justify-content:center; }
+  .btn { font-family:var(--font-thai); font-weight:600; font-size:14px; border-radius:var(--r-md); padding:11px 16px;
+    border:1px solid transparent; cursor:pointer; display:inline-flex; align-items:center; gap:7px; }
+  .btn-primary { background:var(--brand-int); color:#fff; }
+  .btn-secondary { background:var(--bg-surface); color:var(--text-strong); border-color:var(--border-strong); }
+  .gps-badge { display:inline-flex; align-items:center; gap:5px; font-size:11px; font-weight:600; color:var(--success);
+    background:var(--success-bg); padding:3px 9px; border-radius:var(--r-full); margin-top:6px; white-space:nowrap; }
+
+  ::-webkit-scrollbar{width:9px;height:9px}
+  ::-webkit-scrollbar-thumb{background:var(--border-strong);border-radius:6px;border:2px solid var(--bg-surface)}
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- ============ SIDEBAR ============ -->
+  <aside class="side">
+    <div class="side-top">
+      <span id="logo"></span>
+      <span class="wm"><span class="p">p</span>guard</span>
+    </div>
+    <div class="side-scroll" id="nav"></div>
+    <div class="side-foot">
+      <div class="avatar">วร</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:13px;font-weight:600;color:var(--text-strong)">วรรณา ร.</div>
+        <div style="font-size:11px;color:var(--text-muted)">Operations Lead</div>
+      </div>
+      <div class="seg-mini" id="theme">
+        <button data-set="light" class="on">☀</button>
+        <button data-set="dark">☾</button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN ============ -->
+  <div class="main">
+    <div class="topbar">
+      <div>
+        <h1>แผนที่สด <span style="font-weight:400;color:var(--text-faint)">· Live Map</span></h1>
+        <div class="sub">กรุงเทพมหานคร · อัปเดตล่าสุด <span id="clock">เมื่อ 3 วินาทีที่แล้ว</span></div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <input placeholder="ค้นหาเจ้าหน้าที่ หรือ งาน…">
+      </div>
+      <button class="icon-btn"><span class="ndot"></span><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg></button>
+      <div class="seg-mini" id="lang">
+        <button data-l="th" class="on">ไทย</button>
+        <button data-l="en">EN</button>
+      </div>
+    </div>
+
+    <div class="stage" id="stage" data-map="light">
+      <svg class="mapsvg" id="mapsvg" preserveAspectRatio="xMidYMid slice" viewBox="0 0 1200 760"></svg>
+
+      <div class="stat-row">
+        <div class="stat-chip"><span class="d" style="background:var(--status-active)"></span><span class="num">38</span><span class="lab">พร้อมรับงาน</span></div>
+        <div class="stat-chip"><span class="d" style="background:var(--status-working)"></span><span class="num">21</span><span class="lab">กำลังทำงาน</span></div>
+        <div class="stat-chip"><span class="d" style="background:var(--status-offline)"></span><span class="num">7</span><span class="lab">ออฟไลน์</span></div>
+      </div>
+
+      <div class="map-toggle seg-mini" id="mapmode">
+        <button data-m="light" class="on">Light</button>
+        <button data-m="dark">Dark map</button>
+      </div>
+
+      <div class="map-ctrl">
+        <button>+</button><button>−</button>
+        <button title="locate"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg></button>
+      </div>
+
+      <!-- markers injected -->
+      <div id="markers"></div>
+
+      <!-- detail card -->
+      <div class="detail" id="detail"></div>
+
+      <!-- roster -->
+      <aside class="roster">
+        <div class="roster-head">
+          <h2>เจ้าหน้าที่ออนไลน์</h2>
+          <p>66 คนในพื้นที่ · เรียงตามระยะใกล้</p>
+        </div>
+        <div class="filter-tabs" id="ftabs">
+          <span class="ftab on">ทั้งหมด <b style="font-family:var(--font-mono);font-weight:600">66</b></span>
+          <span class="ftab"><span class="d" style="background:var(--status-active)"></span>พร้อม 38</span>
+          <span class="ftab"><span class="d" style="background:var(--status-working)"></span>ทำงาน 21</span>
+          <span class="ftab"><span class="d" style="background:var(--status-offline)"></span>ออฟไลน์ 7</span>
+        </div>
+        <div class="roster-list" id="roster"></div>
+      </aside>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ---- logo mark ----
+  document.getElementById('logo').innerHTML = `<svg width="28" height="29" viewBox="0 0 100 106" fill="none"><defs><linearGradient id="g" x1="50" y1="4" x2="50" y2="106" gradientUnits="userSpaceOnUse"><stop stop-color="#1FA971"/><stop offset="1" stop-color="#0E3B2E"/></linearGradient></defs><path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="url(#g)"/><path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="#fff"/><circle cx="50" cy="46" r="7.5" fill="#1FA971"/></svg>`;
+
+  // ---- nav ----
+  const I = {
+    dash:'<path d="M3 13h8V3H3zM13 21h8V3h-8zM3 21h8v-6H3z"/>',
+    map:'<path d="M9 4 3 6v14l6-2 6 2 6-2V4l-6 2z"/><path d="M9 4v14M15 6v14"/>',
+    users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/>',
+    shield:'<path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/>',
+    cust:'<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
+    star:'<path d="M12 2l3 6 6 1-4.5 4 1 6-5.5-3-5.5 3 1-6L3 9l6-1z"/>',
+    wallet:'<rect x="2" y="6" width="20" height="14" rx="3"/><path d="M2 10h20M16 14h2"/>',
+    tag:'<path d="M3 3h7l11 11-7 7L3 10z"/><circle cx="7.5" cy="7.5" r="1.5"/>',
+    jobs:'<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 4v16"/>',
+    recruit:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M19 8v6M22 11h-6"/>',
+    report:'<path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/>',
+    rules:'<path d="M9 3H5a2 2 0 0 0-2 2v4M21 9V5a2 2 0 0 0-2-2h-4M3 15v4a2 2 0 0 0 2 2h4M15 21h4a2 2 0 0 0 2-2v-4"/>',
+    log:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h4"/>',
+    settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M5 5l2 2M17 17l2 2M2 12h3M19 12h3M5 19l2-2M17 7l2-2"/>',
+  };
+  const navItems = [
+    ['dash','แดชบอร์ด',''], ['map','แผนที่สด','on'], ['users','ผู้สมัคร','12'],
+    ['shield','พนักงาน รปภ.','384'], ['cust','ลูกค้า',''], ['star','รีวิว','dot'],
+    ['wallet','กระเป๋าเงิน','5'], ['tag','กำหนดราคา',''], ['jobs','จัดการงาน','27'],
+    ['recruit','สรรหาบุคลากร',''], ['report','รายงาน',''], ['rules','กฎอัตโนมัติ',''],
+    ['log','Activity Log',''], ['settings','ตั้งค่า',''],
+  ];
+  document.getElementById('nav').innerHTML =
+    '<div class="nav-group-label">ภาพรวม</div>' +
+    navItems.slice(0,6).map(navHTML).join('') +
+    '<div class="nav-group-label">การเงิน & งาน</div>' +
+    navItems.slice(6,9).map(navHTML).join('') +
+    '<div class="nav-group-label">ระบบ</div>' +
+    navItems.slice(9).map(navHTML).join('');
+  function navHTML([ic,label,extra]){
+    let right = '';
+    if(extra==='dot') right='<span class="badge-dot"></span>';
+    else if(extra && extra!=='on') right=`<span class="count">${extra}</span>`;
+    return `<a class="nav ${extra==='on'?'on':''}"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${I[ic]}</svg><span>${label}</span>${right}</a>`;
+  }
+
+  // ---- map drawing ----
+  function drawMap(){
+    const W=1200,H=760; let s='';
+    // park / river blocks behind
+    s += `<rect x="0" y="0" width="${W}" height="${H}" fill="var(--m-land)"/>`;
+    // water river diagonal
+    s += `<path d="M-50 ${H} L320 ${H} L520 320 L420 120 L260 -40 L-50 -40 Z" fill="var(--m-water)" opacity="0.9"/>`;
+    s += `<path d="M820 -20 L1000 -20 L1100 180 L980 360 L900 280 L860 120 Z" fill="var(--m-park)"/>`;
+    s += `<circle cx="640" cy="560" r="90" fill="var(--m-park)"/>`;
+    // city blocks grid
+    const gx=110, gy=95;
+    for(let y=40;y<H;y+=gy){
+      for(let x=40;x<W;x+=gx){
+        const jx=x+(Math.random()*16-8), jy=y+(Math.random()*16-8);
+        const bw=gx-26-(Math.random()*14), bh=gy-24-(Math.random()*12);
+        // skip blocks over water region roughly
+        if(jx<360 && jy>jx*-1.1+560) continue;
+        s += `<rect x="${jx}" y="${jy}" width="${bw}" height="${bh}" rx="4" fill="var(--m-block)" stroke="var(--m-stroke)" stroke-width="1"/>`;
+      }
+    }
+    // major roads
+    const major = [[0,250,1200,300],[0,520,1200,560],[300,0,360,760],[760,0,820,760]];
+    s += `<g stroke="var(--m-major)" stroke-width="16" stroke-linecap="round">`;
+    major.forEach(([x1,y1,x2,y2])=> s+=`<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}"/>`);
+    s += `</g>`;
+    // minor road grid lines
+    s += `<g stroke="var(--m-road)" stroke-width="7">`;
+    for(let y=40;y<H;y+=gy) s+=`<line x1="0" y1="${y-12}" x2="${W}" y2="${y-12}"/>`;
+    for(let x=40;x<W;x+=gx) s+=`<line x1="${x-13}" y1="0" x2="${x-13}" y2="${H}"/>`;
+    s += `</g>`;
+    document.getElementById('mapsvg').innerHTML = s;
+  }
+  drawMap();
+
+  // ---- guards data ----
+  const guards = [
+    {id:1, nm:'สมชาย ก.', en:'Somchai K.', st:'working', x:46, y:54, job:'หมู่บ้านลัดดารมย์', km:1.2, eta:'on-site', rate:4.9, jobs:142, gps:'5 ม.', av:'สม', col:'#F59E0B'},
+    {id:2, nm:'ณัฐพล ว.', en:'Nattapon W.', st:'active', x:62, y:38, job:null, km:0.8, eta:'4 นาที', rate:4.8, jobs:88, gps:'3 ม.', av:'ณฐ', col:'#1FA971'},
+    {id:3, nm:'อนุชา ป.', en:'Anucha P.', st:'active', x:30, y:30, job:null, km:2.1, eta:'7 นาที', rate:5.0, jobs:210, gps:'4 ม.', av:'อช', col:'#1FA971'},
+    {id:4, nm:'ธีรศักดิ์ ม.', en:'Theerasak M.', st:'working', x:72, y:62, job:'คอนโด ไอดีโอ', km:3.4, eta:'on-site', rate:4.7, jobs:64, gps:'6 ม.', av:'ธร', col:'#F59E0B'},
+    {id:5, nm:'พิชัย ส.', en:'Pichai S.', st:'active', x:54, y:70, job:null, km:1.6, eta:'5 นาที', rate:4.9, jobs:121, gps:'3 ม.', av:'พช', col:'#1FA971'},
+    {id:6, nm:'วีระ ท.', en:'Weera T.', st:'offline', x:40, y:78, job:null, km:5.2, eta:'—', rate:4.6, jobs:54, gps:'—', av:'วร', col:'#EF5C5C'},
+    {id:7, nm:'กิตติ ร.', en:'Kitti R.', st:'working', x:80, y:42, job:'โรงงาน ปทุมธานี', km:4.1, eta:'on-site', rate:4.8, jobs:97, gps:'7 ม.', av:'กต', col:'#F59E0B'},
+    {id:8, nm:'สุริยา จ.', en:'Suriya J.', st:'active', x:24, y:58, job:null, km:2.8, eta:'9 นาที', rate:4.9, jobs:166, gps:'4 ม.', av:'สร', col:'#1FA971'},
+    {id:9, nm:'มานพ บ.', en:'Manop B.', st:'active', x:66, y:52, job:null, km:1.0, eta:'4 นาที', rate:5.0, jobs:188, gps:'2 ม.', av:'มน', col:'#1FA971'},
+    {id:10, nm:'เอกชัย ห.', en:'Ekachai H.', st:'offline', x:86, y:70, job:null, km:6.0, eta:'—', rate:4.5, jobs:41, gps:'—', av:'อก', col:'#EF5C5C'},
+  ];
+  const stColor = {active:'var(--status-active)', working:'var(--status-working)', offline:'var(--status-offline)'};
+  const stLabel = {active:'พร้อมรับงาน', working:'กำลังทำงาน', offline:'ออฟไลน์'};
+  const stShort = {active:'พร้อม', working:'ทำงาน', offline:'ออฟไลน์'};
+
+  // ---- render markers ----
+  function renderMarkers(){
+    document.getElementById('markers').innerHTML = guards.map(g=>`
+      <div class="mk ${g.st}" data-id="${g.id}" style="left:${g.x}%; top:${g.y}%">
+        ${g.st==='active'?'<span class="pulse"></span>':''}
+        <div class="tip">${g.nm} · ${stLabel[g.st]}</div>
+        <div class="pinbody" style="background:${stColor[g.st]}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg>
+        </div>
+      </div>`).join('');
+    document.querySelectorAll('.mk').forEach(m=> m.addEventListener('click',()=>select(+m.dataset.id)));
+  }
+  renderMarkers();
+
+  // ---- roster ----
+  function renderRoster(){
+    document.getElementById('roster').innerHTML = guards.map(g=>`
+      <div class="gcard" data-id="${g.id}">
+        <div class="av" style="background:${g.st==='offline'?'var(--bg-sunken)':'var(--green-100)'};color:${g.st==='offline'?'var(--text-muted)':'var(--green-800)'}">
+          ${g.av}<span class="ind" style="background:${stColor[g.st]}"></span></div>
+        <div class="info">
+          <div class="nm">${g.nm}
+            <svg class="verified" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M12 2l2.4 1.8 3-.2.6 2.9 2.4 1.8-1.2 2.7 1.2 2.7-2.4 1.8-.6 2.9-3-.2L12 22l-2.4-1.8-3 .2-.6-2.9L3.6 16l1.2-2.7L3.6 10.6 6 8.8l.6-2.9 3 .2z"/><path d="M9 12l2 2 4-4" stroke="#fff"/></svg>
+          </div>
+          <div class="meta"><span>★ ${g.rate}</span><span class="dot"></span><span>${g.jobs} งาน</span><span class="dot"></span><span style="color:${stColor[g.st]};font-weight:600">${stShort[g.st]}</span></div>
+        </div>
+        <div class="eta"><div class="t">${g.km} กม.</div><div class="l">${g.eta}</div></div>
+      </div>`).join('');
+    document.querySelectorAll('.gcard').forEach(c=> c.addEventListener('click',()=>select(+c.dataset.id)));
+  }
+  renderRoster();
+
+  // ---- selection ----
+  let selId = 1;
+  function select(id){
+    selId = id;
+    const g = guards.find(x=>x.id===id);
+    document.querySelectorAll('.mk').forEach(m=>m.classList.toggle('sel', +m.dataset.id===id));
+    document.querySelectorAll('.gcard').forEach(c=>c.classList.toggle('sel', +c.dataset.id===id));
+    document.getElementById('detail').innerHTML = `
+      <div class="dh">
+        <div class="av">${g.av}</div>
+        <div style="flex:1">
+          <div class="nm">${g.nm}</div>
+          <div class="role">รปภ. ระดับอาวุโส · ID #${1000+g.id}</div>
+          <div class="gps-badge">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+            GPS ${g.gps==='—'?'ไม่มีสัญญาณ':'แม่นยำ '+g.gps}</div>
+        </div>
+        <svg class="close" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" onclick="document.getElementById('detail').style.display='none'"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="v">${g.rate}</div><div class="k">★ คะแนน</div></div>
+        <div class="stat"><div class="v">${g.jobs}</div><div class="k">งานสำเร็จ</div></div>
+        <div class="stat"><div class="v">${g.km}</div><div class="k">กม. ห่าง</div></div>
+      </div>
+      ${g.job?`<div class="job"><div class="ic"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div>
+        <div><div class="jt">${g.job}</div><div class="js">กำลังปฏิบัติงาน · เช็คอินล่าสุด 12 นาทีที่แล้ว</div></div></div>`
+        :`<div class="job"><div class="ic" style="background:var(--success-bg);color:var(--success)"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg></div>
+        <div><div class="jt">พร้อมรับงาน</div><div class="js">ETA ${g.eta} · ตอบรับเฉลี่ย 38 วินาที</div></div></div>`}
+      <div class="acts">
+        <button class="btn btn-secondary"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>แชต</button>
+        <button class="btn btn-primary" style="flex:1.3"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg>โทรหาเจ้าหน้าที่</button>
+      </div>`;
+    document.getElementById('detail').style.display='block';
+  }
+  select(1);
+
+  // ---- toggles ----
+  document.getElementById('theme').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    document.documentElement.setAttribute('data-theme', b.dataset.set);
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));
+    // auto-switch map to match for nicer default
+  });
+  document.getElementById('mapmode').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    document.getElementById('stage').setAttribute('data-map', b.dataset.m);
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));
+  });
+  document.getElementById('lang').addEventListener('click', e=>{
+    const b=e.target.closest('button'); if(!b)return;
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===b));
+  });
+  document.getElementById('ftabs').addEventListener('click', e=>{
+    const t=e.target.closest('.ftab'); if(!t)return;
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on',c===t));
+  });
+</script>
+</body>
+</html>

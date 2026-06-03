@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — Activity Log</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .log-item { display:grid; grid-template-columns:150px 1fr; gap:18px; padding:14px 20px; border-bottom:1px solid var(--border); }
+  .log-item:last-child { border-bottom:0; }
+  .log-time { font-family:var(--font-mono); font-size:12px; color:var(--text-muted); }
+  .log-main { }
+  .log-act { font-size:14px; color:var(--text); }
+  .log-act b { color:var(--text-strong); font-weight:600; }
+  .log-tags { display:flex; gap:8px; margin-top:6px; align-items:center; flex-wrap:wrap; }
+  .json-toggle { font-size:12px; color:var(--brand-int); cursor:pointer; font-weight:600; display:inline-flex; align-items:center; gap:4px; }
+  .json-box { display:none; margin-top:10px; background:var(--n-900); color:#8FE9C0; font-family:var(--font-mono); font-size:11.5px; padding:12px 14px; border-radius:var(--r-md); white-space:pre; overflow-x:auto; }
+  [data-theme="dark"] .json-box { background:#05100B; }
+  .json-box.show { display:block; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'log',title:'Activity Log',titleEn:'Activity Log',sub:'บันทึกการตรวจสอบระบบ',subEn:'System audit trail'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="filters" id="filters">
+        <span class="chip-f on" data-f="all"><span data-th>ทั้งหมด</span><span data-en lang-hide>All</span></span>
+        <span class="chip-f" data-f="booking">booking</span>
+        <span class="chip-f" data-f="payment">payment</span>
+        <span class="chip-f" data-f="guard">guard</span>
+        <span class="chip-f" data-f="admin">admin</span>
+        <div class="spacer"></div>
+        <div class="search-sm"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><input placeholder="ค้นหา user / IP…"></div>
+      </div>
+      <div class="panel" id="log"></div>
+    </div>
+  </div>
+</div>
+<script>
+  const L=[
+    ['03 มิ.ย. 09:14:22','admin','วรรณา ร.','approved','guard','อนุมัติเจ้าหน้าที่ <b>สมชาย ก. (ID#1000)</b>','103.21.44.8'],
+    ['03 มิ.ย. 09:02:10','payment','system','refund_processed','payment','คืนเงิน <b>฿1,150</b> สำหรับ <b>PG-284851</b>','—'],
+    ['03 มิ.ย. 08:48:55','booking','นภาพร ศรีสุข','created','booking','สร้างการจอง <b>BK-48291</b> · รปภ. หมู่บ้าน','49.228.91.2'],
+    ['03 มิ.ย. 08:30:01','guard','ณัฐพล ว.','checkin','booking','เช็คอินรอบ 3 <b>BK-48280</b> · GPS 4 ม.','171.5.22.90'],
+    ['03 มิ.ย. 08:12:44','admin','สมศักดิ์ พ.','updated','pricing','แก้ไขค่าบริการ <b>รปภ. คอนโด</b> ฿240 → ฿250','103.21.44.5'],
+    ['03 มิ.ย. 07:58:30','guard','ธีรศักดิ์ ม.','status','guard','เปลี่ยนสถานะเป็น <b>พร้อมรับงาน</b>','182.232.10.4'],
+    ['03 มิ.ย. 07:40:18','payment','คุณวิชัย ส.','authorized','payment','กันวงเงิน <b>฿2,760</b> · PromptPay','49.49.243.7'],
+  ];
+  const TY={booking:'blue',payment:'green',guard:'amber',admin:'gray'};
+  document.getElementById('log').innerHTML=L.map(([t,cat,user,act,ent,desc,ip],i)=>`
+    <div class="log-item" data-cat="${cat==='admin'?'admin': cat}">
+      <div class="log-time">${t}</div>
+      <div class="log-main">
+        <div class="log-act"><b>${user}</b> · ${desc}</div>
+        <div class="log-tags">
+          <span class="bdg ${TY[cat]||'gray'}">${cat}</span>
+          <span class="bdg gray">${act}</span>
+          <span class="muted" style="font-size:12px">entity: ${ent}</span>
+          <span class="muted" style="font-size:12px;font-family:var(--font-mono)">IP ${ip}</span>
+          <span class="json-toggle" onclick="this.nextElementSibling.classList.toggle('show')">{ } <span data-th>รายละเอียด</span><span data-en lang-hide>detail</span></span>
+        </div>
+        <div class="json-box">{
+  "action": "${act}",
+  "entity_type": "${ent}",
+  "actor": "${user}",
+  "ip": "${ip}",
+  "timestamp": "2026-06-03T${t.split(' ')[2]}+07:00"
+}</div>
+      </div>
+    </div>`).join('');
+  let cf='all';
+  document.getElementById('filters').addEventListener('click',e=>{const c=e.target.closest('.chip-f');if(!c)return;
+    document.querySelectorAll('.chip-f').forEach(x=>x.classList.toggle('on',x===c));cf=c.dataset.f;
+    document.querySelectorAll('.log-item').forEach(it=>it.style.display=(cf==='all'||it.dataset.cat===cf)?'':'none');
+  });
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

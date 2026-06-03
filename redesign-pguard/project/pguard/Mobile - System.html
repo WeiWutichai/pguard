@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard — ระบบ & ช่วยเหลือ</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="proto/app.css">
+<link rel="stylesheet" href="mobile-canvas.css">
+<style>
+  .splash { position:absolute; inset:0; background:linear-gradient(165deg,var(--green-700),var(--green-950)); display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .splash .grid-dec { position:absolute; inset:0; background-image:linear-gradient(rgba(255,255,255,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.05) 1px,transparent 1px); background-size:40px 40px; }
+  .splash .wm { font-family:var(--font-latin); font-weight:700; font-size:34px; letter-spacing:-.03em; color:#fff; margin-top:18px; position:relative; }
+  .splash .wm .p { color:var(--green-300); }
+  .splash .tag { font-size:13px; color:rgba(255,255,255,.7); margin-top:8px; position:relative; }
+  .splash .loader { position:absolute; bottom:70px; width:40px; height:40px; }
+  .spinner { width:34px; height:34px; border:3px solid rgba(255,255,255,.25); border-top-color:#fff; border-radius:50%; animation:spin 0.9s linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+  .lang-big { margin:0 24px 14px; border:1.5px solid var(--border); border-radius:18px; padding:20px; display:flex; align-items:center; gap:16px; cursor:pointer; }
+  .lang-big:hover, .lang-big.on { border-color:var(--brand-int); background:var(--green-50); }
+  [data-theme="dark"] .lang-big.on { background:rgba(47,192,137,.1); }
+  .lang-big .flag { font-size:34px; }
+  .lang-big .lt { font-size:18px; font-weight:600; color:var(--text-strong); }
+  .lang-big .ls { font-size:13px; color:var(--text-muted); margin-top:2px; }
+  .perm-hero { text-align:center; padding:40px 30px 20px; }
+  .perm-hero .pic { width:96px; height:96px; border-radius:28px; display:flex; align-items:center; justify-content:center; margin:0 auto 22px; }
+  .perm-hero h1 { font-size:22px; font-weight:600; color:var(--text-strong); margin:0 0 8px; }
+  .perm-hero p { font-size:14px; color:var(--text-muted); margin:0; line-height:1.6; }
+  .perm-opts { padding:8px 24px; }
+  .perm-opt { display:flex; align-items:center; gap:12px; padding:14px 16px; border:1.5px solid var(--border); border-radius:14px; margin-bottom:10px; cursor:pointer; }
+  .perm-opt.on { border-color:var(--brand-int); background:var(--green-50); }
+  [data-theme="dark"] .perm-opt.on { background:rgba(47,192,137,.1); }
+  .perm-opt .pv { font-size:14.5px; font-weight:600; color:var(--text-strong); }
+  .perm-opt .ps { font-size:12px; color:var(--text-muted); margin-top:1px; }
+  .perm-opt .rd { margin-left:auto; width:22px; height:22px; border-radius:50%; border:2px solid var(--border-strong); display:flex; align-items:center; justify-content:center; }
+  .perm-opt.on .rd { border-color:var(--brand-int); } .perm-opt.on .rd::after { content:''; width:11px; height:11px; border-radius:50%; background:var(--brand-int); }
+  .deny-banner { margin:0 24px; padding:14px 16px; border-radius:14px; background:var(--danger-bg); color:var(--danger); display:flex; gap:11px; font-size:13px; line-height:1.5; }
+  .pin-dots { display:flex; gap:15px; justify-content:center; padding:10px 0; }
+  .pin-dot { width:16px; height:16px; border-radius:50%; border:2px solid var(--border-strong); }
+  .recovery-opt { margin:0 24px 12px; border:1.5px solid var(--border); border-radius:16px; padding:16px; display:flex; gap:13px; align-items:center; cursor:pointer; }
+  .recovery-opt:hover { border-color:var(--brand-int); }
+  .recovery-opt .ri { width:46px; height:46px; border-radius:13px; flex:none; display:flex; align-items:center; justify-content:center; background:var(--green-50); color:var(--green-700); }
+  [data-theme="dark"] .recovery-opt .ri { background:rgba(47,192,137,.12); color:var(--brand-int); }
+  .faq-item { border-bottom:1px solid var(--border); }
+  .faq-q { padding:16px 24px; display:flex; align-items:center; gap:12px; font-size:14.5px; font-weight:600; color:var(--text-strong); cursor:pointer; }
+  .faq-q .chev { margin-left:auto; color:var(--text-faint); transition:.2s; }
+  .faq-item.open .faq-q .chev { transform:rotate(90deg); }
+  .faq-a { max-height:0; overflow:hidden; transition:.25s; }
+  .faq-item.open .faq-a { max-height:140px; }
+  .faq-a div { padding:0 24px 16px 48px; font-size:13.5px; color:var(--text-muted); line-height:1.6; }
+  .support-row { display:flex; align-items:center; gap:13px; padding:15px 24px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .support-row .si { width:42px; height:42px; border-radius:12px; flex:none; display:flex; align-items:center; justify-content:center; }
+  .support-row .sv { font-size:14.5px; font-weight:600; color:var(--text-strong); }
+  .support-row .ss { font-size:12px; color:var(--text-muted); margin-top:1px; }
+  .sheet-opt { display:flex; align-items:center; gap:14px; padding:16px 24px; cursor:pointer; }
+  .sheet-opt:hover { background:var(--bg-sunken); }
+  .sheet-opt .oi { width:42px; height:42px; border-radius:50%; background:var(--bg-sunken); color:var(--text); display:flex; align-items:center; justify-content:center; flex:none; }
+  .sheet-opt .ot { font-size:15px; font-weight:600; color:var(--text-strong); }
+  .crop-frame { width:200px; height:200px; border-radius:50%; margin:24px auto; border:3px solid var(--brand-int); display:flex; align-items:center; justify-content:center; background:var(--bg-sunken); color:var(--text-faint); position:relative; overflow:hidden; }
+  .crop-frame .av-big { font-size:60px; font-weight:600; font-family:var(--font-latin); color:var(--green-700); }
+  .prog { height:6px; border-radius:3px; background:var(--bg-sunken); overflow:hidden; margin:0 24px; }
+  .prog .f { height:100%; background:var(--brand-int); border-radius:3px; }
+  .gps-steps { padding:8px 24px; }
+  .gps-step { display:flex; gap:13px; padding:12px 0; align-items:flex-start; }
+  .gps-step .n { width:26px; height:26px; border-radius:50%; background:var(--green-50); color:var(--green-700); display:flex; align-items:center; justify-content:center; font-family:var(--font-mono); font-size:12px; font-weight:600; flex:none; }
+  [data-theme="dark"] .gps-step .n { background:rgba(47,192,137,.12); color:var(--brand-int); }
+  .gps-step .gt { font-size:14px; font-weight:600; color:var(--text-strong); }
+  .gps-step .gd { font-size:12.5px; color:var(--text-muted); margin-top:2px; }
+</style>
+</head>
+<body>
+<div class="page-head">
+  <div class="eyebrow">Mobile · System &amp; Support</div>
+  <h1 data-th>ระบบพื้นฐาน &amp; การช่วยเหลือ</h1><h1 data-en lang-hide>System &amp; support</h1>
+  <p data-th>Splash · เลือกภาษา · ขอสิทธิ์ (พร้อมหน้าอธิบายเหตุผล + สถานะถูกปฏิเสธ) · ลืม PIN / กู้บัญชี · แก้ปัญหา GPS · อัปโหลดรูปโปรไฟล์ · ออกจากระบบ · ช่วยเหลือ/FAQ</p>
+  <p data-en lang-hide>Splash, language picker, permissions (rationale + denied), forgot PIN/recovery, GPS troubleshooting, avatar upload, logout, help/FAQ.</p>
+</div>
+
+<div class="canvas-section"><h3 data-th>เปิดแอปครั้งแรก &amp; สิทธิ์</h3><h3 data-en lang-hide>Launch &amp; permissions</h3><div class="line"></div></div>
+<div class="canvas">
+
+  <!-- Splash -->
+  <div class="col"><div class="lab"><span class="tag">1</span><h2 data-th>Splash</h2><h2 data-en lang-hide>Splash</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar on-map"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body">
+      <div class="splash"><div class="grid-dec"></div><span id="splashMark"></span><div class="wm"><span class="p">p</span>guard</div><div class="tag" data-th>ความปลอดภัย ณ ตำแหน่งจริง</div><div class="tag" data-en lang-hide>Safety, at a real location</div><div class="loader"><div class="spinner"></div></div></div>
+    </div><div class="home-ind" style="background:#fff"></div></div></div></div>
+  </div>
+
+  <!-- Language picker -->
+  <div class="col"><div class="lab"><span class="tag">2</span><h2 data-th>เลือกภาษา</h2><h2 data-en lang-hide>Language</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div style="text-align:center;padding:40px 24px 24px"><div style="font-size:21px;font-weight:600;color:var(--text-strong)">เลือกภาษา</div><div style="font-size:14px;color:var(--text-muted);margin-top:4px">Choose your language</div></div>
+      <div class="lang-big on"><span class="flag">🇹🇭</span><div style="flex:1"><div class="lt">ภาษาไทย</div><div class="ls">Thai</div></div><div style="width:24px;height:24px;border-radius:50%;background:var(--brand-int);display:flex;align-items:center;justify-content:center"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><path d="M20 6 9 17l-5-5"/></svg></div></div>
+      <div class="lang-big"><span class="flag">🇬🇧</span><div style="flex:1"><div class="lt">English</div><div class="ls">อังกฤษ</div></div></div>
+      <div class="footer" style="border-top:none;margin-top:8px"><button class="cta cta-green">ดำเนินการต่อ · Continue</button></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- Permission rationale -->
+  <div class="col"><div class="lab"><span class="tag">3</span><h2 data-th>ขอสิทธิ์ตำแหน่ง (อธิบาย)</h2><h2 data-en lang-hide>Location rationale</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="display:flex;flex-direction:column">
+      <div class="perm-hero"><div class="pic" style="background:var(--green-50);color:var(--brand-int)"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg></div>
+        <h1 data-th>เปิดตำแหน่งเพื่อความปลอดภัย</h1><h1 data-en lang-hide>Enable location for safety</h1>
+        <p data-th>pguard ใช้ตำแหน่งเพื่อจับคู่เจ้าหน้าที่ใกล้คุณ ติดตามแบบเรียลไทม์ และยืนยันการเช็คอินที่จุดงาน</p>
+        <p data-en lang-hide>pguard uses location to match nearby guards, track in real-time, and verify on-site check-ins.</p></div>
+      <div class="perm-opts">
+        <div class="perm-opt on"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><div><div class="pv" data-th>ขณะใช้งานแอป</div><div class="pv" data-en lang-hide>While using app</div><div class="ps" data-th>แนะนำสำหรับลูกค้า</div><div class="ps" data-en lang-hide>Recommended for customers</div></div><div class="rd"></div></div>
+        <div class="perm-opt"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg><div><div class="pv" data-th>ตลอดเวลา</div><div class="pv" data-en lang-hide>Always</div><div class="ps" data-th>จำเป็นสำหรับเจ้าหน้าที่ที่กำลังทำงาน</div><div class="ps" data-en lang-hide>Required for guards on duty</div></div><div class="rd"></div></div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="footer" style="border-top:none"><button class="cta cta-green" style="margin-bottom:10px" data-th>อนุญาต</button><button class="cta cta-green" style="margin-bottom:10px;display:none" data-en lang-hide>Allow</button><button class="cta cta-ghost" data-th>ไม่ใช่ตอนนี้</button><button class="cta cta-ghost" data-en lang-hide>Not now</button></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- Permission denied -->
+  <div class="col"><div class="lab"><span class="tag">4</span><h2 data-th>สิทธิ์ถูกปฏิเสธ</h2><h2 data-en lang-hide>Permission denied</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="display:flex;flex-direction:column">
+      <div class="perm-hero"><div class="pic" style="background:var(--danger-bg);color:var(--danger)"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0z"/><path d="M9 9l6 6M15 9l-6 6"/></svg></div>
+        <h1 data-th>ต้องเปิดสิทธิ์ตำแหน่ง</h1><h1 data-en lang-hide>Location is required</h1>
+        <p data-th>แอปต้องใช้ตำแหน่งเพื่อทำงาน กรุณาเปิดในการตั้งค่าของเครื่อง</p>
+        <p data-en lang-hide>The app needs location to function. Please enable it in your device settings.</p></div>
+      <div class="deny-banner"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><div data-th>สิทธิ์ตำแหน่งถูกปิดอยู่ · เปิดที่ ตั้งค่า → pguard → ตำแหน่ง</div><div data-en lang-hide style="display:none">Location is off · Settings → pguard → Location</div></div>
+      <div style="flex:1"></div>
+      <div class="footer" style="border-top:none"><button class="cta cta-green"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg><span data-th>เปิดในตั้งค่า</span><span data-en lang-hide>Open Settings</span></button></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+</div>
+
+<div class="canvas-section"><h3 data-th>กู้บัญชี &amp; แก้ปัญหา</h3><h3 data-en lang-hide>Recovery &amp; troubleshooting</h3><div class="line"></div></div>
+<div class="canvas">
+
+  <!-- Forgot PIN -->
+  <div class="col"><div class="lab"><span class="tag">5</span><h2 data-th>ลืม PIN / กู้บัญชี</h2><h2 data-en lang-hide>Forgot PIN</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div class="hd"><button class="iconbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></button><div class="hd-title">กู้คืนบัญชี</div></div>
+      <div style="padding:6px 24px 18px"><div style="font-size:14px;color:var(--text-muted);line-height:1.6" data-th>เลือกวิธีกู้คืนการเข้าถึง</div><div style="font-size:14px;color:var(--text-muted);line-height:1.6;display:none" data-en lang-hide>Choose a way to regain access</div></div>
+      <div class="recovery-opt"><div class="ri"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="2" width="12" height="20" rx="2"/><path d="M11 18h2"/></svg></div><div style="flex:1"><div style="font-size:15px;font-weight:600;color:var(--text-strong)" data-th>ยืนยันด้วย OTP</div><div style="font-size:15px;font-weight:600;color:var(--text-strong);display:none" data-en lang-hide>Verify with OTP</div><div style="font-size:12.5px;color:var(--text-muted);margin-top:2px">+66 81 •••• 5678</div></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></div>
+      <div class="recovery-opt"><div class="ri"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/></svg></div><div style="flex:1"><div style="font-size:15px;font-weight:600;color:var(--text-strong)" data-th>ติดต่อฝ่ายสนับสนุน</div><div style="font-size:15px;font-weight:600;color:var(--text-strong);display:none" data-en lang-hide>Contact support</div><div style="font-size:12.5px;color:var(--text-muted);margin-top:2px" data-th>ตอบกลับภายใน 24 ชม.</div></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></div>
+      <div class="deny-banner" style="margin-top:8px;background:var(--warning-bg);color:var(--amber-700)"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px"><path d="M12 9v4M12 17h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg><div data-th>การกู้คืนจะล้างข้อมูลในเครื่อง คุณจะต้องตั้ง PIN และเข้าสู่ระบบใหม่</div><div data-en lang-hide style="display:none">Recovery wipes local data — you'll set a new PIN and sign in again</div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- GPS troubleshooting -->
+  <div class="col"><div class="lab"><span class="tag">6</span><h2 data-th>แก้ปัญหา GPS (เจ้าหน้าที่)</h2><h2 data-en lang-hide>GPS troubleshooting</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll" style="display:flex;flex-direction:column">
+      <div class="perm-hero" style="padding-bottom:8px"><div class="pic" style="background:var(--danger-bg);color:var(--danger)"><svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><path d="M4 4l16 16"/></svg></div>
+        <h1 data-th>ไม่พบสัญญาณ GPS</h1><h1 data-en lang-hide>GPS unavailable</h1>
+        <p data-th>คุณต้องเปิด GPS เพื่อรับงานและส่งเช็คอิน ลองทำตามขั้นตอนนี้</p>
+        <p data-en lang-hide>GPS is required to accept jobs and check in. Try these steps.</p></div>
+      <div class="gps-steps">
+        <div class="gps-step"><div class="n">1</div><div><div class="gt" data-th>เปิด GPS / ตำแหน่ง</div><div class="gt" data-en lang-hide style="display:none">Turn on Location</div><div class="gd" data-th>ตั้งค่า → ตำแหน่ง → เปิด</div><div class="gd" data-en lang-hide style="display:none">Settings → Location → On</div></div></div>
+        <div class="gps-step"><div class="n">2</div><div><div class="gt" data-th>ตรวจสอบสัญญาณ</div><div class="gt" data-en lang-hide style="display:none">Check signal</div><div class="gd" data-th>ออกไปที่โล่ง หลีกเลี่ยงใต้ดิน/อาคารหนา</div><div class="gd" data-en lang-hide style="display:none">Move to open sky, avoid basements</div></div></div>
+        <div class="gps-step"><div class="n">3</div><div><div class="gt" data-th>รีสตาร์ทแอป</div><div class="gt" data-en lang-hide style="display:none">Restart app</div><div class="gd" data-th>ปิดและเปิด pguard ใหม่</div><div class="gd" data-en lang-hide style="display:none">Close and reopen pguard</div></div></div>
+      </div>
+      <div style="flex:1"></div>
+      <div class="footer" style="border-top:none"><button class="cta cta-green" style="margin-bottom:10px" data-th>ลองอีกครั้ง</button><button class="cta cta-green" style="margin-bottom:10px;display:none" data-en lang-hide>Try again</button><button class="cta cta-ghost" data-th>เปิดในตั้งค่า</button><button class="cta cta-ghost" data-en lang-hide>Open Settings</button></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- Avatar upload -->
+  <div class="col"><div class="lab"><span class="tag">7</span><h2 data-th>อัปโหลดรูปโปรไฟล์</h2><h2 data-en lang-hide>Avatar upload</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div class="hd"><button class="iconbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button><div class="hd-title">รูปโปรไฟล์</div></div>
+      <div class="crop-frame"><div class="av-big">สม</div></div>
+      <div style="text-align:center;font-size:13px;color:var(--text-muted);padding:0 24px" data-th>ปรับให้พอดีกับกรอบวงกลม</div>
+      <div style="text-align:center;font-size:13px;color:var(--text-muted);padding:0 24px;display:none" data-en lang-hide>Fit within the circle</div>
+      <div style="margin:18px 24px 6px;font-size:12px;color:var(--text-muted);display:flex;justify-content:space-between"><span data-th>กำลังอัปโหลด…</span><span data-en lang-hide style="display:none">Uploading…</span><span class="mono" style="font-family:var(--font-mono)">72%</span></div>
+      <div class="prog"><div class="f" style="width:72%"></div></div>
+      <div class="footer" style="border-top:none;margin-top:14px"><button class="cta cta-green" data-th>บันทึกรูป</button><button class="cta cta-green" data-en lang-hide>Save photo</button></div>
+      <!-- bottom sheet over -->
+      <div style="position:absolute;inset:0;background:rgba(8,20,15,.5);display:flex;align-items:flex-end;z-index:30"><div style="background:var(--bg-surface);border-radius:24px 24px 0 0;width:100%;padding:8px 0 calc(16px + env(safe-area-inset-bottom))"><div class="grab"></div>
+        <div class="sheet-opt"><div class="oi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg></div><div class="ot" data-th>ถ่ายรูป</div><div class="ot" data-en lang-hide style="display:none">Take photo</div></div>
+        <div class="sheet-opt"><div class="oi"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-5-5L5 21"/></svg></div><div class="ot" data-th>เลือกจากแกลเลอรี</div><div class="ot" data-en lang-hide style="display:none">Choose from gallery</div></div>
+        <div class="sheet-opt"><div class="oi" style="color:var(--danger)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg></div><div class="ot" style="color:var(--danger)" data-th>ลบรูป</div><div class="ot" style="color:var(--danger);display:none" data-en lang-hide>Remove photo</div></div>
+      </div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+</div>
+
+<div class="canvas-section"><h3 data-th>ออกจากระบบ &amp; ช่วยเหลือ</h3><h3 data-en lang-hide>Logout &amp; help</h3><div class="line"></div></div>
+<div class="canvas">
+
+  <!-- Logout -->
+  <div class="col"><div class="lab"><span class="tag">8</span><h2 data-th>ยืนยันออกจากระบบ</h2><h2 data-en lang-hide>Logout confirm</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div style="text-align:center;padding:18px 0 12px"><div style="width:72px;height:72px;border-radius:50%;background:var(--green-100);color:var(--green-800);display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:600;font-family:var(--font-latin);margin:0 auto 12px">สม</div><div style="font-size:18px;font-weight:600;color:var(--text-strong)">สมชาย กิตติพงษ์</div><div class="hd-sub">ตั้งค่าบัญชี</div></div>
+      <div class="support-row"><div class="si" style="background:var(--bg-sunken);color:var(--text-muted)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 20a8 8 0 0 1 16 0"/></svg></div><div style="flex:1"><div class="sv" data-th>แก้ไขโปรไฟล์</div><div class="sv" data-en lang-hide style="display:none">Edit profile</div></div></div>
+      <div class="support-row"><div class="si" style="background:var(--bg-sunken);color:var(--text-muted)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 8V6a2 2 0 0 1 2-2h2M16 4h2a2 2 0 0 1 2 2v2"/></svg></div><div style="flex:1"><div class="sv" data-th>ความปลอดภัย</div><div class="sv" data-en lang-hide style="display:none">Security</div></div></div>
+      <!-- dialog -->
+      <div style="position:absolute;inset:0;background:rgba(8,20,15,.55);display:flex;align-items:center;justify-content:center;padding:28px;z-index:30"><div style="background:var(--bg-surface);border-radius:22px;padding:26px 24px;text-align:center;width:100%">
+        <div style="width:60px;height:60px;border-radius:50%;background:var(--danger-bg);color:var(--danger);display:flex;align-items:center;justify-content:center;margin:0 auto 18px"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></div>
+        <div style="font-size:19px;font-weight:600;color:var(--text-strong);margin-bottom:8px" data-th>ออกจากระบบ?</div><div style="font-size:19px;font-weight:600;color:var(--text-strong);margin-bottom:8px;display:none" data-en lang-hide>Log out?</div>
+        <div style="font-size:13.5px;color:var(--text-muted);line-height:1.55;margin-bottom:22px" data-th>เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง</div>
+        <div style="font-size:13.5px;color:var(--text-muted);line-height:1.55;margin-bottom:22px;display:none" data-en lang-hide>Session revoked and local tokens cleared. Sign in with your PIN again.</div>
+        <button class="cta cta-ghost" style="margin-bottom:10px;background:var(--danger);color:#fff" data-th>ออกจากระบบ</button><button class="cta cta-ghost" style="margin-bottom:10px;background:var(--danger);color:#fff;display:none" data-en lang-hide>Log out</button>
+        <button class="cta cta-ghost" data-th>ยกเลิก</button><button class="cta cta-ghost" data-en lang-hide>Cancel</button>
+      </div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+
+  <!-- Help / FAQ -->
+  <div class="col"><div class="lab"><span class="tag">9</span><h2 data-th>ช่วยเหลือ &amp; FAQ</h2><h2 data-en lang-hide>Help &amp; FAQ</h2></div>
+    <div class="phone"><div class="notch"></div><div class="screen"><div class="statusbar"><span>9:41</span><span>●●● 5G ▮</span></div><div class="body"><div class="scroll">
+      <div class="hd"><button class="iconbtn"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m15 18-6-6 6-6"/></svg></button><div class="hd-title">ช่วยเหลือ</div></div>
+      <div class="search-bar" style="margin:0 20px 14px;display:flex;align-items:center;gap:9px;background:var(--bg-sunken);border-radius:14px;padding:11px 14px"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--text-faint)" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span style="font-size:14px;color:var(--text-faint)" data-th>ค้นหาคำถาม…</span><span style="font-size:14px;color:var(--text-faint);display:none" data-en lang-hide>Search…</span></div>
+      <div class="faq-item open"><div class="faq-q" onclick="this.parentElement.classList.toggle('open')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/></svg><span data-th>จองเจ้าหน้าที่อย่างไร?</span><span data-en lang-hide style="display:none">How do I book a guard?</span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div><div class="faq-a"><div data-th>เลือกบริการ → ปักหมุดตำแหน่ง → กดเรียกเจ้าหน้าที่ ระบบจะค้นหา รปภ. ใกล้คุณให้อัตโนมัติ</div><div data-en lang-hide style="display:none">Pick a service, drop a pin, tap request — we find nearby guards automatically.</div></div></div>
+      <div class="faq-item"><div class="faq-q" onclick="this.parentElement.classList.toggle('open')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg><span data-th>การชำระเงินและคืนเงิน</span><span data-en lang-hide style="display:none">Payments & refunds</span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div><div class="faq-a"><div data-th>คิดเงินตามเวลาจริง คืนเงินส่วนต่างอัตโนมัติภายใน 3–5 วันทำการ</div></div></div>
+      <div class="faq-item"><div class="faq-q" onclick="this.parentElement.classList.toggle('open')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--brand-int)" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg><span data-th>ความปลอดภัยและความเป็นส่วนตัว</span><span data-en lang-hide style="display:none">Safety & privacy</span><span class="chev"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg></span></div><div class="faq-a"><div data-th>เจ้าหน้าที่ทุกคนผ่านการตรวจประวัติและขึ้นทะเบียน รปภ.</div></div></div>
+      <div class="sec-h" style="padding:18px 20px 8px;font-size:14px;font-weight:600;color:var(--text-strong)" data-th>ติดต่อเรา</div>
+      <div class="support-row"><div class="si" style="background:var(--green-50);color:var(--brand-int)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3 19.5 19.5 0 0 1-6-6 19.8 19.8 0 0 1-3-8.6A2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.4-1.2a2 2 0 0 1 2.1-.5c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/></svg></div><div style="flex:1"><div class="sv" data-th>โทรหาฝ่ายสนับสนุน</div><div class="sv" data-en lang-hide style="display:none">Call support</div><div class="ss">02-123-4567 · 24 ชม.</div></div></div>
+      <div class="support-row"><div class="si" style="background:var(--green-50);color:var(--brand-int)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></div><div style="flex:1"><div class="sv" data-th>แชตกับแอดมิน</div><div class="sv" data-en lang-hide style="display:none">Chat with admin</div></div></div>
+      <div class="support-row"><div class="si" style="background:var(--green-50);color:var(--brand-int)"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM9 9a3 3 0 0 1 5.12-2M12 17h.01"/></svg></div><div style="flex:1"><div class="sv" data-th>แจ้งปัญหา / ส่งความเห็น</div><div class="sv" data-en lang-hide style="display:none">Report a bug / feedback</div></div></div>
+    </div><div class="home-ind"></div></div></div></div>
+  </div>
+</div>
+<script>
+  document.getElementById('splashMark').innerHTML=`<svg width="72" height="76" viewBox="0 0 100 106" fill="none" style="position:relative"><path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="#fff"/><path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="#0E3B2E"/><circle cx="50" cy="46" r="7.5" fill="#30B987"/></svg>`;
+</script>
+<script src="mobile-canvas.js"></script>
+</body>
+</html>

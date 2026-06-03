@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard — Design System</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { margin: 0; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 28px 120px; }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 50;
+    background: color-mix(in srgb, var(--bg-app) 86%, transparent);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+  }
+  .topbar-in { max-width: 1180px; margin: 0 auto; padding: 14px 28px;
+    display: flex; align-items: center; gap: 16px; }
+  .topbar .spacer { flex: 1; }
+  .seg { display: inline-flex; background: var(--bg-sunken); border: 1px solid var(--border);
+    border-radius: var(--r-full); padding: 3px; gap: 2px; }
+  .seg button { font-family: var(--font-latin); font-size: 13px; font-weight: 600;
+    border: 0; background: transparent; color: var(--text-muted); cursor: pointer;
+    padding: 7px 15px; border-radius: var(--r-full); letter-spacing: .01em; transition: .18s; }
+  .seg button.on { background: var(--bg-surface); color: var(--text-strong); box-shadow: var(--sh-sm); }
+
+  /* ---------- Hero ---------- */
+  .hero { padding: 64px 0 40px; border-bottom: 1px solid var(--border); }
+  .eyebrow { font-family: var(--font-latin); font-weight: 600; font-size: 12px;
+    letter-spacing: .18em; text-transform: uppercase; color: var(--brand-int); }
+  .hero h1 { font-size: var(--t-display); line-height: 1.1; margin: 14px 0 10px;
+    color: var(--text-strong); font-weight: 600; letter-spacing: -0.02em; }
+  .hero p { font-size: var(--t-lg); color: var(--text-muted); max-width: 620px; margin: 0;
+    line-height: var(--lh-base); }
+
+  /* ---------- Section ---------- */
+  section { padding: 56px 0 8px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 26px; }
+  .sec-num { font-family: var(--font-mono); font-size: 13px; color: var(--brand-int); font-weight: 600; }
+  .sec-head h2 { font-size: var(--t-h2); margin: 0; color: var(--text-strong);
+    font-weight: 600; letter-spacing: -0.01em; }
+  .sec-head .desc { color: var(--text-muted); font-size: var(--t-sm); margin-left: auto; max-width: 360px; text-align: right; }
+
+  .card { background: var(--bg-surface); border: 1px solid var(--border);
+    border-radius: var(--r-lg); box-shadow: var(--sh-sm); }
+  .grid { display: grid; gap: 18px; }
+
+  /* ---------- Brand ---------- */
+  .brand-row { display: grid; grid-template-columns: 1.1fr 1fr; gap: 18px; }
+  .brand-cell { padding: 36px; display: flex; flex-direction: column; gap: 8px;
+    align-items: flex-start; justify-content: center; min-height: 200px; }
+  .brand-cell.dark { background: var(--green-900); border-color: var(--green-800); }
+  .brand-cell.amberbg { background: var(--amber-50); border-color: var(--amber-200); }
+  [data-theme="dark"] .brand-cell.amberbg { background: rgba(245,158,11,.08); border-color: rgba(245,158,11,.25); }
+  .label-pill { font-family: var(--font-latin); font-size: 11px; font-weight: 600; letter-spacing: .04em;
+    color: var(--text-faint); text-transform: uppercase; }
+  .mark-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; margin-top: 4px; }
+  .mark-cell { padding: 22px; display: flex; align-items: center; justify-content: center; }
+
+  /* logo lockup */
+  .lockup { display: inline-flex; align-items: center; gap: 12px; }
+  .wordmark { font-family: var(--font-latin); font-weight: 700; letter-spacing: -0.03em;
+    font-size: 30px; color: var(--text-strong); }
+  .wordmark .p { color: var(--brand-int); }
+  .brand-cell.dark .wordmark { color: #fff; }
+  .brand-cell.dark .wordmark .p { color: var(--green-300); }
+
+  /* ---------- Color ---------- */
+  .ramp { display: grid; grid-template-columns: repeat(11, 1fr); border-radius: var(--r-md); overflow: hidden;
+    border: 1px solid var(--border); }
+  .ramp.short { grid-template-columns: repeat(9,1fr); }
+  .swatch { height: 76px; display: flex; flex-direction: column; justify-content: flex-end; padding: 8px;
+    font-family: var(--font-mono); font-size: 10px; }
+  .swatch .n { font-weight: 600; }
+  .swatch .h { opacity: .8; font-size: 9px; }
+  .ramp-label { font-family: var(--font-latin); font-weight: 600; font-size: 13px; color: var(--text);
+    margin: 18px 0 8px; display: flex; gap: 8px; align-items: center; }
+  .ramp-label small { color: var(--text-faint); font-weight: 400; }
+
+  .semantic-grid { display: grid; grid-template-columns: repeat(4,1fr); gap: 14px; }
+  .sem { padding: 18px; border-radius: var(--r-md); border: 1px solid var(--border); }
+  .sem .dot { width: 30px; height: 30px; border-radius: 9px; margin-bottom: 12px; }
+  .sem .name { font-weight: 600; color: var(--text-strong); font-size: 14px; }
+  .sem .code { font-family: var(--font-mono); font-size: 11px; color: var(--text-muted); }
+
+  .status-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 14px; }
+  .status-card { padding: 22px; display: flex; align-items: center; gap: 16px; }
+  .pin { position: relative; width: 18px; height: 18px; border-radius: 50%; flex: none; }
+  .pin::after { content: ''; position: absolute; inset: -7px; border-radius: 50%; }
+  .pin.active { background: var(--status-active); box-shadow: 0 0 0 4px var(--status-active-ring); }
+  .pin.working { background: var(--status-working); box-shadow: 0 0 0 4px var(--status-working-ring); }
+  .pin.offline { background: var(--status-offline); box-shadow: 0 0 0 4px var(--status-offline-ring); }
+
+  /* ---------- Typography ---------- */
+  .type-row { display: flex; align-items: baseline; gap: 22px; padding: 18px 0; border-top: 1px solid var(--border); }
+  .type-row:first-child { border-top: 0; }
+  .type-meta { font-family: var(--font-mono); font-size: 11px; color: var(--text-faint); width: 150px; flex: none; line-height: 1.5; }
+  .type-sample { color: var(--text-strong); flex: 1; min-width: 0; }
+  .type-sample .en { color: var(--text-muted); font-family: var(--font-latin); display: block; margin-top: 2px; }
+
+  /* ---------- Spacing / radius ---------- */
+  .sp-grid { display: flex; gap: 16px; align-items: flex-end; flex-wrap: wrap; }
+  .sp-item { text-align: center; }
+  .sp-bar { background: var(--brand-int); border-radius: 4px; width: 100%; }
+  .sp-cap { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+  .radius-grid { display: grid; grid-template-columns: repeat(6,1fr); gap: 14px; }
+  .radius-box { aspect-ratio: 1; background: var(--green-50); border: 1.5px solid var(--brand-int);
+    display: flex; align-items: flex-end; justify-content: center; padding-bottom: 8px;
+    font-family: var(--font-mono); font-size: 10px; color: var(--brand-int); }
+  [data-theme="dark"] .radius-box { background: rgba(47,192,137,.08); }
+
+  /* ---------- Elevation ---------- */
+  .elev-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 20px; }
+  .elev-box { height: 96px; background: var(--bg-surface); border-radius: var(--r-md);
+    display: flex; align-items: center; justify-content: center; font-family: var(--font-mono);
+    font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); }
+
+  /* ---------- Components ---------- */
+  .comp-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .panel { padding: 26px; }
+  .panel h3 { font-family: var(--font-latin); font-size: 12px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; color: var(--text-faint); margin: 0 0 18px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  .row + .row { margin-top: 14px; }
+
+  /* buttons */
+  .btn { font-family: var(--font-thai); font-weight: 600; font-size: 15px; border-radius: var(--r-md);
+    padding: 12px 22px; border: 1px solid transparent; cursor: pointer; display: inline-flex; align-items: center;
+    gap: 8px; min-height: var(--tap); letter-spacing: .01em; transition: .16s; }
+  .btn:active { transform: translateY(1px); }
+  .btn-primary { background: var(--brand-int); color: #fff; box-shadow: var(--sh-sm); }
+  .btn-primary:hover { background: var(--brand-int-hover); }
+  .btn-accent { background: var(--accent); color: #2A1500; box-shadow: var(--sh-sm); }
+  .btn-accent:hover { background: var(--accent-hover); }
+  .btn-secondary { background: var(--bg-surface); color: var(--text-strong); border-color: var(--border-strong); }
+  .btn-secondary:hover { background: var(--bg-sunken); }
+  .btn-ghost { background: transparent; color: var(--brand-int); }
+  .btn-ghost:hover { background: var(--green-50); }
+  [data-theme="dark"] .btn-ghost:hover { background: rgba(47,192,137,.1); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-sm { padding: 8px 14px; font-size: 13px; min-height: 36px; }
+
+  /* inputs */
+  .field { display: flex; flex-direction: column; gap: 7px; margin-bottom: 14px; }
+  .field label { font-size: 13px; font-weight: 600; color: var(--text); }
+  .input { font-family: var(--font-thai); font-size: 15px; padding: 12px 14px; border-radius: var(--r-md);
+    border: 1.5px solid var(--border-strong); background: var(--bg-surface); color: var(--text-strong);
+    min-height: var(--tap); transition: .16s; letter-spacing: .01em; }
+  .input::placeholder { color: var(--text-faint); }
+  .input:focus { outline: none; border-color: var(--brand-int); box-shadow: 0 0 0 4px var(--focus-ring); }
+  .input.err { border-color: var(--danger); }
+  .hint { font-size: 12px; color: var(--text-muted); }
+  .hint.err { color: var(--danger); }
+
+  /* chips & badges */
+  .chip { font-size: 13px; font-weight: 500; padding: 7px 14px; border-radius: var(--r-full);
+    background: var(--bg-sunken); color: var(--text); border: 1px solid var(--border); cursor: pointer; }
+  .chip.on { background: var(--green-900); color: #fff; border-color: var(--green-900); }
+  [data-theme="dark"] .chip.on { background: var(--brand-int); color: #04140D; border-color: var(--brand-int); }
+  .badge { font-family: var(--font-latin); font-size: 11px; font-weight: 600; padding: 4px 10px;
+    border-radius: var(--r-full); display: inline-flex; align-items: center; gap: 6px; letter-spacing: .02em; }
+  .badge .d { width: 7px; height: 7px; border-radius: 50%; }
+  .badge.s-active { background: var(--success-bg); color: var(--success); }
+  .badge.s-work { background: var(--warning-bg); color: var(--amber-700); }
+  [data-theme="dark"] .badge.s-work { color: var(--amber-300); }
+  .badge.s-off { background: var(--danger-bg); color: var(--danger); }
+  .badge.s-info { background: var(--info-bg); color: var(--info); }
+
+  /* toggle */
+  .toggle { width: 50px; height: 30px; border-radius: var(--r-full); background: var(--n-300);
+    position: relative; cursor: pointer; transition: .2s; border: 0; flex: none; }
+  .toggle.on { background: var(--brand-int); }
+  .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 24px; height: 24px;
+    border-radius: 50%; background: #fff; transition: .2s; box-shadow: var(--sh-sm); }
+  .toggle.on::after { left: 23px; }
+
+  /* pin/otp dots */
+  .pin-dots { display: flex; gap: 12px; }
+  .pin-dot { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border-strong); }
+  .pin-dot.fill { background: var(--brand-int); border-color: var(--brand-int); }
+  .otp-boxes { display: flex; gap: 10px; }
+  .otp-box { width: 46px; height: 56px; border-radius: var(--r-md); border: 1.5px solid var(--border-strong);
+    display: flex; align-items: center; justify-content: center; font-size: 24px; font-weight: 600;
+    font-family: var(--font-mono); color: var(--text-strong); background: var(--bg-surface); }
+  .otp-box.active { border-color: var(--brand-int); box-shadow: 0 0 0 4px var(--focus-ring); }
+
+  /* avatar */
+  .avatar { width: 46px; height: 46px; border-radius: 50%; background: var(--green-100); color: var(--green-800);
+    display: flex; align-items: center; justify-content: center; font-weight: 600; font-family: var(--font-latin);
+    position: relative; flex: none; }
+  [data-theme="dark"] .avatar { background: var(--green-800); color: var(--green-100); }
+  .avatar .ind { position: absolute; bottom: -1px; right: -1px; width: 13px; height: 13px; border-radius: 50%;
+    border: 2.5px solid var(--bg-surface); }
+
+  /* map marker mock */
+  .marker { width: 40px; height: 40px; border-radius: 50% 50% 50% 4px; transform: rotate(45deg);
+    display: flex; align-items: center; justify-content: center; box-shadow: var(--sh-md); }
+  .marker svg { transform: rotate(-45deg); }
+
+  /* alert banner */
+  .banner { padding: 14px 16px; border-radius: var(--r-md); display: flex; gap: 12px; align-items: flex-start;
+    font-size: 14px; line-height: var(--lh-snug); }
+  .banner.warn { background: var(--danger-bg); color: var(--danger); border: 1px solid color-mix(in srgb, var(--danger) 30%, transparent); }
+  .banner strong { display: block; }
+
+  .footnote { margin-top: 80px; padding-top: 28px; border-top: 1px solid var(--border);
+    color: var(--text-faint); font-size: 13px; font-family: var(--font-latin); }
+
+  [lang-hide] { display: none !important; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="topbar-in">
+    <div class="lockup" style="gap:10px">
+      <span id="navmark"></span>
+      <span class="wordmark" style="font-size:22px"><span class="p">p</span>guard</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="seg" id="langseg">
+      <button data-lang="th" class="on">ไทย</button>
+      <button data-lang="en">EN</button>
+    </div>
+    <div class="seg" id="themeseg">
+      <button data-theme-set="light" class="on">Light</button>
+      <button data-theme-set="dark">Dark</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+
+  <div class="hero">
+    <div class="eyebrow">Design System · v0.1</div>
+    <h1 data-th>ระบบออกแบบ pguard</h1>
+    <h1 data-en lang-hide>The pguard Design System</h1>
+    <p data-th>รากฐานภาพสำหรับแพลตฟอร์มเรียก รปภ. แบบเรียลไทม์ — โทนน่าเชื่อถือ ระดับพรีเมียม เข้าถึงง่าย รองรับสองภาษา ไทย/อังกฤษ และโหมดมืด</p>
+    <p data-en lang-hide>The visual foundation for a real-time security-guard dispatch platform — trustworthy, premium and approachable. Bilingual TH/EN, light & dark.</p>
+  </div>
+
+  <!-- ===== BRAND ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">01</span>
+      <h2 data-th>แบรนด์</h2><h2 data-en lang-hide>Brand</h2>
+      <span class="desc" data-th>เครื่องหมายโล่ผสานหมุดแผนที่ — ความปลอดภัย ณ ตำแหน่งจริง</span>
+      <span class="desc" data-en lang-hide>A shield fused with a map pin — safety, at a real location.</span>
+    </div>
+    <div class="brand-row">
+      <div class="card brand-cell">
+        <div class="label-pill">Primary lockup</div>
+        <div class="lockup" style="margin:auto 0">
+          <span id="mark-lg"></span>
+          <span class="wordmark" style="font-size:40px"><span class="p">p</span>guard</span>
+        </div>
+      </div>
+      <div class="card brand-cell dark">
+        <div class="label-pill" style="color:rgba(255,255,255,.5)">On Deep Forest</div>
+        <div class="lockup" style="margin:auto 0">
+          <span id="mark-dk"></span>
+          <span class="wordmark" style="font-size:40px"><span class="p">p</span>guard</span>
+        </div>
+      </div>
+    </div>
+    <div class="mark-grid" style="margin-top:18px">
+      <div class="card mark-cell" id="m1"></div>
+      <div class="card mark-cell" style="background:var(--green-900)" id="m2"></div>
+      <div class="card mark-cell" id="m3"></div>
+      <div class="card mark-cell amberbg" id="m4"></div>
+    </div>
+  </section>
+
+  <!-- ===== COLOR ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">02</span>
+      <h2 data-th>สี</h2><h2 data-en lang-hide>Color</h2>
+      <span class="desc" data-th>เขียว Deep Forest เป็นแกนหลัก · อำพันสำหรับ CTA และทิป</span>
+      <span class="desc" data-en lang-hide>Deep Forest green anchors · amber for CTAs & tips.</span>
+    </div>
+
+    <div class="ramp-label">Primary — Green <small>brand anchor 900 · interactive 500</small></div>
+    <div class="ramp" id="ramp-green"></div>
+
+    <div class="ramp-label">Accent — Amber <small>warm CTA · tips · highlights</small></div>
+    <div class="ramp" id="ramp-amber"></div>
+
+    <div class="ramp-label">Neutral — green-tinted slate</div>
+    <div class="ramp" id="ramp-neutral"></div>
+
+    <div class="ramp-label" style="margin-top:28px" data-th>ความหมายเชิงระบบ</div>
+    <div class="ramp-label" style="margin-top:28px" data-en lang-hide>Semantic</div>
+    <div class="semantic-grid">
+      <div class="sem"><div class="dot" style="background:var(--success)"></div><div class="name">Success</div><div class="code">#16A34A</div></div>
+      <div class="sem"><div class="dot" style="background:var(--warning)"></div><div class="name">Warning</div><div class="code">#F59E0B</div></div>
+      <div class="sem"><div class="dot" style="background:var(--danger)"></div><div class="name">Danger</div><div class="code">#E5484D</div></div>
+      <div class="sem"><div class="dot" style="background:var(--info)"></div><div class="name">Info</div><div class="code">#2A6FDB</div></div>
+    </div>
+
+    <div class="ramp-label" style="margin-top:28px" data-th>สถานะเจ้าหน้าที่บนแผนที่สด</div>
+    <div class="ramp-label" style="margin-top:28px" data-en lang-hide>Live guard status</div>
+    <div class="status-grid">
+      <div class="card status-card"><span class="pin active"></span>
+        <div><div class="name" style="font-weight:600;color:var(--text-strong)" data-th>พร้อมรับงาน</div>
+        <div class="name" style="font-weight:600;color:var(--text-strong)" data-en lang-hide>Available</div>
+        <div class="code" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">#1FA971</div></div></div>
+      <div class="card status-card"><span class="pin working"></span>
+        <div><div class="name" style="font-weight:600;color:var(--text-strong)" data-th>กำลังทำงาน</div>
+        <div class="name" style="font-weight:600;color:var(--text-strong)" data-en lang-hide>On a job</div>
+        <div class="code" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">#F59E0B</div></div></div>
+      <div class="card status-card"><span class="pin offline"></span>
+        <div><div class="name" style="font-weight:600;color:var(--text-strong)" data-th>ออฟไลน์</div>
+        <div class="name" style="font-weight:600;color:var(--text-strong)" data-en lang-hide>Offline</div>
+        <div class="code" style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">#EF5C5C</div></div></div>
+    </div>
+  </section>
+
+  <!-- ===== TYPOGRAPHY ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">03</span>
+      <h2 data-th>ตัวอักษร</h2><h2 data-en lang-hide>Typography</h2>
+      <span class="desc" data-th>IBM Plex Sans Thai — line-height 1.62 + tracking +0.01em ให้ไทยหายใจ</span>
+      <span class="desc" data-en lang-hide>IBM Plex Sans Thai — lh 1.62 + 0.01em tracking so Thai breathes.</span>
+    </div>
+    <div class="card" style="padding:8px 28px">
+      <div class="type-row">
+        <div class="type-meta">Display<br>44 / 600 / -2%</div>
+        <div class="type-sample" style="font-size:44px;font-weight:600;line-height:1.1;letter-spacing:-.02em">
+          ปลอดภัยทุกที่<span class="en">Safe, everywhere</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">H1<br>34 / 600</div>
+        <div class="type-sample" style="font-size:34px;font-weight:600;line-height:1.2">
+          เรียกเจ้าหน้าที่ได้ทันที<span class="en">Dispatch a guard now</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">H2<br>27 / 600</div>
+        <div class="type-sample" style="font-size:27px;font-weight:600">
+          งานที่กำลังดำเนินอยู่<span class="en">Active assignment</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">H3<br>21 / 500</div>
+        <div class="type-sample" style="font-size:21px;font-weight:500">
+          รายงานความคืบหน้ารายชั่วโมง<span class="en">Hourly progress report</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">Body<br>16 / 400 / lh 1.62</div>
+        <div class="type-sample" style="font-size:16px;font-weight:400;line-height:1.62;color:var(--text)">
+          เจ้าหน้าที่จะส่งรูปและพิกัดเช็คอินทุกชั่วโมงตลอดระยะเวลางาน คุณติดตามได้แบบเรียลไทม์บนแผนที่
+          <span class="en">Your guard checks in with a photo and GPS every hour. Track them live on the map throughout the shift.</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">Small<br>14 / 400</div>
+        <div class="type-sample" style="font-size:14px;color:var(--text-muted)">
+          ค่าบริการคำนวณตามเวลาจริง · คืนเงินอัตโนมัติหากทำไม่ครบ
+          <span class="en">Billed on actual time · auto-refund for short shifts</span></div>
+      </div>
+      <div class="type-row">
+        <div class="type-meta">Mono · numerics<br>IBM Plex Mono</div>
+        <div class="type-sample" style="font-family:var(--font-mono);font-size:18px;font-weight:500;color:var(--text-strong)">
+          ฿1,840.00 · 04:32:18 · 13.7462°N</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== SPACING ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">04</span>
+      <h2 data-th>ระยะห่าง &amp; มุมโค้ง</h2><h2 data-en lang-hide>Spacing &amp; Radius</h2>
+      <span class="desc">4-pt base scale</span>
+    </div>
+    <div class="card panel">
+      <div class="sp-grid" id="sp-grid"></div>
+    </div>
+    <div class="radius-grid" style="margin-top:18px">
+      <div class="radius-box" style="border-radius:var(--r-xs)">xs · 6</div>
+      <div class="radius-box" style="border-radius:var(--r-sm)">sm · 9</div>
+      <div class="radius-box" style="border-radius:var(--r-md)">md · 12</div>
+      <div class="radius-box" style="border-radius:var(--r-lg)">lg · 16</div>
+      <div class="radius-box" style="border-radius:var(--r-xl)">xl · 22</div>
+      <div class="radius-box" style="border-radius:var(--r-2xl)">2xl · 28</div>
+    </div>
+  </section>
+
+  <!-- ===== ELEVATION ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">05</span>
+      <h2 data-th>เงา &amp; ระดับ</h2><h2 data-en lang-hide>Elevation</h2>
+    </div>
+    <div class="elev-grid">
+      <div class="elev-box" style="box-shadow:var(--sh-xs)">xs</div>
+      <div class="elev-box" style="box-shadow:var(--sh-sm)">sm</div>
+      <div class="elev-box" style="box-shadow:var(--sh-md)">md</div>
+      <div class="elev-box" style="box-shadow:var(--sh-lg)">lg</div>
+      <div class="elev-box" style="box-shadow:var(--sh-xl)">xl</div>
+    </div>
+  </section>
+
+  <!-- ===== COMPONENTS ===== -->
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">06</span>
+      <h2 data-th>คอมโพเนนต์</h2><h2 data-en lang-hide>Components</h2>
+      <span class="desc">44px touch targets · WCAG AA</span>
+    </div>
+    <div class="comp-grid">
+
+      <div class="card panel">
+        <h3>Buttons</h3>
+        <div class="row">
+          <button class="btn btn-primary" data-th>เรียกเจ้าหน้าที่</button><button class="btn btn-primary" data-en lang-hide>Dispatch</button>
+          <button class="btn btn-accent" data-th>ให้ทิป</button><button class="btn btn-accent" data-en lang-hide>Add tip</button>
+          <button class="btn btn-secondary" data-th>ยกเลิก</button><button class="btn btn-secondary" data-en lang-hide>Cancel</button>
+        </div>
+        <div class="row">
+          <button class="btn btn-ghost" data-th>ดูทั้งหมด</button><button class="btn btn-ghost" data-en lang-hide>View all</button>
+          <button class="btn btn-danger btn-sm" data-th>ปฏิเสธงาน</button><button class="btn btn-danger btn-sm" data-en lang-hide>Decline</button>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h3>Inputs</h3>
+        <div class="field">
+          <label data-th>เบอร์โทรศัพท์</label><label data-en lang-hide>Phone number</label>
+          <input class="input" placeholder="08X-XXX-XXXX" value="081-234-5678">
+        </div>
+        <div class="field" style="margin-bottom:0">
+          <label data-th>รหัส PIN</label><label data-en lang-hide>PIN code</label>
+          <input class="input err" value="••••">
+          <span class="hint err" data-th>PIN ไม่ถูกต้อง · เหลืออีก 2 ครั้ง</span>
+          <span class="hint err" data-en lang-hide>Wrong PIN · 2 attempts left</span>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h3>Chips &amp; Status</h3>
+        <div class="row">
+          <span class="chip on" data-th>หมู่บ้าน</span><span class="chip on" data-en lang-hide>Village</span>
+          <span class="chip" data-th>คอนโด</span><span class="chip" data-en lang-hide>Condo</span>
+          <span class="chip" data-th>โรงงาน</span><span class="chip" data-en lang-hide>Factory</span>
+          <span class="chip" data-th>อีเวนต์</span><span class="chip" data-en lang-hide>Event</span>
+        </div>
+        <div class="row" style="margin-top:18px">
+          <span class="badge s-active"><span class="d" style="background:var(--success)"></span>Available</span>
+          <span class="badge s-work"><span class="d" style="background:var(--warning)"></span>On job</span>
+          <span class="badge s-off"><span class="d" style="background:var(--danger)"></span>Offline</span>
+          <span class="badge s-info"><span class="d" style="background:var(--info)"></span>Pending</span>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h3>Toggle · Avatars · Markers</h3>
+        <div class="row" style="justify-content:space-between">
+          <div class="row">
+            <span style="font-size:14px;font-weight:600" data-th>พร้อมรับงาน</span>
+            <span style="font-size:14px;font-weight:600" data-en lang-hide>Go online</span>
+            <button class="toggle on" onclick="this.classList.toggle('on')"></button>
+          </div>
+          <div class="row">
+            <div class="avatar">ส<span class="ind" style="background:var(--status-active)"></span></div>
+            <div class="avatar" style="background:var(--amber-100);color:var(--amber-800)">N<span class="ind" style="background:var(--status-working)"></span></div>
+          </div>
+          <div class="row">
+            <div class="marker" style="background:var(--status-active)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div>
+            <div class="marker" style="background:var(--status-working)"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h3>OTP &amp; PIN</h3>
+        <div class="otp-boxes" style="margin-bottom:18px">
+          <div class="otp-box">4</div><div class="otp-box">9</div><div class="otp-box">2</div>
+          <div class="otp-box active">1</div><div class="otp-box"></div><div class="otp-box"></div>
+        </div>
+        <div class="pin-dots">
+          <div class="pin-dot fill"></div><div class="pin-dot fill"></div><div class="pin-dot fill"></div>
+          <div class="pin-dot"></div><div class="pin-dot"></div><div class="pin-dot"></div>
+        </div>
+      </div>
+
+      <div class="card panel">
+        <h3>Security banner</h3>
+        <div class="banner warn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex:none;margin-top:1px"><path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>
+          <div>
+            <strong data-th>ใส่ PIN ผิด 5 ครั้ง — ล็อก 60 วินาที</strong>
+            <strong data-en lang-hide>5 wrong PINs — locked for 60s</strong>
+            <span data-th>หากผิดครบ 10 ครั้ง ข้อมูลในเครื่องจะถูกล้างเพื่อความปลอดภัย</span>
+            <span data-en lang-hide>After 10 attempts, on-device data is wiped for your safety.</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <div class="footnote">pguard design system · IBM Plex Sans Thai · WCAG 2.1 AA · TH/EN bilingual · light &amp; dark</div>
+</div>
+
+<script>
+  // ---- pguard mark (shield + pin) ----
+  function mark(size, opts){
+    opts = opts || {};
+    const shield = opts.shield || 'url(#pg-grad)';
+    const pin = opts.pin || '#fff';
+    const dot = opts.dot || 'var(--brand-int)';
+    return `<svg width="${size}" height="${size*1.06}" viewBox="0 0 100 106" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="pg-grad" x1="50" y1="4" x2="50" y2="106" gradientUnits="userSpaceOnUse">
+          <stop stop-color="#1FA971"/><stop offset="1" stop-color="#0E3B2E"/>
+        </linearGradient>
+      </defs>
+      <path d="M50 4 L88 18 V50 C88 78 72 95 50 104 C28 95 12 78 12 50 V18 Z" fill="${shield}"/>
+      <path d="M50 30 C41 30 34 37 34 46 C34 58 50 74 50 74 C50 74 66 58 66 46 C66 37 59 30 50 30 Z" fill="${pin}"/>
+      <circle cx="50" cy="46" r="7.5" fill="${dot}"/>
+    </svg>`;
+  }
+  document.getElementById('navmark').innerHTML = mark(26);
+  document.getElementById('mark-lg').innerHTML = mark(56);
+  document.getElementById('mark-dk').innerHTML = mark(56, {pin:'#0E3B2E', dot:'#30B987', shield:'#fff'});
+  document.getElementById('m1').innerHTML = mark(64);
+  document.getElementById('m2').innerHTML = mark(64, {pin:'#fff', dot:'#30B987', shield:'transparent'});
+  document.getElementById('m3').innerHTML = mark(64, {shield:'var(--green-900)', pin:'#fff', dot:'#F59E0B'});
+  document.getElementById('m4').innerHTML = mark(64, {shield:'var(--amber-500)', pin:'#fff', dot:'#0E3B2E'});
+
+  // ---- color ramps ----
+  const greens = [['50','#E9F8F1'],['100','#C9EEDD'],['200','#97E0C2'],['300','#5FCEA4'],['400','#30B987'],['500','#1FA971'],['600','#15885B'],['700','#126B49'],['800','#0E5238'],['900','#0E3B2E'],['950','#082619']];
+  const ambers = [['50','#FEF6E7'],['100','#FDE9C2'],['200','#FBD489'],['300','#F9BC4D'],['400','#F7A823'],['500','#F59E0B'],['600','#D97D06'],['700','#B45F09'],['800','#92490E'],['900','#78400F'],['','']];
+  const neutrals = [['0','#FFFFFF'],['50','#F6F8F7'],['100','#EDF1EF'],['200','#DEE5E2'],['300','#C6D0CC'],['400','#94A29D'],['500','#69776F'],['600','#4C5953'],['700','#36423D'],['800','#222B27'],['900','#141A17']];
+  function fillRamp(id, arr){
+    const el = document.getElementById(id);
+    el.innerHTML = arr.map(([n,h])=>{
+      if(!h) return `<div style="background:transparent"></div>`;
+      const lum = parseInt(h.slice(1,3),16)*.299+parseInt(h.slice(3,5),16)*.587+parseInt(h.slice(5,7),16)*.114;
+      const tc = lum>140 ? 'rgba(0,0,0,.7)' : 'rgba(255,255,255,.92)';
+      return `<div class="swatch" style="background:${h};color:${tc}"><span class="n">${n}</span><span class="h">${h}</span></div>`;
+    }).join('');
+  }
+  fillRamp('ramp-green', greens);
+  fillRamp('ramp-amber', ambers);
+  fillRamp('ramp-neutral', neutrals);
+
+  // ---- spacing ----
+  const sps = [['1',4],['2',8],['3',12],['4',16],['5',20],['6',24],['7',32],['8',40],['9',48],['10',64]];
+  document.getElementById('sp-grid').innerHTML = sps.map(([n,px])=>
+    `<div class="sp-item"><div class="sp-bar" style="height:${px}px"></div><div class="sp-cap">${px}</div></div>`).join('');
+
+  // ---- theme + lang toggles ----
+  document.getElementById('themeseg').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    document.documentElement.setAttribute('data-theme', b.dataset.themeSet);
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on', c===b));
+  });
+  document.getElementById('langseg').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    const lang = b.dataset.lang;
+    [...e.currentTarget.children].forEach(c=>c.classList.toggle('on', c===b));
+    document.querySelectorAll('[data-th]').forEach(el=>el.toggleAttribute('lang-hide', lang!=='th'));
+    document.querySelectorAll('[data-en]').forEach(el=>el.toggleAttribute('lang-hide', lang!=='en'));
+    document.documentElement.lang = lang;
+  });
+</script>
+</body>
+</html>

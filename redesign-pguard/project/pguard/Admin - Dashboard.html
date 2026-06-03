@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — แดชบอร์ด</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .mini-map { height:260px; border-radius:var(--r-md); overflow:hidden; position:relative; background:#E7ECE7; }
+  [data-theme="dark"] .mini-map { background:#0C1310; }
+  .mini-map .mk { position:absolute; width:14px; height:14px; border-radius:50% 50% 50% 2px; transform:translate(-50%,-50%) rotate(45deg); border:2px solid #fff; box-shadow:var(--sh-sm); }
+  [data-theme="dark"] .mini-map .mk { border-color:#0C1310; }
+  .alert { display:flex; gap:12px; padding:13px 4px; margin-bottom:0; align-items:flex-start; border-bottom:1px solid var(--border); }
+  .alert:last-child { border-bottom:0; }
+  .alert .ai { flex:none; width:8px; display:flex; justify-content:center; padding-top:5px; }
+  .alert .ai svg { display:none; }
+  .alert .ai::before { content:''; width:7px; height:7px; border-radius:50%; background:var(--text-faint); }
+  .alert .at { font-size:13.5px; font-weight:600; color:var(--text-strong); }
+  .alert .as { font-size:12px; color:var(--text-muted); margin-top:1px; }
+  .alert.warn .ai::before { background:var(--amber-500); } .alert.danger .ai::before { background:var(--danger); } .alert.info .ai::before { background:var(--info); }
+  .bars { display:flex; align-items:flex-end; gap:10px; height:120px; padding-top:10px; }
+  .bars .bar { flex:1; background:var(--brand-int); border-radius:5px 5px 0 0; position:relative; min-height:6px; }
+  .bars .bar.amber { background:var(--amber-400); }
+  .bars .lbl { position:absolute; bottom:-22px; left:0; right:0; text-align:center; font-size:11px; color:var(--text-faint); }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'dash',title:'แดชบอร์ด',titleEn:'Dashboard',sub:'ภาพรวมการดำเนินงานวันนี้',subEn:'Today\u2019s operations overview'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content">
+      <div class="kpi-grid">
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--brand-int);color:#fff"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2l8 3v6c0 5-3.5 8-8 11-4.5-3-8-6-8-11V5z"/></svg></div><span class="delta up">+12%</span></div><div class="v">27</div><div class="k"><span data-th>งานที่กำลังดำเนิน</span><span data-en lang-hide>Active jobs</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--success-bg);color:var(--success)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg></div></div><div class="v">59</div><div class="k"><span data-th>เจ้าหน้าที่ออนไลน์</span><span data-en lang-hide>Guards online</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--amber-100);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></div><span class="delta up">+8%</span></div><div class="v">฿84.2K</div><div class="k"><span data-th>รายได้วันนี้</span><span data-en lang-hide>Revenue today</span></div></div>
+        <div class="kpi"><div class="top"><div class="ic" style="background:var(--warning-bg);color:var(--amber-600)"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div></div><div class="v">12</div><div class="k"><span data-th>รออนุมัติ</span><span data-en lang-hide>Pending approvals</span></div></div>
+      </div>
+
+      <div class="grid-2" style="margin-bottom:18px">
+        <div class="panel">
+          <div class="panel-head"><h3><span data-th>แผนที่สด</span><span data-en lang-hide>Live map</span></h3><span class="sub">59 <span data-th>ออนไลน์</span><span data-en lang-hide>online</span></span><a href="Web Admin Live Map.html" class="btn sm ghost" style="margin-left:auto"><span data-th>เปิดเต็มจอ</span><span data-en lang-hide>Open full</span> →</a></div>
+          <div class="panel-body"><div class="mini-map" id="mmap"></div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3><span data-th>แจ้งเตือน</span><span data-en lang-hide>Alerts</span></h3></div>
+          <div class="panel-body">
+            <div class="alert danger"><div class="ai"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--danger)" stroke-width="2"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></div><div><div class="at"><span data-th>เจ้าหน้าที่ขาดเช็คอิน 2 รอบ</span><span data-en lang-hide>Guard missed 2 check-ins</span></div><div class="as">BK-48280 · กิตติ ร. · โรงงาน ปทุม</div></div></div>
+            <div class="alert warn"><div class="ai"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--amber-600)" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg></div><div><div class="at"><span data-th>5 รายการรอคืนเงิน</span><span data-en lang-hide>5 refunds pending</span></div><div class="as"><span data-th>รวม ฿4,280 · ดำเนินการในกระเป๋าเงิน</span><span data-en lang-hide>฿4,280 total</span></div></div></div>
+            <div class="alert info"><div class="ai"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--info)" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg></div><div><div class="at"><span data-th>ผู้สมัครใหม่ 3 คน</span><span data-en lang-hide>3 new applicants</span></div><div class="as"><span data-th>เอกสารครบ พร้อมตรวจสอบ</span><span data-en lang-hide>Docs complete</span></div></div></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="panel">
+          <div class="panel-head"><h3><span data-th>รายได้ 7 วันล่าสุด</span><span data-en lang-hide>Revenue, last 7 days</span></h3><span class="sub" style="margin-left:auto">฿512K</span></div>
+          <div class="panel-body"><div class="bars">
+            <div class="bar" style="height:54%"><div class="lbl">จ</div></div><div class="bar" style="height:68%"><div class="lbl">อ</div></div>
+            <div class="bar" style="height:60%"><div class="lbl">พ</div></div><div class="bar" style="height:82%"><div class="lbl">พฤ</div></div>
+            <div class="bar amber" style="height:95%"><div class="lbl">ศ</div></div><div class="bar" style="height:88%"><div class="lbl">ส</div></div>
+            <div class="bar" style="height:72%"><div class="lbl">อา</div></div>
+          </div></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3><span data-th>กิจกรรมล่าสุด</span><span data-en lang-hide>Recent activity</span></h3></div>
+          <div class="panel-body" style="padding-top:6px;padding-bottom:6px" id="feed"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  // mini map
+  let mm=`<svg viewBox="0 0 600 260" preserveAspectRatio="xMidYMid slice" style="position:absolute;inset:0;width:100%;height:100%"><rect width="600" height="260" fill="var(--m-land,#E7ECE7)"/><g stroke="#fff" stroke-width="5">`;
+  for(let y=20;y<260;y+=44)mm+=`<line x1="0" y1="${y}" x2="600" y2="${y}"/>`;
+  for(let x=30;x<600;x+=56)mm+=`<line x1="${x}" y1="0" x2="${x}" y2="260"/>`;
+  mm+=`</g></svg>`;
+  const mks=[['active',20,30],['working',40,55],['active',62,40],['active',30,70],['working',75,62],['offline',86,30],['active',52,80],['working',12,48]];
+  const C={active:'#1FA971',working:'#F59E0B',offline:'#EF5C5C'};
+  mks.forEach(([s,x,y])=>mm+=`<div class="mk" style="left:${x}%;top:${y}%;background:${C[s]}"></div>`);
+  document.getElementById('mmap').innerHTML=mm;
+  document.querySelector('#mmap').style.cssText+=';';
+  // dark map var
+  if(document.documentElement.getAttribute('data-theme')==='dark') document.querySelector('#mmap svg rect').setAttribute('fill','#0C1310');
+
+  const FEED=[
+    ['green','สมชาย ก. เริ่มงาน BK-48280','2 นาทีที่แล้ว'],
+    ['blue','มอบหมาย ณัฐพล ว. → BK-48288','8 นาทีที่แล้ว'],
+    ['amber','นภาพร ส. ขอคืนเงิน BK-48291','15 นาทีที่แล้ว'],
+    ['green','ธีรศักดิ์ ม. ส่งรายงานรอบ 3','22 นาทีที่แล้ว'],
+    ['gray','คอนโด ลุมพินี จบงาน BK-48266','35 นาทีที่แล้ว'],
+  ];
+  const FC={green:'var(--success)',blue:'var(--info)',amber:'var(--amber-500)',gray:'var(--text-muted)'};
+  document.getElementById('feed').innerHTML=FEED.map(([c,t,m])=>`<div class="feed-item"><div class="fic" style="background:color-mix(in srgb,${FC[c]} 14%,transparent);color:${FC[c]}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/></svg></div><div><div class="ft">${t}</div><div class="fm">${m}</div></div></div>`).join('');
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>

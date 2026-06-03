@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="th" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pguard Admin — ตรวจสอบแชต</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="admin.css">
+<style>
+  .chat-mod { display:grid; grid-template-columns:320px 1fr; gap:0; height:calc(100vh - 62px - 140px); border:1px solid var(--border); border-radius:var(--r-lg); overflow:hidden; background:var(--bg-surface); }
+  .conv-list { border-right:1px solid var(--border); overflow-y:auto; }
+  .conv-row { display:flex; gap:12px; padding:13px 16px; border-bottom:1px solid var(--border); cursor:pointer; }
+  .conv-row:hover { background:var(--bg-sunken); }
+  .conv-row.on { background:var(--green-50); }
+  [data-theme="dark"] .conv-row.on { background:rgba(47,192,137,.1); }
+  .conv-row.flagged { border-left:3px solid var(--danger); }
+  .conv-row .av { width:40px; height:40px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-weight:600; font-family:var(--font-latin); font-size:13px; background:var(--green-100); color:var(--green-800); }
+  [data-theme="dark"] .conv-row .av { background:var(--green-800); color:var(--green-100); }
+  .conv-row .nm { font-size:13.5px; font-weight:600; color:var(--text-strong); }
+  .conv-row .last { font-size:12px; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:2px; }
+  .chat-view { display:flex; flex-direction:column; min-width:0; }
+  .cv-head { padding:14px 18px; border-bottom:1px solid var(--border); display:flex; align-items:center; gap:12px; }
+  .cv-body { flex:1; overflow-y:auto; padding:18px; background:var(--bg-app); display:flex; flex-direction:column; gap:10px; }
+  [data-theme="dark"] .cv-body { background:var(--bg-sunken); }
+  .mbub { max-width:62%; padding:9px 13px; border-radius:14px; font-size:13.5px; line-height:1.45; position:relative; }
+  .mbub.a { align-self:flex-start; background:var(--bg-surface); border:1px solid var(--border); }
+  .mbub.b { align-self:flex-end; background:var(--brand-int); color:#fff; }
+  .mbub.flag { outline:2px solid var(--danger); }
+  .mbub .mt { font-size:9.5px; opacity:.6; margin-top:3px; }
+  .mbub .flagtag { position:absolute; top:-8px; right:8px; font-size:9px; font-weight:700; background:var(--danger); color:#fff; padding:1px 7px; border-radius:999px; }
+  .cv-foot { padding:12px 18px; border-top:1px solid var(--border); display:flex; gap:8px; align-items:center; }
+  .lock-note { flex:1; font-size:12.5px; color:var(--text-muted); display:flex; align-items:center; gap:8px; }
+</style>
+</head>
+<body>
+<script>window.PAGE={active:'chat',title:'ตรวจสอบแชต',titleEn:'Chat Moderation',sub:'อ่านและจัดการบทสนทนา',subEn:'Review & moderate conversations'};</script>
+<div class="app">
+  <aside class="side" id="pgSide"></aside>
+  <div class="main">
+    <div class="topbar" id="pgTop"></div>
+    <div class="content" style="padding-bottom:24px">
+      <div class="grid-3" style="margin-bottom:18px">
+        <div class="kpi" style="padding:14px"><div class="v" style="font-size:22px;margin:0">8,412</div><div class="k"><span data-th>ข้อความวันนี้</span><span data-en lang-hide>Messages today</span></div></div>
+        <div class="kpi" style="padding:14px"><div class="v" style="font-size:22px;margin:0;color:var(--danger)">3</div><div class="k"><span data-th>ถูกรายงาน</span><span data-en lang-hide>Flagged</span></div></div>
+        <div class="kpi" style="padding:14px"><div class="v" style="font-size:22px;margin:0">38 วิ</div><div class="k"><span data-th>เวลาตอบเฉลี่ย</span><span data-en lang-hide>Avg response</span></div></div>
+      </div>
+      <div class="chat-mod">
+        <div class="conv-list" id="convList"></div>
+        <div class="chat-view">
+          <div class="cv-head">
+            <div class="cell-user" style="flex:1"><div class="av" style="width:38px;height:38px;font-size:13px">นภ</div><div><div class="nm">นภาพร ศ. ↔ ณัฐพล ว.</div><div class="sub" style="font-size:11.5px;color:var(--text-muted)">BK-48291 · กำลังดำเนินงาน</div></div></div>
+            <button class="btn sm danger-ghost" onclick="pg.toast('บล็อกผู้ใช้แล้ว',false)"><span data-th>บล็อกผู้ใช้</span><span data-en lang-hide>Block user</span></button>
+            <button class="btn sm secondary"><span data-th>เก็บถาวร</span><span data-en lang-hide>Archive</span></button>
+          </div>
+          <div class="cv-body">
+            <div class="mbub a">สวัสดีครับ ผมกำลังเดินทางไปถึงในอีก 5 นาทีครับ<div class="mt">14:01 · ณัฐพล (เจ้าหน้าที่)</div></div>
+            <div class="mbub b">รับทราบค่ะ เดี๋ยวเปิดประตูให้นะคะ<div class="mt">14:02 · นภาพร (ลูกค้า)</div></div>
+            <div class="mbub a flag"><span class="flagtag">รายงาน</span>ขอเบอร์ส่วนตัวไว้ติดต่อนอกแอปได้ไหมครับ<div class="mt">14:05 · ณัฐพล</div></div>
+            <div class="mbub b">ติดต่อผ่านแอปสะดวกกว่าค่ะ<div class="mt">14:06 · นภาพร</div></div>
+            <div class="mbub a">ได้ครับ ขออภัยครับ<div class="mt">14:07 · ณัฐพล</div></div>
+          </div>
+          <div class="cv-foot">
+            <div class="lock-note"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><span data-th>โหมดอ่านอย่างเดียว · แอดมินไม่สามารถส่งข้อความ</span><span data-en lang-hide>Read-only · admins cannot send messages</span></div>
+            <button class="btn sm danger"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4l16 16M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17"/></svg><span data-th>ลบข้อความที่รายงาน</span><span data-en lang-hide>Remove flagged</span></button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+  const CV=[
+    ['นภ','นภาพร ศ. ↔ ณัฐพล ว.','ขอเบอร์ส่วนตัวไว้ติดต่อ…',1,1],
+    ['วช','วิชัย ส. ↔ สมชาย ก.','ขอบคุณครับ งานเรียบร้อยดี',0,0],
+    ['คอ','คอนโด ไอดีโอ ↔ ธีรศักดิ์','รบกวนตรวจชั้น 5 ด้วยครับ',0,0],
+    ['นด','นิดา ป. ↔ พิชัย ส.','เปิดประตูให้แล้วนะคะ',0,0],
+    ['สห','สมหญิง ก. ↔ สุริยา จ.','โอนเงินผิดบัญชีหรือเปล่า',1,0],
+    ['ไท','ไทยพัฒนา ↔ กิตติ ร.','กะกลางคืนเริ่ม 20:00 ครับ',0,0],
+  ];
+  document.getElementById('convList').innerHTML=CV.map(([av,nm,last,flag,on])=>`
+    <div class="conv-row ${on?'on':''} ${flag?'flagged':''}"><div class="av">${av}</div><div style="flex:1;min-width:0"><div class="nm">${nm}</div><div class="last">${flag?'<span style="color:var(--danger);font-weight:600">⚑ </span>':''}${last}</div></div></div>`).join('');
+  document.querySelectorAll('.conv-row').forEach(r=>r.addEventListener('click',()=>{document.querySelectorAll('.conv-row').forEach(x=>x.classList.remove('on'));r.classList.add('on');}));
+</script>
+<script src="admin-shell.js"></script>
+</body>
+</html>
