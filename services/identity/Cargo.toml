@@ -11,6 +11,22 @@ path = "src/main.rs"
 [dependencies]
 axum = { workspace = true }
 tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # user access JWTs (HS256, via shared::auth)
+argon2 = { workspace = true }           # password + refresh-secret hashing (CPU-only)
+async-nats = { workspace = true }       # JetStream consumer for user.compromised
+async-trait = { workspace = true }      # dyn seam for the revoke-all dependency
+futures = { workspace = true }          # StreamExt over the JetStream message stream
 tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+shared-events = { workspace = true }
 observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }            # ServiceExt::oneshot for router tests
