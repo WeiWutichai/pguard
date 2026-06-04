@@ -30,7 +30,7 @@ channels:
     messages: { cancelled: { $ref: '#/components/messages/GenericBookingEvent' } }
   bookingCompleted:
     address: pguard.events.booking.completed
-    messages: { completed: { $ref: '#/components/messages/GenericBookingEvent' } }
+    messages: { completed: { $ref: '#/components/messages/BookingCompleted' } }
   bookingGuardEnRoute:
     address: pguard.events.booking.guard_en_route
     messages: { enRoute: { $ref: '#/components/messages/GenericBookingEvent' } }
@@ -70,6 +70,10 @@ operations:
     action: receive
     channel: { $ref: '#/channels/bookingJobAccepted' }
     summary: notification + presence + payment consume this.
+  onBookingCompleted:
+    action: receive
+    channel: { $ref: '#/channels/bookingCompleted' }
+    summary: payment consumes this → finalize proration/refund (idempotent by event_id).
   onPaymentCompleted:
     action: receive
     channel: { $ref: '#/channels/paymentCompleted' }
@@ -89,6 +93,10 @@ components:
       name: GenericBookingEvent
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_BookingRef' }
+    BookingCompleted:
+      name: BookingCompleted
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_BookingCompleted' }
     PaymentCompleted:
       name: PaymentCompleted
       contentType: application/json
@@ -150,6 +158,28 @@ components:
                 booking_id: { type: string, format: uuid }
                 customer_id: { type: string, format: uuid }
                 guard_id: { type: string, format: uuid, nullable: true }
+
+    EnvelopeOf_BookingCompleted:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id, booked_hours]
+              properties:
+                booking_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid, nullable: true }
+                booked_hours: { type: integer, description: Hours booked (proration denominator). }
+                actual_seconds:
+                  type: integer
+                  format: int64
+                  nullable: true
+                  description: >-
+                    Seconds actually worked (now − work_started_at). Null if the guard never
+                    started → payment keeps the full charge (no proration basis). The payment
+                    service consumes this to finalize proration/refund idempotently.
 
     EnvelopeOf_PaymentRef:
       allOf:

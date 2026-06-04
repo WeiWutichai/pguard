@@ -17,6 +17,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+rust_decimal = { workspace = true }     # money — base_fee/tip as Decimal (serde-str on wire), never f64
 jsonwebtoken = { workspace = true }     # DecodingKey held in AppState (HasJwtSecret)
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
 async-trait = { workspace = true }      # dyn EventPublisher (relay seam)

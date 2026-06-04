@@ -9,6 +9,7 @@
 //! so a committed status change always has its event durably queued, and a rolled-back
 //! change emits nothing.
 
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
@@ -16,10 +17,11 @@ use shared::error::AppError;
 use shared_events::EventEnvelope;
 
 use crate::domain::state::{can_transition, BookingStatus};
-use crate::domain::{event_for_status, EventMapping};
+use crate::domain::{event_for_status, CompletionInfo, EventMapping};
 use crate::models::{BookingResponse, CreateBookingRequest, InternalBooking};
 
-const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, scheduled_at, hours, created_at, updated_at";
+const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
+     scheduled_at, hours, base_fee, guard_count, tip, created_at, updated_at";
 
 // ----- Outbox row (for the relay) -----
 
@@ -49,7 +51,8 @@ pub async fn get_booking(db: &sqlx::PgPool, id: Uuid) -> Result<BookingResponse,
 /// "Data"): the projection is explicit and narrow.
 pub async fn get_internal(db: &sqlx::PgPool, id: Uuid) -> Result<InternalBooking, AppError> {
     sqlx::query_as::<_, InternalBooking>(
-        "SELECT id, customer_id, guard_id, status::text AS status, hours \
+        "SELECT id, customer_id, guard_id, status::text AS status, hours, \
+                base_fee, guard_count, tip \
          FROM booking.bookings WHERE id = $1",
     )
     .bind(id)
@@ -82,15 +85,21 @@ pub async fn list_bookings(
 // ----- Writes -----
 
 /// Insert a new booking in `requested` status. No event is emitted for a bare request.
+///
+/// `guard_count`/`tip` come from the request (defaulted by the handler); `base_fee` is NOT
+/// set here — it falls to the server-owned column DEFAULT so the client can never set the
+/// rate (CLAUDE.md money rules: authoritative pricing inputs are server-owned).
 pub async fn create_booking(
     db: &sqlx::PgPool,
     customer_id: Uuid,
     req: &CreateBookingRequest,
+    guard_count: i32,
+    tip: rust_decimal::Decimal,
 ) -> Result<BookingResponse, AppError> {
     let sql = format!(
         r#"
-        INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours)
-        VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4)
+        INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip)
+        VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6)
         RETURNING {BOOKING_COLUMNS}
         "#
     );
@@ -99,30 +108,54 @@ pub async fn create_booking(
         .bind(&req.address)
         .bind(req.scheduled_at)
         .bind(req.hours)
+        .bind(guard_count)
+        .bind(tip)
         .fetch_one(db)
         .await
         .map_err(AppError::from)
 }
 
-/// Read a booking's current status + ids inside a transaction (row-locked) so a
-/// transition validates against state that cannot change underneath it.
+/// A booking's locked current state for a transition decision.
+struct LockedBooking {
+    status: BookingStatus,
+    customer_id: Uuid,
+    guard_id: Option<Uuid>,
+    hours: i32,
+    /// When the guard went en_route (proration basis); `None` until then.
+    work_started_at: Option<DateTime<Utc>>,
+}
+
+/// Raw row shape returned by [`locked_current`]'s query: status text, customer, guard,
+/// booked hours, work-start clock. Aliased to keep the query type readable (clippy
+/// `type_complexity`).
+type LockedRow = (String, Uuid, Option<Uuid>, i32, Option<DateTime<Utc>>);
+
+/// Read a booking's current status + ids + proration inputs inside a transaction
+/// (row-locked) so a transition validates against state that cannot change underneath it.
 async fn locked_current(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     id: Uuid,
-) -> Result<(BookingStatus, Uuid, Option<Uuid>), AppError> {
-    let row: Option<(String, Uuid, Option<Uuid>)> = sqlx::query_as(
-        "SELECT status::text, customer_id, guard_id FROM booking.bookings WHERE id = $1 FOR UPDATE",
+) -> Result<LockedBooking, AppError> {
+    let row: Option<LockedRow> = sqlx::query_as(
+        "SELECT status::text, customer_id, guard_id, hours, work_started_at \
+         FROM booking.bookings WHERE id = $1 FOR UPDATE",
     )
     .bind(id)
     .fetch_optional(&mut **tx)
     .await?;
 
-    let (status_str, customer_id, guard_id) =
+    let (status_str, customer_id, guard_id, hours, work_started_at) =
         row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
         .map_err(AppError::Internal)?;
-    Ok((status, customer_id, guard_id))
+    Ok(LockedBooking {
+        status,
+        customer_id,
+        guard_id,
+        hours,
+        work_started_at,
+    })
 }
 
 /// Atomically transition a booking to `new_status` and, when the change maps to an event,
@@ -142,7 +175,13 @@ pub async fn transition(
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
 
-    let (current, customer_id, existing_guard) = locked_current(&mut tx, id).await?;
+    let LockedBooking {
+        status: current,
+        customer_id,
+        guard_id: existing_guard,
+        hours,
+        work_started_at,
+    } = locked_current(&mut tx, id).await?;
 
     // Authorization (inside the lock): the handler already checked role; here we enforce
     // assigned-guard OWNERSHIP so one guard cannot drive another guard's in-flight booking
@@ -178,12 +217,17 @@ pub async fn transition(
 
     let guard_id = assign_guard.or(existing_guard);
 
+    // Stamp the work-start clock the first time the guard goes en_route — the basis for the
+    // actual hours worked that the completion event carries to payment for proration.
+    let set_work_started = new_status == BookingStatus::EnRoute;
+
     // 1) the business change
     let sql = format!(
         r#"
         UPDATE booking.bookings
         SET status = $2::booking.booking_status,
             guard_id = COALESCE($3, guard_id),
+            work_started_at = CASE WHEN $4 AND work_started_at IS NULL THEN now() ELSE work_started_at END,
             updated_at = now()
         WHERE id = $1
         RETURNING {BOOKING_COLUMNS}
@@ -193,12 +237,26 @@ pub async fn transition(
         .bind(id)
         .bind(new_status.as_db_str())
         .bind(assign_guard)
+        .bind(set_work_started)
         .fetch_one(&mut *tx)
         .await?;
 
+    // On completion, compute the worked duration (now − work_started_at) so the event
+    // carries the proration inputs. `None` work_started_at → `None` actual_seconds (payment
+    // keeps the full charge; mirrors v1's "missing timestamps → skip proration").
+    let completion = if new_status == BookingStatus::Completed {
+        let actual_seconds = work_started_at.map(|started| (Utc::now() - started).num_seconds());
+        Some(CompletionInfo {
+            booked_hours: hours,
+            actual_seconds,
+        })
+    } else {
+        None
+    };
+
     // 2) the event — same transaction (transactional outbox)
     if let Some(EventMapping { topic, payload }) =
-        event_for_status(new_status, id, customer_id, guard_id)
+        event_for_status(new_status, id, customer_id, guard_id, completion)
     {
         let envelope = EventEnvelope::new(topic, correlation_id, payload);
         let envelope_json = serde_json::to_value(&envelope)
@@ -290,7 +348,11 @@ mod db_tests {
                 address: "123 Test Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 4,
+                guard_count: None,
+                tip: None,
             },
+            1,
+            rust_decimal::Decimal::ZERO,
         )
         .await
         .expect("create");
@@ -377,7 +439,11 @@ mod db_tests {
                 address: "1 IDOR Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 2,
+                guard_count: None,
+                tip: None,
             },
+            1,
+            rust_decimal::Decimal::ZERO,
         )
         .await
         .expect("create");
@@ -420,6 +486,95 @@ mod db_tests {
         .await
         .expect("owner en_route");
 
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The completion event carries the proration inputs the payment consumer needs:
+    /// `work_started_at` is stamped on en_route (and not reset), and the booking.completed
+    /// outbox payload carries `booked_hours` (= hours) + a non-negative `actual_seconds`
+    /// (= completed − work_started_at). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn completed_event_carries_booked_hours_and_actual_seconds() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "1 Worktime Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 4,
+                guard_count: None,
+                tip: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create");
+
+        // Drive the full lifecycle: accept → en_route (stamps work_started_at) → arrived →
+        // completed.
+        for (status, assign) in [
+            (BookingStatus::Accepted, Some(guard_id)),
+            (BookingStatus::EnRoute, None),
+            (BookingStatus::Arrived, None),
+            (BookingStatus::Completed, None),
+        ] {
+            transition(&pool, created.id, guard_id, status, assign, correlation)
+                .await
+                .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+
+        // work_started_at was stamped (on en_route) and is non-null.
+        let work_started: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT work_started_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read work_started_at");
+        assert!(
+            work_started.is_some(),
+            "work_started_at stamped on en_route"
+        );
+
+        // The booking.completed outbox payload carries booked_hours + actual_seconds.
+        let payload: Value = sqlx::query_scalar(
+            "SELECT payload->'payload' FROM booking.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_COMPLETED)
+        .bind(created.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("read completed event payload");
+        assert_eq!(payload["booked_hours"], serde_json::json!(4));
+        let actual = payload["actual_seconds"]
+            .as_i64()
+            .expect("actual_seconds is a number");
+        assert!(actual >= 0, "actual_seconds is non-negative, got {actual}");
+
+        // cleanup
         let _ =
             sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
                 .bind(created.id.to_string())

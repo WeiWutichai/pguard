@@ -20,8 +20,10 @@ use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps};
 
 /// Upper bound on a single booking's duration (defensive against absurd values flowing
-/// into proration/payment later; tighten when the payment slice lands).
+/// into proration/payment).
 const MAX_BOOKING_HOURS: i32 = 168; // 1 week
+/// Guard-count bounds (mirror the DB CHECK + v1's 1..=20).
+const MAX_GUARD_COUNT: i32 = 20;
 
 /// Transition a booking to `new_status` on behalf of `actor` (the caller). `repo::transition`
 /// enforces, inside the row-locked tx, that `actor` is allowed to drive this transition
@@ -63,7 +65,19 @@ pub async fn create_booking<S: BookingDeps>(
             "hours must be between 1 and {MAX_BOOKING_HOURS}"
         )));
     }
-    let booking = repo::create_booking(state.db(), user.user_id, &req).await?;
+    // Pricing inputs: default guard_count → 1, tip → 0. Validate before persisting so the
+    // money path (expected_total = base_fee × hours × guard_count + tip) never sees junk.
+    let guard_count = req.guard_count.unwrap_or(1);
+    if !(1..=MAX_GUARD_COUNT).contains(&guard_count) {
+        return Err(AppError::BadRequest(format!(
+            "guard_count must be between 1 and {MAX_GUARD_COUNT}"
+        )));
+    }
+    let tip = req.tip.unwrap_or(rust_decimal::Decimal::ZERO);
+    if tip < rust_decimal::Decimal::ZERO {
+        return Err(AppError::BadRequest("tip must not be negative".to_string()));
+    }
+    let booking = repo::create_booking(state.db(), user.user_id, &req, guard_count, tip).await?;
     Ok(Json(ApiResponse::success(booking)))
 }
 

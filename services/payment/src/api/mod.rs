@@ -15,7 +15,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 
 use crate::booking_client::BookingReader;
-use crate::domain::{compute_proration, is_payable_status, validate_payment};
+use crate::domain::{amount_covers_expected, expected_total, is_payable_status, validate_payment};
 use crate::models::{CompletePaymentRequest, CreatePaymentRequest, PaymentResponse};
 use crate::repo;
 use crate::state::PaymentDeps;
@@ -26,8 +26,9 @@ use crate::state::PaymentDeps;
 ///  1. VERIFY against the authoritative booking (service-JWT'd internal read), never the
 ///     client: caller must be the booking's customer; booking must be in a payable status.
 ///  2. `guard_id` for the event comes from the booking, not the request.
-///  3. Validate the (client-supplied) amount: `> 0`, `<= cap` (authoritative price is a
-///     tracked follow-up — v2 booking has no price column yet).
+///  3. Validate the amount: well-formed (`> 0`, `<= cap`, ≤2dp) AND covers the SERVER-computed
+///     `expected_total` (`base_fee × hours × guard_count + tip`, all from the booking). A
+///     client can never undercut the authoritative price; surplus is an extra tip.
 ///  4. Idempotent insert + `payment.completed` event in ONE tx (transactional outbox).
 #[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %req.booking_id))]
 pub async fn create_payment<S: PaymentDeps>(
@@ -60,13 +61,29 @@ pub async fn create_payment<S: PaymentDeps>(
         ));
     }
 
-    // (4) idempotent charge + outbox event. `guard_id` from the booking (2).
+    // (3b) the authoritative total — computed from the booking's server-owned pricing inputs,
+    // never the request body. The amount must cover it (a client can't undercut the price).
+    let expected = expected_total(
+        booking.base_fee,
+        booking.hours,
+        booking.guard_count,
+        booking.tip,
+    );
+    if !amount_covers_expected(req.amount, expected) {
+        // Generic message — do NOT echo the expected total (no internal/pricing leak).
+        return Err(AppError::BadRequest(
+            "Payment amount does not cover the booking total".to_string(),
+        ));
+    }
+
+    // (4) idempotent charge + outbox event. `guard_id` + `expected_total` from the booking (2).
     let payment = repo::charge_idempotent(
         state.db(),
         booking.id,
         booking.customer_id,
         booking.guard_id,
         req.amount,
+        expected,
         &req.payment_method,
         Uuid::new_v4(),
     )
@@ -75,12 +92,14 @@ pub async fn create_payment<S: PaymentDeps>(
     Ok(Json(ApiResponse::success(payment)))
 }
 
-/// POST /payments/{booking_id}/complete — apply proration on job completion.
+/// POST /payments/{booking_id}/complete — ADMIN override to apply proration on job
+/// completion. The primary finalization path is the `booking.completed` event consumer
+/// (see `events::consumer`); this stays as a manual override (e.g. a stuck event).
 ///
-/// Actor gate: admin OR a service caller drives this (a customer cannot prorate their own
-/// payment). For now we gate to `admin` via the user JWT; a system/service actor path is a
-/// tracked follow-up (the booking-completion event consumer will call this). The proration
-/// math is pure ([`compute_proration`]); the refund event is enqueued in the same tx.
+/// Actor gate: admin only (a customer cannot prorate their own payment). The booked hours +
+/// status are read from the authoritative booking (never the client). **Idempotent**: if the
+/// event consumer already finalized this payment, `repo::apply_proration` returns the current
+/// row unchanged — the admin call can never stack a second refund on top.
 #[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %booking_id))]
 pub async fn complete_payment<S: PaymentDeps>(
     State(state): State<S>,
@@ -105,10 +124,15 @@ pub async fn complete_payment<S: PaymentDeps>(
         ));
     }
 
-    let payment = repo::get_payment_for_booking_amount(state.db(), booking_id).await?;
-    let proration = compute_proration(payment.amount, booking.hours, req.actual_seconds);
-
-    let updated = repo::apply_proration(state.db(), booking_id, proration, Uuid::new_v4()).await?;
+    // Proration (tip-protected) + refund event live in repo, shared with the event consumer.
+    let updated = repo::apply_proration(
+        state.db(),
+        booking_id,
+        booking.hours,
+        req.actual_seconds,
+        Uuid::new_v4(),
+    )
+    .await?;
     Ok(Json(ApiResponse::success(updated)))
 }
 
@@ -349,6 +373,9 @@ mod tests {
             guard_id: Some(Uuid::new_v4()),
             status: "accepted".to_string(),
             hours: 4,
+            base_fee: "500.00".parse().unwrap(),
+            guard_count: 1,
+            tip: Decimal::ZERO,
         };
         let Some(app) = router(Some(booking)).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
@@ -381,6 +408,9 @@ mod tests {
             guard_id: None,
             status: "requested".to_string(), // not payable
             hours: 4,
+            base_fee: "500.00".parse().unwrap(),
+            guard_count: 1,
+            tip: Decimal::ZERO,
         };
         let Some(app) = router(Some(booking)).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
@@ -400,5 +430,42 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn create_rejects_amount_below_expected() {
+        // Owner + payable, but the amount is below the SERVER-computed total
+        // (500 × 4h × 1 + 0 = 2000) → 400. Proves the client can't undercut the price.
+        // Rejected before the DB charge, so no live DB is needed.
+        let me = Uuid::new_v4();
+        let booking_id = Uuid::new_v4();
+        let booking = InternalBooking {
+            id: booking_id,
+            customer_id: me,
+            guard_id: Some(Uuid::new_v4()),
+            status: "accepted".to_string(),
+            hours: 4,
+            base_fee: "500.00".parse().unwrap(),
+            guard_count: 1,
+            tip: Decimal::ZERO,
+        };
+        let Some(app) = router(Some(booking)).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = customer_token(me, "customer");
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/payments")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(pay_body(booking_id, "1999.99")) // one satang short of 2000.00
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }

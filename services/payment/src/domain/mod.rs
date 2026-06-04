@@ -1,13 +1,17 @@
 //! PURE domain logic — no DB, no HTTP, no NATS. 100% unit-testable.
 //!
+//! - [`pricing`] — `expected_total` (server-computed authoritative total) + the
+//!   amount-covers-expected rule that closes the client-supplied-amount hole.
 //! - [`proration`] — `compute_proration` (ported verbatim from v1), the heart of the
 //!   refund-on-completion math.
 //! - [`validation`] — payment-method + amount validation (positive, under cap).
 //! - [`is_payable_status`] — the pure rule for whether a booking status admits a charge.
 
+pub mod pricing;
 pub mod proration;
 pub mod validation;
 
+pub use pricing::{amount_covers_expected, expected_total};
 pub use proration::{compute_proration, Proration};
 pub use validation::validate_payment;
 

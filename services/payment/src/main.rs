@@ -82,8 +82,21 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
     {
         let relay_db = db.clone();
+        let relay_nats = nats_url.clone();
         tokio::spawn(async move {
-            events::run_relay(relay_db, nats_url).await;
+            events::run_relay(relay_db, relay_nats).await;
+        });
+    }
+
+    // --- background booking.completed consumer (finalizes proration idempotently) ---
+    // The reactive half of the money path: a completed job triggers proration/refund. Like
+    // the relay, it owns its retry and a NATS outage never crashes payment.
+    {
+        let consumer_db = db.clone();
+        let consumer_nats = nats_url.clone();
+        tokio::spawn(async move {
+            // Loops forever (reconnects internally); only returns if the task is aborted.
+            events::consumer::run_consumer(consumer_db, &consumer_nats).await;
         });
     }
 

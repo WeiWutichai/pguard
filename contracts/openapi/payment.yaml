@@ -13,19 +13,22 @@ info:
          (`GET /internal/bookings/{id}`): the caller must be the booking's customer, the
          booking must be in a payable status, and `guard_id` (for the `payment.completed`
          event) comes from the booking — never the request body.
-      2. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
+      2. **Server-computed total.** The required total is `expected_total = base_fee × hours
+         × guard_count + tip`, all from the authoritative booking (`base_fee` is server-owned;
+         the client never sets it). The charge `amount` must COVER `expected_total` — a client
+         can never undercut the price; any surplus is treated as an extra tip.
+      3. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
          index + ON CONFLICT). A retried `POST /payments` returns the existing payment — it
          never double-charges.
-      3. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
-         never float.
-      4. **Transactional outbox.** A charge / refund writes the business row AND the event
+      4. **Event-driven finalization.** On `pguard.events.booking.completed`, the payment
+         service finalizes proration (refund = expected − worked) **idempotently by event_id**
+         and emits `payment.refund_processed` when a refund is owed — no admin step needed.
+      5. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
+         never float (serialized as JSON strings on the wire).
+      6. **Transactional outbox.** A charge / refund writes the business row AND the event
          row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
          NATS JetStream (see `contracts/asyncapi/events.yaml`).
-      5. **Generic errors.** No enumeration / no internal leak.
-
-    Open follow-up: the charge `amount` is client-supplied and validated (`> 0`, `<= cap`).
-    Deriving it from an authoritative booking price is tracked — v2 booking has no price
-    column yet.
+      7. **Generic errors.** No enumeration / no internal leak.
 
     All client-facing paths are served behind the gateway under the `/v1` prefix
     (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
@@ -51,13 +54,15 @@ paths:
       tags: [Payments]
       summary: Pay for a booking (customer only)
       description: |
-        A customer pays for a booking. The handler (1) validates the amount (`> 0`,
-        `<= cap`), (2) verifies the booking via booking's internal read — caller must be the
-        booking's customer (403 otherwise) and the booking must be in a payable status (409
-        otherwise), then (3) idempotently inserts a `completed` payment and enqueues
-        `pguard.events.payment.completed` `{ payment_id, booking_id, guard_id, amount }` into
-        the outbox in the SAME transaction. **Idempotent:** a retried request for an
-        already-paid booking returns the existing payment (no double-charge).
+        A customer pays for a booking. The handler (1) validates the amount is well-formed
+        (`> 0`, `<= cap`, ≤2dp), (2) verifies the booking via booking's internal read — caller
+        must be the booking's customer (403 otherwise) and the booking must be in a payable
+        status (409 otherwise), (3) computes `expected_total` from the authoritative booking
+        and rejects `amount` below it (400), then (4) idempotently inserts a `completed`
+        payment and enqueues `pguard.events.payment.completed`
+        `{ payment_id, booking_id, guard_id, amount }` into the outbox in the SAME
+        transaction. **Idempotent:** a retried request for an already-paid booking returns
+        the existing payment (no double-charge).
       operationId: createPayment
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -203,8 +208,9 @@ components:
           type: string
           description: |
             Exact decimal amount as a string (e.g. "400.00") to avoid float rounding.
-            Validated `> 0` and `<= cap` server-side.
-          example: "400.00"
+            Validated `> 0`, `<= cap`, ≤2dp, AND must cover the server-computed
+            `expected_total` (the client can never undercut the price; surplus = extra tip).
+          example: "2000.00"
         payment_method:
           type: string
           enum: [promptpay, credit_card, debit_card, mobile_banking]
@@ -226,12 +232,22 @@ components:
         booking_id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
         guard_id: { type: string, format: uuid, nullable: true }
-        amount: { type: string, description: Exact decimal, example: "400.00" }
+        amount: { type: string, description: Exact decimal charged, example: "2000.00" }
+        expected_total:
+          type: string
+          nullable: true
+          description: Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
+          example: "2000.00"
         payment_method: { type: string, nullable: true }
         status: { $ref: '#/components/schemas/PaymentStatus' }
         final_amount: { type: string, nullable: true, description: Prorated amount after completion }
         refund_amount: { type: string, nullable: true, description: Amount returned to the customer }
         actual_hours: { type: string, nullable: true, description: Clamped hours actually worked }
+        refund_status:
+          type: string
+          nullable: true
+          enum: [pending, processed]
+          description: Set to `pending` when a refund is owed (admin marks `processed` later); else null.
         paid_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

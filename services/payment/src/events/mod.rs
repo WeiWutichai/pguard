@@ -11,6 +11,11 @@
 //!
 //! Mirrors booking's relay; uses a concrete [`JetStreamPublisher`] (no `dyn`) so the slice
 //! needs no `async-trait`.
+//!
+//! The CONSUMER half (subscribe to `booking.completed` → finalize proration idempotently)
+//! lives in [`consumer`].
+
+pub mod consumer;
 
 use std::time::Duration;
 

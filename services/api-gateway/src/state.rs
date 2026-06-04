@@ -39,6 +39,10 @@ impl UpstreamTable {
             env_url("BOOKING_URL", "http://localhost:3005"),
         );
         urls.insert(
+            Upstream::Payment,
+            env_url("PAYMENT_URL", "http://localhost:3006"),
+        );
+        urls.insert(
             Upstream::Notification,
             env_url("NOTIFICATION_URL", "http://localhost:3004"),
         );
@@ -109,6 +113,7 @@ mod tests {
             Upstream::Otp,
             Upstream::Profile,
             Upstream::Booking,
+            Upstream::Payment,
             Upstream::Notification,
         ] {
             let url = t.base_url(up).expect("every upstream resolves");

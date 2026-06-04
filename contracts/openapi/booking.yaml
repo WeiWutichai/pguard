@@ -286,10 +286,21 @@ components:
         address: { type: string }
         scheduled_at: { type: string, format: date-time }
         hours: { type: integer, format: int32, minimum: 1 }
+        guard_count:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 20
+          default: 1
+          description: Number of guards requested. Authoritative once persisted (used by the money path).
+        tip:
+          type: string
+          default: "0"
+          description: Optional up-front tip (exact decimal string); folded into the expected total.
 
     Booking:
       type: object
-      required: [id, customer_id, status, address, scheduled_at, hours, created_at, updated_at]
+      required: [id, customer_id, status, address, scheduled_at, hours, base_fee, guard_count, tip, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
@@ -298,22 +309,30 @@ components:
         address: { type: string }
         scheduled_at: { type: string, format: date-time }
         hours: { type: integer, format: int32 }
+        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        guard_count: { type: integer, format: int32 }
+        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
     InternalBooking:
       type: object
       description: |
-        The authoritative subset exposed to internal (service-JWT'd) callers — only the
-        fields the payment service needs to verify a charge + carry the guard into the
-        payment event. Deliberately narrower than `Booking` (no address/timestamps).
-      required: [id, customer_id, status, hours]
+        The authoritative subset exposed to internal (service-JWT'd) callers — the fields the
+        payment service needs to verify a charge, compute the expected total
+        (`base_fee × hours × guard_count + tip`), and carry the guard into the payment event.
+        Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is
+        server-owned — the client never sets it.
+      required: [id, customer_id, status, hours, base_fee, guard_count, tip]
       properties:
         id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
         guard_id: { type: string, format: uuid, nullable: true }
         status: { $ref: '#/components/schemas/BookingStatus' }
         hours: { type: integer, format: int32 }
+        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        guard_count: { type: integer, format: int32 }
+        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
 
     ApiResponseEnvelope:
       type: object

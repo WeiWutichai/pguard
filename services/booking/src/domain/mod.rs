@@ -7,4 +7,4 @@
 pub mod events;
 pub mod state;
 
-pub use events::{event_for_status, EventMapping};
+pub use events::{event_for_status, CompletionInfo, EventMapping};

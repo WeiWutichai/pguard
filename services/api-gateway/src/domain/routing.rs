@@ -29,6 +29,7 @@ pub enum Upstream {
     Otp,
     Profile,
     Booking,
+    Payment,
     Notification,
 }
 
@@ -40,6 +41,7 @@ impl Upstream {
             Upstream::Otp => "otp",
             Upstream::Profile => "profile",
             Upstream::Booking => "booking",
+            Upstream::Payment => "payment",
             Upstream::Notification => "notification",
         }
     }
@@ -97,6 +99,11 @@ const RULES: &[Rule] = &[
     Rule {
         prefix: "/bookings",
         upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
+        prefix: "/payments",
+        upstream: Upstream::Payment,
         tier: Tier::Api,
     },
     Rule {
@@ -334,8 +341,28 @@ mod tests {
     #[test]
     fn unknown_prefix_is_not_found() {
         assert_eq!(resolve("/v1/unknown"), RouteDecision::NotFound);
-        assert_eq!(resolve("/v1/payments"), RouteDecision::NotFound);
         assert_eq!(resolve("/v1/"), RouteDecision::NotFound);
+    }
+
+    #[test]
+    fn payments_routes_to_payment_api_tier_protected() {
+        // Closes the money path at the edge: /v1/payments now reaches the payment service
+        // (was NotFound). Authed (not public) + general API tier.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/payments"));
+        assert_eq!(up, Upstream::Payment);
+        assert_eq!(fwd, "/payments");
+        assert!(!public, "/payments requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn payments_subpaths_route_to_payment() {
+        let (up, fwd, _, _) = proxy(resolve("/v1/payments/abc-123"));
+        assert_eq!(up, Upstream::Payment);
+        assert_eq!(fwd, "/payments/abc-123");
+        let (up2, fwd2, _, _) = proxy(resolve("/v1/payments/abc/complete"));
+        assert_eq!(up2, Upstream::Payment);
+        assert_eq!(fwd2, "/payments/abc/complete");
     }
 
     // ----- /internal block (the security-critical case) -----
