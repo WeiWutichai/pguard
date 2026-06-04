@@ -25,6 +25,7 @@ pub enum AmountError {
     InvalidMethod,
     NonPositive,
     AboveCap,
+    TooManyDecimals,
 }
 
 impl AmountError {
@@ -35,17 +36,23 @@ impl AmountError {
             AmountError::InvalidMethod => "Invalid payment method",
             AmountError::NonPositive => "Payment amount must be positive",
             AmountError::AboveCap => "Payment amount exceeds the allowed limit",
+            AmountError::TooManyDecimals => "Payment amount must have at most 2 decimal places",
         }
     }
 }
 
-/// Validate a payment method + amount. `amount` must be `> 0` and `<= MAX_PAYMENT_AMOUNT`.
+/// Validate a payment method + amount. `amount` must be `> 0`, `<= MAX_PAYMENT_AMOUNT`, and
+/// have at most 2 decimal places — otherwise the `NUMERIC(12,2)` column would silently
+/// re-scale it and the charged amount would differ from what the client submitted.
 pub fn validate_payment(method: &str, amount: Decimal) -> Result<(), AmountError> {
     if !VALID_PAYMENT_METHODS.contains(&method) {
         return Err(AmountError::InvalidMethod);
     }
     if amount <= Decimal::ZERO {
         return Err(AmountError::NonPositive);
+    }
+    if amount.scale() > 2 {
+        return Err(AmountError::TooManyDecimals);
     }
     if amount > MAX_PAYMENT_AMOUNT {
         return Err(AmountError::AboveCap);
@@ -122,5 +129,21 @@ mod tests {
     #[test]
     fn max_payment_amount_is_one_million() {
         assert_eq!(MAX_PAYMENT_AMOUNT, dec("1000000"));
+    }
+
+    #[test]
+    fn rejects_more_than_two_decimal_places() {
+        // NUMERIC(12,2) would silently round these — reject so the charge is exact.
+        for s in ["400.999", "0.001", "100.005"] {
+            assert_eq!(
+                validate_payment("promptpay", dec(s)),
+                Err(AmountError::TooManyDecimals),
+                "{s} must be rejected"
+            );
+        }
+        // Exactly 2 dp (and fewer) are fine.
+        assert!(validate_payment("promptpay", dec("400.99")).is_ok());
+        assert!(validate_payment("promptpay", dec("400.5")).is_ok());
+        assert!(validate_payment("promptpay", dec("400")).is_ok());
     }
 }

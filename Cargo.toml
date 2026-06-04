@@ -85,8 +85,10 @@ sha2 = "0.10"
 subtle = "2"
 # HTTP client (notification FCM, chat signed URLs).
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
-# Decimal money type (payment proration — Phase 3).
-rust_decimal = { version = "1", features = ["serde-float"] }
+# Decimal money type (payment proration — Phase 3). `serde-str` serializes money as a
+# JSON string ("400.00") — matches the OpenAPI/AsyncAPI contract + never routes money
+# through f64 on the wire (CLAUDE.md money rule). NOT serde-float.
+rust_decimal = { version = "1", features = ["serde-str"] }
 # Swagger UI (per-service docs).
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # Env loading.

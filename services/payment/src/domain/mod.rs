@@ -21,6 +21,12 @@ pub fn is_payable_status(status: &str) -> bool {
     status == "accepted"
 }
 
+/// Proration/refund may only be applied once the booking is `completed` — otherwise there
+/// is no factual basis for "actual hours worked". Pure rule (mirrors `is_payable_status`).
+pub fn is_finalizable_status(status: &str) -> bool {
+    status == "completed"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -39,6 +45,21 @@ mod tests {
             "ACCEPTED",
         ] {
             assert!(!is_payable_status(s), "{s} must not be payable");
+        }
+    }
+
+    #[test]
+    fn only_completed_is_finalizable() {
+        assert!(is_finalizable_status("completed"));
+        for s in [
+            "requested",
+            "accepted",
+            "en_route",
+            "arrived",
+            "",
+            "COMPLETED",
+        ] {
+            assert!(!is_finalizable_status(s), "{s} must not be finalizable");
         }
     }
 }

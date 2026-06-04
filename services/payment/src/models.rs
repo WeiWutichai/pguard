@@ -60,3 +60,38 @@ pub struct InternalBooking {
     pub status: String,
     pub hours: i32,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn money_serializes_as_string_not_float() {
+        // Guards the rust_decimal `serde-str` wire format: money MUST be a JSON string
+        // (matches the OpenAPI contract + never an f64), preserving 2dp scale.
+        let epoch = DateTime::<Utc>::from_timestamp(0, 0).unwrap();
+        let p = PaymentResponse {
+            id: Uuid::nil(),
+            booking_id: Uuid::nil(),
+            customer_id: Uuid::nil(),
+            guard_id: None,
+            amount: "400.00".parse().unwrap(),
+            payment_method: Some("promptpay".to_string()),
+            status: "completed".to_string(),
+            final_amount: Some("333.33".parse().unwrap()),
+            refund_amount: None,
+            actual_hours: None,
+            paid_at: None,
+            created_at: epoch,
+            updated_at: epoch,
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(
+            v["amount"],
+            serde_json::json!("400.00"),
+            "amount must be a JSON string"
+        );
+        assert_eq!(v["final_amount"], serde_json::json!("333.33"));
+        assert!(v["refund_amount"].is_null());
+    }
+}

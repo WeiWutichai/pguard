@@ -42,7 +42,7 @@ channels:
     messages: { paymentCompleted: { $ref: '#/components/messages/PaymentCompleted' } }
   paymentRefundProcessed:
     address: pguard.events.payment.refund_processed
-    messages: { refundProcessed: { $ref: '#/components/messages/PaymentCompleted' } }
+    messages: { refundProcessed: { $ref: '#/components/messages/PaymentRefundProcessed' } }
   ratingSubmitted:
     address: pguard.events.rating.submitted
     messages: { ratingSubmitted: { $ref: '#/components/messages/RatingSubmitted' } }
@@ -93,6 +93,10 @@ components:
       name: PaymentCompleted
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_PaymentRef' }
+    PaymentRefundProcessed:
+      name: PaymentRefundProcessed
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_RefundRef' }
     RatingSubmitted:
       name: RatingSubmitted
       contentType: application/json
@@ -160,6 +164,20 @@ components:
                 booking_id: { type: string, format: uuid }
                 guard_id: { type: string, format: uuid, description: Recipient (the paid guard). }
                 amount: { type: string, description: Decimal string (THB). }
+
+    EnvelopeOf_RefundRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [payment_id, booking_id, refund_amount, final_amount]
+              properties:
+                payment_id: { type: string, format: uuid }
+                booking_id: { type: string, format: uuid }
+                refund_amount: { type: string, description: Decimal string (THB) refunded. }
+                final_amount: { type: string, description: Decimal string (THB) charged after proration. }
 
     EnvelopeOf_RatingRef:
       allOf:

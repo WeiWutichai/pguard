@@ -94,8 +94,16 @@ pub async fn complete_payment<S: PaymentDeps>(
         ));
     }
 
-    // Read the authoritative booked hours from booking (never trust the client for it).
+    // Read the authoritative booked hours + status from booking (never trust the client).
     let booking = state.booking_reader().get_booking(booking_id).await?;
+
+    // Proration is only legitimate once the job is actually completed — otherwise there is
+    // no factual "actual hours worked" basis (mirrors the charge path's status discipline).
+    if !crate::domain::is_finalizable_status(&booking.status) {
+        return Err(AppError::Conflict(
+            "Booking is not completed; cannot prorate".to_string(),
+        ));
+    }
 
     let payment = repo::get_payment_for_booking_amount(state.db(), booking_id).await?;
     let proration = compute_proration(payment.amount, booking.hours, req.actual_seconds);
