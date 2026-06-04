@@ -126,7 +126,18 @@ const PUBLIC_PATHS: &[&str] = &[
 /// `^~ /notification/internal/` location — service-JWT'd endpoints must never be
 /// reachable from the public edge.
 fn is_internal(path: &str) -> bool {
-    path == "/internal" || path.starts_with("/internal/") || path.contains("/internal/")
+    path == "/internal"
+        || path.ends_with("/internal")
+        || path.starts_with("/internal/")
+        || path.contains("/internal/")
+}
+
+/// `true` if the path carries a percent-encoded path separator (`%2f`/`%5c`). Our resource
+/// paths never contain one; allowing it would let `/v1/x%2finternal/y` slip past the
+/// `/internal` block (a backend that later decodes `%2f` would then see the separator).
+fn has_encoded_separator(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.contains("%2f") || lower.contains("%5c")
 }
 
 /// Resolve an inbound request path (the raw URI path, e.g. `/v1/auth/login`) into a
@@ -140,6 +151,12 @@ fn is_internal(path: &str) -> bool {
 ///   4. Longest-prefix match against [`RULES`]; unknown → [`RouteDecision::NotFound`].
 ///   5. Classify public vs protected via [`PUBLIC_PATHS`].
 pub fn resolve(path: &str) -> RouteDecision {
+    // Reject percent-encoded path separators outright — they have no legitimate use in
+    // our resource paths and would otherwise let an encoded `/internal/` slip the block.
+    if has_encoded_separator(path) {
+        return RouteDecision::Block;
+    }
+
     // Block /internal even if a client tries to reach it without the /v1 prefix.
     if is_internal(path) {
         return RouteDecision::Block;
@@ -343,6 +360,31 @@ mod tests {
             resolve("/v1/notifications/internal/anything"),
             RouteDecision::Block
         );
+    }
+
+    #[test]
+    fn trailing_internal_segment_is_blocked() {
+        // The collection root with no trailing slash must also be blocked.
+        assert_eq!(resolve("/v1/notifications/internal"), RouteDecision::Block);
+        // ...but a longer word that merely starts with "internal" is NOT the segment.
+        assert!(matches!(
+            resolve("/v1/notifications/internalish"),
+            RouteDecision::Proxy { .. }
+        ));
+    }
+
+    #[test]
+    fn encoded_path_separator_is_blocked() {
+        // %2f / %5c can't be used to smuggle an /internal/ past the literal check
+        // (a backend that decodes them would otherwise see a real separator).
+        for p in [
+            "/v1/notifications%2finternal/push",
+            "/v1/notifications/internal%2Fpush",
+            "/v1/bookings%2f..%2fx",
+            "/v1/profile%5cinternal",
+        ] {
+            assert_eq!(resolve(p), RouteDecision::Block, "{p} must be blocked");
+        }
     }
 
     // ----- public allowlist completeness -----

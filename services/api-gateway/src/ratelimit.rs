@@ -36,7 +36,7 @@ pub fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
 ///
 /// Returns the pure [`RateDecision`]. On any Redis error this **fails open**
 /// (returns [`RateDecision::Allow`]) after logging — see module docs.
-#[tracing::instrument(skip(redis, limits), fields(%tier = format!("{tier:?}")))]
+#[tracing::instrument(skip(redis, limits), fields(tier = ?tier))]
 pub async fn check(
     redis: &mut redis::aio::MultiplexedConnection,
     limits: &Limits,

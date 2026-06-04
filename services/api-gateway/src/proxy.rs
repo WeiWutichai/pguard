@@ -127,7 +127,8 @@ pub async fn forward(
         .send()
         .await
         .map_err(|e| {
-            tracing::warn!(error = %e, %url, "upstream request failed");
+            // Log upstream + path only — never the query string (it may carry params).
+            tracing::warn!(error = %e, upstream = %base_url, path = %forward_path, "upstream request failed");
             ProxyError::Upstream
         })?;
 
