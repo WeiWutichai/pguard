@@ -42,4 +42,6 @@ pub struct MeResponse {
 pub struct AuthUserRow {
     pub id: Uuid,
     pub role: String,
+    /// Current force-revoke-all version — stamped into the access token as `trv`.
+    pub token_revocation_version: i32,
 }

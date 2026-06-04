@@ -119,6 +119,10 @@ async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> 
 async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(), AppError> {
     let payload: UserCompromised = serde_json::from_value(envelope.payload)
         .map_err(|e| AppError::BadRequest(format!("invalid user.compromised payload: {e}")))?;
-    repo::revoke_all(&state.db, payload.user_id).await?;
+    let version = repo::revoke_all(&state.db, payload.user_id).await?;
+    // Publish the marker so in-flight access tokens are rejected immediately, not just
+    // refresh tokens.
+    let mut redis = state.redis_conn.clone();
+    crate::state::mark_user_revoked(&mut redis, payload.user_id, version).await;
     Ok(())
 }

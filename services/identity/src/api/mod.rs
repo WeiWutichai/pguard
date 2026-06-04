@@ -60,6 +60,8 @@ fn append_cookie(headers: &mut HeaderMap, cookie: &str) {
 
 // ----- POST /auth/login -----
 
+// `skip_all`: never log the identifier (PII) or the password.
+#[tracing::instrument(skip_all)]
 pub async fn login(
     State(state): State<AppState>,
     Json(req): Json<LoginRequest>,
@@ -74,6 +76,7 @@ pub async fn login(
     let (access_token, _jti) = encode_jwt_with_key(
         user.id,
         &user.role,
+        user.token_revocation_version as i64,
         &state.jwt_config.encoding_key,
         state.jwt_config.expiry_minutes,
     )?;
@@ -90,6 +93,7 @@ pub async fn login(
 
 // ----- POST /auth/refresh -----
 
+#[tracing::instrument(skip_all)]
 pub async fn refresh(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -146,6 +150,7 @@ pub async fn refresh(
             let (access_token, _jti) = encode_jwt_with_key(
                 meta.id,
                 &meta.role,
+                meta.token_revocation_version as i64,
                 &state.jwt_config.encoding_key,
                 state.jwt_config.expiry_minutes,
             )?;
@@ -163,6 +168,7 @@ pub async fn refresh(
 
 // ----- POST /auth/logout -----
 
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
 pub async fn logout(
     State(state): State<AppState>,
     user: AuthUser,
@@ -174,9 +180,14 @@ pub async fn logout(
         let (jti, ttl_secs) = jti_ttl;
         let mut redis = state.redis_conn.clone();
         let key = format!("revoked_jti:{jti}");
-        // Best-effort: a Redis hiccup must not fail logout (token still expires naturally).
-        let _: Result<(), redis::RedisError> =
-            redis.set_ex(&key, user.user_id.to_string(), ttl_secs).await;
+        // Best-effort: a Redis hiccup must not fail logout (token still expires naturally),
+        // but log it so the (small) gap is observable.
+        if let Err(e) = redis
+            .set_ex::<_, _, ()>(&key, user.user_id.to_string(), ttl_secs)
+            .await
+        {
+            tracing::warn!("failed to blocklist access jti on logout: {e}");
+        }
     }
 
     // 2) Revoke the current refresh family (if a refresh token was supplied).
@@ -230,6 +241,7 @@ fn access_jti_and_ttl(state: &AppState, headers: &HeaderMap) -> Option<(String, 
 
 // ----- GET /auth/me -----
 
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
 pub async fn me(user: AuthUser) -> Json<ApiResponse<MeResponse>> {
     Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
@@ -249,7 +261,11 @@ pub async fn internal_revoke_all<S: RevokeAllDeps>(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     tracing::info!(caller = %caller.service, %user_id, "internal revoke-all");
-    repo::revoke_all(state.db(), user_id).await?;
+    let version = repo::revoke_all(state.db(), user_id).await?;
+    // Publish the marker so the AuthUser extractor rejects older access tokens at once.
+    if let Some(mut redis) = state.revocation_redis() {
+        crate::state::mark_user_revoked(&mut redis, user_id, version).await;
+    }
     Ok(Json(ApiResponse::success(())))
 }
 
@@ -283,6 +299,9 @@ mod tests {
     impl RevokeAllDeps for TestDeps {
         fn db(&self) -> &sqlx::PgPool {
             &self.db
+        }
+        fn revocation_redis(&self) -> Option<redis::aio::MultiplexedConnection> {
+            None
         }
     }
 

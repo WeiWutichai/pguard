@@ -120,6 +120,7 @@ async fn locked_current(
 pub async fn transition(
     db: &sqlx::PgPool,
     id: Uuid,
+    actor: Uuid,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
     correlation_id: Uuid,
@@ -127,6 +128,31 @@ pub async fn transition(
     let mut tx = db.begin().await?;
 
     let (current, customer_id, existing_guard) = locked_current(&mut tx, id).await?;
+
+    // Authorization (inside the lock): the handler already checked role; here we enforce
+    // assigned-guard OWNERSHIP so one guard cannot drive another guard's in-flight booking
+    // (IDOR). Done before the state-machine check so a non-owner gets 403, not 409.
+    match new_status {
+        BookingStatus::EnRoute | BookingStatus::Arrived | BookingStatus::Completed => {
+            if existing_guard != Some(actor) {
+                tx.rollback().await?;
+                return Err(AppError::Forbidden(
+                    "Only the assigned guard can update this booking".to_string(),
+                ));
+            }
+        }
+        BookingStatus::Accepted => {
+            // Accept claims an UNASSIGNED booking; never steal one already taken.
+            if existing_guard.is_some() {
+                tx.rollback().await?;
+                return Err(AppError::Conflict(
+                    "Booking already has an assigned guard".to_string(),
+                ));
+            }
+        }
+        // Declined is a pre-assignment offer rejection — the handler's guard-role gate is enough.
+        _ => {}
+    }
 
     if !can_transition(current, new_status) {
         tx.rollback().await?;
@@ -258,6 +284,7 @@ mod db_tests {
         let accepted = transition(
             &pool,
             created.id,
+            guard_id,
             BookingStatus::Accepted,
             Some(guard_id),
             correlation,
@@ -283,13 +310,101 @@ mod db_tests {
         assert_eq!(envelope.correlation_id, correlation);
         assert_eq!(envelope.payload["guard_id"], serde_json::json!(guard_id));
 
-        // an illegal transition writes nothing (no second outbox row)
-        let err = transition(&pool, created.id, BookingStatus::Arrived, None, correlation)
-            .await
-            .expect_err("accepted → arrived is illegal");
+        // an illegal transition writes nothing (no second outbox row). The actor is the
+        // assigned guard, so it passes the ownership check and fails at the state machine.
+        let err = transition(
+            &pool,
+            created.id,
+            guard_id,
+            BookingStatus::Arrived,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("accepted → arrived is illegal");
         assert!(matches!(err, AppError::Conflict(_)));
 
         // cleanup
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// IDOR regression: a guard who is NOT the assigned guard cannot drive another guard's
+    /// in-flight booking. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn transition_rejects_non_assigned_guard() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let owner = Uuid::new_v4(); // the assigned guard
+        let intruder = Uuid::new_v4(); // a different guard
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "1 IDOR Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 2,
+            },
+        )
+        .await
+        .expect("create");
+        transition(
+            &pool,
+            created.id,
+            owner,
+            BookingStatus::Accepted,
+            Some(owner),
+            correlation,
+        )
+        .await
+        .expect("accept");
+
+        // Intruder cannot move the owner's booking → Forbidden (not Conflict).
+        let err = transition(
+            &pool,
+            created.id,
+            intruder,
+            BookingStatus::EnRoute,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("non-assigned guard must be rejected");
+        assert!(
+            matches!(err, AppError::Forbidden(_)),
+            "expected Forbidden, got {err:?}"
+        );
+
+        // The owner can.
+        transition(
+            &pool,
+            created.id,
+            owner,
+            BookingStatus::EnRoute,
+            None,
+            correlation,
+        )
+        .await
+        .expect("owner en_route");
+
         let _ =
             sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
                 .bind(created.id.to_string())

@@ -29,23 +29,30 @@ pub struct JwtClaims {
     pub aud: String,
     /// Unique token ID for the revocation blocklist.
     pub jti: String,
+    /// Per-user token-revocation version (force-revoke-all). A token is rejected when its
+    /// `trv` is below the user's current version (checked in the [`AuthUser`] extractor).
+    /// `#[serde(default)]` keeps older tokens (minted before this field) decoding as `trv = 0`.
+    #[serde(default)]
+    pub trv: i64,
 }
 
 pub fn encode_jwt(
     user_id: Uuid,
     role: &str,
+    trv: i64,
     secret: &str,
     expiry_minutes: i64,
 ) -> Result<(String, String), AppError> {
     let key = EncodingKey::from_secret(secret.as_bytes());
-    encode_jwt_with_key(user_id, role, &key, expiry_minutes)
+    encode_jwt_with_key(user_id, role, trv, &key, expiry_minutes)
 }
 
 /// Encode a user JWT with a pre-computed [`EncodingKey`] (cached in `JwtConfig`).
-/// Returns `(token, jti)`.
+/// `trv` stamps the issuer's current per-user revocation version. Returns `(token, jti)`.
 pub fn encode_jwt_with_key(
     user_id: Uuid,
     role: &str,
+    trv: i64,
     key: &EncodingKey,
     expiry_minutes: i64,
 ) -> Result<(String, String), AppError> {
@@ -59,6 +66,7 @@ pub fn encode_jwt_with_key(
         iss: JWT_ISSUER.to_string(),
         aud: JWT_AUDIENCE.to_string(),
         jti: jti.clone(),
+        trv,
     };
 
     let token = jsonwebtoken::encode(&Header::default(), &claims, key)
@@ -170,6 +178,18 @@ where
             return Err(AppError::Unauthorized("Token has been revoked".to_string()));
         }
 
+        // Per-user force-revoke-all: reject access tokens stamped with a revocation version
+        // older than the user's current one. identity bumps the version and publishes
+        // `user_trv:{user_id}`; absence means version 0 (never revoked). 1 Redis GET/decode.
+        let current_trv: i64 = redis
+            .get::<_, Option<i64>>(format!("user_trv:{}", claims.sub))
+            .await
+            .unwrap_or(None)
+            .unwrap_or(0);
+        if claims.trv < current_trv {
+            return Err(AppError::Unauthorized("Token has been revoked".to_string()));
+        }
+
         Ok(AuthUser {
             user_id: claims.sub,
             role: claims.role,
@@ -205,18 +225,19 @@ mod tests {
     #[test]
     fn encode_then_decode_roundtrip() {
         let user_id = Uuid::new_v4();
-        let (token, jti) = encode_jwt(user_id, "admin", TEST_SECRET, 60).unwrap();
+        let (token, jti) = encode_jwt(user_id, "admin", 7, TEST_SECRET, 60).unwrap();
         let claims = decode_jwt(&token, TEST_SECRET).unwrap();
         assert_eq!(claims.sub, user_id);
         assert_eq!(claims.role, "admin");
         assert_eq!(claims.jti, jti);
         assert_eq!(claims.aud, "pguard");
         assert_eq!(claims.iss, "pguard");
+        assert_eq!(claims.trv, 7, "revocation version round-trips");
     }
 
     #[test]
     fn decode_with_wrong_secret_fails() {
-        let (token, _) = encode_jwt(Uuid::new_v4(), "guard", TEST_SECRET, 60).unwrap();
+        let (token, _) = encode_jwt(Uuid::new_v4(), "guard", 0, TEST_SECRET, 60).unwrap();
         assert!(decode_jwt(&token, "wrong-secret").is_err());
     }
 
@@ -227,7 +248,7 @@ mod tests {
 
     #[test]
     fn jwt_expiry_is_set_correctly() {
-        let (token, _) = encode_jwt(Uuid::new_v4(), "guard", TEST_SECRET, 15).unwrap();
+        let (token, _) = encode_jwt(Uuid::new_v4(), "guard", 0, TEST_SECRET, 15).unwrap();
         let claims = decode_jwt(&token, TEST_SECRET).unwrap();
         assert_eq!(claims.exp - claims.iat, 15 * 60);
     }
@@ -268,5 +289,81 @@ mod tests {
     #[test]
     fn extract_cookie_value_returns_none_for_missing() {
         assert_eq!(extract_cookie_value("other=xyz", "access_token"), None);
+    }
+
+    /// The `AuthUser` extractor enforces force-revoke-all: a token whose `trv` is below the
+    /// user's current revocation version (Redis `user_trv:{id}`) is rejected; a current one
+    /// passes. Redis-gated (TEST_REDIS_URL / REDIS_CACHE_URL); hermetic-skips otherwise.
+    #[tokio::test]
+    async fn auth_user_rejects_stale_trv_and_accepts_current() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = redis::Client::open(redis_url)
+            .expect("redis client")
+            .get_multiplexed_tokio_connection()
+            .await
+            .expect("redis conn");
+
+        struct St {
+            key: DecodingKey,
+            redis: redis::aio::MultiplexedConnection,
+        }
+        impl HasJwtSecret for St {
+            fn jwt_secret(&self) -> &str {
+                TEST_SECRET
+            }
+            fn decoding_key(&self) -> &DecodingKey {
+                &self.key
+            }
+            fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+                &self.redis
+            }
+        }
+        let state = St {
+            key: DecodingKey::from_secret(TEST_SECRET.as_bytes()),
+            redis: conn.clone(),
+        };
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let user_id = Uuid::new_v4();
+
+        let mut c = conn.clone();
+        let _: () = c
+            .set(format!("user_trv:{user_id}"), 5i64)
+            .await
+            .expect("set marker");
+
+        // Stale token (trv 4 < current 5) → rejected.
+        let (stale, _) = encode_jwt_with_key(user_id, "guard", 4, &ek, 60).unwrap();
+        let req = axum::http::Request::builder()
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {stale}"))
+            .body(())
+            .unwrap();
+        let (mut parts, _) = req.into_parts();
+        assert!(
+            AuthUser::from_request_parts(&mut parts, &state)
+                .await
+                .is_err(),
+            "stale-trv token must be rejected"
+        );
+
+        // Current token (trv 5) → accepted.
+        let (cur, _) = encode_jwt_with_key(user_id, "guard", 5, &ek, 60).unwrap();
+        let req2 = axum::http::Request::builder()
+            .header(axum::http::header::AUTHORIZATION, format!("Bearer {cur}"))
+            .body(())
+            .unwrap();
+        let (mut parts2, _) = req2.into_parts();
+        assert!(
+            AuthUser::from_request_parts(&mut parts2, &state)
+                .await
+                .is_ok(),
+            "current-trv token must pass"
+        );
+
+        let _: () = c.del(format!("user_trv:{user_id}")).await.expect("cleanup");
     }
 }

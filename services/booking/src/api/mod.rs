@@ -18,17 +18,30 @@ use crate::models::{BookingResponse, CreateBookingRequest};
 use crate::repo;
 use crate::state::BookingDeps;
 
-/// Transition a booking to `new_status`, generating a fresh correlation id for the
-/// emitted event. (Threading the inbound trace's correlation id from headers is the
-/// observability follow-up; the envelope already carries the field.)
+/// Upper bound on a single booking's duration (defensive against absurd values flowing
+/// into proration/payment later; tighten when the payment slice lands).
+const MAX_BOOKING_HOURS: i32 = 168; // 1 week
+
+/// Transition a booking to `new_status` on behalf of `actor` (the caller). `repo::transition`
+/// enforces, inside the row-locked tx, that `actor` is allowed to drive this transition
+/// (the assigned guard for in-flight changes). A fresh correlation id is generated for the
+/// emitted event (threading the inbound trace's id is the observability follow-up).
 async fn do_transition<S: BookingDeps>(
     state: &S,
     id: Uuid,
+    actor: Uuid,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    let booking =
-        repo::transition(state.db(), id, new_status, assign_guard, Uuid::new_v4()).await?;
+    let booking = repo::transition(
+        state.db(),
+        id,
+        actor,
+        new_status,
+        assign_guard,
+        Uuid::new_v4(),
+    )
+    .await?;
     Ok(Json(ApiResponse::success(booking)))
 }
 
@@ -44,8 +57,10 @@ pub async fn create_booking<S: BookingDeps>(
             "Only customers can create bookings".to_string(),
         ));
     }
-    if req.hours <= 0 {
-        return Err(AppError::BadRequest("hours must be positive".to_string()));
+    if req.hours <= 0 || req.hours > MAX_BOOKING_HOURS {
+        return Err(AppError::BadRequest(format!(
+            "hours must be between 1 and {MAX_BOOKING_HOURS}"
+        )));
     }
     let booking = repo::create_booking(state.db(), user.user_id, &req).await?;
     Ok(Json(ApiResponse::success(booking)))
@@ -64,7 +79,14 @@ pub async fn accept_booking<S: BookingDeps>(
             "Only guards can accept bookings".to_string(),
         ));
     }
-    do_transition(&state, id, BookingStatus::Accepted, Some(user.user_id)).await
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        BookingStatus::Accepted,
+        Some(user.user_id),
+    )
+    .await
 }
 
 /// POST /bookings/{id}/decline — a guard declines → status = declined (outbox event).
@@ -79,7 +101,7 @@ pub async fn decline_booking<S: BookingDeps>(
             "Only guards can decline bookings".to_string(),
         ));
     }
-    do_transition(&state, id, BookingStatus::Declined, None).await
+    do_transition(&state, id, user.user_id, BookingStatus::Declined, None).await
 }
 
 /// POST /bookings/{id}/en-route — the assigned guard is en route (outbox event).
@@ -94,7 +116,7 @@ pub async fn en_route_booking<S: BookingDeps>(
             "Only the assigned guard can update status".to_string(),
         ));
     }
-    do_transition(&state, id, BookingStatus::EnRoute, None).await
+    do_transition(&state, id, user.user_id, BookingStatus::EnRoute, None).await
 }
 
 /// POST /bookings/{id}/arrived — the assigned guard has arrived (outbox event).
@@ -109,7 +131,7 @@ pub async fn arrived_booking<S: BookingDeps>(
             "Only the assigned guard can update status".to_string(),
         ));
     }
-    do_transition(&state, id, BookingStatus::Arrived, None).await
+    do_transition(&state, id, user.user_id, BookingStatus::Arrived, None).await
 }
 
 /// POST /bookings/{id}/complete — the assigned guard completes the job (outbox event).
@@ -124,7 +146,7 @@ pub async fn complete_booking<S: BookingDeps>(
             "Only the assigned guard can update status".to_string(),
         ));
     }
-    do_transition(&state, id, BookingStatus::Completed, None).await
+    do_transition(&state, id, user.user_id, BookingStatus::Completed, None).await
 }
 
 /// GET /bookings/{id} — fetch one booking the caller participates in.
