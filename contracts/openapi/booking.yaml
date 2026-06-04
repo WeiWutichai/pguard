@@ -30,6 +30,8 @@ servers:
 tags:
   - name: Bookings
     description: Booking requests + lifecycle transitions
+  - name: Internal
+    description: Service-to-service endpoints (service-JWT only; not exposed publicly)
 
 paths:
   /bookings:
@@ -178,6 +180,35 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /internal/bookings/{id}:
+    get:
+      tags: [Internal]
+      summary: Read authoritative booking fields (service-JWT only)
+      description: |
+        Service-to-service read used by the payment service to make the money decision
+        against the authoritative booking — never trusting client-supplied
+        customer/guard/status. **Requires a service-JWT** (`serviceAuth`, audience
+        `pguard-internal`); v1 had no auth on cross-service reads. Returns only
+        `{ id, customer_id, guard_id, status, hours }` (least-privilege over the wire). Not
+        routed through the public gateway.
+      operationId: getInternalBooking
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: The authoritative booking subset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/InternalBooking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -185,6 +216,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-to-service token, audience `pguard-internal`, signed with SERVICE_JWT_SECRET.
 
   parameters:
     BookingId:
@@ -264,6 +300,20 @@ components:
         hours: { type: integer, format: int32 }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    InternalBooking:
+      type: object
+      description: |
+        The authoritative subset exposed to internal (service-JWT'd) callers — only the
+        fields the payment service needs to verify a charge + carry the guard into the
+        payment event. Deliberately narrower than `Booking` (no address/timestamps).
+      required: [id, customer_id, status, hours]
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        hours: { type: integer, format: int32 }
 
     ApiResponseEnvelope:
       type: object

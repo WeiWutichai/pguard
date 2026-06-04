@@ -17,7 +17,7 @@ use shared_events::EventEnvelope;
 
 use crate::domain::state::{can_transition, BookingStatus};
 use crate::domain::{event_for_status, EventMapping};
-use crate::models::{BookingResponse, CreateBookingRequest};
+use crate::models::{BookingResponse, CreateBookingRequest, InternalBooking};
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, scheduled_at, hours, created_at, updated_at";
 
@@ -41,6 +41,21 @@ pub async fn get_booking(db: &sqlx::PgPool, id: Uuid) -> Result<BookingResponse,
         .fetch_optional(db)
         .await?
         .ok_or_else(|| AppError::NotFound("Booking not found".to_string()))
+}
+
+/// Read the authoritative subset another service needs to make a decision about a booking
+/// (service-JWT'd internal read). Returns only `id, customer_id, guard_id, status, hours`
+/// — the fields the payment service verifies a charge against. No `SELECT *` (CLAUDE.md
+/// "Data"): the projection is explicit and narrow.
+pub async fn get_internal(db: &sqlx::PgPool, id: Uuid) -> Result<InternalBooking, AppError> {
+    sqlx::query_as::<_, InternalBooking>(
+        "SELECT id, customer_id, guard_id, status::text AS status, hours \
+         FROM booking.bookings WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("Booking not found".to_string()))
 }
 
 /// List bookings the caller participates in (as customer OR assigned guard), newest first.

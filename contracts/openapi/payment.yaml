@@ -1,0 +1,258 @@
+openapi: 3.1.0
+info:
+  title: pguard — Payment Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the payment service (the source of truth — codegen produces the
+    Rust handler stubs/types, the Dart client, and the TS client). THE MONEY PATH.
+
+    Split from the v1 `../guard-dispatch/services/booking` god-service. v2 money rules baked
+    into the contract:
+      1. **No client-trusted authoritative fields.** The charge decision is verified against
+         the authoritative booking via booking's service-JWT'd internal read
+         (`GET /internal/bookings/{id}`): the caller must be the booking's customer, the
+         booking must be in a payable status, and `guard_id` (for the `payment.completed`
+         event) comes from the booking — never the request body.
+      2. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
+         index + ON CONFLICT). A retried `POST /payments` returns the existing payment — it
+         never double-charges.
+      3. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
+         never float.
+      4. **Transactional outbox.** A charge / refund writes the business row AND the event
+         row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
+         NATS JetStream (see `contracts/asyncapi/events.yaml`).
+      5. **Generic errors.** No enumeration / no internal leak.
+
+    Open follow-up: the charge `amount` is client-supplied and validated (`> 0`, `<= cap`).
+    Deriving it from an authoritative booking price is tracked — v2 booking has no price
+    column yet.
+
+    All client-facing paths are served behind the gateway under the `/v1` prefix
+    (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
+    envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3006
+    description: Local dev (payment-service direct)
+
+tags:
+  - name: Payments
+    description: Charge, proration/refund, and reads
+
+paths:
+  /payments:
+    post:
+      tags: [Payments]
+      summary: Pay for a booking (customer only)
+      description: |
+        A customer pays for a booking. The handler (1) validates the amount (`> 0`,
+        `<= cap`), (2) verifies the booking via booking's internal read — caller must be the
+        booking's customer (403 otherwise) and the booking must be in a payable status (409
+        otherwise), then (3) idempotently inserts a `completed` payment and enqueues
+        `pguard.events.payment.completed` `{ payment_id, booking_id, guard_id, amount }` into
+        the outbox in the SAME transaction. **Idempotent:** a retried request for an
+        already-paid booking returns the existing payment (no double-charge).
+      operationId: createPayment
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/PaymentOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Payments]
+      summary: List the caller's payments
+      description: Payments where the caller is the paying customer, newest first.
+      operationId: listPayments
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's payments
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Payment' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /payments/{id}:
+    get:
+      tags: [Payments]
+      summary: Get one payment the caller owns (or admin)
+      operationId: getPayment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/PaymentOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /payments/{booking_id}/complete:
+    post:
+      tags: [Payments]
+      summary: Apply proration on job completion (admin only)
+      description: |
+        Finalize a booking's payment: compute the prorated `final_amount` and `refund_amount`
+        from the booked hours (read from the authoritative booking) and `actual_seconds`,
+        update the payment row, and — if a refund is owed — enqueue
+        `pguard.events.payment.refund_processed` in the SAME transaction. Gated to `admin`
+        for now; a system/service actor (driven by the booking-completion event) is a tracked
+        follow-up. Proration math: `final = original * clamp(actual, 0, booked) / booked`
+        (rounded 2 dp); `refund = max(0, original - final)`; overtime never adds to the bill.
+      operationId: completePayment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: booking_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CompletePaymentRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/PaymentOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+
+  responses:
+    PaymentOk:
+      description: The payment
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Payment' }
+    BadRequest:
+      description: Invalid request body (e.g. bad method, non-positive or over-cap amount)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong role / not your booking / not your payment)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Booking or payment not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Booking is not in a payable state (or already paid)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    PaymentStatus:
+      type: string
+      description: Payment lifecycle status.
+      enum:
+        - pending
+        - completed
+        - refunded
+
+    CreatePaymentRequest:
+      type: object
+      required: [booking_id, amount, payment_method]
+      properties:
+        booking_id: { type: string, format: uuid }
+        amount:
+          type: string
+          description: |
+            Exact decimal amount as a string (e.g. "400.00") to avoid float rounding.
+            Validated `> 0` and `<= cap` server-side.
+          example: "400.00"
+        payment_method:
+          type: string
+          enum: [promptpay, credit_card, debit_card, mobile_banking]
+
+    CompletePaymentRequest:
+      type: object
+      required: [actual_seconds]
+      properties:
+        actual_seconds:
+          type: integer
+          format: int64
+          description: Seconds the guard actually worked (clamped to [0, booked_hours]).
+
+    Payment:
+      type: object
+      required: [id, booking_id, customer_id, amount, status, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        booking_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, nullable: true }
+        amount: { type: string, description: Exact decimal, example: "400.00" }
+        payment_method: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/PaymentStatus' }
+        final_amount: { type: string, nullable: true, description: Prorated amount after completion }
+        refund_amount: { type: string, nullable: true, description: Amount returned to the customer }
+        actual_hours: { type: string, nullable: true, description: Clamped hours actually worked }
+        paid_at: { type: string, format: date-time, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: CONFLICT }
+        message: { type: string }

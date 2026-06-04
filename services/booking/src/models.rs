@@ -30,3 +30,17 @@ pub struct BookingResponse {
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
+
+/// The authoritative subset of a booking exposed to internal callers (service-JWT'd),
+/// e.g. the payment service deciding whether a charge is legitimate. Deliberately narrow:
+/// only the fields the money path needs to verify ownership/payability + carry the guard
+/// into the payment event. NOT the address/timestamps a participant sees — internal
+/// callers get the minimum they need (least-privilege over the wire).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct InternalBooking {
+    pub id: Uuid,
+    pub customer_id: Uuid,
+    pub guard_id: Option<Uuid>,
+    pub status: String,
+    pub hours: i32,
+}

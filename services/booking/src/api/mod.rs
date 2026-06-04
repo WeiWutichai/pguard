@@ -12,11 +12,12 @@ use uuid::Uuid;
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::ApiResponse;
+use shared::service_jwt::ServiceCaller;
 
 use crate::domain::state::BookingStatus;
-use crate::models::{BookingResponse, CreateBookingRequest};
+use crate::models::{BookingResponse, CreateBookingRequest, InternalBooking};
 use crate::repo;
-use crate::state::BookingDeps;
+use crate::state::{BookingDeps, BookingInternalDeps};
 
 /// Upper bound on a single booking's duration (defensive against absurd values flowing
 /// into proration/payment later; tighten when the payment slice lands).
@@ -175,6 +176,24 @@ pub async fn list_bookings<S: BookingDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
+// ----- GET /internal/bookings/{id} (service-to-service) -----
+
+/// Internal read used by the payment service to make the money decision against the
+/// authoritative booking — never trusting a client-supplied customer/guard/status. Guarded
+/// by [`ServiceCaller`] (a valid service-JWT); v1 had no auth on cross-service reads.
+/// Returns only `{ id, customer_id, guard_id, status, hours }`. Generic over
+/// [`BookingInternalDeps`] so the guard is unit-testable (mirrors identity's
+/// `internal_revoke_all`).
+#[tracing::instrument(skip(state), fields(caller = %caller.service, booking_id = %id))]
+pub async fn get_internal_booking<S: BookingInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<InternalBooking>>, AppError> {
+    let booking = repo::get_internal(state.db(), id).await?;
+    Ok(Json(ApiResponse::success(booking)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -323,5 +342,108 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ----- internal read: service-JWT guard (no Redis/DB needed) -----
+
+    const SERVICE_SECRET: &str =
+        "service-secret-at-least-64-characters-long-for-internal-hs256-test!!";
+
+    #[derive(Clone)]
+    struct InternalDeps {
+        dec: Arc<DecodingKey>,
+        db: sqlx::PgPool,
+    }
+
+    impl shared::service_jwt::HasServiceJwt for InternalDeps {
+        fn service_decoding_key(&self) -> &DecodingKey {
+            &self.dec
+        }
+    }
+    impl BookingInternalDeps for InternalDeps {
+        fn db(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+    }
+
+    /// Build the internal router over a lightweight test state. The `ServiceCaller`
+    /// extractor only needs the service decoding key — no Redis, no live DB. Rejected
+    /// requests short-circuit at the guard before any DB access, so a lazy pool to a
+    /// closed port is safe (mirrors identity's internal_revoke_all test).
+    fn internal_router() -> Router {
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let deps = InternalDeps {
+            dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
+            db,
+        };
+        Router::new()
+            .route(
+                "/internal/bookings/{id}",
+                get(get_internal_booking::<InternalDeps>),
+            )
+            .with_state(deps)
+    }
+
+    const INTERNAL_URI: &str = "/internal/bookings/00000000-0000-0000-0000-000000000001";
+
+    #[tokio::test]
+    async fn internal_read_rejects_missing_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(INTERNAL_URI)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_read_rejects_invalid_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(INTERNAL_URI)
+                    .header("authorization", "Bearer not.a.valid.jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_read_accepts_valid_service_token() {
+        // A valid service-JWT (as minted by the payment service) must pass the guard. The
+        // handler then queries the (unreachable) DB, so the response is NOT 401 — proving
+        // auth was accepted before any DB access.
+        use jsonwebtoken::EncodingKey;
+        use shared::service_jwt::encode_service_jwt;
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("payment", &ek, 60).unwrap();
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(INTERNAL_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid service token must pass the guard"
+        );
     }
 }

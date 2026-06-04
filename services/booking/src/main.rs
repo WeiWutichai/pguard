@@ -18,7 +18,7 @@ use anyhow::Context;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::create_pool;
 use shared::redis_client::create_redis_client;
 
@@ -35,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
+    // Guards the `/internal/*` read the payment service calls (separate secret).
+    let service_jwt_config = ServiceJwtConfig::from_env()?;
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -48,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis_conn,
         jwt_config,
+        service_jwt_config,
     };
 
     // --- background outbox relay (the producer half of Phase 1) ---
@@ -90,6 +93,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/bookings/{id}/complete",
             post(api::complete_booking::<AppState>),
+        )
+        // Service-to-service read (service-JWT'd) — the payment service verifies a charge
+        // against the authoritative booking here. Not exposed through the public gateway.
+        .route(
+            "/internal/bookings/{id}",
+            get(api::get_internal_booking::<AppState>),
         )
         .layer(shared::config::build_cors_layer())
         .with_state(state);
