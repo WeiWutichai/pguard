@@ -1,0 +1,206 @@
+openapi: 3.1.0
+info:
+  title: pguard — OTP Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the OTP / phone-verification service (the source of truth
+    for this service — codegen produces the Rust handler stubs/types, the Dart client,
+    and the TS client). Split out of v1 `auth` (`../guard-dispatch/services/auth`).
+
+    Flow (all endpoints are PUBLIC / pre-auth — no bearer or service token):
+      1. `GET  /otp/challenge` — issue a math captcha. Answer stored in Redis (EX 180),
+         burned on request via GETDEL.
+      2. `POST /otp/request`   — solve captcha → validate Thai phone → tiered abuse
+         control (atomic cooldown, daily cap, burst/admin lockout) → store the SHA-256
+         **hash** of a fresh OTP in Postgres → send it via the INET CSGAPI SMS gateway.
+         The response is GENERIC and never reveals whether the phone is registered.
+      3. `POST /otp/verify`    — atomically increment attempts, enforce max-attempts,
+         constant-time compare the SHA-256 of the submitted code, then issue a
+         **single-use** phone-verified JWT (purpose `phone_verify`; its jti is tracked in
+         Redis for later GETDEL by profile/identity).
+
+    Security posture (v1 audit / security-reviewer §3): OTP codes stored hashed only;
+    constant-time compare; atomic SET NX EX cooldown; daily cap with TTL recovery; atomic
+    attempts counter; single-use phone-verified token. Errors are deliberately generic to
+    prevent user enumeration.
+
+    All client-facing paths are served behind the gateway under the `/v1` prefix
+    (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
+    envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3003
+    description: Local dev (otp-service direct)
+
+tags:
+  - name: OTP
+    description: Captcha, OTP request, and verification (all public / pre-auth)
+
+paths:
+  /otp/challenge:
+    get:
+      tags: [OTP]
+      summary: Issue a math-captcha challenge
+      description: |
+        Returns a simple addition captcha that must be solved before `POST /otp/request`.
+        The expected answer is stored in Redis (`otp_captcha:{challenge_id}`, EX 180s) and
+        consumed (GETDEL) when the OTP is requested.
+      operationId: otpChallenge
+      responses:
+        '200':
+          description: Challenge issued
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OtpChallenge' }
+
+  /otp/request:
+    post:
+      tags: [OTP]
+      summary: Request an OTP (captcha-gated, rate-limited)
+      description: |
+        Validates the captcha (GETDEL), the Thai phone format, and the tiered abuse
+        controls (cooldown / daily cap / burst+admin lockout), then stores a hashed OTP
+        and sends it via SMS. Always returns a GENERIC success body — it never reveals
+        whether the phone exists or is registered.
+      operationId: requestOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RequestOtpRequest' }
+      responses:
+        '200':
+          description: OTP sent (generic — does not confirm phone existence)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RequestOtpResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /otp/verify:
+    post:
+      tags: [OTP]
+      summary: Verify an OTP and obtain a single-use phone-verified token
+      description: |
+        Atomically increments the latest live code's attempts, enforces max-attempts,
+        constant-time compares the submitted code, and on success returns a single-use
+        phone-verified JWT (purpose `phone_verify`). Failure responses are generic.
+      operationId: verifyOtp
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/VerifyOtpRequest' }
+      responses:
+        '200':
+          description: OTP verified — phone-verified token returned
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/VerifyOtpResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /healthz:
+    get:
+      tags: [OTP]
+      summary: Liveness/readiness probe
+      operationId: healthz
+      responses:
+        '200':
+          description: Service healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  service: { type: string, example: otp }
+                  version: { type: string }
+
+components:
+  responses:
+    BadRequest:
+      description: Invalid input, captcha failure, rate limit, or invalid/expired OTP
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    OtpChallenge:
+      type: object
+      required: [challenge_id, question, expires_in]
+      properties:
+        challenge_id: { type: string, description: Opaque id binding the captcha answer in Redis }
+        question: { type: string, example: "7 + 5 = ?" }
+        expires_in: { type: integer, format: int64, description: Seconds until the captcha expires }
+
+    RequestOtpRequest:
+      type: object
+      required: [phone, challenge_id, answer]
+      properties:
+        phone: { type: string, description: Thai phone — 10 digits starting with 0, example: "0812345678" }
+        challenge_id: { type: string, description: From GET /otp/challenge }
+        answer: { type: string, description: The captcha answer (numeric string) }
+
+    RequestOtpResult:
+      type: object
+      required: [message, expires_in]
+      properties:
+        message: { type: string, example: "OTP sent successfully" }
+        expires_in: { type: integer, format: int64, description: OTP validity in seconds }
+
+    VerifyOtpRequest:
+      type: object
+      required: [phone, code]
+      properties:
+        phone: { type: string, example: "0812345678" }
+        code: { type: string, description: The OTP code (digits), example: "123456" }
+
+    VerifyOtpResult:
+      type: object
+      required: [phone_verified_token, expires_in]
+      properties:
+        phone_verified_token:
+          type: string
+          description: Single-use JWT (purpose phone_verify) exchanged by profile/identity to finish registration
+        expires_in: { type: integer, format: int64, description: Token validity in seconds }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: BAD_REQUEST }
+        message: { type: string }
