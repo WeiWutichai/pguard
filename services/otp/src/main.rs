@@ -55,21 +55,18 @@ async fn main() -> anyhow::Result<()> {
         .get_multiplexed_tokio_connection()
         .await
         .context("Redis cache connection")?;
-    let http_client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .connect_timeout(Duration::from_secs(5))
-        .build()
-        .context("build HTTP client")?;
-
-    // --- SMS backend (fail-fast unless explicitly disabled for dev) ---
+    // --- SMS backend (fail-fast unless explicitly disabled for dev). The HTTP client is
+    // built only when a real sender is used; InetSender owns it (no copy on state). ---
     let sms: Arc<dyn SmsSender> = if std::env::var("SMS_DISABLED").is_ok() {
         tracing::warn!("SMS_DISABLED set — using NoopSender (no real SMS will be sent)");
         Arc::new(NoopSender)
     } else {
-        Arc::new(InetSender::new(
-            InetConfig::from_env()?,
-            http_client.clone(),
-        ))
+        let http_client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .context("build HTTP client")?;
+        Arc::new(InetSender::new(InetConfig::from_env()?, http_client))
     };
 
     let state = AppState {
@@ -78,7 +75,6 @@ async fn main() -> anyhow::Result<()> {
         otp_config,
         jwt_config,
         sms,
-        http_client,
     };
 
     // --- HTTP router (all OTP routes are PUBLIC / pre-auth) ---

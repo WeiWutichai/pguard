@@ -24,7 +24,7 @@ const PURPOSE_REGISTER: &str = "register";
 
 /// Invalidate any previous unused OTP for this phone+purpose, then insert the new hashed
 /// code — both in one transaction so a request can never leave two live codes.
-#[tracing::instrument(skip(db, code_hash))]
+#[tracing::instrument(skip(db, code_hash, phone))]
 pub async fn store_code(
     db: &PgPool,
     phone: &str,
@@ -61,7 +61,7 @@ pub async fn store_code(
 /// return it. The `FOR UPDATE` subquery serialises concurrent verify attempts so the
 /// attempts counter can never be lost (security-reviewer §3: "Attempts counter atomic").
 /// Returns `None` when there is no valid (unused, unexpired) code.
-#[tracing::instrument(skip(db))]
+#[tracing::instrument(skip(db, phone))]
 pub async fn claim_for_verify(db: &PgPool, phone: &str) -> Result<Option<OtpRow>, AppError> {
     let row = sqlx::query_as::<_, OtpRow>(
         r#"

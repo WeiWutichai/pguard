@@ -22,10 +22,6 @@ pub struct AppState {
     /// Used to sign (encoding_key) and self-issue the phone-verified token.
     pub jwt_config: JwtConfig,
     /// SMS port — [`crate::sms::InetSender`] in prod, `NoopSender` when `SMS_DISABLED`.
+    /// The HTTP client lives inside `InetSender`; state holds no separate copy.
     pub sms: Arc<dyn SmsSender>,
-    /// Shared HTTP client (connection reuse). The [`crate::sms::InetSender`] is built with
-    /// a clone of this in `main`; the field is retained on state per the service spec so
-    /// future outbound calls reuse one pool. Not yet read directly after construction.
-    #[allow(dead_code)]
-    pub http_client: reqwest::Client,
 }

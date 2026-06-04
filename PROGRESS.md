@@ -32,7 +32,7 @@
 - [x] Phase 1 — Decouple notifications (event bus + service-auth) — notification consumer **+ booking emit via transactional outbox** done; ไม่มี cross-schema write (v2 ไม่เคยมี)
 - [ ] Phase 2 — Push-based mobile (WS แทน polling)
 - [ ] Phase 3 — Split booking (call → payment → rating → assignment)
-- [~] Phase 4 — Split auth + Flutter Riverpod migration — identity foundation (login/refresh-rotation/logout/revoke-all + trv) **done**; เหลือ profile/otp split + Flutter Riverpod
+- [~] Phase 4 — Split auth + Flutter Riverpod migration — **identity** (login/refresh/revoke-all+trv) **+ otp** (INET SMS request/verify/captcha) **done**; เหลือ profile split + Flutter Riverpod
 - [ ] Phase 5 — Scale & harden
 
 ---
@@ -52,9 +52,11 @@
 - [x] **§2.4-next booking emit + outbox (จบ Phase 1)** — `booking` service: state machine (pure) + 8 endpoints + **transactional outbox** (status change + event row ใน tx เดียว) + relay → NATS · emit `pguard.events.booking.*` ให้ notification consume · IDOR ownership check (assigned-guard only) · build/clippy/test ✅ + outbox & IDOR real-DB test ผ่าน
 - [x] **§2.4b identity/auth foundation (Phase 4 เริ่ม)** — `identity` service: login (Argon2 + anti-enumeration) · refresh rotation + **reuse detection** (RFC 6749 §6) · logout · `/auth/me` · **`/internal/users/{id}/revoke-all`** (service-JWT) + `user.compromised` consumer · **force-revoke-all จริง**: `trv` claim ใน `shared::auth` + AuthUser ปฏิเสธ token เก่า (Redis `user_trv:{id}`) → ปิด v1 risk #1
   - **2 slices ทำขนานกัน** (Workflow, worktree แยก) → merge → **review 3 agents**: security ✅ Cleared (ปิด risk #1 + IDOR) · architecture ✅ Approve · code-reviewer block (trv) → **แก้แล้ว → cleared** · เพิ่ม regression test (IDOR 403, trv stale) ผ่านกับ infra จริง
-- [ ] **§2.5** เดินตาม phase order ต่อ (profile/otp split · Flutter Riverpod · payment/rating/calling/presence/chat)
+- [x] **§2.4c otp service (INET SMS)** — port v1: **INET CSGAPI** SMS (Cheese Digital Network, TIS-620/UCS-2) เป็น `SmsSender` port (InetSender + NoopSender ตาม `SMS_DISABLED`) · captcha → request → verify · config ทั้งหมดจาก `.env` (`INET_SMS_*`/`OTP_*`/`DAILY_OTP_LIMIT`, `.env.example` placeholder ไม่มี secret v1) · OTP **hash SHA-256** ใน Postgres + **constant-time compare** (`subtle`) · Redis cooldown/daily/tiered-lockout/captcha · single-use phone-verify JWT
+  - **Review 3 agents**: security ⚠️→✅ (แก้ repo span เลิก log เบอร์โทร) · architecture ✅ Approve · code-reviewer ⚠️→✅ (ลบ dead `http_client` field) · 42 tests ผ่าน + gated tests (otp_lifecycle, router) ผ่านกับ PG+Redis จริง
+- [ ] **§2.5** เดินตาม phase order ต่อ (profile split · Flutter Riverpod · payment/rating/calling/presence/chat)
 
-**Verify (Definition of Done):** `cargo build --workspace` ✅ · `cargo clippy --workspace --all-targets -D warnings` ✅ · `cargo test --workspace` ✅ **54 passed/0 failed** (notification 15: domain mapping 8 + idempotency 2 + consumer-dedupe 2 + internal-push auth 3) · `cargo fmt --all --check` ✅ · YAML contracts parse ✅
+**Verify (Definition of Done):** `cargo build --workspace` ✅ · `cargo clippy --workspace --all-targets -D warnings` ✅ · `cargo test --workspace` ✅ **141 passed/0 failed** (otp 42 · identity 25 · booking 18 · notification 16 · shared 35 · shared-events 4 · observability 1) · `cargo fmt --all --check` ✅ · gated tests (booking outbox/IDOR · trv · otp lifecycle) ผ่านกับ PG+Redis จริง
 
 ---
 
@@ -120,6 +122,7 @@
 
 | วันที่ | Task | ทำอะไร | ไฟล์ที่แตะ | verify |
 |---|---|---|---|---|
+| 2026-06-04 | otp service (INET SMS) | build (Workflow, worktree) port v1 INET CSGAPI SMS + OTP captcha/request/verify · config จาก `.env` (INET_SMS_*/OTP_*) · SHA-256 hash + constant-time compare + Redis abuse-control + phone-verify JWT · review 3 agents → แก้: repo span เลิก log เบอร์, ลบ dead `http_client` field | `services/otp/**` · `contracts/openapi/otp.yaml` · `contracts/db/migrations/otp/0001_init.sql` · `services/otp/.env.example` · root `Cargo.toml` (rand/sha2/subtle) | clippy -D warnings ✅ · test 42 hermetic + gated (otp_lifecycle, router) ผ่านกับ PG+Redis จริง · fmt ✅ |
 | 2026-06-04 | identity + booking review fixes | แก้ตาม 3 review agents: **trv force-revoke-all** (`shared::auth` JwtClaims.trv + AuthUser เช็ค Redis `user_trv` → ปิด v1 risk #1) · booking **IDOR** ownership check · DUMMY_HASH LazyLock จริง · logout redis log · hours cap · identity handler spans · +regression test (IDOR 403, trv stale) · re-review: security ✅ + code-reviewer block cleared | `packages/shared-rust/src/auth.rs` · `services/identity/src/{api,repo,state,events,models}` · `services/booking/src/{api,repo}/mod.rs` | clippy -D warnings ✅ · test 97 hermetic + gated (booking 18 IDOR/outbox, shared 35 trv) ผ่านกับ PG+Redis จริง · fmt ✅ |
 | 2026-06-04 | identity + booking slices (ขนาน) | สร้าง 2 vertical slice ขนานกันด้วย Workflow (worktree แยก): **identity** (login/refresh-rotation+reuse/logout/me/revoke-all + user.compromised consumer) + **booking** (state machine + 8 endpoints + transactional outbox + relay → emit `pguard.events.booking.*`) · cherry-pick เข้า `feat/identity-booking` | `services/identity/**` · `services/booking/**` · `contracts/openapi/{identity,booking}.yaml` · `contracts/db/migrations/{identity,booking}/0001_init.sql` · root `Cargo.toml` (sqlx json) | cargo build/clippy -D warnings/test ✅ · integration verify รวม 97/0 |
 | 2026-06-04 | §2.4 E2E proof (NATS) | พิสูจน์ event bus end-to-end กับ infra จริง: nats-server JetStream (brew, เลี่ยง Docker Hub throttle) + Postgres + Redis · apply migration จริง · รัน consumer · publish job_accepted → consume → 1 log; publish ซ้ำ → dedupe (คง 1); id ใหม่ → 2 · DATABASE_URL-gated real-DB idempotency test ผ่าน · เก็บ publisher example | (รันอย่างเดียว ไม่แก้ไฟล์ app) · ad-hoc containers/procs ถูกลบหมดแล้ว | logs: `handle_event{event_id,correlation_id}` + `duplicate event; skipped` · DB row count 1→1→2 |

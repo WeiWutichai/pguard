@@ -293,7 +293,6 @@ mod tests {
             },
             jwt_config,
             sms: Arc::new(NoopSender),
-            http_client: reqwest::Client::new(),
         }
     }
 
