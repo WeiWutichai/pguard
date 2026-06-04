@@ -193,6 +193,7 @@ pub enum Processed {
 /// Atomically claim `event_id` and, if newly claimed and `plan` is `Some`, insert the
 /// notification log — both in one transaction. Idempotent: a redelivered `event_id`
 /// returns [`Processed::Duplicate`] and writes nothing.
+#[tracing::instrument(skip(db, plan), fields(event_id = %event_id, event_type = %event_type))]
 pub async fn process_event(
     db: &PgPool,
     event_id: Uuid,

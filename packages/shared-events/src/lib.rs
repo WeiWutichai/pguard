@@ -43,7 +43,7 @@ impl<T> EventEnvelope<T> {
 pub mod topics {
     // booking context
     pub const BOOKING_JOB_ACCEPTED: &str = "pguard.events.booking.job_accepted";
-    pub const BOOKING_JOB_DECLINED: &str = "pguard.events.booking.declined";
+    pub const BOOKING_DECLINED: &str = "pguard.events.booking.declined";
     pub const BOOKING_CANCELLED: &str = "pguard.events.booking.cancelled";
     pub const BOOKING_COMPLETED: &str = "pguard.events.booking.completed";
     pub const BOOKING_GUARD_EN_ROUTE: &str = "pguard.events.booking.guard_en_route";

@@ -74,7 +74,7 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "เจ้าหน้าที่ตอบรับแล้ว",
             "เจ้าหน้าที่ตอบรับงานของคุณแล้ว",
         )),
-        topics::BOOKING_JOB_DECLINED => Some(make(
+        topics::BOOKING_DECLINED => Some(make(
             uuid_field(payload, "customer_id")?,
             Some("customer"),
             NotificationType::System,

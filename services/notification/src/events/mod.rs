@@ -4,6 +4,7 @@
 
 use futures::StreamExt;
 use serde_json::Value;
+use tracing::Instrument;
 
 use shared::error::AppError;
 use shared_events::EventEnvelope;
@@ -83,11 +84,24 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
     Ok(())
 }
 
-/// Parse one envelope, dedupe + persist atomically, then push (best-effort).
+/// Parse one envelope, then process it inside a span carrying the event identity +
+/// `correlation_id` so booking→NATS→notification logs/traces stitch together. (OTLP
+/// export to the collector is wired in the observability follow-up; the spans exist now.)
 async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> {
     let envelope: EventEnvelope<Value> = serde_json::from_slice(payload)
         .map_err(|e| AppError::BadRequest(format!("invalid event envelope: {e}")))?;
 
+    let span = tracing::info_span!(
+        "notification.handle_event",
+        event_type = %envelope.event_type,
+        event_id = %envelope.event_id,
+        correlation_id = %envelope.correlation_id,
+    );
+    process(state, envelope).instrument(span).await
+}
+
+/// Dedupe + persist atomically, then push (best-effort). Runs inside the event span.
+async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(), AppError> {
     let plan = domain::plan_for_event(&envelope.event_type, &envelope.payload);
 
     match repo::process_event(
@@ -112,12 +126,8 @@ async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> 
                     .await?;
             }
         }
-        Processed::Ignored => {
-            tracing::debug!(event = %envelope.event_type, "no notification mapping; marked processed")
-        }
-        Processed::Duplicate => {
-            tracing::debug!(event_id = %envelope.event_id, "duplicate event; skipped")
-        }
+        Processed::Ignored => tracing::debug!("no notification mapping; marked processed"),
+        Processed::Duplicate => tracing::debug!("duplicate event; skipped"),
     }
     Ok(())
 }
