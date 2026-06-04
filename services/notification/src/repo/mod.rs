@@ -242,3 +242,88 @@ pub async fn process_event(
     tx.commit().await?;
     Ok(outcome)
 }
+
+#[cfg(test)]
+mod db_tests {
+    use super::*;
+    use crate::domain;
+    use serde_json::json;
+    use shared_events::topics;
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
+    use uuid::Uuid;
+
+    /// Real-Postgres integration test: proves the consumer's atomic dedupe end-to-end
+    /// (runtime sqlx + `processed_events` PK + same-tx insert). No-op unless
+    /// `DATABASE_URL` is set, so `cargo test` stays hermetic. Run against a migrated DB:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-notification --  process_event_is_idempotent_against_real_db --nocapture
+    #[tokio::test]
+    async fn process_event_is_idempotent_against_real_db() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let event_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let payload = json!({
+            "customer_id": customer_id,
+            "guard_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+        });
+        let plan = domain::plan_for_event(topics::BOOKING_JOB_ACCEPTED, &payload).expect("maps");
+
+        // First delivery → Created.
+        let first = process_event(&pool, event_id, topics::BOOKING_JOB_ACCEPTED, Some(&plan))
+            .await
+            .expect("process #1");
+        assert_eq!(
+            first,
+            Processed::Created(customer_id),
+            "first delivery creates"
+        );
+
+        // Redelivery (same event_id) → Duplicate, writes nothing.
+        let second = process_event(&pool, event_id, topics::BOOKING_JOB_ACCEPTED, Some(&plan))
+            .await
+            .expect("process #2");
+        assert_eq!(second, Processed::Duplicate, "redelivery deduped");
+
+        // Exactly one log row + one ledger row despite two deliveries.
+        let (logs,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM notification.notification_logs WHERE user_id = $1",
+        )
+        .bind(customer_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count logs");
+        let (claims,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM notification.processed_events WHERE event_id = $1",
+        )
+        .bind(event_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count claims");
+        assert_eq!(
+            logs, 1,
+            "exactly one notification logged for two deliveries"
+        );
+        assert_eq!(claims, 1, "event claimed exactly once");
+
+        // Dev-DB hygiene: remove what this test inserted.
+        let _ = sqlx::query("DELETE FROM notification.notification_logs WHERE user_id = $1")
+            .bind(customer_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM notification.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+    }
+}
