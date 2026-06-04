@@ -1,34 +1,94 @@
-//! pguard profile service — guard/customer profiles, documents (split from v1 auth).
+//! pguard profile service — guard/customer profiles + approval (split from v1 auth).
 //!
-//! v2 scaffold stub: exposes only /healthz. Real handlers adopt the per-service
-//! domain layering (api / domain / repo / events) and shared::{config, auth, error,
-//! service_jwt} per CLAUDE.md. No Provider-style globals; no cross-schema writes —
-//! cross-service state changes go through the NATS event bus (shared-events).
+//! AuthUser-gated CRUD: a registered, logged-in user upserts/reads their own profile; an
+//! admin reviews + approves/rejects guard onboarding. Bank account numbers are masked on
+//! owner reads (PDPA §7); admin endpoints return the full value.
+//!
+//! This file is wiring only — config, db pool, redis conn, router, CORS, telemetry. Logic
+//! lives in `domain/` (pure mask + approval transition + validators), `repo/` (DB), and
+//! `api/` (transport). No /internal/* and no event bus in this slice (Postgres-only).
 
-use axum::routing::get;
+mod api;
+mod domain;
+mod models;
+mod repo;
+mod state;
+
+use anyhow::Context;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use serde_json::{json, Value};
+
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
+use shared::db::create_pool;
+use shared::redis_client::create_redis_client;
+
+use crate::state::AppState;
 
 const SERVICE_NAME: &str = "profile";
-const VERSION: &str = env!("CARGO_PKG_VERSION");
 const PORT: u16 = 3002;
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     observability::init_telemetry(SERVICE_NAME);
 
-    let app = Router::new().route("/healthz", get(healthz));
+    // --- config (fail-fast at startup) ---
+    let db_config = DatabaseConfig::from_env()?;
+    let redis_config = RedisConfig::from_env()?;
+    let jwt_config = JwtConfig::from_env()?;
+
+    // --- infrastructure ---
+    let db = create_pool(&db_config).await?;
+    let redis_client = create_redis_client(&redis_config.cache_url)?;
+    let redis_conn = redis_client
+        .get_multiplexed_tokio_connection()
+        .await
+        .context("Redis cache connection")?;
+
+    let state = AppState {
+        db,
+        redis_conn,
+        jwt_config,
+    };
+
+    // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route(
+            "/profile/guard",
+            post(api::upsert_guard_profile::<AppState>).put(api::update_guard_profile::<AppState>),
+        )
+        .route(
+            "/profile/customer",
+            post(api::upsert_customer_profile::<AppState>),
+        )
+        .route("/profile/me", get(api::get_my_profile::<AppState>))
+        .route(
+            "/admin/guard-profiles",
+            get(api::admin_list_guard_profiles::<AppState>),
+        )
+        .route(
+            "/admin/guard-profiles/{user_id}/approve",
+            post(api::admin_approve_guard::<AppState>),
+        )
+        .route(
+            "/admin/guard-profiles/{user_id}/reject",
+            post(api::admin_reject_guard::<AppState>),
+        )
+        .layer(shared::config::build_cors_layer())
+        .with_state(state);
 
     let addr = format!("0.0.0.0:{PORT}");
-    // startup-only expect — CLAUDE.md forbids unwrap/expect only in the request path.
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("failed to bind health listener");
-    tracing::info!(service = SERVICE_NAME, %addr, "listening");
-    axum::serve(listener, app).await.expect("server error");
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!(service = SERVICE_NAME, %addr, "profile-service listening");
+    axum::serve(listener, app).await?;
+    Ok(())
 }
 
 /// Liveness/readiness probe.
-async fn healthz() -> Json<Value> {
-    Json(json!({ "status": "ok", "service": SERVICE_NAME, "version": VERSION }))
+async fn healthz() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "status": "ok",
+        "service": SERVICE_NAME,
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }

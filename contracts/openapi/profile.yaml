@@ -1,0 +1,384 @@
+openapi: 3.1.0
+info:
+  title: pguard — Profile Service API
+  version: 0.1.0
+  description: |
+    Guard + customer profiles and the guard onboarding-approval lifecycle (source of truth
+    for this service — codegen produces the Rust handler stubs/types, the Dart client, and
+    the TS client). Split out of the v1 `../guard-dispatch/services/auth` god-service.
+
+    Every endpoint here is **AuthUser-gated** (a registered, logged-in user — Bearer access
+    JWT, or the `access_token` cookie for web). There is NO phone-verify / profile-token
+    flow in this slice; that registration step is future identity work.
+
+    **PDPA — bank account masking (security-reviewer §7):** on the owner-facing read
+    (`GET /profile/me`) the `account_number` is returned MASKED to its last 4 characters.
+    The admin onboarding endpoints (`GET /admin/guard-profiles`) return the FULL value, as
+    the reviewer needs it to verify payout details.
+
+    **Role gates (403):** `POST/PUT /profile/guard` require role `guard`; `POST
+    /profile/customer` requires role `customer`; all `/admin/*` endpoints require role
+    `admin`. A wrong-role caller receives a generic 403 that names the REQUIRED role, never
+    the caller's (no role enumeration).
+
+    Client-facing paths are served behind the gateway under the `/v1` prefix (CLAUDE.md
+    "API versioning"). Success responses use the standard `{ success, data }` envelope;
+    errors use `ErrorBody`.
+
+    **Documents:** the schema carries nullable document-key columns (id card, security
+    license, training cert, criminal check, driver license, passbook photo), but document
+    UPLOAD is a deferred follow-up — there are no upload endpoints in this slice.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3002
+    description: Local dev (profile-service direct)
+
+tags:
+  - name: Profile
+    description: The caller's own guard/customer profile (create, update, read)
+  - name: Admin
+    description: Guard onboarding review (admin role only)
+
+paths:
+  /profile/guard:
+    post:
+      tags: [Profile]
+      summary: Create or update the caller's guard profile (role=guard)
+      description: |
+        Upserts the caller's guard profile. On first create the `approval_status` is set to
+        `pending`; a later upsert by the same guard edits the fields but NEVER changes the
+        approval decision (only an admin does, via the approve/reject endpoints). The
+        read-back masks `account_number` (PDPA). Requires role `guard` (else 403).
+      operationId: upsertGuardProfile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpsertGuardProfileRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/GuardProfileOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Profile]
+      summary: Update the caller's EXISTING guard profile (role=guard)
+      description: |
+        Updates an existing guard profile's editable fields. Unlike `POST` this never
+        inserts: a caller with no profile yet receives 404. Requires role `guard`. The
+        read-back masks `account_number` (PDPA).
+      operationId: updateGuardProfile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpsertGuardProfileRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/GuardProfileOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /profile/customer:
+    post:
+      tags: [Profile]
+      summary: Create or update the caller's customer profile (role=customer)
+      description: |
+        Upserts the caller's customer profile (minimal in this slice: full name + address).
+        Requires role `customer` (else 403).
+      operationId: upsertCustomerProfile
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpsertCustomerProfileRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/CustomerProfileOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /profile/me:
+    get:
+      tags: [Profile]
+      summary: The caller's own profile (account number MASKED)
+      description: |
+        Returns the caller's profile, tagged by `kind` (`guard` or `customer`) so the
+        client need not guess. For a guard the `account_number` is MASKED to its last 4
+        characters (PDPA §7). A caller with no profile (or an admin, who has no self-profile
+        in this slice) receives 404.
+      operationId: getMyProfile
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's profile (masked account number for guards)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/MyProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/guard-profiles:
+    get:
+      tags: [Admin]
+      summary: List guard profiles for onboarding review (role=admin; FULL bank details)
+      description: |
+        Lists guard profiles, newest first, optionally filtered by `approval_status`. Admin
+        only (else 403). **Returns the FULL, UN-masked `account_number`** — the reviewer
+        needs it to verify payout details.
+      operationId: adminListGuardProfiles
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: approval_status
+          in: query
+          required: false
+          description: Filter by status. An unrecognized value returns 400.
+          schema: { $ref: '#/components/schemas/ApprovalStatus' }
+      responses:
+        '200':
+          description: Matching guard profiles (FULL account numbers)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/GuardProfile' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/guard-profiles/{user_id}/approve:
+    post:
+      tags: [Admin]
+      summary: Approve a pending guard profile (role=admin)
+      description: |
+        Moves the guard profile `pending → approved` via the pure approval transition.
+        Approved is terminal: re-approving or moving an already-finalized profile returns
+        409. Admin only (else 403). Returns the updated profile (FULL account number).
+      operationId: adminApproveGuard
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/GuardProfileFullOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/guard-profiles/{user_id}/reject:
+    post:
+      tags: [Admin]
+      summary: Reject a pending guard profile (role=admin)
+      description: |
+        Moves the guard profile `pending → rejected` via the pure approval transition. May
+        carry an optional `reason`. Rejected is terminal (409 on a finalized profile). Admin
+        only (else 403). Returns the updated profile (FULL account number).
+      operationId: adminRejectGuard
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RejectRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/GuardProfileFullOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+
+  responses:
+    GuardProfileOk:
+      description: The caller's guard profile (account number MASKED to last 4).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GuardProfile' }
+    GuardProfileFullOk:
+      description: The guard profile (FULL account number — admin response).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GuardProfile' }
+    CustomerProfileOk:
+      description: The caller's customer profile.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CustomerProfile' }
+    BadRequest:
+      description: Validation error (bad field value, unknown filter)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: Authenticated but wrong role for this endpoint
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Illegal approval transition (target state not reachable)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    ApprovalStatus:
+      type: string
+      enum: [pending, approved, rejected]
+      description: Guard onboarding approval lifecycle (mirrors shared::models::ApprovalStatus).
+
+    UpsertGuardProfileRequest:
+      type: object
+      description: All fields optional — a guard fills the profile across an onboarding flow.
+      properties:
+        gender: { type: string, nullable: true }
+        date_of_birth: { type: string, format: date, nullable: true, description: 'ISO YYYY-MM-DD.' }
+        years_of_experience: { type: integer, format: int32, nullable: true, minimum: 0, maximum: 80 }
+        previous_workplace: { type: string, nullable: true }
+        bank_name: { type: string, nullable: true }
+        account_number: { type: string, nullable: true, description: 'Stored in full; masked on owner reads (PDPA).' }
+        account_name: { type: string, nullable: true }
+
+    UpsertCustomerProfileRequest:
+      type: object
+      properties:
+        full_name: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+
+    RejectRequest:
+      type: object
+      properties:
+        reason: { type: string, nullable: true, description: 'Optional context for the rejection.' }
+
+    GuardProfile:
+      type: object
+      required: [user_id, approval_status]
+      properties:
+        user_id: { type: string, format: uuid }
+        gender: { type: string, nullable: true }
+        date_of_birth: { type: string, format: date, nullable: true }
+        years_of_experience: { type: integer, format: int32, nullable: true }
+        previous_workplace: { type: string, nullable: true }
+        bank_name: { type: string, nullable: true }
+        account_number:
+          type: string
+          nullable: true
+          description: |
+            MASKED to its last 4 characters on the owner read (`GET /profile/me`,
+            `POST/PUT /profile/guard`); FULL on the admin endpoints.
+        account_name: { type: string, nullable: true }
+        approval_status: { $ref: '#/components/schemas/ApprovalStatus' }
+
+    CustomerProfile:
+      type: object
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        full_name: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+
+    MyProfile:
+      oneOf:
+        - $ref: '#/components/schemas/MyGuardProfile'
+        - $ref: '#/components/schemas/MyCustomerProfile'
+      discriminator:
+        propertyName: kind
+      description: |
+        The caller's own profile, tagged by `kind`. A guard sees `MyGuardProfile` (masked
+        account number); a customer sees `MyCustomerProfile`.
+
+    MyGuardProfile:
+      allOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [guard] }
+        - $ref: '#/components/schemas/GuardProfile'
+
+    MyCustomerProfile:
+      allOf:
+        - type: object
+          required: [kind]
+          properties:
+            kind: { type: string, enum: [customer] }
+        - $ref: '#/components/schemas/CustomerProfile'
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: FORBIDDEN }
+        message: { type: string }
