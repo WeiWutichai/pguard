@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frontend ↔ Backend Permission Mismatches — pguard</title>
+<style>
+  :root {
+    --deep-forest: #0E5238;
+    --emerald: #1FA971;
+    --emerald-soft: #C9EEDD;
+    --amber: #F59E0B;
+    --amber-soft: #FEF0C7;
+    --rose: #E5484D;
+    --rose-soft: #FCE4E6;
+    --slate-50: #F8FAFC;
+    --slate-100: #F1F5F9;
+    --slate-200: #E2E8F0;
+    --slate-300: #CBD5E1;
+    --slate-500: #64748B;
+    --slate-700: #334155;
+    --slate-900: #0F172A;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "IBM Plex Sans Thai", "Noto Sans Thai", "Segoe UI", sans-serif;
+    background: var(--slate-50);
+    color: var(--slate-900);
+    margin: 0;
+    padding: 0 0 64px 0;
+    line-height: 1.55;
+  }
+  header.hero {
+    background: linear-gradient(135deg, #92400E 0%, var(--amber) 100%);
+    color: white;
+    padding: 48px 32px 40px 32px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .hero-inner {
+    max-width: 1280px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .hero-icon {
+    width: 56px; height: 56px;
+    background: rgba(255,255,255,0.18);
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 28px;
+    font-weight: 700;
+  }
+  h1 { font-size: 26px; margin: 0 0 6px 0; font-weight: 700; }
+  .hero-sub { font-size: 14px; opacity: 0.92; margin: 0; }
+  .hero-meta {
+    display: flex; gap: 12px; flex-wrap: wrap;
+    font-size: 12px;
+  }
+  .hero-meta span {
+    background: rgba(255,255,255,0.16);
+    padding: 5px 10px;
+    border-radius: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  main {
+    max-width: 1280px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+
+  .summary-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 36px;
+  }
+  .stat {
+    background: white;
+    border: 1px solid var(--slate-200);
+    border-radius: 12px;
+    padding: 16px;
+  }
+  .stat-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate-500);
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .stat-value {
+    font-size: 24px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat.medium .stat-value { color: var(--amber); }
+  .stat.low .stat-value { color: var(--emerald); }
+
+  .mismatch {
+    background: white;
+    border: 1px solid var(--slate-200);
+    border-radius: 14px;
+    margin-bottom: 28px;
+    overflow: hidden;
+  }
+  .mismatch-head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--slate-200);
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .severity-badge {
+    flex-shrink: 0;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+  .severity-badge.medium {
+    background: var(--amber-soft);
+    color: #92400E;
+    border: 1px solid var(--amber);
+  }
+  .severity-badge.low {
+    background: var(--emerald-soft);
+    color: var(--deep-forest);
+    border: 1px solid var(--emerald);
+  }
+  .mismatch-title { flex: 1; }
+  .mismatch-title h2 {
+    margin: 0 0 6px 0;
+    font-size: 18px;
+    color: var(--slate-900);
+  }
+  .mismatch-title .id {
+    color: var(--slate-500);
+    font-weight: 500;
+    font-size: 14px;
+  }
+  .mismatch-title .location {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--slate-500);
+    background: var(--slate-50);
+    padding: 4px 8px;
+    border-radius: 6px;
+    display: inline-block;
+    margin-top: 4px;
+  }
+
+  .mismatch-body {
+    padding: 0;
+  }
+  .mismatch-row {
+    display: grid;
+    grid-template-columns: 140px 1fr;
+    padding: 14px 24px;
+    border-bottom: 1px solid var(--slate-100);
+    align-items: start;
+    gap: 16px;
+  }
+  .mismatch-row:last-child { border-bottom: none; }
+  .mismatch-row .label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--slate-500);
+    font-weight: 600;
+    padding-top: 2px;
+  }
+  .mismatch-row .content { font-size: 14px; color: var(--slate-700); }
+  .mismatch-row code {
+    background: var(--slate-100);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 12px;
+    color: var(--slate-900);
+  }
+
+  .diff {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .diff-side {
+    border-radius: 8px;
+    padding: 12px;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .diff-before {
+    background: var(--rose-soft);
+    border: 1px solid #F8B4B4;
+    color: #7F1D1D;
+  }
+  .diff-after {
+    background: var(--emerald-soft);
+    border: 1px solid #86E3C0;
+    color: #064E3B;
+  }
+  .diff-label {
+    font-family: -apple-system, sans-serif;
+    font-weight: 700;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 6px;
+  }
+  .diff-before .diff-label { color: var(--rose); }
+  .diff-after .diff-label { color: var(--emerald); }
+
+  .fix-checklist {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  .fix-checklist li {
+    padding: 6px 0;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .fix-checklist li::before {
+    content: "▸";
+    color: var(--emerald);
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+
+  section.priority {
+    background: linear-gradient(135deg, var(--emerald-soft) 0%, #B0E4CD 100%);
+    border: 1px solid var(--emerald);
+    border-radius: 14px;
+    padding: 24px;
+    margin-top: 32px;
+  }
+  section.priority h2 {
+    margin: 0 0 12px 0;
+    color: var(--deep-forest);
+    font-size: 18px;
+  }
+  section.priority ol {
+    margin: 0;
+    padding-left: 22px;
+    font-size: 14px;
+    color: var(--slate-700);
+  }
+  section.priority li {
+    padding: 4px 0;
+  }
+  section.priority li strong { color: var(--deep-forest); }
+
+  footer {
+    max-width: 1280px;
+    margin: 32px auto 0 auto;
+    padding: 24px 32px;
+    font-size: 12px;
+    color: var(--slate-500);
+    border-top: 1px solid var(--slate-200);
+  }
+  footer code {
+    background: var(--slate-100);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+  a { color: var(--deep-forest); }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-icon">⚠</div>
+    <div style="flex:1; min-width: 280px;">
+      <h1>Frontend ↔ Backend Permission Mismatches</h1>
+      <p class="hero-sub">3 active mismatches between documented role intent (CLAUDE.md) and source code behavior</p>
+    </div>
+    <div class="hero-meta">
+      <span>📅 2026-06-03</span>
+      <span>📄 v1.0</span>
+      <span>📂 v2-audit/role-access-audit-raw.md</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <div class="summary-strip">
+    <div class="stat medium">
+      <div class="stat-label">Total mismatches</div>
+      <div class="stat-value">3</div>
+    </div>
+    <div class="stat medium">
+      <div class="stat-label">Medium severity</div>
+      <div class="stat-value">1</div>
+    </div>
+    <div class="stat low">
+      <div class="stat-label">Low severity</div>
+      <div class="stat-value">2</div>
+    </div>
+    <div class="stat low">
+      <div class="stat-label">Estimated fix effort</div>
+      <div class="stat-value">~1 day</div>
+    </div>
+  </div>
+
+  <!-- Mismatch #1 -->
+  <article class="mismatch">
+    <div class="mismatch-head">
+      <span class="severity-badge low">Low · mitigated</span>
+      <div class="mismatch-title">
+        <h2><span class="id">#1 ·</span> Guard dashboard has no role check in <code>initState()</code></h2>
+        <span class="location">frontend/mobile/lib/screens/guard/guard_dashboard_screen.dart:13-18</span>
+      </div>
+    </div>
+    <div class="mismatch-body">
+      <div class="mismatch-row">
+        <div class="label">Issue</div>
+        <div class="content"><code>GuardDashboardScreen.initState()</code> does <strong>not</strong> verify that <code>AuthProvider.role == 'guard'</code> before mounting the bottom-tab UI. The screen assumes its caller has done the check.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Documented intent</div>
+        <div class="content">CLAUDE.md treats guard dashboard as <strong>guard-only</strong>. Should reject other roles.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Actual behavior</div>
+        <div class="content">Trusts caller. Code-path: <code>main.dart</code> home selector branches on <code>auth.role</code> — so first-mount is safe. <strong>Deep-link / direct <code>Navigator.push</code> bypasses the check</strong> (e.g. notification tap, future deep-link, route restoration after suspended app).</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Why it's LOW</div>
+        <div class="content">Currently no production code path pushes <code>GuardDashboardScreen</code> directly — every entry funnels through <code>main.dart</code>. But the safety net is implicit; one future change can break it silently.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Recommended fix</div>
+        <div class="content">
+          <div class="diff">
+            <div class="diff-side diff-before">
+<span class="diff-label">Before</span>
+@override
+void initState() {
+  super.initState();
+  _ensureGpsServiceStarted();
+}</div>
+            <div class="diff-side diff-after">
+<span class="diff-label">After</span>
+@override
+void initState() {
+  super.initState();
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    final auth = context.read&lt;AuthProvider&gt;();
+    if (auth.role != 'guard') {
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) =&gt; RoleSelectionScreen(
+          phone: auth.phone ?? '',
+        )),
+        (route) =&gt; false,
+      );
+      return;
+    }
+    _ensureGpsServiceStarted();
+  });
+}</div>
+          </div>
+        </div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Tests to add</div>
+        <div class="content">
+          <ul class="fix-checklist">
+            <li>Widget test: pump <code>GuardDashboardScreen</code> with <code>AuthProvider</code> set to role='customer' → expect <code>RoleSelectionScreen</code> in tree after frame.</li>
+            <li>Widget test: pump with role='guard' → expect bottom tab bar rendered.</li>
+            <li>Widget test: pump with role=null (unauthenticated) → expect <code>RoleSelectionScreen</code>.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <!-- Mismatch #2 -->
+  <article class="mismatch">
+    <div class="mismatch-head">
+      <span class="severity-badge low">Low</span>
+      <div class="mismatch-title">
+        <h2><span class="id">#2 ·</span> <code>GET /available-guards</code> allows any authenticated user (should be customer-only)</h2>
+        <span class="location">services/booking/src/handlers.rs — <code>available_guards()</code> handler</span>
+      </div>
+    </div>
+    <div class="mismatch-body">
+      <div class="mismatch-row">
+        <div class="label">Issue</div>
+        <div class="content">Handler accepts <code>AuthUser</code> extractor but does not check role. Any authenticated user (admin/guard/customer) can call.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Documented intent</div>
+        <div class="content">CLAUDE.md describes this as <strong>customer discovery</strong> — used by customer booking screen to find nearby available guards.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Risk</div>
+        <div class="content">A guard could enumerate other available guards (competitive intel — knowing who else is online and their distance). Not a data exfiltration in classical sense (data is intended to be visible to customers), but the role boundary is wrong.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Why it's LOW</div>
+        <div class="content">No PII leak (only public profile + distance). But it's the kind of inconsistency that compounds — if more discovery endpoints follow this pattern, attack surface grows.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Recommended fix</div>
+        <div class="content">
+          <div class="diff">
+            <div class="diff-side diff-before">
+<span class="diff-label">Before</span>
+pub async fn available_guards(
+    State(state): State&lt;Arc&lt;AppState&gt;&gt;,
+    user: AuthUser,
+    Query(params): Query&lt;AvailableGuardsQuery&gt;,
+) -&gt; Result&lt;Json&lt;Vec&lt;AvailableGuardResponse&gt;&gt;&gt; {
+    // ... fetch guards
+}</div>
+            <div class="diff-side diff-after">
+<span class="diff-label">After</span>
+pub async fn available_guards(
+    State(state): State&lt;Arc&lt;AppState&gt;&gt;,
+    user: AuthUser,
+    Query(params): Query&lt;AvailableGuardsQuery&gt;,
+) -&gt; Result&lt;Json&lt;Vec&lt;AvailableGuardResponse&gt;&gt;&gt; {
+    if user.role != "customer" {
+        return Err(AppError::Forbidden);
+    }
+    // ... fetch guards
+}</div>
+          </div>
+        </div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Tests to add</div>
+        <div class="content">
+          <ul class="fix-checklist">
+            <li>Integration test: <code>GET /available-guards</code> as guard JWT → 403</li>
+            <li>Integration test: <code>GET /available-guards</code> as admin JWT → 403 (or 200 if we decide admin should see; doc the decision)</li>
+            <li>Integration test: <code>GET /available-guards</code> as customer JWT → 200 + non-empty list</li>
+          </ul>
+        </div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Decision needed</div>
+        <div class="content">Should <strong>admin</strong> also be able to see <code>/available-guards</code>? Pro: admin's live map shows online guards; might want to test booking workflow. Con: admin has dedicated <code>/admin/operations</code> and <code>/locations/all</code>. Recommended: <strong>customer-only</strong> — admin uses dedicated endpoints.</div>
+      </div>
+    </div>
+  </article>
+
+  <!-- Mismatch #3 -->
+  <article class="mismatch">
+    <div class="mismatch-head">
+      <span class="severity-badge medium">Medium · highest priority</span>
+      <div class="mismatch-title">
+        <h2><span class="id">#3 ·</span> <code>ChatListScreen</code> accepts <code>actingRole</code> param without validation</h2>
+        <span class="location">frontend/mobile/lib/screens/chat_list_screen.dart + chat_screen.dart</span>
+      </div>
+    </div>
+    <div class="mismatch-body">
+      <div class="mismatch-row">
+        <div class="label">Issue</div>
+        <div class="content">Both screens accept a constructor param <code>String? actingRole</code> that is passed to <code>ChatProvider.fetchConversations(role:)</code> and <code>ChatProvider.sendMessage(senderRole:)</code>. The screen does not verify that <code>actingRole</code> is one of <code>'guard' | 'customer'</code> nor that it matches the authenticated user's role.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Documented intent</div>
+        <div class="content">CLAUDE.md states "Chat scoped by acting role" — guard dashboard passes <code>actingRole: 'guard'</code>, hirer dashboard passes <code>actingRole: 'customer'</code>. The role determines which counterpart name and unread counts are shown.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Risk (why MEDIUM)</div>
+        <div class="content">A custom client (or a malicious build) could pass an arbitrary <code>actingRole</code> string. The backend trusts the query param <code>?role=guard</code> on <code>GET /conversations</code> — it does NOT cross-check against the JWT's <code>role</code> claim. So a customer JWT with <code>?role=guard</code> would return guard-side conversation list (still scoped by participant — they only see their own — but in the wrong "perspective"). Not catastrophic since participant check still applies, but the boundary is sloppy.</div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Two-layer fix (both required)</div>
+        <div class="content">
+          <strong>Frontend (mobile):</strong>
+          <div class="diff">
+            <div class="diff-side diff-before">
+<span class="diff-label">Before — chat_list_screen.dart</span>
+class ChatListScreen extends StatefulWidget {
+  final String? actingRole;
+  // accepted as-is
+  const ChatListScreen({this.actingRole});
+}</div>
+            <div class="diff-side diff-after">
+<span class="diff-label">After</span>
+class ChatListScreen extends StatefulWidget {
+  final String actingRole;
+  const ChatListScreen({required this.actingRole})
+      : assert(
+          actingRole == 'guard' || actingRole == 'customer',
+          'actingRole must be guard or customer',
+        );
+}
+
+// in initState:
+final auth = context.read&lt;AuthProvider&gt;();
+final canActAs = auth.role == widget.actingRole ||
+  (widget.actingRole == 'customer' &amp;&amp;
+   auth.customerApprovalStatus == 'approved');
+if (!canActAs) {
+  Navigator.pop(context);
+  return;
+}</div>
+          </div>
+          <strong>Backend (chat service):</strong>
+          <div class="diff" style="margin-top:10px;">
+            <div class="diff-side diff-before">
+<span class="diff-label">Before — list_conversations</span>
+pub async fn list_conversations(
+    user: AuthUser,
+    Query(q): Query&lt;ListQuery&gt;,
+) -&gt; Result&lt;Json&lt;Vec&lt;Conversation&gt;&gt;&gt; {
+    let acting_role = q.role
+      .unwrap_or_else(|| user.role.clone());
+    // trusts query param
+}</div>
+            <div class="diff-side diff-after">
+<span class="diff-label">After</span>
+pub async fn list_conversations(
+    user: AuthUser,
+    Query(q): Query&lt;ListQuery&gt;,
+) -&gt; Result&lt;Json&lt;Vec&lt;Conversation&gt;&gt;&gt; {
+    let acting_role = match (
+        q.role.as_deref(), user.role.as_str()
+    ) {
+        (None, r) =&gt; r.to_string(),
+        (Some(r), "admin") =&gt; r.to_string(),  // admin can act as either
+        (Some(r), user_r) if r == user_r =&gt;
+            r.to_string(),
+        // user with single role can't impersonate the other
+        _ =&gt; return Err(AppError::Forbidden),
+    };
+    // ...
+}</div>
+          </div>
+        </div>
+      </div>
+      <div class="mismatch-row">
+        <div class="label">Tests to add</div>
+        <div class="content">
+          <ul class="fix-checklist">
+            <li>Widget test: <code>ChatListScreen(actingRole: 'admin')</code> with assertion enabled → AssertionError (caught in debug).</li>
+            <li>Integration test: <code>GET /conversations?role=guard</code> with customer JWT → 403 (not 200).</li>
+            <li>Integration test: <code>GET /conversations?role=customer</code> with admin JWT → 200 (admin can act as either).</li>
+            <li>Integration test: <code>GET /conversations?role=guard</code> with guard JWT → 200.</li>
+            <li>Integration test: <code>GET /conversations</code> (no role param) with any JWT → defaults to user's own role, 200.</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </article>
+
+  <section class="priority">
+    <h2>Recommended fix order</h2>
+    <ol>
+      <li><strong>Mismatch #3 first</strong> — it's MEDIUM and has a real backend gap. Fix both frontend assertion and backend cross-check together (single PR).</li>
+      <li><strong>Mismatch #2 second</strong> — single-line backend check + 3 integration tests. ~30 minutes.</li>
+      <li><strong>Mismatch #1 last</strong> — currently mitigated by app-root routing, but adding the check is defensive and trivial. Add when touching the file for any reason. ~15 minutes.</li>
+    </ol>
+    <p style="margin: 14px 0 0 0; font-size: 13px;">
+      <strong>Also fix while you're there (audit found, not separate mismatches):</strong>
+      add role check to <code>LiveMapScreen.initState()</code> (should reject guards/unauthenticated),
+      and add explicit role check to <code>POST /payments</code> (currently relies on inference).
+    </p>
+  </section>
+
+</main>
+
+<footer>
+  Generated 2026-06-03 from <code>v2-audit/role-access-audit-raw.md</code> (Explore agent ground-truth audit).
+  Source of truth: <code>docs/ROLE_MATRIX.md</code>.
+  Companion: <code>docs/reviews/role-access-matrix.html</code>.
+  This is a review artifact — not production code. Apply the diffs above as actual code changes once approved.
+</footer>
+
+</body>
+</html>

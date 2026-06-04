@@ -1,9 +1,26 @@
 # pguard — Architecture Spec
 
 > **Real-time Security Guard Dispatch Platform** (Thai market) — v2 of guard-dispatch
-> **State:** Bootstrapping. v1 reference lives at `../guard-dispatch/`. Audit findings drive the v2 design.
+> **State:** v2 rebuild. The v1 system is a **separate, read-only reference** at `../guard-dispatch/`. Audit findings drive the v2 design.
 
 Keep this file ≤ 400 lines. Detailed rationale lives in `../guard-dispatch/v2-audit/` (don't inline it).
+
+---
+
+## Relationship to v1 (`../guard-dispatch/`) — READ THIS
+
+`guard-dispatch` is the **old v1 project**. It is a **reference only** and lives in a
+**separate sibling folder** (`../guard-dispatch/`), never inside this repo.
+
+✅ **Do:** read v1 to audit it, measure it (perf baseline), and **port logic into the
+clean v2** here — improving as you go. Cite the v1 path when you do (e.g.
+`../guard-dispatch/services/booking/src/handlers.rs`).
+
+❌ **Don't:** copy or move v1 source/infra (`services/ frontend/ database/ nginx/
+docker-compose*`) into `pguard/`. ❌ Don't edit anything under `../guard-dispatch/`
+(it is read-only). pguard re-implements v2 fresh; it does not absorb v1's tree.
+
+To work with both, open/mount the **two folders side by side** — do not merge them.
 
 ---
 
@@ -170,13 +187,24 @@ JetStream durable consumers — at-least-once delivery, idempotency keys on cons
 
 ---
 
+## Progress tracking (READ THIS)
+
+**`PROGRESS.md` (repo root) is the single source of truth for what's done.** At the **end of every task**, before reporting back, Claude Code MUST:
+
+1. Tick the task's checkbox in `PROGRESS.md` (`[ ]`→`[x]`; use `[~]` if started-but-blocked and note the blocker).
+2. Add one row to the **Completed log** table (date · task · what changed · files touched · how it was verified).
+3. Only mark `[x]` if the task's Definition of Done is met (built **and** verified — tests/clippy/analyze/diff as applicable).
+4. For UI changes: tell the user to reload the **Review Console** (`redesign-pguard/project/pguard/Review Console.html`) to re-check.
+
+The user checks `PROGRESS.md` to see progress — keep it current. The phase list below is the high-level mirror; `PROGRESS.md` holds the granular task state.
+
 ## Phase status
 
-Tracked in `../guard-dispatch/v2-audit/06-migration-plan.md`. Current state:
+High-level mirror of `PROGRESS.md`. Granular tasks + completed log live in `PROGRESS.md`. Current state:
 
-- ✅ Phase 1 — Audit (7 files in `../guard-dispatch/v2-audit/`)
-- 🟡 Phase 1 revisions (9 items) — pending Claude Code execution per `../guard-dispatch/audit-revisions.md`
-- ⏳ Phase 0.5 — Performance baseline + PDPA audit + cost baseline
+- ✅ Phase 1 — Audit (7 files in `v1-audit/` + `role-access-audit-raw.md`)
+- ✅ Phase 1 revisions (9/9 items applied to v1-audit/03,05,00,06)
+- ⏳ Phase 0.5 — Performance baseline + PDPA audit + cost baseline (brief in `audit-revisions.md` Part B)
 - ⏳ Phase 0 — Stabilize & safety net (tests + security quick-wins + cleanup)
 - ⏳ Phase 1 — Decouple notifications (event bus + service-auth)
 - ⏳ Phase 2 — Push-based mobile (WS replaces polling)
@@ -184,7 +212,7 @@ Tracked in `../guard-dispatch/v2-audit/06-migration-plan.md`. Current state:
 - ⏳ Phase 4 — Split auth + Flutter Riverpod migration
 - ⏳ Phase 5 — Scale & harden
 
-After Phase 0 cleanup completes inside `guard-dispatch/`, **rename to `pguard/`** (git history preserved). New scaffolding lives here from that point on.
+Phase 0 work happens inside `../guard-dispatch/` (v1 reference). After Phase 0 cleanup completes there, the v1 folder will be renamed to consolidate into pguard. Until then, pguard hosts: planning docs, audit findings, design output (Claude Design), role matrix, and the `.claude/` environment.
 
 ---
 
@@ -211,8 +239,11 @@ cd apps/mobile && flutter run
 - **Hooks:** `.claude/hooks/` — pre-tool blocks destructive bash; post-edit runs fmt/clippy/dart-analyze automatically
 - **Memory:** `.claude/agent-memory/` per-agent knowledge bases
 
-When stuck, reach for v1 audit:
-- Architecture questions → `../guard-dispatch/v2-audit/01-current-state.md`
-- "Why this pattern?" → `../guard-dispatch/v2-audit/05-recommendations.md`
-- "Will this regress?" → `../guard-dispatch/v2-audit/perf-baseline/results.md` (after Phase 0.5)
-- "Is this safe?" → `../guard-dispatch/v2-audit/03-security.md` top 15 risks
+When stuck, reach for v1 audit (now copied locally):
+- Architecture questions → `v1-audit/01-current-state.md`
+- "Why this pattern?" → `v1-audit/05-recommendations.md`
+- "Will this regress?" → `v1-audit/perf-baseline/results.md` (after Phase 0.5)
+- "Is this safe?" → `v1-audit/03-security.md` top 15 risks
+- Role permissions → `docs/ROLE_MATRIX.md` (source of truth) + `docs/reviews/*.html` (visual)
+- Phase brief → `pguard-brief.md`, audit revisions + Phase 0.5 → `audit-revisions.md`
+- Hi-fi design output → `redesign-pguard/project/pguard/` (40 HTML files + Coverage Matrix)

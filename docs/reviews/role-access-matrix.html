@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Role Access Matrix — guard-dispatch / pguard</title>
+<style>
+  :root {
+    --deep-forest: #0E5238;
+    --emerald: #1FA971;
+    --emerald-soft: #C9EEDD;
+    --amber: #F59E0B;
+    --amber-soft: #FEF0C7;
+    --rose: #E5484D;
+    --rose-soft: #FCE4E6;
+    --slate-50: #F8FAFC;
+    --slate-100: #F1F5F9;
+    --slate-200: #E2E8F0;
+    --slate-300: #CBD5E1;
+    --slate-400: #94A3B8;
+    --slate-500: #64748B;
+    --slate-700: #334155;
+    --slate-900: #0F172A;
+    --gray-state: #94A3B8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "IBM Plex Sans Thai", "Noto Sans Thai", "Segoe UI", sans-serif;
+    background: var(--slate-50);
+    color: var(--slate-900);
+    margin: 0;
+    padding: 0 0 64px 0;
+    line-height: 1.55;
+  }
+  header.hero {
+    background: linear-gradient(135deg, var(--deep-forest) 0%, #0a3d2a 100%);
+    color: white;
+    padding: 48px 32px 40px 32px;
+    box-shadow: 0 2px 12px rgba(0,0,0,0.06);
+  }
+  .hero-inner {
+    max-width: 1400px;
+    margin: 0 auto;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    flex-wrap: wrap;
+  }
+  .hero-icon {
+    width: 56px; height: 56px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 14px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 32px;
+  }
+  .hero-title { flex: 1; min-width: 280px; }
+  h1 { font-size: 28px; margin: 0 0 6px 0; font-weight: 700; letter-spacing: -0.01em; }
+  .hero-subtitle { font-size: 15px; opacity: 0.88; margin: 0; }
+  .hero-meta {
+    display: flex; gap: 16px; flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .hero-meta span {
+    background: rgba(255,255,255,0.12);
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-variant-numeric: tabular-nums;
+  }
+  main {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 32px;
+  }
+  .kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 16px;
+    margin-bottom: 40px;
+  }
+  .kpi {
+    background: white;
+    border: 1px solid var(--slate-200);
+    border-radius: 14px;
+    padding: 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.04);
+  }
+  .kpi-label {
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--slate-500);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  .kpi-value {
+    font-size: 28px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    line-height: 1;
+  }
+  .kpi-detail {
+    font-size: 13px;
+    color: var(--slate-500);
+    margin-top: 8px;
+  }
+  .kpi-good .kpi-value { color: var(--emerald); }
+  .kpi-warn .kpi-value { color: var(--amber); }
+  .kpi-bad .kpi-value { color: var(--rose); }
+
+  section {
+    margin-bottom: 48px;
+    background: white;
+    border: 1px solid var(--slate-200);
+    border-radius: 14px;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 20px 24px 16px 24px;
+    border-bottom: 1px solid var(--slate-200);
+    background: linear-gradient(180deg, white 0%, var(--slate-50) 100%);
+  }
+  h2 {
+    font-size: 20px;
+    margin: 0 0 6px 0;
+    color: var(--slate-900);
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  h2 .h2-icon {
+    width: 28px; height: 28px;
+    border-radius: 8px;
+    background: var(--emerald-soft);
+    color: var(--deep-forest);
+    font-size: 14px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-weight: 700;
+  }
+  .section-sub {
+    font-size: 13px;
+    color: var(--slate-500);
+    margin: 0;
+  }
+
+  .legend {
+    display: flex;
+    gap: 16px;
+    flex-wrap: wrap;
+    padding: 14px 24px;
+    background: var(--slate-50);
+    border-bottom: 1px solid var(--slate-200);
+    font-size: 13px;
+  }
+  .legend-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .legend-dot {
+    width: 14px; height: 14px;
+    border-radius: 4px;
+    display: inline-block;
+  }
+  .legend-dot.green { background: var(--emerald); }
+  .legend-dot.red { background: var(--rose); }
+  .legend-dot.orange { background: var(--amber); }
+  .legend-dot.gray { background: var(--gray-state); }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  thead {
+    background: var(--slate-100);
+    color: var(--slate-700);
+  }
+  th {
+    padding: 11px 14px;
+    text-align: left;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-size: 11px;
+    border-bottom: 1px solid var(--slate-200);
+  }
+  td {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--slate-100);
+    vertical-align: top;
+  }
+  tbody tr:hover { background: var(--slate-50); }
+  td.path {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 12px;
+    color: var(--slate-700);
+  }
+  td.method {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 11px;
+    font-weight: 700;
+    width: 60px;
+  }
+  td.method.GET { color: #2563EB; }
+  td.method.POST { color: var(--emerald); }
+  td.method.PUT { color: var(--amber); }
+  td.method.DELETE { color: var(--rose); }
+  td.method.PATCH { color: #8B5CF6; }
+
+  .badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    line-height: 1;
+    white-space: nowrap;
+  }
+  .badge.green {
+    background: var(--emerald-soft);
+    color: var(--deep-forest);
+  }
+  .badge.red {
+    background: var(--rose-soft);
+    color: var(--rose);
+  }
+  .badge.orange {
+    background: var(--amber-soft);
+    color: #92400E;
+  }
+  .badge.gray {
+    background: var(--slate-100);
+    color: var(--slate-500);
+  }
+  .badge.public {
+    background: #DBEAFE;
+    color: #1E40AF;
+  }
+  .role-cell {
+    text-align: center;
+    width: 80px;
+  }
+  .check { color: var(--emerald); font-weight: 700; font-size: 16px; }
+  .x { color: var(--rose); font-weight: 700; font-size: 16px; }
+  .dash { color: var(--slate-300); font-size: 14px; }
+  .scoped {
+    font-size: 11px;
+    color: var(--emerald);
+    font-style: italic;
+  }
+  .notes {
+    font-size: 12px;
+    color: var(--slate-500);
+  }
+
+  .role-header {
+    background: white;
+    border: 1px solid var(--slate-200);
+    border-radius: 14px;
+    padding: 20px;
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 16px;
+    margin-bottom: 28px;
+  }
+  .role-card {
+    padding: 16px;
+    border-radius: 12px;
+    border: 1px solid var(--slate-200);
+  }
+  .role-card.admin { border-left: 4px solid var(--deep-forest); }
+  .role-card.guard { border-left: 4px solid var(--emerald); }
+  .role-card.customer { border-left: 4px solid var(--amber); }
+  .role-card h3 {
+    margin: 0 0 6px 0;
+    font-size: 15px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .role-card p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--slate-500);
+  }
+  .role-tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .role-tag.admin { background: var(--deep-forest); color: white; }
+  .role-tag.guard { background: var(--emerald); color: white; }
+  .role-tag.customer { background: var(--amber); color: white; }
+
+  .mismatch-banner {
+    background: linear-gradient(135deg, var(--amber-soft) 0%, #FFEAB5 100%);
+    border: 1px solid var(--amber);
+    border-radius: 14px;
+    padding: 20px 24px;
+    margin-bottom: 28px;
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .mismatch-banner-icon {
+    width: 36px; height: 36px;
+    background: var(--amber);
+    color: white;
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .mismatch-banner h2 {
+    margin: 0 0 6px 0;
+    font-size: 16px;
+    color: #92400E;
+  }
+  .mismatch-banner p {
+    margin: 0;
+    font-size: 13px;
+    color: #78350F;
+  }
+
+  footer {
+    max-width: 1400px;
+    margin: 32px auto 0 auto;
+    padding: 24px 32px;
+    font-size: 12px;
+    color: var(--slate-500);
+    border-top: 1px solid var(--slate-200);
+  }
+  footer code {
+    background: var(--slate-100);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 11px;
+  }
+
+  .scroll-table {
+    max-height: 600px;
+    overflow-y: auto;
+  }
+  .scroll-table thead {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+
+  details {
+    padding: 16px 24px;
+    border-top: 1px solid var(--slate-100);
+  }
+  details summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--slate-700);
+  }
+  details summary:hover { color: var(--deep-forest); }
+  details[open] summary { margin-bottom: 12px; }
+
+  .assumption-box {
+    background: #EFF6FF;
+    border-left: 3px solid #2563EB;
+    padding: 12px 16px;
+    margin: 12px 0;
+    border-radius: 0 8px 8px 0;
+    font-size: 13px;
+    color: #1E40AF;
+  }
+  .assumption-box strong { color: #1E3A8A; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="hero-icon">🛡️</div>
+    <div class="hero-title">
+      <h1>Role Access Matrix</h1>
+      <p class="hero-subtitle">guard-dispatch / pguard — admin · guard · customer (frontend ↔ backend mapping)</p>
+    </div>
+    <div class="hero-meta">
+      <span>📅 2026-06-03</span>
+      <span>📄 v1.0 — initial</span>
+      <span>📂 v2-audit/role-access-audit-raw.md</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+  <div class="kpi-grid">
+    <div class="kpi kpi-good">
+      <div class="kpi-label">Backend endpoints</div>
+      <div class="kpi-value">87</div>
+      <div class="kpi-detail">across 5 Rust services</div>
+    </div>
+    <div class="kpi kpi-good">
+      <div class="kpi-label">Web admin gating</div>
+      <div class="kpi-value">100%</div>
+      <div class="kpi-detail">14/14 sidebar items + routes via layout AdminOnly</div>
+    </div>
+    <div class="kpi kpi-warn">
+      <div class="kpi-label">Mobile guard dashboard</div>
+      <div class="kpi-value">0%</div>
+      <div class="kpi-detail">5 tabs — no <code>initState</code> role check (relies on app-root)</div>
+    </div>
+    <div class="kpi kpi-warn">
+      <div class="kpi-label">Mismatches found</div>
+      <div class="kpi-value">3</div>
+      <div class="kpi-detail">1 MEDIUM, 2 LOW — see mismatch report</div>
+    </div>
+  </div>
+
+  <div class="mismatch-banner">
+    <div class="mismatch-banner-icon">!</div>
+    <div>
+      <h2>3 active mismatches identified</h2>
+      <p>Open <a href="frontend-backend-permission-mismatch.html" style="color:#78350F; font-weight:600;">frontend-backend-permission-mismatch.html</a> for severity ranking, root cause, before/after code, and recommended fix order.</p>
+    </div>
+  </div>
+
+  <div class="role-header">
+    <div class="role-card admin">
+      <h3><span class="role-tag admin">admin</span> Operations team</h3>
+      <p>Web admin (Next.js). Full read/write on operational data. Cookie-based auth (httpOnly+Secure+SameSite=Lax).</p>
+    </div>
+    <div class="role-card guard">
+      <h3><span class="role-tag guard">guard</span> Security guard</h3>
+      <p>Mobile (Flutter). Self-scoped — own profile, jobs, earnings, GPS write, reviews received. Bearer JWT.</p>
+    </div>
+    <div class="role-card customer">
+      <h3><span class="role-tag customer">customer</span> Hirer</h3>
+      <p>Mobile (Flutter). Self-scoped — own bookings, receipts, reviews given, payments. Bearer JWT.</p>
+    </div>
+  </div>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">L1</span>Web admin sidebar (Next.js)</h2>
+      <p class="section-sub">14 items → all admin-only via <code>app/(dashboard)/layout.tsx</code> + <code>&lt;AdminOnly&gt;</code> wrapper. No per-item filter needed.</p>
+    </div>
+    <div class="legend">
+      <div class="legend-item"><span class="legend-dot green"></span> Allowed + verified</div>
+      <div class="legend-item"><span class="legend-dot red"></span> Denied + verified</div>
+      <div class="legend-item"><span class="legend-dot orange"></span> Mismatch (FE/BE)</div>
+      <div class="legend-item"><span class="legend-dot gray"></span> Unknown / unverified</div>
+    </div>
+    <table>
+      <thead><tr>
+        <th>#</th><th>Item</th><th>Route</th>
+        <th class="role-cell">admin</th><th class="role-cell">guard</th><th class="role-cell">customer</th>
+        <th>Gating</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>1</td><td>Home (Dashboard)</td><td class="path">/</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>2</td><td>Live Map</td><td class="path">/map</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>3</td><td>Operations</td><td class="path">/operations</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>4</td><td>Applicants</td><td class="path">/applicants</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>5</td><td>Guards</td><td class="path">/guards</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>6</td><td>Expiring Docs</td><td class="path">/expiring</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>7</td><td>Customers</td><td class="path">/customers</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>8</td><td>Reviews</td><td class="path">/reviews</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>9</td><td>Chat (admin)</td><td class="path">/chat</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>10</td><td>Calls</td><td class="path">/calls</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>11</td><td>Wallet</td><td class="path">/wallet</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>12</td><td>Pricing</td><td class="path">/pricing</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>13</td><td>Tasks</td><td class="path">/tasks</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>14</td><td>Reports</td><td class="path">/reports</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>15</td><td>Activity Log</td><td class="path">/activity</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>16</td><td>Settings</td><td class="path">/settings</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+        <tr><td>17</td><td>Profile</td><td class="path">/profile</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="notes">Layout AdminOnly</td></tr>
+      </tbody>
+    </table>
+    <details>
+      <summary>Implementation details (3 references)</summary>
+      <div style="font-family: 'SF Mono', Menlo, monospace; font-size: 12px; line-height: 1.7; color: var(--slate-700);">
+        <code style="display:block; background:var(--slate-50); padding:8px 12px; border-radius:6px; margin-bottom:8px;">DashboardLayout → app/(dashboard)/layout.tsx:1-24</code>
+        <code style="display:block; background:var(--slate-50); padding:8px 12px; border-radius:6px; margin-bottom:8px;">  RequireAuth (line 12)         — redirect if !isAuthenticated</code>
+        <code style="display:block; background:var(--slate-50); padding:8px 12px; border-radius:6px;">  AdminOnly (line 18)           — render 403 if user.role !== "admin"</code>
+      </div>
+      <div class="assumption-box"><strong>Note:</strong> Sidebar.tsx itself does NOT filter items per role (line 26-30 builds the same array for every user). Defense-in-depth is at the layout wrapper. If layout is bypassed, sidebar leaks the menu structure.</div>
+    </details>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">L2</span>Mobile dashboards (Flutter)</h2>
+      <p class="section-sub">Bottom tabs per role. Guard dashboard has <strong>no</strong> <code>initState</code> role check; customer dashboard checks <code>customerApprovalStatus</code>.</p>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Surface</th><th>Tab / Shortcut</th><th>Screen</th>
+        <th class="role-cell">admin</th><th class="role-cell">guard</th><th class="role-cell">customer</th>
+        <th>Local guard</th>
+      </tr></thead>
+      <tbody>
+        <tr><td rowspan="5"><strong>Guard Dashboard</strong><br><span class="notes">guard_dashboard_screen.dart</span></td><td>Home</td><td class="path">GuardHomeTab</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td><span class="badge orange">none — see Mismatch #1</span></td></tr>
+        <tr><td>Jobs</td><td class="path">GuardJobsTab</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td><span class="badge orange">none</span></td></tr>
+        <tr><td>Chat</td><td class="path">ChatListScreen(actingRole='guard')</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td><span class="badge orange">actingRole not validated — Mismatch #3</span></td></tr>
+        <tr><td>Income</td><td class="path">GuardIncomeTab</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td><span class="badge orange">none</span></td></tr>
+        <tr><td>Profile</td><td class="path">GuardProfileTab</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td><span class="badge orange">none</span></td></tr>
+        <tr><td rowspan="4"><strong>Hirer Dashboard</strong><br><span class="notes">hirer_dashboard_screen.dart</span></td><td>Home (book guard)</td><td class="path">ServiceSelectionScreen</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">approved</span></td><td><span class="badge green">customerApprovalStatus check</span></td></tr>
+        <tr><td>Chat</td><td class="path">ChatListScreen(actingRole='customer')</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">approved</span></td><td><span class="badge orange">actingRole not validated — Mismatch #3</span></td></tr>
+        <tr><td>History</td><td class="path">HirerHistoryScreen</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">approved</span></td><td><span class="badge green">parent check</span></td></tr>
+        <tr><td>Profile</td><td class="path">HirerProfileScreen</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">approved</span></td><td><span class="badge green">parent check</span></td></tr>
+      </tbody>
+    </table>
+    <div class="assumption-box"><strong>Risk pattern:</strong> Guard dashboard tabs rely entirely on the app-root selector in <code>main.dart</code> (which checks <code>auth.role == 'guard'</code> before mounting). Any code path that uses <code>Navigator.push</code> directly to <code>GuardDashboardScreen</code> (e.g. notification tap, deep link, future route restoration) bypasses that check.</div>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">L3</span>Route guards (web + mobile)</h2>
+      <p class="section-sub">Where the role check actually runs.</p>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Platform</th><th>Layer</th><th>Mechanism</th><th>Coverage</th><th>Status</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Web</td><td>Middleware</td><td>None (no <code>middleware.ts</code> found)</td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge gray">N/A</span></td></tr>
+        <tr><td>Web</td><td>Layout wrapper</td><td><code>RequireAuth + AdminOnly</code> in <code>app/(dashboard)/layout.tsx</code></td><td>All /(dashboard)/* routes</td><td><span class="badge green">verified</span></td></tr>
+        <tr><td>Web</td><td>Per-page check</td><td>None (none required — layout covers all)</td><td>0 pages need it</td><td><span class="badge green">acceptable</span></td></tr>
+        <tr><td>Mobile</td><td>App-root selector</td><td><code>main.dart</code> branches on <code>auth.status + auth.role</code></td><td>Initial route</td><td><span class="badge green">verified</span></td></tr>
+        <tr><td>Mobile</td><td>Dashboard <code>initState</code></td><td>Guard dashboard: <strong>none</strong>; Hirer dashboard: <code>customerApprovalStatus</code> check</td><td>1/2 dashboards</td><td><span class="badge orange">half-covered</span></td></tr>
+        <tr><td>Mobile</td><td>Deep-link guards</td><td>None — any screen with <code>Navigator.push</code> is reachable</td><td>0 explicit</td><td><span class="badge orange">implicit only</span></td></tr>
+        <tr><td>Mobile</td><td><code>LiveMapScreen</code> guard</td><td><strong>Missing</strong> — should be customer-or-admin only</td><td>0/1</td><td><span class="badge red">should add</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">L4</span>Backend API endpoints (Rust)</h2>
+      <p class="section-sub">87 endpoints across 5 services. 53 (61%) have explicit role checks. Booking has the most implicit / participant-based checks.</p>
+    </div>
+    <div class="scroll-table">
+      <table>
+        <thead><tr>
+          <th>Service</th><th class="method">Method</th><th>Path</th>
+          <th class="role-cell">admin</th><th class="role-cell">guard</th><th class="role-cell">customer</th><th class="role-cell">public</th>
+          <th>Guard impl</th>
+        </tr></thead>
+        <tbody>
+
+          <!-- Auth -->
+          <tr><td>auth</td><td class="method POST">POST</td><td class="path">/login/phone</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">open</span></td></tr>
+          <tr><td>auth</td><td class="method POST">POST</td><td class="path">/login/mobile</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">open</span></td></tr>
+          <tr><td>auth</td><td class="method POST">POST</td><td class="path">/otp/request</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">open + nginx otp_limit 3r/m</span></td></tr>
+          <tr><td>auth</td><td class="method POST">POST</td><td class="path">/otp/verify</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">open + constant-time compare</span></td></tr>
+          <tr><td>auth</td><td class="method POST">POST</td><td class="path">/register/otp</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">open — returns 202, no tokens</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/me</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">JWT extractor</span></td></tr>
+          <tr><td>auth</td><td class="method PUT">PUT</td><td class="path">/me</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">JWT extractor</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/guards/me</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1271</span></td></tr>
+          <tr><td>auth</td><td class="method PUT">PUT</td><td class="path">/guards/me</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:996</span></td></tr>
+          <tr><td>auth</td><td class="method PUT">PUT</td><td class="path">/profile/guard/document/{type}</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:918</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/users</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:591</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/admin/guards/{id}</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1186</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/admin/customers/{id}</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1319</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/admin/customer-applicants</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1391</span></td></tr>
+          <tr><td>auth</td><td class="method PATCH">PATCH</td><td class="path">/admin/customers/{id}/approval</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1423</span></td></tr>
+          <tr><td>auth</td><td class="method GET">GET</td><td class="path">/admin/audit-logs</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1454</span></td></tr>
+
+          <!-- Booking -->
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/requests</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">customer-only</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/requests</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">own</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:49</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/requests/{id}/assign</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">owner</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:108</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/assignments/{id}/accept-decline</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:344</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/assignments/{id}/start</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:381</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/assignments/{id}/status</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:320</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/assignments/{id}/review-completion</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:405</span></td></tr>
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/assignments/{id}/progress</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:436</span></td></tr>
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/payments</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge orange">inferred — should add explicit check</span></td></tr>
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/assignments/{id}/tip</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:586</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/customer/receipts</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">customer-only</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/available-guards</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge orange">MISMATCH #2 — should be customer-only</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/pricing/services</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span></td><td><span class="badge public">public — intended</span></td></tr>
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/pricing/services</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">require_admin() :697</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/pricing/services/{id}</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">require_admin() :720</span></td></tr>
+          <tr><td>booking</td><td class="method DELETE">DELETE</td><td class="path">/pricing/services/{id}</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">require_admin() :743</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/admin/wallet/summary</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1044</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/admin/payments</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1073</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/admin/refunds</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1100</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/admin/refunds/{id}/process</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:1167</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/admin/reviews</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:949</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/guard/dashboard</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">guard-only</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/guard/earnings</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">guard-only</span></td></tr>
+          <tr><td>booking</td><td class="method GET">GET</td><td class="path">/customer/active-job</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">customer-only</span></td></tr>
+          <tr><td>booking</td><td class="method POST">POST</td><td class="path">/calls/initiate</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">participant-based</span></td></tr>
+          <tr><td>booking</td><td class="method PUT">PUT</td><td class="path">/calls/{id}/accept</td><td class="role-cell"><span class="dash">—</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">callee</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">callee</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">callee-only</span></td></tr>
+
+          <!-- Tracking -->
+          <tr><td>tracking</td><td class="method GET">GET</td><td class="path">/ws/track (WebSocket)</td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:34 — guard-only write</span></td></tr>
+          <tr><td>tracking</td><td class="method GET">GET</td><td class="path">/locations/all</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:305</span></td></tr>
+          <tr><td>tracking</td><td class="method GET">GET</td><td class="path">/locations/{guard_id}</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">own</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">active booking</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:224-231</span></td></tr>
+          <tr><td>tracking</td><td class="method GET">GET</td><td class="path">/locations/{guard_id}/history</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">own</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">active booking</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:267-274</span></td></tr>
+
+          <!-- Chat -->
+          <tr><td>chat</td><td class="method GET">GET</td><td class="path">/ws/chat (WebSocket)</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">participant + admin bypass</span></td></tr>
+          <tr><td>chat</td><td class="method POST">POST</td><td class="path">/conversations</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:269</span></td></tr>
+          <tr><td>chat</td><td class="method GET">GET</td><td class="path">/conversations</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">own</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">own</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">scoped by query param</span></td></tr>
+          <tr><td>chat</td><td class="method GET">GET</td><td class="path">/conversations/{id}/messages</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:376-382</span></td></tr>
+          <tr><td>chat</td><td class="method POST">POST</td><td class="path">/attachments</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="check">✓</span> <span class="scoped">participant</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:626-630</span></td></tr>
+          <tr><td>chat</td><td class="method GET">GET</td><td class="path">/admin/conversations</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">admin-only</span></td></tr>
+
+          <!-- Notification -->
+          <tr><td>notification</td><td class="method POST">POST</td><td class="path">/tokens</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">JWT extractor</span></td></tr>
+          <tr><td>notification</td><td class="method GET">GET</td><td class="path">/notifications</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">scoped by user_id</span></td></tr>
+          <tr><td>notification</td><td class="method GET">GET</td><td class="path">/notifications/unread-count</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">scoped by user_id</span></td></tr>
+          <tr><td>notification</td><td class="method POST">POST</td><td class="path">/notifications/send</td><td class="role-cell"><span class="check">✓</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="x">✗</span></td><td class="role-cell"><span class="dash">—</span></td><td><span class="badge green">handlers.rs:181</span></td></tr>
+
+        </tbody>
+      </table>
+    </div>
+    <details>
+      <summary>Coverage by service (87 endpoints total)</summary>
+      <table>
+        <thead><tr><th>Service</th><th>Total endpoints</th><th>Explicit role check</th><th>Coverage</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>auth</td><td>22</td><td>19</td><td><span class="badge green">86%</span></td><td>strong — most admin gated</td></tr>
+          <tr><td>booking</td><td>42</td><td>18</td><td><span class="badge orange">43%</span></td><td>many inferred / participant-based</td></tr>
+          <tr><td>tracking</td><td>8</td><td>8</td><td><span class="badge green">100%</span></td><td>comprehensive</td></tr>
+          <tr><td>chat</td><td>8</td><td>7</td><td><span class="badge green">88%</span></td><td>participant-based</td></tr>
+          <tr><td>notification</td><td>7</td><td>1</td><td><span class="badge gray">14%</span></td><td>by design (per-user scope)</td></tr>
+          <tr><td><strong>Total</strong></td><td><strong>87</strong></td><td><strong>53</strong></td><td><strong>61%</strong></td><td>—</td></tr>
+        </tbody>
+      </table>
+    </details>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">L5</span>Cross-check vs <code>CLAUDE.md</code></h2>
+      <p class="section-sub">16 documented role expectations verified against code. 3 mismatches found — see dedicated mismatch report.</p>
+    </div>
+    <table>
+      <thead><tr>
+        <th>Feature</th><th>CLAUDE.md says</th><th>Code says</th><th>Match</th>
+      </tr></thead>
+      <tbody>
+        <tr><td>Web admin all routes</td><td>admin-only</td><td><code>AdminOnly</code> + <code>RequireAuth</code></td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Sidebar items</td><td>admin-only (14)</td><td>layout-level (no per-item filter)</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Auth <code>/users</code></td><td>admin-only</td><td>handlers.rs:591</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Auth <code>/admin/*</code></td><td>admin-only</td><td>all <code>require_admin()</code></td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Guard <code>/guards/me</code></td><td>guard self-only</td><td>handlers.rs:1271</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Booking <code>/available-guards</code></td><td>customer discovery</td><td>any authenticated</td><td><span class="badge orange">MISMATCH #2</span></td></tr>
+        <tr><td>Booking <code>/pricing/services</code> GET</td><td>public</td><td>public (no check)</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Booking admin refunds</td><td>admin-only</td><td><code>require_admin()</code> :1536, 1555</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Chat endpoints</td><td>participant + admin bypass</td><td><code>is_conversation_participant()</code> + <code>is_admin</code></td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Tracking GPS WS</td><td>guard-only</td><td>handlers.rs:34</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Tracking location query</td><td>participant + admin</td><td>handlers.rs:224-274</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Mobile guard dashboard</td><td>guard-only</td><td>no <code>initState</code> check</td><td><span class="badge orange">MISMATCH #1</span></td></tr>
+        <tr><td>Mobile customer dashboard</td><td>customer-approved only</td><td><code>customerApprovalStatus</code> check</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Mobile chat <code>actingRole</code></td><td>participant-based</td><td><code>actingRole</code> trusted from caller</td><td><span class="badge orange">MISMATCH #3</span></td></tr>
+        <tr><td>Web <code>/me</code> GET</td><td>any authenticated</td><td>JWT required</td><td><span class="badge green">✓</span></td></tr>
+        <tr><td>Review visibility</td><td>admin only</td><td><code>user.role != "admin"</code> reject</td><td><span class="badge green">✓</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="section-header">
+      <h2><span class="h2-icon">PD</span>Product decision (recommended)</h2>
+      <p class="section-sub">Should guard have any access to payment / wallet / refund flows?</p>
+    </div>
+    <div style="padding: 20px 24px;">
+      <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div style="border: 1px solid var(--slate-200); border-radius: 12px; padding: 18px; background: var(--emerald-soft);">
+          <h3 style="margin: 0 0 10px 0; font-size: 16px; color: var(--deep-forest);">Option A — Guard stays out of money (recommended)</h3>
+          <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: var(--slate-700);">
+            <li>Guard sees <strong>own earnings (read-only)</strong> and tip notifications</li>
+            <li>No access to /admin/wallet, /admin/payments, /admin/refunds, /pricing CRUD</li>
+            <li>No write on anything monetary except progress reports (feeds proration)</li>
+            <li>Refund handled by admin; tip handled by customer</li>
+          </ul>
+          <p style="font-size: 12px; color: var(--slate-700); margin: 10px 0 0 0;"><strong>Why:</strong> minimum necessary access (PDPA principle), reduces blast radius if credentials leak, admin-mediated dispute resolution is cleaner.</p>
+        </div>
+        <div style="border: 1px solid var(--slate-200); border-radius: 12px; padding: 18px;">
+          <h3 style="margin: 0 0 10px 0; font-size: 16px; color: var(--slate-700);">Option B — Guard as cashier (not recommended now)</h3>
+          <ul style="margin: 0; padding-left: 20px; font-size: 13px; color: var(--slate-500);">
+            <li>Guard can record cash collection on behalf of platform</li>
+            <li>Guard can issue receipts on customer's behalf</li>
+            <li>Guard has limited write on payment ledger</li>
+          </ul>
+          <p style="font-size: 12px; color: var(--slate-500); margin: 10px 0 0 0;"><strong>Requires:</strong> separate <code>cashier</code> sub-role, separate audit trail, separate UI in mobile, separate testing. Not in current scope.</p>
+        </div>
+      </div>
+      <div class="assumption-box" style="margin-top: 16px;"><strong>Current code follows Option A.</strong> Recommendation: keep Option A. Re-evaluate when business model needs cash collection (currently digital payments only).</div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  Generated 2026-06-03 from <code>v2-audit/role-access-audit-raw.md</code> (Explore agent ground-truth audit, file:line cited).
+  Source of truth: <code>docs/ROLE_MATRIX.md</code>.
+  Companion: <code>docs/reviews/frontend-backend-permission-mismatch.html</code>.
+  Verified roles: admin, guard, customer. Backend endpoints: 87. Frontend surfaces: ~38.
+  HTML artifact policy: visual review only — not production code, not the design source of truth.
+</footer>
+
+</body>
+</html>
