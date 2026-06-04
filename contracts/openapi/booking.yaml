@@ -1,0 +1,287 @@
+openapi: 3.1.0
+info:
+  title: pguard — Booking Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the booking service (the source of truth for this service —
+    codegen produces the Rust handler stubs/types, the Dart client, and the TS client).
+
+    Split from the v1 `../guard-dispatch/services/booking` god-service. This slice closes
+    Phase 1's **producer** side of the decoupling: a booking status change writes the
+    business row AND a transactional-outbox row in ONE database transaction, and a
+    background relay publishes those rows to NATS JetStream as `pguard.events.booking.*`
+    events (see `contracts/asyncapi/events.yaml`). The notification consumer subscribes
+    and reacts — booking **never** writes another service's schema (v1 Issue C1).
+
+    All client-facing paths are served behind the gateway under the `/v1` prefix
+    (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
+    envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3005
+    description: Local dev (booking-service direct)
+
+tags:
+  - name: Bookings
+    description: Booking requests + lifecycle transitions
+
+paths:
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Create a booking request (customer only)
+      description: |
+        A customer creates a booking request (status `requested`). Role gating is enforced
+        in the handler (403 for non-customers). No event is emitted for a bare request.
+      operationId: createBooking
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBookingRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Bookings]
+      summary: List the caller's bookings
+      description: Bookings where the caller is the customer OR the assigned guard, newest first.
+      operationId: listBookings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's bookings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Booking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: Get one booking the caller participates in
+      operationId: getBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bookings/{id}/accept:
+    post:
+      tags: [Bookings]
+      summary: Guard accepts a request
+      description: |
+        A guard accepts → status `accepted`, `guard_id` set to the caller. Enqueues
+        `pguard.events.booking.job_accepted` `{ booking_id, customer_id, guard_id }` into
+        the outbox in the SAME transaction (transactional outbox). Rejected with 409 if the
+        booking is not in a state from which acceptance is legal.
+      operationId: acceptBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/decline:
+    post:
+      tags: [Bookings]
+      summary: Guard declines a request
+      description: |
+        Status → `declined`. Enqueues `pguard.events.booking.declined` into the outbox in
+        the same transaction.
+      operationId: declineBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/en-route:
+    post:
+      tags: [Bookings]
+      summary: Assigned guard is en route
+      description: |
+        Status → `en_route`. Enqueues `pguard.events.booking.guard_en_route` into the
+        outbox in the same transaction.
+      operationId: enRouteBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/arrived:
+    post:
+      tags: [Bookings]
+      summary: Assigned guard has arrived
+      description: |
+        Status → `arrived`. Enqueues `pguard.events.booking.arrived` into the outbox in
+        the same transaction.
+      operationId: arrivedBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/complete:
+    post:
+      tags: [Bookings]
+      summary: Assigned guard completes the job
+      description: |
+        Status → `completed`. Enqueues `pguard.events.booking.completed` into the outbox in
+        the same transaction.
+      operationId: completeBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+
+  parameters:
+    BookingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BookingOk:
+      description: The booking
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Booking' }
+    BadRequest:
+      description: Invalid request body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong role / not a participant)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Booking not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Illegal lifecycle transition for the booking's current status
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    BookingStatus:
+      type: string
+      description: Booking lifecycle status. See the state machine in src/domain/state.rs.
+      enum:
+        - requested
+        - accepted
+        - declined
+        - en_route
+        - arrived
+        - completed
+        - cancelled
+
+    CreateBookingRequest:
+      type: object
+      required: [address, scheduled_at, hours]
+      properties:
+        address: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        hours: { type: integer, format: int32, minimum: 1 }
+
+    Booking:
+      type: object
+      required: [id, customer_id, status, address, scheduled_at, hours, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        address: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        hours: { type: integer, format: int32 }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: CONFLICT }
+        message: { type: string }

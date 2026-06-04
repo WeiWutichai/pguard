@@ -11,6 +11,21 @@ path = "src/main.rs"
 [dependencies]
 axum = { workspace = true }
 tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }            # AuthUser extractor needs the jti revocation blocklist
+serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # DecodingKey held in AppState (HasJwtSecret)
+async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
+async-trait = { workspace = true }      # dyn EventPublisher (relay seam)
+futures = { workspace = true }
 tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+shared-events = { workspace = true }
 observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }            # ServiceExt::oneshot for router tests
