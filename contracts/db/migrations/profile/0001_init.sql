@@ -30,7 +30,7 @@ CREATE TABLE profile.guard_profiles (
     user_id               UUID NOT NULL UNIQUE,            -- owned by identity; bare UUID, no cross-service FK
     gender                TEXT,
     date_of_birth         DATE,
-    years_of_experience   INTEGER,
+    years_of_experience   INTEGER CHECK (years_of_experience IS NULL OR years_of_experience BETWEEN 0 AND 80),
     previous_workplace    TEXT,
     -- Document object keys (S3 path; deferred upload slice fills these). Keys only —
     -- the binaries live in S3 (CLAUDE.md "Binary blobs stay in S3").

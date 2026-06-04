@@ -369,6 +369,17 @@ mod db_tests {
             .expect("approve");
         assert_eq!(approved.approval_status, ApprovalStatus::Approved);
 
+        // 3b) a guard re-upserting their own profile must NOT reset the admin's decision
+        //     (the ON CONFLICT clause deliberately omits approval_status).
+        let re_upserted = upsert_guard_profile(&pool, user_id, &req)
+            .await
+            .expect("re-upsert after approve");
+        assert_eq!(
+            re_upserted.approval_status,
+            ApprovalStatus::Approved,
+            "re-upsert must preserve the admin approval decision"
+        );
+
         // 4) re-reject after approve is illegal (terminal) → Conflict, status unchanged.
         let err = set_approval_status(&pool, user_id, ApprovalStatus::Rejected)
             .await
