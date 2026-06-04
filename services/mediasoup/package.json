@@ -1,0 +1,11 @@
+{
+  "name": "@pguard/mediasoup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "pguard mediasoup SFU (Node) — WebRTC media routing for the calling service. v2 scaffold placeholder.",
+  "type": "module",
+  "scripts": {
+    "dev": "echo 'TODO: mediasoup SFU dev server (Phase 3 — split calling)'",
+    "start": "echo 'TODO: mediasoup SFU'"
+  }
+}

@@ -1,0 +1,245 @@
+//! PURE event → notification mapping. No DB/HTTP imports.
+//!
+//! Given an event topic + its JSON payload, decide **who** to notify and with **what**
+//! copy. This replaces v1's 10 `spawn_notification` call sites in booking (each a direct
+//! cross-schema INSERT) — now booking just emits an event and this maps it. Returns
+//! `None` when an event produces no user notification (e.g. `user.compromised`, or a
+//! payload missing its recipient).
+
+use serde_json::Value;
+use uuid::Uuid;
+
+use shared_events::topics;
+
+use crate::models::NotificationType;
+
+/// What the consumer should persist + push for one event. Pure data.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NotificationPlan {
+    pub recipient_id: Uuid,
+    pub notification_type: NotificationType,
+    pub title: String,
+    pub body: String,
+    /// Stored as the notification payload. Carries `target_role` (when known) so the
+    /// read API can filter by guard/customer, mirroring v1 `payload->>'target_role'`.
+    pub data: Value,
+}
+
+/// Parse a UUID string field out of an event payload.
+fn uuid_field(payload: &Value, key: &str) -> Option<Uuid> {
+    payload
+        .get(key)?
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
+/// Build the stored payload: target_role (for filtering) + a few reference ids carried
+/// through from the source event + the originating event_type (for client routing).
+fn build_data(target_role: Option<&str>, event_type: &str, payload: &Value) -> Value {
+    let mut m = serde_json::Map::new();
+    if let Some(role) = target_role {
+        m.insert("target_role".to_string(), Value::String(role.to_string()));
+    }
+    m.insert(
+        "event_type".to_string(),
+        Value::String(event_type.to_string()),
+    );
+    for key in ["booking_id", "conversation_id", "payment_id", "rating_id"] {
+        if let Some(v) = payload.get(key) {
+            m.insert(key.to_string(), v.clone());
+        }
+    }
+    Value::Object(m)
+}
+
+/// Map an event to a [`NotificationPlan`], or `None` if it should not notify anyone.
+pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationPlan> {
+    let make = |recipient: Uuid,
+                role: Option<&'static str>,
+                notification_type: NotificationType,
+                title: &str,
+                body: &str| NotificationPlan {
+        recipient_id: recipient,
+        notification_type,
+        title: title.to_string(),
+        body: body.to_string(),
+        data: build_data(role, event_type, payload),
+    };
+
+    match event_type {
+        topics::BOOKING_JOB_ACCEPTED => Some(make(
+            uuid_field(payload, "customer_id")?,
+            Some("customer"),
+            NotificationType::GuardAssigned,
+            "เจ้าหน้าที่ตอบรับแล้ว",
+            "เจ้าหน้าที่ตอบรับงานของคุณแล้ว",
+        )),
+        topics::BOOKING_JOB_DECLINED => Some(make(
+            uuid_field(payload, "customer_id")?,
+            Some("customer"),
+            NotificationType::System,
+            "เจ้าหน้าที่ปฏิเสธงาน",
+            "กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ",
+        )),
+        topics::BOOKING_GUARD_EN_ROUTE => Some(make(
+            uuid_field(payload, "customer_id")?,
+            Some("customer"),
+            NotificationType::GuardEnRoute,
+            "เจ้าหน้าที่กำลังเดินทาง",
+            "เจ้าหน้าที่กำลังเดินทางไปยังจุดนัดหมาย",
+        )),
+        topics::BOOKING_ARRIVED => Some(make(
+            uuid_field(payload, "customer_id")?,
+            Some("customer"),
+            NotificationType::GuardArrived,
+            "เจ้าหน้าที่ถึงแล้ว",
+            "เจ้าหน้าที่มาถึงจุดนัดหมายแล้ว",
+        )),
+        topics::BOOKING_COMPLETED => Some(make(
+            uuid_field(payload, "guard_id")?,
+            Some("guard"),
+            NotificationType::BookingCompleted,
+            "งานเสร็จสมบูรณ์",
+            "งานของคุณเสร็จสมบูรณ์แล้ว",
+        )),
+        topics::BOOKING_CANCELLED => {
+            // Prefer the assigned guard; fall back to the customer if no guard yet.
+            if let Some(guard_id) = uuid_field(payload, "guard_id") {
+                Some(make(
+                    guard_id,
+                    Some("guard"),
+                    NotificationType::BookingCancelled,
+                    "งานถูกยกเลิก",
+                    "ลูกค้ายกเลิกงานแล้ว",
+                ))
+            } else {
+                Some(make(
+                    uuid_field(payload, "customer_id")?,
+                    Some("customer"),
+                    NotificationType::BookingCancelled,
+                    "งานถูกยกเลิก",
+                    "งานของคุณถูกยกเลิกแล้ว",
+                ))
+            }
+        }
+        topics::PAYMENT_COMPLETED => Some(make(
+            uuid_field(payload, "guard_id")?,
+            Some("guard"),
+            NotificationType::System,
+            "ได้รับการชำระเงิน",
+            "คุณได้รับการชำระเงินสำหรับงานแล้ว",
+        )),
+        topics::RATING_SUBMITTED => Some(make(
+            uuid_field(payload, "guard_id")?,
+            Some("guard"),
+            NotificationType::System,
+            "มีรีวิวใหม่",
+            "คุณได้รับคะแนนรีวิวใหม่",
+        )),
+        topics::CHAT_MESSAGE_SENT => Some(make(
+            uuid_field(payload, "recipient_id")?,
+            None,
+            NotificationType::ChatMessage,
+            "ข้อความใหม่",
+            "คุณมีข้อความใหม่",
+        )),
+        // No user notification: force-revoke is identity's concern; calling.* and any
+        // unmapped/under-specified topic are intentionally ignored (claimed, not pushed).
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn job_accepted_notifies_customer() {
+        let customer = Uuid::new_v4();
+        let payload = json!({ "customer_id": customer, "guard_id": Uuid::new_v4(), "booking_id": Uuid::new_v4() });
+        let plan = plan_for_event(topics::BOOKING_JOB_ACCEPTED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, customer);
+        assert_eq!(plan.notification_type, NotificationType::GuardAssigned);
+        assert_eq!(plan.data["target_role"], "customer");
+        assert_eq!(plan.data["booking_id"], json!(payload["booking_id"]));
+    }
+
+    #[test]
+    fn completed_notifies_guard() {
+        let guard = Uuid::new_v4();
+        let payload = json!({ "customer_id": Uuid::new_v4(), "guard_id": guard, "booking_id": Uuid::new_v4() });
+        let plan = plan_for_event(topics::BOOKING_COMPLETED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, guard);
+        assert_eq!(plan.notification_type, NotificationType::BookingCompleted);
+        assert_eq!(plan.data["target_role"], "guard");
+    }
+
+    #[test]
+    fn payment_and_rating_notify_guard() {
+        let guard = Uuid::new_v4();
+        let pay = json!({ "guard_id": guard, "booking_id": Uuid::new_v4(), "payment_id": Uuid::new_v4(), "amount": "500.00" });
+        assert_eq!(
+            plan_for_event(topics::PAYMENT_COMPLETED, &pay)
+                .unwrap()
+                .recipient_id,
+            guard
+        );
+        let rate = json!({ "guard_id": guard, "booking_id": Uuid::new_v4(), "rating_id": Uuid::new_v4(), "score": 5 });
+        assert_eq!(
+            plan_for_event(topics::RATING_SUBMITTED, &rate)
+                .unwrap()
+                .recipient_id,
+            guard
+        );
+    }
+
+    #[test]
+    fn chat_message_notifies_recipient() {
+        let recipient = Uuid::new_v4();
+        let payload = json!({ "recipient_id": recipient, "sender_id": Uuid::new_v4(), "conversation_id": Uuid::new_v4(), "message_id": Uuid::new_v4() });
+        let plan = plan_for_event(topics::CHAT_MESSAGE_SENT, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, recipient);
+        assert_eq!(plan.notification_type, NotificationType::ChatMessage);
+    }
+
+    #[test]
+    fn cancelled_prefers_guard_then_customer() {
+        let guard = Uuid::new_v4();
+        let customer = Uuid::new_v4();
+        let with_guard =
+            json!({ "guard_id": guard, "customer_id": customer, "booking_id": Uuid::new_v4() });
+        assert_eq!(
+            plan_for_event(topics::BOOKING_CANCELLED, &with_guard)
+                .unwrap()
+                .recipient_id,
+            guard
+        );
+        let no_guard = json!({ "customer_id": customer, "booking_id": Uuid::new_v4() });
+        assert_eq!(
+            plan_for_event(topics::BOOKING_CANCELLED, &no_guard)
+                .unwrap()
+                .recipient_id,
+            customer
+        );
+    }
+
+    #[test]
+    fn user_compromised_is_not_a_notification() {
+        let payload =
+            json!({ "user_id": Uuid::new_v4(), "reason": "refresh_token_reuse_detected" });
+        assert!(plan_for_event(topics::USER_COMPROMISED, &payload).is_none());
+    }
+
+    #[test]
+    fn missing_recipient_yields_none() {
+        // job_accepted with no customer_id → cannot route → None (not a panic).
+        let payload = json!({ "guard_id": Uuid::new_v4(), "booking_id": Uuid::new_v4() });
+        assert!(plan_for_event(topics::BOOKING_JOB_ACCEPTED, &payload).is_none());
+    }
+
+    #[test]
+    fn unknown_topic_yields_none() {
+        assert!(plan_for_event("pguard.events.calling.initiated", &json!({})).is_none());
+    }
+}

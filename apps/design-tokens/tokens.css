@@ -1,0 +1,34 @@
+/* GENERATED PLACEHOLDER — regenerate from Design System.html
+   pguard v2 design tokens (subset). Keep tokens.css / tokens.dart / tokens.ts in sync. */
+:root {
+  /* Brand */
+  --pg-color-brand: #0E3B2E;        /* Deep Forest — green-900 */
+  --pg-color-primary: #1FA971;      /* interactive base — green-500 */
+  --pg-color-accent: #F59E0B;       /* amber-500 */
+
+  /* Semantic */
+  --pg-color-success: #16A34A;
+  --pg-color-warning: #F59E0B;
+  --pg-color-danger: #E5484D;
+  --pg-color-info: #2A6FDB;
+
+  /* Surface / text (light) */
+  --pg-color-bg: #F6F8F7;           /* n-50 */
+  --pg-color-surface: #FFFFFF;      /* n-0 */
+  --pg-color-text: #222B27;         /* n-800 */
+  --pg-color-text-muted: #69776F;   /* n-500 */
+  --pg-color-border: #DEE5E2;       /* n-200 */
+
+  /* Spacing scale (4px base) */
+  --pg-space-1: 4px;
+  --pg-space-2: 8px;
+  --pg-space-3: 12px;
+  --pg-space-4: 16px;
+  --pg-space-6: 24px;
+
+  /* Radius */
+  --pg-radius-sm: 6px;
+  --pg-radius-md: 8px;
+  --pg-radius-lg: 11px;
+  --pg-radius-full: 999px;
+}

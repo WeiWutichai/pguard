@@ -1,0 +1,44 @@
+# pguard v2 — Grafana datasource provisioning (SCAFFOLD STUB)
+#
+# Auto-wires Grafana to the three telemetry backends so the dashboards work on
+# first boot. Tempo↔Loki↔Prometheus are cross-linked for trace→logs→metrics
+# correlation (CLAUDE.md → Observability: debug distributed).
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      httpMethod: POST
+
+  - name: Loki
+    uid: loki
+    type: loki
+    access: proxy
+    url: http://loki:3100
+    jsonData:
+      # Jump from a log line's trace_id straight to the trace in Tempo.
+      derivedFields:
+        - name: TraceID
+          matcherRegex: '"trace_id":"(\w+)"'
+          url: "$${__value.raw}"
+          datasourceUid: tempo
+
+  - name: Tempo
+    uid: tempo
+    type: tempo
+    access: proxy
+    url: http://tempo:3200
+    jsonData:
+      # trace → logs (Loki) and trace → metrics (Prometheus) correlation.
+      tracesToLogsV2:
+        datasourceUid: loki
+      tracesToMetrics:
+        datasourceUid: prometheus
+      serviceMap:
+        datasourceUid: prometheus

@@ -1,0 +1,23 @@
+# pguard v2 scaffold stub — analyzer + lint config for the Flutter mobile app.
+# See ../../CLAUDE.md "Flutter (mobile)" Do/Don't.
+# flutter_lints baseline + custom_lint plugin to surface riverpod_lint rules.
+include: package:flutter_lints/flutter.yaml
+
+analyzer:
+  # custom_lint runs riverpod_lint (enforces correct provider/codegen usage).
+  plugins:
+    - custom_lint
+  exclude:
+    # Generated Riverpod/codegen + generated Dart API client are not linted.
+    - "**/*.g.dart"
+    - "**/*.freezed.dart"
+    - "lib/api/generated/**"
+
+linter:
+  rules:
+    # TODO: tighten as the codebase grows. Enforce CLAUDE.md "Do" rules:
+    # - prefer pure logic in core/controllers (testable without widgets)
+    # - no Provider/ChangeNotifier; use @riverpod codegen instead
+    prefer_const_constructors: true
+    prefer_final_locals: true
+    avoid_print: true

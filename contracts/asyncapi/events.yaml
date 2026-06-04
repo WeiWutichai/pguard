@@ -1,0 +1,214 @@
+asyncapi: 3.0.0
+info:
+  title: pguard — Event Bus (NATS JetStream)
+  version: 0.1.0
+  description: |
+    Source of truth for cross-service events. Mirrors `packages/shared-events`
+    (`topics` constants + `EventEnvelope`). Every message is wrapped in the standard
+    envelope; JetStream durable consumers are **at-least-once**, so consumers MUST
+    dedupe on `event_id` and use idempotency keys (CLAUDE.md "NATS topics").
+
+    Naming: `pguard.events.<bounded_context>.<event_name>`.
+
+defaultContentType: application/json
+
+servers:
+  jetstream:
+    host: localhost:4222
+    protocol: nats
+    description: Local dev NATS with JetStream (infra/docker/docker-compose.yml).
+
+channels:
+  bookingJobAccepted:
+    address: pguard.events.booking.job_accepted
+    messages: { jobAccepted: { $ref: '#/components/messages/BookingJobAccepted' } }
+  bookingDeclined:
+    address: pguard.events.booking.declined
+    messages: { declined: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingCancelled:
+    address: pguard.events.booking.cancelled
+    messages: { cancelled: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingCompleted:
+    address: pguard.events.booking.completed
+    messages: { completed: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingGuardEnRoute:
+    address: pguard.events.booking.guard_en_route
+    messages: { enRoute: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingArrived:
+    address: pguard.events.booking.arrived
+    messages: { arrived: { $ref: '#/components/messages/GenericBookingEvent' } }
+  paymentCompleted:
+    address: pguard.events.payment.completed
+    messages: { paymentCompleted: { $ref: '#/components/messages/PaymentCompleted' } }
+  paymentRefundProcessed:
+    address: pguard.events.payment.refund_processed
+    messages: { refundProcessed: { $ref: '#/components/messages/PaymentCompleted' } }
+  ratingSubmitted:
+    address: pguard.events.rating.submitted
+    messages: { ratingSubmitted: { $ref: '#/components/messages/RatingSubmitted' } }
+  callingInitiated:
+    address: pguard.events.calling.initiated
+    messages: { initiated: { $ref: '#/components/messages/GenericCallEvent' } }
+  callingAccepted:
+    address: pguard.events.calling.accepted
+    messages: { accepted: { $ref: '#/components/messages/GenericCallEvent' } }
+  callingRejected:
+    address: pguard.events.calling.rejected
+    messages: { rejected: { $ref: '#/components/messages/GenericCallEvent' } }
+  callingEnded:
+    address: pguard.events.calling.ended
+    messages: { ended: { $ref: '#/components/messages/GenericCallEvent' } }
+  chatMessageSent:
+    address: pguard.events.chat.message_sent
+    messages: { messageSent: { $ref: '#/components/messages/ChatMessageSent' } }
+  userCompromised:
+    address: pguard.events.user.compromised
+    messages: { compromised: { $ref: '#/components/messages/UserCompromised' } }
+
+operations:
+  onBookingJobAccepted:
+    action: receive
+    channel: { $ref: '#/channels/bookingJobAccepted' }
+    summary: notification + presence + payment consume this.
+  onPaymentCompleted:
+    action: receive
+    channel: { $ref: '#/channels/paymentCompleted' }
+    summary: booking + notification consume this.
+  onUserCompromised:
+    action: receive
+    channel: { $ref: '#/channels/userCompromised' }
+    summary: identity consumes this → force-revoke-all sessions for the user.
+
+components:
+  messages:
+    BookingJobAccepted:
+      name: BookingJobAccepted
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_JobAccepted' }
+    GenericBookingEvent:
+      name: GenericBookingEvent
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_BookingRef' }
+    PaymentCompleted:
+      name: PaymentCompleted
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_PaymentRef' }
+    RatingSubmitted:
+      name: RatingSubmitted
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_RatingRef' }
+    GenericCallEvent:
+      name: GenericCallEvent
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_CallRef' }
+    ChatMessageSent:
+      name: ChatMessageSent
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_ChatRef' }
+    UserCompromised:
+      name: UserCompromised
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_UserRef' }
+
+  schemas:
+    Envelope:
+      type: object
+      required: [event_id, event_type, occurred_at, correlation_id, payload]
+      properties:
+        event_id: { type: string, format: uuid, description: Dedupe key (at-least-once). }
+        event_type: { type: string, example: pguard.events.booking.job_accepted }
+        occurred_at: { type: string, format: date-time }
+        correlation_id: { type: string, format: uuid }
+        payload: { type: object }
+
+    EnvelopeOf_JobAccepted:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id, guard_id, customer_id]
+              properties:
+                booking_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid }
+
+    EnvelopeOf_BookingRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id]
+              properties:
+                booking_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid, nullable: true }
+
+    EnvelopeOf_PaymentRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [payment_id, booking_id, guard_id, amount]
+              properties:
+                payment_id: { type: string, format: uuid }
+                booking_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid, description: Recipient (the paid guard). }
+                amount: { type: string, description: Decimal string (THB). }
+
+    EnvelopeOf_RatingRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [rating_id, booking_id, guard_id, score]
+              properties:
+                rating_id: { type: string, format: uuid }
+                booking_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid, description: Recipient (the reviewed guard). }
+                score: { type: integer, minimum: 1, maximum: 5 }
+
+    EnvelopeOf_CallRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [call_id, booking_id]
+              properties:
+                call_id: { type: string, format: uuid }
+                booking_id: { type: string, format: uuid }
+
+    EnvelopeOf_ChatRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [message_id, conversation_id, sender_id, recipient_id]
+              properties:
+                message_id: { type: string, format: uuid }
+                conversation_id: { type: string, format: uuid }
+                sender_id: { type: string, format: uuid }
+                recipient_id: { type: string, format: uuid, description: The other participant (notification target). }
+
+    EnvelopeOf_UserRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [user_id, reason]
+              properties:
+                user_id: { type: string, format: uuid }
+                reason: { type: string, example: refresh_token_reuse_detected }

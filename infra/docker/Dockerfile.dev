@@ -1,0 +1,40 @@
+# pguard v2 — GENERIC Rust service dev Dockerfile (SCAFFOLD STUB)
+#
+# Reusable across every Rust service in services/*. In dev we normally run
+# services on the host via `cargo run` (see ./README.md), so this image is for
+# the optional containerized-dev / integration-compose path.
+#
+# Each service later gets a thin wrapper that just sets SERVICE_NAME, e.g.:
+#   # services/notification/Dockerfile.dev
+#   FROM pguard/rust-dev   # (built from this file)
+#   ARG SERVICE_NAME=notification
+#
+# Build (from repo root, mounting the workspace at /workspace):
+#   docker build -f infra/docker/Dockerfile.dev \
+#     --build-arg SERVICE_NAME=notification -t pguard/notification:dev .
+#
+# TODO(infra): Dockerfile.prod — multi-stage build → distroless/static runtime
+#              (cargo build --release in a builder stage, copy the single binary
+#              into gcr.io/distroless/cc or scratch). Tracked for Phase 5 harden.
+
+FROM rust:1-slim
+
+# Which service this image runs. Wrappers override via --build-arg.
+ARG SERVICE_NAME=api-gateway
+ENV SERVICE_NAME=${SERVICE_NAME}
+
+# Minimal build deps for SQLx / TLS-enabled crates.
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends pkg-config libssl-dev ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# TODO(infra): for hot-reload install cargo-watch and run:
+#   CMD ["cargo", "watch", "-x", "run -p ${SERVICE_NAME}"]
+# Skipped here to keep the scaffold network-free / build-free.
+# RUN cargo install cargo-watch
+
+WORKDIR /workspace
+
+# Source is bind-mounted in dev (compose volume / `docker run -v`), so we do not
+# COPY the tree here. The container just compiles + runs the requested service.
+CMD ["sh", "-c", "cargo run -p ${SERVICE_NAME}"]
