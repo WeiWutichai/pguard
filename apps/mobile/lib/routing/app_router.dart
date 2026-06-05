@@ -8,7 +8,12 @@ import '../features/auth/otp_screen.dart';
 import '../features/auth/phone_entry_screen.dart';
 import '../features/auth/pin_entry_screen.dart';
 import '../features/auth/pin_lock_screen.dart';
+import '../features/booking/booking_form_screen.dart';
+import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/live_status_screen.dart';
+import '../features/booking/payment_screen.dart';
+import '../features/booking/payment_success_screen.dart';
+import '../features/booking/service_selection_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
 import '../features/splash_screen.dart';
@@ -55,6 +60,18 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/home/customer',
           builder: (_, __) => const CustomerHomeScreen()),
       GoRoute(path: '/home/guard', builder: (_, __) => const GuardHomeScreen()),
+      // Customer book-a-guard flow (shared keepAlive BookingFlowController carries state).
+      GoRoute(path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
+      GoRoute(
+          path: '/book/form', builder: (_, __) => const BookingFormScreen()),
+      GoRoute(
+          path: '/book/guards',
+          builder: (_, __) => const GuardDiscoveryScreen()),
+      GoRoute(
+          path: '/book/payment', builder: (_, __) => const PaymentScreen()),
+      GoRoute(
+          path: '/book/success',
+          builder: (_, __) => const PaymentSuccessScreen()),
       GoRoute(
         path: '/booking/:id/live',
         builder: (context, state) =>

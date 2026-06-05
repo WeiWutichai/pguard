@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -51,14 +52,31 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: PgTokens.space4),
-              const Text('ติดตามงานแบบเรียลไทม์',
+              const Text('จองเจ้าหน้าที่รักษาความปลอดภัย',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.w600)),
+              const SizedBox(height: PgTokens.space1),
+              const Text(
+                'เลือกบริการ ระบุสถานที่ และเรียกเจ้าหน้าที่ใกล้คุณ',
+                style: TextStyle(color: PgTokens.colorTextMuted),
+              ),
+              const SizedBox(height: PgTokens.space4),
+              PgPrimaryButton(
+                label: 'จองเจ้าหน้าที่ / Book a guard',
+                onPressed: () {
+                  // Start a fresh draft, then enter the flow.
+                  ref.read(bookingFlowControllerProvider.notifier).reset();
+                  context.push('/book');
+                },
+              ),
+              const SizedBox(height: PgTokens.space7),
+              const Text('ติดตามงานแบบเรียลไทม์',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
               const SizedBox(height: PgTokens.space1),
               const Text(
                 'สถานะเจ้าหน้าที่อัปเดตสดผ่าน WebSocket (ไม่มีการ polling)',
                 style: TextStyle(color: PgTokens.colorTextMuted),
               ),
-              const SizedBox(height: PgTokens.space6),
+              const SizedBox(height: PgTokens.space4),
               TextField(
                 controller: _bookingId,
                 decoration: const InputDecoration(labelText: 'Booking ID'),
