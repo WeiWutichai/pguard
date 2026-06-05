@@ -279,6 +279,42 @@ pub async fn delete_me(
     ))
 }
 
+// ----- GET /me/data-export (PDPA §19 access / §32 portability) -----
+
+/// Aggregate the authenticated user's data from every owning service (identity own fields +
+/// profile + bookings + payments + reviews) into one machine-readable JSON envelope.
+/// Best-effort: a downstream that's unavailable is marked `"error"` in `_meta.sections`
+/// rather than failing the whole export, so the user still receives what's retrievable.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn data_export(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let user_data = repo::export_user(&state.db, user.user_id).await?;
+    let sections = state.export_client.collect(user.user_id).await;
+
+    let mut envelope = serde_json::Map::new();
+    envelope.insert("user".to_string(), user_data);
+    let mut meta_sections = serde_json::Map::new();
+    for s in sections {
+        meta_sections.insert(
+            s.name.to_string(),
+            serde_json::Value::String(s.status.to_string()),
+        );
+        envelope.insert(s.name.to_string(), s.data);
+    }
+    envelope.insert(
+        "_meta".to_string(),
+        serde_json::json!({
+            "generated_at": chrono::Utc::now(),
+            "sections": serde_json::Value::Object(meta_sections),
+        }),
+    );
+    Ok(Json(ApiResponse::success(serde_json::Value::Object(
+        envelope,
+    ))))
+}
+
 // ----- POST /internal/users/{id}/revoke-all -----
 
 /// Force-revoke-all for a user (service-to-service). **v2:** requires a valid service-JWT

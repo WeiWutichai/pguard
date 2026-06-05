@@ -21,7 +21,8 @@ jsonwebtoken = { workspace = true }     # user access JWTs (HS256, via shared::a
 argon2 = { workspace = true }           # password + refresh-secret hashing (CPU-only)
 async-nats = { workspace = true }       # JetStream consumer for user.compromised
 async-trait = { workspace = true }      # dyn seam for the revoke-all dependency
-futures = { workspace = true }          # StreamExt over the JetStream message stream
+futures = { workspace = true }          # StreamExt over the JetStream consumer + export fan-out
+reqwest = { workspace = true }          # data-export aggregator: service-JWT'd internal reads
 tracing = { workspace = true }
 anyhow = { workspace = true }
 shared = { workspace = true }

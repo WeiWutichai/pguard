@@ -6,6 +6,7 @@
 //! `rating.submitted` outbox event are written in ONE transaction (CLAUDE.md "Cross-tx
 //! consistency: transactional outbox").
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use uuid::Uuid;
@@ -154,6 +155,68 @@ pub async fn guard_summary(db: &sqlx::PgPool, guard_id: Uuid) -> Result<RatingSu
     .await?;
     let scores: Vec<i32> = scores.into_iter().map(i32::from).collect();
     Ok(domain::compute_summary(&scores))
+}
+
+/// PDPA §19/§32 data export: ALL reviews AUTHORED by the user (as the reviewing customer),
+/// regardless of admin visibility — it is the user's own content. Scoped to `customer_id`.
+pub async fn export_user_reviews(db: &sqlx::PgPool, customer_id: Uuid) -> Result<Value, AppError> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        Uuid,
+        Uuid,
+        Uuid,
+        i16,
+        Option<i16>,
+        Option<i16>,
+        Option<i16>,
+        Option<i16>,
+        Option<String>,
+        bool,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT id, guard_id, assignment_id, overall_rating, punctuality, professionalism, \
+                communication, appearance, review_text, is_visible, created_at, updated_at \
+         FROM rating.guard_reviews WHERE customer_id = $1 ORDER BY created_at DESC",
+    )
+    .bind(customer_id)
+    .fetch_all(db)
+    .await?;
+
+    let reviews: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let (
+                id,
+                guard_id,
+                assignment_id,
+                overall,
+                punct,
+                prof,
+                comm,
+                appear,
+                text,
+                is_visible,
+                created_at,
+                updated_at,
+            ) = r;
+            serde_json::json!({
+                "id": id,
+                "guard_id": guard_id,
+                "assignment_id": assignment_id,
+                "overall_rating": overall,
+                "punctuality": punct,
+                "professionalism": prof,
+                "communication": comm,
+                "appearance": appear,
+                "review_text": text,
+                "is_visible": is_visible,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            })
+        })
+        .collect();
+    Ok(Value::Array(reviews))
 }
 
 /// Admin moderation list: reviews matching the (optional) filters + the total + GLOBAL

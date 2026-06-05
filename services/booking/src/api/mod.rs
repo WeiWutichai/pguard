@@ -353,6 +353,20 @@ pub async fn get_internal_booking<S: BookingInternalDeps>(
     Ok(Json(ApiResponse::success(booking)))
 }
 
+// ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
+
+/// Export a user's OWN bookings (as the customer OR the assigned guard) for a cross-service
+/// data export. `ServiceCaller`-gated and scoped strictly to the path `user_id`.
+#[tracing::instrument(skip(state), fields(caller = %caller.service, user = %user_id))]
+pub async fn internal_export_user<S: BookingInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let bookings = repo::export_user_bookings(state.db(), user_id).await?;
+    Ok(Json(ApiResponse::success(bookings)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

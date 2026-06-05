@@ -221,6 +221,21 @@ pub async fn internal_list_guards<S: ProfileInternalDeps>(
     Ok(Json(ApiResponse::success(guards)))
 }
 
+// ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
+
+/// Export the user's OWN profile data for a cross-service data export. `ServiceCaller`-gated
+/// (only identity's aggregator, holding a valid service-JWT, reaches this) and scoped
+/// strictly to the path `user_id`, so it can never return another user's rows.
+#[tracing::instrument(skip(state), fields(caller = %caller.service, user = %user_id))]
+pub async fn internal_export_user<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let data = repo::export_user_data(state.db(), user_id).await?;
+    Ok(Json(ApiResponse::success(data)))
+}
+
 // ----- POST /admin/guard-profiles/{user_id}/approve | /reject -----
 
 #[tracing::instrument(skip(state), fields(admin = %user.user_id, target_user = %user_id))]

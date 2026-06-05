@@ -5,6 +5,7 @@ use sqlx::PgPool;
 
 use shared::auth::HasJwtSecret;
 use shared::config::JwtConfig;
+use shared::service_jwt::HasServiceJwt;
 
 use crate::booking_client::{BookingReader, HttpBookingReader};
 
@@ -14,6 +15,8 @@ pub struct AppState {
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
+    /// Verifies inbound service-JWTs on the internal data-export read.
+    pub service_decoding_key: DecodingKey,
     /// The booking-reader (mints a service-JWT + GETs booking's internal read).
     pub booking_reader: HttpBookingReader,
 }
@@ -27,6 +30,23 @@ impl HasJwtSecret for AppState {
     }
     fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
         &self.redis_conn
+    }
+}
+
+impl HasServiceJwt for AppState {
+    fn service_decoding_key(&self) -> &DecodingKey {
+        &self.service_decoding_key
+    }
+}
+
+/// Capability seam for the service-JWT'd internal data-export read (mirrors rating/booking).
+pub trait PaymentInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
+    fn db(&self) -> &PgPool;
+}
+
+impl PaymentInternalDeps for AppState {
+    fn db(&self) -> &PgPool {
+        &self.db
     }
 }
 

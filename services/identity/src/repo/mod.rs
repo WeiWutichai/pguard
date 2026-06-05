@@ -381,6 +381,41 @@ pub async fn soft_delete_and_redact(db: &PgPool, user_id: Uuid) -> Result<i32, A
     Ok(new_version)
 }
 
+/// The user's own identity record for a PDPA data export (§19/§32) — the data subject
+/// reading THEIR OWN data, so real (un-redacted) values. Scoped strictly to `user_id`.
+pub async fn export_user(db: &PgPool, user_id: Uuid) -> Result<serde_json::Value, AppError> {
+    #[allow(clippy::type_complexity)]
+    let row: Option<(
+        String,
+        Option<String>,
+        String,
+        bool,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        r#"
+        SELECT phone, email, role::text AS role, is_active, deleted_at, created_at, updated_at
+        FROM identity.users WHERE id = $1
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let (phone, email, role, is_active, deleted_at, created_at, updated_at) =
+        row.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    Ok(serde_json::json!({
+        "user_id": user_id,
+        "phone": phone,
+        "email": email,
+        "role": role,
+        "is_active": is_active,
+        "deleted_at": deleted_at,
+        "created_at": created_at,
+        "updated_at": updated_at,
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

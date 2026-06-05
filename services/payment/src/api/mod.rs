@@ -13,12 +13,14 @@ use uuid::Uuid;
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::ApiResponse;
+use shared::service_jwt::ServiceCaller;
 
 use crate::booking_client::BookingReader;
 use crate::domain::{amount_covers_expected, expected_total, is_payable_status, validate_payment};
 use crate::models::{CompletePaymentRequest, CreatePaymentRequest, PaymentResponse};
 use crate::repo;
 use crate::state::PaymentDeps;
+use crate::state::PaymentInternalDeps;
 
 /// POST /payments — a customer pays for a booking.
 ///
@@ -159,6 +161,20 @@ pub async fn list_payments<S: PaymentDeps>(
 ) -> Result<Json<ApiResponse<Vec<PaymentResponse>>>, AppError> {
     let items = repo::list_payments(state.db(), user.user_id).await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+// ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
+
+/// Export a user's OWN payments for a cross-service data export. `ServiceCaller`-gated (only
+/// identity's aggregator reaches this) and scoped strictly to the path `user_id`.
+#[tracing::instrument(skip(state), fields(caller = %caller.service, user = %user_id))]
+pub async fn internal_export_user<S: PaymentInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let payments = repo::export_user_payments(state.db(), user_id).await?;
+    Ok(Json(ApiResponse::success(payments)))
 }
 
 #[cfg(test)]

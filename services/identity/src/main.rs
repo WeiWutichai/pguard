@@ -10,6 +10,7 @@
 mod api;
 mod domain;
 mod events;
+mod export_client;
 mod models;
 mod repo;
 mod state;
@@ -22,6 +23,7 @@ use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::create_pool;
 use shared::redis_client::create_redis_client;
 
+use crate::export_client::{ExportClient, ExportUpstream};
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "identity";
@@ -45,11 +47,42 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Redis cache connection")?;
 
+    // --- data-export aggregator (PDPA §19/§32): fan out to data owners' internal reads ---
+    let export_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .context("build export HTTP client")?;
+    let export_client = ExportClient::new(
+        export_http,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+        vec![
+            ExportUpstream {
+                section: "profile",
+                base_url: svc_url("PROFILE_URL", "http://localhost:3002"),
+            },
+            ExportUpstream {
+                section: "bookings",
+                base_url: svc_url("BOOKING_URL", "http://localhost:3005"),
+            },
+            ExportUpstream {
+                section: "payments",
+                base_url: svc_url("PAYMENT_URL", "http://localhost:3006"),
+            },
+            ExportUpstream {
+                section: "reviews",
+                base_url: svc_url("RATING_URL", "http://localhost:3007"),
+            },
+        ],
+    );
+
     let state = AppState {
         db,
         redis_conn,
         jwt_config,
         service_jwt_config,
+        export_client,
     };
 
     // --- background JetStream consumer (user.compromised → force-revoke-all) ---
@@ -71,6 +104,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))
         .route("/auth/me", get(api::me).delete(api::delete_me))
+        .route("/me/data-export", get(api::data_export))
         .route(
             "/internal/users/{id}/revoke-all",
             post(api::internal_revoke_all::<AppState>),
@@ -87,6 +121,11 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(service = SERVICE_NAME, %addr, "identity-service listening");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+/// A data-owner base URL from env, falling back to the dev default.
+fn svc_url(key: &str, default: &str) -> String {
+    std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
 async fn healthz() -> Json<serde_json::Value> {

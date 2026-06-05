@@ -16,6 +16,8 @@ pub struct AppState {
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
     pub service_jwt_config: ServiceJwtConfig,
+    /// PDPA data-export aggregator: fans out to the data owners' internal export reads.
+    pub export_client: crate::export_client::ExportClient,
 }
 
 impl HasJwtSecret for AppState {

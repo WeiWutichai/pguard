@@ -138,6 +138,10 @@ async fn main() -> anyhow::Result<()> {
             "/internal/bookings/{id}",
             get(api::get_internal_booking::<AppState>),
         )
+        .route(
+            "/internal/users/{user_id}/export",
+            get(api::internal_export_user::<AppState>),
+        )
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(

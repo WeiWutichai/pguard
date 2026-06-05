@@ -181,6 +181,20 @@ pub async fn internal_rating_summary<S: RatingInternalDeps>(
     })))
 }
 
+// ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
+
+/// Export the reviews a user AUTHORED for a cross-service data export. `ServiceCaller`-gated
+/// (only identity's aggregator reaches this) and scoped strictly to the path `user_id`.
+#[tracing::instrument(skip(state), fields(caller = %caller.service, user = %user_id))]
+pub async fn internal_export_user<S: RatingInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let reviews = repo::export_user_reviews(state.db(), user_id).await?;
+    Ok(Json(ApiResponse::success(reviews)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

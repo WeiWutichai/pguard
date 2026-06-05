@@ -71,6 +71,7 @@ async fn main() -> anyhow::Result<()> {
         db: db.clone(),
         redis_conn,
         jwt_config,
+        service_decoding_key: service_jwt_config.decoding_key.clone(),
         booking_reader,
     };
 
@@ -111,6 +112,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/payments/{booking_id}/complete",
             post(api::complete_payment::<AppState>),
+        )
+        .route(
+            "/internal/users/{user_id}/export",
+            get(api::internal_export_user::<AppState>),
         )
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())

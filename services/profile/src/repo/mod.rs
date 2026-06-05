@@ -12,7 +12,7 @@
 
 use std::str::FromStr;
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -349,6 +349,101 @@ pub async fn record_access(
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// PDPA §19/§32 data export: the user's OWN profile rows (guard and/or customer). This is
+/// the data subject reading their own data, so the FULL account number is returned;
+/// documents are reported as presence flags (not raw S3 keys — signed-URL download is a
+/// follow-up). Scoped strictly to `user_id`.
+#[allow(clippy::type_complexity)]
+pub async fn export_user_data(db: &PgPool, user_id: Uuid) -> Result<serde_json::Value, AppError> {
+    let guard: Option<(
+        Option<String>,
+        Option<NaiveDate>,
+        Option<i32>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT gender, date_of_birth, years_of_experience, previous_workplace, \
+                bank_name, account_number, account_name, \
+                id_card_key, security_license_key, training_cert_key, criminal_check_key, \
+                driver_license_key, passbook_photo_key, created_at, updated_at \
+         FROM profile.guard_profiles WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+
+    let guard_json = guard.map(|g| {
+        let (
+            gender,
+            dob,
+            yoe,
+            prev,
+            bank_name,
+            account_number,
+            account_name,
+            id_card,
+            sec_lic,
+            train,
+            crim,
+            driver,
+            passbook,
+            created_at,
+            updated_at,
+        ) = g;
+        serde_json::json!({
+            "gender": gender,
+            "date_of_birth": dob,
+            "years_of_experience": yoe,
+            "previous_workplace": prev,
+            "bank_name": bank_name,
+            "account_number": account_number,
+            "account_name": account_name,
+            "documents": {
+                "id_card": id_card.is_some(),
+                "security_license": sec_lic.is_some(),
+                "training_cert": train.is_some(),
+                "criminal_check": crim.is_some(),
+                "driver_license": driver.is_some(),
+                "passbook_photo": passbook.is_some(),
+            },
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })
+    });
+
+    let customer: Option<(Option<String>, Option<String>, DateTime<Utc>, DateTime<Utc>)> =
+        sqlx::query_as(
+            "SELECT full_name, address, created_at, updated_at \
+             FROM profile.customer_profiles WHERE user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+    let customer_json = customer.map(|(full_name, address, created_at, updated_at)| {
+        serde_json::json!({
+            "full_name": full_name,
+            "address": address,
+            "created_at": created_at,
+            "updated_at": updated_at,
+        })
+    });
+
+    Ok(serde_json::json!({
+        "guard_profile": guard_json,
+        "customer_profile": customer_json,
+    }))
 }
 
 #[cfg(test)]
