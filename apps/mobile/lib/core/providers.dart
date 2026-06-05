@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
+import 'location/location_service.dart';
 import 'network/api_client.dart';
 import 'network/sockets/booking_status_socket.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
@@ -25,6 +26,12 @@ PguardApi pguardApi(PguardApiRef ref) => ApiClient(
 @Riverpod(keepAlive: true)
 PinService pinService(PinServiceRef ref) =>
     PinService(store: ref.watch(appStoreProvider));
+
+/// Location/geocoding for the booking map picker. Offline-safe by default; tests (and a future
+/// real geocoder) override this provider.
+@Riverpod(keepAlive: true)
+LocationService locationService(LocationServiceRef ref) =>
+    const DefaultLocationService();
 
 /// Builds a live booking-status feed for a booking id. Production returns a real
 /// [BookingStatusSocket]; tests override this provider to inject a fake feed.

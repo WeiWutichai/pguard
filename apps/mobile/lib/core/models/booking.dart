@@ -78,6 +78,8 @@ class Booking {
     this.scheduledAt,
     this.hours,
     this.guardCount,
+    this.baseFee,
+    this.tip,
   });
 
   final String id;
@@ -88,6 +90,13 @@ class Booking {
   final DateTime? scheduledAt;
   final int? hours;
   final int? guardCount;
+
+  /// Server-owned ฿/hour/guard rate as an exact decimal STRING ("500.00"). The client never
+  /// sets it; it arrives on the created booking and drives the authoritative charge amount.
+  final String? baseFee;
+
+  /// Up-front tip as an exact decimal STRING ("0").
+  final String? tip;
 
   factory Booking.fromJson(Map<String, dynamic> json) => Booking(
         id: json['id'] as String,
@@ -101,6 +110,8 @@ class Booking {
             : null,
         hours: (json['hours'] as num?)?.toInt(),
         guardCount: (json['guard_count'] as num?)?.toInt(),
+        baseFee: json['base_fee'] as String?,
+        tip: json['tip'] as String?,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -113,6 +124,8 @@ class Booking {
         scheduledAt: scheduledAt,
         hours: hours,
         guardCount: guardCount,
+        baseFee: baseFee,
+        tip: tip,
       );
 }
 
