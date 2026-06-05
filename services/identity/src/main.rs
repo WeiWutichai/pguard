@@ -70,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))
-        .route("/auth/me", get(api::me))
+        .route("/auth/me", get(api::me).delete(api::delete_me))
         .route(
             "/internal/users/{id}/revoke-all",
             post(api::internal_revoke_all::<AppState>),

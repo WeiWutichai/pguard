@@ -249,6 +249,36 @@ pub async fn me(user: AuthUser) -> Json<ApiResponse<MeResponse>> {
     }))
 }
 
+// ----- DELETE /auth/me (PDPA §33 — right to erasure) -----
+
+/// Erase the authenticated user's own account: soft-delete + PII redaction, force-revoke
+/// every token, and clear the auth cookies. Afterwards the account cannot authenticate
+/// (deactivated + PII redacted), and outstanding access tokens are rejected at once via the
+/// Redis `trv` marker. The redacted row is retained as minimal deletion audit (PDPA §33).
+#[tracing::instrument(skip_all, fields(user_id = %user.user_id))]
+pub async fn delete_me(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let new_version = repo::soft_delete_and_redact(&state.db, user.user_id).await?;
+
+    // Reject every outstanding access token immediately (force-revoke-all marker).
+    let mut redis = state.redis_conn.clone();
+    crate::state::mark_user_revoked(&mut redis, user.user_id, new_version).await;
+
+    // Clear the auth cookies on the way out (web).
+    let mut headers = HeaderMap::new();
+    append_cookie(&mut headers, &build_clear_cookie(ACCESS_TOKEN_COOKIE, "/"));
+    append_cookie(
+        &mut headers,
+        &build_clear_cookie(REFRESH_TOKEN_COOKIE, REFRESH_COOKIE_PATH),
+    );
+    Ok((
+        headers,
+        Json(ApiResponse::success(serde_json::json!({ "deleted": true }))),
+    ))
+}
+
 // ----- POST /internal/users/{id}/revoke-all -----
 
 /// Force-revoke-all for a user (service-to-service). **v2:** requires a valid service-JWT

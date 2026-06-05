@@ -186,6 +186,14 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
     };
     // Admin sees the FULL account number (not masked) — onboarding review needs it.
     let profiles = repo::list_guard_profiles(state.db(), status).await?;
+    // PDPA §30: record this admin read of personal data (who accessed what).
+    repo::record_access(
+        state.db(),
+        user.user_id,
+        "admin_list_guard_profiles",
+        q.approval_status.as_deref(),
+    )
+    .await?;
     Ok(Json(ApiResponse::success(profiles)))
 }
 

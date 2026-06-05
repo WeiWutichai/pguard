@@ -325,6 +325,62 @@ pub async fn revoke_all(db: &PgPool, user_id: Uuid) -> Result<i32, AppError> {
     Ok(new_version)
 }
 
+/// PDPA §33 erasure: soft-delete the user in ONE tx — redact PII (phone → opaque
+/// placeholder, email → NULL), deactivate (which blocks re-login via the `is_active` check
+/// in [`verify_credentials`], and the original phone/email no longer match anyway), stamp
+/// `deleted_at` (minimal retained audit), and force-revoke every token (bump `trv` + revoke
+/// refresh families). Returns the new `trv` so the caller can publish the Redis marker that
+/// rejects outstanding access tokens at once. Idempotent: an already-deleted user → NotFound.
+#[tracing::instrument(skip(db), fields(user_id = %user_id))]
+pub async fn soft_delete_and_redact(db: &PgPool, user_id: Uuid) -> Result<i32, AppError> {
+    let mut tx = db.begin().await?;
+
+    let current: Option<(i32,)> = sqlx::query_as(
+        "SELECT token_revocation_version FROM identity.users \
+         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let current = match current {
+        Some((v,)) => v,
+        None => {
+            tx.rollback().await?;
+            return Err(AppError::NotFound(
+                "User not found or already deleted".to_string(),
+            ));
+        }
+    };
+    let new_version = revocation::next_revocation_version(current);
+
+    // Redact PII. `phone` is UNIQUE NOT NULL → an opaque per-user placeholder keeps the
+    // constraint while carrying no personal data; `email` (UNIQUE, nullable) → NULL.
+    sqlx::query(
+        r#"
+        UPDATE identity.users
+        SET phone = $2, email = NULL, is_active = FALSE,
+            token_revocation_version = $3, deleted_at = now(), updated_at = now()
+        WHERE id = $1
+        "#,
+    )
+    .bind(user_id)
+    .bind(format!("deleted:{user_id}"))
+    .bind(new_version)
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    tracing::info!(new_version, "account erased (soft-delete + PII redaction)");
+    Ok(new_version)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -340,5 +396,82 @@ mod tests {
             ),
             "DUMMY_HASH must parse and reject all inputs"
         );
+    }
+
+    /// DB-gated PDPA §33 erasure proof: a user can log in, then after `soft_delete_and_redact`
+    /// the original credentials fail (deactivated + phone redacted), the row's PII is gone,
+    /// and a second erase is a no-op NotFound (idempotent). Gated on `DATABASE_URL` (migrated
+    /// identity 0001+0002); hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn erasure_redacts_pii_and_blocks_login() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the erasure test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let phone = format!("+66{}", &user_id.simple().to_string()[..9]);
+        let pw_hash = password::hash_secret("secret123").expect("hash");
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role) \
+             VALUES ($1, $2, $3, 'customer')",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(&pw_hash)
+        .execute(&pool)
+        .await
+        .expect("seed user");
+
+        // Logs in before erasure.
+        assert!(
+            verify_credentials(&pool, &phone, "secret123").await.is_ok(),
+            "credentials valid before erasure"
+        );
+
+        // Erase.
+        soft_delete_and_redact(&pool, user_id).await.expect("erase");
+
+        // Original credentials no longer work (deactivated + phone redacted).
+        assert!(
+            verify_credentials(&pool, &phone, "secret123")
+                .await
+                .is_err(),
+            "login blocked after erasure"
+        );
+
+        // PII redacted + deletion stamped.
+        let (redacted_phone, email, is_active, deleted_at): (
+            String,
+            Option<String>,
+            bool,
+            Option<DateTime<Utc>>,
+        ) = sqlx::query_as(
+            "SELECT phone, email, is_active, deleted_at FROM identity.users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read redacted row");
+        assert!(redacted_phone.starts_with("deleted:"), "phone redacted");
+        assert!(email.is_none(), "email cleared");
+        assert!(!is_active, "deactivated");
+        assert!(deleted_at.is_some(), "deletion timestamp stamped");
+
+        // Idempotent: a second erase finds nothing to do.
+        assert!(
+            soft_delete_and_redact(&pool, user_id).await.is_err(),
+            "second erase is NotFound (idempotent)"
+        );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
     }
 }

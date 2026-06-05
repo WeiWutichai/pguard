@@ -330,11 +330,69 @@ pub async fn get_customer_profile(
     )
 }
 
+/// Record an admin read of personal data (PDPA §30 — who accessed what). Runs on the same
+/// pool as the read it accompanies, so it propagates errors rather than swallowing them: a
+/// healthy read path is a healthy audit-write path, and an unrecorded access should fail
+/// loudly rather than disclose PII silently.
+pub async fn record_access(
+    db: &PgPool,
+    accessed_by: Uuid,
+    action: &str,
+    target: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO profile.access_audit (accessed_by, action, target) VALUES ($1, $2, $3)",
+    )
+    .bind(accessed_by)
+    .bind(action)
+    .bind(target)
+    .execute(db)
+    .await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
     use sqlx::postgres::PgPoolOptions;
     use std::time::Duration;
+
+    /// PDPA §30 read-audit: `record_access` writes a row attributable to the admin. Gated on
+    /// `DATABASE_URL` (migrated profile 0001+0002); hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn record_access_writes_a_row() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let admin = Uuid::new_v4();
+        record_access(&pool, admin, "admin_list_guard_profiles", Some("approved"))
+            .await
+            .expect("record_access");
+
+        let (count, action, target): (i64, String, Option<String>) = sqlx::query_as(
+            "SELECT count(*)::bigint, max(action), max(target) FROM profile.access_audit \
+             WHERE accessed_by = $1",
+        )
+        .bind(admin)
+        .fetch_one(&pool)
+        .await
+        .expect("read audit row");
+        assert_eq!(count, 1, "one audit row written");
+        assert_eq!(action, "admin_list_guard_profiles");
+        assert_eq!(target.as_deref(), Some("approved"));
+
+        let _ = sqlx::query("DELETE FROM profile.access_audit WHERE accessed_by = $1")
+            .bind(admin)
+            .execute(&pool)
+            .await;
+    }
 
     /// Real-Postgres integration test: upsert → get → approve, end-to-end. Proves the
     /// schema-qualified enum read/write round-trips and the approval transition writes.
