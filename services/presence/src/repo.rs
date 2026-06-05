@@ -4,15 +4,34 @@
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 
-/// Delete location-history rows older than `cutoff`; returns the number purged. The
-/// `idx_location_history_recorded_at` BRIN index makes this range-delete efficient on the
-/// high-volume append-only store.
+/// Max rows deleted per statement — bounds each transaction so a large backlog catch-up
+/// never locks an unbounded set in one go (this is a high-volume sensitive store).
+const PURGE_BATCH: i64 = 10_000;
+
+/// Delete location-history rows older than `cutoff`, in bounded batches; returns the total
+/// purged. The `idx_location_history_recorded_at` BRIN index makes each range-delete
+/// efficient on the append-only store, and the `ctid IN (… LIMIT)` batching keeps any single
+/// statement's lock/transaction footprint small even when clearing a large backlog.
 pub async fn purge_older_than(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<u64, sqlx::Error> {
-    let res = sqlx::query("DELETE FROM presence.location_history WHERE recorded_at < $1")
+    let mut total = 0u64;
+    loop {
+        let res = sqlx::query(
+            "DELETE FROM presence.location_history \
+             WHERE ctid IN ( \
+               SELECT ctid FROM presence.location_history WHERE recorded_at < $1 LIMIT $2 \
+             )",
+        )
         .bind(cutoff)
+        .bind(PURGE_BATCH)
         .execute(pool)
         .await?;
-    Ok(res.rows_affected())
+        let n = res.rows_affected();
+        total += n;
+        if n < PURGE_BATCH as u64 {
+            break;
+        }
+    }
+    Ok(total)
 }
 
 #[cfg(test)]

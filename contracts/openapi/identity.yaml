@@ -118,6 +118,32 @@ paths:
                     properties:
                       data: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Auth]
+      summary: Erase the authenticated user's account (PDPA §33 right to erasure)
+      description: |
+        Soft-deletes the caller's OWN account in one transaction: redacts PII (phone → an
+        opaque per-user placeholder, email → null), deactivates it (blocks re-login),
+        retains a minimal deletion audit (`deleted_at`), force-revokes every token (refresh
+        families + a `token_revocation_version` bump so outstanding access tokens are
+        rejected at once), and clears the auth cookies. Irreversible.
+      operationId: deleteMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Account erased
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted: { type: boolean, example: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
 
   /internal/users/{id}/revoke-all:
     post:
