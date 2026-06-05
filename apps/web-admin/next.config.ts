@@ -11,6 +11,16 @@ const nextConfig: NextConfig = {
   // App Router only (no Pages Router) — per CLAUDE.md.
   typedRoutes: true,
   reactStrictMode: true,
+  // Self-contained server bundle for the production Docker image: emits
+  // `.next/standalone` (server.js + minimal node_modules) so the runtime stage
+  // copies only what it needs — no dev deps, no full node_modules.
+  // See infra/docker/web-admin.Dockerfile.
+  output: "standalone",
+  // Pin the file-tracing root to THIS app dir so standalone always emits the FLAT
+  // layout (server.js at the bundle root) that web-admin.Dockerfile copies. Without
+  // this, Next infers the root and could nest the output if a lockfile/workspace
+  // file ever appears higher up. __dirname is the app dir at build time.
+  outputFileTracingRoot: __dirname,
 };
 
 export default nextConfig;
