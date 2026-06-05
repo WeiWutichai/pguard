@@ -10,16 +10,26 @@ use tower_http::cors::CorsLayer;
 
 use crate::error::AppError;
 
+/// The allowed browser origins from `CORS_ALLOWED_ORIGINS` (comma-separated, trimmed),
+/// defaulting to `http://localhost:3000` for dev. Single source of truth so the CORS layer
+/// and any manual origin check (e.g. the gateway's WebSocket-upgrade gate, which CORS does
+/// NOT cover) agree on exactly the same allowlist.
+pub fn cors_allowed_origins() -> Vec<String> {
+    std::env::var("CORS_ALLOWED_ORIGINS")
+        .unwrap_or_else(|_| "http://localhost:3000".to_string())
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
 /// Build a CORS layer from `CORS_ALLOWED_ORIGINS` (comma-separated).
 /// Defaults to `http://localhost:3000` for dev. Never permissive — `allow_credentials(true)`
 /// forbids the `*` wildcard, so origins are always explicit.
 pub fn build_cors_layer() -> CorsLayer {
-    let origins_str = std::env::var("CORS_ALLOWED_ORIGINS")
-        .unwrap_or_else(|_| "http://localhost:3000".to_string());
-
-    let origins: Vec<HeaderValue> = origins_str
-        .split(',')
-        .filter_map(|s| s.trim().parse().ok())
+    let origins: Vec<HeaderValue> = cors_allowed_origins()
+        .iter()
+        .filter_map(|s| s.parse().ok())
         .collect();
 
     CorsLayer::new()

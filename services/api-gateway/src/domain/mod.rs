@@ -6,10 +6,12 @@
 //!   - [`ratelimit`] — the fixed-window allow/deny *decision* (given a count + limit),
 //!     decoupled from the Redis I/O that produces the count.
 //!   - [`headers`]  — hop-by-hop / spoofable-header filtering rules.
+//!   - [`ws`]       — booking-status event → client frame mapping (topic→status, parse, frame).
 //!
 //! The I/O that *applies* these decisions lives in `auth`, `ratelimit` (middleware),
-//! and `proxy` — per CLAUDE.md's per-service domain layering.
+//! `proxy`, and `ws` (the WebSocket handler + NATS hub) — per CLAUDE.md's domain layering.
 
 pub mod headers;
 pub mod ratelimit;
 pub mod routing;
+pub mod ws;

@@ -9,7 +9,7 @@ name = "pguard-api-gateway"
 path = "src/main.rs"
 
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true }                 # workspace enables the "ws" feature
 tokio = { workspace = true }
 reqwest = { workspace = true }
 redis = { workspace = true }
@@ -21,7 +21,11 @@ jsonwebtoken = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }
 shared = { workspace = true }
+shared-events = { workspace = true }         # booking topic constants for the status WS
+async-nats = { workspace = true }            # subscribe to pguard.events.booking.* (status fan-out)
+futures = { workspace = true }               # WS stream split + NATS subscriber stream
 observability = { workspace = true }
 
 [dev-dependencies]
 tower = { workspace = true }
+tokio-tungstenite = "0.24"                   # real WS client for the gated status-WS e2e test

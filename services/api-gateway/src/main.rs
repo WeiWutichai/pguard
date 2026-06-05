@@ -18,6 +18,7 @@ mod handler;
 mod proxy;
 mod ratelimit;
 mod state;
+mod ws;
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -38,6 +39,9 @@ const PORT: u16 = 3000;
 /// metrics registry (route inventory, traffic, latency) is not scrapable from the internet.
 /// Override with `METRICS_ADDR`; restrict it to the monitoring network in prod.
 const METRICS_PORT: u16 = 9100;
+/// Buffer of in-flight booking-status updates the broadcast hub holds for slow receivers; a
+/// receiver that lags past this gets a `Lagged` signal (the client then REST-refreshes).
+const STATUS_FANOUT_CAPACITY: usize = 1024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -61,12 +65,25 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("build HTTP client")?;
 
+    // --- booking-status WS fan-out: one NATS subscription → broadcast → per-connection ---
+    // The hub owns the single subscription to pguard.events.booking.* and pushes updates to
+    // every connected /v1/ws/bookings/{id} session (which filters to its own booking).
+    let (status_tx, _) = tokio::sync::broadcast::channel(STATUS_FANOUT_CAPACITY);
+    {
+        let nats_url =
+            std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+        let tx = status_tx.clone();
+        tokio::spawn(async move { ws::run_status_hub(nats_url, tx).await });
+    }
+
     let state = AppState {
         http,
         redis_conn,
         jwt_config,
         routes,
         limits,
+        status_tx,
+        allowed_origins: shared::config::cors_allowed_origins().into(),
     };
 
     // --- admin listener: /metrics (+ /healthz) on a SEPARATE port, never on the public
@@ -92,12 +109,14 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // --- public router: gateway's own /healthz (never proxied) + the catch-all edge handler.
-    // The EDGE telemetry middleware starts a fresh root trace — an untrusted client must not
-    // be able to supply the trace context (forge trace_id / force sampling). `/metrics` is
-    // NOT here; it lives on the admin listener above. ---
+    // --- public router: gateway's own /healthz (never proxied) + the booking-status WS
+    // (specific route, matches before the catch-all) + the catch-all edge handler. The EDGE
+    // telemetry middleware starts a fresh root trace — an untrusted client must not be able to
+    // supply the trace context (forge trace_id / force sampling). `/metrics` is NOT here; it
+    // lives on the admin listener above. ---
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/ws/bookings/{id}", get(ws::ws_bookings))
         .route("/{*path}", any(handler::gateway))
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(
