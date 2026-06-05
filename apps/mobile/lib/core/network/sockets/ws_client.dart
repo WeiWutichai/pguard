@@ -40,6 +40,8 @@ class ReconnectingWebSocket {
 
   final StreamController<Map<String, dynamic>> _controller =
       StreamController<Map<String, dynamic>>.broadcast();
+  final StreamController<bool> _connController =
+      StreamController<bool>.broadcast();
   WebSocketChannel? _channel;
   StreamSubscription<dynamic>? _sub;
   Timer? _reconnectTimer;
@@ -49,6 +51,20 @@ class ReconnectingWebSocket {
 
   /// Decoded JSON frames (object frames only; non-JSON heartbeats are dropped).
   Stream<Map<String, dynamic>> get messages => _controller.stream;
+
+  /// Connection liveness: emits `true` when a channel opens, `false` when it drops (before the
+  /// reconnect attempt). Lets bidirectional callers (e.g. the presence GPS stream) reflect an
+  /// online/connecting/offline state. Inbound-only callers can ignore it.
+  Stream<bool> get connectionChanges => _connController.stream;
+
+  /// Send a frame to the server (e.g. an outbound GPS sample). JSON-encoded unless already a
+  /// String. No-op (dropped) when not currently connected — ephemeral frames like GPS samples
+  /// are superseded by the next one, so we never queue.
+  void send(Object data) {
+    final channel = _channel;
+    if (_closed || channel == null) return;
+    channel.sink.add(data is String ? data : jsonEncode(data));
+  }
 
   /// Open the connection (idempotent; no-op after [close]).
   Future<void> connect() async {
@@ -76,6 +92,7 @@ class ReconnectingWebSocket {
         onError: (Object _) => _onClosed(),
         cancelOnError: true,
       );
+      _emitConnection(true);
     } catch (_) {
       _scheduleReconnect();
     } finally {
@@ -102,7 +119,12 @@ class ReconnectingWebSocket {
     _sub?.cancel();
     _sub = null;
     _channel = null;
+    _emitConnection(false);
     if (!_closed) _scheduleReconnect();
+  }
+
+  void _emitConnection(bool connected) {
+    if (!_connController.isClosed) _connController.add(connected);
   }
 
   void _scheduleReconnect() {
@@ -121,5 +143,6 @@ class ReconnectingWebSocket {
     await _sub?.cancel();
     await _channel?.sink.close();
     if (!_controller.isClosed) await _controller.close();
+    if (!_connController.isClosed) await _connController.close();
   }
 }

@@ -1,9 +1,16 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:pguard_mobile/core/location/location_service.dart';
+import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/models/geo.dart';
+import 'package:pguard_mobile/core/models/tracking.dart';
 import 'package:pguard_mobile/core/network/api_client.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
+import 'package:pguard_mobile/core/network/check_in_service.dart';
 import 'package:pguard_mobile/core/network/sockets/booking_status_socket.dart';
+import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
 import 'package:pguard_mobile/core/storage/secure_store.dart';
 
 /// In-memory [AppStore] for tests — keeps the app off platform channels (FlutterSecureStorage).
@@ -131,6 +138,79 @@ class FakeBookingFeed implements BookingStatusFeed {
   }
 
   void emit(BookingStatusEvent event) => _controller.add(event);
+}
+
+/// Fake [PresenceFeed] — records the GPS samples streamed up and lets tests drive link state.
+class FakePresenceFeed implements PresenceFeed {
+  final StreamController<PresenceLink> _link =
+      StreamController<PresenceLink>.broadcast();
+  final List<GpsSample> sent = [];
+  bool connected = false;
+  bool closed = false;
+
+  @override
+  Stream<PresenceLink> get link => _link.stream;
+
+  @override
+  Future<void> connect() async {
+    connected = true;
+    _link.add(PresenceLink.online);
+  }
+
+  @override
+  void sendLocation(GpsSample sample) => sent.add(sample);
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    if (!_link.isClosed) await _link.close();
+  }
+
+  void emitLink(PresenceLink link) => _link.add(link);
+}
+
+/// Fake [LocationService] — a controllable GPS position stream (no native channels).
+class FakeLocationService implements LocationService {
+  final StreamController<GpsSample> _positions =
+      StreamController<GpsSample>.broadcast();
+
+  void emit(GpsSample sample) => _positions.add(sample);
+
+  @override
+  Stream<GpsSample> positionStream() => _positions.stream;
+
+  @override
+  Future<GeoPoint?> currentLocation() async => GeoPoint.bangkok;
+
+  @override
+  Future<String> reverseGeocode(GeoPoint point) async => 'fake place';
+}
+
+/// Fake [CheckInService] — records submissions; optionally fails.
+class FakeCheckInService implements CheckInService {
+  FakeCheckInService({this.fail = false});
+
+  final bool fail;
+  final List<int> submitted = [];
+
+  @override
+  Future<void> submit({
+    required String bookingId,
+    required int hourNumber,
+    required CapturedPhoto photo,
+    GpsSample? gps,
+    String? note,
+  }) async {
+    if (fail) throw const ApiException(message: 'check-in failed');
+    submitted.add(hourNumber);
+  }
+}
+
+/// Fake [PhotoCaptureService] — returns a canned photo.
+class FakePhotoCaptureService implements PhotoCaptureService {
+  @override
+  Future<CapturedPhoto?> capture() async =>
+      const CapturedPhoto(path: '/tmp/checkpoint.jpg', sizeBytes: 1024);
 }
 
 /// Build an UNSIGNED-but-well-formed JWT with the given claims (for client `exp`/`role`
