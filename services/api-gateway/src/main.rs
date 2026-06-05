@@ -18,6 +18,7 @@ mod handler;
 mod proxy;
 mod ratelimit;
 mod state;
+mod ws;
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -34,6 +35,9 @@ use crate::state::{AppState, UpstreamTable};
 
 const SERVICE_NAME: &str = "api-gateway";
 const PORT: u16 = 3000;
+/// Buffer of in-flight booking-status updates the broadcast hub holds for slow receivers; a
+/// receiver that lags past this gets a `Lagged` signal (the client then REST-refreshes).
+const STATUS_FANOUT_CAPACITY: usize = 1024;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -57,17 +61,32 @@ async fn main() -> anyhow::Result<()> {
         .build()
         .context("build HTTP client")?;
 
+    // --- booking-status WS fan-out: one NATS subscription → broadcast → per-connection ---
+    // The hub owns the single subscription to pguard.events.booking.* and pushes updates to
+    // every connected /v1/ws/bookings/{id} session (which filters to its own booking).
+    let (status_tx, _) = tokio::sync::broadcast::channel(STATUS_FANOUT_CAPACITY);
+    {
+        let nats_url =
+            std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+        let tx = status_tx.clone();
+        tokio::spawn(async move { ws::run_status_hub(nats_url, tx).await });
+    }
+
     let state = AppState {
         http,
         redis_conn,
         jwt_config,
         routes,
         limits,
+        status_tx,
+        allowed_origins: shared::config::cors_allowed_origins().into(),
     };
 
-    // --- router: gateway's own /healthz (never proxied) + the catch-all edge handler ---
+    // --- router: gateway's own /healthz + the booking-status WS + the catch-all edge handler.
+    // The specific WS route matches before the catch-all proxy. ---
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/v1/ws/bookings/{id}", get(ws::ws_bookings))
         .route("/{*path}", any(handler::gateway))
         .layer(shared::config::build_cors_layer())
         .with_state(state);

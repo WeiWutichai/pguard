@@ -229,6 +229,8 @@ mod tests {
                 auth_per_sec: 10_000,
                 api_per_sec: 10_000,
             },
+            status_tx: tokio::sync::broadcast::channel(16).0,
+            allowed_origins: std::sync::Arc::from(vec!["http://localhost:3000".to_string()]),
         }
     }
 

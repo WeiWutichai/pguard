@@ -5,14 +5,18 @@
 //! (not in `domain`) keeps `domain` free of env/IO.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use jsonwebtoken::DecodingKey;
 
 use shared::auth::HasJwtSecret;
 use shared::config::JwtConfig;
 
+use tokio::sync::broadcast;
+
 use crate::domain::ratelimit::Limits;
 use crate::domain::routing::Upstream;
+use crate::domain::ws::StatusUpdate;
 
 /// Resolved base URLs for every upstream, keyed by [`Upstream`].
 #[derive(Debug, Clone)]
@@ -85,6 +89,13 @@ pub struct AppState {
     pub routes: UpstreamTable,
     /// Per-tier rate limits.
     pub limits: Limits,
+    /// Fan-out of live booking-status updates (fed by the NATS hub) to the per-connection
+    /// WebSocket receivers. Each `/v1/ws/bookings/{id}` connection subscribes and filters
+    /// to its own booking id.
+    pub status_tx: broadcast::Sender<StatusUpdate>,
+    /// Allowed browser origins (same allowlist as CORS) — the WS upgrade checks `Origin`
+    /// against this because CORS does not cover WebSocket handshakes.
+    pub allowed_origins: Arc<[String]>,
 }
 
 /// Lets the gateway reuse shared auth helpers/typing that key off [`HasJwtSecret`].

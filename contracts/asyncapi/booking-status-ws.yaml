@@ -1,0 +1,92 @@
+asyncapi: 3.0.0
+info:
+  title: pguard — Booking-status WebSocket (client-facing)
+  version: 0.1.0
+  description: |
+    The real-time booking/assignment status feed the **mobile** live-status screen subscribes
+    to (Phase 2: WebSocket replaces v1's Timer.periodic polling). Exposed AT THE GATEWAY edge
+    and terminated there: the gateway authenticates the upgrade, authorizes the caller as a
+    booking participant (delegated to booking's own `GET /bookings/{id}`), then fans out the
+    `pguard.events.booking.*` NATS events (see `events.yaml`) to the connected client as
+    `booking_status` frames — filtered to the subscribed booking id.
+
+    This is the client contract the mobile track coded against
+    (`apps/mobile/lib/core/network/sockets/booking_status_socket.dart`). It is NOT an
+    inter-service NATS topic — for those see `events.yaml`.
+
+defaultContentType: application/json
+
+servers:
+  gatewayWs:
+    host: localhost:3000
+    protocol: ws
+    description: |
+      api-gateway `/v1` edge. Connect with the access token in the `Authorization: Bearer`
+      header on the HTTP upgrade — NEVER in the URL query. The connection is re-authenticated
+      every 60s and closed if the token expires or is revoked.
+
+channels:
+  bookingStatus:
+    address: /v1/ws/bookings/{bookingId}
+    parameters:
+      bookingId:
+        description: The booking to subscribe to. The caller must be its customer or assigned guard.
+    messages:
+      bookingStatus:
+        $ref: '#/components/messages/BookingStatus'
+    description: |
+      Server→client only (the client sends nothing; inbound frames are ignored). On connect the
+      server sends an initial snapshot frame with the booking's current status, then one frame
+      per subsequent status transition. `pending_completion` has no NATS event and therefore
+      arrives ONLY via the initial snapshot (or a reconnect's snapshot), never as a live push.
+
+operations:
+  receiveBookingStatus:
+    action: receive
+    channel:
+      $ref: '#/channels/bookingStatus'
+    summary: Receive booking status transitions for the subscribed booking.
+
+components:
+  messages:
+    BookingStatus:
+      name: bookingStatus
+      title: Booking status frame
+      contentType: application/json
+      payload:
+        type: object
+        required: [type, booking_id, status]
+        properties:
+          type:
+            type: string
+            const: booking_status
+          booking_id:
+            type: string
+            format: uuid
+          status:
+            type: string
+            enum:
+              - requested
+              - accepted
+              - declined
+              - en_route
+              - arrived
+              - pending_completion
+              - completed
+              - cancelled
+          occurred_at:
+            type: string
+            format: date-time
+            description: Producer clock (UTC, RFC 3339). Snapshot frames use the connect time.
+          guard_id:
+            type: string
+            format: uuid
+            description: Present once a guard is assigned.
+      examples:
+        - name: enRoute
+          payload:
+            type: booking_status
+            booking_id: 11111111-1111-1111-1111-111111111111
+            status: en_route
+            occurred_at: "2026-06-05T10:00:00Z"
+            guard_id: 22222222-2222-2222-2222-222222222222
