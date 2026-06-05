@@ -118,6 +118,41 @@ pub fn extract_cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'
     })
 }
 
+/// Validate a raw access token END-TO-END: decode (signature/exp/iss/aud) THEN check the
+/// Redis per-jti revocation blocklist + per-user force-revoke-all (`trv`). Returns the claims,
+/// or `Unauthorized` if expired/revoked. Shared by the [`AuthUser`] extractor (one-shot, per
+/// request) AND by long-lived sessions (e.g. the calling WS relay) that must RE-validate
+/// periodically — an open socket must not outlive token expiry or a force-revoke-all.
+pub async fn authenticate_token(
+    token: &str,
+    decoding_key: &DecodingKey,
+    redis: &redis::aio::MultiplexedConnection,
+) -> Result<JwtClaims, AppError> {
+    let claims = decode_jwt_with_key(token, decoding_key)?;
+    let mut redis = redis.clone();
+
+    let is_revoked: bool = redis
+        .exists(format!("revoked_jti:{}", claims.jti))
+        .await
+        .unwrap_or(false);
+    if is_revoked {
+        return Err(AppError::Unauthorized("Token has been revoked".to_string()));
+    }
+
+    // Per-user force-revoke-all: a token stamped with a version older than the user's current
+    // one is rejected. `user_trv:{user_id}` absent ⇒ version 0 (never revoked).
+    let current_trv: i64 = redis
+        .get::<_, Option<i64>>(format!("user_trv:{}", claims.sub))
+        .await
+        .unwrap_or(None)
+        .unwrap_or(0);
+    if claims.trv < current_trv {
+        return Err(AppError::Unauthorized("Token has been revoked".to_string()));
+    }
+
+    Ok(claims)
+}
+
 /// Authenticated user, extracted from a validated (non-revoked) JWT.
 #[derive(Debug, Clone, ToSchema)]
 pub struct AuthUser {
@@ -168,27 +203,8 @@ where
             }
         }
 
-        let claims = decode_jwt_with_key(&token, state.decoding_key())?;
-
-        // Revocation blocklist (Redis).
-        let mut redis = state.redis_conn().clone();
-        let revoked_key = format!("revoked_jti:{}", claims.jti);
-        let is_revoked: bool = redis.exists(&revoked_key).await.unwrap_or(false);
-        if is_revoked {
-            return Err(AppError::Unauthorized("Token has been revoked".to_string()));
-        }
-
-        // Per-user force-revoke-all: reject access tokens stamped with a revocation version
-        // older than the user's current one. identity bumps the version and publishes
-        // `user_trv:{user_id}`; absence means version 0 (never revoked). 1 Redis GET/decode.
-        let current_trv: i64 = redis
-            .get::<_, Option<i64>>(format!("user_trv:{}", claims.sub))
-            .await
-            .unwrap_or(None)
-            .unwrap_or(0);
-        if claims.trv < current_trv {
-            return Err(AppError::Unauthorized("Token has been revoked".to_string()));
-        }
+        // Decode + revocation/force-revoke checks (shared with long-lived WS re-auth).
+        let claims = authenticate_token(&token, state.decoding_key(), state.redis_conn()).await?;
 
         Ok(AuthUser {
             user_id: claims.sub,

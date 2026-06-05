@@ -9,8 +9,24 @@ name = "pguard-calling"
 path = "src/main.rs"
 
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true }              # workspace enables the "ws" feature (WS signaling)
 tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }            # AuthUser extractor needs the jti revocation blocklist
+serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + service-JWT minting
+reqwest = { workspace = true }          # calls booking's /internal read (service-JWT'd authz)
+async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
+futures = { workspace = true }          # WS stream split + relay fan-out
 tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+shared-events = { workspace = true }
 observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }                          # ServiceExt::oneshot for router/WS-upgrade tests
+tokio-tungstenite = "0.24"                            # real WS client for the 2-peer relay test

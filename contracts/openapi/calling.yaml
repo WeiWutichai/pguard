@@ -1,0 +1,249 @@
+openapi: 3.1.0
+info:
+  title: pguard — Calling Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the calling service (source of truth — codegen produces Rust
+    handler stubs/types, the Dart client, the TS client). WebRTC voice/video SIGNALING; the
+    media plane is the Node mediasoup SFU (brokered by calling over a service-JWT).
+
+    v2 rules baked into the contract:
+      1. **Participant-only authz.** A call may only be placed between the two participants of
+         an ACTIVE booking — verified via booking's service-JWT'd `/internal/bookings/{id}`.
+         The `callee` is DERIVED from the booking (the other participant), never supplied by
+         the client (no dialing strangers / IDOR).
+      2. **Events (outbox).** State changes emit `pguard.events.calling.{initiated,accepted,
+         rejected,ended}` in the SAME tx (transactional outbox); notification consumes them.
+      3. **Generic errors.** No enumeration / no internal leak.
+
+    ## WebSocket signaling — `GET /ws/call`
+    - **Auth = `Authorization: Bearer <access-token>` on the upgrade request.** A token in the
+      URL query is NEVER read → such a request is rejected `401` (no sensitive data in the WS
+      URL). This is not expressible in OpenAPI paths, so it is documented here.
+    - After open, the client sends JSON frames:
+      `{ "type": "signal", "call_id": "<uuid>", "signal": <opaque SDP/ICE> }`.
+      The server looks up the call's two participants, verifies the sender is one of them, and
+      forwards `{ "type": "signal", "from": "<uuid>", "call_id": "<uuid>", "signal": ... }` to
+      the OTHER participant's live socket. Errors come back as
+      `{ "type": "error", "message": "<reason>" }`. A non-participant / unknown call is refused.
+
+    Client-facing paths are served behind the gateway under `/v1`. Success responses use the
+    standard `{ success, data }` envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3008
+    description: Local dev (calling-service direct)
+
+tags:
+  - name: Calls
+    description: Call control (signaling lifecycle)
+
+paths:
+  /calls/initiate:
+    post:
+      tags: [Calls]
+      summary: Start a call to the other participant of a booking
+      description: |
+        Initiates a call. The handler verifies (via booking's internal read) that the caller
+        is the booking's customer or assigned guard and the booking is active; the `callee` is
+        DERIVED as the other participant. Inserts an `initiated` call + emits `calling.initiated`.
+        409 if the callee is already busy or the booking has no assigned guard / is inactive.
+      operationId: initiateCall
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/InitiateCallRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /calls/{id}:
+    get:
+      tags: [Calls]
+      summary: Get a call the caller participates in (or admin)
+      operationId: getCall
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /calls/{id}/accept:
+    put:
+      tags: [Calls]
+      summary: Callee accepts a ringing call (initiated → accepted)
+      operationId: acceptCall
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /calls/{id}/reject:
+    put:
+      tags: [Calls]
+      summary: Callee rejects a ringing call (initiated → rejected)
+      operationId: rejectCall
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /calls/{id}/connected:
+    put:
+      tags: [Calls]
+      summary: Report media connected (accepted → connected)
+      operationId: connectedCall
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /calls/{id}/end:
+    put:
+      tags: [Calls]
+      summary: End a call (→ ended, or → missed if never answered)
+      description: Either participant may end. A never-answered call becomes `missed`; otherwise `ended` with a derived `duration_seconds`. Emits `calling.ended`.
+      operationId: endCall
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EndCallRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/CallOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web; for WS, Bearer on the upgrade request only.
+
+  parameters:
+    CallId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    CallOk:
+      description: The call
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Call' }
+    BadRequest:
+      description: Invalid request (e.g. unknown call_type)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Forbidden:
+      description: Authenticated but not a participant (or wrong participant for the action)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    NotFound:
+      description: Call or booking not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Conflict:
+      description: Illegal state transition, callee busy, or booking not callable
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+
+  schemas:
+    CallStatus:
+      type: string
+      enum: [initiated, accepted, connected, ended, rejected, missed]
+    CallType:
+      type: string
+      enum: [audio, video]
+
+    InitiateCallRequest:
+      type: object
+      required: [booking_id]
+      properties:
+        booking_id:
+          type: string
+          format: uuid
+          description: The active booking whose other participant is called (callee derived server-side).
+        call_type: { $ref: '#/components/schemas/CallType' }
+
+    EndCallRequest:
+      type: object
+      properties:
+        reason: { type: string, nullable: true, description: 'Optional audit reason (e.g. "hangup").' }
+
+    Call:
+      type: object
+      required: [id, caller_id, callee_id, booking_id, call_type, status, started_at, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        caller_id: { type: string, format: uuid }
+        callee_id: { type: string, format: uuid }
+        booking_id: { type: string, format: uuid }
+        call_type: { $ref: '#/components/schemas/CallType' }
+        status: { $ref: '#/components/schemas/CallStatus' }
+        started_at: { type: string, format: date-time }
+        answered_at: { type: string, format: date-time, nullable: true }
+        ended_at: { type: string, format: date-time, nullable: true }
+        duration_seconds: { type: integer, format: int32, nullable: true }
+        end_reason: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: CONFLICT }
+        message: { type: string }
