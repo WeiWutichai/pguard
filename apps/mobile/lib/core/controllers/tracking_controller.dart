@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/tracking.dart';
 import '../network/sockets/presence_socket.dart';
 import '../providers.dart';
+import 'session_controller.dart';
 
 part 'tracking_controller.g.dart';
 
@@ -53,6 +54,13 @@ class TrackingController extends _$TrackingController {
   @override
   TrackingState build() {
     ref.onDispose(_teardown);
+    // Going offline must follow the guard out of the session — otherwise GPS keeps streaming
+    // after logout (this provider is keepAlive and would survive the dashboard leaving).
+    ref.listen(sessionProvider, (_, next) {
+      if (next.status != SessionStatus.authenticated && state.online) {
+        goOffline();
+      }
+    });
     return const TrackingState();
   }
 
@@ -71,6 +79,10 @@ class TrackingController extends _$TrackingController {
       if (state.online) state = state.copyWith(link: link);
     });
     await feed.connect();
+    // goOffline() may have raced in during the await — _teardown ran and already closed the
+    // feed, but it could not cancel _posSub (not assigned yet). Bail before subscribing so we
+    // never orphan a GPS subscription that streams to a closed feed.
+    if (!state.online) return;
 
     _posSub = ref.read(locationServiceProvider).positionStream().listen((s) {
       if (!state.online) return;

@@ -41,6 +41,7 @@ class _CheckInSheet extends ConsumerStatefulWidget {
 class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
   final TextEditingController _note = TextEditingController();
   CapturedPhoto? _photo;
+  GpsSample? _gps; // captured WITH the photo so the coordinate matches the shot
   bool _busy = false;
   String? _error;
 
@@ -60,6 +61,8 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
     }
     setState(() {
       _photo = photo;
+      // Stamp the GPS fix at the moment of capture (not at submit) for the audit trail.
+      _gps = ref.read(trackingControllerProvider).lastSample;
       _error = null;
     });
   }
@@ -71,13 +74,12 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
       _busy = true;
       _error = null;
     });
-    final GpsSample? gps = ref.read(trackingControllerProvider).lastSample;
     final ok = await ref
         .read(activeJobControllerProvider(widget.bookingId).notifier)
         .submitCheckIn(
           hourNumber: widget.hourNumber,
           photo: photo,
-          gps: gps,
+          gps: _gps,
           note: _note.text.trim().isEmpty ? null : _note.text.trim(),
         );
     if (!mounted) return;

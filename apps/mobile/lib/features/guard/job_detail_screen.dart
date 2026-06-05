@@ -29,15 +29,10 @@ class JobDetailScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _decline(BuildContext context, WidgetRef ref) async {
-    final err =
-        await ref.read(guardJobsControllerProvider.notifier).decline(bookingId);
-    if (!context.mounted) return;
-    if (err != null) {
-      _snack(context, err);
-    } else {
-      context.pop();
-    }
+  // First-come-accept: skipping an unaccepted offer is a local dismiss, not a server call.
+  void _dismiss(BuildContext context, WidgetRef ref) {
+    ref.read(guardJobsControllerProvider.notifier).dismiss(bookingId);
+    context.pop();
   }
 
   static void _snack(BuildContext context, String msg) =>
@@ -72,7 +67,7 @@ class JobDetailScreen extends ConsumerWidget {
           data: (state) => _Body(
             booking: state.booking,
             onAccept: () => _accept(context, ref),
-            onDecline: () => _decline(context, ref),
+            onDismiss: () => _dismiss(context, ref),
           ),
         ),
       ),
@@ -84,12 +79,12 @@ class _Body extends StatelessWidget {
   const _Body({
     required this.booking,
     required this.onAccept,
-    required this.onDecline,
+    required this.onDismiss,
   });
 
   final Booking booking;
   final VoidCallback onAccept;
-  final VoidCallback onDecline;
+  final VoidCallback onDismiss;
 
   @override
   Widget build(BuildContext context) {
@@ -136,7 +131,7 @@ class _Body extends StatelessWidget {
                 children: [
                   SizedBox(
                     width: 110,
-                    child: PgGhostButton(label: 'ปฏิเสธ', onPressed: onDecline),
+                    child: PgGhostButton(label: 'ข้าม', onPressed: onDismiss),
                   ),
                   const SizedBox(width: PgTokens.space2),
                   Expanded(

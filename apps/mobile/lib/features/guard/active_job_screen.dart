@@ -273,7 +273,9 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
           const SizedBox(height: PgTokens.space3),
           if (dueNow)
             PgPrimaryButton(
-              label: 'เช็คอินรอบที่ $dueIndex / Check in now',
+              label: dueIndex == 0
+                  ? 'เช็คอินเริ่มงาน / Start check-in'
+                  : 'เช็คอินรอบที่ $dueIndex / Check in now',
               color: PgTokens.colorAccent,
               foreground: PgTokens.colorOnAmber,
               onPressed: () => _checkIn(dueIndex),
@@ -324,18 +326,13 @@ class _TransitionBar extends ConsumerWidget {
   final String bookingId;
   final ActiveJobState state;
 
-  Future<void> _run(BuildContext context, WidgetRef ref,
-      Future<bool> Function() action) async {
-    await action();
-  }
-
-  Future<void> _complete(BuildContext context, WidgetRef ref) async {
-    final yes = await showDialog<bool>(
+  Future<bool?> _confirm(
+      BuildContext context, String title, String body) {
+    return showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
-        title: const Text('จบงาน / Complete job?'),
-        content: const Text(
-            'ส่งคำขอจบงานให้ลูกค้าตรวจสอบ — ย้อนกลับไม่ได้\nThis requests completion and cannot be undone.'),
+        title: Text(title),
+        content: Text(body),
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(c, false),
@@ -346,9 +343,23 @@ class _TransitionBar extends ConsumerWidget {
         ],
       ),
     );
-    if (yes == true) {
-      await ref.read(activeJobControllerProvider(bookingId).notifier).complete();
-    }
+  }
+
+  Future<void> _complete(BuildContext context, WidgetRef ref) async {
+    // Capture the notifier BEFORE the dialog await so we never touch `ref` post-await.
+    final notifier = ref.read(activeJobControllerProvider(bookingId).notifier);
+    final yes = await _confirm(context, 'จบงาน / Complete job?',
+        'ส่งคำขอจบงานให้ลูกค้าตรวจสอบ — ย้อนกลับไม่ได้\nThis requests completion and cannot be undone.');
+    if (yes == true) await notifier.complete();
+  }
+
+  Future<void> _withdraw(BuildContext context, WidgetRef ref) async {
+    final notifier = ref.read(activeJobControllerProvider(bookingId).notifier);
+    final yes = await _confirm(context, 'ปฏิเสธงาน / Withdraw?',
+        'ถอนตัวจากงานนี้ — ย้อนกลับไม่ได้\nThis releases the job and cannot be undone.');
+    if (yes != true) return;
+    final ok = await notifier.withdraw();
+    if (ok && context.mounted) context.go('/home/guard');
   }
 
   @override
@@ -368,16 +379,26 @@ class _TransitionBar extends ConsumerWidget {
 
     switch (stage) {
       case JobStage.enRoute:
-        return bar(PgPrimaryButton(
-          label: 'เริ่มเดินทาง / Go en route',
-          busy: busy,
-          onPressed: busy ? null : () => _run(context, ref, ctrl.enRoute),
+        return bar(Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            PgPrimaryButton(
+              label: 'เริ่มเดินทาง / Go en route',
+              busy: busy,
+              onPressed: busy ? null : () => ctrl.enRoute(),
+            ),
+            const SizedBox(height: PgTokens.space1),
+            PgGhostButton(
+              label: 'ปฏิเสธงาน / Withdraw',
+              onPressed: busy ? null : () => _withdraw(context, ref),
+            ),
+          ],
         ));
       case JobStage.arrived:
         return bar(PgPrimaryButton(
           label: 'ถึงจุดนัดแล้ว / Arrived',
           busy: busy,
-          onPressed: busy ? null : () => _run(context, ref, ctrl.arrived),
+          onPressed: busy ? null : () => ctrl.arrived(),
         ));
       case JobStage.start:
         return bar(PgPrimaryButton(
@@ -385,7 +406,7 @@ class _TransitionBar extends ConsumerWidget {
           color: PgTokens.colorAccent,
           foreground: PgTokens.colorOnAmber,
           busy: busy,
-          onPressed: busy ? null : () => _run(context, ref, ctrl.start),
+          onPressed: busy ? null : () => ctrl.start(),
         ));
       case JobStage.working:
         return bar(PgPrimaryButton(

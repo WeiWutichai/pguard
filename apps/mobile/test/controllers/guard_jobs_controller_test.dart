@@ -45,16 +45,12 @@ void main() {
     expect(GuardJobsController.active(list).map((b) => b.id), ['b2']);
   });
 
-  test('accept POSTs and decline PUTs the correct paths', () async {
+  test('accept POSTs the correct path', () async {
     final api = FakeApi(
       onGet: (_, __) async => [bookingJson('b1', 'requested')],
       onPost: (path, _) async {
         expect(path, '/bookings/b1/accept');
         return bookingJson('b1', 'accepted');
-      },
-      onPut: (path, _) async {
-        expect(path, '/bookings/b1/decline');
-        return bookingJson('b1', 'declined');
       },
     );
     final c = ProviderContainer(overrides: [
@@ -63,13 +59,28 @@ void main() {
     ]);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
-    final ctrl = c.read(guardJobsControllerProvider.notifier);
 
-    expect(await ctrl.accept('b1'), isNull); // null = success
+    expect(await c.read(guardJobsControllerProvider.notifier).accept('b1'),
+        isNull); // null = success
     expect(api.calls, contains('POST /bookings/b1/accept'));
+  });
 
-    expect(await ctrl.decline('b1'), isNull);
-    expect(api.calls, contains('PUT /bookings/b1/decline'));
+  test('dismiss hides an offer locally with NO API call', () async {
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          [bookingJson('b1', 'requested'), bookingJson('b2', 'requested')],
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+    await c.read(guardJobsControllerProvider.future);
+
+    c.read(guardJobsControllerProvider.notifier).dismiss('b1');
+    expect(c.read(guardJobsControllerProvider).value!.map((b) => b.id), ['b2']);
+    // First-come-accept: dismiss must not call the (illegal pre-accept) decline endpoint.
+    expect(api.calls, ['GET /bookings']);
   });
 
   test('accept surfaces the server error message (and does not throw)', () async {

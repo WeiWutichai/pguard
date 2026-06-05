@@ -11,11 +11,14 @@ void main() {
   Future<void> flush() => Future<void>.delayed(Duration.zero);
 
   ProviderContainer makeContainer(FakePresenceFeed feed, FakeLocationService loc) {
+    // access + refresh present + no PIN → Session resolves to `authenticated`, so the
+    // controller's logout-teardown listener stays dormant during the test.
     final c = ProviderContainer(overrides: [
       presenceFeedBuilderProvider.overrideWithValue((_) => feed),
       locationServiceProvider.overrideWithValue(loc),
       pguardApiProvider.overrideWithValue(FakeApi()),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
     return c;

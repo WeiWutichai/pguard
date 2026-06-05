@@ -27,10 +27,9 @@ class GuardHomeScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _decline(BuildContext context, WidgetRef ref, String id) async {
-    final err = await ref.read(guardJobsControllerProvider.notifier).decline(id);
-    if (context.mounted && err != null) _snack(context, err);
-  }
+  // First-come-accept: an unaccepted offer can't be "declined" server-side — just hide it.
+  void _dismiss(WidgetRef ref, String id) =>
+      ref.read(guardJobsControllerProvider.notifier).dismiss(id);
 
   static void _snack(BuildContext context, String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -73,7 +72,7 @@ class GuardHomeScreen extends ConsumerWidget {
                   incoming: GuardJobsController.incoming(all),
                   active: GuardJobsController.active(all),
                   onAccept: (id) => _accept(context, ref, id),
-                  onDecline: (id) => _decline(context, ref, id),
+                  onDismiss: (id) => _dismiss(ref, id),
                   onOpenActive: (id) => context.push('/guard/active/$id'),
                   onOpenDetail: (id) => context.push('/guard/job/$id'),
                 ),
@@ -91,7 +90,7 @@ class _JobsBody extends StatelessWidget {
     required this.incoming,
     required this.active,
     required this.onAccept,
-    required this.onDecline,
+    required this.onDismiss,
     required this.onOpenActive,
     required this.onOpenDetail,
   });
@@ -99,7 +98,7 @@ class _JobsBody extends StatelessWidget {
   final List<Booking> incoming;
   final List<Booking> active;
   final void Function(String id) onAccept;
-  final void Function(String id) onDecline;
+  final void Function(String id) onDismiss;
   final void Function(String id) onOpenActive;
   final void Function(String id) onOpenDetail;
 
@@ -129,8 +128,8 @@ class _JobsBody extends StatelessWidget {
                   SizedBox(
                     width: 96,
                     child: PgGhostButton(
-                      label: 'ปฏิเสธ',
-                      onPressed: () => onDecline(b.id),
+                      label: 'ข้าม',
+                      onPressed: () => onDismiss(b.id),
                     ),
                   ),
                   const SizedBox(width: PgTokens.space2),

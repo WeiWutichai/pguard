@@ -83,6 +83,28 @@ void main() {
         ]));
   });
 
+  test('withdraw PUTs decline (assigned-guard withdraw → declined)', () async {
+    final api = FakeApi(
+      onGet: (_, __) async => bookingJson('b1', 'accepted'),
+      onPut: (path, _) async {
+        expect(path, '/bookings/b1/decline');
+        return bookingJson('b1', 'declined');
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+    await c.read(activeJobControllerProvider('b1').future);
+
+    expect(await c.read(activeJobControllerProvider('b1').notifier).withdraw(),
+        isTrue);
+    expect(c.read(activeJobControllerProvider('b1')).value!.booking.status,
+        BookingStatus.declined);
+    expect(api.calls, contains('PUT /bookings/b1/decline'));
+  });
+
   test('submitCheckIn records the slot via the check-in service', () async {
     final checkIn = FakeCheckInService();
     final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));

@@ -7,7 +7,7 @@ import '../providers.dart';
 part 'guard_jobs_controller.g.dart';
 
 /// The guard's jobs, from `GET /v1/bookings` (the caller's bookings — for a guard, the ones
-/// they are assigned to). Exposes accept (POST) / decline (PUT) actions.
+/// they are assigned to). Exposes accept (POST) + local dismiss of incoming offers.
 ///
 /// BACKEND DEPENDENCY (documented): `GET /v1/bookings` returns only ALREADY-ASSIGNED jobs
 /// (`guard_id = caller`); there is NO open-job discovery feed (`requested` jobs with
@@ -42,9 +42,14 @@ class GuardJobsController extends _$GuardJobsController {
   Future<String?> accept(String id) =>
       _act(() => ref.read(pguardApiProvider).post('/bookings/$id/accept'));
 
-  /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws.
-  Future<String?> decline(String id) =>
-      _act(() => ref.read(pguardApiProvider).put('/bookings/$id/decline'));
+  /// Locally hide an incoming offer the guard isn't taking. v2 is first-come-accept: there is
+  /// NO server-side "decline" for an unassigned `requested` job (PUT decline is the assigned
+  /// guard withdrawing — see [ActiveJobController.withdraw]), so this just removes the card.
+  void dismiss(String id) {
+    final list = state.valueOrNull;
+    if (list == null) return;
+    state = AsyncData(list.where((b) => b.id != id).toList());
+  }
 
   Future<String?> refresh() async {
     ref.invalidateSelf();
