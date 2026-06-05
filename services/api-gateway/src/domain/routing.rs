@@ -328,6 +328,24 @@ mod tests {
     }
 
     #[test]
+    fn booking_lifecycle_subpaths_are_edge_reachable() {
+        // The customer-facing lifecycle actions added to booking must resolve through the
+        // gateway (the single `/bookings` prefix covers every subpath + method).
+        for p in [
+            "/v1/bookings/abc/cancel",
+            "/v1/bookings/abc/review-completion",
+            "/v1/bookings/abc/start",
+            "/v1/bookings/abc/complete",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Booking, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
     fn notifications_routes_to_notification() {
         let (up, fwd, _, tier) = proxy(resolve("/v1/notifications/unread-count"));
         assert_eq!(up, Upstream::Notification);

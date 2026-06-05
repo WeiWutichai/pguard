@@ -1,17 +1,32 @@
 //! PURE booking state machine. No DB/HTTP imports — 100% unit-testable.
 //!
-//! Ported (and tightened) from v1 `../guard-dispatch/services/booking/src/service.rs`
-//! (the `update_assignment_status` transition `match`, lines ~652-665). v1 spread the
-//! lifecycle across two enums (`request_status` + `assignment_status`); v2 collapses it
-//! to one ordered status per booking with a single source-of-truth transition table here.
+//! Ported (and adapted) from v1 `../guard-dispatch/services/booking/src/service.rs`
+//! (`update_assignment_status` + the `assignment_status` enum). v2 collapses v1's two-enum,
+//! per-guard-offer model into ONE first-come lifecycle:
+//!
+//! ```text
+//!   requested ─accept→ accepted ─en_route→ en_route ─arrived→ arrived ─complete→ pending_completion
+//!      │                  │                                                            │  ▲
+//!      │ (no guard yet)   └─decline→ declined (assigned guard withdraws)        approve│  │reject
+//!      └─────────────── cancel ────────────► cancelled (PRE-ARRIVAL only)              ▼  │
+//!                                                                                  completed
+//! ```
+//! - `accept` CLAIMS an unassigned booking (first-come) — there is no per-guard offer, so
+//!   `decline` is the ASSIGNED guard withdrawing after accepting (`accepted → declined`), not
+//!   a refusal of an open request.
+//! - `complete` (by the guard) requests completion → `pending_completion`; the CUSTOMER then
+//!   approves (`→ completed`, emits `booking.completed`) or rejects (`→ arrived`).
+//! - `cancel` is allowed only PRE-ARRIVAL (requested/accepted/en_route) — once work has begun
+//!   at the site the booking runs to completion review.
+//! - `start` (set `work_started_at`) does NOT change status (stays `arrived`); it is a guarded
+//!   side-effect in the repo, not a status transition.
 
 use std::fmt;
 use std::str::FromStr;
 
-/// The booking lifecycle status. Serialized as snake_case to match the Postgres enum
-/// `booking.booking_status` (deliberately NOT `sqlx::Type` — the repo binds
-/// [`BookingStatus::as_db_str`] with a `::booking.booking_status` cast and reads the
-/// column back as text, keeping `domain` free of any DB derives).
+/// The booking lifecycle status. Serialized snake_case to match the Postgres enum
+/// `booking.booking_status` (NOT `sqlx::Type` — the repo binds [`BookingStatus::as_db_str`]
+/// with a `::booking.booking_status` cast and reads the column back as text).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BookingStatus {
@@ -20,6 +35,7 @@ pub enum BookingStatus {
     Declined,
     EnRoute,
     Arrived,
+    PendingCompletion,
     Completed,
     Cancelled,
 }
@@ -33,6 +49,7 @@ impl BookingStatus {
             BookingStatus::Declined => "declined",
             BookingStatus::EnRoute => "en_route",
             BookingStatus::Arrived => "arrived",
+            BookingStatus::PendingCompletion => "pending_completion",
             BookingStatus::Completed => "completed",
             BookingStatus::Cancelled => "cancelled",
         }
@@ -63,6 +80,7 @@ impl FromStr for BookingStatus {
             "declined" => Ok(BookingStatus::Declined),
             "en_route" => Ok(BookingStatus::EnRoute),
             "arrived" => Ok(BookingStatus::Arrived),
+            "pending_completion" => Ok(BookingStatus::PendingCompletion),
             "completed" => Ok(BookingStatus::Completed),
             "cancelled" => Ok(BookingStatus::Cancelled),
             other => Err(format!("unknown booking status: {other}")),
@@ -70,32 +88,39 @@ impl FromStr for BookingStatus {
     }
 }
 
-/// Pure transition guard. Returns `true` iff `from → to` is a legal lifecycle move.
-///
-/// Happy path: `requested → accepted → en_route → arrived → completed`.
-/// Branches: `requested → declined`; any non-terminal, non-`requested` active state may
-/// be `cancelled` (the customer cancels an in-flight booking).
-pub fn can_transition(from: BookingStatus, to: BookingStatus) -> bool {
+/// WHO is allowed to drive a given (legal) transition — the authz dimension the repo enforces
+/// inside the row lock (the API layer only gates the broad role; OWNERSHIP is decided here).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequiredActor {
+    /// `accept` claims an UNASSIGNED booking (the booking must have no guard yet).
+    ClaimUnassigned,
+    /// Only the booking's assigned guard (en_route/arrived/complete/decline).
+    AssignedGuard,
+    /// Only the booking's owner — the customer (cancel / review-completion).
+    RequestOwner,
+}
+
+/// The actor class permitted to drive `from → to`, or `None` if the transition is ILLEGAL.
+/// This is the SINGLE source of truth for both legality ([`can_transition`] derives from it)
+/// and ownership authz (the repo maps the class onto the concrete guard/customer id). Pure.
+pub fn required_actor(from: BookingStatus, to: BookingStatus) -> Option<RequiredActor> {
     use BookingStatus::*;
-    // A terminal status (declined/completed/cancelled) admits no further moves.
+    use RequiredActor::*;
     if from.is_terminal() {
-        return false;
+        return None;
     }
     match (from, to) {
-        // dispatch
-        (Requested, Accepted) => true,
-        (Requested, Declined) => true,
-        // execution
-        (Accepted, EnRoute) => true,
-        (EnRoute, Arrived) => true,
-        (Arrived, Completed) => true,
-        // cancellation: any active post-request state (a guard is committed) may be
-        // cancelled; `requested` is withdrawn the same way.
-        (Requested, Cancelled)
-        | (Accepted, Cancelled)
-        | (EnRoute, Cancelled)
-        | (Arrived, Cancelled) => true,
-        _ => false,
+        (Requested, Accepted) => Some(ClaimUnassigned),
+        // assigned-guard execution path + withdrawal
+        (Accepted, EnRoute) | (EnRoute, Arrived) | (Arrived, PendingCompletion) => {
+            Some(AssignedGuard)
+        }
+        (Accepted, Declined) => Some(AssignedGuard),
+        // customer review of the guard's completion request
+        (PendingCompletion, Completed) | (PendingCompletion, Arrived) => Some(RequestOwner),
+        // cancellation: PRE-ARRIVAL active states only (a guard is not yet on-site)
+        (Requested, Cancelled) | (Accepted, Cancelled) | (EnRoute, Cancelled) => Some(RequestOwner),
+        _ => None,
     }
 }
 
@@ -104,38 +129,78 @@ mod tests {
     use super::BookingStatus::*;
     use super::*;
 
+    /// `true` iff `from → to` is a legal lifecycle move — derived from [`required_actor`]
+    /// (the prod authz path is the single source of truth; this just asserts legality).
+    ///
+    /// Happy path: `requested → accepted → en_route → arrived → pending_completion → completed`.
+    /// Branches: `accepted → declined` (assigned guard withdraws); `pending_completion →
+    /// arrived` (customer rejects completion); `cancelled` from any PRE-ARRIVAL active state.
+    fn can_transition(from: BookingStatus, to: BookingStatus) -> bool {
+        required_actor(from, to).is_some()
+    }
+
     #[test]
     fn happy_path_transitions_are_valid() {
         assert!(can_transition(Requested, Accepted));
         assert!(can_transition(Accepted, EnRoute));
         assert!(can_transition(EnRoute, Arrived));
-        assert!(can_transition(Arrived, Completed));
+        assert!(can_transition(Arrived, PendingCompletion));
+        assert!(can_transition(PendingCompletion, Completed));
     }
 
     #[test]
-    fn decline_and_cancel_branches_are_valid() {
-        assert!(can_transition(Requested, Declined));
+    fn decline_is_assigned_guard_withdrawing_after_accept() {
+        assert!(can_transition(Accepted, Declined));
+        // NOT from an unassigned request (v2 has no per-guard offer to decline).
+        assert!(!can_transition(Requested, Declined));
+        // ...and never after work is underway.
+        assert!(!can_transition(EnRoute, Declined));
+        assert!(!can_transition(Arrived, Declined));
+    }
+
+    #[test]
+    fn customer_review_branches() {
+        assert!(can_transition(PendingCompletion, Completed)); // approve
+        assert!(can_transition(PendingCompletion, Arrived)); // reject → guard finishes
+                                                             // a guard cannot jump arrived straight to completed (must go via review)
+        assert!(!can_transition(Arrived, Completed));
+    }
+
+    #[test]
+    fn cancel_is_pre_arrival_only() {
         assert!(can_transition(Requested, Cancelled));
         assert!(can_transition(Accepted, Cancelled));
         assert!(can_transition(EnRoute, Cancelled));
-        assert!(can_transition(Arrived, Cancelled));
+        // once on-site / in review, no cancel — the job runs to completion review.
+        assert!(!can_transition(Arrived, Cancelled));
+        assert!(!can_transition(PendingCompletion, Cancelled));
     }
 
     #[test]
     fn skipping_states_is_invalid() {
-        // cannot jump straight to arrived/completed
         assert!(!can_transition(Requested, EnRoute));
         assert!(!can_transition(Requested, Arrived));
         assert!(!can_transition(Accepted, Arrived));
-        assert!(!can_transition(Accepted, Completed));
+        assert!(!can_transition(Accepted, PendingCompletion));
+        assert!(!can_transition(EnRoute, PendingCompletion));
         assert!(!can_transition(EnRoute, Completed));
+        assert!(!can_transition(Arrived, Completed));
     }
 
     #[test]
     fn terminal_states_admit_no_transitions() {
         for terminal in [Declined, Completed, Cancelled] {
             assert!(terminal.is_terminal());
-            for to in [Accepted, EnRoute, Arrived, Completed, Cancelled, Requested] {
+            for to in [
+                Requested,
+                Accepted,
+                Declined,
+                EnRoute,
+                Arrived,
+                PendingCompletion,
+                Completed,
+                Cancelled,
+            ] {
                 assert!(
                     !can_transition(terminal, to),
                     "{terminal} → {to} must be rejected (terminal)"
@@ -145,24 +210,88 @@ mod tests {
     }
 
     #[test]
+    fn pending_completion_is_not_terminal() {
+        assert!(!PendingCompletion.is_terminal());
+    }
+
+    #[test]
     fn backwards_and_self_transitions_are_invalid() {
         assert!(!can_transition(Accepted, Requested));
         assert!(!can_transition(Arrived, EnRoute));
         assert!(!can_transition(Accepted, Accepted));
         assert!(!can_transition(EnRoute, EnRoute));
+        assert!(!can_transition(Completed, PendingCompletion));
     }
 
     #[test]
-    fn declined_after_accept_is_invalid() {
-        // decline is only a response to a fresh request, never after acceptance.
-        assert!(!can_transition(Accepted, Declined));
-        assert!(!can_transition(EnRoute, Declined));
+    fn required_actor_maps_each_legal_transition() {
+        use RequiredActor::*;
+        assert_eq!(required_actor(Requested, Accepted), Some(ClaimUnassigned));
+        assert_eq!(required_actor(Accepted, EnRoute), Some(AssignedGuard));
+        assert_eq!(required_actor(EnRoute, Arrived), Some(AssignedGuard));
+        assert_eq!(
+            required_actor(Arrived, PendingCompletion),
+            Some(AssignedGuard)
+        );
+        assert_eq!(required_actor(Accepted, Declined), Some(AssignedGuard));
+        assert_eq!(
+            required_actor(PendingCompletion, Completed),
+            Some(RequestOwner)
+        );
+        assert_eq!(
+            required_actor(PendingCompletion, Arrived),
+            Some(RequestOwner)
+        );
+        assert_eq!(required_actor(Accepted, Cancelled), Some(RequestOwner));
+        // illegal → None (and therefore can_transition false)
+        assert_eq!(required_actor(Arrived, Completed), None);
+        assert_eq!(required_actor(Arrived, Cancelled), None);
+        assert_eq!(required_actor(Completed, Cancelled), None);
+    }
+
+    #[test]
+    fn claim_unassigned_maps_to_exactly_one_transition() {
+        // SECURITY INVARIANT: the repo's participation gate lets a NON-participant past only
+        // when required_actor == ClaimUnassigned (the first-come accept). That is safe only
+        // because exactly ONE transition — (Requested → Accepted) — has that class. If a future
+        // edit adds another ClaimUnassigned arm, non-participants could drive it; this test
+        // fails loudly so the gate is revisited.
+        let all = [
+            Requested,
+            Accepted,
+            Declined,
+            EnRoute,
+            Arrived,
+            PendingCompletion,
+            Completed,
+            Cancelled,
+        ];
+        let mut claims = Vec::new();
+        for from in all {
+            for to in all {
+                if required_actor(from, to) == Some(RequiredActor::ClaimUnassigned) {
+                    claims.push((from, to));
+                }
+            }
+        }
+        assert_eq!(
+            claims,
+            vec![(Requested, Accepted)],
+            "ClaimUnassigned must map to exactly (Requested → Accepted); got {claims:?}"
+        );
     }
 
     #[test]
     fn db_str_roundtrips_through_from_str() {
         for s in [
-            Requested, Accepted, Declined, EnRoute, Arrived, Completed, Cancelled,
+            Requested,
+            Accepted,
+            Declined,
+            EnRoute,
+            Arrived,
+            PendingCompletion,
+            Completed,
+            Cancelled,
         ] {
             let parsed: BookingStatus = s.as_db_str().parse().unwrap();
             assert_eq!(parsed, s);

@@ -54,14 +54,20 @@ fn payload(booking_id: Uuid, customer_id: Uuid, guard_id: Option<Uuid>) -> Value
     }
 }
 
-/// Map a *new* booking status to the event it should emit, or `None` if that status
-/// produces no cross-service event. Pure: the caller (repo) enqueues the returned
-/// mapping into the outbox in the same transaction as the status write.
+/// Map a *transition* (`from → new_status`) to the event it should emit, or `None` if it
+/// produces no cross-service event. Pure: the caller (repo) enqueues the returned mapping
+/// into the outbox in the same transaction as the status write.
+///
+/// The decision depends on BOTH ends of the transition, not just the target: e.g. a fresh
+/// arrival (`en_route → arrived`) notifies the customer, but the customer's completion
+/// REJECT (`pending_completion → arrived`) lands on the same `arrived` status and must NOT
+/// re-fire a "guard arrived" push.
 ///
 /// `completion` is only meaningful for [`BookingStatus::Completed`]: it adds
 /// `booked_hours` + `actual_seconds` to the payload so the payment consumer can prorate.
 /// Other statuses ignore it.
 pub fn event_for_status(
+    from: BookingStatus,
     new_status: BookingStatus,
     booking_id: Uuid,
     customer_id: Uuid,
@@ -72,11 +78,20 @@ pub fn event_for_status(
         BookingStatus::Accepted => topics::BOOKING_JOB_ACCEPTED,
         BookingStatus::Declined => topics::BOOKING_DECLINED,
         BookingStatus::EnRoute => topics::BOOKING_GUARD_EN_ROUTE,
-        BookingStatus::Arrived => topics::BOOKING_ARRIVED,
+        BookingStatus::Arrived => {
+            // Only a FRESH arrival (en_route → arrived) emits. The completion-reject bounce
+            // (pending_completion → arrived) reuses `arrived` but is NOT a new arrival, so it
+            // emits nothing (a re-fired "guard arrived" push would be wrong + duplicate).
+            if from == BookingStatus::PendingCompletion {
+                return None;
+            }
+            topics::BOOKING_ARRIVED
+        }
         BookingStatus::Completed => topics::BOOKING_COMPLETED,
         BookingStatus::Cancelled => topics::BOOKING_CANCELLED,
-        // A bare request has no cross-service consumer yet → no event.
-        BookingStatus::Requested => return None,
+        // A bare request, and the guard's completion REQUEST (pending_completion is an
+        // internal milestone awaiting customer review), have no cross-service event.
+        BookingStatus::Requested | BookingStatus::PendingCompletion => return None,
     };
     let mut payload = payload(booking_id, customer_id, guard_id);
     // Completion carries the proration inputs the money path consumes.
@@ -99,6 +114,7 @@ mod tests {
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();
         let m = event_for_status(
+            BookingStatus::Requested,
             BookingStatus::Accepted,
             booking,
             customer,
@@ -115,6 +131,7 @@ mod tests {
     #[test]
     fn declined_emits_declined() {
         let m = event_for_status(
+            BookingStatus::Accepted,
             BookingStatus::Declined,
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -133,22 +150,62 @@ mod tests {
         let c = Uuid::new_v4();
         let g = Some(Uuid::new_v4());
         assert_eq!(
-            event_for_status(BookingStatus::EnRoute, b, c, g, None)
-                .unwrap()
-                .topic,
+            event_for_status(
+                BookingStatus::Accepted,
+                BookingStatus::EnRoute,
+                b,
+                c,
+                g,
+                None
+            )
+            .unwrap()
+            .topic,
             topics::BOOKING_GUARD_EN_ROUTE
         );
+        // FRESH arrival (en_route → arrived) emits.
         assert_eq!(
-            event_for_status(BookingStatus::Arrived, b, c, g, None)
-                .unwrap()
-                .topic,
+            event_for_status(
+                BookingStatus::EnRoute,
+                BookingStatus::Arrived,
+                b,
+                c,
+                g,
+                None
+            )
+            .unwrap()
+            .topic,
             topics::BOOKING_ARRIVED
         );
         assert_eq!(
-            event_for_status(BookingStatus::Completed, b, c, g, None)
-                .unwrap()
-                .topic,
+            event_for_status(
+                BookingStatus::PendingCompletion,
+                BookingStatus::Completed,
+                b,
+                c,
+                g,
+                None
+            )
+            .unwrap()
+            .topic,
             topics::BOOKING_COMPLETED
+        );
+    }
+
+    #[test]
+    fn completion_reject_bounce_to_arrived_emits_nothing() {
+        // pending_completion → arrived is the customer REJECTING completion, not a new
+        // arrival; it must NOT re-fire booking.arrived (which would push "guard arrived").
+        let m = event_for_status(
+            BookingStatus::PendingCompletion,
+            BookingStatus::Arrived,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            None,
+        );
+        assert!(
+            m.is_none(),
+            "completion-reject bounce to arrived must emit no event"
         );
     }
 
@@ -158,6 +215,7 @@ mod tests {
         let c = Uuid::new_v4();
         let g = Some(Uuid::new_v4());
         let m = event_for_status(
+            BookingStatus::PendingCompletion,
             BookingStatus::Completed,
             b,
             c,
@@ -176,6 +234,7 @@ mod tests {
     #[test]
     fn completed_without_start_carries_null_actual_seconds() {
         let m = event_for_status(
+            BookingStatus::PendingCompletion,
             BookingStatus::Completed,
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -197,6 +256,7 @@ mod tests {
     fn non_completed_ignores_completion_info() {
         // Passing completion info to a non-completed status must not leak proration fields.
         let m = event_for_status(
+            BookingStatus::Requested,
             BookingStatus::Accepted,
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -215,6 +275,7 @@ mod tests {
     fn cancelled_emits_cancelled_and_carries_guard_when_assigned() {
         let g = Uuid::new_v4();
         let m = event_for_status(
+            BookingStatus::Accepted,
             BookingStatus::Cancelled,
             Uuid::new_v4(),
             Uuid::new_v4(),
@@ -229,6 +290,7 @@ mod tests {
     #[test]
     fn requested_emits_nothing() {
         assert!(event_for_status(
+            BookingStatus::Requested,
             BookingStatus::Requested,
             Uuid::new_v4(),
             Uuid::new_v4(),

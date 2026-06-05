@@ -27,6 +27,13 @@ pub struct CreateBookingRequest {
     pub tip: Option<Decimal>,
 }
 
+/// Customer's verdict on a guard's completion request (`pending_completion`).
+#[derive(Debug, Deserialize)]
+pub struct ReviewCompletionRequest {
+    /// `"approve"` → completed; `"reject"` → back to arrived.
+    pub action: String,
+}
+
 // ----- Responses -----
 
 /// A booking row as returned to clients. `status` is read as text (the DB enum cast to

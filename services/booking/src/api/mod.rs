@@ -18,7 +18,9 @@ use shared::service_jwt::ServiceCaller;
 
 use crate::discovery_client::{GuardCatalog, RatingReader};
 use crate::domain::state::BookingStatus;
-use crate::models::{AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking};
+use crate::models::{
+    AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking, ReviewCompletionRequest,
+};
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
 
@@ -32,14 +34,28 @@ const MAX_BOOKING_HOURS: i32 = 168; // 1 week
 /// Guard-count bounds (mirror the DB CHECK + v1's 1..=20).
 const MAX_GUARD_COUNT: i32 = 20;
 
-/// Transition a booking to `new_status` on behalf of `actor` (the caller). `repo::transition`
-/// enforces, inside the row-locked tx, that `actor` is allowed to drive this transition
-/// (the assigned guard for in-flight changes). A fresh correlation id is generated for the
-/// emitted event (threading the inbound trace's id is the observability follow-up).
+const ROLE_GUARD: &str = "guard";
+const ROLE_CUSTOMER: &str = "customer";
+const ROLE_ADMIN: &str = "admin";
+
+/// Gate a handler to a broad role (or admin). The repo then enforces the SPECIFIC owner
+/// (assigned-guard / request-owner) inside the row lock — this is only the coarse role check.
+fn require_role(user: &AuthUser, role: &str) -> Result<bool, AppError> {
+    let is_admin = user.role == ROLE_ADMIN;
+    if user.role != role && !is_admin {
+        return Err(AppError::Forbidden(format!("Only {role}s can do this")));
+    }
+    Ok(is_admin)
+}
+
+/// Transition a booking to `new_status` on behalf of `actor`. `repo::transition` enforces,
+/// inside the row-locked tx, that `actor` is the actor the transition requires (assigned guard
+/// / request owner; `is_admin` overrides). A fresh correlation id is generated for the event.
 async fn do_transition<S: BookingDeps>(
     state: &S,
     id: Uuid,
     actor: Uuid,
+    is_admin: bool,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
@@ -47,6 +63,7 @@ async fn do_transition<S: BookingDeps>(
         state.db(),
         id,
         actor,
+        is_admin,
         new_status,
         assign_guard,
         Uuid::new_v4(),
@@ -96,79 +113,148 @@ pub async fn accept_booking<S: BookingDeps>(
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    if user.role != "guard" {
-        return Err(AppError::Forbidden(
-            "Only guards can accept bookings".to_string(),
-        ));
-    }
+    let is_admin = require_role(&user, ROLE_GUARD)?;
     do_transition(
         &state,
         id,
         user.user_id,
+        is_admin,
         BookingStatus::Accepted,
         Some(user.user_id),
     )
     .await
 }
 
-/// POST /bookings/{id}/decline — a guard declines → status = declined (outbox event).
+/// PUT /bookings/{id}/decline — the ASSIGNED guard withdraws after accepting → declined.
 #[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
 pub async fn decline_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    if user.role != "guard" {
-        return Err(AppError::Forbidden(
-            "Only guards can decline bookings".to_string(),
-        ));
-    }
-    do_transition(&state, id, user.user_id, BookingStatus::Declined, None).await
+    let is_admin = require_role(&user, ROLE_GUARD)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::Declined,
+        None,
+    )
+    .await
 }
 
-/// POST /bookings/{id}/en-route — the assigned guard is en route (outbox event).
+/// PUT /bookings/{id}/en-route — the assigned guard is en route (outbox event).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
 pub async fn en_route_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    if user.role != "guard" {
-        return Err(AppError::Forbidden(
-            "Only the assigned guard can update status".to_string(),
-        ));
-    }
-    do_transition(&state, id, user.user_id, BookingStatus::EnRoute, None).await
+    let is_admin = require_role(&user, ROLE_GUARD)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::EnRoute,
+        None,
+    )
+    .await
 }
 
-/// POST /bookings/{id}/arrived — the assigned guard has arrived (outbox event).
+/// PUT /bookings/{id}/arrived — the assigned guard has arrived (outbox event).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
 pub async fn arrived_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    if user.role != "guard" {
-        return Err(AppError::Forbidden(
-            "Only the assigned guard can update status".to_string(),
-        ));
-    }
-    do_transition(&state, id, user.user_id, BookingStatus::Arrived, None).await
+    let is_admin = require_role(&user, ROLE_GUARD)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::Arrived,
+        None,
+    )
+    .await
 }
 
-/// POST /bookings/{id}/complete — the assigned guard completes the job (outbox event).
+/// PUT /bookings/{id}/start — the assigned guard starts the job (stamps `work_started_at`,
+/// the proration basis). Status stays `arrived`; no event.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+pub async fn start_booking<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
+    let is_admin = require_role(&user, ROLE_GUARD)?;
+    let booking = repo::start_job(state.db(), id, user.user_id, is_admin).await?;
+    Ok(Json(ApiResponse::success(booking)))
+}
+
+/// PUT /bookings/{id}/complete — the assigned guard REQUESTS completion → `pending_completion`
+/// (the customer then reviews). The job must have been started. No event yet.
 #[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
 pub async fn complete_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
-    if user.role != "guard" {
-        return Err(AppError::Forbidden(
-            "Only the assigned guard can update status".to_string(),
-        ));
-    }
-    do_transition(&state, id, user.user_id, BookingStatus::Completed, None).await
+    let is_admin = require_role(&user, ROLE_GUARD)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::PendingCompletion,
+        None,
+    )
+    .await
+}
+
+/// PUT /bookings/{id}/review-completion — the CUSTOMER reviews the guard's completion request:
+/// `approve` → completed (emits `booking.completed` → payment proration) or `reject` → arrived
+/// (the guard finishes the job).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %id))]
+pub async fn review_completion<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<ReviewCompletionRequest>,
+) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
+    let is_admin = require_role(&user, ROLE_CUSTOMER)?;
+    let target = match req.action.as_str() {
+        "approve" => BookingStatus::Completed,
+        "reject" => BookingStatus::Arrived,
+        _ => {
+            return Err(AppError::BadRequest(
+                "action must be 'approve' or 'reject'".to_string(),
+            ))
+        }
+    };
+    do_transition(&state, id, user.user_id, is_admin, target, None).await
+}
+
+/// PUT /bookings/{id}/cancel — the customer (or admin) cancels a PRE-ARRIVAL booking → cancelled.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+pub async fn cancel_booking<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
+    let is_admin = require_role(&user, ROLE_CUSTOMER)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::Cancelled,
+        None,
+    )
+    .await
 }
 
 /// GET /bookings/{id} — fetch one booking the caller participates in.
@@ -272,7 +358,7 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::{get, post};
+    use axum::routing::{get, post, put};
     use axum::Router;
     use jsonwebtoken::DecodingKey;
     use shared::auth::HasJwtSecret;
@@ -340,6 +426,16 @@ mod tests {
             Router::new()
                 .route("/bookings", post(create_booking::<TestDeps>))
                 .route("/bookings/{id}/accept", post(accept_booking::<TestDeps>))
+                .route("/bookings/{id}/decline", put(decline_booking::<TestDeps>))
+                .route("/bookings/{id}/en-route", put(en_route_booking::<TestDeps>))
+                .route("/bookings/{id}/arrived", put(arrived_booking::<TestDeps>))
+                .route("/bookings/{id}/start", put(start_booking::<TestDeps>))
+                .route("/bookings/{id}/complete", put(complete_booking::<TestDeps>))
+                .route(
+                    "/bookings/{id}/review-completion",
+                    put(review_completion::<TestDeps>),
+                )
+                .route("/bookings/{id}/cancel", put(cancel_booking::<TestDeps>))
                 .route("/bookings/{id}", get(get_booking::<TestDeps>))
                 .with_state(deps),
         )
@@ -409,6 +505,144 @@ mod tests {
                 Request::builder()
                     .method("POST")
                     .uri(format!("/bookings/{id}/accept"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ----- lifecycle api-layer authz: the broad role gate (require_role) -----
+    //
+    // These assert the coarse role check each lifecycle handler runs BEFORE the repo: a
+    // valid token of the WRONG role is rejected (403) before any DB access (the lazy pool
+    // points at a closed port, so a 403 here also proves no query was attempted). The
+    // FINER ownership authz (assigned-guard vs request-owner) lives in `repo::transition`
+    // / `repo::start_job` and is covered by the DB-gated repo tests. Redis-gated for the
+    // same reason as the other router tests (AuthUser needs a reachable revocation store).
+
+    /// Send a lifecycle request to `subpath` with a freshly-minted valid token for `role`.
+    /// `body` is the JSON request body (empty for the bodiless endpoints).
+    async fn lifecycle_req(
+        app: Router,
+        method: &str,
+        subpath: &str,
+        role: &str,
+        body: Body,
+    ) -> StatusCode {
+        let id = Uuid::new_v4();
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(format!("/bookings/{id}/{subpath}"))
+            .header("authorization", format!("Bearer {}", user_token(role)));
+        // review-completion deserializes a JSON body; give it the right content-type so the
+        // Json extractor succeeds and execution reaches the handler's role gate.
+        if subpath == "review-completion" {
+            builder = builder.header("content-type", "application/json");
+        }
+        app.oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn decline_rejects_non_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // a customer cannot drive a guard-only transition
+        let status = lifecycle_req(app, "PUT", "decline", "customer", Body::empty()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn en_route_rejects_non_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let status = lifecycle_req(app, "PUT", "en-route", "customer", Body::empty()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn start_rejects_non_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let status = lifecycle_req(app, "PUT", "start", "customer", Body::empty()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn complete_rejects_non_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let status = lifecycle_req(app, "PUT", "complete", "customer", Body::empty()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_non_customer() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // a guard cannot cancel a customer's booking
+        let status = lifecycle_req(app, "PUT", "cancel", "guard", Body::empty()).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn review_completion_rejects_non_customer() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // a guard cannot approve/reject their own completion request
+        let body = Body::from(serde_json::json!({ "action": "approve" }).to_string());
+        let status = lifecycle_req(app, "PUT", "review-completion", "guard", body).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/bookings/{id}/cancel"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn start_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/bookings/{id}/start"))
                     .body(Body::empty())
                     .unwrap(),
             )

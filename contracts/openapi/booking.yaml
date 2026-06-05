@@ -136,12 +136,14 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
 
   /bookings/{id}/decline:
-    post:
+    put:
       tags: [Bookings]
-      summary: Guard declines a request
+      summary: Assigned guard withdraws (after accepting)
       description: |
-        Status → `declined`. Enqueues `pguard.events.booking.declined` into the outbox in
-        the same transaction.
+        The ASSIGNED guard backs out → status `declined` (terminal). v2 is first-come-accept,
+        so there is no per-guard offer to decline before accepting — decline is the assigned
+        guard withdrawing (`accepted → declined`). Enqueues `pguard.events.booking.declined`
+        in the same transaction. 403 if the caller is not the assigned guard.
       operationId: declineBooking
       security: [{ bearerAuth: [] }]
       parameters:
@@ -154,12 +156,12 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
 
   /bookings/{id}/en-route:
-    post:
+    put:
       tags: [Bookings]
       summary: Assigned guard is en route
       description: |
         Status → `en_route`. Enqueues `pguard.events.booking.guard_en_route` into the
-        outbox in the same transaction.
+        outbox in the same transaction. Assigned guard only.
       operationId: enRouteBooking
       security: [{ bearerAuth: [] }]
       parameters:
@@ -172,12 +174,12 @@ paths:
         '409': { $ref: '#/components/responses/Conflict' }
 
   /bookings/{id}/arrived:
-    post:
+    put:
       tags: [Bookings]
       summary: Assigned guard has arrived
       description: |
         Status → `arrived`. Enqueues `pguard.events.booking.arrived` into the outbox in
-        the same transaction.
+        the same transaction. Assigned guard only.
       operationId: arrivedBooking
       security: [{ bearerAuth: [] }]
       parameters:
@@ -189,14 +191,79 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
-  /bookings/{id}/complete:
-    post:
+  /bookings/{id}/start:
+    put:
       tags: [Bookings]
-      summary: Assigned guard completes the job
+      summary: Assigned guard starts the job
       description: |
-        Status → `completed`. Enqueues `pguard.events.booking.completed` into the outbox in
-        the same transaction.
+        Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
+        Assigned guard only; the booking must be `arrived`. A second start is an idempotent
+        no-op. The job must be started before completion can be requested.
+      operationId: startBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/complete:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard requests completion
+      description: |
+        Status `arrived → pending_completion` — the guard REQUESTS completion; the customer
+        then reviews (see review-completion). No event yet. 409 if the job was not started.
+        Assigned guard only.
       operationId: completeBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/review-completion:
+    put:
+      tags: [Bookings]
+      summary: Customer reviews the guard's completion request
+      description: |
+        The CUSTOMER (request owner) decides: `approve` → `completed` (emits
+        `pguard.events.booking.completed` with `booked_hours` + `actual_seconds`, driving
+        payment proration) or `reject` → back to `arrived` (the guard finishes). Customer/admin
+        only; the booking must be `pending_completion`.
+      operationId: reviewCompletion
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewCompletionRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/cancel:
+    put:
+      tags: [Bookings]
+      summary: Customer/admin cancels a pre-arrival booking
+      description: |
+        Status → `cancelled`. Allowed only PRE-ARRIVAL (`requested`/`accepted`/`en_route`) —
+        once a guard is on-site the job runs to completion review. Enqueues
+        `pguard.events.booking.cancelled`. Customer (request owner) or admin only.
+      operationId: cancelBooking
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/BookingId'
@@ -303,8 +370,18 @@ components:
         - declined
         - en_route
         - arrived
+        - pending_completion
         - completed
         - cancelled
+
+    ReviewCompletionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, reject]
+          description: "`approve` → completed (emits booking.completed); `reject` → back to arrived."
 
     CreateBookingRequest:
       type: object

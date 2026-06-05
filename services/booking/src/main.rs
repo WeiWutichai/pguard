@@ -16,7 +16,7 @@ mod repo;
 mod state;
 
 use anyhow::Context;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
@@ -104,21 +104,33 @@ async fn main() -> anyhow::Result<()> {
             "/bookings/{id}/accept",
             post(api::accept_booking::<AppState>),
         )
+        // Lifecycle state changes (PUT). Guard: decline/en-route/arrived/start/complete;
+        // customer: review-completion/cancel. The gateway's `/bookings` prefix already routes
+        // every subpath, so these are edge-reachable under /v1.
         .route(
             "/bookings/{id}/decline",
-            post(api::decline_booking::<AppState>),
+            put(api::decline_booking::<AppState>),
         )
         .route(
             "/bookings/{id}/en-route",
-            post(api::en_route_booking::<AppState>),
+            put(api::en_route_booking::<AppState>),
         )
         .route(
             "/bookings/{id}/arrived",
-            post(api::arrived_booking::<AppState>),
+            put(api::arrived_booking::<AppState>),
         )
+        .route("/bookings/{id}/start", put(api::start_booking::<AppState>))
         .route(
             "/bookings/{id}/complete",
-            post(api::complete_booking::<AppState>),
+            put(api::complete_booking::<AppState>),
+        )
+        .route(
+            "/bookings/{id}/review-completion",
+            put(api::review_completion::<AppState>),
+        )
+        .route(
+            "/bookings/{id}/cancel",
+            put(api::cancel_booking::<AppState>),
         )
         // Service-to-service read (service-JWT'd) — the payment service verifies a charge
         // against the authoritative booking here. Not exposed through the public gateway.
