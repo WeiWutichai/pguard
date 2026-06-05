@@ -1,0 +1,36 @@
+# Keep the build context lean & secret-free. COPY . . in the Rust/web images would
+# otherwise pull the whole tree (incl. build artifacts and the v1 reference repo).
+
+# Rust build output (multi-GB; rebuilt inside the image)
+target/
+**/target/
+
+# Node / web
+node_modules/
+**/node_modules/
+.next/
+**/.next/
+apps/mobile/build/
+apps/mobile/.dart_tool/
+
+# VCS / tooling / editor
+.git/
+.gitignore
+**/.DS_Store
+.idea/
+.vscode/
+
+# Local env & secrets — never bake into an image
+**/.env
+**/.env.*
+!**/.env.example
+infra/.env
+
+# Docs & local agent state (not needed to build)
+.claude/
+docs/
+*.md
+!apps/web-admin/README.md
+
+# The v1 reference lives in a sibling folder; never part of any build context.
+../guard-dispatch/

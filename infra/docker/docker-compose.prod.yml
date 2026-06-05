@@ -1,0 +1,526 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pguard v2 — PRODUCTION compose (Phase 5 harden).
+#
+# Builds the per-service prod images and runs the full stack with strict network
+# isolation per CLAUDE.md:
+#   ✅ ONLY the api-gateway publishes host ports — every other service / DB / Redis /
+#      MinIO / observability backend uses `expose` (cluster-internal only).
+#   ✅ All secrets come from the environment via ${VAR:?} (fail fast if missing) —
+#      no inline defaults for credentials, no `minioadmin`, no dev fallbacks.
+#   ✅ Pinned base/runtime images — no `:latest`.
+#
+# Usage (from repo root):
+#   set -a; source infra/.env.prod; set +a      # provide the required secrets
+#   docker compose -f infra/docker/docker-compose.prod.yml config      # validate
+#   docker compose -f infra/docker/docker-compose.prod.yml build       # build all
+#   docker compose -f infra/docker/docker-compose.prod.yml up -d
+#
+# Required secrets (no defaults — compose errors if unset):
+#   POSTGRES_PASSWORD · JWT_SECRET · SERVICE_JWT_SECRET
+#   MINIO_ROOT_USER · MINIO_ROOT_PASSWORD · GRAFANA_ADMIN_PASSWORD
+#   INET_SMS_USERNAME · INET_SMS_PASSWORD · INET_SMS_SENDER   (otp; set SMS_DISABLED=true to skip)
+# See infra/docker/README.md for the full list.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: pguard-prod
+
+networks:
+  pguard-prod:
+    name: pguard-prod
+
+volumes:
+  pg-data:
+  minio-data:
+  grafana-data:
+  tempo-data:
+  loki-data:
+
+# ── Reusable env fragments (YAML anchors) ────────────────────────────────────
+x-db-env: &db-env
+  # Per-service schemas live in one `pguard` DB. C5.3: flip host `postgres`→`pgbouncer`
+  # and port 5432→6432 to route through the pooler (see the pgbouncer service below).
+  DATABASE_URL: postgres://${POSTGRES_USER:-pguard}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-pguard}
+  DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
+
+x-rust-env: &rust-env
+  RUST_LOG: ${RUST_LOG:-info}
+  NATS_URL: nats://nats:4222
+  REDIS_CACHE_URL: redis://redis:6379/0
+  REDIS_PUBSUB_URL: redis://redis:6379/1
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
+  # Every Rust service validates JWT_SECRET at startup via JwtConfig::from_env()
+  # (shared-rust/src/config.rs) and exits if it is missing — so it lives here, in the
+  # env shared by all of them, not per-service. Must be ≥64 chars (identity/gateway check).
+  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (≥64 chars)}
+
+x-rust-service: &rust-service
+  restart: unless-stopped
+  # Cheap, fleet-wide hardening: a compromised service cannot gain new privileges.
+  security_opt:
+    - no-new-privileges:true
+  networks:
+    - pguard-prod
+  depends_on:
+    postgres:
+      condition: service_healthy
+    nats:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  # ═══════════════════════════════ STATEFUL / INFRA ═════════════════════════════
+  postgres:
+    image: postgres:17
+    container_name: pguard-prod-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      POSTGRES_DB: ${POSTGRES_DB:-pguard}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - pguard-prod
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pguard} -d ${POSTGRES_DB:-pguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # pgbouncer — connection pooler (CLAUDE.md DB-scaling decision · C5.3 placeholder).
+  # Present so the prod topology is complete; app services still point at `postgres`
+  # directly until C5.3 cuts DATABASE_URL over to pgbouncer:6432. Verify the pin when
+  # that work lands.
+  pgbouncer:
+    image: edoburu/pgbouncer:1.23.1-p3
+    container_name: pguard-prod-pgbouncer
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${POSTGRES_USER:-pguard}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      DB_NAME: ${POSTGRES_DB:-pguard}
+      POOL_MODE: transaction
+      MAX_CLIENT_CONN: "1000"
+      DEFAULT_POOL_SIZE: "20"
+    expose:
+      - "6432"
+    networks:
+      - pguard-prod
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  nats:
+    image: nats:2
+    container_name: pguard-prod-nats
+    restart: unless-stopped
+    command: ["-js", "-m", "8222"]
+    expose:
+      - "4222"
+      - "8222"
+    networks:
+      - pguard-prod
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  redis:
+    image: redis:7
+    container_name: pguard-prod-redis
+    restart: unless-stopped
+    expose:
+      - "6379"
+    networks:
+      - pguard-prod
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  minio:
+    image: minio/minio:RELEASE.2024-10-13T13-34-11Z
+    container_name: pguard-prod-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      # No `minioadmin` defaults — both must be provided (CLAUDE.md rule).
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD is required}
+    volumes:
+      - minio-data:/data
+    expose:
+      - "9000"
+      - "9001"
+    networks:
+      - pguard-prod
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ═══════════════════════════════ EDGE (only host-published ports) ════════════
+  api-gateway:
+    <<: *rust-service
+    image: pguard/api-gateway:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-api-gateway
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-api-gateway
+        APP_PORT: "3000"
+    environment:
+      <<: *rust-env
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
+      # /metrics is unauthenticated — keep it on the internal admin port, never published.
+      METRICS_ADDR: 0.0.0.0:9100
+      RATE_API_PER_SEC: ${RATE_API_PER_SEC:-50}
+      RATE_AUTH_PER_SEC: ${RATE_AUTH_PER_SEC:-10}
+      RATE_OTP_PER_MIN: ${RATE_OTP_PER_MIN:-3}
+      # Upstream service map (cluster DNS — service name = hostname).
+      IDENTITY_URL: http://identity:3001
+      PROFILE_URL: http://profile:3002
+      OTP_URL: http://otp:3003
+      NOTIFICATION_URL: http://notification:3004
+      BOOKING_URL: http://booking:3005
+      PAYMENT_URL: http://payment:3006
+    # The ONLY service that publishes a host port. In real prod an ingress/nginx
+    # terminates TLS in front of this; here the gateway is the single ingress.
+    ports:
+      - "${GATEWAY_PORT:-3000}:3000"
+    expose:
+      - "9100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      identity:
+        condition: service_started
+      booking:
+        condition: service_started
+
+  # ═══════════════════════════════ APP SERVICES (internal only) ════════════════
+  identity:
+    <<: *rust-service
+    image: pguard/identity:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-identity
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-identity
+        APP_PORT: "3001"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-15}
+    expose:
+      - "3001"
+
+  profile:
+    <<: *rust-service
+    image: pguard/profile:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-profile
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-profile
+        APP_PORT: "3002"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+    expose:
+      - "3002"
+
+  otp:
+    <<: *rust-service
+    image: pguard/otp:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-otp
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-otp
+        APP_PORT: "3003"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      # NOTE: the otp service disables SMS when SMS_DISABLED is *present* in the env
+      # (presence-based gate, any value incl. "false"), so it is intentionally NOT set
+      # here — prod runs with SMS ENABLED and the INET creds below required. To disable
+      # the SMS gateway, add `SMS_DISABLED: "1"` to this service.
+      INET_SMS_URL: ${INET_SMS_URL:-https://www.etracker.cc/bulksms/mesapi.aspx}
+      INET_SMS_USERNAME: ${INET_SMS_USERNAME:?INET_SMS_USERNAME is required (or set SMS_DISABLED=true)}
+      INET_SMS_PASSWORD: ${INET_SMS_PASSWORD:?INET_SMS_PASSWORD is required (or set SMS_DISABLED=true)}
+      INET_SMS_SENDER: ${INET_SMS_SENDER:?INET_SMS_SENDER is required (or set SMS_DISABLED=true)}
+      OTP_LENGTH: ${OTP_LENGTH:-6}
+      OTP_EXPIRY_MINUTES: ${OTP_EXPIRY_MINUTES:-5}
+      OTP_MAX_ATTEMPTS: ${OTP_MAX_ATTEMPTS:-5}
+      OTP_RATE_LIMIT_SECONDS: ${OTP_RATE_LIMIT_SECONDS:-60}
+      DAILY_OTP_LIMIT: ${DAILY_OTP_LIMIT:-10}
+      PHONE_VERIFY_TTL_MINUTES: ${PHONE_VERIFY_TTL_MINUTES:-30}
+    expose:
+      - "3003"
+
+  notification:
+    <<: *rust-service
+    image: pguard/notification:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-notification
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-notification
+        APP_PORT: "3004"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      FCM_DISABLED: ${FCM_DISABLED:-false}
+      FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/fcm-service-account.json}
+    expose:
+      - "3004"
+
+  booking:
+    <<: *rust-service
+    image: pguard/booking:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-booking
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-booking
+        APP_PORT: "3005"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      PROFILE_URL: http://profile:3002
+      RATING_URL: http://rating:3007
+    expose:
+      - "3005"
+
+  payment:
+    <<: *rust-service
+    image: pguard/payment:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-payment
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-payment
+        APP_PORT: "3006"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      BOOKING_URL: http://booking:3005
+    expose:
+      - "3006"
+
+  rating:
+    <<: *rust-service
+    image: pguard/rating:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-rating
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-rating
+        APP_PORT: "3007"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      BOOKING_URL: http://booking:3005
+    expose:
+      - "3007"
+
+  calling:
+    <<: *rust-service
+    image: pguard/calling:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-calling
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-calling
+        APP_PORT: "3008"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      BOOKING_URL: http://booking:3005
+      MEDIASOUP_URL: http://mediasoup:3011
+    expose:
+      - "3008"
+
+  presence:
+    <<: *rust-service
+    image: pguard/presence:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-presence
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-presence
+        APP_PORT: "3009"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+    expose:
+      - "3009"
+
+  chat:
+    <<: *rust-service
+    image: pguard/chat:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-chat
+    build:
+      context: ../..
+      dockerfile: infra/docker/rust-service.Dockerfile
+      args:
+        BIN: pguard-chat
+        APP_PORT: "3010"
+    environment:
+      <<: [*rust-env, *db-env]
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+    expose:
+      - "3010"
+
+  # mediasoup SFU (Node). Control plane internal; ONLY the WebRTC UDP media range is
+  # host-published (CLAUDE.md: never a host TCP port for the SFU control plane).
+  mediasoup:
+    image: pguard/mediasoup:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-mediasoup
+    restart: unless-stopped
+    build:
+      context: ../../services/mediasoup
+      dockerfile: Dockerfile
+    environment:
+      NODE_ENV: production
+      MEDIASOUP_PORT: "3011"
+      RTC_MIN_PORT: ${RTC_MIN_PORT:-40000}
+      RTC_MAX_PORT: ${RTC_MAX_PORT:-49999}
+      SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      # Announced public IP for ICE candidates — set to the node's public IP in prod.
+      MEDIASOUP_ANNOUNCED_IP: ${MEDIASOUP_ANNOUNCED_IP:?MEDIASOUP_ANNOUNCED_IP is required}
+    expose:
+      - "3011"
+    ports:
+      # UDP media range only — WebRTC needs host:container 1:1, so this is unavoidable
+      # and is the documented exception to "only the gateway publishes ports".
+      - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-49999}:40000-49999/udp"
+    networks:
+      - pguard-prod
+
+  # ═══════════════════════════════ WEB ADMIN (internal — fronted by gateway/ingress) ═
+  web-admin:
+    image: pguard/web-admin:${PGUARD_TAG:-0.1.0}
+    container_name: pguard-prod-web-admin
+    restart: unless-stopped
+    build:
+      context: ../..
+      dockerfile: infra/docker/web-admin.Dockerfile
+    environment:
+      NODE_ENV: production
+      # Server-side base URL for the generated TS client → the gateway (internal DNS).
+      PGUARD_API_BASE_URL: http://api-gateway:3000
+    expose:
+      - "3000"
+    networks:
+      - pguard-prod
+    depends_on:
+      - api-gateway
+
+  # ═══════════════════════════════ OBSERVABILITY (internal) ════════════════════
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    container_name: pguard-prod-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ../observability/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    expose:
+      - "4317"
+      - "4318"
+    networks:
+      - pguard-prod
+    depends_on:
+      - tempo
+      - loki
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: pguard-prod-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ../observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    expose:
+      - "3200"
+      - "4317"
+    networks:
+      - pguard-prod
+
+  loki:
+    image: grafana/loki:3.2.1
+    container_name: pguard-prod-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ../observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    expose:
+      - "3100"
+    networks:
+      - pguard-prod
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: pguard-prod-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    expose:
+      - "9090"
+    networks:
+      - pguard-prod
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: pguard-prod-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      # Anonymous access OFF in prod (dev compose enables it; prod must not).
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    expose:
+      - "3000"
+    networks:
+      - pguard-prod
+    depends_on:
+      - tempo
+      - loki
+      - prometheus
