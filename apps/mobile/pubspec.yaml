@@ -1,0 +1,50 @@
+# pguard v2 scaffold stub — Flutter + Riverpod 2.x mobile app.
+# See ../../CLAUDE.md "Flutter (mobile)" Do/Don't and "Architecture decisions".
+# Customer-side on-demand security guard booking app (bilingual TH/EN).
+# TODO: do NOT run `flutter pub get` during scaffold; wire real versions later.
+name: pguard_mobile
+description: pguard customer mobile app — book on-demand security guards (TH/EN).
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management — Riverpod 2.x + codegen (locked decision; replaces Provider).
+  flutter_riverpod: ^2.5.1
+  riverpod_annotation: ^2.3.5
+
+  # Navigation
+  go_router: ^14.2.0
+
+  # Networking — REST via dio; real-time booking status via WebSocket (no polling).
+  dio: ^5.5.0
+  web_socket_channel: ^3.0.0
+
+  # Storage — secure storage for tokens + PIN hash; prefs for non-sensitive only.
+  flutter_secure_storage: ^9.2.2
+  shared_preferences: ^2.2.3
+
+  # i18n — bilingual TH/EN.
+  intl: ^0.19.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  # Codegen — `dart run build_runner build` generates Riverpod providers.
+  build_runner: ^2.4.11
+  riverpod_generator: ^2.4.0
+
+  # Lints — custom_lint enables riverpod_lint analyzer plugin.
+  custom_lint: ^0.6.4
+  riverpod_lint: ^2.3.10
+  flutter_lints: ^4.0.0
+
+flutter:
+  uses-material-design: true
+  # TODO: declare assets, fonts, and l10n (TH/EN) config here as features land.

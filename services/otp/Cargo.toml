@@ -1,0 +1,32 @@
+[package]
+name = "pguard-otp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pguard-otp"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # phone-verify token signing (HS256)
+reqwest = { workspace = true }          # INET CSGAPI SMS gateway (HTTP)
+rand = { workspace = true }             # OTP code + captcha generation
+sha2 = { workspace = true }             # SHA-256 hash of OTP codes (DB at rest)
+subtle = { workspace = true }           # constant-time hash compare (timing safety)
+async-trait = { workspace = true }      # dyn SmsSender port
+tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }            # ServiceExt::oneshot for router tests

@@ -1,0 +1,474 @@
+openapi: 3.1.0
+info:
+  title: pguard — Booking Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the booking service (the source of truth for this service —
+    codegen produces the Rust handler stubs/types, the Dart client, and the TS client).
+
+    Split from the v1 `../guard-dispatch/services/booking` god-service. This slice closes
+    Phase 1's **producer** side of the decoupling: a booking status change writes the
+    business row AND a transactional-outbox row in ONE database transaction, and a
+    background relay publishes those rows to NATS JetStream as `pguard.events.booking.*`
+    events (see `contracts/asyncapi/events.yaml`). The notification consumer subscribes
+    and reacts — booking **never** writes another service's schema (v1 Issue C1).
+
+    All client-facing paths are served behind the gateway under the `/v1` prefix
+    (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
+    envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3005
+    description: Local dev (booking-service direct)
+
+tags:
+  - name: Bookings
+    description: Booking requests + lifecycle transitions
+  - name: Internal
+    description: Service-to-service endpoints (service-JWT only; not exposed publicly)
+
+paths:
+  /bookings:
+    post:
+      tags: [Bookings]
+      summary: Create a booking request (customer only)
+      description: |
+        A customer creates a booking request (status `requested`). Role gating is enforced
+        in the handler (403 for non-customers). No event is emitted for a bare request.
+      operationId: createBooking
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBookingRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Bookings]
+      summary: List the caller's bookings
+      description: Bookings where the caller is the customer OR the assigned guard, newest first.
+      operationId: listBookings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's bookings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Booking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /available-guards:
+    get:
+      tags: [Bookings]
+      summary: Discovery — approved guards enriched with their rating summary
+      description: |
+        booking owns discovery but neither the guard catalog (profile) nor reviews (rating).
+        This lists the APPROVED guard catalog (read from profile's `/internal/guards` over a
+        service-JWT) and enriches each with the guard's live rating summary (read from rating's
+        `/internal/guards/{id}/rating-summary`). Best-effort on ratings: a guard whose rating
+        lookup fails still appears with `average_rating: null` and `review_count: 0`.
+      operationId: listAvailableGuards
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Approved guards with rating summaries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AvailableGuard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /bookings/{id}:
+    get:
+      tags: [Bookings]
+      summary: Get one booking the caller participates in
+      operationId: getBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /bookings/{id}/accept:
+    post:
+      tags: [Bookings]
+      summary: Guard accepts a request
+      description: |
+        A guard accepts → status `accepted`, `guard_id` set to the caller. Enqueues
+        `pguard.events.booking.job_accepted` `{ booking_id, customer_id, guard_id }` into
+        the outbox in the SAME transaction (transactional outbox). Rejected with 409 if the
+        booking is not in a state from which acceptance is legal.
+      operationId: acceptBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/decline:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard withdraws (after accepting)
+      description: |
+        The ASSIGNED guard backs out → status `declined` (terminal). v2 is first-come-accept,
+        so there is no per-guard offer to decline before accepting — decline is the assigned
+        guard withdrawing (`accepted → declined`). Enqueues `pguard.events.booking.declined`
+        in the same transaction. 403 if the caller is not the assigned guard.
+      operationId: declineBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/en-route:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard is en route
+      description: |
+        Status → `en_route`. Enqueues `pguard.events.booking.guard_en_route` into the
+        outbox in the same transaction. Assigned guard only.
+      operationId: enRouteBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/arrived:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard has arrived
+      description: |
+        Status → `arrived`. Enqueues `pguard.events.booking.arrived` into the outbox in
+        the same transaction. Assigned guard only.
+      operationId: arrivedBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/start:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard starts the job
+      description: |
+        Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
+        Assigned guard only; the booking must be `arrived`. A second start is an idempotent
+        no-op. The job must be started before completion can be requested.
+      operationId: startBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/complete:
+    put:
+      tags: [Bookings]
+      summary: Assigned guard requests completion
+      description: |
+        Status `arrived → pending_completion` — the guard REQUESTS completion; the customer
+        then reviews (see review-completion). No event yet. 409 if the job was not started.
+        Assigned guard only.
+      operationId: completeBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/review-completion:
+    put:
+      tags: [Bookings]
+      summary: Customer reviews the guard's completion request
+      description: |
+        The CUSTOMER (request owner) decides: `approve` → `completed` (emits
+        `pguard.events.booking.completed` with `booked_hours` + `actual_seconds`, driving
+        payment proration) or `reject` → back to `arrived` (the guard finishes). Customer/admin
+        only; the booking must be `pending_completion`.
+      operationId: reviewCompletion
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReviewCompletionRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /bookings/{id}/cancel:
+    put:
+      tags: [Bookings]
+      summary: Customer/admin cancels a pre-arrival booking
+      description: |
+        Status → `cancelled`. Allowed only PRE-ARRIVAL (`requested`/`accepted`/`en_route`) —
+        once a guard is on-site the job runs to completion review. Enqueues
+        `pguard.events.booking.cancelled`. Customer (request owner) or admin only.
+      operationId: cancelBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /internal/bookings/{id}:
+    get:
+      tags: [Internal]
+      summary: Read authoritative booking fields (service-JWT only)
+      description: |
+        Service-to-service read used by the payment service to make the money decision
+        against the authoritative booking — never trusting client-supplied
+        customer/guard/status. **Requires a service-JWT** (`serviceAuth`, audience
+        `pguard-internal`); v1 had no auth on cross-service reads. Returns only
+        `{ id, customer_id, guard_id, status, hours }` (least-privilege over the wire). Not
+        routed through the public gateway.
+      operationId: getInternalBooking
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: The authoritative booking subset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/InternalBooking' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-to-service token, audience `pguard-internal`, signed with SERVICE_JWT_SECRET.
+
+  parameters:
+    BookingId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    BookingOk:
+      description: The booking
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/Booking' }
+    BadRequest:
+      description: Invalid request body
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong role / not a participant)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Booking not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Illegal lifecycle transition for the booking's current status
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    BookingStatus:
+      type: string
+      description: Booking lifecycle status. See the state machine in src/domain/state.rs.
+      enum:
+        - requested
+        - accepted
+        - declined
+        - en_route
+        - arrived
+        - pending_completion
+        - completed
+        - cancelled
+
+    ReviewCompletionRequest:
+      type: object
+      required: [action]
+      properties:
+        action:
+          type: string
+          enum: [approve, reject]
+          description: "`approve` → completed (emits booking.completed); `reject` → back to arrived."
+
+    CreateBookingRequest:
+      type: object
+      required: [address, scheduled_at, hours]
+      properties:
+        address: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        hours: { type: integer, format: int32, minimum: 1 }
+        guard_count:
+          type: integer
+          format: int32
+          minimum: 1
+          maximum: 20
+          default: 1
+          description: Number of guards requested. Authoritative once persisted (used by the money path).
+        tip:
+          type: string
+          default: "0"
+          description: Optional up-front tip (exact decimal string); folded into the expected total.
+
+    Booking:
+      type: object
+      required: [id, customer_id, status, address, scheduled_at, hours, base_fee, guard_count, tip, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        address: { type: string }
+        scheduled_at: { type: string, format: date-time }
+        hours: { type: integer, format: int32 }
+        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        guard_count: { type: integer, format: int32 }
+        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    InternalBooking:
+      type: object
+      description: |
+        The authoritative subset exposed to internal (service-JWT'd) callers — the fields the
+        payment service needs to verify a charge, compute the expected total
+        (`base_fee × hours × guard_count + tip`), and carry the guard into the payment event.
+        Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is
+        server-owned — the client never sets it.
+      required: [id, customer_id, status, hours, base_fee, guard_count, tip]
+      properties:
+        id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/BookingStatus' }
+        hours: { type: integer, format: int32 }
+        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        guard_count: { type: integer, format: int32 }
+        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+
+    AvailableGuard:
+      type: object
+      description: An approved guard (profile catalog) enriched with their rating summary (rating).
+      required: [guard_id, review_count]
+      properties:
+        guard_id: { type: string, format: uuid }
+        years_of_experience: { type: integer, format: int32, nullable: true }
+        average_rating:
+          type: string
+          nullable: true
+          description: AVG of visible overall ratings (decimal string); null if none / rating unreachable.
+          example: "4.50"
+        review_count: { type: integer, format: int64 }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: CONFLICT }
+        message: { type: string }

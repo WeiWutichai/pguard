@@ -1,0 +1,32 @@
+[package]
+name = "pguard-notification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "pguard-notification"
+path = "src/main.rs"
+
+[dependencies]
+axum = { workspace = true }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # FCM OAuth2 (RS256 service-account JWT)
+reqwest = { workspace = true }          # FCM HTTP v1 API
+async-nats = { workspace = true }       # JetStream event consumer
+async-trait = { workspace = true }      # dyn Pusher
+futures = { workspace = true }          # StreamExt over the JetStream message stream
+tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+shared-events = { workspace = true }
+observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }            # ServiceExt::oneshot for router tests

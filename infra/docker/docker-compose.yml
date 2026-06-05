@@ -1,0 +1,202 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pguard v2 — dev INFRA compose (SCAFFOLD STUB)
+#
+# INFRA ONLY. Per CLAUDE.md → Quickstart, this brings up the backing services:
+#   postgres · nats (JetStream) · redis · minio · otel-collector · tempo · loki
+#   · prometheus · grafana
+#
+# Application Rust services are NOT in this file. In dev they run on the host via
+# `cargo run` (see ./README.md) so you get fast incremental rebuilds + cargo-watch
+# and direct debugger attach. Compose is just the stateful/observability backbone
+# the services talk to. A future prod/integration compose may add the services.
+#
+# Network: pguard-dev (CLAUDE.md locked decision). Project name: pguard.
+# Env interpolation reads ../.env (copy from ../.env.example). Defaults inline so
+# `docker compose up` works with zero config.
+#
+# TODO(infra): pgbouncer + read replica for report/list paths
+#              (CLAUDE.md → Architecture decisions: "DB scaling").
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: pguard
+
+networks:
+  pguard-dev:
+    name: pguard-dev
+
+volumes:
+  pg-data:
+  minio-data:
+  grafana-data:
+  tempo-data:
+  loki-data:
+
+services:
+  # ── PostgreSQL 17 — primary datastore (per-service schemas, CLAUDE.md → Data) ──
+  postgres:
+    image: postgres:17
+    container_name: pguard-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-pguard}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-pguard_dev_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-pguard}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    networks:
+      - pguard-dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pguard} -d ${POSTGRES_DB:-pguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── NATS 2 (JetStream) — inter-service event bus (CLAUDE.md → NATS topics) ──
+  # 4222 = client, 8222 = HTTP monitoring. -js enables JetStream durable consumers.
+  nats:
+    image: nats:2
+    container_name: pguard-nats
+    restart: unless-stopped
+    command: ["-js", "-m", "8222"]
+    ports:
+      - "${NATS_PORT:-4222}:4222"
+      - "${NATS_MONITOR_PORT:-8222}:8222"
+    networks:
+      - pguard-dev
+    healthcheck:
+      # /healthz served by the monitoring endpoint when -m is enabled
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8222/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Redis 7 — cache, rate-limit buckets, jti blocklist (CLAUDE.md → token revocation) ──
+  redis:
+    image: redis:7
+    container_name: pguard-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    networks:
+      - pguard-dev
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── MinIO — S3-compatible object store (docs, check-in photos; R2 in prod) ──
+  # 9000 = S3 API, 9001 = web console.
+  minio:
+    image: minio/minio:latest
+    container_name: pguard-minio
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-pguard}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-pguard_dev_pw}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - pguard-dev
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── OpenTelemetry Collector (contrib) — single OTLP ingress for traces/logs/metrics ──
+  # Services export to 4317 (gRPC) / 4318 (HTTP); collector fans out to tempo/loki/prometheus.
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: pguard-otel-collector
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ../observability/otel-collector-config.yaml:/etc/otel/config.yaml:ro
+    ports:
+      - "${OTLP_GRPC_PORT:-4317}:4317"
+      - "${OTLP_HTTP_PORT:-4318}:4318"
+    networks:
+      - pguard-dev
+    depends_on:
+      - tempo
+      - loki
+
+  # ── Tempo — distributed tracing backend (local block storage in dev) ──
+  # Pinned: `:latest` drifted to a config schema that rejects tempo.yaml (C5.1 found this
+  # when first booting the stack). A pinned release keeps the trace backend reproducible.
+  tempo:
+    image: grafana/tempo:2.6.1
+    container_name: pguard-tempo
+    restart: unless-stopped
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ../observability/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    networks:
+      - pguard-dev
+
+  # ── Loki — log aggregation (single-binary mode in dev) ──
+  loki:
+    image: grafana/loki:latest
+    container_name: pguard-loki
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/loki-config.yaml"]
+    volumes:
+      - ../observability/loki-config.yaml:/etc/loki/loki-config.yaml:ro
+      - loki-data:/loki
+    networks:
+      - pguard-dev
+
+  # ── Prometheus — metrics scrape + storage ──
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: pguard-prometheus
+    restart: unless-stopped
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.enable-remote-write-receiver"
+    volumes:
+      - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    # Rust services run on the host (`cargo run`); map host.docker.internal so the
+    # per-service /metrics scrape targets resolve on Linux too (no-op on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - pguard-dev
+
+  # ── Grafana — dashboards over Tempo + Loki + Prometheus ──
+  # Host 3030 → container 3000. NOT 3001 (the identity service binds host 3001) and NOT
+  # 3000 (api-gateway). Keeps the host-port map collision-free when services run on the host.
+  grafana:
+    image: grafana/grafana:latest
+    container_name: pguard-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+    ports:
+      - "${GRAFANA_PORT:-3030}:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro
+    networks:
+      - pguard-dev
+    depends_on:
+      - tempo
+      - loki
+      - prometheus

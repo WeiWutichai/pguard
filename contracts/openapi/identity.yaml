@@ -1,0 +1,276 @@
+openapi: 3.1.0
+info:
+  title: pguard — Identity Service API
+  version: 0.1.0
+  description: |
+    The auth foundation (source of truth for this service — codegen produces the Rust
+    handler stubs/types, the Dart client, and the TS client). Identity ISSUES + manages
+    the user access JWTs that every other pguard service validates.
+
+    Ported from the v1 `../guard-dispatch/services/auth` god-service, split out and
+    hardened for v2:
+      1. **Refresh-token rotation + reuse detection (RFC 6749 §6).** Each refresh is a
+         single-use opaque token in a `family`; presenting an already-rotated token is
+         treated as theft and revokes the whole family.
+      2. **Force-revoke-all.** A per-user `token_revocation_version` (plus the Redis jti
+         blocklist) lets incident response invalidate every outstanding access token at
+         once. Exposed as a service-JWT'd internal endpoint AND driven by the
+         `pguard.events.user.compromised` NATS event.
+      3. **Generic 401 on login failure** — no user-enumeration; the password verify runs
+         even for unknown identifiers (constant-time path).
+
+    Client-facing paths are served behind the gateway under the `/v1` prefix (CLAUDE.md
+    "API versioning"). Success responses use the standard `{ success, data }` envelope;
+    errors use `ErrorBody`. On login/refresh the token pair is ALSO set as httpOnly,
+    Secure, SameSite=Lax cookies (`access_token`, `refresh_token`) for the web admin.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3001
+    description: Local dev (identity-service direct)
+
+tags:
+  - name: Auth
+    description: Login, token refresh, logout, current user
+  - name: Internal
+    description: Service-to-service endpoints (service-JWT only; not exposed publicly)
+
+paths:
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Authenticate with phone/email + password; issue an access + refresh token
+      description: |
+        Looks up the user by `identifier` (phone OR email), verifies the password with
+        Argon2 (constant-time, anti-enumeration), then issues an access JWT + a rotating
+        refresh token (new family). Tokens are returned in the body AND set as cookies.
+        Any failure returns a generic 401 — the response never reveals whether the
+        account exists.
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/TokenPairOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
+      description: |
+        Validates the presented refresh token (from the body or the `refresh_token`
+        cookie). On success it rotates: the presented token is revoked and a new
+        access+refresh pair is issued in the SAME family. **Reuse detection:** presenting
+        a token that was already rotated revokes the entire family and returns 401.
+        Expired or unknown tokens also return a generic 401.
+      operationId: refresh
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/TokenPairOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Log out — blocklist the access jti and revoke the refresh family
+      description: |
+        Adds the presented access-token `jti` to the Redis revocation blocklist (TTL =
+        remaining token lifetime) and revokes the refresh family of the supplied refresh
+        token (body or cookie). Clears the auth cookies.
+      operationId: logout
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RefreshRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/EmptyOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/me:
+    get:
+      tags: [Auth]
+      summary: Current authenticated user
+      operationId: me
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The authenticated user's id + role
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    delete:
+      tags: [Auth]
+      summary: Erase the authenticated user's account (PDPA §33 right to erasure)
+      description: |
+        Soft-deletes the caller's OWN account in one transaction: redacts PII (phone → an
+        opaque per-user placeholder, email → null), deactivates it (blocks re-login),
+        retains a minimal deletion audit (`deleted_at`), force-revokes every token (refresh
+        families + a `token_revocation_version` bump so outstanding access tokens are
+        rejected at once), and clears the auth cookies. Irreversible.
+      operationId: deleteMe
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Account erased
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          deleted: { type: boolean, example: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /internal/users/{id}/revoke-all:
+    post:
+      tags: [Internal]
+      summary: Force-revoke all of a user's tokens (service-JWT only)
+      description: |
+        Bumps the user's `token_revocation_version` and revokes every outstanding refresh
+        family — instantly invalidating all access + refresh tokens for incident response.
+        **v2:** requires a service-JWT (`serviceAuth`, audience `pguard-internal`). Also
+        triggered asynchronously by the `pguard.events.user.compromised` NATS event. Not
+        routed through the public gateway.
+      operationId: internalRevokeAll
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/EmptyOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-to-service token, audience `pguard-internal`, signed with SERVICE_JWT_SECRET.
+
+  responses:
+    TokenPairOk:
+      description: |
+        Issued tokens. Also delivered as `Set-Cookie: access_token=...; HttpOnly; Secure;
+        SameSite=Lax` and `refresh_token=...` (the refresh cookie is scoped to `/auth`).
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/TokenPair' }
+    EmptyOk:
+      description: Success (no payload)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { type: 'null' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    UserRole:
+      type: string
+      enum: [admin, customer, guard]
+
+    LoginRequest:
+      type: object
+      required: [identifier, password]
+      properties:
+        identifier:
+          type: string
+          description: Phone number or email address.
+        password: { type: string }
+
+    RefreshRequest:
+      type: object
+      required: [refresh_token]
+      properties:
+        refresh_token:
+          type: string
+          description: |
+            The opaque refresh token (`{rotation_id}.{secret}`). May be omitted if the
+            `refresh_token` cookie is present.
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, expires_in, token_type]
+      properties:
+        access_token: { type: string, description: Short-lived access JWT (HS256). }
+        refresh_token: { type: string, description: Single-use rotating refresh token. }
+        expires_in: { type: integer, format: int64, description: Access-token lifetime, seconds. }
+        token_type: { type: string, enum: [Bearer] }
+
+    Me:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/UserRole' }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: UNAUTHORIZED }
+        message: { type: string }

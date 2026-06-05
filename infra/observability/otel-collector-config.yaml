@@ -1,0 +1,58 @@
+# pguard v2 — OpenTelemetry Collector config (SCAFFOLD STUB)
+#
+# Single OTLP ingress for the whole platform. Services (Rust via the
+# `observability` package, Node mediasoup) export traces/logs/metrics here; the
+# collector fans them out to Tempo (traces) · Loki (logs) · Prometheus (metrics).
+# See CLAUDE.md → Observability decision (OTel + Tempo + Loki across services).
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+  # TODO(obs): add resourcedetection + memory_limiter before prod.
+
+exporters:
+  # Traces → Tempo (OTLP gRPC, in-cluster service name).
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Logs → Loki (OTLP HTTP ingest).
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+  # Metrics → Prometheus (remote-write receiver enabled on the prom container).
+  prometheusremotewrite:
+    endpoint: http://prometheus:9090/api/v1/write
+    tls:
+      insecure: true
+
+extensions:
+  health_check:
+    endpoint: 0.0.0.0:13133
+
+service:
+  extensions: [health_check]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp/tempo]
+    logs:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/loki]
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheusremotewrite]

@@ -1,0 +1,26 @@
+[package]
+name = "observability"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+# --- OpenTelemetry: OTLP trace export + W3C trace-context propagation (C5.1) ---
+opentelemetry = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+tracing-opentelemetry = { workspace = true }
+
+# --- Prometheus metrics (process recorder + /metrics endpoint) ---
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+
+# --- HTTP transport: the per-request telemetry middleware + /metrics handler ---
+axum = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tower = { workspace = true }

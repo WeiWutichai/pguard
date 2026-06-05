@@ -1,0 +1,113 @@
+# pguard v2 — Rust workspace root.
+# Service map + locked architecture decisions: see CLAUDE.md.
+# Apps (apps/web-admin Next.js, apps/mobile Flutter) and the Node SFU
+# (services/mediasoup) are NOT cargo crates — they are intentionally excluded.
+
+[workspace]
+resolver = "2"
+members = [
+    # Shared libraries
+    "packages/shared-rust",
+    "packages/shared-events",
+    "packages/observability",
+    # Services (Rust + Axum)
+    "services/api-gateway",
+    "services/identity",
+    "services/profile",
+    "services/otp",
+    "services/notification",
+    "services/booking",
+    "services/payment",
+    "services/rating",
+    "services/calling",
+    "services/presence",
+    "services/chat",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+rust-version = "1.80"
+
+# Workspace-wide dependency versions (single source of truth across members).
+[workspace.dependencies]
+# --- Web framework ---
+axum = { version = "0.8", features = ["ws", "multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# --- Serialization ---
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# --- Persistence / cache ---
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "rust_decimal", "json"] }
+redis = { version = "0.27", features = ["tokio-comp"] }
+
+# --- Types ---
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# --- Auth ---
+jsonwebtoken = "9"
+
+# --- Errors ---
+thiserror = "2"
+anyhow = "1"
+
+# --- Async utilities ---
+async-trait = "0.1"
+futures = "0.3"
+
+# --- Tracing ---
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# --- OpenAPI ---
+utoipa = { version = "5", features = ["axum_extras", "uuid", "chrono"] }
+
+# --- Internal crates ---
+shared = { path = "packages/shared-rust" }
+shared-events = { path = "packages/shared-events" }
+observability = { path = "packages/observability" }
+
+# --- Declared for upcoming phases (not yet referenced by any member; cargo will
+#     not fetch these until a crate opts in via `{ workspace = true }`) ---
+# NATS JetStream event bus (Phase 1: decouple notifications).
+async-nats = "0.38"
+# Password hashing (identity/otp split — Phase 4).
+argon2 = "0.5"
+# OTP service: CSPRNG (codes + captcha), SHA-256 hashed OTP at rest, constant-time compare.
+rand = "0.8"
+sha2 = "0.10"
+subtle = "2"
+# HTTP client (notification FCM, chat signed URLs).
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+# Decimal money type (payment proration — Phase 3). `serde-str` serializes money as a
+# JSON string ("400.00") — matches the OpenAPI/AsyncAPI contract + never routes money
+# through f64 on the wire (CLAUDE.md money rule). NOT serde-float.
+rust_decimal = { version = "1", features = ["serde-str"] }
+# Swagger UI (per-service docs).
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
+# Env loading.
+dotenvy = "0.15"
+# OpenTelemetry OTLP export (Observability decision — Phase 5 C5.1). The `observability`
+# package wires these into `init_telemetry`: OTLP trace export to the collector → Tempo,
+# W3C trace-context propagation across HTTP + NATS. Pin the 0.27/0.28 line together.
+# default-features off keeps the heavy blocking-reqwest/http-proto exporters out — we
+# only use the gRPC (tonic) trace exporter.
+opentelemetry = "0.27"
+opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["grpc-tonic", "trace"] }
+tracing-opentelemetry = "0.28"
+# Prometheus metrics: a process-wide recorder + a `/metrics` text endpoint per service
+# (request rate, p99 latency, error rate). default-features off drops the built-in HTTP
+# listener/push-gateway (hyper) — services expose `/metrics` through their own Axum router.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
+
+[profile.dev]
+# Faster incremental builds for the many-crate workspace.
+debug = 1

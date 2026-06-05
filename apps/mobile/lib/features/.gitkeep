@@ -1,0 +1,4 @@
+# pguard v2 scaffold stub — placeholder so lib/features/ is tracked by git.
+# Feature modules (booking, auth, profile, payment, rating, chat, calling) land
+# here, each with its own screens + controllers (controllers in core/controllers
+# or feature-local, but pure + testable). See ../../CLAUDE.md "Flutter (mobile)".

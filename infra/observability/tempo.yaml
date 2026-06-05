@@ -1,0 +1,35 @@
+# pguard v2 — Tempo config (SCAFFOLD STUB)
+#
+# Distributed tracing backend. Dev = single-binary, local block storage.
+# Receives OTLP from the otel-collector (exporter otlp/tempo → tempo:4317).
+# TODO(obs): switch to object storage (S3/R2) + compaction tuning for prod (Phase 5).
+
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks

@@ -1,0 +1,26 @@
+# pguard v2 scaffold stub — web-admin .gitignore
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+
+# next.js build output
+/.next/
+/out/
+next-env.d.ts
+
+# production
+/build
+
+# generated API client (regenerated from contracts/openapi via tooling/codegen)
+/src/api/generated/
+
+# env (never commit real secrets; .env.example is the template)
+.env
+.env.local
+.env*.local
+
+# misc
+.DS_Store
+*.tsbuildinfo

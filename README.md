@@ -13,6 +13,25 @@ This repo is currently a **bootstrapping skeleton**. The full structure gets bui
 pguard/
 ├── README.md                ← you are here
 ├── CLAUDE.md                ← architecture, decisions, do/don't rules
+├── pguard-brief.md          ← 3-phase plan for Claude Code CLI
+├── audit-revisions.md       ← Part A revisions (✓ done) + Part B Phase 0.5 brief
+├── v1-audit/                ← 7 audit files + role-access raw report
+│   ├── 00-overview.md       ← executive summary + risk table
+│   ├── 01-current-state.md  ← service inventory, coupling, debt
+│   ├── 02-issues.md         ← architectural issues ranked
+│   ├── 03-security.md       ← JWT/PIN/audit gaps + top 15 risks
+│   ├── 04-tests.md          ← coverage gaps (P0 critical)
+│   ├── 05-recommendations.md ← per-service redesign vs port + §5.7 ops maturity
+│   ├── 06-migration-plan.md ← 6-phase strangler-fig (+ Phase 0.5)
+│   └── role-access-audit-raw.md ← ground-truth role audit
+├── docs/
+│   ├── ROLE_MATRIX.md       ← source of truth for admin/guard/customer permissions
+│   └── reviews/             ← HTML visual artifacts
+│       ├── role-access-matrix.html
+│       └── frontend-backend-permission-mismatch.html
+├── redesign-pguard/         ← Claude Design output (40 HTML pages, hi-fi mockups)
+│   └── project/pguard/      ← Design System.html, Web Admin Live Map.html,
+│                              Mobile - Active Standby.html, Coverage Matrix.html, ...
 └── .claude/
     ├── settings.json        ← hooks config
     ├── INSTALL-SKILLS.md    ← how to install 9arm-skills

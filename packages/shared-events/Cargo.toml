@@ -1,0 +1,15 @@
+[package]
+name = "shared-events"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+# Stamp the current span's W3C traceparent into the envelope at construction time so a
+# booking→NATS→notification flow is one distributed trace (C5.1). No cycle: observability
+# does not depend on shared-events.
+observability = { workspace = true }

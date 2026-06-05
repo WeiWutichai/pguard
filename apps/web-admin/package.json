@@ -1,0 +1,26 @@
+{
+  "name": "@pguard/web-admin",
+  "version": "0.0.0",
+  "private": true,
+  "description": "pguard v2 web admin — Next.js 16 App Router (TypeScript strict). v2 scaffold stub.",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "^16",
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "devDependencies": {
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9",
+    "eslint-config-next": "^16",
+    "typescript": "^5"
+  }
+}

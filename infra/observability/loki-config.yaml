@@ -1,0 +1,41 @@
+# pguard v2 — Loki config (SCAFFOLD STUB)
+#
+# Log aggregation. Dev = minimal single-binary, filesystem storage, no auth.
+# Receives logs via OTLP HTTP (/otlp) from the otel-collector.
+# TODO(obs): object storage backend + retention/compaction policy for prod (Phase 5).
+
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  # Allow OTLP structured-metadata ingest (used by the OTLP log path).
+  allow_structured_metadata: true
+  reject_old_samples: false
+
+ruler:
+  alertmanager_url: http://localhost:9093

@@ -1,0 +1,24 @@
+{
+  "name": "@pguard/mediasoup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "pguard mediasoup SFU (Node) — WebRTC media routing for the calling service.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "lint": "eslint src test"
+  },
+  "dependencies": {
+    "jsonwebtoken": "^9.0.2"
+  },
+  "optionalDependencies": {
+    "mediasoup": "^3.14.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.13.0"
+  }
+}
