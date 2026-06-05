@@ -1,0 +1,363 @@
+openapi: 3.1.0
+info:
+  title: pguard — Rating Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the rating service (source of truth — codegen produces Rust
+    handler stubs/types, the Dart client, the TS client). Split from the v1
+    `../guard-dispatch/services/booking` god-service.
+
+    v2 rules baked into the contract:
+      1. **Authoritative authz.** A review is verified against booking's service-JWT'd internal
+         read (`GET /internal/bookings/{id}`): the caller must be the booking's customer and the
+         booking must be `completed`. The reviewed `guard_id` comes from the booking, never the
+         request body.
+      2. **One review per assignment.** DB `UNIQUE(assignment_id)`; a duplicate submit → 409.
+      3. **Event on submit.** `pguard.events.rating.submitted` is emitted in the SAME tx as the
+         INSERT (transactional outbox); notification consumes it (see `contracts/asyncapi`).
+      4. **Public discovery filters `is_visible = true`.** Admin-hidden reviews never surface on
+         `GET /guards/{id}/ratings`; admin moderation toggles visibility.
+      5. **Generic errors.** No enumeration / no internal leak.
+
+    Ratings are whole-star integers `1..=5`; `overall_rating` is required, category ratings
+    optional. Client-facing paths are served behind the gateway under `/v1`. Success responses
+    use the standard `{ success, data }` envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3007
+    description: Local dev (rating-service direct)
+
+tags:
+  - name: Reviews
+    description: Submit a review + public guard discovery
+  - name: Admin
+    description: Review moderation (admin only)
+
+paths:
+  /assignments/{id}/review:
+    post:
+      tags: [Reviews]
+      summary: Submit a review for a completed assignment (customer only)
+      description: |
+        A customer reviews a completed booking. The handler (1) validates the ratings
+        (`overall_rating` required, all `1..=5`), (2) verifies via booking's internal read that
+        the caller is the booking's customer (403 otherwise) and the booking is `completed`
+        (409 otherwise), then (3) inserts the review and enqueues
+        `pguard.events.rating.submitted` `{ rating_id, booking_id, guard_id, score }` in the
+        SAME transaction. **One review per assignment** — a duplicate → 409.
+      operationId: submitReview
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The assignment / booking id.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateReviewRequest' }
+      responses:
+        '200':
+          description: The created review id
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        required: [id]
+                        properties:
+                          id: { type: string, format: uuid }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /guards/{id}/ratings:
+    get:
+      tags: [Reviews]
+      summary: Public guard ratings — visible reviews + aggregate summary
+      description: |
+        Public discovery (no auth). Returns the guard's VISIBLE reviews (newest first) plus the
+        aggregate `{ average, count }` of visible overall ratings. Admin-hidden reviews are
+        excluded from both the list and the summary.
+      operationId: getGuardRatings
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The guard's public ratings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GuardRatings' }
+
+  /admin/reviews:
+    get:
+      tags: [Admin]
+      summary: List reviews with filters (admin only)
+      description: |
+        Admin moderation list. Filters: `guard_id`, `rating` (whole-star overall), `is_visible`,
+        `search` (matches review text). `stats` are computed on the UNFILTERED dataset (v1 rule —
+        the dashboard cards reflect the whole dataset, not the current filter).
+      operationId: listAdminReviews
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { name: guard_id, in: query, required: false, schema: { type: string, format: uuid } }
+        - { name: rating, in: query, required: false, schema: { type: integer, minimum: 1, maximum: 5 } }
+        - { name: is_visible, in: query, required: false, schema: { type: boolean } }
+        - { name: search, in: query, required: false, schema: { type: string } }
+        - { name: limit, in: query, required: false, schema: { type: integer, default: 50, maximum: 200 } }
+        - { name: offset, in: query, required: false, schema: { type: integer, default: 0 } }
+      responses:
+        '200':
+          description: Paginated reviews + unfiltered stats
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AdminReviews' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/reviews/{id}/visibility:
+    put:
+      tags: [Admin]
+      summary: Toggle a review's public visibility (admin only)
+      operationId: setReviewVisibility
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [is_visible]
+              properties:
+                is_visible: { type: boolean }
+      responses:
+        '200':
+          description: The updated visibility
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          id: { type: string, format: uuid }
+                          is_visible: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/guards/{id}/rating-summary:
+    get:
+      tags: [Admin]
+      summary: Guard rating summary (service-to-service)
+      description: |
+        Internal read for booking's available-guards discovery — AVG + COUNT of the guard's
+        VISIBLE reviews. Guarded by a **service-JWT** (`ServiceCaller`), never reachable from
+        the public edge (the gateway blocks `/internal/`). Documented here for the contract;
+        not part of the public/admin client.
+      operationId: getInternalRatingSummary
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The guard's visible-review summary
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RatingSummary' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-JWT (aud=pguard-internal); internal endpoints only.
+
+  responses:
+    BadRequest:
+      description: Invalid request body (e.g. a rating outside 1..=5)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Forbidden:
+      description: Authenticated but not permitted (wrong role / not your booking)
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    NotFound:
+      description: Booking or review not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Booking not completed, or a review already exists for this assignment
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+
+  schemas:
+    CreateReviewRequest:
+      type: object
+      required: [overall_rating]
+      properties:
+        overall_rating: { type: integer, minimum: 1, maximum: 5 }
+        punctuality: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        professionalism: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        communication: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        appearance: { type: integer, minimum: 1, maximum: 5, nullable: true }
+        review_text: { type: string, nullable: true, maxLength: 2000 }
+
+    Review:
+      type: object
+      required: [id, guard_id, overall_rating, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid }
+        overall_rating: { type: integer, minimum: 1, maximum: 5 }
+        punctuality: { type: integer, nullable: true }
+        professionalism: { type: integer, nullable: true }
+        communication: { type: integer, nullable: true }
+        appearance: { type: integer, nullable: true }
+        review_text: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    GuardRatings:
+      type: object
+      required: [guard_id, count, reviews]
+      properties:
+        guard_id: { type: string, format: uuid }
+        average:
+          type: string
+          nullable: true
+          description: AVG of visible overall ratings (exact decimal string), null if none.
+          example: "4.50"
+        count:
+          type: integer
+          format: int64
+          description: Total number of VISIBLE reviews (may exceed `reviews.length`, which is one page).
+        reviews:
+          type: array
+          description: The most-recent page of visible reviews (max 100), newest first.
+          items: { $ref: '#/components/schemas/Review' }
+
+    AdminReview:
+      type: object
+      required: [id, assignment_id, customer_id, guard_id, overall_rating, is_visible, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        assignment_id: { type: string, format: uuid }
+        customer_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid }
+        overall_rating: { type: integer }
+        punctuality: { type: integer, nullable: true }
+        professionalism: { type: integer, nullable: true }
+        communication: { type: integer, nullable: true }
+        appearance: { type: integer, nullable: true }
+        review_text: { type: string, nullable: true }
+        is_visible: { type: boolean }
+        created_at: { type: string, format: date-time }
+
+    AdminReviews:
+      type: object
+      required: [data, total, limit, offset, stats]
+      properties:
+        data:
+          type: array
+          items: { $ref: '#/components/schemas/AdminReview' }
+        total: { type: integer, format: int64 }
+        limit: { type: integer, format: int64 }
+        offset: { type: integer, format: int64 }
+        stats: { $ref: '#/components/schemas/AdminReviewStats' }
+
+    AdminReviewStats:
+      type: object
+      description: Computed on the UNFILTERED dataset.
+      required: [total, visible]
+      properties:
+        total: { type: integer, format: int64 }
+        visible: { type: integer, format: int64 }
+        average: { type: string, nullable: true, example: "4.20" }
+
+    RatingSummary:
+      type: object
+      required: [guard_id, count]
+      properties:
+        guard_id: { type: string, format: uuid }
+        average: { type: string, nullable: true, example: "4.50" }
+        count: { type: integer, format: int64 }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: CONFLICT }
+        message: { type: string }
