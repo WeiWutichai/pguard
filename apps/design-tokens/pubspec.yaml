@@ -1,0 +1,17 @@
+# pguard v2 design tokens — Flutter path package.
+# The cross-language token trio (tokens.css / lib/pguard_design_tokens.dart / tokens.ts) is
+# the single source of truth, regenerated from Design System.html. This pubspec exposes the
+# Dart tokens as `package:pguard_design_tokens/pguard_design_tokens.dart` so apps/mobile can
+# consume them via a path dependency (no hardcoded colors in the app).
+name: pguard_design_tokens
+description: pguard v2 design tokens for Flutter (kept in sync with tokens.css / tokens.ts).
+publish_to: "none"
+version: 0.1.0
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+  flutter: ">=3.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter

@@ -1,0 +1,16 @@
+# Flutter / Dart ephemeral
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Codegen output — regenerate with `dart run build_runner build`
+# (Riverpod providers / freezed). Kept out of VCS per the Phase 2 spec DoD.
+*.g.dart
+*.freezed.dart
+
+# IDE / tooling
+.idea/
+*.iml
+.claude/
