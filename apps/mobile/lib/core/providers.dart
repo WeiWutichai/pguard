@@ -3,8 +3,11 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
+import 'media/photo_capture.dart';
 import 'network/api_client.dart';
+import 'network/check_in_service.dart';
 import 'network/sockets/booking_status_socket.dart';
+import 'network/sockets/presence_socket.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
 
 part 'providers.g.dart';
@@ -45,3 +48,25 @@ BookingStatusFeedBuilder bookingStatusFeedBuilder(
         BookingStatusFeedBuilderRef ref) =>
     (bookingId, tokenProvider) =>
         BookingStatusSocket(bookingId: bookingId, tokenProvider: tokenProvider);
+
+/// Builds the guard's presence (GPS uplink) feed. Production returns a real [PresenceSocket]
+/// (coded against the not-yet-built presence WS contract); tests inject a fake feed.
+typedef PresenceFeedBuilder = PresenceFeed Function(
+  Future<String?> Function() tokenProvider,
+);
+
+@Riverpod(keepAlive: true)
+PresenceFeedBuilder presenceFeedBuilder(PresenceFeedBuilderRef ref) =>
+    (tokenProvider) => PresenceSocket(tokenProvider: tokenProvider);
+
+/// Submits hourly check-in progress reports. Default fails (the endpoint isn't built — see
+/// [CheckInService]); tests override with a fake that records submissions.
+@Riverpod(keepAlive: true)
+CheckInService checkInService(CheckInServiceRef ref) =>
+    const PendingCheckInService();
+
+/// Captures the check-in checkpoint photo. Default is unavailable (no camera plugin wired);
+/// tests override with a fake.
+@Riverpod(keepAlive: true)
+PhotoCaptureService photoCaptureService(PhotoCaptureServiceRef ref) =>
+    const UnavailablePhotoCaptureService();

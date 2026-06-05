@@ -13,10 +13,22 @@ class _FakeWsSink implements WebSocketSink {
   dynamic noSuchMethod(Invocation i) => null;
 }
 
+/// A sink that records what was written (to assert outbound frames).
+class _RecordingSink implements WebSocketSink {
+  final List<dynamic> added = [];
+  bool closed = false;
+  @override
+  void add(dynamic data) => added.add(data);
+  @override
+  Future<void> close([int? code, String? reason]) async => closed = true;
+  @override
+  dynamic noSuchMethod(Invocation i) => null;
+}
+
 class _FakeWsChannel implements WebSocketChannel {
   _FakeWsChannel(this._stream, this._sink);
   final Stream<dynamic> _stream;
-  final _FakeWsSink _sink;
+  final WebSocketSink _sink;
   @override
   Stream<dynamic> get stream => _stream;
   @override
@@ -69,5 +81,50 @@ void main() {
     // The post-await `_closed` check returns before opening a channel → no orphan.
     expect(factoryCalls, 0);
     expect(got, isEmpty);
+  });
+
+  test('send() forwards a JSON frame when connected, drops otherwise', () async {
+    final ctrl = StreamController<dynamic>.broadcast();
+    final sink = _RecordingSink();
+    final ws = ReconnectingWebSocket(
+      url: Uri.parse('ws://x/v1/ws/track'),
+      tokenProvider: () async => 'tok',
+      factory: (_, __) => _FakeWsChannel(ctrl.stream, sink),
+    );
+
+    // Before connect → dropped (ephemeral GPS frames are never queued).
+    ws.send({'type': 'location', 'lat': 1});
+    expect(sink.added, isEmpty);
+
+    await ws.connect();
+    ws.send({'type': 'location', 'lat': 13.7});
+    expect(sink.added.single, '{"type":"location","lat":13.7}'); // JSON-encoded
+    ws.send('raw');
+    expect(sink.added.last, 'raw'); // strings pass through unchanged
+
+    await ws.close();
+    ws.send({'x': 1}); // after close → dropped
+    expect(sink.added.length, 2);
+  });
+
+  test('connectionChanges emits true on open and false on drop', () async {
+    final ctrl = StreamController<dynamic>.broadcast();
+    final ws = ReconnectingWebSocket(
+      url: Uri.parse('ws://x/v1/ws/track'),
+      tokenProvider: () async => 'tok',
+      factory: (_, __) => _FakeWsChannel(ctrl.stream, _FakeWsSink()),
+    );
+    final events = <bool>[];
+    ws.connectionChanges.listen(events.add);
+
+    await ws.connect();
+    await Future<void>.delayed(Duration.zero);
+    expect(events, [true]);
+
+    await ctrl.close(); // stream done → _onClosed emits false (then schedules reconnect)
+    await Future<void>.delayed(Duration.zero);
+    expect(events, [true, false]);
+
+    await ws.close(); // cancels the pending reconnect timer
   });
 }

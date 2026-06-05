@@ -14,6 +14,8 @@ import '../features/booking/live_status_screen.dart';
 import '../features/booking/payment_screen.dart';
 import '../features/booking/payment_success_screen.dart';
 import '../features/booking/service_selection_screen.dart';
+import '../features/guard/active_job_screen.dart';
+import '../features/guard/job_detail_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
 import '../features/splash_screen.dart';
@@ -60,6 +62,17 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/home/customer',
           builder: (_, __) => const CustomerHomeScreen()),
       GoRoute(path: '/home/guard', builder: (_, __) => const GuardHomeScreen()),
+      // Guard-side flow: incoming-job detail + active-job working screen.
+      GoRoute(
+        path: '/guard/job/:id',
+        builder: (context, state) =>
+            JobDetailScreen(bookingId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/guard/active/:id',
+        builder: (context, state) =>
+            ActiveJobScreen(bookingId: state.pathParameters['id']!),
+      ),
       // Customer book-a-guard flow (shared keepAlive BookingFlowController carries state).
       GoRoute(path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
       GoRoute(
