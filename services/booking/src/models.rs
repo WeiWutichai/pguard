@@ -48,6 +48,17 @@ pub struct BookingResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One entry in the `/available-guards` discovery list: an approved guard (from profile's
+/// catalog) enriched with their live rating summary (from rating). `average_rating` is `None`
+/// when the guard has no visible reviews (or rating was unreachable — best-effort).
+#[derive(Debug, Serialize)]
+pub struct AvailableGuard {
+    pub guard_id: Uuid,
+    pub years_of_experience: Option<i32>,
+    pub average_rating: Option<Decimal>,
+    pub review_count: i64,
+}
+
 /// The authoritative subset of a booking exposed to internal callers (service-JWT'd),
 /// e.g. the payment service deciding whether a charge is legitimate and computing the
 /// expected total. Deliberately narrow: ownership/payability + the pricing inputs the money

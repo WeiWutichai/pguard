@@ -7,6 +7,8 @@ use shared::auth::HasJwtSecret;
 use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
+use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, RatingReader};
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -14,8 +16,11 @@ pub struct AppState {
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
     /// Separate secret for service-to-service JWTs — guards the `/internal/*` read that
-    /// the payment service calls (CLAUDE.md "Service auth (internal)").
+    /// the payment/rating services call, and signs the discovery reads booking MINTS
+    /// (CLAUDE.md "Service auth (internal)").
     pub service_jwt_config: ServiceJwtConfig,
+    /// Discovery reads: the service-JWT'd profile catalog + rating summary clients.
+    pub discovery: HttpDiscoveryClient,
 }
 
 impl HasJwtSecret for AppState {
@@ -61,5 +66,28 @@ pub trait BookingInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
 impl BookingInternalDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+}
+
+/// Capability seam for the discovery aggregator (`GET /available-guards`). The two readers
+/// are associated types (static dispatch, native `async fn` ports) so the handler's
+/// aggregation is unit-testable with stubs — no live profile/rating needed.
+pub trait DiscoveryDeps: HasJwtSecret + Clone + Send + Sync + 'static {
+    type Catalog: GuardCatalog;
+    type Rating: RatingReader;
+
+    fn guard_catalog(&self) -> &Self::Catalog;
+    fn rating_reader(&self) -> &Self::Rating;
+}
+
+impl DiscoveryDeps for AppState {
+    type Catalog = HttpDiscoveryClient;
+    type Rating = HttpDiscoveryClient;
+
+    fn guard_catalog(&self) -> &HttpDiscoveryClient {
+        &self.discovery
+    }
+    fn rating_reader(&self) -> &HttpDiscoveryClient {
+        &self.discovery
     }
 }

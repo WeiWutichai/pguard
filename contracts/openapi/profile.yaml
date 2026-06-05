@@ -215,6 +215,33 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /internal/guards:
+    get:
+      tags: [Admin]
+      summary: Approved guard catalog (service-to-service)
+      description: |
+        Internal read for booking's discovery (`/available-guards`) — the APPROVED guard
+        catalog. Guarded by a **service-JWT** (`ServiceCaller`), never reachable from the
+        public edge (the gateway blocks `/internal/`). Returns ONLY `{ user_id,
+        years_of_experience }` — least-privilege; the PDPA-sensitive bank/PII columns never
+        cross the wire. Documented here for the contract; not part of the user-facing client.
+      operationId: internalListGuards
+      security: [{ serviceAuth: [] }]
+      responses:
+        '200':
+          description: The approved guard catalog
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/InternalGuard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -222,6 +249,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: User access token (HS256). Also accepted as the `access_token` cookie for web.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-JWT (aud=pguard-internal); internal endpoints only.
 
   responses:
     GuardProfileOk:
@@ -308,6 +340,16 @@ components:
       type: object
       properties:
         reason: { type: string, nullable: true, description: 'Optional context for the rejection.' }
+
+    InternalGuard:
+      type: object
+      description: |
+        The lean approved-guard row for internal discovery — deliberately NARROW (no bank/PII;
+        least-privilege over the service-to-service wire).
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        years_of_experience: { type: integer, format: int32, nullable: true }
 
     GuardProfile:
       type: object

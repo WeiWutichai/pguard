@@ -9,15 +9,22 @@ use axum::extract::{Path, State};
 use axum::Json;
 use uuid::Uuid;
 
+use futures::StreamExt;
+
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
+use crate::discovery_client::{GuardCatalog, RatingReader};
 use crate::domain::state::BookingStatus;
-use crate::models::{BookingResponse, CreateBookingRequest, InternalBooking};
+use crate::models::{AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking};
 use crate::repo;
-use crate::state::{BookingDeps, BookingInternalDeps};
+use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
+
+/// Max concurrent rating-summary lookups when building the discovery list (bounds fan-out
+/// to the rating service while keeping the page snappy).
+const MAX_CONCURRENT_RATING: usize = 8;
 
 /// Upper bound on a single booking's duration (defensive against absurd values flowing
 /// into proration/payment).
@@ -187,6 +194,58 @@ pub async fn list_bookings<S: BookingDeps>(
     user: AuthUser,
 ) -> Result<Json<ApiResponse<Vec<BookingResponse>>>, AppError> {
     let items = repo::list_bookings(state.db(), user.user_id).await?;
+    Ok(Json(ApiResponse::success(items)))
+}
+
+/// GET /available-guards — discovery: the approved guard catalog (from profile) enriched
+/// with each guard's live rating summary (from rating). booking owns discovery but neither
+/// the catalog nor reviews, so it reads both owners over service-JWT and aggregates here.
+///
+/// Best-effort on ratings: a guard whose rating lookup fails still appears (with no
+/// average / zero count) — one slow dependency never blanks the whole list. Rating lookups
+/// run concurrently (bounded) and preserve the catalog's order.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn available_guards<S: DiscoveryDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<AvailableGuard>>>, AppError> {
+    let guards = state.guard_catalog().list_approved_guards().await?;
+    let rater = state.rating_reader();
+
+    // Each entry carries whether its rating lookup fell back (best-effort), so we can emit a
+    // single aggregate signal for a degraded list rather than only per-guard warns.
+    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(guards)
+        .map(|g| async move {
+            let (summary, ok) = match rater.guard_summary(g.user_id).await {
+                Ok(s) => (s, true),
+                Err(e) => {
+                    // Best-effort: a per-guard rating failure must not fail the whole list.
+                    tracing::warn!(guard_id = %g.user_id, "rating summary failed: {e}; defaulting");
+                    (Default::default(), false)
+                }
+            };
+            let guard = AvailableGuard {
+                guard_id: g.user_id,
+                years_of_experience: g.years_of_experience,
+                average_rating: summary.average,
+                review_count: summary.count,
+            };
+            (guard, !ok)
+        })
+        .buffered(MAX_CONCURRENT_RATING)
+        .collect()
+        .await;
+
+    let rating_failures = merged.iter().filter(|(_, failed)| *failed).count();
+    if rating_failures > 0 {
+        tracing::warn!(
+            rating_failures,
+            total = merged.len(),
+            "discovery returned with degraded ratings (rating service unreachable for some guards)"
+        );
+    }
+    let items: Vec<AvailableGuard> = merged.into_iter().map(|(g, _)| g).collect();
+
     Ok(Json(ApiResponse::success(items)))
 }
 
@@ -459,5 +518,182 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "valid service token must pass the guard"
         );
+    }
+
+    // ----- /available-guards discovery aggregation (stub readers; Redis-gated for AuthUser) -----
+
+    use crate::discovery_client::{CatalogGuard, GuardCatalog, GuardRatingSummary, RatingReader};
+
+    /// Catalog stub — returns a canned approved-guard list, no HTTP.
+    #[derive(Clone)]
+    struct StubCatalog {
+        guards: Vec<CatalogGuard>,
+    }
+    impl GuardCatalog for StubCatalog {
+        async fn list_approved_guards(&self) -> Result<Vec<CatalogGuard>, AppError> {
+            Ok(self.guards.clone())
+        }
+    }
+
+    /// Rating stub — returns avg 4.50/count 2 for `good`, and ERRORS for any other guard so
+    /// the handler's best-effort default (None/0) path is exercised.
+    #[derive(Clone)]
+    struct StubRater {
+        good: Uuid,
+    }
+    impl RatingReader for StubRater {
+        async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError> {
+            if guard_id == self.good {
+                Ok(GuardRatingSummary {
+                    average: Some("4.50".parse().unwrap()),
+                    count: 2,
+                })
+            } else {
+                Err(AppError::Internal("rating unreachable".to_string()))
+            }
+        }
+    }
+
+    #[derive(Clone)]
+    struct DiscoveryTestDeps {
+        dec: Arc<DecodingKey>,
+        redis: redis::aio::MultiplexedConnection,
+        catalog: StubCatalog,
+        rater: StubRater,
+    }
+    impl HasJwtSecret for DiscoveryTestDeps {
+        fn jwt_secret(&self) -> &str {
+            SECRET
+        }
+        fn decoding_key(&self) -> &DecodingKey {
+            &self.dec
+        }
+        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+            &self.redis
+        }
+    }
+    impl crate::state::DiscoveryDeps for DiscoveryTestDeps {
+        type Catalog = StubCatalog;
+        type Rating = StubRater;
+        fn guard_catalog(&self) -> &StubCatalog {
+            &self.catalog
+        }
+        fn rating_reader(&self) -> &StubRater {
+            &self.rater
+        }
+    }
+
+    async fn discovery_router(catalog: StubCatalog, rater: StubRater) -> Option<Router> {
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let redis = redis::Client::open(redis_url)
+            .ok()?
+            .get_multiplexed_tokio_connection()
+            .await
+            .ok()?;
+        // available_guards never touches the DB (only the readers) — no pool needed.
+        let deps = DiscoveryTestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            redis,
+            catalog,
+            rater,
+        };
+        Some(
+            Router::new()
+                .route(
+                    "/available-guards",
+                    get(available_guards::<DiscoveryTestDeps>),
+                )
+                .with_state(deps),
+        )
+    }
+
+    fn user_token(role: &str) -> String {
+        use shared::auth::encode_jwt_with_key;
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, _jti) = encode_jwt_with_key(Uuid::new_v4(), role, 0, &ek, 15).unwrap();
+        tok
+    }
+
+    #[tokio::test]
+    async fn available_guards_rejects_missing_token() {
+        let app = discovery_router(
+            StubCatalog { guards: vec![] },
+            StubRater {
+                good: Uuid::new_v4(),
+            },
+        )
+        .await;
+        let Some(app) = app else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn available_guards_merges_catalog_and_ratings_best_effort() {
+        let good = Uuid::new_v4(); // has a rating
+        let bad = Uuid::new_v4(); // rating lookup errors → best-effort default
+        let catalog = StubCatalog {
+            guards: vec![
+                CatalogGuard {
+                    user_id: good,
+                    years_of_experience: Some(5),
+                },
+                CatalogGuard {
+                    user_id: bad,
+                    years_of_experience: None,
+                },
+            ],
+        };
+        let Some(app) = discovery_router(catalog, StubRater { good }).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 2, "both approved guards listed");
+        // Order preserved (catalog order): good first, then bad.
+        assert_eq!(data[0]["guard_id"], serde_json::json!(good));
+        assert_eq!(data[0]["average_rating"], serde_json::json!("4.50"));
+        assert_eq!(data[0]["review_count"], serde_json::json!(2));
+        assert_eq!(data[0]["years_of_experience"], serde_json::json!(5));
+        // The guard whose rating lookup failed still appears, with best-effort defaults.
+        assert_eq!(data[1]["guard_id"], serde_json::json!(bad));
+        assert!(
+            data[1]["average_rating"].is_null(),
+            "no rating → null average"
+        );
+        assert_eq!(data[1]["review_count"], serde_json::json!(0));
     }
 }

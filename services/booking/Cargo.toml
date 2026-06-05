@@ -18,7 +18,8 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }     # money — base_fee/tip as Decimal (serde-str on wire), never f64
-jsonwebtoken = { workspace = true }     # DecodingKey held in AppState (HasJwtSecret)
+jsonwebtoken = { workspace = true }     # DecodingKey held in AppState + service-JWT minting
+reqwest = { workspace = true }          # discovery: service-JWT'd reads of profile + rating
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
 async-trait = { workspace = true }      # dyn EventPublisher (relay seam)
 futures = { workspace = true }

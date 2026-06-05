@@ -74,6 +74,33 @@ paths:
                         items: { $ref: '#/components/schemas/Booking' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /available-guards:
+    get:
+      tags: [Bookings]
+      summary: Discovery — approved guards enriched with their rating summary
+      description: |
+        booking owns discovery but neither the guard catalog (profile) nor reviews (rating).
+        This lists the APPROVED guard catalog (read from profile's `/internal/guards` over a
+        service-JWT) and enriches each with the guard's live rating summary (read from rating's
+        `/internal/guards/{id}/rating-summary`). Best-effort on ratings: a guard whose rating
+        lookup fails still appears with `average_rating: null` and `review_count: 0`.
+      operationId: listAvailableGuards
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Approved guards with rating summaries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AvailableGuard' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /bookings/{id}:
     get:
       tags: [Bookings]
@@ -333,6 +360,20 @@ components:
         base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
         guard_count: { type: integer, format: int32 }
         tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+
+    AvailableGuard:
+      type: object
+      description: An approved guard (profile catalog) enriched with their rating summary (rating).
+      required: [guard_id, review_count]
+      properties:
+        guard_id: { type: string, format: uuid }
+        years_of_experience: { type: integer, format: int32, nullable: true }
+        average_rating:
+          type: string
+          nullable: true
+          description: AVG of visible overall ratings (decimal string); null if none / rating unreachable.
+          example: "4.50"
+        review_count: { type: integer, format: int64 }
 
     ApiResponseEnvelope:
       type: object

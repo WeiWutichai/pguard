@@ -20,7 +20,7 @@ use shared::error::AppError;
 use shared::models::ApprovalStatus;
 
 use crate::models::{
-    CustomerProfileResponse, GuardProfileResponse, UpsertCustomerProfileRequest,
+    CustomerProfileResponse, GuardProfileResponse, InternalGuard, UpsertCustomerProfileRequest,
     UpsertGuardProfileRequest,
 };
 
@@ -205,6 +205,23 @@ pub async fn list_guard_profiles(
         .map(guard_row_from_tuple)
         .map(GuardRow::into_response)
         .collect()
+}
+
+/// List APPROVED guards for the internal discovery catalog (booking's `/available-guards`).
+/// Narrow projection (user_id + experience) — NEVER the bank/PII columns; least-privilege
+/// over the service-to-service wire. Bounded (`LIMIT`), newest first; NOT paginated yet, so a
+/// roster beyond the cap is truncated (the handler logs it). The `user_id` tiebreaker makes
+/// the order deterministic when `created_at` ties (stable across calls).
+pub async fn list_approved_guards(db: &PgPool, limit: i64) -> Result<Vec<InternalGuard>, AppError> {
+    let rows = sqlx::query_as::<_, InternalGuard>(
+        "SELECT user_id, years_of_experience FROM profile.guard_profiles \
+         WHERE approval_status = 'approved'::profile.approval_status \
+         ORDER BY created_at DESC, user_id DESC LIMIT $1",
+    )
+    .bind(limit.clamp(1, 200))
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// Admin: set a guard profile's approval status (row-locked + transition-checked).
@@ -392,7 +409,57 @@ mod db_tests {
             .expect("list");
         assert!(listed.iter().any(|p| p.user_id == user_id));
 
+        // 6) the internal catalog returns the approved guard (with experience) — and the
+        //    projection carries no bank fields (it's `InternalGuard`, type-enforced).
+        let catalog = list_approved_guards(&pool, 100).await.expect("catalog");
+        let row = catalog
+            .iter()
+            .find(|g| g.user_id == user_id)
+            .expect("approved guard appears in the internal catalog");
+        assert_eq!(row.years_of_experience, Some(5));
+
         // cleanup
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// A pending (un-approved) guard never appears in the internal discovery catalog.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn internal_catalog_excludes_unapproved() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let req = UpsertGuardProfileRequest {
+            gender: None,
+            date_of_birth: None,
+            years_of_experience: Some(2),
+            previous_workplace: None,
+            bank_name: None,
+            account_number: None,
+            account_name: None,
+        };
+        // Created → defaults to pending (never approved).
+        upsert_guard_profile(&pool, user_id, &req)
+            .await
+            .expect("upsert pending");
+
+        let catalog = list_approved_guards(&pool, 200).await.expect("catalog");
+        assert!(
+            !catalog.iter().any(|g| g.user_id == user_id),
+            "a pending guard must NOT surface in the internal discovery catalog"
+        );
+
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
             .bind(user_id)
             .execute(&pool)

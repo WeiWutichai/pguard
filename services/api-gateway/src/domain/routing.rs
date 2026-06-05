@@ -102,6 +102,12 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Guard discovery (booking owns it; aggregates profile catalog + rating summaries).
+        prefix: "/available-guards",
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/payments",
         upstream: Upstream::Payment,
         tier: Tier::Api,
@@ -342,6 +348,17 @@ mod tests {
     fn unknown_prefix_is_not_found() {
         assert_eq!(resolve("/v1/unknown"), RouteDecision::NotFound);
         assert_eq!(resolve("/v1/"), RouteDecision::NotFound);
+    }
+
+    #[test]
+    fn available_guards_routes_to_booking_protected() {
+        // Discovery is edge-reachable (bearerAuth in the contract) → must resolve to booking,
+        // authed, Api tier. (Regression for the gateway/OpenAPI route-map drift.)
+        let (up, fwd, public, tier) = proxy(resolve("/v1/available-guards"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/available-guards");
+        assert!(!public, "/available-guards requires a token");
+        assert_eq!(tier, Tier::Api);
     }
 
     #[test]

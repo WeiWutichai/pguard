@@ -9,6 +9,17 @@ use serde::{Deserialize, Serialize};
 use shared::models::ApprovalStatus;
 use uuid::Uuid;
 
+// ----- Internal (service-to-service) -----
+
+/// The lean guard-catalog row exposed to internal (service-JWT'd) callers — booking's
+/// discovery (`/available-guards`). Deliberately NARROW: only what discovery needs, NEVER
+/// bank/PII fields (least-privilege over the wire; the PDPA-sensitive columns stay home).
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct InternalGuard {
+    pub user_id: Uuid,
+    pub years_of_experience: Option<i32>,
+}
+
 // ----- Requests -----
 
 /// Upsert the caller's guard profile. All fields optional except where a guard would

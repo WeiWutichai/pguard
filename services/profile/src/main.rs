@@ -18,7 +18,7 @@ use anyhow::Context;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::create_pool;
 use shared::redis_client::create_redis_client;
 
@@ -35,6 +35,8 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
+    // Verifies inbound service-JWTs on the internal guard-catalog read.
+    let service_jwt_config = ServiceJwtConfig::from_env()?;
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -48,6 +50,7 @@ async fn main() -> anyhow::Result<()> {
         db,
         redis_conn,
         jwt_config,
+        service_jwt_config,
     };
 
     // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
@@ -73,6 +76,10 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/admin/guard-profiles/{user_id}/reject",
             post(api::admin_reject_guard::<AppState>),
+        )
+        .route(
+            "/internal/guards",
+            get(api::internal_list_guards::<AppState>),
         )
         .layer(shared::config::build_cors_layer())
         .with_state(state);

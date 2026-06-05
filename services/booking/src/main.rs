@@ -8,6 +8,7 @@
 //! status+outbox tx), `events/` (the relay → NATS), `api/` (transport).
 
 mod api;
+mod discovery_client;
 mod domain;
 mod events;
 mod models;
@@ -22,6 +23,7 @@ use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::create_pool;
 use shared::redis_client::create_redis_client;
 
+use crate::discovery_client::HttpDiscoveryClient;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "booking";
@@ -35,8 +37,14 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
-    // Guards the `/internal/*` read the payment service calls (separate secret).
+    // Guards the `/internal/*` read the payment/rating services call, and signs the
+    // discovery reads booking MINTS to profile + rating (separate secret).
     let service_jwt_config = ServiceJwtConfig::from_env()?;
+    // Discovery upstreams (service-JWT'd internal reads).
+    let profile_url =
+        std::env::var("PROFILE_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
+    let rating_url =
+        std::env::var("RATING_URL").unwrap_or_else(|_| "http://localhost:3007".to_string());
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -46,11 +54,27 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Redis cache connection")?;
 
+    // Bounded timeouts so one stalled upstream can't hang a discovery fan-out (each lookup
+    // then surfaces as a generic error → best-effort default for that guard).
+    let discovery_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .context("build discovery HTTP client")?;
+    let discovery = HttpDiscoveryClient::new(
+        discovery_http,
+        profile_url,
+        rating_url,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+    );
+
     let state = AppState {
         db: db.clone(),
         redis_conn,
         jwt_config,
         service_jwt_config,
+        discovery,
     };
 
     // --- background outbox relay (the producer half of Phase 1) ---
@@ -74,6 +98,8 @@ async fn main() -> anyhow::Result<()> {
             post(api::create_booking::<AppState>).get(api::list_bookings::<AppState>),
         )
         .route("/bookings/{id}", get(api::get_booking::<AppState>))
+        // Discovery: approved guard catalog (profile) + rating summaries (rating).
+        .route("/available-guards", get(api::available_guards::<AppState>))
         .route(
             "/bookings/{id}/accept",
             post(api::accept_booking::<AppState>),

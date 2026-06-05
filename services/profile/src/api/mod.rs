@@ -12,15 +12,21 @@ use uuid::Uuid;
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::{ApiResponse, ApprovalStatus};
+use shared::service_jwt::ServiceCaller;
 
 use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
-    CustomerProfileResponse, GuardProfileResponse, MyProfile, RejectRequest,
+    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RejectRequest,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 use crate::repo;
-use crate::state::ProfileDeps;
+use crate::state::{ProfileDeps, ProfileInternalDeps};
+
+/// Hard cap on the internal catalog response. NOT paginated yet — a roster beyond this is
+/// truncated (the handler logs a warn so the truncation is observable). Cursor pagination is
+/// a tracked follow-up once the approved-guard count approaches this.
+const INTERNAL_GUARDS_LIMIT: i64 = 100;
 
 const ROLE_GUARD: &str = "guard";
 const ROLE_CUSTOMER: &str = "customer";
@@ -181,6 +187,30 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
     // Admin sees the FULL account number (not masked) — onboarding review needs it.
     let profiles = repo::list_guard_profiles(state.db(), status).await?;
     Ok(Json(ApiResponse::success(profiles)))
+}
+
+// ----- GET /internal/guards (service-to-service catalog) -----
+
+/// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
+/// guard catalog. Guarded by [`ServiceCaller`] (a valid service-JWT) — never reachable from
+/// the public edge (the gateway blocks `/internal/`). Returns only `{ user_id,
+/// years_of_experience }` (least-privilege — no bank/PII over the wire). Generic over
+/// [`ProfileInternalDeps`] so the guard is unit-testable (mirrors booking's internal read).
+#[tracing::instrument(skip(state), fields(caller = %caller.service))]
+pub async fn internal_list_guards<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+) -> Result<Json<ApiResponse<Vec<InternalGuard>>>, AppError> {
+    let guards = repo::list_approved_guards(state.db(), INTERNAL_GUARDS_LIMIT).await?;
+    // Surface the (un-paginated) truncation so a roster that outgrows the cap is observable
+    // rather than silently dropping guards from discovery.
+    if guards.len() as i64 >= INTERNAL_GUARDS_LIMIT {
+        tracing::warn!(
+            limit = INTERNAL_GUARDS_LIMIT,
+            "approved-guard catalog hit the cap; discovery results truncated (no pagination yet)"
+        );
+    }
+    Ok(Json(ApiResponse::success(guards)))
 }
 
 // ----- POST /admin/guard-profiles/{user_id}/approve | /reject -----
@@ -447,5 +477,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- internal guard catalog: service-JWT guard (no Redis/DB needed) -----
+
+    const SERVICE_SECRET: &str =
+        "service-secret-at-least-64-characters-long-for-internal-hs256-test!!";
+
+    #[derive(Clone)]
+    struct InternalDeps {
+        dec: Arc<DecodingKey>,
+        db: sqlx::PgPool,
+    }
+    impl shared::service_jwt::HasServiceJwt for InternalDeps {
+        fn service_decoding_key(&self) -> &DecodingKey {
+            &self.dec
+        }
+    }
+    impl ProfileInternalDeps for InternalDeps {
+        fn db(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+    }
+
+    /// Internal router over a lightweight state. The `ServiceCaller` extractor only needs the
+    /// service decoding key — no Redis, no live DB. Rejected requests short-circuit at the
+    /// guard before any DB access (mirrors booking's internal_router test).
+    fn internal_router() -> Router {
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let deps = InternalDeps {
+            dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
+            db,
+        };
+        Router::new()
+            .route(
+                "/internal/guards",
+                get(internal_list_guards::<InternalDeps>),
+            )
+            .with_state(deps)
+    }
+
+    #[tokio::test]
+    async fn internal_guards_rejects_missing_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/guards")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_guards_rejects_invalid_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/guards")
+                    .header("authorization", "Bearer not.a.valid.jwt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_guards_accepts_valid_service_token() {
+        // A valid service-JWT (as minted by booking) must pass the guard; the handler then
+        // queries the (unreachable) DB, so the response is NOT 401 — proving auth passed.
+        use shared::service_jwt::encode_service_jwt;
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("booking", &ek, 60).unwrap();
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/guards")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid service token must pass the guard"
+        );
     }
 }
