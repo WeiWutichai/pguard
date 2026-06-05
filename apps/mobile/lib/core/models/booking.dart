@@ -110,8 +110,9 @@ class Booking {
             : null,
         hours: (json['hours'] as num?)?.toInt(),
         guardCount: (json['guard_count'] as num?)?.toInt(),
-        baseFee: json['base_fee'] as String?,
-        tip: json['tip'] as String?,
+        // Money fields are decimal strings on the wire; parse defensively.
+        baseFee: (json['base_fee'] as Object?)?.toString(),
+        tip: (json['tip'] as Object?)?.toString(),
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).

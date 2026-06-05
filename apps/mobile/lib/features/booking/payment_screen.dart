@@ -140,6 +140,10 @@ class _SummaryCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final baseFeeSatang = Money.satangFromString(state.booking?.baseFee);
+    // Mirror the multipliers used by bookingSubtotalSatang (server values when present) so the
+    // line-item label and the computed subtotal can never disagree.
+    final hours = state.booking?.hours ?? state.hours;
+    final guards = state.booking?.guardCount ?? state.guardCount;
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
       decoration: BoxDecoration(
@@ -151,13 +155,13 @@ class _SummaryCard extends StatelessWidget {
         children: [
           _Line(
             label:
-                'ค่าบริการ ${Money.format(baseFeeSatang)} × ${state.hours} ชม. × ${state.guardCount} คน',
+                'ค่าบริการ ${Money.format(baseFeeSatang)} × $hours ชม. × $guards คน',
             value: Money.format(subtotal, decimals: true),
           ),
           if (state.tipSatang > 0) ...[
             const SizedBox(height: PgTokens.space2),
             _Line(
-              label: 'ทิปเจ้าหน้าที่ 💚 / Tip',
+              label: 'ทิปเจ้าหน้าที่ / Tip',
               value: Money.format(state.tipSatang, decimals: true),
             ),
           ],

@@ -25,7 +25,8 @@ class AvailableGuard {
   factory AvailableGuard.fromJson(Map<String, dynamic> json) => AvailableGuard(
         guardId: json['guard_id'] as String,
         yearsOfExperience: (json['years_of_experience'] as num?)?.toInt(),
-        averageRating: json['average_rating'] as String?,
+        // Decimal string on the wire; parse defensively.
+        averageRating: (json['average_rating'] as Object?)?.toString(),
         reviewCount: (json['review_count'] as num?)?.toInt() ?? 0,
       );
 

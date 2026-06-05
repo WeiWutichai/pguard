@@ -53,14 +53,19 @@ class _MapPickerState extends ConsumerState<MapPicker> {
   }
 
   Future<void> _resolve() async {
+    // Capture the coordinate this geocode is for; if the pin moves again while we await, a
+    // newer _resolve() is in flight — discard this (stale) result so the name/coordinate pair
+    // never gets crossed.
+    final pointAtCall = _point;
     setState(() => _resolving = true);
-    final name = await ref.read(locationServiceProvider).reverseGeocode(_point);
-    if (!mounted) return;
+    final name =
+        await ref.read(locationServiceProvider).reverseGeocode(pointAtCall);
+    if (!mounted || pointAtCall != _point) return;
     setState(() {
       _placeName = name;
       _resolving = false;
     });
-    widget.onChanged(GeoPlace(point: _point, placeName: name));
+    widget.onChanged(GeoPlace(point: pointAtCall, placeName: name));
   }
 
   Future<void> _useCurrentLocation() async {

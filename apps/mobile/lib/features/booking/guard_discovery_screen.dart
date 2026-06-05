@@ -25,9 +25,12 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
   @override
   void initState() {
     super.initState();
-    // Single fetch on entry — NOT polling.
-    Future.microtask(
-        () => ref.read(bookingFlowControllerProvider.notifier).loadGuards());
+    // Single fetch on entry — NOT polling. Skip if we already have results (avoids a redundant
+    // call on back-then-forward navigation); an empty/errored list still retries.
+    if (ref.read(bookingFlowControllerProvider).guards.isEmpty) {
+      Future.microtask(
+          () => ref.read(bookingFlowControllerProvider.notifier).loadGuards());
+    }
   }
 
   @override

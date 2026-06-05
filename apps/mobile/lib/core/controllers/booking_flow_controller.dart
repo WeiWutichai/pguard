@@ -73,13 +73,15 @@ class BookingFlowState {
   bool get hasEstimate => service?.indicativeHourlySatang != null;
 
   /// Authoritative service subtotal (satang) once the booking exists: `base_fee × hours ×
-  /// guard_count`, all from the server-owned booking. `null` until the booking is created.
+  /// guard_count`, all from the server-owned booking. `null` until the booking is created OR if
+  /// the server-owned `base_fee` is missing/unparseable (so the UI shows "not ready" rather
+  /// than a misleading ฿0 that the payment service would reject).
   int? get bookingSubtotalSatang {
     final b = booking;
     if (b?.baseFee == null) return null;
-    return Money.satangFromString(b!.baseFee) *
-        (b.hours ?? hours) *
-        (b.guardCount ?? guardCount);
+    final baseFeeSatang = Money.satangFromString(b!.baseFee);
+    if (baseFeeSatang <= 0) return null;
+    return baseFeeSatang * (b.hours ?? hours) * (b.guardCount ?? guardCount);
   }
 
   /// Amount the client will send to `POST /v1/payments` (satang) = authoritative subtotal +

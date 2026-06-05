@@ -70,8 +70,10 @@ class Payment {
         bookingId: json['booking_id'] as String,
         customerId: json['customer_id'] as String,
         guardId: json['guard_id'] as String?,
-        amount: json['amount'] as String,
-        expectedTotal: json['expected_total'] as String?,
+        // Money fields are decimal strings on the wire; parse defensively so a numeric type
+        // from a misbehaving backend degrades gracefully instead of throwing.
+        amount: (json['amount'] as Object?)?.toString() ?? '0',
+        expectedTotal: (json['expected_total'] as Object?)?.toString(),
         paymentMethod: json['payment_method'] as String?,
         status: PaymentStatus.tryParse(json['status'] as String?) ??
             PaymentStatus.pending,

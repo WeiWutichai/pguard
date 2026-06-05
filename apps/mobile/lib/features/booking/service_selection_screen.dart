@@ -10,35 +10,18 @@ import '../../widgets/pguard_header.dart';
 
 /// Step 1 of the booking flow — pick a security-service category. Each card shows the
 /// indicative ฿/hr estimate (the authoritative `base_fee` is server-owned and arrives on the
-/// created booking). UI per `Mobile - Customer App.html` (service-select). Entering this screen
-/// resets the flow so every booking starts fresh.
-class ServiceSelectionScreen extends ConsumerStatefulWidget {
+/// created booking). UI per `Mobile - Customer App.html` (service-select). The flow is reset to
+/// a fresh draft by the home screen's entry button before this screen is pushed.
+class ServiceSelectionScreen extends ConsumerWidget {
   const ServiceSelectionScreen({super.key});
 
-  @override
-  ConsumerState<ServiceSelectionScreen> createState() =>
-      _ServiceSelectionScreenState();
-}
-
-class _ServiceSelectionScreenState
-    extends ConsumerState<ServiceSelectionScreen> {
-  @override
-  void initState() {
-    super.initState();
-    // Fresh draft on flow entry (the controller is keepAlive across the five screens).
-    // Deferred off the build phase — modifying a provider during initState is disallowed.
-    Future.microtask(() {
-      if (mounted) ref.read(bookingFlowControllerProvider.notifier).reset();
-    });
-  }
-
-  void _pick(SecurityService service) {
+  void _pick(WidgetRef ref, BuildContext context, SecurityService service) {
     ref.read(bookingFlowControllerProvider.notifier).selectService(service);
     context.push('/book/form');
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: const PGuardHeader(
@@ -51,7 +34,8 @@ class _ServiceSelectionScreenState
           padding: const EdgeInsets.all(PgTokens.space4),
           children: [
             for (final service in SecurityService.values) ...[
-              _ServiceCard(service: service, onTap: () => _pick(service)),
+              _ServiceCard(
+                  service: service, onTap: () => _pick(ref, context, service)),
               const SizedBox(height: PgTokens.space3),
             ],
           ],
