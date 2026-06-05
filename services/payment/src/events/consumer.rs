@@ -111,6 +111,11 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
             }
         };
 
+        // Report this durable consumer's backlog (lag) to Prometheus.
+        if let Ok(info) = message.info() {
+            observability::record_consumer_lag(DURABLE, info.pending);
+        }
+
         // Parse first. A malformed envelope is POISON — it can never become valid, so ACK it
         // (drop) instead of letting it redeliver forever and wedge the consumer.
         let envelope: EventEnvelope<CompletedPayload> =
@@ -159,6 +164,11 @@ async fn process(
         event_id = %envelope.event_id,
         correlation_id = %envelope.correlation_id,
     );
+    // Reparent on the producer's trace (carried in the envelope) so booking→NATS→payment
+    // is one distributed trace in Tempo (C5.1).
+    if let Some(tp) = envelope.traceparent.as_deref() {
+        observability::set_parent_from_traceparent(&span, tp);
+    }
     finalize(db, envelope).instrument(span).await
 }
 

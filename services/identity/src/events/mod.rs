@@ -79,6 +79,11 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
             }
         };
 
+        // Report this durable consumer's backlog (lag) to Prometheus.
+        if let Ok(info) = message.info() {
+            observability::record_consumer_lag(DURABLE, info.pending);
+        }
+
         match handle_event(&state, message.payload.as_ref()).await {
             Ok(()) => {
                 if let Err(e) = message.ack().await {
@@ -113,6 +118,9 @@ async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> 
         event_id = %envelope.event_id,
         correlation_id = %envelope.correlation_id,
     );
+    if let Some(tp) = envelope.traceparent.as_deref() {
+        observability::set_parent_from_traceparent(&span, tp);
+    }
     process(state, envelope).instrument(span).await
 }
 

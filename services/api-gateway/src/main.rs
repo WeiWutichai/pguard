@@ -34,10 +34,14 @@ use crate::state::{AppState, UpstreamTable};
 
 const SERVICE_NAME: &str = "api-gateway";
 const PORT: u16 = 3000;
+/// Default admin port — serves `/metrics` (+ `/healthz`) OFF the public edge port so the
+/// metrics registry (route inventory, traffic, latency) is not scrapable from the internet.
+/// Override with `METRICS_ADDR`; restrict it to the monitoring network in prod.
+const METRICS_PORT: u16 = 9100;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    observability::init_telemetry(SERVICE_NAME);
+    let _telemetry = observability::init_telemetry(SERVICE_NAME);
 
     // --- config (fail-fast at startup) ---
     let redis_config = RedisConfig::from_env()?;
@@ -65,11 +69,40 @@ async fn main() -> anyhow::Result<()> {
         limits,
     };
 
-    // --- router: gateway's own /healthz (never proxied) + the catch-all edge handler ---
+    // --- admin listener: /metrics (+ /healthz) on a SEPARATE port, never on the public
+    // edge. Prometheus scrapes this; the public 3000 port serves only the proxied API. ---
+    {
+        let metrics_addr =
+            std::env::var("METRICS_ADDR").unwrap_or_else(|_| format!("0.0.0.0:{METRICS_PORT}"));
+        let metrics_app = Router::new()
+            .route("/metrics", get(observability::metrics_handler))
+            .route("/healthz", get(healthz));
+        tokio::spawn(async move {
+            match tokio::net::TcpListener::bind(&metrics_addr).await {
+                Ok(l) => {
+                    tracing::info!(addr = %metrics_addr, "api-gateway metrics listener");
+                    if let Err(e) = axum::serve(l, metrics_app).await {
+                        tracing::error!("metrics listener error: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(addr = %metrics_addr, "metrics listener bind failed: {e}")
+                }
+            }
+        });
+    }
+
+    // --- public router: gateway's own /healthz (never proxied) + the catch-all edge handler.
+    // The EDGE telemetry middleware starts a fresh root trace — an untrusted client must not
+    // be able to supply the trace context (forge trace_id / force sampling). `/metrics` is
+    // NOT here; it lives on the admin listener above. ---
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/{*path}", any(handler::gateway))
         .layer(shared::config::build_cors_layer())
+        .layer(axum::middleware::from_fn(
+            observability::edge_telemetry_middleware,
+        ))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{PORT}");

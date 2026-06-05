@@ -40,7 +40,7 @@ const PORT: u16 = 3003;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    observability::init_telemetry(SERVICE_NAME);
+    let _telemetry = observability::init_telemetry(SERVICE_NAME);
 
     // --- config (fail-fast at startup) ---
     let db_config = DatabaseConfig::from_env()?;
@@ -83,7 +83,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/otp/challenge", get(api::challenge))
         .route("/otp/request", post(api::request))
         .route("/otp/verify", post(api::verify))
+        .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())
+        .layer(axum::middleware::from_fn(
+            observability::telemetry_middleware,
+        ))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{PORT}");

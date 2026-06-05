@@ -133,8 +133,10 @@ services:
       - loki
 
   # ── Tempo — distributed tracing backend (local block storage in dev) ──
+  # Pinned: `:latest` drifted to a config schema that rejects tempo.yaml (C5.1 found this
+  # when first booting the stack). A pinned release keeps the trace backend reproducible.
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.6.1
     container_name: pguard-tempo
     restart: unless-stopped
     command: ["-config.file=/etc/tempo/tempo.yaml"]
@@ -168,11 +170,16 @@ services:
       - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
+    # Rust services run on the host (`cargo run`); map host.docker.internal so the
+    # per-service /metrics scrape targets resolve on Linux too (no-op on Docker Desktop).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - pguard-dev
 
   # ── Grafana — dashboards over Tempo + Loki + Prometheus ──
-  # Host 3001 → container 3000 to avoid clash with api-gateway on host 3000.
+  # Host 3030 → container 3000. NOT 3001 (the identity service binds host 3001) and NOT
+  # 3000 (api-gateway). Keeps the host-port map collision-free when services run on the host.
   grafana:
     image: grafana/grafana:latest
     container_name: pguard-grafana
@@ -183,7 +190,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
     ports:
-      - "${GRAFANA_PORT:-3001}:3000"
+      - "${GRAFANA_PORT:-3030}:3000"
     volumes:
       - grafana-data:/var/lib/grafana
       - ../observability/grafana/provisioning:/etc/grafana/provisioning:ro

@@ -72,6 +72,7 @@ impl BookingReader for HttpBookingReader {
         let resp = self
             .http
             .get(&url)
+            .headers(observability::trace_headers()) // continue the trace across the hop
             .header("Authorization", format!("Bearer {token}"))
             .send()
             .await

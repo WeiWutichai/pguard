@@ -93,12 +93,20 @@ rust_decimal = { version = "1", features = ["serde-str"] }
 utoipa-swagger-ui = { version = "9", features = ["axum"] }
 # Env loading.
 dotenvy = "0.15"
-# OpenTelemetry OTLP export (Observability decision — wired in a follow-up; see
-# packages/observability/src/lib.rs). Pin the 0.27/0.28 line together.
+# OpenTelemetry OTLP export (Observability decision — Phase 5 C5.1). The `observability`
+# package wires these into `init_telemetry`: OTLP trace export to the collector → Tempo,
+# W3C trace-context propagation across HTTP + NATS. Pin the 0.27/0.28 line together.
+# default-features off keeps the heavy blocking-reqwest/http-proto exporters out — we
+# only use the gRPC (tonic) trace exporter.
 opentelemetry = "0.27"
 opentelemetry_sdk = { version = "0.27", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.27", features = ["grpc-tonic"] }
+opentelemetry-otlp = { version = "0.27", default-features = false, features = ["grpc-tonic", "trace"] }
 tracing-opentelemetry = "0.28"
+# Prometheus metrics: a process-wide recorder + a `/metrics` text endpoint per service
+# (request rate, p99 latency, error rate). default-features off drops the built-in HTTP
+# listener/push-gateway (hyper) — services expose `/metrics` through their own Axum router.
+metrics = "0.24"
+metrics-exporter-prometheus = { version = "0.16", default-features = false }
 
 [profile.dev]
 # Faster incremental builds for the many-crate workspace.

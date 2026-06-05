@@ -67,6 +67,11 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
             }
         };
 
+        // Report this durable consumer's backlog (lag) to Prometheus.
+        if let Ok(info) = message.info() {
+            observability::record_consumer_lag(DURABLE, info.pending);
+        }
+
         match handle_event(&state, message.payload.as_ref()).await {
             Ok(()) => {
                 if let Err(e) = message.ack().await {
@@ -85,8 +90,8 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
 }
 
 /// Parse one envelope, then process it inside a span carrying the event identity +
-/// `correlation_id` so booking→NATS→notification logs/traces stitch together. (OTLP
-/// export to the collector is wired in the observability follow-up; the spans exist now.)
+/// `correlation_id`. The span is REPARENTED on the producer's `traceparent` (carried in the
+/// envelope) so a booking→NATS→notification flow is one distributed trace in Tempo (C5.1).
 async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> {
     let envelope: EventEnvelope<Value> = serde_json::from_slice(payload)
         .map_err(|e| AppError::BadRequest(format!("invalid event envelope: {e}")))?;
@@ -97,6 +102,9 @@ async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> 
         event_id = %envelope.event_id,
         correlation_id = %envelope.correlation_id,
     );
+    if let Some(tp) = envelope.traceparent.as_deref() {
+        observability::set_parent_from_traceparent(&span, tp);
+    }
     process(state, envelope).instrument(span).await
 }
 

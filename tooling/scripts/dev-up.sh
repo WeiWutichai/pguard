@@ -20,9 +20,19 @@ cat <<'EOF'
 
 ==> Infra is up. Next steps (see CLAUDE.md "Quickstart (dev)"):
 
-  # Per-service backend (Rust + Axum):
+  # Export traces to the collector (→ Tempo) + scale sampling (C5.1). Unset = logging-only:
+  export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+  export OTEL_TRACES_SAMPLER_ARG=1.0        # 0.0–1.0 (default 1.0 = sample all)
+
+  # Per-service backend (Rust + Axum) — each exposes /metrics (Prometheus scrapes it):
   cd services/notification && cargo run     # repeat per service: identity, profile, otp,
                                             # booking, payment, rating, calling, presence, chat, api-gateway
+
+  # Observability UIs: Grafana http://localhost:3030 (dashboard "pguard · service overview")
+  #                    Prometheus http://localhost:9090 · Tempo via Grafana Explore
+  # api-gateway serves /metrics on its admin port 9100 (not the public 3000); other
+  # services serve /metrics on their service port. Restrict /metrics to the monitoring
+  # network in prod (k8s NetworkPolicy / firewall) — it is unauthenticated.
 
   # Web admin (Next.js 16):
   cd apps/web-admin && pnpm dev

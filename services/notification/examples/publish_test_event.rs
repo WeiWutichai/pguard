@@ -29,6 +29,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_type: topics::BOOKING_JOB_ACCEPTED.to_string(),
         occurred_at: chrono::Utc::now(),
         correlation_id: Uuid::new_v4(),
+        // Dev helper publishes outside any request span → no producer trace to carry.
+        traceparent: None,
         payload: json!({
             "customer_id": customer_id,
             "guard_id": Uuid::new_v4(),

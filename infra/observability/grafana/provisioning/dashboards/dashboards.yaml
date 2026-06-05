@@ -1,0 +1,20 @@
+# pguard v2 — Grafana dashboard provisioning (C5.1)
+#
+# Loads JSON dashboards from this directory on boot. The "pguard · service
+# overview" dashboard (pguard-overview.json) reads the Prometheus series the
+# `observability` package exposes: request rate, p99 latency, error rate, and
+# NATS consumer lag. See CLAUDE.md → Observability.
+
+apiVersion: 1
+
+providers:
+  - name: pguard
+    orgId: 1
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      # Grafana reads only *.json here as dashboards; this provider yaml is ignored.
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false

@@ -15,9 +15,14 @@ const PORT: u16 = 3010;
 
 #[tokio::main]
 async fn main() {
-    observability::init_telemetry(SERVICE_NAME);
+    let _telemetry = observability::init_telemetry(SERVICE_NAME);
 
-    let app = Router::new().route("/healthz", get(healthz));
+    let app = Router::new()
+        .route("/healthz", get(healthz))
+        .route("/metrics", get(observability::metrics_handler))
+        .layer(axum::middleware::from_fn(
+            observability::telemetry_middleware,
+        ));
 
     let addr = format!("0.0.0.0:{PORT}");
     // startup-only expect — CLAUDE.md forbids unwrap/expect only in the request path.

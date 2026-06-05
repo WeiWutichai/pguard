@@ -62,6 +62,12 @@ fn build_forward_headers(
     let mut out = reqwest::header::HeaderMap::new();
     for (name, value) in inbound.iter() {
         let n = name.as_str();
+        // Drop client-supplied W3C trace context at the edge: the gateway is the trust
+        // boundary and re-injects its OWN context (a client must not forge the downstream
+        // trace_id or force sampling). Stripped here so it holds even in logging-only mode.
+        if n.eq_ignore_ascii_case("traceparent") || n.eq_ignore_ascii_case("tracestate") {
+            continue;
+        }
         if is_hop_by_hop(n) || is_spoofable_identity(n) {
             continue;
         }
@@ -110,7 +116,12 @@ pub async fn forward(
         .await
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
-    let fwd_headers = build_forward_headers(&parts.headers, user);
+    let mut fwd_headers = build_forward_headers(&parts.headers, user);
+    // Inject the edge's W3C trace context so the backend continues THIS trace. The gateway
+    // span is a fresh root (edge_telemetry_middleware ignores any client traceparent) and
+    // build_forward_headers strips client trace-context headers, so the downstream parent is
+    // always the gateway's.
+    observability::inject_context(&mut fwd_headers);
 
     let url = match query {
         Some(q) if !q.is_empty() => format!("{base_url}{forward_path}?{q}"),
@@ -227,6 +238,30 @@ mod tests {
         let h = inbound(&[("authorization", "Bearer tok")]);
         let out = build_forward_headers(&h, None);
         assert_eq!(out.get(AUTHORIZATION.as_str()).unwrap(), "Bearer tok");
+    }
+
+    #[test]
+    fn forward_headers_strip_client_trace_context() {
+        // Edge trust boundary: a client must not control the downstream trace context
+        // (forge trace_id / force sampling). The gateway re-injects its own.
+        let h = inbound(&[
+            (
+                "traceparent",
+                "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+            ),
+            ("tracestate", "vendor=value"),
+            ("content-type", "application/json"),
+        ]);
+        let out = build_forward_headers(&h, None);
+        assert!(
+            out.get("traceparent").is_none(),
+            "client traceparent stripped at edge"
+        );
+        assert!(
+            out.get("tracestate").is_none(),
+            "client tracestate stripped at edge"
+        );
+        assert_eq!(out.get("content-type").unwrap(), "application/json");
     }
 
     // ----- ephemeral-upstream proxy integration (no Redis required) -----

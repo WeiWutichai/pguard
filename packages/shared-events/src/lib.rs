@@ -22,18 +22,29 @@ pub struct EventEnvelope<T> {
     pub occurred_at: DateTime<Utc>,
     /// Correlation id threaded across services for distributed tracing.
     pub correlation_id: Uuid,
+    /// W3C `traceparent` captured from the producer's request span at construction time
+    /// (C5.1). The consumer reparents its span on this so the trace continues across NATS.
+    /// `None` when produced outside a sampled trace (e.g. logging-only mode). `default` +
+    /// `skip_serializing_if` keep wire-compat with envelopes that predate this field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traceparent: Option<String>,
     /// The domain payload.
     pub payload: T,
 }
 
 impl<T> EventEnvelope<T> {
     /// Build an envelope for `event_type` with a fresh `event_id` and `occurred_at = now`.
+    ///
+    /// Captures the current span's `traceparent` so the event carries the producer's trace
+    /// through the outbox → NATS → consumer. Call this *inside the request span* (the repo
+    /// tx that writes the outbox row) — which is exactly where producers build envelopes.
     pub fn new(event_type: impl Into<String>, correlation_id: Uuid, payload: T) -> Self {
         Self {
             event_id: Uuid::new_v4(),
             event_type: event_type.into(),
             occurred_at: Utc::now(),
             correlation_id,
+            traceparent: observability::current_traceparent(),
             payload,
         }
     }

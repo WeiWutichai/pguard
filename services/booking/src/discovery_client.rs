@@ -98,6 +98,7 @@ impl GuardCatalog for HttpDiscoveryClient {
         let resp = self
             .http
             .get(&url)
+            .headers(observability::trace_headers())
             .header("Authorization", format!("Bearer {token}"))
             .send()
             .await
@@ -129,6 +130,7 @@ impl RatingReader for HttpDiscoveryClient {
         let resp = self
             .http
             .get(&url)
+            .headers(observability::trace_headers())
             .header("Authorization", format!("Bearer {token}"))
             .send()
             .await

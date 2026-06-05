@@ -1,46 +1,28 @@
-//! Telemetry setup shared by every service.
+//! Telemetry shared by every pguard service (CLAUDE.md → Observability decision:
+//! OpenTelemetry traces across services → Tempo, plus Prometheus metrics).
 //!
-//! v2 scaffold: structured logging via `tracing-subscriber` with `RUST_LOG`
-//! filtering. The CLAUDE.md "Observability" decision (OpenTelemetry traces across
-//! services → Tempo + Loki) plugs in here next: add an OTLP layer exporting to the
-//! collector defined in `infra/observability/otel-collector-config.yaml`, plus
-//! W3C trace-context propagation on outbound HTTP/NATS calls.
+//! Wiring per service (`main.rs`):
+//! ```ignore
+//! let _telemetry = observability::init_telemetry(SERVICE_NAME); // bind to flush on exit
+//! let app = Router::new()
+//!     .route("/metrics", axum::routing::get(observability::metrics_handler))
+//!     // ... routes ...
+//!     .layer(axum::middleware::from_fn(observability::telemetry_middleware));
+//! ```
+//!
+//! Outbound service→service calls inject the trace context with [`inject_context`];
+//! NATS producers stamp [`current_traceparent`] into the event envelope and consumers
+//! reparent with [`set_parent_from_traceparent`]. Together these make a
+//! booking→payment→notification flow one trace in Tempo.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+mod metrics;
+mod middleware;
+mod propagation;
+mod telemetry;
 
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
-
-static INITIALISED: AtomicBool = AtomicBool::new(false);
-
-/// Initialise the global tracing subscriber for `service_name`.
-///
-/// Idempotent: safe to call once per process (subsequent calls are no-ops), which
-/// also makes it safe to call from tests. Reads the `RUST_LOG` env filter, falling
-/// back to `info`.
-pub fn init_telemetry(service_name: &str) {
-    // Guard against double-init (the global subscriber can only be set once).
-    if INITIALISED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
-
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    tracing::info!(service = service_name, "telemetry initialised");
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn init_is_idempotent() {
-        // Should not panic on repeated calls.
-        init_telemetry("test-service");
-        init_telemetry("test-service");
-    }
-}
+pub use metrics::{metrics_handler, record_consumer_lag};
+pub use middleware::{edge_telemetry_middleware, telemetry_middleware};
+pub use propagation::{
+    current_traceparent, inject_context, set_parent_from_traceparent, trace_headers,
+};
+pub use telemetry::{init_telemetry, OtelGuard};
