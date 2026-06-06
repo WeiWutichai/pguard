@@ -75,14 +75,18 @@ class ProfileController extends _$ProfileController {
 
   /// `POST /v1/auth/logout` (best-effort server revoke) then clear the local session.
   Future<void> logout() async {
+    // Capture refs up-front — this controller is autoDispose and must not touch `ref` after an
+    // await (the screen could unmount mid-logout). The captured providers are all keepAlive.
     final store = ref.read(appStoreProvider);
+    final api = ref.read(pguardApiProvider);
+    final session = ref.read(sessionProvider.notifier);
     final refresh = await store.readRefreshToken();
     try {
-      await ref.read(pguardApiProvider).post('/auth/logout',
+      await api.post('/auth/logout',
           data: refresh != null ? {'refresh_token': refresh} : null);
     } catch (_) {
       // Best-effort: even if the server call fails, always clear locally so the user is out.
     }
-    await ref.read(sessionProvider.notifier).logout();
+    await session.logout();
   }
 }

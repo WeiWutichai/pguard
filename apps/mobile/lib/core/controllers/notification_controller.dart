@@ -10,10 +10,18 @@ part 'notification_controller.g.dart';
 /// No polling — the badge ([UnreadCount]) refreshes on dashboard focus, not on a timer.
 @riverpod
 class NotificationController extends _$NotificationController {
+  // True once this (autoDispose) controller is gone, so a rollback from an in-flight request
+  // after the screen unmounts doesn't write to disposed state.
+  bool _disposed = false;
+
   @override
   Future<List<AppNotification>> build() async {
+    ref.onDispose(() => _disposed = true);
+    // No role filter: notifications are per-user; we fetch all the caller's own notifications
+    // (the contract's optional `role`/`unread_only` scoping is deferred).
     final data = await ref.read(pguardApiProvider).get('/notifications');
-    return (data as List)
+    final raw = data is List ? data : const [];
+    return raw
         .whereType<Map<String, dynamic>>()
         .map(AppNotification.fromJson)
         .toList();
@@ -40,7 +48,7 @@ class NotificationController extends _$NotificationController {
     try {
       await ref.read(pguardApiProvider).put('/notifications/$id/read');
     } catch (_) {
-      state = AsyncData(original); // rollback
+      if (!_disposed) state = AsyncData(original); // rollback
     }
   }
 
@@ -59,7 +67,7 @@ class NotificationController extends _$NotificationController {
     try {
       await ref.read(pguardApiProvider).put('/notifications/read-all');
     } catch (_) {
-      state = AsyncData(original); // rollback
+      if (!_disposed) state = AsyncData(original); // rollback
     }
   }
 }

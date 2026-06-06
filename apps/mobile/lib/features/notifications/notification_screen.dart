@@ -45,11 +45,11 @@ class NotificationScreen extends ConsumerWidget {
                 : 'โหลดการแจ้งเตือนไม่สำเร็จ / Could not load notifications',
             onRetry: ctrl.refresh,
           ),
-          data: (list) => list.isEmpty
-              ? const _EmptyBody()
-              : RefreshIndicator(
-                  onRefresh: ctrl.refresh,
-                  child: ListView.builder(
+          data: (list) => RefreshIndicator(
+            onRefresh: ctrl.refresh,
+            child: list.isEmpty
+                ? const _EmptyBody()
+                : ListView.builder(
                     itemCount: list.length,
                     itemBuilder: (_, i) {
                       final n = list[i];
@@ -59,7 +59,7 @@ class NotificationScreen extends ConsumerWidget {
                       );
                     },
                   ),
-                ),
+          ),
         ),
       ),
     );

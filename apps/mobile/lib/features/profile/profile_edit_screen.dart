@@ -32,24 +32,21 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
   final _newAccountNumber = TextEditingController();
 
   bool _saving = false;
+  bool _seeded = false;
   String? _error;
-  late final UserProfile? _profile =
-      ref.read(profileControllerProvider).valueOrNull;
 
-  @override
-  void initState() {
-    super.initState();
-    final p = _profile;
-    if (p != null) {
-      _fullName.text = p.fullName ?? '';
-      _address.text = p.address ?? '';
-      _gender.text = p.gender ?? '';
-      _dob.text = p.dateOfBirth ?? '';
-      _experience.text = p.yearsOfExperience?.toString() ?? '';
-      _workplace.text = p.previousWorkplace ?? '';
-      _bankName.text = p.bankName ?? '';
-      _accountName.text = p.accountName ?? '';
-    }
+  /// Seed the text fields once, when the profile first becomes available.
+  void _seed(UserProfile p) {
+    if (_seeded) return;
+    _fullName.text = p.fullName ?? '';
+    _address.text = p.address ?? '';
+    _gender.text = p.gender ?? '';
+    _dob.text = p.dateOfBirth ?? '';
+    _experience.text = p.yearsOfExperience?.toString() ?? '';
+    _workplace.text = p.previousWorkplace ?? '';
+    _bankName.text = p.bankName ?? '';
+    _accountName.text = p.accountName ?? '';
+    _seeded = true;
   }
 
   @override
@@ -70,9 +67,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     super.dispose();
   }
 
-  Future<void> _save() async {
-    final p = _profile;
-    if (p == null) return;
+  Future<void> _save(UserProfile p) async {
     setState(() {
       _saving = true;
       _error = null;
@@ -114,7 +109,8 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final p = _profile;
+    final p = ref.watch(profileControllerProvider).valueOrNull;
+    if (p != null) _seed(p);
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: const PGuardHeader(
@@ -135,7 +131,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                             label: 'เบอร์โทร (เข้าสู่ระบบ) / Phone',
                             value: p.phone ?? '—'),
                         const SizedBox(height: PgTokens.space4),
-                        if (p.isGuard) ..._guardFields() else ..._customerFields(),
+                        if (p.isGuard) ..._guardFields(p) else ..._customerFields(),
                         if (_error != null) ...[
                           const SizedBox(height: PgTokens.space3),
                           Text(_error!,
@@ -157,7 +153,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                       child: PgPrimaryButton(
                         label: 'บันทึก / Save',
                         busy: _saving,
-                        onPressed: _saving ? null : _save,
+                        onPressed: _saving ? null : () => _save(p),
                       ),
                     ),
                   ),
@@ -173,7 +169,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
         _Field(label: 'ที่อยู่ / Address', controller: _address, maxLines: 2),
       ];
 
-  List<Widget> _guardFields() => [
+  List<Widget> _guardFields(UserProfile p) => [
         _Field(label: 'เพศ / Gender', controller: _gender),
         const SizedBox(height: PgTokens.space3),
         _Field(
@@ -194,10 +190,10 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
         const SizedBox(height: PgTokens.space3),
         _Field(label: 'ชื่อบัญชี / Account name', controller: _accountName),
         const SizedBox(height: PgTokens.space3),
-        if ((_profile?.accountNumberMasked ?? '').isNotEmpty)
+        if ((p.accountNumberMasked ?? '').isNotEmpty)
           _ReadonlyField(
               label: 'เลขบัญชีปัจจุบัน / Current account',
-              value: _profile!.accountNumberMasked!),
+              value: p.accountNumberMasked!),
         const SizedBox(height: PgTokens.space3),
         _Field(
           label: 'เปลี่ยนเลขบัญชี (ถ้าต้องการ) / New account number',
