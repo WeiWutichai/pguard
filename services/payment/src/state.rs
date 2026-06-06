@@ -12,6 +12,9 @@ use crate::booking_client::{BookingReader, HttpBookingReader};
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Read-replica pool (C5.3) for the payment list + data-export reads; primary fallback.
+    /// Writes + read-after-write (charge, proration, single get_payment) use `db`.
+    pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
@@ -42,11 +45,18 @@ impl HasServiceJwt for AppState {
 /// Capability seam for the service-JWT'd internal data-export read (mirrors rating/booking).
 pub trait PaymentInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the read-only data export (C5.3). Defaults to primary.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl PaymentInternalDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }
 
@@ -62,6 +72,11 @@ pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Reader: BookingReader;
 
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the payment list read (C5.3). Defaults to primary; single
+    /// `get_payment` + charge/proration stay on `db` (money read-after-write).
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
     fn booking_reader(&self) -> &Self::Reader;
 }
 
@@ -70,6 +85,9 @@ impl PaymentDeps for AppState {
 
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
     fn booking_reader(&self) -> &Self::Reader {
         &self.booking_reader

@@ -16,6 +16,9 @@ use crate::booking_client::{BookingReader, HttpBookingReader};
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Read-replica pool (C5.3) for the admin/public review lists + rating-summary reads;
+    /// primary fallback. Writes (submit, visibility toggle) use `db`.
+    pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
@@ -51,6 +54,11 @@ pub trait RatingDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Reader: BookingReader;
 
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the admin/public review LIST reads (C5.3). Defaults to primary;
+    /// submit-review + visibility toggle stay on `db`.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
     fn booking_reader(&self) -> &Self::Reader;
 }
 
@@ -59,6 +67,9 @@ impl RatingDeps for AppState {
 
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
     fn booking_reader(&self) -> &Self::Reader {
         &self.booking_reader
@@ -70,10 +81,17 @@ impl RatingDeps for AppState {
 /// (mirrors booking's `BookingInternalDeps`).
 pub trait RatingInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the rating-summary + data-export reads (C5.3). Defaults to primary.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl RatingInternalDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }

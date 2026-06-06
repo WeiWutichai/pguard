@@ -27,9 +27,15 @@ name: pguard-prod
 networks:
   pguard-prod:
     name: pguard-prod
+    # Explicit subnet so the primary's pg_hba can scope streaming replication to THIS
+    # network's CIDR (C5.3), instead of `all` (any source).
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
 
 volumes:
   pg-data:
+  pg-replica-data:
   minio-data:
   grafana-data:
   tempo-data:
@@ -37,10 +43,13 @@ volumes:
 
 # ── Reusable env fragments (YAML anchors) ────────────────────────────────────
 x-db-env: &db-env
-  # Per-service schemas live in one `pguard` DB. C5.3: flip host `postgres`→`pgbouncer`
-  # and port 5432→6432 to route through the pooler (see the pgbouncer service below).
-  DATABASE_URL: postgres://${POSTGRES_USER:-pguard}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/${POSTGRES_DB:-pguard}
+  # Per-service schemas live in one `pguard` DB. C5.3: writes + read-after-write go through
+  # pgbouncer (transaction pooling, host `pgbouncer:6432`); list/report/discovery reads go to
+  # the streaming read replica (`postgres-replica:5432`) — fixes the v1 6×20 single-DB SPOF.
+  DATABASE_URL: postgres://${POSTGRES_USER:-pguard}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@pgbouncer:6432/${POSTGRES_DB:-pguard}
+  DATABASE_READ_URL: postgres://${POSTGRES_USER:-pguard}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres-replica:5432/${POSTGRES_DB:-pguard}
   DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
+  DATABASE_READ_MAX_CONNECTIONS: ${DATABASE_READ_MAX_CONNECTIONS:-10}
 
 x-rust-env: &rust-env
   RUST_LOG: ${RUST_LOG:-info}
@@ -64,6 +73,14 @@ x-rust-service: &rust-service
   depends_on:
     postgres:
       condition: service_healthy
+    # Services connect to Postgres THROUGH pgbouncer (DATABASE_URL) + read from the replica
+    # (DATABASE_READ_URL). pgbouncer comes up fast against the healthy primary; the replica is
+    # gated on its healthcheck so services don't start mid base-backup (C5.3). The read pool is
+    # also lazy (create_read_pool), so a replica blip degrades reads rather than aborting boot.
+    pgbouncer:
+      condition: service_started
+    postgres-replica:
+      condition: service_healthy
     nats:
       condition: service_healthy
     redis:
@@ -75,12 +92,28 @@ services:
     image: postgres:17
     container_name: pguard-prod-postgres
     restart: unless-stopped
+    # Primary configured for streaming replication (C5.3 read replica).
+    command:
+      - "postgres"
+      - "-c"
+      - "wal_level=replica"
+      - "-c"
+      - "max_wal_senders=10"
+      - "-c"
+      - "max_replication_slots=10"
+      - "-c"
+      - "hot_standby=on"
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-pguard}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       POSTGRES_DB: ${POSTGRES_DB:-pguard}
+      # Password for the dedicated `replicator` role the standby streams as.
+      REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?REPLICATION_PASSWORD is required}
     volumes:
       - pg-data:/var/lib/postgresql/data
+      # Runs once on first init: creates the `replicator` role + a physical slot and allows
+      # streaming connections from the replica.
+      - ../db/primary-replication-init.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
     expose:
       - "5432"
     networks:
@@ -92,10 +125,54 @@ services:
       retries: 5
       start_period: 10s
 
-  # pgbouncer — connection pooler (CLAUDE.md DB-scaling decision · C5.3 placeholder).
-  # Present so the prod topology is complete; app services still point at `postgres`
-  # directly until C5.3 cuts DATABASE_URL over to pgbouncer:6432. Verify the pin when
-  # that work lands.
+  # postgres-replica — streaming read replica (C5.3). list/report/discovery reads hit this
+  # via DATABASE_READ_URL; writes + read-after-write go to the primary through pgbouncer.
+  # On first boot it base-backs up from the primary (pg_basebackup -R writes standby.signal +
+  # primary_conninfo), then runs as a hot standby. Needs a real Docker host to actually stream
+  # (verified structurally via `docker compose config`).
+  postgres-replica:
+    image: postgres:17
+    container_name: pguard-prod-postgres-replica
+    restart: unless-stopped
+    user: postgres
+    environment:
+      PGDATA: /var/lib/postgresql/data
+      PGPASSWORD: ${REPLICATION_PASSWORD:?REPLICATION_PASSWORD is required}
+    command:
+      - "bash"
+      - "-c"
+      - |
+        set -e
+        if [ ! -s "$${PGDATA}/PG_VERSION" ]; then
+          echo "replica: base-backup from primary…"
+          until pg_basebackup -h postgres -p 5432 -U replicator -D "$${PGDATA}" -Fp -Xs -P -R -S replica_1; do
+            echo "replica: primary not ready, retrying…"; sleep 2
+          done
+        fi
+        exec docker-entrypoint.sh postgres -c hot_standby=on
+    volumes:
+      - pg-replica-data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    networks:
+      - pguard-prod
+    # Healthy only once Postgres is actually serving (i.e. after first-boot base-backup +
+    # `exec postgres`), so dependents gated on service_healthy don't start mid-basebackup.
+    # Generous start_period covers the base-backup window.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pguard} -d ${POSTGRES_DB:-pguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # pgbouncer — connection pooler (CLAUDE.md DB-scaling decision · C5.3). As of C5.3 the
+  # services' DATABASE_URL routes writes + read-after-write THROUGH this pooler (transaction
+  # mode, pgbouncer:6432) fronting the primary; list/report/discovery reads go to
+  # postgres-replica via DATABASE_READ_URL. Fixes the v1 6×20 single-DB connection explosion.
   pgbouncer:
     image: edoburu/pgbouncer:1.23.1-p3
     container_name: pguard-prod-pgbouncer

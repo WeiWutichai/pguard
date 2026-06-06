@@ -101,8 +101,9 @@ pub async fn guard_ratings<S: RatingDeps>(
     State(state): State<S>,
     Path(guard_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<GuardRatingsResponse>>, AppError> {
+    // Public list read → replica (C5.3).
     let (summary, reviews) =
-        repo::guard_ratings(state.db(), guard_id, PUBLIC_REVIEWS_LIMIT).await?;
+        repo::guard_ratings(state.db_read(), guard_id, PUBLIC_REVIEWS_LIMIT).await?;
     Ok(Json(ApiResponse::success(GuardRatingsResponse {
         guard_id,
         average: summary.average,
@@ -132,8 +133,9 @@ pub async fn list_admin_reviews<S: RatingDeps>(
             ));
         }
     }
+    // Admin moderation list read → replica (C5.3).
     let resp = repo::list_admin_reviews(
-        state.db(),
+        state.db_read(),
         q.guard_id,
         q.rating,
         q.is_visible,
@@ -173,7 +175,7 @@ pub async fn internal_rating_summary<S: RatingInternalDeps>(
     caller: ServiceCaller,
     Path(guard_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<RatingSummaryResponse>>, AppError> {
-    let summary = repo::guard_summary(state.db(), guard_id).await?;
+    let summary = repo::guard_summary(state.db_read(), guard_id).await?;
     Ok(Json(ApiResponse::success(RatingSummaryResponse {
         guard_id,
         average: summary.average,
@@ -191,7 +193,7 @@ pub async fn internal_export_user<S: RatingInternalDeps>(
     caller: ServiceCaller,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let reviews = repo::export_user_reviews(state.db(), user_id).await?;
+    let reviews = repo::export_user_reviews(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(reviews)))
 }
 

@@ -185,7 +185,8 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
         ),
     };
     // Admin sees the FULL account number (not masked) — onboarding review needs it.
-    let profiles = repo::list_guard_profiles(state.db(), status).await?;
+    // List read → replica (C5.3); the §30 read-audit below is a WRITE → primary.
+    let profiles = repo::list_guard_profiles(state.db_read(), status).await?;
     // PDPA §30: record this admin read of personal data (who accessed what).
     repo::record_access(
         state.db(),
@@ -209,7 +210,7 @@ pub async fn internal_list_guards<S: ProfileInternalDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
 ) -> Result<Json<ApiResponse<Vec<InternalGuard>>>, AppError> {
-    let guards = repo::list_approved_guards(state.db(), INTERNAL_GUARDS_LIMIT).await?;
+    let guards = repo::list_approved_guards(state.db_read(), INTERNAL_GUARDS_LIMIT).await?;
     // Surface the (un-paginated) truncation so a roster that outgrows the cap is observable
     // rather than silently dropping guards from discovery.
     if guards.len() as i64 >= INTERNAL_GUARDS_LIMIT {
@@ -232,7 +233,7 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
     caller: ServiceCaller,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let data = repo::export_user_data(state.db(), user_id).await?;
+    let data = repo::export_user_data(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(data)))
 }
 

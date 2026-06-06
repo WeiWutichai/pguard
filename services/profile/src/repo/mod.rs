@@ -330,9 +330,9 @@ pub async fn get_customer_profile(
     )
 }
 
-/// Record an admin read of personal data (PDPA §30 — who accessed what). Runs on the same
-/// pool as the read it accompanies, so it propagates errors rather than swallowing them: a
-/// healthy read path is a healthy audit-write path, and an unrecorded access should fail
+/// Record an admin read of personal data (PDPA §30 — who accessed what). This is a WRITE, so
+/// the caller runs it on the PRIMARY pool (the accompanying admin LIST reads from the replica,
+/// C5.3). It propagates errors rather than swallowing them — an unrecorded access should fail
 /// loudly rather than disclose PII silently.
 pub async fn record_access(
     db: &PgPool,

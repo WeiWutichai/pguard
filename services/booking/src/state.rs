@@ -12,6 +12,9 @@ use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, RatingReader};
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Read-replica pool (C5.3) for list/discovery reads. Falls back to the primary when
+    /// `DATABASE_READ_URL` is unset. Writes + read-after-write use `db`.
+    pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
     pub redis_conn: redis::aio::MultiplexedConnection,
     pub jwt_config: JwtConfig,
@@ -47,11 +50,19 @@ impl HasServiceJwt for AppState {
 /// the DB is touched (mirrors notification's `InternalPushDeps`).
 pub trait BookingDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for list reads (C5.3). Defaults to the primary, so test doubles +
+    /// single-node deployments need no change; `AppState` overrides it with the replica pool.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl BookingDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }
 
@@ -61,11 +72,18 @@ impl BookingDeps for AppState {
 /// identity's `RevokeAllDeps`).
 pub trait BookingInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the read-only data export (C5.3). Defaults to primary.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl BookingInternalDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }
 

@@ -55,8 +55,16 @@ pub fn build_cors_layer() -> CorsLayer {
 
 #[derive(Debug, Clone)]
 pub struct DatabaseConfig {
+    /// Primary (writes + read-after-write). In prod this points at pgbouncer (transaction
+    /// pooling), which fronts Postgres — so `max_connections` is the app's pooled client
+    /// count, not raw server connections (fixes the v1 6×20 single-DB explosion).
     pub url: String,
+    /// Read replica for list/report/discovery reads (C5.3). `None` → reads fall back to the
+    /// primary so single-node dev/test works unchanged.
+    pub read_url: Option<String>,
     pub max_connections: u32,
+    /// Pool size for the read replica (smaller — it only serves read-heavy list/report reads).
+    pub read_max_connections: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -120,10 +128,24 @@ impl DatabaseConfig {
     pub fn from_env() -> Result<Self, AppError> {
         Ok(Self {
             url: require_env("DATABASE_URL")?,
+            // Optional: empty/unset → reads fall back to the primary (single-node dev).
+            read_url: optional_env("DATABASE_READ_URL").filter(|s| !s.trim().is_empty()),
             max_connections: optional_env("DATABASE_MAX_CONNECTIONS")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(20),
+            read_max_connections: optional_env("DATABASE_READ_MAX_CONNECTIONS")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10),
         })
+    }
+
+    /// The URL the read pool should connect to, with a tag for logging. Pure (no I/O) so the
+    /// replica-vs-fallback decision is unit-testable. `read_url` when set, else the primary.
+    pub fn read_target(&self) -> (&str, &'static str) {
+        match &self.read_url {
+            Some(u) => (u.as_str(), "replica"),
+            None => (self.url.as_str(), "primary-fallback"),
+        }
     }
 }
 
