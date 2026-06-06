@@ -279,7 +279,9 @@ pub async fn list_bookings<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
 ) -> Result<Json<ApiResponse<Vec<BookingResponse>>>, AppError> {
-    let items = repo::list_bookings(state.db(), user.user_id).await?;
+    // List read → replica (C5.3). Single-booking get_booking stays on the primary (it can be
+    // a read-after-write).
+    let items = repo::list_bookings(state.db_read(), user.user_id).await?;
     Ok(Json(ApiResponse::success(items)))
 }
 
@@ -363,7 +365,7 @@ pub async fn internal_export_user<S: BookingInternalDeps>(
     caller: ServiceCaller,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let bookings = repo::export_user_bookings(state.db(), user_id).await?;
+    let bookings = repo::export_user_bookings(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(bookings)))
 }
 

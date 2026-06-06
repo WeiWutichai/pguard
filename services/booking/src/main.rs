@@ -20,7 +20,7 @@ use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
-use shared::db::create_pool;
+use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_redis_client;
 
 use crate::discovery_client::HttpDiscoveryClient;
@@ -48,6 +48,8 @@ async fn main() -> anyhow::Result<()> {
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
+    // Read-replica pool (C5.3) for list/discovery reads; falls back to primary if unset.
+    let db_read = create_read_pool(&db_config).await?;
     let redis_client = create_redis_client(&redis_config.cache_url)?;
     let redis_conn = redis_client
         .get_multiplexed_tokio_connection()
@@ -71,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         db: db.clone(),
+        db_read,
         redis_conn,
         jwt_config,
         service_jwt_config,

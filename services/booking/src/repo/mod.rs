@@ -477,6 +477,62 @@ mod db_tests {
     use sqlx::postgres::PgPoolOptions;
     use std::time::Duration;
 
+    /// C5.3 create→read consistency: a write committed on the PRIMARY is visible both to a
+    /// read-after-write on the primary (`get_booking`) AND to a list read on the REPLICA pool
+    /// (`list_bookings` runs on `db_read`). The read pool is built the way services build it —
+    /// `read_url` unset → falls back to the same DB — so committed writes are immediately
+    /// visible (single-node). Gated on `DATABASE_URL`; hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn create_read_consistency_primary_and_read_pool() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let primary = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("primary pool");
+        // Build the read pool exactly as the service does (fallback → same DB here).
+        let cfg = shared::config::DatabaseConfig {
+            url: url.clone(),
+            read_url: None,
+            max_connections: 5,
+            read_max_connections: 5,
+        };
+        let read = shared::db::create_read_pool(&cfg).await.expect("read pool");
+
+        let customer_id = Uuid::new_v4();
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO booking.bookings (id, customer_id, address, scheduled_at, hours) \
+             VALUES ($1, $2, '1 Consistency Rd', now(), 4)",
+        )
+        .bind(id)
+        .bind(customer_id)
+        .execute(&primary) // WRITE → primary
+        .await
+        .expect("insert booking");
+
+        // read-after-write on the PRIMARY sees it
+        let got = get_booking(&primary, id).await.expect("get on primary");
+        assert_eq!(got.id, id, "read-after-write on primary is consistent");
+
+        // list on the READ pool sees the committed write
+        let listed = list_bookings(&read, customer_id)
+            .await
+            .expect("list on read pool");
+        assert!(
+            listed.iter().any(|b| b.id == id),
+            "read pool sees the committed booking"
+        );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(id)
+            .execute(&primary)
+            .await;
+    }
+
     /// Real-Postgres integration test: proves the transactional outbox end-to-end —
     /// accepting a booking writes BOTH the status change AND exactly one outbox row in one
     /// transaction, and the enqueued payload is a well-formed EventEnvelope for the right

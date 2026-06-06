@@ -159,7 +159,8 @@ pub async fn list_payments<S: PaymentDeps>(
     State(state): State<S>,
     user: AuthUser,
 ) -> Result<Json<ApiResponse<Vec<PaymentResponse>>>, AppError> {
-    let items = repo::list_payments(state.db(), user.user_id).await?;
+    // List read → replica (C5.3); single get_payment stays on the primary (money read).
+    let items = repo::list_payments(state.db_read(), user.user_id).await?;
     Ok(Json(ApiResponse::success(items)))
 }
 
@@ -173,7 +174,7 @@ pub async fn internal_export_user<S: PaymentInternalDeps>(
     caller: ServiceCaller,
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
-    let payments = repo::export_user_payments(state.db(), user_id).await?;
+    let payments = repo::export_user_payments(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(payments)))
 }
 

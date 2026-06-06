@@ -10,6 +10,9 @@ use shared::service_jwt::HasServiceJwt;
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Read-replica pool (C5.3) for admin list + discovery-catalog reads; falls back to the
+    /// primary when `DATABASE_READ_URL` is unset. Writes + read-after-write use `db`.
+    pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti + force-revoke-all blocklist (user auth).
     /// The `AuthUser` extractor reads it on every request — this slice never writes it.
     pub redis_conn: redis::aio::MultiplexedConnection,
@@ -43,11 +46,19 @@ impl HasServiceJwt for AppState {
 /// touched (mirrors booking's `BookingDeps`).
 pub trait ProfileDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for admin list reads (C5.3). Defaults to primary (test doubles +
+    /// single-node need no change); `AppState` overrides it with the replica pool.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl ProfileDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }
 
@@ -57,10 +68,17 @@ impl ProfileDeps for AppState {
 /// booking's `BookingInternalDeps`).
 pub trait ProfileInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the internal catalog + data-export reads (C5.3). Defaults to primary.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
 }
 
 impl ProfileInternalDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
 }
