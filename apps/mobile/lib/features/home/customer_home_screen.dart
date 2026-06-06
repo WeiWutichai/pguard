@@ -4,9 +4,9 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
-import '../../core/controllers/session_controller.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../notifications/widgets/notification_bell.dart';
 
 /// Customer dashboard (role landing). For this slice it opens the live booking-status screen
 /// — the real-time vertical that proves the WS-push pattern. UI per `Mobile - Customer App.html`.
@@ -39,10 +39,17 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
       appBar: PGuardHeader(
         title: 'pguard',
         subtitle: 'ลูกค้า · Customer',
-        trailing: IconButton(
-          icon: const Icon(Icons.logout, color: Colors.white, size: 20),
-          tooltip: 'Sign out',
-          onPressed: () => ref.read(sessionProvider.notifier).logout(),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const NotificationBell(),
+            IconButton(
+              icon: const Icon(Icons.person_outline,
+                  color: Colors.white, size: 22),
+              tooltip: 'โปรไฟล์ / Profile',
+              onPressed: () => context.push('/profile'),
+            ),
+          ],
         ),
       ),
       body: SafeArea(

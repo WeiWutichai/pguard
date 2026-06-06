@@ -124,8 +124,12 @@ class AuthController extends _$AuthController {
           'password': pin,
         });
         final tokens = TokenPair.fromJson(data as Map<String, dynamic>);
-        await ref.read(appStoreProvider).saveTokens(
+        final store = ref.read(appStoreProvider);
+        await store.saveTokens(
             access: tokens.accessToken, refresh: tokens.refreshToken);
+        // Persist the verified phone (PII, secure storage) so the profile can show it read-only
+        // — it is the login identifier and is not returned by any API.
+        await store.savePhone(state.phone);
         // Persist the PIN locally too, so returning cold starts unlock OFFLINE via the lock
         // screen (PinService) without a round-trip. The PIN/hash never leaves the device.
         await ref.read(pinServiceProvider).setup(pin);
