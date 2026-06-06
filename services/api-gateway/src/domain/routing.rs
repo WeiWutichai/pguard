@@ -87,6 +87,13 @@ const RULES: &[Rule] = &[
         tier: Tier::Auth,
     },
     Rule {
+        // PDPA §19/§32 data export (identity aggregates across services). A specific prefix
+        // (not bare `/me`) so it can't over-match a future `/me…` resource.
+        prefix: "/me/data-export",
+        upstream: Upstream::Identity,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/otp/",
         upstream: Upstream::Otp,
         tier: Tier::Otp,
@@ -276,6 +283,15 @@ mod tests {
         assert_eq!(fwd, "/auth/me");
         assert!(!public, "/auth/me requires a token");
         assert_eq!(tier, Tier::Auth);
+    }
+
+    #[test]
+    fn data_export_routes_to_identity_api_tier_protected() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/me/data-export"));
+        assert_eq!(up, Upstream::Identity);
+        assert_eq!(fwd, "/me/data-export");
+        assert!(!public, "data-export requires a token");
+        assert_eq!(tier, Tier::Api);
     }
 
     #[test]

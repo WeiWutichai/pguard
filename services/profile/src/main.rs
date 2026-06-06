@@ -81,6 +81,10 @@ async fn main() -> anyhow::Result<()> {
             "/internal/guards",
             get(api::internal_list_guards::<AppState>),
         )
+        .route(
+            "/internal/users/{user_id}/export",
+            get(api::internal_export_user::<AppState>),
+        )
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(

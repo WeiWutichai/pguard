@@ -64,6 +64,22 @@ pub async fn list_payments(
     Ok(rows)
 }
 
+/// PDPA §19/§32 data export: ALL of the user's OWN payments (as the paying customer), no
+/// pagination limit. Reuses `PaymentResponse` so money serializes as exact-decimal strings
+/// (CLAUDE.md money rule). Scoped strictly to `customer_id`.
+pub async fn export_user_payments(db: &sqlx::PgPool, customer_id: Uuid) -> Result<Value, AppError> {
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
+         WHERE customer_id = $1 ORDER BY created_at DESC"
+    );
+    let rows = sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(customer_id)
+        .fetch_all(db)
+        .await?;
+    serde_json::to_value(rows)
+        .map_err(|e| AppError::Internal(format!("serialize payments export: {e}")))
+}
+
 /// Read the existing completed payment for a booking (the idempotency target).
 async fn completed_for_booking(
     db: &sqlx::PgPool,

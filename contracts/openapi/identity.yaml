@@ -145,6 +145,49 @@ paths:
                           deleted: { type: boolean, example: true }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /me/data-export:
+    get:
+      tags: [Auth]
+      summary: Export the authenticated user's data (PDPA §19 access / §32 portability)
+      description: |
+        Aggregates the caller's data from every owning service (identity fields + profile +
+        bookings + payments + reviews) into one machine-readable JSON envelope. identity owns
+        no business data — it fans out over service-JWT to each owner's internal export.
+        **Best-effort:** a downstream that's unavailable is reported as `"error"` in
+        `_meta.sections` rather than failing the whole export, so the user still receives what
+        is retrievable. `chat` + GPS `location_history` are follow-up sections.
+      operationId: dataExport
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The aggregated, machine-readable export
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        description: |
+                          `{ user, profile, bookings, payments, reviews, _meta }` where
+                          `_meta = { generated_at, sections: { <section>: "ok" | "error" } }`.
+                        properties:
+                          user: { type: object }
+                          profile: { type: object, nullable: true }
+                          bookings: { type: array, items: { type: object } }
+                          payments: { type: array, items: { type: object } }
+                          reviews: { type: array, items: { type: object } }
+                          _meta:
+                            type: object
+                            properties:
+                              generated_at: { type: string, format: date-time }
+                              sections:
+                                type: object
+                                additionalProperties: { type: string, enum: [ok, error] }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /internal/users/{id}/revoke-all:
     post:
       tags: [Internal]

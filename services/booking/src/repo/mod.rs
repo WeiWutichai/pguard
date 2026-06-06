@@ -395,6 +395,80 @@ pub async fn mark_published(db: &sqlx::PgPool, id: Uuid) -> Result<(), AppError>
     Ok(())
 }
 
+/// PDPA §19/§32 data export: a user's OWN bookings — as the customer OR the assigned guard.
+/// Money fields are cast to text so they cross the wire as exact-decimal strings (CLAUDE.md
+/// money rule) without pulling a Decimal type through the export path. Scoped to `user_id`.
+pub async fn export_user_bookings(db: &sqlx::PgPool, user_id: Uuid) -> Result<Value, AppError> {
+    #[allow(clippy::type_complexity)]
+    let rows: Vec<(
+        Uuid,
+        Uuid,
+        Option<Uuid>,
+        String,
+        DateTime<Utc>,
+        i32,
+        String,
+        String,
+        i32,
+        String,
+        Option<DateTime<Utc>>,
+        DateTime<Utc>,
+        DateTime<Utc>,
+    )> = sqlx::query_as(
+        "SELECT id, customer_id, guard_id, address, scheduled_at, hours, status::text, \
+                base_fee::text, guard_count, tip::text, work_started_at, created_at, updated_at \
+         FROM booking.bookings WHERE customer_id = $1 OR guard_id = $1 \
+         ORDER BY created_at DESC",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+
+    let bookings: Vec<Value> = rows
+        .into_iter()
+        .map(|r| {
+            let (
+                id,
+                customer_id,
+                guard_id,
+                address,
+                scheduled_at,
+                hours,
+                status,
+                base_fee,
+                guard_count,
+                tip,
+                work_started_at,
+                created_at,
+                updated_at,
+            ) = r;
+            // `role` tells the user how they relate to each booking.
+            let role = if Some(user_id) == guard_id {
+                "guard"
+            } else {
+                "customer"
+            };
+            serde_json::json!({
+                "id": id,
+                "role": role,
+                "customer_id": customer_id,
+                "guard_id": guard_id,
+                "address": address,
+                "scheduled_at": scheduled_at,
+                "hours": hours,
+                "status": status,
+                "base_fee": base_fee,
+                "guard_count": guard_count,
+                "tip": tip,
+                "work_started_at": work_started_at,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            })
+        })
+        .collect();
+    Ok(Value::Array(bookings))
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
