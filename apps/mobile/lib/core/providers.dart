@@ -8,14 +8,19 @@ import 'network/api_client.dart';
 import 'network/check_in_service.dart';
 import 'network/sockets/booking_status_socket.dart';
 import 'network/sockets/presence_socket.dart';
+import 'storage/prefs_store.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
 
 part 'providers.g.dart';
 
-/// App storage (tokens + PIN). Single instance app-wide; overridden with an in-memory fake
-/// in tests (the [AppStore] interface keeps the app off platform channels under test).
+/// App storage (tokens + PIN + phone). Single instance app-wide; overridden with an in-memory
+/// fake in tests (the [AppStore] interface keeps the app off platform channels under test).
 @Riverpod(keepAlive: true)
 AppStore appStore(AppStoreRef ref) => SecureStore();
+
+/// Non-sensitive preferences (language). Overridden with an in-memory fake in tests.
+@Riverpod(keepAlive: true)
+PrefsStore prefsStore(PrefsStoreRef ref) => const SharedPrefsStore();
 
 /// The REST client to the `/v1` gateway (Dio + auth interceptors). On unrecoverable refresh
 /// failure it drops the session so the router leaves the dashboard (no zombie auth state).

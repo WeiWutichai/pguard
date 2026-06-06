@@ -7,6 +7,12 @@ abstract class SessionStore {
   Future<String?> readRefreshToken();
   Future<void> saveTokens({required String access, required String refresh});
   Future<void> clearSession();
+
+  /// The verified login phone (PII) — persisted in secure storage at login so the profile can
+  /// show it read-only (it is the login identifier and is not returned by any API). Cleared on
+  /// logout. Mirrors v1's `verified_phone` PDPA decision (PII never in SharedPreferences).
+  Future<String?> readPhone();
+  Future<void> savePhone(String phone);
 }
 
 /// The PIN-persistence surface the PIN service depends on (hash/salt + lockout counters).
@@ -46,6 +52,7 @@ class SecureStore implements AppStore {
   // ---- keys ----
   static const _kAccess = 'pg_access_token';
   static const _kRefresh = 'pg_refresh_token';
+  static const _kPhone = 'pg_phone';
   static const _kPinHash = 'pg_pin_hash';
   static const _kPinSalt = 'pg_pin_salt';
   static const _kPinAttempts = 'pg_pin_attempts';
@@ -64,13 +71,20 @@ class SecureStore implements AppStore {
     await _s.write(key: _kRefresh, value: refresh);
   }
 
-  /// Drop the session tokens (logout / unrecoverable 401). Leaves the PIN so the same user
-  /// can re-unlock and re-login.
+  /// Drop the session tokens + phone (logout / unrecoverable 401). Leaves the PIN so the same
+  /// user can re-unlock and re-login.
   @override
   Future<void> clearSession() async {
     await _s.delete(key: _kAccess);
     await _s.delete(key: _kRefresh);
+    await _s.delete(key: _kPhone);
   }
+
+  // ---- phone (PII; the login identifier, shown read-only on the profile) ----
+  @override
+  Future<String?> readPhone() => _s.read(key: _kPhone);
+  @override
+  Future<void> savePhone(String phone) => _s.write(key: _kPhone, value: phone);
 
   // ---- PIN (local gate; never sent to the server) ----
   @override

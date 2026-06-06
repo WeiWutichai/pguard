@@ -1,0 +1,88 @@
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../models/profile.dart';
+import '../network/api_exception.dart';
+import '../providers.dart';
+import 'session_controller.dart';
+
+part 'profile_controller.g.dart';
+
+/// The caller's profile, merged from `GET /v1/auth/me` (user_id + role) and `GET /v1/profile/me`
+/// (the customer/guard profile; 404 = not set up yet) plus the locally-stored phone. Editing
+/// upserts via `POST /v1/profile/{guard|customer}`. Logout revokes server-side then clears
+/// local storage.
+@riverpod
+class ProfileController extends _$ProfileController {
+  @override
+  Future<UserProfile> build() async {
+    final api = ref.read(pguardApiProvider);
+    final me = await api.get('/auth/me') as Map<String, dynamic>;
+    Map<String, dynamic>? profile;
+    try {
+      profile = await api.get('/profile/me') as Map<String, dynamic>?;
+    } on ApiException catch (e) {
+      // 404 = the caller hasn't created a profile yet; surface an empty editable one. Other
+      // errors are real failures.
+      if (e.statusCode != 404) rethrow;
+    }
+    final phone = await ref.read(appStoreProvider).readPhone();
+    return UserProfile.from(me: me, profile: profile, phone: phone);
+  }
+
+  /// Upsert editable profile fields (`POST /v1/profile/{guard|customer}`). Only the provided
+  /// (non-null) fields are sent. Returns null on success, or a user-safe error message.
+  /// NOTE: never pass a masked `accountNumber` back (the server masks it on read).
+  Future<String?> save({
+    String? fullName,
+    String? address,
+    String? gender,
+    String? dateOfBirth,
+    int? yearsOfExperience,
+    String? previousWorkplace,
+    String? bankName,
+    String? accountNumber,
+    String? accountName,
+  }) async {
+    final current = state.valueOrNull;
+    if (current == null) return 'ยังไม่พร้อม / Not ready';
+    try {
+      final api = ref.read(pguardApiProvider);
+      if (current.isGuard) {
+        await api.post('/profile/guard', data: {
+          if (gender != null) 'gender': gender,
+          if (dateOfBirth != null) 'date_of_birth': dateOfBirth,
+          if (yearsOfExperience != null) 'years_of_experience': yearsOfExperience,
+          if (previousWorkplace != null) 'previous_workplace': previousWorkplace,
+          if (bankName != null) 'bank_name': bankName,
+          if (accountNumber != null) 'account_number': accountNumber,
+          if (accountName != null) 'account_name': accountName,
+        });
+      } else {
+        await api.post('/profile/customer', data: {
+          if (fullName != null) 'full_name': fullName,
+          if (address != null) 'address': address,
+        });
+      }
+      ref.invalidateSelf();
+      await future;
+      return null;
+    } on ApiException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'เกิดข้อผิดพลาด / Something went wrong';
+    }
+  }
+
+  /// `POST /v1/auth/logout` (best-effort server revoke) then clear the local session.
+  Future<void> logout() async {
+    final store = ref.read(appStoreProvider);
+    final refresh = await store.readRefreshToken();
+    try {
+      await ref.read(pguardApiProvider).post('/auth/logout',
+          data: refresh != null ? {'refresh_token': refresh} : null);
+    } catch (_) {
+      // Best-effort: even if the server call fails, always clear locally so the user is out.
+    }
+    await ref.read(sessionProvider.notifier).logout();
+  }
+}

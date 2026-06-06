@@ -4,13 +4,13 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_jobs_controller.dart';
-import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../guard/widgets/job_card.dart';
 import '../guard/widgets/online_card.dart';
+import '../notifications/widgets/notification_bell.dart';
 
 /// Guard dashboard (role landing): online/standby GPS toggle + the guard's jobs (incoming to
 /// accept, active to work). UI per `Mobile - Guard App.html` / `Mobile - Active Standby.html`.
@@ -43,10 +43,17 @@ class GuardHomeScreen extends ConsumerWidget {
       appBar: PGuardHeader(
         title: 'pguard',
         subtitle: 'เจ้าหน้าที่ · Guard',
-        trailing: IconButton(
-          icon: const Icon(Icons.logout, color: Colors.white, size: 20),
-          tooltip: 'Sign out',
-          onPressed: () => ref.read(sessionProvider.notifier).logout(),
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const NotificationBell(),
+            IconButton(
+              icon: const Icon(Icons.person_outline,
+                  color: Colors.white, size: 22),
+              tooltip: 'โปรไฟล์ / Profile',
+              onPressed: () => context.push('/profile'),
+            ),
+          ],
         ),
       ),
       body: SafeArea(

@@ -11,12 +11,14 @@ import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/network/check_in_service.dart';
 import 'package:pguard_mobile/core/network/sockets/booking_status_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
+import 'package:pguard_mobile/core/storage/prefs_store.dart';
 import 'package:pguard_mobile/core/storage/secure_store.dart';
 
 /// In-memory [AppStore] for tests — keeps the app off platform channels (FlutterSecureStorage).
 class InMemoryStore implements AppStore {
   String? access;
   String? refresh;
+  String? phone;
   String? pinHash;
   String? pinSalt;
   int attempts = 0;
@@ -35,9 +37,15 @@ class InMemoryStore implements AppStore {
   }
 
   @override
+  Future<String?> readPhone() async => phone;
+  @override
+  Future<void> savePhone(String phone) async => this.phone = phone;
+
+  @override
   Future<void> clearSession() async {
     access = null;
     refresh = null;
+    phone = null;
   }
 
   @override
@@ -73,12 +81,22 @@ class InMemoryStore implements AppStore {
   Future<void> wipe() async {
     access = null;
     refresh = null;
+    phone = null;
     pinHash = null;
     pinSalt = null;
     attempts = 0;
     lockUntil = null;
     wiped = true;
   }
+}
+
+/// In-memory [PrefsStore] for tests (no platform channels).
+class FakePrefsStore implements PrefsStore {
+  final Map<String, String> values = {};
+  @override
+  Future<String?> getString(String key) async => values[key];
+  @override
+  Future<void> setString(String key, String value) async => values[key] = value;
 }
 
 /// Configurable fake [PguardApi] with per-method handlers and a call log (to prove there is

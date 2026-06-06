@@ -18,6 +18,9 @@ import '../features/guard/active_job_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
+import '../features/notifications/notification_screen.dart';
+import '../features/profile/profile_edit_screen.dart';
+import '../features/profile/profile_screen.dart';
 import '../features/splash_screen.dart';
 
 part 'app_router.g.dart';
@@ -62,6 +65,14 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/home/customer',
           builder: (_, __) => const CustomerHomeScreen()),
       GoRoute(path: '/home/guard', builder: (_, __) => const GuardHomeScreen()),
+      // Notification centre + profile/settings (both roles).
+      GoRoute(
+          path: '/notifications',
+          builder: (_, __) => const NotificationScreen()),
+      GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
+      GoRoute(
+          path: '/profile/edit',
+          builder: (_, __) => const ProfileEditScreen()),
       // Guard-side flow: incoming-job detail + active-job working screen.
       GoRoute(
         path: '/guard/job/:id',
