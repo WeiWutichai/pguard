@@ -7,11 +7,16 @@
 # and streams WAL. REPLICATION_PASSWORD is required (compose passes it via ${VAR:?}).
 set -euo pipefail
 
-psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" <<-EOSQL
-  CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD '${REPLICATION_PASSWORD}';
+# Pass the password as a psql variable (`:'repl_pw'` quotes + escapes it safely) instead of
+# shell-interpolating it into the SQL text — so a password containing a single quote can't
+# break or alter the CREATE ROLE statement. Heredoc is quoted (no shell expansion).
+psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+     -v repl_pw="$REPLICATION_PASSWORD" <<-'EOSQL'
+  CREATE ROLE replicator WITH REPLICATION LOGIN PASSWORD :'repl_pw';
   SELECT pg_create_physical_replication_slot('replica_1');
 EOSQL
 
-# Allow streaming replication from the compose network (scram-sha-256 auth, not trust).
-echo "host replication replicator all scram-sha-256" >> "$PGDATA/pg_hba.conf"
+# Allow streaming replication ONLY from this compose network's CIDR (matches the
+# pguard-prod ipam subnet) — scram-sha-256 auth, never trust, never any-source `all`.
+echo "host replication replicator 172.30.0.0/16 scram-sha-256" >> "$PGDATA/pg_hba.conf"
 pg_ctl reload -D "$PGDATA"

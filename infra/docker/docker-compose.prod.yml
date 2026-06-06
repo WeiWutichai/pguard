@@ -27,6 +27,11 @@ name: pguard-prod
 networks:
   pguard-prod:
     name: pguard-prod
+    # Explicit subnet so the primary's pg_hba can scope streaming replication to THIS
+    # network's CIDR (C5.3), instead of `all` (any source).
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
 
 volumes:
   pg-data:
@@ -69,11 +74,13 @@ x-rust-service: &rust-service
     postgres:
       condition: service_healthy
     # Services connect to Postgres THROUGH pgbouncer (DATABASE_URL) + read from the replica
-    # (DATABASE_READ_URL); wait for both to start (C5.3).
+    # (DATABASE_READ_URL). pgbouncer comes up fast against the healthy primary; the replica is
+    # gated on its healthcheck so services don't start mid base-backup (C5.3). The read pool is
+    # also lazy (create_read_pool), so a replica blip degrades reads rather than aborting boot.
     pgbouncer:
       condition: service_started
     postgres-replica:
-      condition: service_started
+      condition: service_healthy
     nats:
       condition: service_healthy
     redis:
@@ -149,14 +156,23 @@ services:
       - "5432"
     networks:
       - pguard-prod
+    # Healthy only once Postgres is actually serving (i.e. after first-boot base-backup +
+    # `exec postgres`), so dependents gated on service_healthy don't start mid-basebackup.
+    # Generous start_period covers the base-backup window.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pguard} -d ${POSTGRES_DB:-pguard}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
 
-  # pgbouncer — connection pooler (CLAUDE.md DB-scaling decision · C5.3 placeholder).
-  # Present so the prod topology is complete; app services still point at `postgres`
-  # directly until C5.3 cuts DATABASE_URL over to pgbouncer:6432. Verify the pin when
-  # that work lands.
+  # pgbouncer — connection pooler (CLAUDE.md DB-scaling decision · C5.3). As of C5.3 the
+  # services' DATABASE_URL routes writes + read-after-write THROUGH this pooler (transaction
+  # mode, pgbouncer:6432) fronting the primary; list/report/discovery reads go to
+  # postgres-replica via DATABASE_READ_URL. Fixes the v1 6×20 single-DB connection explosion.
   pgbouncer:
     image: edoburu/pgbouncer:1.23.1-p3
     container_name: pguard-prod-pgbouncer
