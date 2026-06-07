@@ -7,10 +7,19 @@
 // endpoints.
 import type { NextConfig } from "next";
 
+// Server-reachable gateway base (internal DNS in prod, e.g. http://api-gateway:3000). The
+// browser talks to a SAME-ORIGIN `/v1` so the httpOnly auth cookies stay first-party (no CORS,
+// no cross-site SameSite issues); this rewrite proxies `/v1/*` to the gateway. In a same-origin
+// ingress deployment the ingress can own this instead — harmless either way.
+const GATEWAY = process.env.PGUARD_API_BASE_URL ?? "http://localhost:3000";
+
 const nextConfig: NextConfig = {
   // App Router only (no Pages Router) — per CLAUDE.md.
   typedRoutes: true,
   reactStrictMode: true,
+  async rewrites() {
+    return [{ source: "/v1/:path*", destination: `${GATEWAY}/v1/:path*` }];
+  },
   // Self-contained server bundle for the production Docker image: emits
   // `.next/standalone` (server.js + minimal node_modules) so the runtime stage
   // copies only what it needs — no dev deps, no full node_modules.

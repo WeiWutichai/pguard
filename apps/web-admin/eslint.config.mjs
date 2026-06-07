@@ -1,19 +1,11 @@
-// pguard v2 scaffold stub — ESLint flat config extending Next.js presets.
-// TODO(CLAUDE.md › Web (Next.js)): keep TypeScript strict; App Router only.
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
-import { FlatCompat } from "@eslint/eslintrc";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-const compat = new FlatCompat({
-  baseDirectory: __dirname,
-});
+// ESLint flat config (ESLint 9). eslint-config-next 16 ships a NATIVE flat-config array
+// (Linter.Config[]) — spread it directly; FlatCompat is no longer needed (and breaks here).
+import next from "eslint-config-next";
 
 const eslintConfig = [
-  ...compat.extends("next/core-web-vitals", "next/typescript"),
+  ...next,
   {
+    // Generated client + build output are not hand-edited → not linted.
     ignores: [".next/**", "node_modules/**", "src/api/generated/**"],
   },
 ];

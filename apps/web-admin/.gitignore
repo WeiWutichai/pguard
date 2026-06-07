@@ -13,8 +13,10 @@ next-env.d.ts
 # production
 /build
 
-# generated API client (regenerated from contracts/openapi via tooling/codegen)
-/src/api/generated/
+# Generated API client (regenerated from contracts/openapi via `pnpm gen:api`).
+# COMMITTED (not ignored): the prod Docker builder copies only apps/web-admin/ (not the
+# contracts/ dir), so it can't regenerate at build time — committing the client is what keeps
+# `pnpm build` reproducible there. Re-run `pnpm gen:api` whenever the OpenAPI contracts change.
 
 # env (never commit real secrets; .env.example is the template)
 .env
