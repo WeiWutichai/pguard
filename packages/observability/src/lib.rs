@@ -20,7 +20,7 @@ mod middleware;
 mod propagation;
 mod telemetry;
 
-pub use metrics::{metrics_handler, record_consumer_lag};
+pub use metrics::{metrics_handler, record_consumer_lag, record_rejected_event};
 pub use middleware::{edge_telemetry_middleware, telemetry_middleware};
 pub use propagation::{
     current_traceparent, inject_context, set_parent_from_traceparent, trace_headers,

@@ -10,6 +10,17 @@ info:
 
     Naming: `pguard.events.<bounded_context>.<event_name>`.
 
+    **Signed envelopes (forged-event defense).** The NATS bus has no producer authentication,
+    so every message carries a detached **HMAC-SHA256 signature** of its exact payload bytes in
+    the NATS header `X-Pguard-Signature` (lowercase hex), keyed by the shared
+    `EVENT_SIGNING_SECRET`. Producers attach it via the single signed-publish helper
+    (`shared_events::publish_signed`); **consumers MUST verify it (`shared_events::verify_message`)
+    BEFORE any dedupe/business logic** and DROP (ack-without-apply, increment
+    `nats_rejected_events_total`) any message whose signature is missing or invalid. This is the
+    event-bus counterpart of the request-path Service-JWT, and is what makes a forged
+    `user.approved`/`user.compromised` (which would approve or force-revoke an arbitrary account)
+    unactable. The signature is a transport-layer NATS header, not a field of the JSON envelope.
+
 defaultContentType: application/json
 
 servers:

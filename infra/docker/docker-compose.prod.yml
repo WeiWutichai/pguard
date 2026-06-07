@@ -16,7 +16,7 @@
 #   docker compose -f infra/docker/docker-compose.prod.yml up -d
 #
 # Required secrets (no defaults — compose errors if unset):
-#   POSTGRES_PASSWORD · JWT_SECRET · SERVICE_JWT_SECRET
+#   POSTGRES_PASSWORD · JWT_SECRET · SERVICE_JWT_SECRET · EVENT_SIGNING_SECRET
 #   MINIO_ROOT_USER · MINIO_ROOT_PASSWORD · GRAFANA_ADMIN_PASSWORD
 #   INET_SMS_USERNAME · INET_SMS_PASSWORD · INET_SMS_SENDER   (otp; set SMS_DISABLED=true to skip)
 # See infra/docker/README.md for the full list.
@@ -62,6 +62,11 @@ x-rust-env: &rust-env
   # (shared-rust/src/config.rs) and exits if it is missing — so it lives here, in the
   # env shared by all of them, not per-service. Must be ≥64 chars (identity/gateway check).
   JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required (≥64 chars)}
+  # HMAC key for signed NATS event envelopes (shared-events). Every service that
+  # publishes/consumes on the event bus loads it at startup (init_signing_key_from_env) and
+  # exits if missing — producers sign, consumers verify, so a forged event is rejected. A
+  # DEDICATED secret (never an overload of JWT_SECRET), ≥64 chars.
+  EVENT_SIGNING_SECRET: ${EVENT_SIGNING_SECRET:?EVENT_SIGNING_SECRET is required (≥64 chars)}
 
 x-rust-service: &rust-service
   restart: unless-stopped

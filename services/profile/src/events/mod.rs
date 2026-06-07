@@ -51,13 +51,9 @@ impl JetStreamPublisher {
 #[async_trait::async_trait]
 impl EventPublisher for JetStreamPublisher {
     async fn publish(&self, subject: &str, payload: &[u8]) -> Result<(), anyhow::Error> {
-        let ack = self
-            .jetstream
-            .publish(subject.to_string(), payload.to_vec().into())
-            .await?;
-        // Await the broker's persistence ack before the relay marks the row published.
-        ack.await?;
-        Ok(())
+        // Sign + publish via the shared helper (HMAC signature header); awaits the broker
+        // persistence ack so a row is marked published only after a durable, signed publish.
+        shared_events::publish_signed(&self.jetstream, subject, payload).await
     }
 }
 

@@ -72,6 +72,15 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
             observability::record_consumer_lag(DURABLE, info.pending);
         }
 
+        // Verify the HMAC signature BEFORE any dedupe/business logic — a forged/unsigned event
+        // is dropped (acked so it can't redeliver), counted, and NEVER applied. Fail-closed.
+        if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
+            observability::record_rejected_event(DURABLE);
+            tracing::warn!("dropping event with missing/invalid signature (forged?)");
+            let _ = message.ack().await;
+            continue;
+        }
+
         match handle_event(&state, message.payload.as_ref()).await {
             Ok(()) => {
                 if let Err(e) = message.ack().await {

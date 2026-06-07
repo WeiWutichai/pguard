@@ -116,6 +116,17 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
             observability::record_consumer_lag(DURABLE, info.pending);
         }
 
+        // Verify the HMAC signature BEFORE dedupe/finalize — a forged `booking.completed` (which
+        // would drive proration/refunds) is dropped, counted, and never applied. Fail-closed.
+        if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
+            observability::record_rejected_event(DURABLE);
+            tracing::warn!(
+                "dropping booking.completed event with missing/invalid signature (forged?)"
+            );
+            let _ = message.ack().await;
+            continue;
+        }
+
         // Parse first. A malformed envelope is POISON — it can never become valid, so ACK it
         // (drop) instead of letting it redeliver forever and wedge the consumer.
         let envelope: EventEnvelope<CompletedPayload> =
@@ -333,6 +344,12 @@ mod e2e_tests {
         .await
         .expect("ensure stream");
 
+        // Set the process signing key BEFORE spawning the consumer (whose verify path reads it)
+        // — the consumer now verifies HMAC signatures, and we publish SIGNED with this same key.
+        shared_events::init_signing_key(
+            b"payment-e2e-event-signing-secret-at-least-64-characters-long-okok!",
+        );
+
         let consumer_pool = pool.clone();
         let consumer_nats = nats_url.clone();
         let consumer = tokio::spawn(async move {
@@ -354,11 +371,9 @@ mod e2e_tests {
             }),
         );
         let bytes = serde_json::to_vec(&envelope).expect("serialize envelope");
-        js.publish(topics::BOOKING_COMPLETED.to_string(), bytes.clone().into())
+        shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)
             .await
-            .expect("publish")
-            .await
-            .expect("publish ack");
+            .expect("signed publish");
 
         // 5) poll until the consumer finalizes (bounded; ~10s).
         let mut finalized = None;
@@ -382,11 +397,9 @@ mod e2e_tests {
         assert_eq!(p.refund_status.as_deref(), Some("pending"));
 
         // 6) replay the SAME event (same event_id) → idempotent, no double refund.
-        js.publish(topics::BOOKING_COMPLETED.to_string(), bytes.into())
+        shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)
             .await
-            .expect("replay publish")
-            .await
-            .expect("replay ack");
+            .expect("signed replay");
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
         let refund_events: i64 = sqlx::query_scalar(
