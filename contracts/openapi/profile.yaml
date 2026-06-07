@@ -49,14 +49,20 @@ paths:
   /profile/guard:
     post:
       tags: [Profile]
-      summary: Create or update the caller's guard profile (role=guard)
+      summary: Create or update the caller's guard profile (profile_token OR logged-in guard)
       description: |
-        Upserts the caller's guard profile. On first create the `approval_status` is set to
-        `pending`; a later upsert by the same guard edits the fields but NEVER changes the
-        approval decision (only an admin does, via the approve/reject endpoints). The
-        read-back masks `account_number` (PDPA). Requires role `guard` (else 403).
+        Upserts the caller's guard profile. **Dual auth** (either satisfies the request):
+          - a single-use, purpose-scoped `profileToken` (`guard_profile`) from registration
+            (`POST /auth/register`) — the user is NOT logged in yet. The token is consumed
+            single-use; a `customer_profile` token is rejected here (purpose isolation).
+          - a logged-in guard's `bearerAuth` access token (a later self-edit), role-gated.
+
+        Writes ONLY the profile schema: on first create `approval_status` is `pending`; a
+        later upsert edits fields but NEVER changes the approval decision (only an admin does,
+        via approve/reject), and `users.role` (identity-owned) is never touched. The read-back
+        masks `account_number` (PDPA).
       operationId: upsertGuardProfile
-      security: [{ bearerAuth: [] }]
+      security: [{ bearerAuth: [] }, { profileToken: [] }]
       requestBody:
         required: true
         content:
@@ -91,12 +97,19 @@ paths:
   /profile/customer:
     post:
       tags: [Profile]
-      summary: Create or update the caller's customer profile (role=customer)
+      summary: Create or update the caller's customer profile (profile_token OR logged-in customer)
       description: |
         Upserts the caller's customer profile (minimal in this slice: full name + address).
-        Requires role `customer` (else 403).
+        **Dual auth** (either satisfies the request):
+          - a single-use `profileToken` (`customer_profile`) from registration (the user is
+            not logged in yet); consumed single-use, and a `guard_profile` token is rejected
+            here (purpose isolation).
+          - a logged-in customer's `bearerAuth` access token (a later self-edit), role-gated.
+
+        Writes ONLY the customer profile schema; account approval state is identity-owned (the
+        account is already `pending` from register) and is never written here.
       operationId: upsertCustomerProfile
-      security: [{ bearerAuth: [] }]
+      security: [{ bearerAuth: [] }, { profileToken: [] }]
       requestBody:
         required: true
         content:
@@ -254,6 +267,17 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: Service-JWT (aud=pguard-internal); internal endpoints only.
+    profileToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Single-use, purpose-scoped profile-submission token (`guard_profile` /
+        `customer_profile`) issued by `POST /auth/register` and presented as
+        `Authorization: Bearer <profile_token>`. Consumed single-use (Redis GETDEL) and
+        purpose-isolated to its matching route. Used during initial registration when the
+        user is not yet logged in; signed with the same `JWT_SECRET` as access tokens but
+        carries a `purpose` claim and no iss/aud, so it is never accepted as an access token.
 
   responses:
     GuardProfileOk:

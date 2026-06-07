@@ -4,12 +4,16 @@
 //! Handlers are generic over [`ProfileDeps`] so the `AuthUser` guard + the role gates are
 //! unit-testable with a lightweight state (no live DB), mirroring booking's seam.
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::http::request::Parts;
+use axum::http::HeaderMap;
 use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
-use shared::auth::AuthUser;
+use shared::auth::{
+    decode_profile_token, AuthUser, HasJwtSecret, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
+};
 use shared::error::AppError;
 use shared::models::{ApiResponse, ApprovalStatus};
 use shared::service_jwt::ServiceCaller;
@@ -41,6 +45,106 @@ fn require_role(user: &AuthUser, expected_role: &str) -> Result<(), AppError> {
         )));
     }
     Ok(())
+}
+
+// ============================================================================
+// Dual-auth for profile submission (profile_token OR logged-in AuthUser)
+// ----------------------------------------------------------------------------
+// `POST /profile/{guard,customer}` accepts EITHER a single-use, purpose-scoped
+// `profile_token` (initial registration — the user is NOT logged in yet) OR a
+// standard `AuthUser` (a later self-edit by a logged-in user). The resolver tries
+// the profile_token first: only a token whose `purpose` matches THIS route decodes
+// (purpose isolation — a guard token fails on the customer route and vice-versa),
+// and it is consumed single-use via Redis GETDEL. A non-profile Bearer (an access
+// token has no `purpose`) falls through to the standard `AuthUser` path, which also
+// covers cookie+CSRF and the role gate. EITHER way we only learn the `user_id`;
+// the profile schema is the only thing written — `users.role` (identity-owned) is
+// never touched here (no cross-schema write).
+
+/// Extract `Authorization: Bearer <token>`.
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer ").map(|t| t.to_string()))
+}
+
+/// Resolve the writer's `user_id` from EITHER a single-use `profile_token` of `purpose`
+/// OR a logged-in `AuthUser` holding `role`. See the module note above.
+async fn resolve_profile_writer<S: HasJwtSecret + Send + Sync>(
+    parts: &mut Parts,
+    state: &S,
+    purpose: &str,
+    role: &str,
+) -> Result<Uuid, AppError> {
+    // 1) profile_token path — only if the Bearer decodes as a profile token of THIS purpose.
+    //    A wrong-purpose token does NOT decode here, so it is NOT consumed (it stays usable
+    //    on its correct route) — it simply falls through to (2) and is rejected there.
+    if let Some(tok) = bearer_token(&parts.headers) {
+        if let Ok((user_id, jti)) = decode_profile_token(&tok, state.decoding_key(), purpose) {
+            // GETDEL is the ATOMIC single-use claim (mirrors identity register): two concurrent
+            // submissions of the same token → exactly one winner, the other gets nil → 401.
+            // The token is consumed here in the extractor, i.e. BEFORE the repo write. A
+            // transient write failure (500) therefore burns the token — the deliberate, simpler
+            // trade-off (atomicity + replay-safety over retry-after-partial-failure), consistent
+            // with identity register's consume-before-UPSERT. Recovery is re-OTP → re-register
+            // (a still-pending phone re-registers fine and yields a fresh profile_token).
+            let mut redis = state.redis_conn().clone();
+            let status: Option<String> = redis::cmd("GETDEL")
+                .arg(format!("profile_jti:{jti}"))
+                .query_async(&mut redis)
+                .await?;
+            return match status.as_deref() {
+                Some("valid") => Ok(user_id),
+                _ => Err(AppError::Unauthorized(
+                    "Profile token is invalid, expired, or already used".to_string(),
+                )),
+            };
+        }
+    }
+    // 2) logged-in user path — standard AuthUser (Bearer or cookie + CSRF + revocation),
+    //    role-gated. A non-profile Bearer / cookie / wrong-role all resolve here.
+    let user = AuthUser::from_request_parts(parts, state).await?;
+    if user.role != role {
+        return Err(AppError::Forbidden(format!(
+            "This action requires the {role} role"
+        )));
+    }
+    Ok(user.user_id)
+}
+
+/// Authorized writer of a GUARD profile: a `guard_profile` token OR a logged-in guard.
+pub struct GuardProfileWriter {
+    pub user_id: Uuid,
+}
+
+impl<S> FromRequestParts<S> for GuardProfileWriter
+where
+    S: HasJwtSecret + Send + Sync,
+{
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let user_id =
+            resolve_profile_writer(parts, state, PROFILE_PURPOSE_GUARD, ROLE_GUARD).await?;
+        Ok(Self { user_id })
+    }
+}
+
+/// Authorized writer of a CUSTOMER profile: a `customer_profile` token OR a logged-in customer.
+pub struct CustomerProfileWriter {
+    pub user_id: Uuid,
+}
+
+impl<S> FromRequestParts<S> for CustomerProfileWriter
+where
+    S: HasJwtSecret + Send + Sync,
+{
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        let user_id =
+            resolve_profile_writer(parts, state, PROFILE_PURPOSE_CUSTOMER, ROLE_CUSTOMER).await?;
+        Ok(Self { user_id })
+    }
 }
 
 /// Apply the shared field validators to a guard-profile write. Maps the pure validators'
@@ -86,16 +190,16 @@ fn mask_guard_response(mut profile: GuardProfileResponse) -> GuardProfileRespons
 
 // ----- POST /profile/guard — upsert own guard profile -----
 
-#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+#[tracing::instrument(skip(state, writer, req), fields(user = %writer.user_id))]
 pub async fn upsert_guard_profile<S: ProfileDeps>(
     State(state): State<S>,
-    user: AuthUser,
+    writer: GuardProfileWriter,
     Json(req): Json<UpsertGuardProfileRequest>,
 ) -> Result<Json<ApiResponse<GuardProfileResponse>>, AppError> {
-    require_role(&user, ROLE_GUARD)?;
     validate_guard_req(&req)?;
-    // Owner read-back is masked (PDPA): a guard never needs their own full number echoed.
-    let profile = repo::upsert_guard_profile(state.db(), user.user_id, &req).await?;
+    // Writes ONLY the profile schema (approval_status defaults to 'pending'); identity owns
+    // the account role/state and is never touched here. Owner read-back is masked (PDPA).
+    let profile = repo::upsert_guard_profile(state.db(), writer.user_id, &req).await?;
     Ok(Json(ApiResponse::success(mask_guard_response(profile))))
 }
 
@@ -115,13 +219,12 @@ pub async fn update_guard_profile<S: ProfileDeps>(
 
 // ----- POST /profile/customer — upsert own customer profile -----
 
-#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+#[tracing::instrument(skip(state, writer, req), fields(user = %writer.user_id))]
 pub async fn upsert_customer_profile<S: ProfileDeps>(
     State(state): State<S>,
-    user: AuthUser,
+    writer: CustomerProfileWriter,
     Json(req): Json<UpsertCustomerProfileRequest>,
 ) -> Result<Json<ApiResponse<CustomerProfileResponse>>, AppError> {
-    require_role(&user, ROLE_CUSTOMER)?;
     validate::validate_text(
         req.full_name.as_deref(),
         "full_name",
@@ -130,7 +233,9 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     .map_err(AppError::BadRequest)?;
     validate::validate_text(req.address.as_deref(), "address", validate::MAX_TEXT_LEN)
         .map_err(AppError::BadRequest)?;
-    let profile = repo::upsert_customer_profile(state.db(), user.user_id, &req).await?;
+    // Writes ONLY the customer profile schema; account approval is identity-owned (the
+    // account is already `pending` from register) and is never written here.
+    let profile = repo::upsert_customer_profile(state.db(), writer.user_id, &req).await?;
     Ok(Json(ApiResponse::success(profile)))
 }
 
@@ -501,6 +606,243 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- dual-auth: single-use, purpose-isolated profile_token -----
+
+    use redis::AsyncCommands;
+    use shared::auth::{encode_profile_token, PROFILE_PURPOSE_GUARD};
+
+    /// Router (guard + customer POST routes) plus the live Redis conn, so the profile_token
+    /// tests can seed/inspect the single-use `profile_jti` marker. Redis-gated like `router()`.
+    async fn token_router() -> Option<(Router, redis::aio::MultiplexedConnection)> {
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let redis = redis::Client::open(redis_url)
+            .ok()?
+            .get_multiplexed_tokio_connection()
+            .await
+            .ok()?;
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db,
+            redis: redis.clone(),
+        };
+        let app = Router::new()
+            .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))
+            .route(
+                "/profile/customer",
+                post(upsert_customer_profile::<TestDeps>),
+            )
+            .with_state(deps);
+        Some((app, redis))
+    }
+
+    fn post_with_bearer(uri: &str, token: &str, body: Body) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(body)
+            .unwrap()
+    }
+
+    fn customer_body() -> Body {
+        Body::from(serde_json::json!({ "full_name": "Somchai" }).to_string())
+    }
+
+    /// A valid `guard_profile` token authorizes the guard route (NOT 401/403 — it reaches the
+    /// repo, which 500s on the closed lazy pool) and is single-use: the second presentation is
+    /// rejected 401 (the jti was consumed via GETDEL). NB this also documents the deliberate
+    /// consume-on-extract trade-off — the first call's repo write FAILED (500) yet the token is
+    /// still burned, so reuse 401s (atomicity over retry-after-partial-failure; see the resolver).
+    #[tokio::test]
+    async fn guard_profile_token_is_accepted_and_single_use() {
+        let Some((app, mut redis)) = token_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, jti) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let _: () = redis
+            .set_ex(format!("profile_jti:{jti}"), "valid", 600)
+            .await
+            .expect("seed jti");
+
+        let res = app
+            .clone()
+            .oneshot(post_with_bearer("/profile/guard", &tok, guard_body()))
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid token must pass auth"
+        );
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "purpose grants the route"
+        );
+
+        // Second use of the same token → jti already consumed → 401.
+        let res2 = app
+            .oneshot(post_with_bearer("/profile/guard", &tok, guard_body()))
+            .await
+            .unwrap();
+        assert_eq!(
+            res2.status(),
+            StatusCode::UNAUTHORIZED,
+            "profile_token is single-use"
+        );
+    }
+
+    /// Purpose isolation: a `guard_profile` token on the CUSTOMER route is rejected (401), and
+    /// crucially the token is NOT consumed — it must remain usable on its correct guard route.
+    #[tokio::test]
+    async fn guard_profile_token_rejected_on_customer_route_and_not_consumed() {
+        let Some((app, mut redis)) = token_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, jti) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let key = format!("profile_jti:{jti}");
+        let _: () = redis.set_ex(&key, "valid", 600).await.expect("seed jti");
+
+        let res = app
+            .oneshot(post_with_bearer("/profile/customer", &tok, customer_body()))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a guard token must not authorize the customer route"
+        );
+
+        // The token must still be live (purpose mismatch does not burn it).
+        let still_valid: bool = redis.exists(&key).await.expect("exists check");
+        assert!(
+            still_valid,
+            "a purpose-mismatched token must NOT be consumed"
+        );
+        let _: () = redis.del(&key).await.unwrap_or(());
+    }
+
+    /// End-to-end boundary proof (DATABASE_URL + Redis): a guard submits their profile with a
+    /// `profile_token` (NOT logged in) — the guard_profiles row is written, while the
+    /// identity-owned `identity.users.role` is left untouched (no cross-schema write). Gated on
+    /// both a real Postgres (identity 0001+0003 + profile 0001 migrated) and a test Redis.
+    #[tokio::test]
+    async fn profile_token_writes_profile_but_not_identity_role() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the boundary test");
+            return;
+        };
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect Postgres");
+        let mut redis = redis::Client::open(redis_url)
+            .expect("redis client")
+            .get_multiplexed_tokio_connection()
+            .await
+            .expect("redis conn");
+
+        // Seed an identity user (role=guard, pending) — as identity's register would.
+        let uid = Uuid::new_v4();
+        let phone: String = format!(
+            "0{}",
+            uid.simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, 'x', 'guard', 'pending'::identity.approval_status)",
+        )
+        .bind(uid)
+        .bind(&phone)
+        .execute(&pool)
+        .await
+        .expect("seed identity user");
+
+        // Router over the REAL pool; issue + seed a single-use guard profile_token.
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db: pool.clone(),
+            redis: redis.clone(),
+        };
+        let app = Router::new()
+            .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))
+            .with_state(deps);
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, jti) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let _: () = redis
+            .set_ex(format!("profile_jti:{jti}"), "valid", 600)
+            .await
+            .expect("seed jti");
+
+        let res = app
+            .oneshot(post_with_bearer(
+                "/profile/guard",
+                &tok,
+                Body::from(serde_json::json!({ "years_of_experience": 3 }).to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "profile_token submission succeeds"
+        );
+
+        // The profile row was written...
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM profile.guard_profiles WHERE user_id = $1",
+        )
+        .bind(uid)
+        .fetch_one(&pool)
+        .await
+        .expect("count profile");
+        assert_eq!(count, 1, "guard profile written");
+
+        // ...and the identity-owned role is UNCHANGED (no cross-schema write).
+        let (role,): (String,) =
+            sqlx::query_as("SELECT role::text FROM identity.users WHERE id = $1")
+                .bind(uid)
+                .fetch_one(&pool)
+                .await
+                .expect("read role");
+        assert_eq!(role, "guard", "profile must NOT touch identity.users.role");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await;
     }
 
     // ----- internal guard catalog: service-JWT guard (no Redis/DB needed) -----

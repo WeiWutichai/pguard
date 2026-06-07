@@ -100,6 +100,7 @@ async fn main() -> anyhow::Result<()> {
     // --- HTTP router ---
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/auth/register", post(api::register::<AppState>))
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))
