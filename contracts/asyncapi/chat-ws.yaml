@@ -1,0 +1,154 @@
+asyncapi: 3.0.0
+info:
+  title: pguard — Chat real-time (WebSocket + message_sent event)
+  version: 0.1.0
+  description: |
+    Real-time chat delivery contract for the `chat` service. Two transports:
+
+      1. **Client WebSocket** `GET /ws/chat` — bidirectional message stream between a client
+         and the service.
+      2. **NATS event** `pguard.events.chat.message_sent` — the cross-service notification
+         signal, emitted via the transactional outbox (mirror of the entry in
+         `contracts/asyncapi/events.yaml`; restated here so the chat contract is self-contained).
+
+    ## WebSocket auth + framing rules (v2)
+    - **Bearer-on-upgrade.** Auth is `Authorization: Bearer <access-token>` on the HTTP upgrade
+      request (the `AuthUser` extractor runs before the upgrade). A token placed in the URL
+      query is NEVER read → the upgrade is rejected `401` (no sensitive data in the WS URL). The
+      live session re-validates the token periodically and closes on expiry / revoke.
+    - **`conversation_id` is sent AFTER open, never in the URL.** Each inbound frame names its
+      `conversation_id`. The server verifies the sender is a participant of that conversation
+      and that the conversation is writable (not `completed`/`cancelled`) before persisting.
+    - **Alignment by role.** Bubble side is decided by `sender_role` vs the receiver's acting
+      role — never by `sender_id`.
+    - **Cross-instance fan-out** via Redis pub/sub on channel `chat:{conversation_id}`; each
+      live socket only forwards frames for conversations the user participates in.
+
+defaultContentType: application/json
+
+servers:
+  ws:
+    host: localhost:3010
+    protocol: ws
+    description: Local dev (chat-service direct). Behind the gateway in prod under `/v1/ws/chat`.
+  jetstream:
+    host: localhost:4222
+    protocol: nats
+    description: Local dev NATS with JetStream (infra/docker/docker-compose.yml).
+
+channels:
+  wsChat:
+    address: /ws/chat
+    description: Client WebSocket. Bearer-on-upgrade; conversation_id is sent per-frame after open.
+    messages:
+      incoming: { $ref: '#/components/messages/IncomingChatMessage' }
+      outgoing: { $ref: '#/components/messages/OutgoingChatMessage' }
+      error: { $ref: '#/components/messages/WsError' }
+  chatMessageSent:
+    address: pguard.events.chat.message_sent
+    description: Emitted (outbox) on every persisted message; notification consumes it.
+    messages:
+      messageSent: { $ref: '#/components/messages/ChatMessageSent' }
+
+operations:
+  sendChatMessage:
+    action: send
+    channel: { $ref: '#/channels/wsChat' }
+    summary: Client → server. Persist + broadcast a message to the conversation.
+    messages:
+      - { $ref: '#/channels/wsChat/messages/incoming' }
+  receiveChatMessage:
+    action: receive
+    channel: { $ref: '#/channels/wsChat' }
+    summary: Server → client. A message from the counterpart (or this client's own echo).
+    messages:
+      - { $ref: '#/channels/wsChat/messages/outgoing' }
+  onChatMessageSent:
+    action: receive
+    channel: { $ref: '#/channels/chatMessageSent' }
+    summary: notification consumes this → push to the recipient (idempotent by event_id).
+
+components:
+  messages:
+    IncomingChatMessage:
+      name: IncomingChatMessage
+      contentType: application/json
+      summary: A frame the client sends after the socket opens.
+      payload: { $ref: '#/components/schemas/IncomingChatMessage' }
+    OutgoingChatMessage:
+      name: OutgoingChatMessage
+      contentType: application/json
+      summary: A persisted message broadcast to the conversation's participants.
+      payload: { $ref: '#/components/schemas/OutgoingChatMessage' }
+    WsError:
+      name: WsError
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/WsError' }
+    ChatMessageSent:
+      name: ChatMessageSent
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_ChatRef' }
+
+  schemas:
+    IncomingChatMessage:
+      type: object
+      required: [conversation_id]
+      properties:
+        conversation_id: { type: string, format: uuid, description: Sent per-frame (NOT in the URL). }
+        content: { type: string, nullable: true }
+        message_type:
+          type: string
+          enum: [text, image, video, system]
+          default: text
+        sender_role:
+          type: string
+          enum: [guard, customer]
+          nullable: true
+          description: The acting role of the sender (drives alignment on receivers).
+
+    OutgoingChatMessage:
+      type: object
+      required: [id, conversation_id, sender_id, message_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        sender_role: { type: string, nullable: true }
+        content: { type: string, nullable: true }
+        message_type: { type: string, enum: [text, image, video, system] }
+        created_at: { type: string, format: date-time }
+
+    WsError:
+      type: object
+      required: [type, message]
+      properties:
+        type: { type: string, enum: [error], example: error }
+        message: { type: string, example: Not a participant of this conversation }
+
+    Envelope:
+      type: object
+      required: [event_id, event_type, occurred_at, correlation_id, payload]
+      properties:
+        event_id: { type: string, format: uuid, description: Dedupe key (at-least-once). }
+        event_type: { type: string, example: pguard.events.chat.message_sent }
+        occurred_at: { type: string, format: date-time }
+        correlation_id: { type: string, format: uuid }
+        traceparent: { type: string, nullable: true, description: W3C trace-context (continues the trace across NATS). }
+        payload: { type: object }
+
+    EnvelopeOf_ChatRef:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [message_id, conversation_id, sender_id, recipient_id]
+              properties:
+                message_id: { type: string, format: uuid }
+                conversation_id: { type: string, format: uuid }
+                sender_id: { type: string, format: uuid }
+                recipient_id:
+                  type: string
+                  format: uuid
+                  description: The other participant (notification target).
