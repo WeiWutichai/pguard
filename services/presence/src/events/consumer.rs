@@ -122,6 +122,15 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
             observability::record_consumer_lag(DURABLE, info.pending);
         }
 
+        // Verify the HMAC signature BEFORE dedupe/business — a forged booking event (which would
+        // poison the presence assignment read-model) is dropped, counted, and never applied.
+        if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
+            observability::record_rejected_event(DURABLE);
+            tracing::warn!("dropping booking event with missing/invalid signature (forged?)");
+            let _ = message.ack().await;
+            continue;
+        }
+
         // Parse first. A malformed envelope is POISON — ack (drop) so it can't wedge the
         // consumer by redelivering forever.
         let envelope: EventEnvelope<BookingPayload> =

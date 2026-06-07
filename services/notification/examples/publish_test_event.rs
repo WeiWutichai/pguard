@@ -12,9 +12,13 @@ use shared_events::{topics, EventEnvelope};
 use uuid::Uuid;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> anyhow::Result<()> {
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+
+    // The notification consumer now verifies HMAC signatures, so this helper must publish SIGNED
+    // with the SAME EVENT_SIGNING_SECRET the running service uses (else the event is dropped).
+    shared_events::init_signing_key_from_env().map_err(|e| anyhow::anyhow!(e))?;
 
     // Fixed default id so two runs with no arg collide (idempotency demo).
     let event_id = match std::env::args().nth(1) {
@@ -38,12 +42,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }),
     };
 
+    // Publish via JetStream + the shared signed-publish helper (HMAC header), exactly like the
+    // production outbox relay, so the verifying consumer accepts it.
     let client = async_nats::connect(&nats_url).await?;
+    let jetstream = async_nats::jetstream::new(client);
     let bytes = serde_json::to_vec(&envelope)?;
-    client
-        .publish(envelope.event_type.clone(), bytes.into())
-        .await?;
-    client.flush().await?;
+    shared_events::publish_signed(&jetstream, &envelope.event_type, &bytes)
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?;
 
     println!(
         "published event_id={} type={} recipient(customer_id)={} -> {}",

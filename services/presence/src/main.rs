@@ -46,6 +46,9 @@ const PURGE_INTERVAL_SECS: u64 = 3600;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = observability::init_telemetry(SERVICE_NAME);
+    // Load the event-signing key (EVENT_SIGNING_SECRET, ≥64 chars) once at startup — fail-fast
+    // so this service never publishes/consumes unsigned NATS events.
+    shared_events::init_signing_key_from_env().map_err(|e| anyhow::anyhow!(e))?;
 
     // --- config (fail-fast at startup) ---
     let db_config = DatabaseConfig::from_env()?;

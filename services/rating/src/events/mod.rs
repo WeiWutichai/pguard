@@ -40,14 +40,10 @@ impl JetStreamPublisher {
         Ok(Self { jetstream })
     }
 
-    /// Publish `payload` (serialized envelope bytes) to `subject`, awaiting the broker ack.
+    /// Publish `payload` (serialized envelope bytes) to `subject`, signed (HMAC header) via the
+    /// shared helper, awaiting the broker persistence ack.
     async fn publish(&self, subject: &str, payload: Vec<u8>) -> Result<(), anyhow::Error> {
-        let ack = self
-            .jetstream
-            .publish(subject.to_string(), payload.into())
-            .await?;
-        ack.await?;
-        Ok(())
+        shared_events::publish_signed(&self.jetstream, subject, &payload).await
     }
 }
 

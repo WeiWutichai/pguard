@@ -72,6 +72,13 @@ pub fn record_consumer_lag(durable: &str, pending: u64) {
     metrics::gauge!("nats_consumer_pending", "durable" => durable.to_string()).set(pending as f64);
 }
 
+/// Count an event a consumer DROPPED at the boundary because its HMAC signature was
+/// missing/invalid (a forged or tampered event). A non-zero rate here is a security signal —
+/// alert on it. Consumers call this just before dropping (ack-without-apply) the event.
+pub fn record_rejected_event(durable: &str) {
+    metrics::counter!("nats_rejected_events_total", "durable" => durable.to_string()).increment(1);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

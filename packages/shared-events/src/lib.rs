@@ -11,6 +11,12 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod sig;
+pub use sig::{
+    init_signing_key, init_signing_key_from_env, publish_signed, sign_bytes, verify_bytes,
+    verify_message, SIGNATURE_HEADER,
+};
+
 /// The standard event envelope wrapping a typed `payload`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventEnvelope<T> {

@@ -110,6 +110,16 @@ async fn connect_and_consume(state: &AppState, nats_url: &str) -> Result<(), App
             observability::record_consumer_lag(DURABLE, info.pending);
         }
 
+        // Verify the HMAC signature BEFORE parse/dedupe/flip — a FORGED `user.approved` (the
+        // headline threat: approving an arbitrary account over the open bus) is dropped, counted,
+        // and never applied. Fail-closed: missing/invalid signature → drop.
+        if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
+            observability::record_rejected_event(DURABLE);
+            tracing::warn!("dropping user.approved event with missing/invalid signature (forged?)");
+            let _ = message.ack().await;
+            continue;
+        }
+
         // Parse first. A malformed envelope is POISON — ACK it (drop) instead of letting it
         // redeliver forever and wedge the consumer.
         let envelope: EventEnvelope<ApprovedPayload> =
@@ -256,6 +266,10 @@ mod e2e_tests {
             }
         };
 
+        // The consumer now verifies HMAC signatures, so the test must publish SIGNED with the
+        // same key. Set the process signing key (first-write-wins; shared across this binary).
+        shared_events::init_signing_key(SECRET.as_bytes());
+
         // 1) Register a PENDING guard (as /auth/register does).
         let phone: String = format!(
             "0{}",
@@ -327,11 +341,9 @@ mod e2e_tests {
             serde_json::json!({ "user_id": user_id, "role": "guard", "approved_at": chrono::Utc::now() }),
         );
         let bytes = serde_json::to_vec(&envelope).expect("serialize");
-        js.publish(topics::USER_APPROVED.to_string(), bytes.clone().into())
+        shared_events::publish_signed(&js, topics::USER_APPROVED, &bytes)
             .await
-            .expect("publish")
-            .await
-            .expect("publish ack");
+            .expect("signed publish");
 
         // 5) Poll until login succeeds (bounded ~10s).
         let mut ok = false;
@@ -351,11 +363,9 @@ mod e2e_tests {
         );
 
         // 6) Replay the SAME event → idempotent (still approved, processed_events dedupes).
-        js.publish(topics::USER_APPROVED.to_string(), bytes.into())
+        shared_events::publish_signed(&js, topics::USER_APPROVED, &bytes)
             .await
-            .expect("replay")
-            .await
-            .expect("replay ack");
+            .expect("signed replay");
         tokio::time::sleep(Duration::from_millis(800)).await;
         assert!(
             repo::verify_credentials(&pool, &phone, &pin_hash)
@@ -370,6 +380,148 @@ mod e2e_tests {
             .bind(envelope.event_id)
             .execute(&pool)
             .await;
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// THE forgery defense: a FORGED (unsigned) `user.approved` for a pending account is
+    /// DROPPED by the consumer — the account is NOT approved and still cannot log in. This is
+    /// the exact attack the slice closes (approving an arbitrary account over the open bus).
+    /// Gated on DATABASE_URL + NATS_URL + a test Redis.
+    #[tokio::test]
+    async fn e2e_forged_user_approved_is_dropped() {
+        let (Ok(db_url), Ok(nats_url)) = (std::env::var("DATABASE_URL"), std::env::var("NATS_URL"))
+        else {
+            eprintln!("SKIP: DATABASE_URL + NATS_URL required for the forged-event e2e");
+            return;
+        };
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: TEST_REDIS_URL/REDIS_CACHE_URL required (AppState needs Redis)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect Postgres");
+        let redis = redis::Client::open(redis_url)
+            .expect("redis client")
+            .get_multiplexed_tokio_connection()
+            .await
+            .expect("redis conn");
+
+        // The consumer verifies against this key; the attacker does NOT have it.
+        shared_events::init_signing_key(SECRET.as_bytes());
+
+        // Seed a PENDING guard.
+        let phone: String = format!(
+            "0{}",
+            uuid::Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+        let pin_hash = "a".repeat(64);
+        let user_id = repo::upsert_pending_user(&pool, &phone, "guard", &pin_hash)
+            .await
+            .expect("register pending");
+
+        let state = AppState {
+            db: pool.clone(),
+            redis_conn: redis,
+            jwt_config: JwtConfig {
+                secret: SECRET.to_string(),
+                expiry_minutes: 15,
+                encoding_key: jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                decoding_key: jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes()),
+            },
+            service_jwt_config: ServiceJwtConfig {
+                encoding_key: jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                decoding_key: jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes()),
+                ttl_secs: 60,
+            },
+            export_client: crate::export_client::ExportClient::new(
+                reqwest::Client::new(),
+                jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                60,
+                vec![],
+            ),
+        };
+
+        let client = async_nats::connect(&nats_url).await.expect("nats connect");
+        let js = async_nats::jetstream::new(client);
+        js.get_or_create_stream(async_nats::jetstream::stream::Config {
+            name: STREAM.to_string(),
+            subjects: vec![SUBJECTS.to_string()],
+            ..Default::default()
+        })
+        .await
+        .expect("ensure stream");
+
+        let consumer = tokio::spawn({
+            let s = state.clone();
+            let n = nats_url.clone();
+            async move { run_consumer(s, &n).await }
+        });
+        tokio::time::sleep(Duration::from_millis(500)).await;
+
+        // ATTACK: publish a well-formed but UNSIGNED user.approved (no signature header) —
+        // exactly what an attacker with raw bus access (but no signing key) could send.
+        let envelope = EventEnvelope::new(
+            topics::USER_APPROVED,
+            uuid::Uuid::new_v4(),
+            serde_json::json!({ "user_id": user_id, "role": "guard" }),
+        );
+        let bytes = serde_json::to_vec(&envelope).expect("serialize");
+        js.publish(topics::USER_APPROVED.to_string(), bytes.into())
+            .await
+            .expect("publish forged")
+            .await
+            .expect("publish ack");
+
+        // Give the consumer time to receive + DROP it.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        // The forged event was dropped: the account is STILL pending and cannot log in.
+        let (status,): (String,) =
+            sqlx::query_as("SELECT approval_status::text FROM identity.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read status");
+        assert_eq!(
+            status, "pending",
+            "a forged (unsigned) user.approved must NOT flip approval"
+        );
+        assert!(
+            repo::verify_credentials(&pool, &phone, &pin_hash)
+                .await
+                .is_err(),
+            "forged approval must not enable login"
+        );
+        // The forged event_id must NOT have been recorded as processed (it never reached the
+        // dedupe/business layer — it was dropped at the signature boundary).
+        let (claimed,): (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM identity.processed_events WHERE event_id = $1",
+        )
+        .bind(envelope.event_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count processed");
+        assert_eq!(
+            claimed, 0,
+            "a dropped forged event never reaches the dedupe ledger"
+        );
+
+        // teardown
+        consumer.abort();
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)

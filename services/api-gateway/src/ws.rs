@@ -68,6 +68,16 @@ pub async fn run_status_hub(nats_url: String, tx: broadcast::Sender<StatusUpdate
             }
         };
         while let Some(msg) = sub.next().await {
+            // Verify the HMAC signature BEFORE fanning out — a forged booking event must not be
+            // pushed to clients as a fake live-status frame. Fail-closed (mirrors the durable
+            // consumers). The booking outbox relay publishes these signed via `publish_signed`.
+            if !shared_events::verify_message(msg.headers.as_ref(), msg.payload.as_ref()) {
+                observability::record_rejected_event("status-ws-hub");
+                tracing::warn!(
+                    "status-WS hub: dropping booking event with missing/invalid signature"
+                );
+                continue;
+            }
             if let Some(update) = parse_status_update(msg.payload.as_ref()) {
                 // A send error just means no client is currently connected — that's fine.
                 let _ = tx.send(update);
@@ -316,6 +326,9 @@ mod e2e_tests {
     const SECRET: &str = "gateway-ws-e2e-secret-at-least-64-characters-long-hs256-aaaaaaaaaa!!";
     const PARTICIPANT_BOOKING: &str = "11111111-1111-1111-1111-111111111111";
     const OTHER_BOOKING: &str = "99999999-9999-9999-9999-999999999999";
+    /// Event-signing key for the WS-hub tests (the hub verifies; the test publishes signed).
+    const WS_TEST_KEY: &[u8] =
+        b"api-gateway-ws-hub-event-signing-test-key-at-least-64-chars-long!!";
 
     fn infra() -> Option<(String, String)> {
         let nats = std::env::var("NATS_URL").ok()?;
@@ -364,6 +377,9 @@ mod e2e_tests {
         };
         let routes =
             crate::state::UpstreamTable::from_env().with_override(Upstream::Booking, booking_url);
+        // The hub now verifies signed booking events — set the process key so the test can
+        // publish signed and the hub accepts it (first-write-wins; shared across this binary).
+        shared_events::init_signing_key(WS_TEST_KEY);
         let (status_tx, _) = broadcast::channel(256);
         {
             let tx = status_tx.clone();
@@ -489,9 +505,17 @@ mod e2e_tests {
             "correlation_id": Uuid::new_v4().to_string(),
             "payload": { "booking_id": PARTICIPANT_BOOKING, "customer_id": "c1", "guard_id": "g1" }
         });
-        nc.publish(
+        // Publish SIGNED (the hub verifies fail-closed) — sign the exact bytes with the test key.
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        let mut hdrs = async_nats::HeaderMap::new();
+        hdrs.insert(
+            shared_events::SIGNATURE_HEADER,
+            shared_events::sign_bytes(&bytes, WS_TEST_KEY).as_str(),
+        );
+        nc.publish_with_headers(
             shared_events::topics::BOOKING_GUARD_EN_ROUTE.to_string(),
-            serde_json::to_vec(&envelope).unwrap().into(),
+            hdrs,
+            bytes.into(),
         )
         .await
         .unwrap();

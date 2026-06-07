@@ -35,12 +35,8 @@ impl JetStreamPublisher {
     }
 
     async fn publish(&self, subject: &str, payload: Vec<u8>) -> Result<(), anyhow::Error> {
-        let ack = self
-            .jetstream
-            .publish(subject.to_string(), payload.into())
-            .await?;
-        ack.await?;
-        Ok(())
+        // Sign + publish via the shared helper (HMAC signature header); awaits the persistence ack.
+        shared_events::publish_signed(&self.jetstream, subject, &payload).await
     }
 }
 

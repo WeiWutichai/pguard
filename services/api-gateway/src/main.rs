@@ -46,6 +46,8 @@ const STATUS_FANOUT_CAPACITY: usize = 1024;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let _telemetry = observability::init_telemetry(SERVICE_NAME);
+    // The status-WS hub verifies signed booking events before fan-out — load the key (fail-fast).
+    shared_events::init_signing_key_from_env().map_err(|e| anyhow::anyhow!(e))?;
 
     // --- config (fail-fast at startup) ---
     let redis_config = RedisConfig::from_env()?;
