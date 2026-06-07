@@ -62,3 +62,6 @@ secrets/
 
 # Design handoff bundle (kept local, not tracked in git)
 redesign-pguard/
+
+# perf-harness local env (throwaway secrets — never committed)
+.env.perf

@@ -1,6 +1,5 @@
-// B1.6 — Auth login. POST /auth/login/mobile at 10 RPS.
-// Captures Argon2 verify p99 (CPU-bound — drives service sizing & pool config).
-// No seeding beyond one valid credential; every iteration re-verifies the hash.
+// B1.6 — Auth login. POST /v1/auth/login at 10 RPS (gateway → identity).
+// Captures Argon2 verify p99 (CPU-bound — drives identity-service sizing & pool config).
 // Run: k6 run -e TEST_PHONE=08... -e TEST_PASSWORD=... auth-login.js
 import http from 'k6/http';
 import { check } from 'k6';
@@ -18,7 +17,7 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ['p(99)<1500'], // Argon2 is intentionally slow; record real p99
+    'http_req_duration{name:auth-login}': ['p(99)<1500'], // tag-scoped → clean per-endpoint p99
     http_req_failed: ['rate<0.01'],
   },
 };
@@ -28,8 +27,8 @@ const PASSWORD = __ENV.TEST_PASSWORD || 'Password123!';
 
 export default function () {
   const res = http.post(
-    `${BASE_URL}/auth/login/mobile`,
-    JSON.stringify({ phone: PHONE, password: PASSWORD }),
+    `${BASE_URL}/v1/auth/login`,
+    JSON.stringify({ identifier: PHONE, password: PASSWORD }),
     { headers: { 'Content-Type': 'application/json' }, tags: { name: 'auth-login' } }
   );
   check(res, { 'login 200': (r) => r.status === 200 });
