@@ -111,3 +111,9 @@ metrics-exporter-prometheus = { version = "0.16", default-features = false }
 [profile.dev]
 # Faster incremental builds for the many-crate workspace.
 debug = 1
+
+[profile.release]
+# Strip symbols + debuginfo from release binaries (smaller images, no symbol leakage).
+# Defense-in-depth: the prod Dockerfile also runs `strip`, but this guarantees any
+# `cargo build --release` (CI, local) produces a stripped binary too.
+strip = true

@@ -71,7 +71,7 @@ pub trait SmsSender: Send + Sync {
 }
 
 /// Dev/test sender — logs and succeeds without contacting the gateway. Selected when
-/// `SMS_DISABLED` is set. Never logs the OTP body (PII / code leakage).
+/// `SMS_DISABLED` is truthy (see [`sms_disabled`]). Never logs the OTP body (PII / code leakage).
 pub struct NoopSender;
 
 #[async_trait]
@@ -80,6 +80,16 @@ impl SmsSender for NoopSender {
         tracing::info!(to = %mask_phone(to), "noop SMS (SMS_DISABLED)");
         Ok("noop".to_string())
     }
+}
+
+/// otp's SMS-gating policy: real SMS is disabled ONLY when `SMS_DISABLED` carries a
+/// truthy value (`true`/`1`/`yes`/`on`, case-insensitive). `false`/`0`/empty/unset keep
+/// real SMS ENABLED. Pass `std::env::var("SMS_DISABLED").ok().as_deref()`.
+///
+/// Fixes the v1 footgun where presence-based `std::env::var("SMS_DISABLED").is_ok()`
+/// treated *any* value — including `"false"` — as "disable", silently dropping real SMS.
+pub fn sms_disabled(raw: Option<&str>) -> bool {
+    shared::config::parse_env_bool(raw)
 }
 
 /// Real INET CSGAPI sender. Holds the gateway config + a shared `reqwest::Client`
@@ -345,5 +355,29 @@ mod tests {
         assert_eq!(mask_phone("66812345678"), "*******5678");
         assert_eq!(mask_phone("1234"), "****");
         assert_eq!(mask_phone("12"), "**");
+    }
+
+    // ----- SMS_DISABLED is value-aware (the v1 footgun fix) -----
+
+    #[test]
+    fn sms_disabled_only_for_truthy_values() {
+        // Disabled (NoopSender) only when explicitly truthy.
+        assert!(sms_disabled(Some("true")));
+        assert!(sms_disabled(Some("True")));
+        assert!(sms_disabled(Some("1")));
+        assert!(sms_disabled(Some("yes")));
+    }
+
+    #[test]
+    fn sms_disabled_false_keeps_real_sms() {
+        // The crux: "false"/"0"/empty must NOT disable real SMS (v1's `.is_ok()` got this wrong).
+        assert!(!sms_disabled(Some("false")));
+        assert!(!sms_disabled(Some("0")));
+        assert!(!sms_disabled(Some("")));
+    }
+
+    #[test]
+    fn sms_disabled_unset_keeps_real_sms() {
+        assert!(!sms_disabled(None));
     }
 }

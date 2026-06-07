@@ -122,6 +122,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(axum::middleware::from_fn(
             observability::edge_telemetry_middleware,
         ))
+        // OUTERMOST: stamp security headers on every response (incl. CORS + errors).
+        .layer(axum::middleware::from_fn(handler::security_headers_mw))
         .with_state(state);
 
     let addr = format!("0.0.0.0:{PORT}");

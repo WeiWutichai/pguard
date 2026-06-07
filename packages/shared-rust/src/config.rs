@@ -124,6 +124,21 @@ fn optional_env(key: &str) -> Option<String> {
     std::env::var(key).ok()
 }
 
+/// Value-aware boolean parse for env flags. Returns `true` ONLY for an explicit
+/// truthy value (`true`/`1`/`yes`/`on`/`y`, case-insensitive, surrounding whitespace
+/// ignored). Everything else — `false`, `0`, the empty string, an unrecognized value,
+/// or unset (`None`) — is `false`.
+///
+/// This exists because `std::env::var(K).is_ok()` is *presence-based*: it treats any
+/// value (even `"false"`) as set/true. That footgun once gated otp's real SMS sender
+/// (`SMS_DISABLED=false` silently disabled SMS). Env flags must be parsed by value.
+pub fn parse_env_bool(val: Option<&str>) -> bool {
+    matches!(
+        val.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("true" | "1" | "yes" | "on" | "y")
+    )
+}
+
 impl DatabaseConfig {
     pub fn from_env() -> Result<Self, AppError> {
         Ok(Self {
@@ -295,5 +310,27 @@ mod tests {
                 assert!(cfg.pubsub_url.is_none());
             },
         );
+    }
+
+    // ----- parse_env_bool: value-aware, not presence-based (the SMS_DISABLED footgun) -----
+
+    #[test]
+    fn parse_env_bool_truthy_values_are_true() {
+        for v in ["true", "True", "TRUE", "TrUe", "1", "yes", "YES", "on", "y", " true "] {
+            assert!(parse_env_bool(Some(v)), "{v:?} should parse as true");
+        }
+    }
+
+    #[test]
+    fn parse_env_bool_falsy_values_are_false() {
+        // The crux: "false"/"0"/empty must NOT disable (the old `.is_ok()` got this wrong).
+        for v in ["false", "False", "0", "no", "off", "n", "", "  ", "disabled", "banana"] {
+            assert!(!parse_env_bool(Some(v)), "{v:?} should parse as false");
+        }
+    }
+
+    #[test]
+    fn parse_env_bool_unset_is_false() {
+        assert!(!parse_env_bool(None));
     }
 }

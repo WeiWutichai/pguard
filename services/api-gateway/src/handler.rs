@@ -10,7 +10,7 @@
 //! Every error is returned as a generic [`ApiResponse`] envelope (no internal leakage).
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::{HeaderMap, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use std::net::SocketAddr;
@@ -22,6 +22,27 @@ use crate::domain::ratelimit::RateDecision;
 use crate::domain::routing::{resolve, RouteDecision};
 use crate::state::AppState;
 use crate::{auth, proxy, ratelimit};
+
+/// Middleware: stamp the fixed [`security_headers`](crate::domain::headers::security_headers)
+/// on every response — proxied, gateway-originated error, `/healthz`, and CORS responses
+/// alike. Mounted as the OUTERMOST layer so it runs last on the response path. `insert`
+/// (not `append`) so a header can't be duplicated/forged from upstream.
+pub async fn security_headers_mw(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let mut resp = next.run(request).await;
+    let headers = resp.headers_mut();
+    // `from_static` is infallible: `security_headers()` guarantees lowercase names + valid
+    // constant values (asserted by a domain test), so this never panics in the request path.
+    for (name, value) in crate::domain::headers::security_headers() {
+        headers.insert(
+            HeaderName::from_static(name),
+            HeaderValue::from_static(value),
+        );
+    }
+    resp
+}
 
 /// Build a generic `ApiResponse` error body (`{ success:false, error:"…" }`) with a
 /// status. Used for all gateway-originated errors so the edge contract is uniform.
@@ -156,6 +177,43 @@ mod tests {
     fn auth_err_maps_forbidden_to_403() {
         let resp = auth_err(AppError::Forbidden("x".into()));
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- security headers land on EVERY response (incl. errors) -----
+
+    #[tokio::test]
+    async fn security_headers_mw_stamps_ok_and_error_responses() {
+        async fn ok() -> &'static str {
+            "ok"
+        }
+        let app = Router::new()
+            .route("/ok", any_route(ok))
+            .layer(axum::middleware::from_fn(security_headers_mw));
+
+        // 200 path — all expected headers present with hardened values.
+        let resp = app
+            .clone()
+            .oneshot(AxumRequest::builder().uri("/ok").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
+        assert_eq!(resp.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert!(resp.headers().contains_key("content-security-policy"));
+        assert!(resp.headers().contains_key("strict-transport-security"));
+
+        // 404 path (no matching route) — headers must STILL be stamped on the error response.
+        let resp404 = app
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/nope")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp404.status(), StatusCode::NOT_FOUND);
+        assert_eq!(resp404.headers().get("x-frame-options").unwrap(), "DENY");
     }
 
     // ----- full-pipeline integration (Redis-gated) -----
