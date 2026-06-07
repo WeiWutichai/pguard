@@ -9,7 +9,11 @@ import {
   type ReactNode,
 } from "react";
 
-export type Lang = "th" | "en";
+// Locale primitives live in a server-safe module so the Server-Component root layout can call
+// parseLang() without crossing the "use client" boundary. Re-exported here for client consumers.
+import { LANG_COOKIE, parseLang, type Lang } from "./lang";
+
+export type { Lang };
 
 /** Translation keys — both languages must define every key (enforced by the `Record` types). */
 const dictionaries = {
@@ -263,8 +267,6 @@ interface LanguageContextValue {
 
 const LanguageContext = createContext<LanguageContextValue | null>(null);
 
-const LANG_COOKIE = "lang";
-
 /** Provider seeded with the server-read locale (avoids a hydration mismatch). The toggle writes a
  *  non-sensitive `lang` cookie (locale isn't a secret) so the server renders the same locale next
  *  load. */
@@ -308,9 +310,5 @@ export function useLanguage(): LanguageContextValue {
   return ctx;
 }
 
-/** Parse a `lang` cookie value into a valid [Lang], defaulting to Thai (the primary market). */
-export function parseLang(value: string | undefined): Lang {
-  return value === "en" ? "en" : "th";
-}
-
-export { LANG_COOKIE };
+// Re-export the server-safe locale primitives for client-side imports from "@/lib/i18n".
+export { LANG_COOKIE, parseLang };

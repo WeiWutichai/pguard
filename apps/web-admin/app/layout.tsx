@@ -4,7 +4,8 @@ import type { Metadata } from "next";
 import type { ReactNode } from "react";
 import { cookies } from "next/headers";
 
-import { LANG_COOKIE, LanguageProvider, parseLang } from "@/lib/i18n";
+import { LanguageProvider } from "@/lib/i18n";
+import { LANG_COOKIE, parseLang } from "@/lib/lang";
 
 export const metadata: Metadata = {
   title: "pguard admin",

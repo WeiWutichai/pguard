@@ -194,6 +194,7 @@ export default function ApplicantsPage() {
                       <div className="inline-flex gap-2">
                         <button
                           type="button"
+                          data-testid={`applicant-approve-${p.user_id}`}
                           disabled={actingId === p.user_id}
                           onClick={() => void act(p.user_id, "approve")}
                           className="inline-flex items-center gap-1 rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
@@ -203,6 +204,7 @@ export default function ApplicantsPage() {
                         </button>
                         <button
                           type="button"
+                          data-testid={`applicant-reject-${p.user_id}`}
                           disabled={actingId === p.user_id}
                           onClick={() => void act(p.user_id, "reject")}
                           className="inline-flex items-center gap-1 rounded-lg border border-danger px-3 py-1.5 text-xs font-medium text-danger disabled:opacity-60"

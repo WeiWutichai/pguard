@@ -253,3 +253,67 @@ jobs:
           INET_SMS_SENDER: ci
           MEDIASOUP_ANNOUNCED_IP: 127.0.0.1
         run: docker compose -f infra/docker/docker-compose.prod.yml config --quiet
+
+  # ---------------------------------------------------------------------------
+  # E2E — web-admin happy-path against the REAL stack (Playwright). Brings the prod
+  # compose up via the e2e harness (e2e-stack-up.sh → migrate + seed-v2), runs
+  # web-admin under Playwright's webServer (`next dev` on :3100, with the env-gated
+  # rating/presence rewrites), and asserts the cross-service approve→login event loop,
+  # the login cookie, the reviews visibility toggle, guards/map live data, and the
+  # documented-gap pages. Heavyweight (builds the service images) → bounded by
+  # timeout-minutes. The mobile Patrol suite is local-only (needs an emulator) — see
+  # tests/e2e/mobile/README.md.
+  # ---------------------------------------------------------------------------
+  e2e-web:
+    name: E2E — web (Playwright vs live stack)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      # Builds only the services the flows touch, applies the per-service migrations, seeds the
+      # deterministic dataset. Uses the committed infra/.env.e2e (dummy secrets, e2e-only).
+      - name: Bring up the e2e stack (build + migrate + seed)
+        run: tooling/scripts/e2e-stack-up.sh
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9 # no root packageManager to infer from — pin to match the web-admin job
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: |
+            apps/web-admin/pnpm-lock.yaml
+            tests/e2e/pnpm-lock.yaml
+
+      # Playwright's webServer starts `next dev` from apps/web-admin, so its deps must be installed.
+      - name: Install web-admin deps
+        working-directory: apps/web-admin
+        run: pnpm install --frozen-lockfile
+
+      - name: Install e2e deps + Chromium
+        working-directory: tests/e2e
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec playwright install --with-deps chromium
+
+      - name: Run Playwright (web)
+        working-directory: tests/e2e
+        env:
+          CI: "true"
+          PGUARD_API_BASE_URL: http://localhost:3000
+          PGUARD_RATING_URL: http://localhost:3007
+          PGUARD_PRESENCE_URL: http://localhost:3009
+        run: pnpm test:web
+
+      - name: Upload Playwright report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/e2e/playwright-report
+          retention-days: 7

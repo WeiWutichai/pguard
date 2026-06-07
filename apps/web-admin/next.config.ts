@@ -13,12 +13,36 @@ import type { NextConfig } from "next";
 // ingress deployment the ingress can own this instead — harmless either way.
 const GATEWAY = process.env.PGUARD_API_BASE_URL ?? "http://localhost:3000";
 
+// E2E-ONLY accommodation of a documented v2 gap: the gateway does NOT yet route the rating
+// (reviews) or presence (locations) services (perf-baseline README + api-gateway routing table),
+// so the same-origin `/v1` proxy can't reach them. When these are set (only in the e2e harness),
+// route those two ADMIN prefixes straight to the services — which validate the SAME httpOnly
+// `access_token` cookie — so the reviews + map pages exercise real data end-to-end. Unset in prod
+// → the single `/v1`→gateway rule below is the only rewrite (behaviour identical to before).
+const RATING_URL = process.env.PGUARD_RATING_URL;
+const PRESENCE_URL = process.env.PGUARD_PRESENCE_URL;
+
 const nextConfig: NextConfig = {
   // App Router only (no Pages Router) — per CLAUDE.md.
   typedRoutes: true,
   reactStrictMode: true,
   async rewrites() {
-    return [{ source: "/v1/:path*", destination: `${GATEWAY}/v1/:path*` }];
+    const rules: { source: string; destination: string }[] = [];
+    if (RATING_URL) {
+      rules.push(
+        { source: "/v1/admin/reviews", destination: `${RATING_URL}/admin/reviews` },
+        { source: "/v1/admin/reviews/:path*", destination: `${RATING_URL}/admin/reviews/:path*` },
+      );
+    }
+    if (PRESENCE_URL) {
+      rules.push(
+        { source: "/v1/locations", destination: `${PRESENCE_URL}/locations` },
+        { source: "/v1/locations/:path*", destination: `${PRESENCE_URL}/locations/:path*` },
+      );
+    }
+    // Everything else (and all of prod): same-origin `/v1` → gateway.
+    rules.push({ source: "/v1/:path*", destination: `${GATEWAY}/v1/:path*` });
+    return rules;
   },
   // Self-contained server bundle for the production Docker image: emits
   // `.next/standalone` (server.js + minimal node_modules) so the runtime stage
