@@ -57,18 +57,18 @@ async fn main() -> anyhow::Result<()> {
         .context("Redis cache connection")?;
     // --- SMS backend (fail-fast unless explicitly disabled for dev). The HTTP client is
     // built only when a real sender is used; InetSender owns it (no copy on state). ---
-    let sms: Arc<dyn SmsSender> = if sms::sms_disabled(std::env::var("SMS_DISABLED").ok().as_deref())
-    {
-        tracing::warn!("SMS_DISABLED is truthy — using NoopSender (no real SMS will be sent)");
-        Arc::new(NoopSender)
-    } else {
-        let http_client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(10))
-            .connect_timeout(Duration::from_secs(5))
-            .build()
-            .context("build HTTP client")?;
-        Arc::new(InetSender::new(InetConfig::from_env()?, http_client))
-    };
+    let sms: Arc<dyn SmsSender> =
+        if sms::sms_disabled(std::env::var("SMS_DISABLED").ok().as_deref()) {
+            tracing::warn!("SMS_DISABLED is truthy — using NoopSender (no real SMS will be sent)");
+            Arc::new(NoopSender)
+        } else {
+            let http_client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .connect_timeout(Duration::from_secs(5))
+                .build()
+                .context("build HTTP client")?;
+            Arc::new(InetSender::new(InetConfig::from_env()?, http_client))
+        };
 
     let state = AppState {
         db,

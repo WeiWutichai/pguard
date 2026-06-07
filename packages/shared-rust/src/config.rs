@@ -316,7 +316,9 @@ mod tests {
 
     #[test]
     fn parse_env_bool_truthy_values_are_true() {
-        for v in ["true", "True", "TRUE", "TrUe", "1", "yes", "YES", "on", "y", " true "] {
+        for v in [
+            "true", "True", "TRUE", "TrUe", "1", "yes", "YES", "on", "y", " true ",
+        ] {
             assert!(parse_env_bool(Some(v)), "{v:?} should parse as true");
         }
     }
@@ -324,7 +326,9 @@ mod tests {
     #[test]
     fn parse_env_bool_falsy_values_are_false() {
         // The crux: "false"/"0"/empty must NOT disable (the old `.is_ok()` got this wrong).
-        for v in ["false", "False", "0", "no", "off", "n", "", "  ", "disabled", "banana"] {
+        for v in [
+            "false", "False", "0", "no", "off", "n", "", "  ", "disabled", "banana",
+        ] {
             assert!(!parse_env_bool(Some(v)), "{v:?} should parse as false");
         }
     }

@@ -1,0 +1,255 @@
+name: CI
+
+# Build + lint + test every stack on push/PR to main. The per-stack jobs run the SAME commands
+# the feature slices verified locally (see PROGRESS.md). Jobs are independent (a red stack never
+# masks another); the gated DB/NATS/Redis Rust tests live in a separate services-up job.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Supersede in-flight runs on the same ref (saves CI minutes; safe — CI is read-only).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Rust — fmt · clippy · build · HERMETIC tests (gated DB/NATS/Redis suites SKIP
+  # cleanly without infra, so this job is fast + always green). Matches the slices'
+  # `cargo fmt --check` · `clippy --all-targets -D warnings` · `build` · `test --workspace`.
+  # (`--all-features` is a no-op here — no crate defines optional features.)
+  # ---------------------------------------------------------------------------
+  rust:
+    name: Rust — fmt · clippy · build · test (hermetic)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Pin the Rust toolchain: the slices verified fmt/clippy on 1.93.x, but GitHub's floating
+      # `stable` is newer (1.96) and its rustfmt reformats + clippy adds lints that trip
+      # `-D warnings`. Pin to the verified version for reproducible CI (the image builds keep using
+      # current stable — they only `cargo build`, never fmt/clippy). Bump deliberately.
+      - name: Install Rust 1.93.1 (rustfmt + clippy)
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.93.1
+          rustc --version
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format check
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (deny warnings)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
+      - name: Build workspace
+        run: cargo build --workspace
+
+      - name: Test (hermetic — DB/NATS/Redis-gated tests skip without infra)
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Rust — the DB/NATS/Redis-gated suites, with real service containers + the
+  # per-service migrations applied. Single-service gated tests now run; the
+  # cross-service e2e tests (BOOKING_URL/PROFILE_URL/RATING_URL) stay skipped
+  # (they need the services running — out of scope for unit-level CI).
+  # ---------------------------------------------------------------------------
+  rust-integration:
+    name: Rust — gated tests (Postgres 17 + NATS + Redis)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: pguard
+          POSTGRES_PASSWORD: pguard
+          POSTGRES_DB: pguard
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pguard"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust 1.93.1 (pinned — matches the verified toolchain)
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal
+          rustup default 1.93.1
+
+      - name: Cache cargo registry + target
+        uses: Swatinem/rust-cache@v2
+
+      - name: Start NATS (JetStream)
+        # GitHub `services:` can't override the container command, and the durable
+        # consumers need JetStream — so run NATS with `-js` directly, then wait for the port
+        # (the heavy cargo compile usually masks the boot, but don't depend on that).
+        run: |
+          docker run -d --name nats -p 4222:4222 nats:2.10 -js
+          for i in $(seq 1 20); do
+            (exec 3<>/dev/tcp/localhost/4222) 2>/dev/null && { exec 3>&-; echo "nats up"; break; }
+            echo "waiting for nats ($i)…"; sleep 1
+          done
+
+      - name: Apply per-service DB migrations
+        env:
+          PGPASSWORD: pguard
+        run: |
+          # Wait for the REAL Postgres over TCP first — the postgres image's first-boot runs a
+          # temporary socket-only init server that the in-container health-check can briefly pass,
+          # so connect over TCP (which only the real server accepts) before applying.
+          for i in $(seq 1 30); do
+            psql -h localhost -U pguard -d pguard -tAc 'select 1' >/dev/null 2>&1 && break
+            echo "waiting for postgres ($i)…"; sleep 2
+          done
+          # Per-service schemas are independent (no cross-schema FK in v2), so applying in
+          # sorted path order (service, then migration number) is correct.
+          for f in $(find contracts/db/migrations -name '*.sql' | sort); do
+            echo "==> applying $f"
+            psql -h localhost -U pguard -d pguard -v ON_ERROR_STOP=1 -f "$f"
+          done
+
+      - name: Test (gated — exercises the DB/NATS/Redis suites)
+        env:
+          DATABASE_URL: postgres://pguard:pguard@localhost:5432/pguard
+          DATABASE_READ_URL: postgres://pguard:pguard@localhost:5432/pguard
+          NATS_URL: nats://localhost:4222
+          REDIS_CACHE_URL: redis://localhost:6379
+          TEST_REDIS_URL: redis://localhost:6379
+          # Dummy (CI-only) — long enough for the ≥64-char signing/JWT guards.
+          EVENT_SIGNING_SECRET: ci-dummy-event-signing-secret-at-least-64-characters-long-00000000
+          JWT_SECRET: ci-dummy-jwt-secret-at-least-64-characters-long-0000000000000000000
+        run: cargo test --workspace
+
+  # ---------------------------------------------------------------------------
+  # Mobile (Flutter) — codegen first (the *.g.dart are gitignored), then analyze + test.
+  # ---------------------------------------------------------------------------
+  mobile:
+    name: Mobile — build_runner · analyze · test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: 3.41.0
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+
+      - name: Generate Riverpod codegen
+        run: dart run build_runner build --delete-conflicting-outputs
+
+      - run: flutter analyze
+
+      - run: flutter test
+
+  # ---------------------------------------------------------------------------
+  # web-admin (Next.js 16, pnpm) — lint · typecheck · build.
+  # ---------------------------------------------------------------------------
+  web-admin:
+    name: web-admin — lint · typecheck · build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web-admin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: apps/web-admin/pnpm-lock.yaml
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm exec tsc --noEmit
+
+      - run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # mediasoup (Node SFU) — lint · test (native engine is an optionalDependency,
+  # so `npm ci` works without it; the tests cover the control/auth layer).
+  # ---------------------------------------------------------------------------
+  mediasoup:
+    name: mediasoup — lint · test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/mediasoup
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: services/mediasoup/package-lock.json
+
+      - run: npm ci
+
+      - run: npm run lint
+
+      - run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Compose drift — the prod compose must still `config`-resolve. Dummy values for
+  # the required ${VAR:?} secrets (structure/drift check only — no real secrets).
+  # ---------------------------------------------------------------------------
+  compose-validate:
+    name: Compose — prod config validates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.prod.yml
+        env:
+          POSTGRES_PASSWORD: ci
+          REPLICATION_PASSWORD: ci
+          JWT_SECRET: ci
+          SERVICE_JWT_SECRET: ci
+          EVENT_SIGNING_SECRET: ci
+          CORS_ALLOWED_ORIGINS: https://admin.example.test
+          MINIO_ROOT_USER: ci
+          MINIO_ROOT_PASSWORD: ci
+          GRAFANA_ADMIN_PASSWORD: ci
+          INET_SMS_USERNAME: ci
+          INET_SMS_PASSWORD: ci
+          INET_SMS_SENDER: ci
+          MEDIASOUP_ANNOUNCED_IP: 127.0.0.1
+        run: docker compose -f infra/docker/docker-compose.prod.yml config --quiet

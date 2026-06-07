@@ -193,12 +193,20 @@ mod tests {
         // 200 path — all expected headers present with hardened values.
         let resp = app
             .clone()
-            .oneshot(AxumRequest::builder().uri("/ok").body(Body::empty()).unwrap())
+            .oneshot(
+                AxumRequest::builder()
+                    .uri("/ok")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(resp.headers().get("x-frame-options").unwrap(), "DENY");
-        assert_eq!(resp.headers().get("x-content-type-options").unwrap(), "nosniff");
+        assert_eq!(
+            resp.headers().get("x-content-type-options").unwrap(),
+            "nosniff"
+        );
         assert!(resp.headers().contains_key("content-security-policy"));
         assert!(resp.headers().contains_key("strict-transport-security"));
 
