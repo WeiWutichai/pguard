@@ -158,6 +158,72 @@ pub async fn upsert_pending_user(
     })
 }
 
+/// Outcome of consuming a `user.approved` event.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ApprovedOutcome {
+    /// The account was flipped to `approved` (it can now log in).
+    Applied,
+    /// This `event_id` was already processed — a redelivery; no-op (idempotent).
+    Duplicate,
+    /// No such user (or already deleted). The event is still recorded as processed so it does
+    /// not redeliver forever; logged by the caller.
+    UserNotFound,
+}
+
+/// Flip the user's OWN `approval_status` to `approved`, driven by the `user.approved` event
+/// that profile emits on admin approval. **Idempotent by `event_id`**: the claim into
+/// `processed_events` + the `users` update happen in ONE transaction, so a redelivered event
+/// (JetStream at-least-once) is a safe no-op. This is identity writing its OWN schema — the
+/// event is the only coupling to profile (no cross-schema write in either direction).
+#[tracing::instrument(skip(db), fields(event_id = %event_id, user_id = %user_id))]
+pub async fn approve_user_on_event(
+    db: &PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    user_id: Uuid,
+) -> Result<ApprovedOutcome, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) Claim the event_id — the idempotency anchor. A redelivery inserts nothing.
+    let claim = sqlx::query(
+        "INSERT INTO identity.processed_events (event_id, event_type) \
+         VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?;
+    if claim.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(ApprovedOutcome::Duplicate);
+    }
+
+    // 2) Flip approval_status. Only a live (not soft-deleted) account is approvable — so a
+    //    stale/forged approval can never re-enable an erased account (login also re-checks
+    //    is_active independently, defense-in-depth).
+    let res = sqlx::query(
+        "UPDATE identity.users \
+         SET approval_status = 'approved'::identity.approval_status, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Commit the claim even when 0 rows matched (UserNotFound). This is deliberate: in the real
+    // flow the identity row ALWAYS predates an approval (register → profile submit → admin
+    // approve, each gated on the prior), so a 0-row match means a forged/stale/deleted-user
+    // event — recording it (vs. rollback) prevents a bogus event from redelivering forever. The
+    // caller logs UserNotFound loudly so a genuine anomaly is still visible.
+    tx.commit().await?;
+
+    if res.rows_affected() == 0 {
+        Ok(ApprovedOutcome::UserNotFound)
+    } else {
+        Ok(ApprovedOutcome::Applied)
+    }
+}
+
 /// Persist a freshly-issued refresh token (new family on login). Returns the opaque
 /// token the client receives (`{rotation_id}.{secret}`).
 pub async fn create_refresh_family(db: &PgPool, user_id: Uuid) -> Result<String, AppError> {
@@ -660,6 +726,76 @@ mod tests {
             .expect_err("re-register approved is a conflict");
         assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
 
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// DB-gated consumer idempotency: `approve_user_on_event` flips a pending account to
+    /// `approved` AND records the `event_id`; a redelivery of the SAME event_id is a no-op
+    /// (`Duplicate`); an event for an unknown user records the id but reports `UserNotFound`.
+    /// Gated on `DATABASE_URL` (identity 0001+0003+0004).
+    #[tokio::test]
+    async fn approve_user_on_event_flips_and_is_idempotent() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the approval-consumer test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        // Seed a PENDING guard (as register would).
+        let user_id = Uuid::new_v4();
+        let phone = format!("0{}", &user_id.simple().to_string()[..9]);
+        let pw = password::hash_secret("x").expect("hash");
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, $3, 'guard', 'pending'::identity.approval_status)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(&pw)
+        .execute(&pool)
+        .await
+        .expect("seed pending user");
+
+        let event_id = Uuid::new_v4();
+        let topic = "pguard.events.user.approved";
+
+        // 1) First delivery → Applied; the column flips to approved.
+        let outcome = approve_user_on_event(&pool, event_id, topic, user_id)
+            .await
+            .expect("apply");
+        assert_eq!(outcome, ApprovedOutcome::Applied);
+        let (status,): (String,) =
+            sqlx::query_as("SELECT approval_status::text FROM identity.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read status");
+        assert_eq!(status, "approved", "consumer flips approval_status");
+
+        // 2) Redelivery of the SAME event_id → Duplicate (idempotent no-op).
+        let again = approve_user_on_event(&pool, event_id, topic, user_id)
+            .await
+            .expect("redeliver");
+        assert_eq!(again, ApprovedOutcome::Duplicate);
+
+        // 3) A different event for an unknown user → UserNotFound (id still recorded).
+        let outcome = approve_user_on_event(&pool, Uuid::new_v4(), topic, Uuid::new_v4())
+            .await
+            .expect("unknown user");
+        assert_eq!(outcome, ApprovedOutcome::UserNotFound);
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM identity.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)

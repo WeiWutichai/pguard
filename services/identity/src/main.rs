@@ -85,15 +85,25 @@ async fn main() -> anyhow::Result<()> {
         export_client,
     };
 
-    // --- background JetStream consumer (user.compromised → force-revoke-all) ---
+    // --- background JetStream consumers ---
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+    // (1) user.compromised → force-revoke-all.
     {
         let consumer_state = state.clone();
+        let nats = nats_url.clone();
         tokio::spawn(async move {
-            if let Err(e) = events::run_consumer(consumer_state, &nats_url).await {
+            if let Err(e) = events::run_consumer(consumer_state, &nats).await {
                 tracing::error!("identity compromise consumer stopped: {e}");
             }
+        });
+    }
+    // (2) user.approved → flip our own approval_status (closes the approval→login loop).
+    {
+        let consumer_state = state.clone();
+        let nats = nats_url.clone();
+        tokio::spawn(async move {
+            events::approved::run_consumer(consumer_state, &nats).await;
         });
     }
 

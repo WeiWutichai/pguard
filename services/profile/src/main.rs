@@ -4,12 +4,13 @@
 //! admin reviews + approves/rejects guard onboarding. Bank account numbers are masked on
 //! owner reads (PDPA §7); admin endpoints return the full value.
 //!
-//! This file is wiring only — config, db pool, redis conn, router, CORS, telemetry. Logic
-//! lives in `domain/` (pure mask + approval transition + validators), `repo/` (DB), and
-//! `api/` (transport). No /internal/* and no event bus in this slice (Postgres-only).
+//! This file is wiring only — config, db pool, redis conn, router, CORS, telemetry, and the
+//! transactional-outbox relay. Logic lives in `domain/` (pure mask + approval transition +
+//! validators), `repo/` (DB), `events/` (outbox relay), and `api/` (transport).
 
 mod api;
 mod domain;
+mod events;
 mod models;
 mod repo;
 mod state;
@@ -55,6 +56,16 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_jwt_config,
     };
+
+    // --- background outbox relay: drains profile.outbox → NATS (user.approved/rejected) ---
+    let nats_url =
+        std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+    {
+        let relay_db = state.db.clone();
+        tokio::spawn(async move {
+            events::run_relay(relay_db, nats_url).await;
+        });
+    }
 
     // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
     let app = Router::new()

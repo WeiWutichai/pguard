@@ -78,6 +78,15 @@ pub mod topics {
 
     // user/security context — triggers force-revoke-all
     pub const USER_COMPROMISED: &str = "pguard.events.user.compromised";
+    /// Account approved (profile → identity): identity flips its own `users.approval_status`
+    /// to `approved` so the (previously pending) account can log in. Producer = profile,
+    /// consumer = identity. Closes the approval→login loop without a cross-schema write.
+    pub const USER_APPROVED: &str = "pguard.events.user.approved";
+    /// Account rejected — RESERVED topic for a future audit/notify consumer. Not emitted today:
+    /// login already blocks every non-`approved` account, so a rejection needs no propagation
+    /// (emitting it with no consumer would only accrue orphan messages). Kept for symmetry so a
+    /// later "notify the guard they were rejected" slice has a stable name to bind to.
+    pub const USER_REJECTED: &str = "pguard.events.user.rejected";
 }
 
 #[cfg(test)]
