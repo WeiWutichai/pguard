@@ -1,0 +1,212 @@
+openapi: 3.1.0
+info:
+  title: pguard — Presence Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the presence service (source of truth — codegen produces Rust
+    handler stubs/types, the Dart client, the TS client). presence owns real-time guard GPS:
+    a WebSocket ingress (`/ws/track`, see `contracts/asyncapi/presence-ws.yaml`), the
+    current-position store, online status, and these IDOR-safe read APIs. The append-only
+    `location_history` is SENSITIVE GPS under a 90-day PDPA retention purge
+    (`v1-audit/07-pdpa.md` §7.1/§7.3).
+
+    v2 authz rules baked into the contract:
+      1. **Bulk is admin-only.** `GET /locations` returns every guard's live position — a
+         customer can NEVER pull bulk locations.
+      2. **Per-guard reads are IDOR-gated.** A customer may read a specific guard's location /
+         history ONLY while they have an **active booking** with that guard (derived from
+         `pguard.events.booking.*` — presence holds no cross-service FK and makes no synchronous
+         cross-schema read). A guard may read its own; an admin may read any.
+      3. **Freshness.** A guard counts as live for discovery only when
+         `is_online = true AND recorded_at > now() - interval '5 minutes'` — surfaced as
+         `is_live` on the read DTOs.
+
+    Client-facing paths are served behind the gateway under `/v1`. Success responses use the
+    standard `{ success, data }` envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3009
+    description: Local dev (presence-service direct)
+
+tags:
+  - name: Locations
+    description: Live guard locations + history (IDOR-safe reads)
+
+paths:
+  /locations:
+    get:
+      tags: [Locations]
+      summary: List live guard locations (admin only)
+      description: |
+        Returns the current position of every guard with a recorded location. **Admin only** —
+        a guard or customer receives `403` (no bulk pull). `is_live` reflects the 5-minute
+        freshness rule; `?online_only=true` restricts the result to currently-connected guards.
+      operationId: listLocations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: online_only
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: When true, only guards with `is_online = true` are returned.
+      responses:
+        '200': { $ref: '#/components/responses/LocationsOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /guards/{id}/location:
+    get:
+      tags: [Locations]
+      summary: Get a guard's latest location (own / active-booking customer / admin)
+      description: |
+        Latest known position for guard `{id}`. Authz: the guard may read its own; an admin any;
+        a customer ONLY with an active booking with that guard (else `403` — no probing unrelated
+        guards). `404` if the guard has no recorded location.
+      operationId: getGuardLocation
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/GuardId'
+      responses:
+        '200': { $ref: '#/components/responses/LocationOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /guards/{id}/history:
+    get:
+      tags: [Locations]
+      summary: Get a guard's location history (own / active-booking customer / admin)
+      description: |
+        Paginated GPS history for guard `{id}`, newest first (older than the 90-day PDPA
+        retention window is purged). Same IDOR authz as `/guards/{id}/location`.
+      operationId: getGuardHistory
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/GuardId'
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, default: 100, minimum: 1, maximum: 1000 }
+          description: Max points (default 100, capped at 1000).
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, default: 0, minimum: 0 }
+          description: Pagination offset.
+      responses:
+        '200': { $ref: '#/components/responses/HistoryOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256). Also accepted as the `access_token` cookie for web; for WS, Bearer on the upgrade request only.
+
+  parameters:
+    GuardId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+
+  responses:
+    LocationsOk:
+      description: Live guard locations
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/GuardLocation' }
+    LocationOk:
+      description: A guard's latest location
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/GuardLocation' }
+    HistoryOk:
+      description: A guard's location history (newest first)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/HistoryPoint' }
+    Unauthorized:
+      description: Missing or invalid authentication
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Forbidden:
+      description: Authenticated but not authorized (wrong role, or no active booking with the guard)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    NotFound:
+      description: No location recorded for the guard
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+
+  schemas:
+    GuardLocation:
+      type: object
+      required: [guard_id, lat, lng, recorded_at, is_online, is_live]
+      properties:
+        guard_id: { type: string, format: uuid }
+        lat: { type: number, format: double }
+        lng: { type: number, format: double }
+        accuracy: { type: number, format: float, nullable: true, description: Metres. }
+        heading: { type: number, format: float, nullable: true, description: Degrees, 0..360. }
+        speed: { type: number, format: float, nullable: true, description: m/s. }
+        recorded_at: { type: string, format: date-time }
+        is_online: { type: boolean, description: A live WS session is currently connected. }
+        is_live:
+          type: boolean
+          description: Discovery freshness — `is_online AND recorded_at` within the last 5 minutes.
+
+    HistoryPoint:
+      type: object
+      required: [lat, lng, recorded_at]
+      properties:
+        lat: { type: number, format: double }
+        lng: { type: number, format: double }
+        accuracy: { type: number, format: float, nullable: true }
+        recorded_at: { type: string, format: date-time }
+
+    ApiResponseEnvelope:
+      type: object
+      required: [success]
+      properties:
+        success: { type: boolean }
+        error: { type: string, nullable: true }
+      description: Standard success envelope; concrete `data` shape is composed per-endpoint.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: '#/components/schemas/ErrorDetail' }
+
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: FORBIDDEN }
+        message: { type: string }

@@ -1,0 +1,192 @@
+asyncapi: 3.0.0
+info:
+  title: pguard — Presence GPS WebSocket (guard → server)
+  version: 0.1.0
+  description: |
+    The real-time GPS stream a **guard's mobile app** opens while on shift (Phase 2: WebSocket
+    replaces v1's REST-polling BUG cluster). The gateway authenticates the upgrade, authorizes
+    the caller as a **guard**, then accepts `GpsUpdate` frames, writes the current position +
+    append-only history, and republishes the raw fix to a Redis pub/sub channel for the admin
+    live map.
+
+    This is the client contract the mobile tracking controller streams against
+    (`apps/mobile/lib/core/network/sockets/presence_socket.dart`).
+
+    ## Boundary (what this is NOT)
+    - Raw high-frequency GPS fans out over **Redis pub/sub** (channel `presence:gps`), NOT NATS.
+      presence emits **zero** `pguard.events.*` topics — booking already owns the
+      en_route/arrived facts; duplicating them here would be wrong. presence only *consumes*
+      `pguard.events.booking.*` (see `events.yaml`) to derive its IDOR read-model. So this slice
+      adds no inter-service NATS surface — see `events.yaml` for those.
+
+defaultContentType: application/json
+
+servers:
+  gatewayWs:
+    host: localhost:3000
+    protocol: ws
+    description: |
+      api-gateway `/v1` edge. Connect with the access token in the `Authorization: Bearer`
+      header on the HTTP upgrade — **NEVER** in the URL query (a query-only token is rejected
+      `401`, mirroring `/ws/call`). Only a `guard` role passes the upgrade gate (admin/customer
+      GPS ingest is forbidden → `403`). The connection is re-authenticated every 60s and closed
+      if the token expires or is force-revoked.
+  direct:
+    host: localhost:3009
+    protocol: ws
+    description: Local dev (presence-service direct, no gateway prefix → `/ws/track`).
+
+channels:
+  track:
+    address: /v1/ws/track
+    messages:
+      gpsUpdate:
+        $ref: '#/components/messages/GpsUpdate'
+      heartbeat:
+        $ref: '#/components/messages/Heartbeat'
+      ack:
+        $ref: '#/components/messages/Ack'
+      error:
+        $ref: '#/components/messages/Error'
+    description: |
+      Bidirectional. **Client → server:** `GpsUpdate` (a bare coordinate object, no `type`) at
+      up to **1/sec** — faster updates are dropped silently server-side. A `Heartbeat`
+      (`{"type":"heartbeat"}`) is a keep-alive only, rate-limited to 1/10s; it does NOT advance
+      the guard's `recorded_at` and does NOT set the guard online (a guard who lost GPS but
+      holds the socket must not stay falsely "live"). **Server → client:** `Ack` after each
+      accepted update (carrying the persisted `recorded_at`), an error frame on a rejected
+      update, and a WebSocket control **Ping** every 30s — the client MUST Pong within 10s or
+      the server closes the zombie socket and marks the guard offline. Any disconnect marks the
+      guard offline.
+
+operations:
+  sendGpsUpdate:
+    action: send
+    channel:
+      $ref: '#/channels/track'
+    summary: Guard sends a GPS fix (≤ 1/sec; excess dropped).
+    messages:
+      - $ref: '#/channels/track/messages/gpsUpdate'
+  sendHeartbeat:
+    action: send
+    channel:
+      $ref: '#/channels/track'
+    summary: Guard sends a keep-alive (≤ 1/10s; does not affect freshness/online).
+    messages:
+      - $ref: '#/channels/track/messages/heartbeat'
+  receiveAck:
+    action: receive
+    channel:
+      $ref: '#/channels/track'
+    summary: Receive the acknowledgment (with persisted recorded_at) of an accepted GPS fix.
+    messages:
+      - $ref: '#/channels/track/messages/ack'
+  receiveError:
+    action: receive
+    channel:
+      $ref: '#/channels/track'
+    summary: Receive an error frame for a rejected/invalid update (the socket stays open).
+    messages:
+      - $ref: '#/channels/track/messages/error'
+
+components:
+  messages:
+    GpsUpdate:
+      name: gpsUpdate
+      title: GPS fix (client → server)
+      contentType: application/json
+      summary: A bare coordinate object — no `type` field (any frame with `type:"heartbeat"` is treated as a heartbeat instead).
+      payload:
+        type: object
+        required: [lat, lng]
+        # Lenient by design (matches the server classifier): any non-heartbeat JSON object is
+        # treated as a fix and unknown keys are ignored (iOS/Android field variance). A stray
+        # `type` that is not "heartbeat" is also treated as a fix. lat/lng are still hard-validated.
+        additionalProperties: true
+        properties:
+          lat:
+            type: number
+            format: double
+            description: WGS84 latitude, −90..90. (0,0) is rejected as a null-island fix.
+          lng:
+            type: number
+            format: double
+            description: WGS84 longitude, −180..180. (0,0) is rejected.
+          accuracy:
+            type: number
+            format: float
+            nullable: true
+            description: Horizontal accuracy (metres), 0..10000. NaN / out-of-range / iOS −1 → treated as null (the update is NOT rejected for this).
+          heading:
+            type: number
+            format: float
+            nullable: true
+            description: Course over ground (degrees), 0..360. Out-of-range/NaN → null.
+          speed:
+            type: number
+            format: float
+            nullable: true
+            description: Ground speed (m/s), 0..500. Out-of-range/NaN → null.
+          assignment_id:
+            type: string
+            format: uuid
+            nullable: true
+            description: Optional booking/assignment the fix relates to (currently informational; history is keyed by guard + time).
+      examples:
+        - name: bangkok
+          payload:
+            lat: 13.7563
+            lng: 100.5018
+            accuracy: 12.5
+            heading: 270.0
+            speed: 1.4
+    Heartbeat:
+      name: heartbeat
+      title: Keep-alive (client → server)
+      contentType: application/json
+      payload:
+        type: object
+        required: [type]
+        properties:
+          type:
+            type: string
+            const: heartbeat
+      examples:
+        - name: keepAlive
+          payload:
+            type: heartbeat
+    Ack:
+      name: ack
+      title: Update acknowledgment (server → client)
+      contentType: application/json
+      summary: Sent only after a real upsert succeeded — `recorded_at` is the persisted server timestamp (never a trivial status:ok).
+      payload:
+        type: object
+        required: [type, recorded_at]
+        properties:
+          type:
+            type: string
+            const: ack
+          recorded_at:
+            type: string
+            format: date-time
+            description: The server timestamp written to the guard's current position + history row.
+      examples:
+        - name: ackExample
+          payload:
+            type: ack
+            recorded_at: "2026-06-07T10:30:45Z"
+    Error:
+      name: error
+      title: Rejected update (server → client)
+      contentType: application/json
+      payload:
+        type: object
+        required: [type, message]
+        properties:
+          type:
+            type: string
+            const: error
+          message:
+            type: string
+            description: e.g. "lat/lng at (0,0) is rejected" or "invalid gps update".
