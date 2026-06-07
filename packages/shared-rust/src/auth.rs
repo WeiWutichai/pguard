@@ -93,6 +93,149 @@ pub fn decode_jwt_with_key(token: &str, key: &DecodingKey) -> Result<JwtClaims, 
     Ok(token_data.claims)
 }
 
+// ============================================================================
+// Purpose-scoped single-use tokens (phone-verify + profile submission)
+// ----------------------------------------------------------------------------
+// Two short-lived JWTs that gate the OTP-registration handshake. Both are signed
+// with the SAME user `JWT_SECRET` (so every service that holds `JwtConfig` can
+// verify them) but carry a `purpose` claim and NO `iss`/`aud` — which keeps them
+// structurally distinct from an access token (`decode_jwt_with_key` requires
+// iss=aud="pguard" + a `role`, neither of which these carry, so an access token
+// can never be mistaken for one of these and vice-versa). Single-use is enforced
+// by the issuer storing the token's `jti` in Redis and the consumer `GETDEL`-ing
+// it (the Redis bookkeeping lives in the services, not here — these helpers only
+// mint/verify the JWT itself).
+//
+// The phone-verify half is ISSUED by otp (`/otp/verify`) and CONSUMED by identity
+// (`/auth/register`); the profile half is ISSUED by identity's register response
+// and CONSUMED by profile (`POST /profile/{guard,customer}`). Keeping both schemes
+// here is the single source of truth for the claim shapes — the issuer and the
+// consumer live in different service crates, so a divergent local copy would let
+// one mint a token the other cannot decode.
+
+/// Purpose marker for the phone-verified token (otp → identity). Consumers MUST
+/// check `purpose == PHONE_VERIFY_PURPOSE`.
+pub const PHONE_VERIFY_PURPOSE: &str = "phone_verify";
+
+/// Profile-token purpose for a GUARD registration (identity → profile `/profile/guard`).
+pub const PROFILE_PURPOSE_GUARD: &str = "guard_profile";
+/// Profile-token purpose for a CUSTOMER registration (identity → profile `/profile/customer`).
+pub const PROFILE_PURPOSE_CUSTOMER: &str = "customer_profile";
+
+/// Build a `Validation` for the purpose-scoped tokens: HS256, expiry enforced, and
+/// NO issuer/audience requirement (these tokens deliberately omit iss/aud). Without
+/// disabling `validate_aud` the default validator would reject a token that carries
+/// no `aud` claim.
+fn purpose_token_validation() -> Validation {
+    let mut v = Validation::new(Algorithm::HS256);
+    v.validate_exp = true;
+    v.validate_aud = false;
+    v.required_spec_claims.clear();
+    v
+}
+
+/// Claims for the short-lived phone-verification JWT. Carries the verified phone plus
+/// a unique `jti` for single-use enforcement (tracked in Redis, consumed via GETDEL).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct PhoneVerifyClaims {
+    pub phone: String,
+    pub purpose: String,
+    pub jti: String,
+    pub exp: i64,
+    pub iat: i64,
+}
+
+/// Encode a phone-verification JWT with a unique `jti`. Returns `(token, jti)` so the
+/// caller (otp) can store the jti in Redis "valid" for the consumer's single-use GETDEL.
+pub fn encode_phone_verify_token(
+    phone: &str,
+    key: &EncodingKey,
+    expiry_minutes: i64,
+) -> Result<(String, String), AppError> {
+    let now = Utc::now();
+    let jti = Uuid::new_v4().to_string();
+    let claims = PhoneVerifyClaims {
+        phone: phone.to_string(),
+        purpose: PHONE_VERIFY_PURPOSE.to_string(),
+        jti: jti.clone(),
+        exp: (now + chrono::TimeDelta::minutes(expiry_minutes)).timestamp(),
+        iat: now.timestamp(),
+    };
+    let token = jsonwebtoken::encode(&Header::default(), &claims, key)
+        .map_err(|e| AppError::Internal(format!("Failed to encode phone verify token: {e}")))?;
+    Ok((token, jti))
+}
+
+/// Decode + verify a phone-verification JWT (signature, expiry, `purpose`). Returns
+/// `(phone, jti)`; the caller then enforces single-use by `GETDEL`-ing the jti in Redis.
+/// A wrong-purpose token (e.g. a profile token) is rejected so the schemes can't be crossed.
+pub fn decode_phone_verify_token(
+    token: &str,
+    key: &DecodingKey,
+) -> Result<(String, String), AppError> {
+    let data = jsonwebtoken::decode::<PhoneVerifyClaims>(token, key, &purpose_token_validation())
+        .map_err(|e| AppError::Unauthorized(format!("Invalid phone verify token: {e}")))?;
+    if data.claims.purpose != PHONE_VERIFY_PURPOSE {
+        return Err(AppError::Unauthorized(
+            "Invalid phone verify token".to_string(),
+        ));
+    }
+    Ok((data.claims.phone, data.claims.jti))
+}
+
+/// Claims for the short-lived, single-use profile-submission JWT. `sub` is the user id
+/// (set by identity at register); `purpose` is `guard_profile` or `customer_profile` so
+/// a token minted for one route is rejected on the other (purpose isolation).
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ProfileTokenClaims {
+    pub sub: Uuid,
+    pub purpose: String,
+    pub jti: String,
+    pub exp: i64,
+    pub iat: i64,
+}
+
+/// Encode a single-use profile-submission JWT for `user_id` scoped to `purpose`
+/// ([`PROFILE_PURPOSE_GUARD`] / [`PROFILE_PURPOSE_CUSTOMER`]). Returns `(token, jti)`;
+/// the issuer (identity) stores the jti in Redis "valid" for the consumer's GETDEL.
+pub fn encode_profile_token(
+    user_id: Uuid,
+    purpose: &str,
+    key: &EncodingKey,
+    expiry_minutes: i64,
+) -> Result<(String, String), AppError> {
+    let now = Utc::now();
+    let jti = Uuid::new_v4().to_string();
+    let claims = ProfileTokenClaims {
+        sub: user_id,
+        purpose: purpose.to_string(),
+        jti: jti.clone(),
+        exp: (now + chrono::TimeDelta::minutes(expiry_minutes)).timestamp(),
+        iat: now.timestamp(),
+    };
+    let token = jsonwebtoken::encode(&Header::default(), &claims, key)
+        .map_err(|e| AppError::Internal(format!("Failed to encode profile token: {e}")))?;
+    Ok((token, jti))
+}
+
+/// Decode + verify a profile-submission JWT, enforcing `purpose == expected_purpose`
+/// (purpose isolation: a guard token MUST fail on the customer route and vice-versa).
+/// Returns `(user_id, jti)`; the caller (profile) then enforces single-use via GETDEL.
+/// A non-profile token (an access token has no `purpose`) fails to decode here, so the
+/// caller can cleanly fall through to standard `AuthUser` auth.
+pub fn decode_profile_token(
+    token: &str,
+    key: &DecodingKey,
+    expected_purpose: &str,
+) -> Result<(Uuid, String), AppError> {
+    let data = jsonwebtoken::decode::<ProfileTokenClaims>(token, key, &purpose_token_validation())
+        .map_err(|e| AppError::Unauthorized(format!("Invalid profile token: {e}")))?;
+    if data.claims.purpose != expected_purpose {
+        return Err(AppError::Unauthorized("Invalid profile token".to_string()));
+    }
+    Ok((data.claims.sub, data.claims.jti))
+}
+
 /// Build a Set-Cookie value for an httpOnly, Secure, SameSite=Lax cookie.
 pub fn build_cookie(name: &str, value: &str, max_age_secs: i64, path: &str) -> String {
     format!("{name}={value}; HttpOnly; Secure; SameSite=Lax; Path={path}; Max-Age={max_age_secs}")
@@ -267,6 +410,110 @@ mod tests {
         let (token, _) = encode_jwt(Uuid::new_v4(), "guard", 0, TEST_SECRET, 15).unwrap();
         let claims = decode_jwt(&token, TEST_SECRET).unwrap();
         assert_eq!(claims.exp - claims.iat, 15 * 60);
+    }
+
+    // ----- phone-verify token (otp → identity) -----
+
+    #[test]
+    fn phone_verify_token_round_trips_phone_and_jti() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (token, jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (phone, decoded_jti) = decode_phone_verify_token(&token, &dk).unwrap();
+        assert_eq!(phone, "0812345678");
+        assert_eq!(
+            decoded_jti, jti,
+            "jti round-trips for single-use bookkeeping"
+        );
+    }
+
+    #[test]
+    fn phone_verify_token_each_issuance_has_unique_jti() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (_, j1) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (_, j2) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        assert_ne!(j1, j2, "jti must be unique per issuance (single-use)");
+    }
+
+    #[test]
+    fn phone_verify_token_rejects_wrong_secret() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (token, _) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let wrong = DecodingKey::from_secret(
+            b"another-secret-key-at-least-64-chars-long-for-the-negative-test!!",
+        );
+        assert!(decode_phone_verify_token(&token, &wrong).is_err());
+    }
+
+    // ----- profile token (identity → profile), with purpose isolation -----
+
+    #[test]
+    fn profile_token_round_trips_user_and_jti() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        let uid = Uuid::new_v4();
+        let (token, jti) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let (decoded_uid, decoded_jti) =
+            decode_profile_token(&token, &dk, PROFILE_PURPOSE_GUARD).unwrap();
+        assert_eq!(decoded_uid, uid);
+        assert_eq!(decoded_jti, jti);
+    }
+
+    #[test]
+    fn profile_token_purpose_isolation_guard_fails_on_customer_route() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (guard_tok, _) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        // Decoding a guard token while expecting the customer purpose MUST fail.
+        assert!(decode_profile_token(&guard_tok, &dk, PROFILE_PURPOSE_CUSTOMER).is_err());
+
+        let (cust_tok, _) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_CUSTOMER, &ek, 15).unwrap();
+        assert!(decode_profile_token(&cust_tok, &dk, PROFILE_PURPOSE_GUARD).is_err());
+    }
+
+    #[test]
+    fn profile_token_each_issuance_has_unique_jti() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let uid = Uuid::new_v4();
+        let (_, j1) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let (_, j2) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        assert_ne!(j1, j2, "jti must be unique per issuance (single-use)");
+    }
+
+    #[test]
+    fn profile_token_rejects_wrong_secret() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (token, _) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let wrong = DecodingKey::from_secret(
+            b"another-secret-key-at-least-64-chars-long-for-the-negative-test!!",
+        );
+        assert!(decode_profile_token(&token, &wrong, PROFILE_PURPOSE_GUARD).is_err());
+    }
+
+    /// Cross-scheme confusion guard: an ACCESS token (carries iss/aud/role, no `purpose`)
+    /// must NOT decode as a profile token, and a profile token must NOT decode as an access
+    /// token — even though all three are signed with the same secret. This is what lets the
+    /// profile dual-auth resolver cleanly tell a profile_token apart from a Bearer access token.
+    #[test]
+    fn access_token_and_profile_token_are_not_interchangeable() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+
+        let (access, _) = encode_jwt(Uuid::new_v4(), "guard", 0, TEST_SECRET, 15).unwrap();
+        assert!(
+            decode_profile_token(&access, &dk, PROFILE_PURPOSE_GUARD).is_err(),
+            "an access token must not pass as a profile token"
+        );
+
+        let (profile, _) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        assert!(
+            decode_jwt(&profile, TEST_SECRET).is_err(),
+            "a profile token must not pass as an access token (no iss/aud/role)"
+        );
     }
 
     #[test]

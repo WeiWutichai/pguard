@@ -34,6 +34,9 @@ struct UserAuthRow {
     role: String,
     password_hash: String,
     is_active: bool,
+    /// Account approval state (`pending`/`approved`/`rejected`). Login is allowed ONLY
+    /// when `approved` — a registered-but-unapproved account cannot authenticate.
+    approval_status: String,
     token_revocation_version: i32,
 }
 
@@ -43,9 +46,10 @@ async fn find_user_by_identifier(
     db: &PgPool,
     identifier: &str,
 ) -> Result<Option<UserAuthRow>, AppError> {
-    let row: Option<(Uuid, String, String, bool, i32)> = sqlx::query_as(
+    let row: Option<(Uuid, String, String, bool, String, i32)> = sqlx::query_as(
         r#"
-        SELECT id, role::text AS role, password_hash, is_active, token_revocation_version
+        SELECT id, role::text AS role, password_hash, is_active,
+               approval_status::text AS approval_status, token_revocation_version
         FROM identity.users
         WHERE phone = $1 OR email = $1
         "#,
@@ -54,20 +58,24 @@ async fn find_user_by_identifier(
     .fetch_optional(db)
     .await?;
 
-    Ok(
-        row.map(|(id, role, password_hash, is_active, trv)| UserAuthRow {
+    Ok(row.map(
+        |(id, role, password_hash, is_active, approval_status, trv)| UserAuthRow {
             id,
             role,
             password_hash,
             is_active,
+            approval_status,
             token_revocation_version: trv,
-        }),
-    )
+        },
+    ))
 }
 
 /// Verify credentials. Always returns a generic `Unauthorized` on any failure (no
-/// user-enumeration); runs the Argon2 verify even when the user is missing so timing
-/// does not leak existence. Returns the minimal user identity on success.
+/// user-enumeration); runs the Argon2 verify even when the user is missing/ineligible so
+/// timing does not leak existence OR approval state. Returns the minimal user identity on
+/// success. ELIGIBILITY = active AND `approval_status = 'approved'`: a pending/rejected
+/// account is rejected with the SAME generic 401 as a wrong password (so login cannot be
+/// used to probe whether a phone is registered-but-pending).
 pub async fn verify_credentials(
     db: &PgPool,
     identifier: &str,
@@ -75,10 +83,10 @@ pub async fn verify_credentials(
 ) -> Result<AuthUserRow, AppError> {
     let user = find_user_by_identifier(db, identifier).await?;
 
-    // Pick the hash to verify against: the real one, or a constant dummy. Either way we
-    // spend the same Argon2 time.
-    let (hash, active, identity) = match &user {
-        Some(u) if u.is_active => (
+    // Pick the hash to verify against: the real one (only for an eligible account), or a
+    // constant dummy. Either way we spend the same Argon2 time.
+    let (hash, eligible, identity) = match &user {
+        Some(u) if u.is_active && u.approval_status == "approved" => (
             u.password_hash.clone(),
             true,
             Some(AuthUserRow {
@@ -95,10 +103,59 @@ pub async fn verify_credentials(
         .await
         .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??;
 
-    match (ok, active, identity) {
+    match (ok, eligible, identity) {
         (true, true, Some(id)) => Ok(id),
         _ => Err(AppError::Unauthorized("Invalid credentials".to_string())),
     }
+}
+
+/// UPSERT a freshly-registered account in the `pending` (non-loginable) state and return
+/// its `user_id`. The PIN-hash supplied by the client (SHA-256 hex of the PIN) is Argon2'd
+/// here (CPU-bound → `spawn_blocking`) and stored as the password hash.
+///
+/// `ON CONFLICT (phone)`: re-registering a phone that is STILL pending is allowed — it
+/// refreshes the credentials/role and keeps the account pending (a user who never finished
+/// onboarding can start over). A phone that already exists in a NON-pending state
+/// (approved/rejected) makes the `WHERE approval_status = 'pending'` predicate false, so the
+/// row is NOT touched and `RETURNING` yields no row → `Conflict` ("log in instead"). This is
+/// the only place identity creates a user; profile/otp never write this schema.
+// `skip(db, phone, pin_hash)`: never log the phone (PII) or the pin hash; `role` is fine.
+#[tracing::instrument(skip(db, phone, pin_hash))]
+pub async fn upsert_pending_user(
+    db: &PgPool,
+    phone: &str,
+    role: &str,
+    pin_hash: &str,
+) -> Result<Uuid, AppError> {
+    let pin_hash = pin_hash.to_string();
+    let password_hash = tokio::task::spawn_blocking(move || password::hash_secret(&pin_hash))
+        .await
+        .map_err(|e| AppError::Internal(format!("hash task failed: {e}")))??;
+
+    let row: Option<(Uuid,)> = sqlx::query_as(
+        r#"
+        INSERT INTO identity.users (phone, password_hash, role, approval_status)
+        VALUES ($1, $2, $3::identity.user_role, 'pending'::identity.approval_status)
+        ON CONFLICT (phone) DO UPDATE
+          SET password_hash   = EXCLUDED.password_hash,
+              role            = EXCLUDED.role,
+              approval_status = 'pending'::identity.approval_status,
+              updated_at      = now()
+          WHERE identity.users.approval_status = 'pending'::identity.approval_status
+        RETURNING id
+        "#,
+    )
+    .bind(phone)
+    .bind(&password_hash)
+    .bind(role)
+    .fetch_optional(db)
+    .await?;
+
+    row.map(|(id,)| id).ok_or_else(|| {
+        AppError::Conflict(
+            "This phone number is already registered. Please log in instead.".to_string(),
+        )
+    })
 }
 
 /// Persist a freshly-issued refresh token (new family on login). Returns the opaque
@@ -249,13 +306,17 @@ pub async fn revoke_family(db: &PgPool, family_id: Uuid) -> Result<u64, AppError
 }
 
 /// The user's current role (re-read at rotation so a role change since login is honoured
-/// in the freshly-issued access token). `None` if the user is gone or deactivated.
+/// in the freshly-issued access token). `None` if the user is gone, deactivated, or no
+/// longer approved — so a refresh cannot mint a fresh access token for an account that has
+/// become pending/rejected since login (defense-in-depth; a pending account never had a
+/// refresh token to begin with).
 pub async fn user_auth_meta(db: &PgPool, user_id: Uuid) -> Result<Option<AuthUserRow>, AppError> {
     let row: Option<(String, i32)> = sqlx::query_as(
         r#"
         SELECT role::text AS role, token_revocation_version
         FROM identity.users
         WHERE id = $1 AND is_active = TRUE
+          AND approval_status = 'approved'::identity.approval_status
         "#,
     )
     .bind(user_id)
@@ -452,9 +513,11 @@ mod tests {
         let user_id = Uuid::new_v4();
         let phone = format!("+66{}", &user_id.simple().to_string()[..9]);
         let pw_hash = password::hash_secret("secret123").expect("hash");
+        // Seed an APPROVED account — login (verify_credentials) gates on approval_status,
+        // and this test needs the credentials to be valid before erasure.
         sqlx::query(
-            "INSERT INTO identity.users (id, phone, password_hash, role) \
-             VALUES ($1, $2, $3, 'customer')",
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, $3, 'customer', 'approved'::identity.approval_status)",
         )
         .bind(user_id)
         .bind(&phone)
@@ -503,6 +566,99 @@ mod tests {
             soft_delete_and_redact(&pool, user_id).await.is_err(),
             "second erase is NotFound (idempotent)"
         );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// DB-gated registration lifecycle: `upsert_pending_user` creates a PENDING (non-loginable)
+    /// account; login is blocked while pending and allowed after approval; a re-register of a
+    /// STILL-pending phone is allowed (refreshes credentials/role); a re-register of an
+    /// APPROVED phone is rejected with `Conflict`. Gated on `DATABASE_URL` (identity 0001+0003).
+    #[tokio::test]
+    async fn registration_lifecycle_pending_then_approved() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the registration test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        // A unique 10-digit Thai-format phone derived from a fresh UUID (digits only).
+        let phone: String = format!(
+            "0{}",
+            &Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+        // pin_hash = the 64-hex SHA-256 the mobile client sends; identity Argon2's it.
+        let pin_hash = "a".repeat(64);
+
+        // 1) Register → creates a pending account, returns a user_id.
+        let user_id = upsert_pending_user(&pool, &phone, "guard", &pin_hash)
+            .await
+            .expect("register");
+
+        // The row exists and is pending.
+        let (status, role): (String, String) = sqlx::query_as(
+            "SELECT approval_status::text, role::text FROM identity.users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read row");
+        assert_eq!(status, "pending", "register creates a pending account");
+        assert_eq!(role, "guard");
+
+        // 2) Login is BLOCKED while pending (generic 401), even with the correct password.
+        assert!(
+            verify_credentials(&pool, &phone, &pin_hash).await.is_err(),
+            "a pending account cannot log in"
+        );
+
+        // 3) Re-register the STILL-pending phone → allowed (refreshes creds, stays pending).
+        let again = upsert_pending_user(&pool, &phone, "customer", &pin_hash)
+            .await
+            .expect("re-register pending");
+        assert_eq!(
+            again, user_id,
+            "re-register hits the same row (ON CONFLICT)"
+        );
+        let (role2,): (String,) =
+            sqlx::query_as("SELECT role::text FROM identity.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read role");
+        assert_eq!(role2, "customer", "re-register may change the pending role");
+
+        // 4) Approve → login now succeeds with the same credentials.
+        sqlx::query(
+            "UPDATE identity.users SET approval_status = 'approved'::identity.approval_status WHERE id = $1",
+        )
+        .bind(user_id)
+        .execute(&pool)
+        .await
+        .expect("approve");
+        let logged_in = verify_credentials(&pool, &phone, &pin_hash)
+            .await
+            .expect("login after approval");
+        assert_eq!(logged_in.id, user_id);
+
+        // 5) Re-register an APPROVED phone → Conflict (must log in instead).
+        let err = upsert_pending_user(&pool, &phone, "guard", &pin_hash)
+            .await
+            .expect_err("re-register approved is a conflict");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
 
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)

@@ -1,6 +1,6 @@
 //! Shared application state + the trait impls the extractors require.
 
-use jsonwebtoken::DecodingKey;
+use jsonwebtoken::{DecodingKey, EncodingKey};
 use redis::AsyncCommands;
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -55,6 +55,33 @@ impl RevokeAllDeps for AppState {
     }
     fn revocation_redis(&self) -> Option<redis::aio::MultiplexedConnection> {
         Some(self.redis_conn.clone())
+    }
+}
+
+/// Capability seam for `POST /auth/register`. Mounting the handler over a trait (rather
+/// than the concrete [`AppState`]) lets an integration test drive it with a lightweight
+/// state — a real Redis (for the single-use GETDEL/SET) + the JWT keys + a lazy DB pool —
+/// without building the full `AppState` (export client, service-JWT config). Mirrors the
+/// `RevokeAllDeps` seam.
+pub trait RegisterDeps: Clone + Send + Sync + 'static {
+    fn db(&self) -> &PgPool;
+    fn redis(&self) -> redis::aio::MultiplexedConnection;
+    fn jwt_encoding_key(&self) -> &EncodingKey;
+    fn jwt_decoding_key(&self) -> &DecodingKey;
+}
+
+impl RegisterDeps for AppState {
+    fn db(&self) -> &PgPool {
+        &self.db
+    }
+    fn redis(&self) -> redis::aio::MultiplexedConnection {
+        self.redis_conn.clone()
+    }
+    fn jwt_encoding_key(&self) -> &EncodingKey {
+        &self.jwt_config.encoding_key
+    }
+    fn jwt_decoding_key(&self) -> &DecodingKey {
+        &self.jwt_config.decoding_key
     }
 }
 
