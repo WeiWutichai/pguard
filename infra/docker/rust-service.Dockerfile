@@ -23,8 +23,9 @@
 # images instead of recompiling deps per service.
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Pinned toolchain (workspace rust-version = 1.80; build with a current stable).
-ARG RUST_VERSION=1.83
+# Build toolchain (workspace rust-version = 1.80; build with current stable —
+# cargo-chef ^0.1 / recent deps need a newer compiler than the old 1.83 pin).
+ARG RUST_VERSION=1
 ARG DEBIAN_RELEASE=bookworm
 
 # ── chef: toolchain + cargo-chef, shared by planner & builder ──

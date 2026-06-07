@@ -174,7 +174,7 @@ services:
   # mode, pgbouncer:6432) fronting the primary; list/report/discovery reads go to
   # postgres-replica via DATABASE_READ_URL. Fixes the v1 6×20 single-DB connection explosion.
   pgbouncer:
-    image: edoburu/pgbouncer:1.23.1-p3
+    image: edoburu/pgbouncer:v1.23.1-p3
     container_name: pguard-prod-pgbouncer
     restart: unless-stopped
     environment:
@@ -509,6 +509,9 @@ services:
     image: pguard/web-admin:${PGUARD_TAG:-0.1.0}
     container_name: pguard-prod-web-admin
     restart: unless-stopped
+    # Optional admin UI — excluded by default (its image build is being fixed
+    # separately). Bring it up with: docker compose --profile ui up -d
+    profiles: ["ui"]
     build:
       context: ../..
       dockerfile: infra/docker/web-admin.Dockerfile
