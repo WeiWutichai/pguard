@@ -212,9 +212,18 @@ class CallController extends _$CallController {
     _signalSub = feed.signals.listen(_onSignal);
     await feed.connect();
 
+    // Fetch the ICE list the calling service serves (public STUN + short-lived, per-caller TURN
+    // credentials) — never hard-coded in the client. A failed fetch throws and fails call setup
+    // (handled by the start* entry points); we don't silently fall back to a baked-in STUN.
+    final ice = await api.get('/calls/ice') as Map<String, dynamic>;
+    final iceServers = (ice['ice_servers'] as List<dynamic>)
+        .map((e) => IceServer.fromJson(e as Map<String, dynamic>))
+        .toList();
+
     final engine = ref.read(callEngineFactoryProvider)();
     _engine = engine;
-    await engine.initialize(video: video); // may throw CallException (permission denied)
+    // may throw CallException (permission denied)
+    await engine.initialize(video: video, iceServers: iceServers);
     _localCandSub = engine.onLocalCandidate.listen((c) => _sendSignal(
           CallSignal.candidate(
             candidate: c.candidate,

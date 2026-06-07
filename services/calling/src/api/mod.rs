@@ -9,6 +9,7 @@ pub mod ws;
 
 use axum::extract::{Path, State};
 use axum::Json;
+use chrono::Utc;
 use uuid::Uuid;
 
 use shared::auth::AuthUser;
@@ -17,7 +18,7 @@ use shared::models::ApiResponse;
 
 use crate::booking_client::BookingReader;
 use crate::domain::{is_callable_status, is_valid_call_type, peer_of};
-use crate::models::{CallResponse, EndCallRequest, InitiateCallRequest};
+use crate::models::{CallResponse, EndCallRequest, IceConfig, InitiateCallRequest};
 use crate::repo;
 use crate::state::CallDeps;
 
@@ -135,14 +136,35 @@ pub async fn end_call<S: CallDeps>(
     Ok(Json(ApiResponse::success(call)))
 }
 
+/// GET /calls/ice — the ICE server list (STUN + short-lived per-caller HMAC TURN credentials) the
+/// authenticated caller feeds into its `RTCPeerConnection`. Credentials are minted PER REQUEST,
+/// time-boxed (`TurnConfig.ttl_secs`), and scoped to the caller's id — never static in the client,
+/// never the raw coturn secret (CLAUDE.md: no long-lived shared credentials reach the device).
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn ice_config<S: CallDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<IceConfig>>, AppError> {
+    let turn = state.turn();
+    let cfg = IceConfig::build(
+        &turn.stun_urls,
+        &turn.turn_urls,
+        turn.secret.as_deref(),
+        &user.user_id.to_string(),
+        Utc::now().timestamp(),
+        turn.ttl_secs,
+    );
+    Ok(Json(ApiResponse::success(cfg)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::models::InternalBooking;
-    use crate::state::Registry;
+    use crate::state::{Registry, TurnConfig};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::post;
+    use axum::routing::{get, post};
     use axum::Router;
     use jsonwebtoken::{DecodingKey, EncodingKey};
     use shared::auth::{encode_jwt_with_key, HasJwtSecret};
@@ -174,6 +196,7 @@ mod tests {
         redis: redis::aio::MultiplexedConnection,
         reader: StubReader,
         registry: Registry,
+        turn: TurnConfig,
     }
     impl HasJwtSecret for TestDeps {
         fn jwt_secret(&self) -> &str {
@@ -197,6 +220,18 @@ mod tests {
         fn registry(&self) -> &Registry {
             &self.registry
         }
+        fn turn(&self) -> &TurnConfig {
+            &self.turn
+        }
+    }
+
+    fn test_turn() -> TurnConfig {
+        TurnConfig {
+            secret: Some("test-turn-secret".to_string()),
+            stun_urls: vec!["stun:stun.l.google.com:19302".to_string()],
+            turn_urls: vec!["turn:turn.test:3478?transport=udp".to_string()],
+            ttl_secs: 3600,
+        }
     }
 
     async fn router(booking: Option<InternalBooking>) -> Option<Router> {
@@ -218,10 +253,12 @@ mod tests {
             redis,
             reader: StubReader { booking },
             registry: Arc::new(Mutex::new(HashMap::new())),
+            turn: test_turn(),
         };
         Some(
             Router::new()
                 .route("/calls/initiate", post(initiate_call::<TestDeps>))
+                .route("/calls/ice", get(ice_config::<TestDeps>))
                 .with_state(deps),
         )
     }
@@ -300,6 +337,48 @@ mod tests {
         assert_eq!(
             post_initiate(app, Some(&tok), Uuid::new_v4()).await,
             StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn ice_config_serves_stun_and_short_lived_turn() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = token(Uuid::new_v4(), "customer");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/calls/ice")
+            .header("authorization", format!("Bearer {tok}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let servers = v["data"]["ice_servers"]
+            .as_array()
+            .expect("ice_servers array");
+        assert!(
+            servers.iter().any(|s| s["credential"].is_null()),
+            "a STUN entry (no creds)"
+        );
+        let turn = servers
+            .iter()
+            .find(|s| s["credential"].is_string())
+            .expect("a TURN entry with credentials");
+        assert!(
+            turn["username"].as_str().unwrap().contains(':'),
+            "TURN username is <expiry>:<user>"
+        );
+        assert!(!turn["credential"].as_str().unwrap().is_empty());
+        // The static coturn secret must NEVER reach the client.
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("test-turn-secret"),
+            "the static auth secret must never be serialized"
         );
     }
 }

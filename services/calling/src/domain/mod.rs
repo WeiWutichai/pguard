@@ -7,7 +7,34 @@
 use std::fmt;
 use std::str::FromStr;
 
+use base64::Engine as _;
+use hmac::{Hmac, Mac};
+use sha1::Sha1;
 use uuid::Uuid;
+
+type HmacSha1 = Hmac<Sha1>;
+
+/// Mint a SHORT-LIVED TURN credential for the coturn REST API (`use-auth-secret`,
+/// draft-uberti-behave-turn-rest). The `username` is `<expiry_unix>:<user_id>` — coturn reads the
+/// numeric prefix as the credential's expiry and rejects it after that — and the `credential` is
+/// `base64(HMAC-SHA1(secret, username))`, which coturn recomputes from the SAME `static-auth-secret`
+/// to authenticate the allocation. SHA-1 is mandated by the scheme (not a security choice).
+///
+/// PURE + deterministic given its inputs → unit-tested here; the live coturn allocation
+/// (turnutils_uclient against the running relay) is the integration known-answer check. The
+/// secret never reaches the client — only this derived, time-boxed credential does.
+///
+/// Returns `None` only on HMAC key-construction failure, which is unreachable for HMAC (any byte
+/// length is a valid key) — modelled as `Option` so the request path NEVER panics (no `.expect()`):
+/// the caller degrades to STUN-only instead.
+pub fn turn_credential(secret: &[u8], user_id: &str, expiry_unix: i64) -> Option<(String, String)> {
+    let username = format!("{expiry_unix}:{user_id}");
+    // new_from_slice only errors on impossible key sizes; any byte secret is valid for HMAC.
+    let mut mac = HmacSha1::new_from_slice(secret).ok()?;
+    mac.update(username.as_bytes());
+    let credential = base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes());
+    Some((username, credential))
+}
 
 /// The call lifecycle status. Serialized snake_case to match the Postgres enum
 /// `calling.call_status` (NOT `sqlx::Type` — the repo binds [`CallStatus::as_db_str`] with a
@@ -224,6 +251,46 @@ mod tests {
         for bad in ["", "AUDIO", "screen", "voice"] {
             assert!(!is_valid_call_type(bad), "{bad} must be invalid");
         }
+    }
+
+    #[test]
+    fn turn_credential_is_deterministic_and_well_formed() {
+        let (u1, c1) = turn_credential(b"super-secret", "user-abc", 1_000_000_000).unwrap();
+        let (u2, c2) = turn_credential(b"super-secret", "user-abc", 1_000_000_000).unwrap();
+        // Deterministic: same inputs → identical credential (so a client can present it as-is).
+        assert_eq!((u1.as_str(), c1.as_str()), (u2.as_str(), c2.as_str()));
+        // username = <expiry>:<user> (coturn parses the timestamp prefix as the expiry).
+        assert_eq!(u1, "1000000000:user-abc");
+        // credential = base64 of a 20-byte SHA-1 HMAC → 28 chars (24 + '=' padding), valid base64.
+        assert_eq!(c1.len(), 28);
+        assert!(base64::engine::general_purpose::STANDARD
+            .decode(&c1)
+            .is_ok());
+        // Golden vector tying us to the CANONICAL coturn REST scheme — verified ACCEPTED by a live
+        // coturn 4.6.2 relay (turnutils_uclient ALLOCATE success). Equivalent to:
+        //   printf '%s' '1000000000:user-abc' | openssl dgst -sha1 -hmac 'super-secret' -binary | base64
+        assert_eq!(c1, "hLZrI4Uz6/iVAWCFqNO6CjmPdYs=");
+    }
+
+    #[test]
+    fn turn_credential_changes_with_every_input() {
+        let base = turn_credential(b"secret", "u", 1000).unwrap().1;
+        // Different secret, expiry, or user → different credential (HMAC actually keyed on all).
+        assert_ne!(
+            base,
+            turn_credential(b"secret2", "u", 1000).unwrap().1,
+            "secret-sensitive"
+        );
+        assert_ne!(
+            base,
+            turn_credential(b"secret", "u", 1001).unwrap().1,
+            "expiry-sensitive"
+        );
+        assert_ne!(
+            base,
+            turn_credential(b"secret", "u2", 1000).unwrap().1,
+            "user-sensitive"
+        );
     }
 
     #[test]

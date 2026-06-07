@@ -31,6 +31,7 @@ pub enum Upstream {
     Booking,
     Payment,
     Notification,
+    Calling,
 }
 
 impl Upstream {
@@ -43,6 +44,7 @@ impl Upstream {
             Upstream::Booking => "booking",
             Upstream::Payment => "payment",
             Upstream::Notification => "notification",
+            Upstream::Calling => "calling",
         }
     }
 }
@@ -117,6 +119,15 @@ const RULES: &[Rule] = &[
     Rule {
         prefix: "/payments",
         upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
+        // WebRTC call control (REST): initiate/get/accept/reject/connected/end + the served ICE
+        // config (`/calls/ice`). All require a token (bearerAuth in calling.yaml). The `/ws/call`
+        // signaling upgrade is NOT here — generic WS proxying through the gateway is a separate
+        // platform gap (tracked in §2.5), like the status-WS hub's bespoke handling.
+        prefix: "/calls",
+        upstream: Upstream::Calling,
         tier: Tier::Api,
     },
     Rule {
@@ -404,6 +415,32 @@ mod tests {
         assert_eq!(fwd, "/payments");
         assert!(!public, "/payments requires a token");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn calls_route_to_calling_api_tier_protected() {
+        // The served ICE config (and all call-control REST) must reach the calling service through
+        // the edge — was NotFound before the Calling upstream was wired. Authed + general API tier.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/calls/ice"));
+        assert_eq!(up, Upstream::Calling);
+        assert_eq!(fwd, "/calls/ice");
+        assert!(!public, "/calls/ice requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn calls_subpaths_route_to_calling() {
+        for p in [
+            "/v1/calls/initiate",
+            "/v1/calls/abc-123",
+            "/v1/calls/abc/accept",
+            "/v1/calls/abc/end",
+        ] {
+            let (up, fwd, public, _) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Calling, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+        }
     }
 
     #[test]

@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/call_controller.dart';
 import 'package:pguard_mobile/core/models/call.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
@@ -24,6 +25,25 @@ Map<String, dynamic> callJson(
       'updated_at': '2026-06-05T10:00:00Z',
     };
 
+/// The shape `GET /calls/ice` returns (public STUN + a short-lived per-caller TURN credential),
+/// matching the calling OpenAPI `IceConfig`/`IceServer` schemas.
+Map<String, dynamic> iceJson() => {
+      'ice_servers': [
+        {
+          'urls': ['stun:stun.l.google.com:19302']
+        },
+        {
+          'urls': [
+            'turn:turn.pguard.app:3478?transport=udp',
+            'turn:turn.pguard.app:3478?transport=tcp'
+          ],
+          'username': '1700000000:user-1',
+          'credential': 'c2hvcnQtbGl2ZWQtY3JlZA==',
+        },
+      ],
+      'ttl_secs': 3600,
+    };
+
 typedef Harness = ({
   ProviderContainer c,
   FakeCallEngine engine,
@@ -35,6 +55,7 @@ void main() {
   Harness make({
     Map<String, dynamic>? initiate,
     Map<String, dynamic>? get,
+    Map<String, dynamic>? ice,
     FakeCallEngine? engine,
     bool autoDispose = true,
   }) {
@@ -42,7 +63,9 @@ void main() {
     final feed = FakeCallSignalFeed();
     final api = FakeApi(
       onPost: (_, __) async => initiate ?? callJson('call1'),
-      onGet: (_, __) async => get ?? callJson('call1'),
+      // The controller GETs both the call (`/calls/{id}`) and the served ICE list (`/calls/ice`).
+      onGet: (path, __) async =>
+          path == '/calls/ice' ? (ice ?? iceJson()) : (get ?? callJson('call1')),
       onPut: (_, __) async => {'success': true},
     );
     final c = ProviderContainer(overrides: [
@@ -80,6 +103,55 @@ void main() {
     expect(t.feed.connected, isTrue);
     expect(kinds(t.feed), isEmpty,
         reason: '…but NOT sent until the callee signals `ready` (no wasted send)');
+  });
+
+  test('ICE config applied: served STUN+TURN list is fetched and passed to the engine (not hard-coded)',
+      () async {
+    final t = make(initiate: callJson('call1'));
+    await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+
+    // The controller fetched the served ICE list…
+    expect(t.api.calls, contains('GET /calls/ice'));
+    // …and handed it to the engine verbatim (no client-side hard-coding).
+    final servers = t.engine.initIceServers;
+    expect(servers, isNotNull);
+    expect(servers!.length, 2);
+    expect(servers[0].urls, ['stun:stun.l.google.com:19302']);
+    expect(servers[0].credential, isNull, reason: 'STUN entry carries no credential');
+    // The TURN entry carries the short-lived, per-caller credential from the server.
+    expect(servers[1].urls, contains('turn:turn.pguard.app:3478?transport=udp'));
+    expect(servers[1].username, '1700000000:user-1');
+    expect(servers[1].credential, 'c2hvcnQtbGl2ZWQtY3JlZA==');
+  });
+
+  test('ICE fetch failure fails call setup + tears down (no silent hard-coded fallback)',
+      () async {
+    final eng = FakeCallEngine();
+    final feed = FakeCallSignalFeed();
+    final api = FakeApi(
+      onPost: (_, __) async => callJson('call1'),
+      onGet: (path, __) async => path == '/calls/ice'
+          ? throw const ApiException(message: 'ice unavailable')
+          : callJson('call1'),
+      onPut: (_, __) async => {'success': true},
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      callEngineFactoryProvider.overrideWithValue(() => eng),
+      callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(callControllerProvider, (_, __) {});
+    addTearDown(sub.close);
+
+    await c
+        .read(callControllerProvider.notifier)
+        .startOutgoing(bookingId: 'bk1', type: CallType.audio);
+
+    expect(c.read(callControllerProvider).phase, CallPhase.ended);
+    expect(eng.initialized, isFalse, reason: 'engine never initialised without ICE');
+    expect(feed.closed, isTrue, reason: 'setup torn down on failure');
   });
 
   test('caller: an inbound answer moves dialing → connecting', () async {

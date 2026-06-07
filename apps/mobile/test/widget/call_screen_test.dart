@@ -21,10 +21,22 @@ Map<String, dynamic> callJson(String id, {String callType = 'audio'}) => {
       'updated_at': '2026-06-05T10:00:00Z',
     };
 
+/// STUN-only ICE config — enough for the controller's `GET /calls/ice` during call setup.
+Map<String, dynamic> iceJson() => {
+      'ice_servers': [
+        {
+          'urls': ['stun:stun.l.google.com:19302']
+        },
+      ],
+      'ttl_secs': 3600,
+    };
+
 ({ProviderContainer c, FakeApi api}) harness() {
   final api = FakeApi(
     onPost: (_, __) async => callJson('call1'),
-    onGet: (_, __) async => callJson('call1'),
+    // Call setup GETs both the call (`/calls/{id}`) and the served ICE list (`/calls/ice`).
+    onGet: (path, __) async =>
+        path == '/calls/ice' ? iceJson() : callJson('call1'),
     onPut: (_, __) async => {'success': true},
   );
   final c = ProviderContainer(overrides: [

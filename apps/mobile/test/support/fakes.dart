@@ -346,6 +346,7 @@ class FakeCallEngine implements CallEngine {
 
   bool initialized = false;
   bool? initVideo;
+  List<IceServer>? initIceServers;
   bool disposed = false;
   bool? muted;
   bool? speakerOn;
@@ -363,10 +364,14 @@ class FakeCallEngine implements CallEngine {
   final _remoteChanged = StreamController<void>.broadcast();
 
   @override
-  Future<void> initialize({required bool video}) async {
+  Future<void> initialize({
+    required bool video,
+    required List<IceServer> iceServers,
+  }) async {
     if (throwOnInit != null) throw throwOnInit!;
     initialized = true;
     initVideo = video;
+    initIceServers = iceServers;
   }
 
   @override

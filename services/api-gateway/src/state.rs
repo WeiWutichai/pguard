@@ -50,6 +50,10 @@ impl UpstreamTable {
             Upstream::Notification,
             env_url("NOTIFICATION_URL", "http://localhost:3004"),
         );
+        urls.insert(
+            Upstream::Calling,
+            env_url("CALLING_URL", "http://localhost:3008"),
+        );
         Self { urls }
     }
 
@@ -126,6 +130,7 @@ mod tests {
             Upstream::Booking,
             Upstream::Payment,
             Upstream::Notification,
+            Upstream::Calling,
         ] {
             let url = t.base_url(up).expect("every upstream resolves");
             assert!(url.starts_with("http://"), "{up:?} -> {url}");

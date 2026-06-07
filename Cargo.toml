@@ -86,6 +86,11 @@ subtle = "2"
 # AWS SigV4 presigning (chat attachments → MinIO/R2): HMAC-SHA256 over `sha2`. Lets chat sign
 # its own presigned GET/PUT URLs with `reqwest` rather than pulling the heavy aws-sdk-s3 tree.
 hmac = "0.12"
+# coturn TURN REST API (calling ICE creds, R1): short-lived HMAC-SHA1 credential over the
+# `<expiry>:<user>` username, base64-encoded — the draft-uberti-behave-turn-rest scheme coturn's
+# `use-auth-secret` validates. SHA-1 is mandated by that scheme (not a security choice).
+sha1 = "0.10"
+base64 = "0.22"
 # HTTP client (notification FCM, chat signed URLs).
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 # Decimal money type (payment proration — Phase 3). `serde-str` serializes money as a

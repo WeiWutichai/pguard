@@ -23,18 +23,11 @@ class AppConfig {
   static const String mediaHost =
       String.fromEnvironment('PGUARD_MEDIA_HOST', defaultValue: '');
 
-  /// TURN relay for WebRTC calls — REQUIRED in production. STUN alone fails behind symmetric /
-  /// carrier-grade NAT (common on Thai mobile networks: AIS/DTAC/True), so without a TURN relay a
-  /// meaningful share of calls negotiate signaling but never connect media. Configure via
-  /// `--dart-define=PGUARD_TURN_URL=turn:turn.pguard.app:3478` (+ `_USERNAME` / `_CREDENTIAL`).
-  /// Empty (default) → STUN-only (dev/LAN). The proper long-term fix is a backend endpoint issuing
-  /// SHORT-LIVED TURN credentials (e.g. `GET /v1/calls/{id}/ice-config`) — a documented gap.
-  static const String turnUrl =
-      String.fromEnvironment('PGUARD_TURN_URL', defaultValue: '');
-  static const String turnUsername =
-      String.fromEnvironment('PGUARD_TURN_USERNAME', defaultValue: '');
-  static const String turnCredential =
-      String.fromEnvironment('PGUARD_TURN_CREDENTIAL', defaultValue: '');
+  // WebRTC ICE (STUN/TURN) is NO LONGER a build-time `--dart-define`. The calling service serves
+  // the ICE list at `GET /v1/calls/ice` with SHORT-LIVED, per-caller TURN credentials (coturn REST
+  // scheme) — the controller fetches it per call and feeds it to the engine. This removes the
+  // static-credential gap and means TURN works behind symmetric / carrier-grade NAT (common on Thai
+  // mobile networks) without baking secrets into the app bundle.
 
   /// REST base URL including the `/v1` version prefix the gateway expects.
   static String get apiBaseUrl => '$_apiHost/v1';

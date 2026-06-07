@@ -144,6 +144,25 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /calls/ice:
+    get:
+      tags: [Calls]
+      summary: ICE servers (STUN + short-lived TURN credentials) for the caller's RTCPeerConnection
+      description: |
+        Returns the ICE server list the mobile client feeds into its WebRTC `RTCPeerConnection`:
+        public STUN, plus — when a TURN relay is configured — a TURN entry with a SHORT-LIVED,
+        per-caller credential. The credential follows the coturn REST scheme
+        (draft-uberti-behave-turn-rest): `username = "<expiry_unix>:<user_id>"`,
+        `credential = base64(HMAC-SHA1(static-auth-secret, username))`. It is minted PER REQUEST,
+        expires after `ttl_secs`, and is scoped to the caller — the static `TURN_SECRET` is NEVER
+        sent to the client. The client should refetch before `ttl_secs` elapses. STUN-only is
+        served when no TURN is configured (local dev / same-LAN).
+      operationId: getIceConfig
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/IceConfigOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -185,6 +204,16 @@ components:
     Conflict:
       description: Illegal state transition, callee busy, or booking not callable
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    IceConfigOk:
+      description: ICE server list (STUN + short-lived TURN credentials)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/IceConfig' }
 
   schemas:
     CallStatus:
@@ -208,6 +237,30 @@ components:
       type: object
       properties:
         reason: { type: string, nullable: true, description: 'Optional audit reason (e.g. "hangup").' }
+
+    IceServer:
+      type: object
+      required: [urls]
+      description: One WebRTC ICE server (STUN = urls only; TURN = urls + short-lived username/credential).
+      properties:
+        urls:
+          type: array
+          items: { type: string }
+          description: 'STUN/TURN URLs, e.g. "stun:stun.l.google.com:19302" or "turn:turn.pguard.app:3478?transport=udp".'
+        username: { type: string, nullable: true, description: 'TURN only — "<expiry_unix>:<user_id>".' }
+        credential: { type: string, nullable: true, description: 'TURN only — base64(HMAC-SHA1(secret, username)); short-lived.' }
+
+    IceConfig:
+      type: object
+      required: [ice_servers, ttl_secs]
+      properties:
+        ice_servers:
+          type: array
+          items: { $ref: '#/components/schemas/IceServer' }
+        ttl_secs:
+          type: integer
+          format: int64
+          description: TURN credential lifetime; refetch before this elapses.
 
     Call:
       type: object
