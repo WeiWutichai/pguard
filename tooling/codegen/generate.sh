@@ -29,11 +29,11 @@ echo "                      (e.g. openapi-generator dart-dio)"
 # pairs them with `openapi-fetch` at runtime. Run from the app so its pinned dev dep is used.
 WEB_ADMIN="${ROOT}/apps/web-admin"
 if [ -d "${WEB_ADMIN}/node_modules/openapi-typescript" ]; then
-  echo "==> [ts-client] generating web-admin TS types (identity, profile)"
+  echo "==> [ts-client] generating web-admin TS types (identity, profile, rating, payment, booking, presence)"
   ( cd "${WEB_ADMIN}" && pnpm gen:api )
 else
   echo "TODO [ts-client]: run 'pnpm install' in apps/web-admin first, then 'pnpm gen:api'"
-  echo "                  (openapi-typescript → src/api/generated/{identity,profile}.ts; openapi-fetch wraps them in lib/api.ts)"
+  echo "                  (openapi-typescript → src/api/generated/{identity,profile,rating,payment,booking,presence}.ts; openapi-fetch wraps them in lib/api.ts)"
 fi
 
 echo "==> Done (placeholders only — no files written). Wire targets per tooling/codegen/README.md."

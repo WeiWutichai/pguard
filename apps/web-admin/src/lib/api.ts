@@ -11,6 +11,10 @@ import createClient, { type Middleware } from "openapi-fetch";
 
 import type { paths as IdentityPaths } from "@/api/generated/identity";
 import type { paths as ProfilePaths } from "@/api/generated/profile";
+import type { paths as RatingPaths } from "@/api/generated/rating";
+import type { paths as PaymentPaths } from "@/api/generated/payment";
+import type { paths as BookingPaths } from "@/api/generated/booking";
+import type { paths as PresencePaths } from "@/api/generated/presence";
 
 /** Same-origin gateway prefix for the browser (proxied to the gateway). Overridable for an
  *  off-origin deployment via NEXT_PUBLIC_API_BASE_URL (then CORS + SameSite must allow it). */
@@ -40,3 +44,17 @@ export const identityApi = browserClient<IdentityPaths>();
 
 /** profile service (admin guard-profiles list / approve / reject) — browser. */
 export const profileApi = browserClient<ProfilePaths>();
+
+/** rating service (admin reviews list + visibility toggle) — browser. */
+export const ratingApi = browserClient<RatingPaths>();
+
+/** presence service (admin live guard locations) — browser. */
+export const presenceApi = browserClient<PresencePaths>();
+
+/** payment service (caller payments; admin payments/refunds endpoints are not in the v2
+ *  contract yet — see the wallet page). Client wired so it is ready when they land. */
+export const paymentApi = browserClient<PaymentPaths>();
+
+/** booking service (bookings lifecycle; an admin service-rate/pricing catalog is not in the
+ *  v2 contract — see the pricing page). Client wired for when those endpoints land. */
+export const bookingApi = browserClient<BookingPaths>();

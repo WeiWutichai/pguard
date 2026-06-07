@@ -10,19 +10,22 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "gen:api": "openapi-typescript ../../contracts/openapi/identity.yaml -o src/api/generated/identity.ts && openapi-typescript ../../contracts/openapi/profile.yaml -o src/api/generated/profile.ts"
+    "gen:api": "openapi-typescript ../../contracts/openapi/identity.yaml -o src/api/generated/identity.ts && openapi-typescript ../../contracts/openapi/profile.yaml -o src/api/generated/profile.ts && openapi-typescript ../../contracts/openapi/rating.yaml -o src/api/generated/rating.ts && openapi-typescript ../../contracts/openapi/payment.yaml -o src/api/generated/payment.ts && openapi-typescript ../../contracts/openapi/booking.yaml -o src/api/generated/booking.ts && openapi-typescript ../../contracts/openapi/presence.yaml -o src/api/generated/presence.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.460.0",
     "next": "^16",
     "openapi-fetch": "^0.13.0",
     "react": "^19",
     "react-dom": "^19",
+    "react-leaflet": "^5.0.0",
     "tailwind-merge": "^3.0.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",
+    "@types/leaflet": "^1.9.12",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
