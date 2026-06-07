@@ -83,6 +83,9 @@ argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
 subtle = "2"
+# AWS SigV4 presigning (chat attachments → MinIO/R2): HMAC-SHA256 over `sha2`. Lets chat sign
+# its own presigned GET/PUT URLs with `reqwest` rather than pulling the heavy aws-sdk-s3 tree.
+hmac = "0.12"
 # HTTP client (notification FCM, chat signed URLs).
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 # Decimal money type (payment proration — Phase 3). `serde-str` serializes money as a

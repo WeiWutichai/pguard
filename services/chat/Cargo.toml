@@ -9,8 +9,26 @@ name = "pguard-chat"
 path = "src/main.rs"
 
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true }              # workspace enables "ws" (chat WS) + "multipart" (uploads)
 tokio = { workspace = true }
+sqlx = { workspace = true }
+redis = { workspace = true }            # AuthUser jti blocklist + chat:* pub/sub fan-out
+serde = { workspace = true }
 serde_json = { workspace = true }
+uuid = { workspace = true }
+chrono = { workspace = true }
+jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + service-JWT decode (internal)
+reqwest = { workspace = true }          # S3/MinIO PUT upload + presigned GET (own SigV4)
+async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
+futures = { workspace = true }          # WS stream split
+sha2 = { workspace = true }             # SigV4 canonical-request + signing-key hashing
+hmac = { workspace = true }             # SigV4 HMAC-SHA256 chain
 tracing = { workspace = true }
+anyhow = { workspace = true }
+shared = { workspace = true }
+shared-events = { workspace = true }
 observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }                          # ServiceExt::oneshot for router/WS-upgrade tests
+tokio-tungstenite = "0.24"                            # real WS client for the 2-peer chat relay test

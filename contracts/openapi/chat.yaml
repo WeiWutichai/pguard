@@ -1,0 +1,464 @@
+openapi: 3.1.0
+info:
+  title: pguard — Chat Service API
+  version: 0.1.0
+  description: |
+    v2 OpenAPI contract for the chat service (source of truth — codegen produces Rust handler
+    stubs/types, the Dart client, the TS client). 1:1 booking-scoped messaging between a
+    customer and the assigned guard, with image/video attachments and real-time delivery over
+    a WebSocket.
+
+    ## v2 rules baked into the contract
+      1. **N+1-free list.** `GET /conversations` resolves last-message, unread-count, and the
+         counterpart's name/avatar in ONE query — entirely inside the `chat` schema. v1 JOINed
+         `auth`/`booking` directly; v2 forbids cross-schema JOINs (CLAUDE.md → Data). The
+         counterpart display fields are **booking-derived data the creator supplies inline** at
+         `POST /conversations` and stored on `chat.participants` (API/event-derived, never a
+         cross-schema JOIN).
+      2. **Role-based alignment.** Bubble side + unread are decided by `sender_role` vs the
+         caller's `acting_role` — NEVER by `sender_id`. The same user can be the guard in one
+         conversation and the customer in another, so read receipts are tracked **per role**.
+      3. **IDOR.** `list-messages` / attachment upload+signed-url / mark-read all require the
+         caller to be a **participant** of the conversation (admin bypasses). The check is
+         explicit; an authenticated non-participant gets `403`.
+      4. **Read-only state.** When the linked booking is `completed`/`cancelled` the client
+         disables send — and the **server also rejects** writes (message send + attachment
+         upload) to a closed conversation. Never trust the client.
+      5. **Events (outbox).** A sent message enqueues `pguard.events.chat.message_sent` in the
+         SAME transaction as the message INSERT (transactional outbox); a background relay
+         publishes it to NATS and notification consumes it. Chat NEVER writes notification's
+         schema directly (no v1 fire-and-forget cross-schema INSERT).
+      6. **Generic errors.** No enumeration / no internal leak.
+
+    ## WebSocket — `GET /ws/chat`
+    Documented here because WS handshakes are not expressible as OpenAPI paths. See also
+    `contracts/asyncapi/chat-ws.yaml`.
+    - **Auth = `Authorization: Bearer <access-token>` on the upgrade request.** A token in the
+      URL query is NEVER read → such a request is rejected `401` (no sensitive data in the WS
+      URL). The session re-validates the token periodically and closes on expiry/revoke.
+    - **`conversation_id` is NOT in the URL.** After open, the client sends JSON frames
+      `{ "conversation_id": "<uuid>", "content": "...", "message_type": "text",
+         "sender_role": "guard|customer" }`. The server verifies the sender is a participant of
+      that conversation and the conversation is writable, persists + emits the outbox event,
+      and broadcasts `{ "id", "conversation_id", "sender_id", "sender_role", "content",
+      "message_type", "created_at" }` to the other participant's live socket (Redis pub/sub on
+      `chat:{conversation_id}` for cross-instance fan-out). Errors come back as
+      `{ "type": "error", "message": "<reason>" }`.
+
+    Client-facing paths are served behind the gateway under `/v1`. Success responses use the
+    standard `{ success, data }` envelope; errors use `ErrorBody`.
+  license:
+    name: UNLICENSED
+
+servers:
+  - url: https://api.pguard.app/v1
+    description: Production (via api-gateway)
+  - url: http://localhost:3000/v1
+    description: Local dev (via api-gateway)
+  - url: http://localhost:3010
+    description: Local dev (chat-service direct)
+
+tags:
+  - name: Conversations
+    description: Conversation lifecycle + the N+1-free enriched list
+  - name: Messages
+    description: Message history (newest-first)
+  - name: Attachments
+    description: Image/video upload + presigned download (magic-byte validated)
+  - name: Internal
+    description: Service-to-service (service-JWT; the gateway blocks `/internal/` from the edge)
+
+paths:
+  /conversations:
+    post:
+      tags: [Conversations]
+      summary: Create a booking-scoped conversation
+      description: |
+        Creates a conversation linked to a booking `request_id` and registers its participants.
+        The caller must be one of the participants (or admin). Each participant carries its
+        booking-derived `role` and (optional) `display_name`/`avatar_url`, denormalized so the
+        enriched list resolves the counterpart's name with NO cross-schema JOIN.
+      operationId: createConversation
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateConversationRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ConversationOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Conversations]
+      summary: List the caller's conversations (N+1-free, enriched)
+      description: |
+        Returns the caller's conversations in the given `acting_role`, each enriched with the
+        counterpart's name/avatar, the last message + time, the unread count, and the booking
+        `request_status` — resolved in ONE query. The counterpart name is chosen by role
+        (a customer sees the guard; a guard sees the customer), never by `sender_id`. Unread =
+        messages whose `sender_role IS DISTINCT FROM acting_role` newer than the caller's
+        per-role read receipt.
+      operationId: listConversations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ActingRole' }
+      responses:
+        '200':
+          description: Enriched conversation list (newest activity first)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/EnrichedConversation' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /conversations/{id}/messages:
+    get:
+      tags: [Messages]
+      summary: Message history for a conversation (newest-first)
+      description: |
+        Returns messages newest-first, each with `sender_role` (drives client-side alignment).
+        Participant-only (admin bypasses); a non-participant gets `403`.
+      operationId: listMessages
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ConversationId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Message history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/Message' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /conversations/{id}/read:
+    put:
+      tags: [Conversations]
+      summary: Mark a conversation read (per-role receipt)
+      description: |
+        UPSERTs the caller's read receipt for `acting_role` (PK
+        `conversation_id, user_id, user_role`). Participant-only (admin bypasses).
+      operationId: markConversationRead
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ConversationId' }
+        - { $ref: '#/components/parameters/ActingRole' }
+      responses:
+        '200': { $ref: '#/components/responses/Empty' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /attachments:
+    post:
+      tags: [Attachments]
+      summary: Upload an image/video to a conversation
+      description: |
+        Multipart upload (`conversation_id` + `file`). The server validates **size first**, then
+        the **declared MIME AND the magic bytes** (JPEG/PNG/WEBP ≤10MB, MP4/MOV ≤200MB), stores
+        the object at `chat/{chat_id}/{uuid}.{ext}`, and returns a presigned URL (TTL 1h). The
+        uploader must be a participant of the conversation (admin bypasses) and the conversation
+        must be writable (not `completed`/`cancelled`). The bucket is never exposed.
+      operationId: uploadAttachment
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema: { $ref: '#/components/schemas/AttachmentUploadForm' }
+      responses:
+        '200': { $ref: '#/components/responses/AttachmentOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /attachments/{id}:
+    get:
+      tags: [Attachments]
+      summary: Fetch an attachment with a fresh presigned URL
+      description: |
+        Regenerates a short-lived (1h) presigned download URL for the attachment. Participant
+        of the attachment's conversation only (admin bypasses); a non-participant gets `403`.
+      operationId: getAttachment
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/AttachmentId' }
+      responses:
+        '200': { $ref: '#/components/responses/AttachmentOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /internal/conversations/by-request/{request_id}/status:
+    put:
+      tags: [Internal]
+      summary: Push a booking's lifecycle status onto its conversation(s)
+      description: |
+        Service-to-service (service-JWT). Booking calls this on a lifecycle change so chat's
+        denormalized `request_status` stays current — which drives the server-side read-only
+        gate (writes to a `completed`/`cancelled` conversation are rejected). Never reachable
+        from the edge (the gateway blocks `/internal/`). Idempotent. (A booking-event consumer
+        — mirroring the presence read-model — is the natural evolution of this push.)
+      operationId: setConversationRequestStatus
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/RequestId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetRequestStatusRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/Empty' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: User access token (HS256; iss/aud `pguard`).
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-to-service JWT (separate secret; aud `pguard-internal`).
+
+  parameters:
+    ConversationId:
+      name: id
+      in: path
+      required: true
+      description: Conversation UUID.
+      schema: { type: string, format: uuid }
+    AttachmentId:
+      name: id
+      in: path
+      required: true
+      description: Attachment UUID.
+      schema: { type: string, format: uuid }
+    RequestId:
+      name: request_id
+      in: path
+      required: true
+      description: Booking request UUID the conversation is linked to.
+      schema: { type: string, format: uuid }
+    ActingRole:
+      name: role
+      in: query
+      required: false
+      description: |
+        Acting role — `guard` or `customer`. Selects which counterpart name to show and which
+        per-role read receipt to use. Defaults to the caller's token role when omitted.
+      schema: { type: string, enum: [guard, customer] }
+    Limit:
+      name: limit
+      in: query
+      required: false
+      description: Page size (default 50, max 200).
+      schema: { type: integer, minimum: 1, maximum: 200, default: 50 }
+    Offset:
+      name: offset
+      in: query
+      required: false
+      description: Rows to skip (default 0).
+      schema: { type: integer, minimum: 0, default: 0 }
+
+  schemas:
+    MessageType:
+      type: string
+      enum: [text, image, video, system]
+      description: Message kind. `image`/`video` carry the attachment reference/URL in `content`.
+
+    ParticipantInput:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id: { type: string, format: uuid }
+        role:
+          type: string
+          enum: [guard, customer]
+          description: This participant's role IN THIS conversation (drives alignment + receipts).
+        display_name:
+          type: string
+          nullable: true
+          description: Booking-derived display name (denormalized; no cross-schema JOIN at read).
+        avatar_url:
+          type: string
+          nullable: true
+          description: Booking-derived avatar URL (denormalized).
+
+    CreateConversationRequest:
+      type: object
+      required: [request_id, participants]
+      properties:
+        request_id:
+          type: string
+          format: uuid
+          description: The booking this conversation belongs to (bare UUID, no cross-service FK).
+        request_status:
+          type: string
+          nullable: true
+          description: >-
+            Booking status at creation (e.g. `accepted`). Stored to drive the read-only gate;
+            refreshed via `PUT /internal/conversations/by-request/{request_id}/status`.
+        participants:
+          type: array
+          minItems: 1
+          description: >-
+            Conversation participants with booking-derived role + optional display data. This
+            supersedes v1's bare `participant_ids[]`: v2 forbids the cross-schema JOIN v1 used
+            to resolve roles/names, so the creator (booking) supplies them inline.
+          items: { $ref: '#/components/schemas/ParticipantInput' }
+
+    SetRequestStatusRequest:
+      type: object
+      required: [request_status]
+      properties:
+        request_status:
+          type: string
+          description: New booking lifecycle status (e.g. `completed`, `cancelled`, `accepted`).
+
+    ConversationResponse:
+      type: object
+      required: [id, request_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        request_status: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    EnrichedConversation:
+      type: object
+      required: [id, request_id, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        participant_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: Counterpart user id (the participant whose role differs from `acting_role`).
+        participant_name: { type: string, nullable: true }
+        participant_avatar: { type: string, nullable: true }
+        last_message: { type: string, nullable: true }
+        last_message_at: { type: string, format: date-time, nullable: true }
+        unread_count:
+          type: integer
+          format: int64
+          description: Messages from the counterpart role newer than the caller's read receipt.
+        request_status: { type: string, nullable: true }
+
+    Message:
+      type: object
+      required: [id, conversation_id, sender_id, message_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        sender_role: { type: string, nullable: true, description: 'guard | customer (drives alignment)' }
+        content: { type: string, nullable: true }
+        message_type: { $ref: '#/components/schemas/MessageType' }
+        created_at: { type: string, format: date-time }
+
+    Attachment:
+      type: object
+      required: [id, chat_id, file_key, file_url, mime_type, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        chat_id:
+          type: string
+          format: uuid
+          description: The conversation this attachment belongs to (= `conversation_id`).
+        file_key:
+          type: string
+          description: Object key `chat/{chat_id}/{uuid}.{ext}` (internal; never the bucket URL).
+        file_url:
+          type: string
+          description: Short-lived presigned download URL (TTL 1h), regenerated on each GET.
+        file_size: { type: integer, nullable: true, description: Bytes. }
+        mime_type: { type: string }
+        created_at: { type: string, format: date-time }
+
+    AttachmentUploadForm:
+      type: object
+      required: [conversation_id, file]
+      properties:
+        conversation_id: { type: string, format: uuid }
+        file:
+          type: string
+          format: binary
+          description: JPEG/PNG/WEBP (≤10MB) or MP4/MOV (≤200MB). Validated by magic bytes.
+
+    ErrorBody:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, example: FORBIDDEN }
+            message: { type: string }
+
+  responses:
+    ConversationOk:
+      description: Conversation
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, example: true }
+              data: { $ref: '#/components/schemas/ConversationResponse' }
+    AttachmentOk:
+      description: Attachment with a fresh presigned URL
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, example: true }
+              data: { $ref: '#/components/schemas/Attachment' }
+    Empty:
+      description: Success (no body payload)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, example: true }
+    BadRequest:
+      description: Invalid input
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Unauthorized:
+      description: Missing/invalid/revoked token
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Forbidden:
+      description: Authenticated but not permitted (e.g. not a participant)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    NotFound:
+      description: Not found
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    Conflict:
+      description: Conflict (e.g. write to a closed conversation)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }

@@ -1,0 +1,680 @@
+//! API layer — thin Axum transport handlers (REST) + the WS module. No business logic beyond
+//! authz gating (AuthUser/ServiceCaller + the explicit participant IDOR check + the read-only
+//! gate) and orchestration of `domain` (pure validation), `repo` (DB + outbox), `s3` (upload +
+//! presign), and `events` (pub/sub fan-out).
+//!
+//! Client handlers are generic over [`ChatDeps`] and the internal one over [`ChatInternalDeps`]
+//! so the guards + IDOR logic are unit-testable with a lightweight state (mirrors profile).
+
+pub mod ws;
+
+use axum::extract::{Multipart, Path, Query, State};
+use axum::Json;
+use uuid::Uuid;
+
+use shared::auth::AuthUser;
+use shared::error::AppError;
+use shared::models::ApiResponse;
+use shared::service_jwt::ServiceCaller;
+
+use crate::domain;
+use crate::events;
+use crate::models::{
+    AttachmentResponse, AttachmentRow, ConversationResponse, CreateConversationRequest,
+    EnrichedConversation, IncomingChatMessage, ListMessagesQuery, OutgoingChatMessage, RoleQuery,
+    SetRequestStatusRequest,
+};
+use crate::repo;
+use crate::state::{ChatDeps, ChatInternalDeps};
+
+const ROLE_ADMIN: &str = "admin";
+const DEFAULT_LIMIT: i64 = 50;
+
+/// The acting role for this request. A NON-admin always acts in their own (token) role — a
+/// client-supplied `?role=` is ignored so a customer can't query/receipt as the guard (no role
+/// spoofing; v1-audit #3). An admin (moderation) may pass an explicit `?role=`.
+fn acting_role<'a>(query: &'a RoleQuery, user: &'a AuthUser) -> &'a str {
+    if user.role == ROLE_ADMIN {
+        query.role.as_deref().unwrap_or(&user.role)
+    } else {
+        &user.role
+    }
+}
+
+/// Build the client-facing attachment view with a fresh presigned URL (TTL 1h). The stored
+/// `file_url` may be stale, so we always re-sign from `file_key` — the bucket is never exposed.
+fn attachment_view(row: AttachmentRow, file_url: String) -> AttachmentResponse {
+    AttachmentResponse {
+        id: row.id,
+        chat_id: row.chat_id,
+        file_key: row.file_key,
+        file_url,
+        file_size: row.file_size,
+        mime_type: row.mime_type,
+        created_at: row.created_at,
+    }
+}
+
+// ----- POST /conversations -----
+
+/// Create a booking-scoped conversation. Participant gate: the caller must be one of the
+/// participants (or admin) — `AuthUser` alone is NOT sufficient (IDOR).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, request_id = %req.request_id))]
+pub async fn create_conversation<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<CreateConversationRequest>,
+) -> Result<Json<ApiResponse<ConversationResponse>>, AppError> {
+    if user.role != ROLE_ADMIN && !req.participants.iter().any(|p| p.user_id == user.user_id) {
+        return Err(AppError::Forbidden(
+            "You must be a participant of the conversation".to_string(),
+        ));
+    }
+    let conv = repo::create_conversation(state.db(), &req).await?;
+    Ok(Json(ApiResponse::success(conv)))
+}
+
+// ----- GET /conversations?role= -----
+
+/// The N+1-free enriched list for the caller in `acting_role` (read replica).
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn list_conversations<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(query): Query<RoleQuery>,
+) -> Result<Json<ApiResponse<Vec<EnrichedConversation>>>, AppError> {
+    let role = acting_role(&query, &user);
+    let convos = repo::list_conversations(state.db_read(), user.user_id, role).await?;
+    Ok(Json(ApiResponse::success(convos)))
+}
+
+// ----- GET /conversations/{id}/messages -----
+
+/// Message history (newest-first). Participant-only (admin bypasses) — the explicit IDOR gate.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, conversation_id = %id))]
+pub async fn list_messages<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ListMessagesQuery>,
+) -> Result<Json<ApiResponse<Vec<OutgoingChatMessage>>>, AppError> {
+    require_participant(&state, id, &user).await?;
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let messages = repo::list_messages(state.db(), id, limit, offset).await?;
+    Ok(Json(ApiResponse::success(messages)))
+}
+
+// ----- PUT /conversations/{id}/read?role= -----
+
+/// UPSERT the caller's per-role read receipt. Participant-only (admin bypasses).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, conversation_id = %id))]
+pub async fn mark_read<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<RoleQuery>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    require_participant(&state, id, &user).await?;
+    let role = acting_role(&query, &user);
+    repo::mark_read(state.db(), id, user.user_id, role).await?;
+    Ok(Json(ApiResponse::success(())))
+}
+
+// ----- POST /attachments (multipart) -----
+
+/// Upload an image/video to a conversation. Order: parse → participant gate → read-only gate →
+/// validate (size before magic bytes) → S3 upload → persist → return a presigned URL.
+///
+/// Memory note: the field body is buffered into a `Vec<u8>` before the per-kind size gate fires,
+/// so peak allocation per upload is bounded by the route's `DefaultBodyLimit` (`MAX_UPLOAD_BYTES`,
+/// ~210MB to cover the 200MB video path) rather than the per-kind cap. A truly pre-allocation cap
+/// would require streaming the multipart field in chunks (deferred — matches the profile S3 pattern).
+#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id))]
+pub async fn upload_attachment<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<AttachmentResponse>>, AppError> {
+    let mut conversation_id: Option<Uuid> = None;
+    let mut file_data: Option<Vec<u8>> = None;
+    let mut declared_mime: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "conversation_id" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Invalid conversation_id: {e}")))?;
+                conversation_id = Some(
+                    text.parse::<Uuid>()
+                        .map_err(|e| AppError::BadRequest(format!("Invalid UUID: {e}")))?,
+                );
+            }
+            "file" => {
+                declared_mime = field.content_type().map(|s| s.to_string());
+                file_data = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(format!("Failed to read file: {e}")))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let conversation_id = conversation_id
+        .ok_or_else(|| AppError::BadRequest("conversation_id is required".to_string()))?;
+    let data = file_data.ok_or_else(|| AppError::BadRequest("file is required".to_string()))?;
+    let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
+
+    // Participant gate (IDOR) + read-only gate (server-side; never trust the client).
+    require_participant(&state, conversation_id, &user).await?;
+    let request_status = repo::conversation_request_status(state.db(), conversation_id).await?;
+    if !domain::is_writable(request_status.as_deref()) {
+        return Err(AppError::Conflict(
+            "Conversation is read-only (booking completed/cancelled)".to_string(),
+        ));
+    }
+
+    // Validate (size BEFORE magic bytes) — returns the canonical (detected) MIME.
+    let canonical_mime = domain::validate_upload(&declared_mime, data.len(), &data)?;
+    // `validate_upload` already capped the length well under i32::MAX; try_from makes the
+    // narrowing explicit so a future cap increase can't silently persist a negative size.
+    let size = i32::try_from(data.len())
+        .map_err(|_| AppError::BadRequest("File too large".to_string()))?;
+    let ext = domain::mime_to_extension(canonical_mime);
+    let file_key = format!("chat/{conversation_id}/{}.{ext}", Uuid::new_v4());
+
+    // Upload (server → MinIO internal), then sign a fresh client-facing GET URL.
+    state.s3().upload(&file_key, data, canonical_mime).await?;
+    let file_url = state.s3().download_url(&file_key);
+
+    let row = repo::save_attachment(
+        state.db(),
+        conversation_id,
+        user.user_id,
+        &file_key,
+        &file_url,
+        Some(size),
+        canonical_mime,
+    )
+    .await?;
+
+    Ok(Json(ApiResponse::success(attachment_view(row, file_url))))
+}
+
+// ----- GET /attachments/{id} -----
+
+/// Fetch an attachment with a freshly-signed download URL. Participant of the attachment's
+/// conversation only (admin bypasses) — the IDOR gate.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, attachment_id = %id))]
+pub async fn get_attachment<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<AttachmentResponse>>, AppError> {
+    // IDOR gate FIRST, before any fetch, so existence is never leaked: a non-admin who is not a
+    // participant gets a generic 403 whether or not the attachment exists (`is_attachment_participant`
+    // returns false for a missing id too) — closing the 403-vs-404 existence oracle.
+    if user.role != ROLE_ADMIN
+        && !repo::is_attachment_participant(state.db(), id, user.user_id).await?
+    {
+        return Err(AppError::Forbidden(
+            "You do not have access to this attachment".to_string(),
+        ));
+    }
+    let row = repo::get_attachment(state.db(), id).await?;
+    let file_url = state.s3().download_url(&row.file_key);
+    Ok(Json(ApiResponse::success(attachment_view(row, file_url))))
+}
+
+// ----- PUT /internal/conversations/by-request/{request_id}/status (service-JWT) -----
+
+/// Booking pushes a lifecycle status onto the conversation(s) for a request so chat's
+/// denormalized `request_status` (and thus the read-only gate) stays current. `ServiceCaller`-
+/// gated; never reachable from the edge (the gateway blocks `/internal/`). Idempotent.
+#[tracing::instrument(skip(state, req), fields(caller = %caller.service, request_id = %request_id))]
+pub async fn internal_set_request_status<S: ChatInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(request_id): Path<Uuid>,
+    Json(req): Json<SetRequestStatusRequest>,
+) -> Result<Json<ApiResponse<()>>, AppError> {
+    let _ = &caller; // presence of a valid service-JWT is the authorization
+    let updated = repo::set_request_status(state.db(), request_id, &req.request_status).await?;
+    tracing::info!(updated, status = %req.request_status, "request_status pushed to conversations");
+    Ok(Json(ApiResponse::success(())))
+}
+
+/// The explicit participant IDOR gate shared by list-messages / mark-read / upload. Admin
+/// bypasses. A non-participant gets a generic `403` (never `_user: AuthUser` ignored).
+async fn require_participant<S: ChatDeps>(
+    state: &S,
+    conversation_id: Uuid,
+    user: &AuthUser,
+) -> Result<(), AppError> {
+    if user.role == ROLE_ADMIN {
+        return Ok(());
+    }
+    if repo::is_participant(state.db(), conversation_id, user.user_id).await? {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "You are not a participant of this conversation".to_string(),
+        ))
+    }
+}
+
+// Re-exported for the WS module (persists + broadcasts). The sender's role is DERIVED inside
+// `repo::send_message` from their conversation membership — the client `frame.sender_role` is
+// advisory only and never trusted (no attribution spoofing).
+pub(crate) async fn persist_and_broadcast<S: ChatDeps>(
+    state: &S,
+    sender: &AuthUser,
+    frame: &IncomingChatMessage,
+) -> Result<OutgoingChatMessage, AppError> {
+    let message = repo::send_message(state.db(), sender.user_id, frame).await?;
+    events::publish_chat_message(state.pubsub_conn(), &message).await;
+    Ok(message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::s3::S3Client;
+    use crate::state::ChatInternalDeps;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::{get, post, put};
+    use axum::Router;
+    use jsonwebtoken::{DecodingKey, EncodingKey};
+    use shared::auth::{encode_jwt_with_key, HasJwtSecret};
+    use shared::service_jwt::{encode_service_jwt, HasServiceJwt};
+    use sqlx::postgres::PgPoolOptions;
+    use std::sync::Arc;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-chat-test!!!!!!!";
+    const SERVICE_SECRET: &str =
+        "service-secret-at-least-64-characters-long-for-internal-hs256-chat!!";
+
+    #[derive(Clone)]
+    struct TestDeps {
+        dec: Arc<DecodingKey>,
+        svc_dec: Arc<DecodingKey>,
+        db: sqlx::PgPool,
+        redis: redis::aio::MultiplexedConnection,
+        pubsub_client: redis::Client,
+        s3: S3Client,
+    }
+    impl HasJwtSecret for TestDeps {
+        fn jwt_secret(&self) -> &str {
+            SECRET
+        }
+        fn decoding_key(&self) -> &DecodingKey {
+            &self.dec
+        }
+        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+            &self.redis
+        }
+    }
+    impl HasServiceJwt for TestDeps {
+        fn service_decoding_key(&self) -> &DecodingKey {
+            &self.svc_dec
+        }
+    }
+    impl ChatDeps for TestDeps {
+        fn db(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+        fn db_read(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+        fn pubsub_conn(&self) -> &redis::aio::MultiplexedConnection {
+            &self.redis
+        }
+        fn pubsub_client(&self) -> &redis::Client {
+            &self.pubsub_client
+        }
+        fn s3(&self) -> &S3Client {
+            &self.s3
+        }
+    }
+    impl ChatInternalDeps for TestDeps {
+        fn db(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+    }
+
+    fn s3_stub() -> S3Client {
+        S3Client::new(
+            reqwest::Client::new(),
+            "http://localhost:9000".to_string(),
+            None,
+            "test".to_string(),
+            "us-east-1".to_string(),
+            "k".to_string(),
+            "s".to_string(),
+        )
+    }
+
+    /// Lazy pool to a closed port — used by the hermetic auth tests, whose paths short-circuit
+    /// (401 at the extractor / 403 at the in-memory participant gate) before any DB access.
+    fn lazy_pool() -> sqlx::PgPool {
+        PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool")
+    }
+
+    async fn deps(db: sqlx::PgPool) -> Option<TestDeps> {
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let redis_client = redis::Client::open(redis_url).ok()?;
+        let redis = redis_client.get_multiplexed_tokio_connection().await.ok()?;
+        Some(TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            svc_dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
+            db,
+            redis,
+            pubsub_client: redis_client,
+            s3: s3_stub(),
+        })
+    }
+
+    fn router(deps: TestDeps) -> Router {
+        Router::new()
+            .route("/conversations", post(create_conversation::<TestDeps>))
+            .route("/conversations", get(list_conversations::<TestDeps>))
+            .route(
+                "/conversations/{id}/messages",
+                get(list_messages::<TestDeps>),
+            )
+            .route("/conversations/{id}/read", put(mark_read::<TestDeps>))
+            .route("/attachments/{id}", get(get_attachment::<TestDeps>))
+            .route(
+                "/internal/conversations/by-request/{request_id}/status",
+                put(internal_set_request_status::<TestDeps>),
+            )
+            .with_state(deps)
+    }
+
+    fn token(user_id: Uuid, role: &str) -> String {
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        encode_jwt_with_key(user_id, role, 0, &ek, 60).unwrap().0
+    }
+
+    fn svc_token() -> String {
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        encode_service_jwt("booking", &ek, 60).unwrap()
+    }
+
+    async fn status_of(app: Router, req: Request<Body>) -> StatusCode {
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    // ----- 401: every client route rejects a missing token (hermetic) -----
+
+    #[tokio::test]
+    async fn routes_reject_missing_token() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let cases = [
+            Request::builder()
+                .method("GET")
+                .uri("/conversations")
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/conversations/{id}/messages"))
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/conversations/{id}/read"))
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("GET")
+                .uri(format!("/attachments/{id}"))
+                .body(Body::empty())
+                .unwrap(),
+        ];
+        for req in cases {
+            assert_eq!(
+                status_of(router(deps.clone()), req).await,
+                StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn create_conversation_rejects_non_participant() {
+        // Authenticated, but the caller is NOT among the participants → 403 (in-memory gate,
+        // no DB access). This is the create-side participant gate (`_user` is never ignored).
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let caller = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let body = serde_json::json!({
+            "request_id": Uuid::new_v4(),
+            "participants": [
+                { "user_id": other, "role": "customer" },
+                { "user_id": Uuid::new_v4(), "role": "guard" }
+            ]
+        });
+        let req = Request::builder()
+            .method("POST")
+            .uri("/conversations")
+            .header(
+                "authorization",
+                format!("Bearer {}", token(caller, "customer")),
+            )
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
+    }
+
+    // ----- internal endpoint: service-JWT guard (no DB needed to prove the guard) -----
+
+    #[tokio::test]
+    async fn internal_status_rejects_missing_and_invalid_service_token() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let rid = Uuid::new_v4();
+        let uri = format!("/internal/conversations/by-request/{rid}/status");
+        let missing = Request::builder()
+            .method("PUT")
+            .uri(&uri)
+            .header("content-type", "application/json")
+            .body(Body::from("{\"request_status\":\"completed\"}"))
+            .unwrap();
+        assert_eq!(
+            status_of(router(deps.clone()), missing).await,
+            StatusCode::UNAUTHORIZED
+        );
+
+        let invalid = Request::builder()
+            .method("PUT")
+            .uri(&uri)
+            .header("authorization", "Bearer not.a.jwt")
+            .header("content-type", "application/json")
+            .body(Body::from("{\"request_status\":\"completed\"}"))
+            .unwrap();
+        assert_eq!(
+            status_of(router(deps), invalid).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    // ----- DB+Redis-gated IDOR: non-participant → 403 on messages / mark-read / attachments -----
+
+    async fn real_deps() -> Option<TestDeps> {
+        let url = std::env::var("DATABASE_URL").ok()?;
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .ok()?;
+        deps(db).await
+    }
+
+    #[tokio::test]
+    async fn idor_non_participant_forbidden_participant_ok() {
+        let Some(deps) = real_deps().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL required for the IDOR router test");
+            return;
+        };
+        use crate::models::{CreateConversationRequest, ParticipantInput};
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let stranger = Uuid::new_v4();
+        let req = CreateConversationRequest {
+            request_id: Uuid::new_v4(),
+            request_status: Some("accepted".to_string()),
+            participants: vec![
+                ParticipantInput {
+                    user_id: customer,
+                    role: "customer".into(),
+                    display_name: Some("C".into()),
+                    avatar_url: None,
+                },
+                ParticipantInput {
+                    user_id: guard,
+                    role: "guard".into(),
+                    display_name: Some("G".into()),
+                    avatar_url: None,
+                },
+            ],
+        };
+        let conv = repo::create_conversation(&deps.db, &req)
+            .await
+            .expect("seed convo");
+        let att = repo::save_attachment(
+            &deps.db,
+            conv.id,
+            guard,
+            &format!("chat/{}/x.jpg", conv.id),
+            "https://s/x",
+            Some(1),
+            "image/jpeg",
+        )
+        .await
+        .expect("seed attachment");
+
+        let get_msgs = |tok: &str| {
+            Request::builder()
+                .method("GET")
+                .uri(format!("/conversations/{}/messages", conv.id))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let mark = |tok: &str| {
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/conversations/{}/read?role=customer", conv.id))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let get_att = |tok: &str| {
+            Request::builder()
+                .method("GET")
+                .uri(format!("/attachments/{}", att.id))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+
+        // Stranger → 403 on all three.
+        let st = token(stranger, "customer");
+        assert_eq!(
+            status_of(router(deps.clone()), get_msgs(&st)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_of(router(deps.clone()), mark(&st)).await,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            status_of(router(deps.clone()), get_att(&st)).await,
+            StatusCode::FORBIDDEN
+        );
+        // No existence oracle: a non-participant hitting a NON-EXISTENT attachment id gets the
+        // SAME 403 (not a 404), so 403-vs-404 can't be used to probe which attachments exist.
+        let missing = Uuid::new_v4();
+        let get_att_missing = Request::builder()
+            .method("GET")
+            .uri(format!("/attachments/{missing}"))
+            .header("authorization", format!("Bearer {st}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            status_of(router(deps.clone()), get_att_missing).await,
+            StatusCode::FORBIDDEN,
+            "non-participant gets 403 for a non-existent attachment too (no existence oracle)"
+        );
+
+        // Participant (the customer) → allowed (200) for messages + mark-read.
+        let ct = token(customer, "customer");
+        assert_eq!(
+            status_of(router(deps.clone()), get_msgs(&ct)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            status_of(router(deps.clone()), mark(&ct)).await,
+            StatusCode::OK
+        );
+
+        // Admin bypass on attachments.
+        let at = token(Uuid::new_v4(), "admin");
+        assert_eq!(
+            status_of(router(deps.clone()), get_att(&at)).await,
+            StatusCode::OK
+        );
+
+        // cleanup (cascades).
+        let _ = sqlx::query("DELETE FROM chat.conversations WHERE id = $1")
+            .bind(conv.id)
+            .execute(&deps.db)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn internal_status_accepts_valid_service_token() {
+        let Some(deps) = real_deps().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL required for the internal status test");
+            return;
+        };
+        let rid = Uuid::new_v4();
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/internal/conversations/by-request/{rid}/status"))
+            .header("authorization", format!("Bearer {}", svc_token()))
+            .header("content-type", "application/json")
+            .body(Body::from("{\"request_status\":\"completed\"}"))
+            .unwrap();
+        // Valid service token + reachable DB → 200 (idempotent; 0 rows updated is fine).
+        assert_eq!(status_of(router(deps), req).await, StatusCode::OK);
+    }
+}
