@@ -19,6 +19,9 @@ Cargo.lock
 .env
 .env.local
 .env.*.local
+# Real per-environment secret files (the *.example templates ARE committed).
+.env.staging
+.env.prod
 
 # IDE
 .idea/
