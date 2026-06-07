@@ -3,10 +3,12 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
+import 'media/chat_attachment_service.dart';
 import 'media/photo_capture.dart';
 import 'network/api_client.dart';
 import 'network/check_in_service.dart';
 import 'network/sockets/booking_status_socket.dart';
+import 'network/sockets/chat_socket.dart';
 import 'network/sockets/presence_socket.dart';
 import 'storage/prefs_store.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
@@ -63,6 +65,23 @@ typedef PresenceFeedBuilder = PresenceFeed Function(
 @Riverpod(keepAlive: true)
 PresenceFeedBuilder presenceFeedBuilder(PresenceFeedBuilderRef ref) =>
     (tokenProvider) => PresenceSocket(tokenProvider: tokenProvider);
+
+/// Builds the chat real-time feed (one socket multiplexes all the user's conversations).
+/// Production returns a real [ChatSocket] (coded against the chat WS contract); tests override
+/// this provider to inject a fake feed.
+typedef ChatFeedBuilder = ChatFeed Function(
+  Future<String?> Function() tokenProvider,
+);
+
+@Riverpod(keepAlive: true)
+ChatFeedBuilder chatFeedBuilder(ChatFeedBuilderRef ref) =>
+    (tokenProvider) => ChatSocket(tokenProvider: tokenProvider);
+
+/// Picks + uploads chat attachments. Default is unavailable (no picker plugin wired — see
+/// [ChatAttachmentService]); tests override with a fake that returns a canned attachment.
+@Riverpod(keepAlive: true)
+ChatAttachmentService chatAttachmentService(ChatAttachmentServiceRef ref) =>
+    const UnavailableChatAttachmentService();
 
 /// Submits hourly check-in progress reports. Default fails (the endpoint isn't built — see
 /// [CheckInService]); tests override with a fake that records submissions.

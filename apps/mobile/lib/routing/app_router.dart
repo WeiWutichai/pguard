@@ -4,7 +4,10 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
+import '../core/models/chat.dart';
 import '../features/auth/otp_screen.dart';
+import '../features/chat/chat_list_screen.dart';
+import '../features/chat/chat_screen.dart';
 import '../features/auth/phone_entry_screen.dart';
 import '../features/auth/pin_entry_screen.dart';
 import '../features/auth/pin_lock_screen.dart';
@@ -73,6 +76,27 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
           path: '/profile/edit',
           builder: (_, __) => const ProfileEditScreen()),
+      // Chat: the conversation list (acting role in `?role=`) + a single conversation
+      // (`?role=`/`?readonly=` so a deep link works without `extra`; the counterpart name,
+      // when known, rides in `extra` for the header).
+      GoRoute(
+        path: '/chat',
+        builder: (context, state) => ChatListScreen(
+          actingRole:
+              ChatRole.tryParse(state.uri.queryParameters['role']) ??
+                  ChatRole.customer,
+        ),
+      ),
+      GoRoute(
+        path: '/chat/c/:id',
+        builder: (context, state) => ChatScreen(
+          conversationId: state.pathParameters['id']!,
+          acting: ChatRole.tryParse(state.uri.queryParameters['role']) ??
+              ChatRole.customer,
+          readOnly: state.uri.queryParameters['readonly'] == '1',
+          title: state.extra is String ? state.extra as String : null,
+        ),
+      ),
       // Guard-side flow: incoming-job detail + active-job working screen.
       GoRoute(
         path: '/guard/job/:id',

@@ -2,14 +2,17 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:pguard_mobile/core/location/location_service.dart';
+import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/models/chat.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/core/models/tracking.dart';
 import 'package:pguard_mobile/core/network/api_client.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/network/check_in_service.dart';
 import 'package:pguard_mobile/core/network/sockets/booking_status_socket.dart';
+import 'package:pguard_mobile/core/network/sockets/chat_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
 import 'package:pguard_mobile/core/storage/prefs_store.dart';
 import 'package:pguard_mobile/core/storage/secure_store.dart';
@@ -156,6 +159,63 @@ class FakeBookingFeed implements BookingStatusFeed {
   }
 
   void emit(BookingStatusEvent event) => _controller.add(event);
+}
+
+/// Fake [ChatFeed] — tests push incoming messages synchronously and inspect what was sent,
+/// without any real WebSocket.
+class FakeChatFeed implements ChatFeed {
+  final StreamController<ChatMessage> _controller =
+      StreamController<ChatMessage>.broadcast();
+
+  /// Frames passed to [sendMessage], in order (so tests assert the outbound payload).
+  final List<Map<String, dynamic>> sent = [];
+  bool connected = false;
+  bool closed = false;
+
+  @override
+  Stream<ChatMessage> get messages => _controller.stream;
+
+  @override
+  Future<void> connect() async => connected = true;
+
+  @override
+  void sendMessage({
+    required String conversationId,
+    String? content,
+    required ChatMessageType type,
+    required ChatRole senderRole,
+  }) {
+    // Mirror ChatSocket's conditional inclusion (omit `content` when null) so the fake's recorded
+    // frame matches the real wire frame exactly.
+    sent.add({
+      'conversation_id': conversationId,
+      if (content != null) 'content': content,
+      'message_type': type.wire,
+      'sender_role': senderRole.wire,
+    });
+  }
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    if (!_controller.isClosed) await _controller.close();
+  }
+
+  void emit(ChatMessage message) => _controller.add(message);
+}
+
+/// Fake [ChatAttachmentService] — returns a canned attachment (or throws a canned error).
+class FakeChatAttachmentService implements ChatAttachmentService {
+  FakeChatAttachmentService({this.attachment, this.error});
+
+  final Attachment? attachment;
+  final Object? error;
+
+  @override
+  Future<Attachment?> pickAndUpload(String conversationId) async {
+    if (error != null) throw error!;
+    return attachment;
+  }
 }
 
 /// Fake [PresenceFeed] — records the GPS samples streamed up and lets tests drive link state.

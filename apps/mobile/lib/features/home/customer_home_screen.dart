@@ -4,8 +4,10 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/models/chat.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../chat/chat_routes.dart';
 import '../notifications/widgets/notification_bell.dart';
 
 /// Customer dashboard (role landing). For this slice it opens the live booking-status screen
@@ -43,6 +45,12 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
           mainAxisSize: MainAxisSize.min,
           children: [
             const NotificationBell(),
+            IconButton(
+              icon: const Icon(Icons.forum_outlined,
+                  color: Colors.white, size: 22),
+              tooltip: 'แชท / Chat',
+              onPressed: () => context.push(ChatRoutes.list(ChatRole.customer)),
+            ),
             IconButton(
               icon: const Icon(Icons.person_outline,
                   color: Colors.white, size: 22),

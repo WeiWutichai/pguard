@@ -19,8 +19,10 @@ WebSocketChannel _defaultChannelFactory(Uri url, Map<String, String> headers) =>
 /// frames to a broadcast stream, and auto-reconnects with exponential backoff (cap 60s) using
 /// a SINGLE one-shot timer per attempt — this is push delivery, NOT `Timer.periodic` polling.
 ///
-/// Reconnecting re-runs [tokenProvider] (so a rotated/refreshed token is used) and re-opens
-/// the same URL, which re-establishes the subscription (the booking id is in the path).
+/// Reconnecting re-runs [tokenProvider] (so a rotated/refreshed token is used) and re-opens the
+/// same URL. The subscription scope is transport-defined: in the URL PATH for booking/presence
+/// (re-opening re-subscribes), or SERVER-SIDE for chat (the server auto-subscribes on open and
+/// each frame names its own `conversation_id` — NOT in the URL).
 class ReconnectingWebSocket {
   ReconnectingWebSocket({
     required this.url,
@@ -29,7 +31,8 @@ class ReconnectingWebSocket {
     WsChannelFactory factory = _defaultChannelFactory,
   }) : _factory = factory;
 
-  /// e.g. `ws://host/v1/ws/bookings/{id}` — the subscription scope is the path.
+  /// e.g. `ws://host/v1/ws/bookings/{id}` (path-scoped) or `.../ws/chat` (server-side scope;
+  /// the conversation id rides in each frame, not the URL).
   final Uri url;
 
   /// Supplies a fresh access token for the upgrade header on each (re)connect.
