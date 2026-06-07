@@ -35,7 +35,7 @@ use shared::db::create_pool;
 use shared::redis_client::create_redis_client;
 
 use crate::booking_client::HttpBookingReader;
-use crate::state::AppState;
+use crate::state::{AppState, TurnConfig};
 
 const SERVICE_NAME: &str = "calling";
 const PORT: u16 = 3008;
@@ -54,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
     // calling MINTS service-JWTs (to authorize a call against booking); it exposes no
     // /internal endpoint, so it needs only the encoding side of the shared secret.
     let service_jwt_config = ServiceJwtConfig::from_env()?;
+    // STUN/TURN config served to clients (GET /calls/ice). Fail-fast if TURN_URLS is set without
+    // TURN_SECRET (can't mint relay credentials).
+    let turn = TurnConfig::from_env()?;
     let booking_url =
         std::env::var("BOOKING_URL").unwrap_or_else(|_| "http://localhost:3005".to_string());
 
@@ -84,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         booking_reader,
         registry: Arc::new(Mutex::new(HashMap::new())),
+        turn,
     };
 
     // --- background outbox relay (publishes calling.* events) ---
@@ -111,6 +115,7 @@ async fn main() -> anyhow::Result<()> {
             put(api::connected_call::<AppState>),
         )
         .route("/calls/{id}/end", put(api::end_call::<AppState>))
+        .route("/calls/ice", get(api::ice_config::<AppState>))
         .route("/ws/call", get(api::ws::ws_call::<AppState>))
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())

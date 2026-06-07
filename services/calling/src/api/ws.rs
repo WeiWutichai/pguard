@@ -284,6 +284,10 @@ mod tests {
         fn registry(&self) -> &Registry {
             &self.registry
         }
+        fn turn(&self) -> &crate::state::TurnConfig {
+            // The WS signaling path never serves ICE; present only to satisfy the seam.
+            unreachable!("ws tests do not serve ICE config")
+        }
     }
 
     async fn router() -> Option<Router> {
@@ -437,6 +441,12 @@ mod tests {
                 60,
             ),
             registry: Arc::new(Mutex::new(HashMap::new())),
+            turn: crate::state::TurnConfig {
+                secret: None,
+                stun_urls: vec![],
+                turn_urls: vec![],
+                ttl_secs: 3600,
+            },
         };
         let app = Router::new()
             .route("/ws/call", get(ws_call::<AppState>))

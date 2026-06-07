@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../config/app_config.dart';
 import 'call_engine.dart';
 
 /// Production [CallEngine] over `flutter_webrtc`: a P2P `RTCPeerConnection` whose SDP/ICE is
@@ -22,18 +21,17 @@ class WebRtcCallEngine implements CallEngine {
   final _mediaEvent = StreamController<CallMediaEvent>.broadcast();
   final _remoteChanged = StreamController<void>.broadcast();
 
-  /// ICE config: a public STUN + (when configured) a TURN relay. TURN is REQUIRED in production —
-  /// STUN alone fails behind symmetric / carrier-grade NAT (common on Thai mobile networks). See
-  /// [AppConfig.turnUrl]. A future backend endpoint issuing short-lived TURN credentials is the
-  /// proper source (documented gap); for now it's a build-time `--dart-define`.
-  static Map<String, dynamic> _buildConfig() => {
+  /// Map the SERVED ICE list (STUN + short-lived TURN credentials from `GET /v1/calls/ice`) into
+  /// the WebRTC `RTCConfiguration`. Nothing is hard-coded: the controller fetches the list per call
+  /// and the relay credentials it carries are minted server-side + short-lived. TURN is what lets a
+  /// call connect behind symmetric / carrier-grade NAT (common on Thai mobile networks).
+  static Map<String, dynamic> _rtcConfig(List<IceServer> iceServers) => {
         'iceServers': [
-          {'urls': 'stun:stun.l.google.com:19302'},
-          if (AppConfig.turnUrl.isNotEmpty)
+          for (final s in iceServers)
             {
-              'urls': AppConfig.turnUrl,
-              'username': AppConfig.turnUsername,
-              'credential': AppConfig.turnCredential,
+              'urls': s.urls,
+              if (s.username != null) 'username': s.username,
+              if (s.credential != null) 'credential': s.credential,
             },
         ],
         'sdpSemantics': 'unified-plan',
@@ -51,7 +49,10 @@ class WebRtcCallEngine implements CallEngine {
   Object? get remoteStream => _remote;
 
   @override
-  Future<void> initialize({required bool video}) async {
+  Future<void> initialize({
+    required bool video,
+    required List<IceServer> iceServers,
+  }) async {
     // Permissions FIRST (Android + iOS) — a denied mic/camera is a friendly, generic failure.
     if (!await Permission.microphone.request().isGranted) {
       throw const CallException('Microphone permission is required for calls');
@@ -69,7 +70,7 @@ class WebRtcCallEngine implements CallEngine {
       throw const CallException('Could not access the microphone/camera');
     }
 
-    final pc = await createPeerConnection(_buildConfig());
+    final pc = await createPeerConnection(_rtcConfig(iceServers));
     _pc = pc;
     pc.onIceCandidate = (candidate) {
       final c = candidate.candidate;

@@ -21,6 +21,9 @@ jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + service-J
 reqwest = { workspace = true }          # calls booking's /internal read (service-JWT'd authz)
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
 futures = { workspace = true }          # WS stream split + relay fan-out
+hmac = { workspace = true }             # TURN REST credential (HMAC-SHA1 over `<expiry>:<user>`)
+sha1 = { workspace = true }             # coturn use-auth-secret mandates SHA-1 for the HMAC
+base64 = { workspace = true }           # base64(HMAC) → the short-lived TURN password
 tracing = { workspace = true }
 anyhow = { workspace = true }
 shared = { workspace = true }

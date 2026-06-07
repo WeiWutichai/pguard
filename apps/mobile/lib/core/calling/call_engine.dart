@@ -10,6 +10,30 @@ class SignalDescription {
   final String sdp;
 }
 
+/// A neutral ICE server (no plugin types) — one entry of what the calling service serves at
+/// `GET /v1/calls/ice`. A STUN entry carries [urls] only; a TURN entry adds a SHORT-LIVED,
+/// per-caller [username]/[credential] (the coturn REST scheme). The engine maps these straight
+/// into the WebRTC `RTCIceServer` shape — nothing here is hard-coded in the client.
+class IceServer {
+  const IceServer({required this.urls, this.username, this.credential});
+
+  /// Parse one served `ice_servers[]` entry (field names match the calling OpenAPI contract).
+  /// Tolerant of a malformed entry — a non-list `urls` or non-string members are dropped rather
+  /// than throwing, so one bad entry can't fail the whole call (the engine just skips a dud server).
+  factory IceServer.fromJson(Map<String, dynamic> json) {
+    final rawUrls = json['urls'];
+    return IceServer(
+      urls: rawUrls is List ? rawUrls.whereType<String>().toList() : const <String>[],
+      username: json['username'] is String ? json['username'] as String : null,
+      credential: json['credential'] is String ? json['credential'] as String : null,
+    );
+  }
+
+  final List<String> urls;
+  final String? username;
+  final String? credential;
+}
+
 /// A neutral trickle-ICE candidate (no plugin types).
 class SignalCandidate {
   const SignalCandidate({
@@ -42,8 +66,12 @@ class CallException implements Exception {
 /// the controller never touches the plugin and is unit-testable with a fake.
 abstract class CallEngine {
   /// Acquire mic (+camera for [video]) — requesting OS permission first — and create the peer
-  /// connection. Throws [CallException] if a required permission is denied or media is unavailable.
-  Future<void> initialize({required bool video});
+  /// connection using [iceServers] (the STUN/TURN list served by the calling service; NOT
+  /// hard-coded). Throws [CallException] if a required permission is denied or media is unavailable.
+  Future<void> initialize({
+    required bool video,
+    required List<IceServer> iceServers,
+  });
 
   /// Create the local offer (sets the local description) and return it for relaying to the peer.
   Future<SignalDescription> createOffer();

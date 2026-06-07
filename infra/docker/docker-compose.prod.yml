@@ -299,6 +299,7 @@ services:
       NOTIFICATION_URL: http://notification:3004
       BOOKING_URL: http://booking:3005
       PAYMENT_URL: http://payment:3006
+      CALLING_URL: http://calling:3008
     # The ONLY service that publishes a host port. In real prod an ingress/nginx
     # terminates TLS in front of this; here the gateway is the single ingress.
     ports:
@@ -466,6 +467,13 @@ services:
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       BOOKING_URL: http://booking:3005
       MEDIASOUP_URL: http://mediasoup:3011
+      # ICE config served at GET /v1/calls/ice. calling mints SHORT-LIVED, per-caller TURN
+      # credentials from the SAME static secret coturn runs with (REST scheme) — the secret
+      # itself is never sent to clients. STUN_URLS/TURN_URLS are the CLIENT-reachable URLs.
+      STUN_URLS: ${STUN_URLS:-stun:stun.l.google.com:19302}
+      TURN_URLS: ${TURN_URLS:?TURN_URLS is required (e.g. turn:turn.example.com:3478?transport=udp,turn:turn.example.com:3478?transport=tcp)}
+      TURN_SECRET: ${TURN_SECRET:?TURN_SECRET is required (shared with the coturn static-auth-secret)}
+      TURN_CRED_TTL_SECS: ${TURN_CRED_TTL_SECS:-3600}
     expose:
       - "3008"
 
@@ -533,6 +541,60 @@ services:
       # UDP media range only — WebRTC needs host:container 1:1, so this is unavoidable
       # and is the documented exception to "only the gateway publishes ports".
       - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-49999}:40000-49999/udp"
+    networks:
+      - pguard-prod
+
+  # coturn — STUN/TURN relay for P2P WebRTC calls (NAT traversal). When the two callers can't
+  # reach each other directly (symmetric NAT, CGNAT, mobile carrier networks), media is relayed
+  # through here. Auth is the coturn REST scheme: clients NEVER get the static secret — the
+  # calling service mints a short-lived per-caller credential from it (GET /v1/calls/ice).
+  #
+  # PUBLIC-IP / CGNAT EXCEPTION (documented): a TURN relay only works if clients can reach it.
+  #   • --external-ip MUST be the node's PUBLIC IP (TURN_EXTERNAL_IP) so the relayed candidates
+  #     it hands out are routable. On a host behind its own NAT, set it to the *public* IP and
+  #     forward 3478 + the relay range to this host.
+  #   • If THIS host is itself behind CGNAT (no inbound-routable public IP), a self-hosted relay
+  #     cannot work — use a managed TURN provider (e.g. Twilio/Cloudflare) and point TURN_URLS at
+  #     it instead. coturn here is for nodes that DO have a public IP.
+  #   • The relay UDP range is published host:container 1:1 (same WebRTC constraint as mediasoup)
+  #     and is deliberately OUTSIDE mediasoup's 40000-49999 range to avoid a collision.
+  coturn:
+    image: coturn/coturn:4.6.2
+    container_name: pguard-prod-coturn
+    restart: unless-stopped
+    command:
+      - -n                                   # no config file — flags are the source of truth
+      - --log-file=stdout
+      - --listening-port=3478
+      - --fingerprint
+      - --use-auth-secret                    # REST scheme: HMAC creds, no static user/password
+      - --static-auth-secret=${TURN_SECRET:?TURN_SECRET is required (shared with the calling service)}
+      - --realm=${TURN_REALM:-pguard.app}
+      - --external-ip=${TURN_EXTERNAL_IP:?TURN_EXTERNAL_IP is required (the node PUBLIC IP for relayed ICE candidates)}
+      - --min-port=${TURN_MIN_PORT:-50000}
+      - --max-port=${TURN_MAX_PORT:-50100}
+      - --no-cli                             # disable the admin telnet CLI
+      - --no-multicast-peers
+      # Hardening: forbid relaying TO private/loopback ranges so the relay can't be abused to
+      # reach internal services (SSRF-style). Legitimate peers are public addresses.
+      # NOTE: pguard-prod is IPv4-only (no enable_ipv6) — but we deny IPv6 private/link-local/ULA
+      # + IPv4-mapped too, so the deny posture holds even on a host with a routable public IPv6 and
+      # can't be re-opened by anyone later flipping IPv6 on without also revisiting this list.
+      - --no-loopback-peers
+      - --denied-peer-ip=10.0.0.0-10.255.255.255
+      - --denied-peer-ip=172.16.0.0-172.31.255.255
+      - --denied-peer-ip=192.168.0.0-192.168.255.255
+      - --denied-peer-ip=169.254.0.0-169.254.255.255
+      - --denied-peer-ip=100.64.0.0-100.127.255.255
+      - --denied-peer-ip=::ffff:0:0-::ffff:255.255.255.255
+      - --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+      - --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+    ports:
+      # STUN/TURN listening port (UDP + TCP) and the relay UDP range — all host:container 1:1
+      # (WebRTC constraint). Documented exception to "only the gateway publishes ports".
+      - "${TURN_LISTEN_PORT:-3478}:3478/udp"
+      - "${TURN_LISTEN_PORT:-3478}:3478/tcp"
+      - "${TURN_MIN_PORT:-50000}-${TURN_MAX_PORT:-50100}:50000-50100/udp"
     networks:
       - pguard-prod
 

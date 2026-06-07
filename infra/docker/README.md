@@ -112,13 +112,15 @@ Each service still gets its own **image** (`pguard/<svc>:<tag>`), wired in
 | otp | 3003 | presence | 3009 |
 | notification | 3004 | chat | 3010 |
 | booking | 3005 | mediasoup | 3011 (ctrl) + 40000-49999/udp |
+| | | coturn | 3478/udp+tcp + 50000-50100/udp (relay) |
 
 ### Required secrets (no defaults)
 
 `POSTGRES_PASSWORD` · `JWT_SECRET` · `SERVICE_JWT_SECRET` · `MINIO_ROOT_USER` ·
 `MINIO_ROOT_PASSWORD` · `GRAFANA_ADMIN_PASSWORD` · `CORS_ALLOWED_ORIGINS` ·
 `MEDIASOUP_ANNOUNCED_IP` · `INET_SMS_USERNAME`/`INET_SMS_PASSWORD`/`INET_SMS_SENDER`
-(set `SMS_DISABLED=true` to skip the SMS gateway).
+(set `SMS_DISABLED=true` to skip the SMS gateway) · `TURN_SECRET` ·
+`TURN_EXTERNAL_IP` · `TURN_URLS` (see **TURN relay** below).
 
 ### Build & run
 
@@ -154,6 +156,57 @@ docker run --rm pguard/api-gateway:0.1.0 id
 # confirm no source/toolchain in the runtime image
 docker run --rm pguard/api-gateway:0.1.0 sh -c 'ls /usr/local/cargo 2>/dev/null; which cargo gcc rustc 2>/dev/null; echo none'
 ```
+
+### TURN relay (calling NAT traversal)
+
+P2P WebRTC calls fall back to a TURN relay when the two phones can't reach each other directly
+(symmetric NAT, CGNAT, Thai mobile carriers). The `coturn` service runs the relay; the **calling**
+service serves the ICE list at `GET /v1/calls/ice` with **short-lived, per-caller** credentials
+minted from `TURN_SECRET` (coturn REST scheme — `username = "<expiry_unix>:<user_id>"`,
+`credential = base64(HMAC-SHA1(TURN_SECRET, username))`). The static secret is **never** sent to a
+client; the mobile app builds its `RTCPeerConnection` purely from the served list (nothing
+hard-coded).
+
+TURN env (calling + coturn share `TURN_SECRET`):
+
+| Var | Used by | Meaning |
+|---|---|---|
+| `TURN_SECRET` | coturn + calling | coturn `static-auth-secret`; calling mints creds from it |
+| `TURN_EXTERNAL_IP` | coturn | the node's **public** IP (announced in relayed ICE candidates) |
+| `TURN_URLS` | calling | client-reachable relay URL(s), e.g. `turn:turn.example.com:3478?transport=udp,…tcp` |
+| `STUN_URLS` | calling | public STUN (default `stun:stun.l.google.com:19302`) |
+| `TURN_REALM` | coturn | realm (default `pguard.app`; the verification snippet/`.env.perf` use `pguard.local`). Cosmetic for auth — the REST credential HMACs only `<expiry>:<user>`+secret, **not** the realm, so any value works |
+| `TURN_CRED_TTL_SECS` | calling | credential lifetime (default 3600); client refetches before expiry |
+| `TURN_MIN_PORT`/`TURN_MAX_PORT` | coturn | relay UDP range (default 50000–50100; **outside** mediasoup's 40000–49999) |
+
+**Public-IP / CGNAT exception.** A self-hosted relay only works if clients can reach it:
+`TURN_EXTERNAL_IP` must be a routable **public** IP and 3478 + the relay range must be forwarded to
+the host. If the host is itself behind CGNAT (no inbound-routable IP), a self-hosted relay can't
+work — point `TURN_URLS` at a managed provider (Twilio/Cloudflare) instead. The relay UDP range is
+host-published 1:1 (the same WebRTC constraint as mediasoup) and is the documented exception to
+"only the gateway publishes ports".
+
+**Verified** (coturn 4.6.2, `turnutils_uclient`) — a credential minted by the same scheme
+`calling` uses authenticates against a live relay, and a forged one is rejected:
+
+```bash
+SECRET=… ; EXPIRY=$(( $(date +%s) + 3600 )) ; U="${EXPIRY}:user-1"
+CRED=$(printf '%s' "$U" | openssl dgst -sha1 -hmac "$SECRET" -binary | base64)
+docker run -d --name turn -p 3478:3478/udp -p 3478:3478/tcp -p 50000-50010:50000-50010/udp \
+  coturn/coturn:4.6.2 -n --listening-port=3478 --fingerprint --use-auth-secret \
+  --static-auth-secret="$SECRET" --realm=pguard.local --external-ip=127.0.0.1 \
+  --min-port=50000 --max-port=50010 --no-cli
+# POSITIVE → "success" + "Received relay addr: 127.0.0.1:5000x"  (credential ACCEPTED)
+docker exec turn turnutils_uclient -v -y -u "$U" -w "$CRED"  -p 3478 -n 1 127.0.0.1
+# NEGATIVE → "ERROR: Cannot complete Allocation"               (wrong credential REJECTED, 401)
+docker exec turn turnutils_uclient -v -y -u "$U" -w WRONG     -p 3478 -n 1 127.0.0.1
+```
+
+The `domain::turn_credential` unit test pins the byte-identical golden vector
+(`hLZrI4Uz6/iVAWCFqNO6CjmPdYs=` for `super-secret` / `1000000000:user-abc`). A full 2-device
+cross-network call (ICE `connected` + two-way media) is a **manual** acceptance step: run the mobile
+app on two phones on **different** networks (one on mobile data), place a call, and confirm the WebRTC
+stats report an `iceConnectionState=connected` pair using a `relay` candidate.
 
 ## Still TODO
 
