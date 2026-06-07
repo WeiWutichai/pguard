@@ -104,9 +104,11 @@ Required values to fill (the compose fails fast if any are empty):
 (already set to `https://pguard.innoveraappcenter.com`).
 
 - **SMS stays OFF by default** (`SMS_DISABLED` defaults to `true` in the staging compose). The
-  `INET_SMS_*` placeholders only need to be non-empty. To actually send OTP SMS, comment out the
-  `SMS_DISABLED` line in `docker-compose.staging.yml` (the gate is presence-based — `false` still
-  disables) and put real INET creds in `.env.staging`.
+  `INET_SMS_*` placeholders only need to be non-empty. The otp gate is **value-aware**: only a
+  truthy value (`true/1/yes/on/y`) disables SMS; `false`/`0`/empty/**unset** ENABLE it. To actually
+  send OTP SMS, set `SMS_DISABLED=false` in `.env.staging` and put real INET creds there. Do **not**
+  delete the `SMS_DISABLED` line from `docker-compose.staging.yml` — without it the service runs
+  with SMS ON.
 - `infra/.env.staging` is **gitignored** (matches `.env`/`.env.*.local`). Never commit it.
 
 Then export the image coordinates + secrets for this shell:
@@ -263,7 +265,8 @@ docker run --rm \
 Add a cron entry (e.g. `crontab -e`) that renews and reloads nginx:
 
 ```cron
-0 3 * * * docker run --rm -v /etc/letsencrypt:/etc/letsencrypt -v /var/www/certbot:/var/www/certbot certbot/certbot renew --webroot -w /var/www/certbot --quiet && docker compose -f /root/pguard/infra/docker/docker-compose.prod.yml -f /root/pguard/infra/docker/docker-compose.staging.yml exec nginx nginx -s reload
+# `exec -T` (no TTY) — cron has no terminal, so a bare `exec` errors with "input device is not a TTY".
+0 3 * * * docker run --rm -v /etc/letsencrypt:/etc/letsencrypt -v /var/www/certbot:/var/www/certbot certbot/certbot renew --webroot -w /var/www/certbot --quiet && docker compose -f /root/pguard/infra/docker/docker-compose.prod.yml -f /root/pguard/infra/docker/docker-compose.staging.yml exec -T nginx nginx -s reload
 ```
 
 ---

@@ -115,10 +115,13 @@ services:
     build: !reset null
     environment:
       # Staging defaults the SMS gateway OFF (no SMS spend, no real phone needed).
-      # The otp service gate is PRESENCE-based — ANY value (incl. "false") disables
-      # SMS. So `${SMS_DISABLED:-true}` means: unset ⇒ disabled. To actually SEND
-      # real SMS while load-testing OTP, COMMENT THIS LINE OUT (don't set it to
-      # "false") and supply real INET_SMS_* creds in infra/.env.staging.
+      # The otp gate is VALUE-AWARE (shared::config::parse_env_bool): only a truthy
+      # value — true/1/yes/on/y — disables SMS; false/0/empty/UNSET keep SMS ENABLED.
+      # So `${SMS_DISABLED:-true}` means: unset on the host ⇒ "true" in the container
+      # ⇒ disabled. KEEP THIS LINE — removing it lets the container run with SMS_DISABLED
+      # unset, which the otp service treats as SMS ENABLED. To actually SEND real SMS
+      # while testing OTP, set `SMS_DISABLED=false` in infra/.env.staging AND supply
+      # real INET_SMS_* creds there.
       SMS_DISABLED: ${SMS_DISABLED:-true}
 
   notification:
@@ -152,11 +155,12 @@ services:
   mediasoup:
     image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/mediasoup:${IMAGE_TAG:-latest}
     build: !reset null
-    # MEDIASOUP_ANNOUNCED_IP is already `${MEDIASOUP_ANNOUNCED_IP:?}` in prod — set it
-    # to the VPS PUBLIC IP in infra/.env.staging so WebRTC ICE advertises a reachable
-    # address. The UDP media range (40000-49999/udp) is published by the prod file and
-    # inherited here (the one WebRTC host-port exception). See the runbook for the
-    # Tailscale 41641 / RTC-port conflict workaround.
+    # MEDIASOUP_ANNOUNCED_IP is already `${MEDIASOUP_ANNOUNCED_IP:?}` in prod — set it to
+    # the VPS PUBLIC IP in infra/.env.staging so WebRTC ICE advertises a reachable address.
+    # The UDP media range is inherited from prod, which now publishes it SYMMETRICALLY off
+    # RTC_MIN_PORT/RTC_MAX_PORT (host==container==the SFU worker's bound range). staging
+    # narrows that range to 42000-42199 via infra/.env.staging.example — avoiding Tailscale's
+    # 41641 and the 10k-port publish — so no `ports` override is needed here. See the runbook.
 
   # web-admin ⇒ first-class in staging (prod gates it behind the `ui` profile).
   web-admin:
