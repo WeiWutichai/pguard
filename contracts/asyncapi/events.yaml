@@ -64,6 +64,11 @@ channels:
   userCompromised:
     address: pguard.events.user.compromised
     messages: { compromised: { $ref: '#/components/messages/UserCompromised' } }
+  userApproved:
+    address: pguard.events.user.approved
+    messages: { approved: { $ref: '#/components/messages/UserApproved' } }
+  # pguard.events.user.rejected is a RESERVED topic (shared-events) with no producer/consumer
+  # yet — login already blocks non-approved accounts. Documented here when a consumer is added.
 
 operations:
   onBookingJobAccepted:
@@ -82,6 +87,14 @@ operations:
     action: receive
     channel: { $ref: '#/channels/userCompromised' }
     summary: identity consumes this → force-revoke-all sessions for the user.
+  onUserApproved:
+    action: receive
+    channel: { $ref: '#/channels/userApproved' }
+    summary: >-
+      Producer = profile (emitted via its transactional outbox, atomic with the
+      guard_profiles approval flip). Consumer = identity → flips its OWN
+      users.approval_status to 'approved' so the account can log in (idempotent by event_id).
+      Closes the approval→login loop with no cross-schema write.
 
 components:
   messages:
@@ -121,6 +134,10 @@ components:
       name: UserCompromised
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_UserRef' }
+    UserApproved:
+      name: UserApproved
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_UserApproved' }
 
   schemas:
     Envelope:
@@ -260,3 +277,16 @@ components:
               properties:
                 user_id: { type: string, format: uuid }
                 reason: { type: string, example: refresh_token_reuse_detected }
+
+    EnvelopeOf_UserApproved:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [user_id, role]
+              properties:
+                user_id: { type: string, format: uuid }
+                role: { type: string, enum: [guard, customer], description: Informational; identity flips by user_id. }
+                approved_at: { type: string, format: date-time }

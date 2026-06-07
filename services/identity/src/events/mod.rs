@@ -1,8 +1,15 @@
-//! Event layer — the NATS JetStream consumer for `pguard.events.user.compromised`.
-//! Identity is the consumer of record for that topic: on a compromise event it runs the
-//! SAME force-revoke-all logic as the internal HTTP route (`repo::revoke_all`), so an
-//! incident-response signal from any service instantly invalidates the user's tokens
-//! (CLAUDE.md "Token revocation" + NATS topic `pguard.events.user.compromised`).
+//! Event layer — identity's NATS JetStream consumers.
+//!
+//! This module (`mod.rs`) hosts the `pguard.events.user.compromised` consumer: on a compromise
+//! event it runs the SAME force-revoke-all logic as the internal HTTP route (`repo::revoke_all`),
+//! so an incident-response signal from any service instantly invalidates the user's tokens
+//! (CLAUDE.md "Token revocation").
+//!
+//! [`approved`] hosts a second, independent durable consumer for `pguard.events.user.approved`
+//! (emitted by profile on admin approval) which flips identity's own `users.approval_status` so
+//! the account can log in — closing the approval→login loop with no cross-schema write.
+
+pub mod approved;
 
 use futures::StreamExt;
 use serde::Deserialize;

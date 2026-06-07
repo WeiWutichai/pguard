@@ -13,11 +13,13 @@
 use std::str::FromStr;
 
 use chrono::{DateTime, NaiveDate, Utc};
+use serde_json::Value;
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use shared::error::AppError;
 use shared::models::ApprovalStatus;
+use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     CustomerProfileResponse, GuardProfileResponse, InternalGuard, UpsertCustomerProfileRequest,
@@ -224,17 +226,26 @@ pub async fn list_approved_guards(db: &PgPool, limit: i64) -> Result<Vec<Interna
     Ok(rows)
 }
 
-/// Admin: set a guard profile's approval status (row-locked + transition-checked).
+/// Admin: set a guard profile's approval status (row-locked + transition-checked) AND emit
+/// the matching account event into the outbox — IN ONE TRANSACTION.
 ///
 /// Reads the current status under `FOR UPDATE`, applies the pure
 /// [`crate::domain::approval::can_transition`] gate, and writes only if legal — so two
-/// concurrent admins cannot both finalize the same pending profile into conflicting
-/// states. Returns the updated profile (FULL account number; admin endpoints don't mask).
-#[tracing::instrument(skip(db), fields(user_id = %user_id, target = %target))]
+/// concurrent admins cannot both finalize the same pending profile into conflicting states.
+///
+/// The status flip and the outbox row are **atomic**: an `Approved` transition writes a
+/// `user.approved` event (and `Rejected` → `user.rejected`) in the same tx, so the event is
+/// emitted iff the flip commits — never one without the other. identity consumes
+/// `user.approved` and flips ITS OWN `users.approval_status` (no cross-schema write here;
+/// profile only ever touches `profile.*` + its outbox). `role` is informational metadata for
+/// the consumer (the route already determines it — `guard`). Returns the updated profile
+/// (FULL account number; admin endpoints don't mask).
+#[tracing::instrument(skip(db), fields(user_id = %user_id, target = %target, role = %role))]
 pub async fn set_approval_status(
     db: &PgPool,
     user_id: Uuid,
     target: ApprovalStatus,
+    role: &str,
 ) -> Result<GuardProfileResponse, AppError> {
     let mut tx = db.begin().await?;
 
@@ -275,8 +286,81 @@ pub async fn set_approval_status(
         .fetch_one(&mut *tx)
         .await?;
 
+    // Atomic with the flip: enqueue the account event for identity to consume. Only an
+    // APPROVAL needs an event — it's the login UNBLOCKER identity must react to. A rejection
+    // needs none: login already blocks every non-`approved` account, so there is no consumer
+    // (emitting a consumer-less `user.rejected` would just accrue orphan messages). The
+    // `user.rejected` topic stays reserved in shared-events for a future audit/notify consumer.
+    if let Some(topic) = approval_event_topic(&target) {
+        let now = Utc::now();
+        let envelope = EventEnvelope::new(
+            topic,
+            Uuid::new_v4(),
+            serde_json::json!({ "user_id": user_id, "role": role, "approved_at": now }),
+        );
+        let payload = serde_json::to_value(&envelope)
+            .map_err(|e| AppError::Internal(format!("serialize outbox envelope: {e}")))?;
+        enqueue_outbox(&mut tx, topic, &payload).await?;
+    }
+
     tx.commit().await?;
     guard_row_from_tuple(row).into_response()
+}
+
+/// The account-event topic to emit for an approval transition. Only `Approved` produces an
+/// event (the login unblocker identity consumes); `Rejected`/`Pending` emit nothing (no
+/// consumer — login already blocks them).
+fn approval_event_topic(target: &ApprovalStatus) -> Option<&'static str> {
+    match target {
+        ApprovalStatus::Approved => Some(topics::USER_APPROVED),
+        ApprovalStatus::Rejected | ApprovalStatus::Pending => None,
+    }
+}
+
+// ----- Transactional outbox (producer + relay support) -----
+
+/// One unpublished outbox row, as the relay reads it.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct OutboxRow {
+    pub id: Uuid,
+    pub topic: String,
+    /// The serialized `EventEnvelope` (JSONB).
+    pub payload: Value,
+}
+
+/// Insert one outbox row inside the caller's transaction (atomic with the business write).
+async fn enqueue_outbox(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    topic: &str,
+    envelope_json: &Value,
+) -> Result<(), AppError> {
+    sqlx::query("INSERT INTO profile.outbox (topic, payload) VALUES ($1, $2)")
+        .bind(topic)
+        .bind(envelope_json)
+        .execute(&mut **tx)
+        .await?;
+    Ok(())
+}
+
+/// Fetch up to `limit` unpublished outbox rows, oldest first (relay drain).
+pub async fn fetch_unpublished(db: &PgPool, limit: i64) -> Result<Vec<OutboxRow>, AppError> {
+    let rows = sqlx::query_as::<_, OutboxRow>(
+        "SELECT id, topic, payload FROM profile.outbox \
+         WHERE published_at IS NULL ORDER BY created_at LIMIT $1",
+    )
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Stamp one outbox row published (called only after a successful NATS publish).
+pub async fn mark_published(db: &PgPool, id: Uuid) -> Result<(), AppError> {
+    sqlx::query("UPDATE profile.outbox SET published_at = now() WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(())
 }
 
 // ----- Customer profile -----
@@ -534,10 +618,26 @@ mod db_tests {
         assert_eq!(fetched.approval_status, ApprovalStatus::Pending);
 
         // 3) approve — legal transition writes; the status moves to approved.
-        let approved = set_approval_status(&pool, user_id, ApprovalStatus::Approved)
+        let approved = set_approval_status(&pool, user_id, ApprovalStatus::Approved, "guard")
             .await
             .expect("approve");
         assert_eq!(approved.approval_status, ApprovalStatus::Approved);
+
+        // 3a) ATOMIC: a `user.approved` outbox row was written in the SAME tx as the flip,
+        //     carrying this user_id — the only coupling to identity (no cross-schema write).
+        let (evt_count,): (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM profile.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'user_id' = $2",
+        )
+        .bind(topics::USER_APPROVED)
+        .bind(user_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count outbox");
+        assert_eq!(
+            evt_count, 1,
+            "approve emits exactly one user.approved outbox row"
+        );
 
         // 3b) a guard re-upserting their own profile must NOT reset the admin's decision
         //     (the ON CONFLICT clause deliberately omits approval_status).
@@ -551,7 +651,7 @@ mod db_tests {
         );
 
         // 4) re-reject after approve is illegal (terminal) → Conflict, status unchanged.
-        let err = set_approval_status(&pool, user_id, ApprovalStatus::Rejected)
+        let err = set_approval_status(&pool, user_id, ApprovalStatus::Rejected, "guard")
             .await
             .expect_err("approved is terminal");
         assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
@@ -574,6 +674,10 @@ mod db_tests {
         // cleanup
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
+            .bind(user_id.to_string())
             .execute(&pool)
             .await;
     }

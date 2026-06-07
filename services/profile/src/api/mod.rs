@@ -351,7 +351,11 @@ pub async fn admin_approve_guard<S: ProfileDeps>(
     Path(user_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<GuardProfileResponse>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
-    let profile = repo::set_approval_status(state.db(), user_id, ApprovalStatus::Approved).await?;
+    // The approve emits `user.approved` atomically (outbox) → identity flips its own
+    // `users.approval_status` so the guard can finally log in. `role = guard` (this route).
+    let profile =
+        repo::set_approval_status(state.db(), user_id, ApprovalStatus::Approved, ROLE_GUARD)
+            .await?;
     Ok(Json(ApiResponse::success(profile)))
 }
 
@@ -367,7 +371,9 @@ pub async fn admin_reject_guard<S: ProfileDeps>(
         // Reason is contextual metadata, not PII — safe to log; persisting it is a follow-up.
         tracing::info!(reason = %r, "guard profile rejected with reason");
     }
-    let profile = repo::set_approval_status(state.db(), user_id, ApprovalStatus::Rejected).await?;
+    let profile =
+        repo::set_approval_status(state.db(), user_id, ApprovalStatus::Rejected, ROLE_GUARD)
+            .await?;
     Ok(Json(ApiResponse::success(profile)))
 }
 
