@@ -1,7 +1,8 @@
-// B1.4 — Available guards discovery. GET /booking/available-guards at 30 RPS.
-// Exercises the 5-JOIN Haversine radius query.
-// PREREQ: seed ~200 guards with online GPS rows inside a 50km radius of the
-// query point (see ../README.md §Seeding).
+// B1.4 — Available-guards discovery. GET /v1/available-guards at 30 RPS (gateway → booking →
+// service-JWT fan-out to profile's approved catalog + rating summaries). Replica-served reads
+// (C5.3). NOTE v2 takes NO lat/lng/radius query params (the v1 5-JOIN Haversine is gone —
+// discovery returns the approved catalog enriched with rating summaries).
+// PREREQ: seed ~200 approved guards (seed-v2.sql).
 // Run: k6 run -e TEST_PHONE=08... -e TEST_PASSWORD=... available-guards.js
 import http from 'k6/http';
 import { check } from 'k6';
@@ -19,18 +20,20 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ['p(99)<2500'], // placeholder — Haversine 5-JOIN; record real p99
+    'http_req_duration{name:available-guards}': ['p(99)<2500'], // tag-scoped → clean p99 (excl. setup login)
     http_req_failed: ['rate<0.01'],
   },
 };
 
-const LAT = __ENV.LAT || '13.7563';
-const LNG = __ENV.LNG || '100.5018';
-const RADIUS = __ENV.RADIUS_KM || '50';
-const TOKEN = login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!');
+// k6 forbids HTTP in the init context — log in ONCE in setup() and pass the token to the VUs.
+export function setup() {
+  return { token: login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!') };
+}
 
-export default function () {
-  const url = `${BASE_URL}/booking/available-guards?lat=${LAT}&lng=${LNG}&radius_km=${RADIUS}`;
-  const res = http.get(url, { headers: authHeaders(TOKEN), tags: { name: 'available-guards' } });
+export default function (data) {
+  const res = http.get(`${BASE_URL}/v1/available-guards`, {
+    headers: authHeaders(data.token),
+    tags: { name: 'available-guards' },
+  });
   check(res, { 'discover 200': (r) => r.status === 200 });
 }

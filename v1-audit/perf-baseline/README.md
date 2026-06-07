@@ -1,93 +1,86 @@
-# Performance Baseline (Phase 0.5 · B1)
+# Performance Baseline (Phase 0.5 · B1) — v2 harness
 
-> **Purpose:** capture v1 performance numbers **before** the v2 migration so every
-> later phase can be gated on "p99 must stay within +20% of baseline." These are
-> relative-comparison numbers, not production SLAs.
+> **Purpose:** capture **v2** performance numbers on the prod stack (per-service schemas behind
+> the gateway, pgbouncer + streaming read replica) and evaluate the **C5.3 replica gate**. These
+> are relative-comparison numbers, not production SLAs. The v1 baseline was never captured and v1
+> is a read-only reference (not run), so the gate is framed as replica-served vs primary-served.
+>
+> Captured numbers live in `results.md`.
 
 ## What this measures
 
-Six k6 scripts in `scripts/`, one per hot path identified in the audit:
+k6 scripts in `scripts/` (one per hot path), all v2:
 
-| # | Script | Path | Load | What it stresses |
-|---|---|---|---|---|
-| 1 | `gps-websocket.js` | `WS /ws/track` | 10→100→500→1000 conns, 1 upd/s | WS fan-in + 1/s server rate-limit drop |
-| 2 | `booking-create.js` | `POST /booking/requests` | 50 RPS · 2 min | write path + outbox |
-| 3 | `list-conversations.js` | `GET /chat/conversations?role=customer` | 20 RPS · 1 min | **N+1 enrichment** (100 convos) |
-| 4 | `available-guards.js` | `GET /booking/available-guards` | 30 RPS · 1 min | **5-JOIN Haversine** (200 guards/50km) |
-| 5 | `payment-create.js` | `POST /booking/payments` | 20 RPS · 1 min | DB write contention (cost_summary coupling) |
-| 6 | `auth-login.js` | `POST /auth/login/mobile` | 10 RPS · 1 min | **Argon2 verify** (CPU-bound sizing) |
+| Script | Path (v2) | Load | Stresses |
+|---|---|---|---|
+| `auth-login.js` | `POST /v1/auth/login` (gateway) | 10 RPS | Argon2 verify (CPU) |
+| `available-guards.js` | `GET /v1/available-guards` (gateway) | 30 RPS | discovery fan-out (profile+rating), replica |
+| `booking-create.js` | `POST /v1/bookings` (gateway) | 50 RPS | write path + outbox |
+| `payment-create.js` | `POST /v1/payments` (gateway) | 20 RPS | write + service-JWT booking read + idempotent charge |
+| `list-conversations.js` | `GET /conversations?role=` (**direct→chat**) | 20 RPS | the N+1-FIXED list (single query) |
+| `ratings.js` | `GET /guards/{id}/ratings` (**direct→rating**) | 30 RPS | public rating summary, replica (C5.3 gate) |
+| `admin-guard-profiles.js` | `GET /v1/admin/guard-profiles` (gateway) | 20 RPS | admin list, replica + §30 audit (C5.3 gate) |
+| `gps-websocket.js` | `WS /ws/track` (**direct→presence**) | 10→100→500 conns | WS fan-in + ≥1 s/conn drop |
 
-All scripts hit the **nginx gateway** and share `scripts/_common.js` (login + auth headers).
+`_common.js` logs in via `POST /v1/auth/login {identifier,password}` in `setup()` (k6 forbids HTTP
+in the init context) and shares auth headers. **Routing gap:** the gateway does NOT route chat /
+presence / rating in v2 — those scripts hit the service directly (the harness runs k6 *on the
+compose network*, so `chat:3010` / `presence:3009` / `rating:3007` resolve by DNS).
 
-## Environment (fill in when you run)
-
-- Target: ☐ local Docker Compose (`docker-compose.yml`, single Postgres, no replica) ☐ staging
-- Host specs: _CPU / RAM_
-- Date captured: _YYYY-MM-DD_
-- k6 version: _`k6 version`_
-
-> **Note:** local Compose has a single Postgres with no read replica and no pgbouncer,
-> so numbers are **optimistic vs production**. That is fine — v2 is measured on the
-> same rig, so the *relative* delta is what the gate cares about.
-
-## Prerequisites
-
-1. **k6 installed** — `brew install k6` (macOS) or https://k6.io/docs/get-started/installation/
-2. **v1 stack running** — `docker compose up -d` in `guard-dispatch/`, gateway reachable at `BASE_URL`.
-3. **Seed data** (see below). Scripts have safe defaults but seeded data is required for #3, #4, #5 to produce meaningful numbers.
-
-### Seeding (§Seeding)
-
-**`scripts/seed.sql` does all of this in one idempotent, re-runnable pass** (validated
-against the real Postgres parser). It creates exactly what the scripts need:
-
-| Seeded | For | Detail |
-|---|---|---|
-| 1 customer (`0820000001`) + 1 guard (`0810000001`) | all scripts (login) | password `Password123!` (real Argon2id hash inlined) |
-| 100 conversations on the customer (+ participants + a message each) | #3 list-conversations | exercises the N+1 enrichment |
-| 200 approved, **online** guards w/ GPS within ~25 km of 13.7563,100.5018 | #4 available-guards | `auth.users` + `guard_profiles` + `tracking.guard_locations` |
-| 100 customer-owned `request_id` (the conversation-backing requests) | #5 payment-create | reused as the payable pool |
-
-Run it:
+## Reproduce (full, no manual SQL)
 
 ```bash
-docker compose exec -T postgres-db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" < seed.sql
+# 0) secrets (throwaway, local-only)
+cp infra/.env.perf.example infra/.env.perf      # already gitignored
+set -a; source infra/.env.perf; set +a
+
+# 1) build (custom primary image + the Rust services exercised here)
+docker compose -f infra/docker/docker-compose.prod.yml build \
+  postgres api-gateway identity profile booking payment rating chat presence
+
+# 2) clean boot — fresh `down -v` proves the replica-init fix (no manual steps)
+docker compose -f infra/docker/docker-compose.prod.yml down -v
+docker compose -f infra/docker/docker-compose.prod.yml up -d \
+  postgres postgres-replica pgbouncer nats redis \
+  identity profile booking payment rating chat presence api-gateway
+
+# confirm the replica is streaming (no manual SQL was needed to get here):
+docker exec pguard-prod-postgres         psql -U pguard -c "SELECT client_addr,state FROM pg_stat_replication;"   # → streaming
+docker exec pguard-prod-postgres-replica psql -U pguard -tAc "SELECT pg_is_in_recovery();"                        # → t
+
+# 3) migrate (idempotent; applies contracts/db/migrations/<svc>/*.sql to the primary → replica via WAL)
+tooling/scripts/migrate.sh
+
+# 4) seed the v2 schema
+docker compose -f infra/docker/docker-compose.prod.yml exec -T postgres \
+  psql -U pguard -d pguard < v1-audit/perf-baseline/scripts/seed-v2.sql
+
+# 5) run k6 AS A CONTAINER ON THE COMPOSE NETWORK (reaches the gateway + the non-routed services)
+SC="$PWD/v1-audit/perf-baseline/scripts"
+run() { docker run --rm --network pguard-prod -v "$SC:/scripts:ro" \
+  -e BASE_URL=http://api-gateway:3000 -e CHAT_URL=http://chat:3010 \
+  -e RATING_URL=http://rating:3007 -e PRESENCE_WS=ws://presence:3009 -e DURATION=45s \
+  grafana/k6:latest run --no-color --summary-trend-stats="avg,med,p(95),p(99),max,count" "/scripts/$1"; }
+
+run auth-login.js; run available-guards.js; run booking-create.js; run payment-create.js
+run list-conversations.js; run ratings.js; run admin-guard-profiles.js
+for v in 10 100 500; do
+  docker run --rm --network pguard-prod -v "$SC:/scripts:ro" -e PRESENCE_WS=ws://presence:3009 \
+    -e BASE_URL=http://api-gateway:3000 -e STAGE_VUS=$v -e HOLD=30s \
+    grafana/k6:latest run --no-color --summary-trend-stats="avg,med,p(95),p(99),max" /scripts/gps-websocket.js
+done
 ```
 
-Then capture the request IDs for `payment-create.js`:
+Read `http_req_duration{name:…}` p99 (tag-scoped → excludes the setup login) + `http_req_failed`
+and transcribe into `results.md`. For GPS-WS read `gps_ack_latency_ms` + `gps_connection_failures`.
 
-```bash
-export REQUEST_IDS=$(docker compose exec -T postgres-db \
-  psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -tAc \
-  "SELECT id FROM booking.guard_requests WHERE description='k6-seed'" | paste -sd, -)
-```
+### C5.3 gate (replica-served vs primary-served)
 
-> ⚠️ Seed data only — never run `seed.sql` against a real/production database.
+Run the read paths (available-guards / admin-guard-profiles / ratings) once as deployed
+(replica-served), then again with reads forced to the primary (an override file pointing each
+service's `DATABASE_READ_URL` at `pgbouncer:6432`), and compare p99. PASS if
+replica p99 ≤ primary p99 × 1.20. (Procedure + numbers in `results.md`.)
 
-## Running
-
-```bash
-cd v1-audit/perf-baseline/scripts
-export BASE_URL=http://localhost:8080 WS_URL=ws://localhost:8080
-export TEST_PHONE=0820000001 TEST_PASSWORD='Password123!'
-export GUARD_PHONE=0810000001 GUARD_PASSWORD='Password123!'
-
-# 1) GPS WS — run once per concurrency level, record each row
-for n in 10 100 500 1000; do k6 run -e STAGE_VUS=$n gps-websocket.js | tee gps_$n.txt; done
-
-# 2–6) HTTP paths
-k6 run booking-create.js
-k6 run -e ROLE=customer list-conversations.js
-k6 run available-guards.js
-k6 run payment-create.js          # REQUEST_IDS exported from the seed step above
-k6 run auth-login.js
-```
-
-Read p50/p95/p99 from k6's `http_req_duration` summary (and `gps_ack_latency_ms`
-for #1). Transcribe into `results.md`.
-
-## Output
-
-Fill `results.md`. Those numbers become the regression gate referenced by every
-phase exit criterion in `06-migration-plan.md`.
+> ⚠️ `seed-v2.sql` is synthetic perf data — never run it against a real database.
+> Seeded accounts log in with `Password123!` (customer `0820000001`, guard `0810000001`,
+> admin `0800000001`).

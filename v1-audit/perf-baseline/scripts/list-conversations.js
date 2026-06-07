@@ -1,10 +1,13 @@
-// B1.3 — List conversations. GET /chat/conversations?role=customer at 20 RPS for 1 min.
-// Exercises the known N+1 (chat::service::list_conversations enriches each row).
-// PREREQ: seed the login user with ~100 conversations (see ../README.md §Seeding).
+// B1.3 — List conversations. GET /conversations?role=customer at 20 RPS.
+// The N+1-fixed read (chat::repo::list_conversations is ONE query enriching all rows).
+// NOTE: chat is NOT wired into the gateway routing table in v2, so this hits the chat service
+// DIRECTLY at CHAT_URL (reached by Docker DNS — chat:3010 — when k6 runs on the compose network)
+// with the same Bearer the gateway login issued; chat validates the JWT itself (defense-in-depth).
+// PREREQ: seed the customer with ~100 conversations (seed-v2.sql).
 // Run: k6 run -e TEST_PHONE=08... -e TEST_PASSWORD=... list-conversations.js
 import http from 'k6/http';
 import { check } from 'k6';
-import { BASE_URL, login, authHeaders } from './_common.js';
+import { CHAT_URL, login, authHeaders } from './_common.js';
 
 export const options = {
   scenarios: {
@@ -18,17 +21,20 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ['p(99)<2000'], // placeholder — N+1 expected to be slow; record real p99
+    'http_req_duration{name:list-conversations}': ['p(99)<2000'], // tag-scoped → clean p99 (excl. setup login)
     http_req_failed: ['rate<0.01'],
   },
 };
 
 const ROLE = __ENV.ROLE || 'customer';
-const TOKEN = login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!');
 
-export default function () {
-  const res = http.get(`${BASE_URL}/chat/conversations?role=${ROLE}`, {
-    headers: authHeaders(TOKEN),
+export function setup() {
+  return { token: login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!') };
+}
+
+export default function (data) {
+  const res = http.get(`${CHAT_URL}/conversations?role=${ROLE}`, {
+    headers: authHeaders(data.token),
     tags: { name: 'list-conversations' },
   });
   check(res, {

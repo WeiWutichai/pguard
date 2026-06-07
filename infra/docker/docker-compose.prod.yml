@@ -94,7 +94,14 @@ x-rust-service: &rust-service
 services:
   # ═══════════════════════════════ STATEFUL / INFRA ═════════════════════════════
   postgres:
-    image: postgres:17
+    # Custom primary image bakes the replication bootstrap into /docker-entrypoint-initdb.d/
+    # (COPY + chmod +x) so it ALWAYS runs at initdb — no bind-mount race / lost exec bit on
+    # Docker Desktop (the bug that left the replica unable to base-backup). See
+    # infra/docker/postgres-primary.Dockerfile.
+    image: pguard/postgres-primary:${PGUARD_TAG:-0.1.0}
+    build:
+      context: ../..
+      dockerfile: infra/docker/postgres-primary.Dockerfile
     container_name: pguard-prod-postgres
     restart: unless-stopped
     # Primary configured for streaming replication (C5.3 read replica).
@@ -116,9 +123,8 @@ services:
       REPLICATION_PASSWORD: ${REPLICATION_PASSWORD:?REPLICATION_PASSWORD is required}
     volumes:
       - pg-data:/var/lib/postgresql/data
-      # Runs once on first init: creates the `replicator` role + a physical slot and allows
-      # streaming connections from the replica.
-      - ../db/primary-replication-init.sh:/docker-entrypoint-initdb.d/10-replication.sh:ro
+      # NOTE: the replication bootstrap is BAKED INTO the image (postgres-primary.Dockerfile),
+      # not bind-mounted — the bind-mount could miss initdb on Docker Desktop (the fixed bug).
     expose:
       - "5432"
     networks:
@@ -188,9 +194,21 @@ services:
       DB_USER: ${POSTGRES_USER:-pguard}
       DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       DB_NAME: ${POSTGRES_DB:-pguard}
+      # LISTEN on 6432 — services' DATABASE_URL + `expose` use 6432. The edoburu image defaults
+      # LISTEN_PORT to 5432, so without this pgbouncer listened on the wrong port and every
+      # DB-backed service's pool timed out (connection refused on :6432). Surfaced on the first
+      # real `up` (the prod compose had only been `config`-validated before).
+      LISTEN_PORT: "6432"
+      # postgres:17 uses scram-sha-256; tell pgbouncer to negotiate it to the upstream.
+      AUTH_TYPE: scram-sha-256
       POOL_MODE: transaction
       MAX_CLIENT_CONN: "1000"
       DEFAULT_POOL_SIZE: "20"
+      # Transaction-mode prepared-statement support (pgbouncer ≥1.21). Without it, sqlx's named
+      # prepared statements (sqlx_s_N) collide when a backend conn is reused across transactions
+      # → intermittent `prepared statement "sqlx_s_1" already exists`. pgbouncer tracks + replays
+      # prepared statements per client so the extended protocol is safe in transaction pooling.
+      MAX_PREPARED_STATEMENTS: "256"
     expose:
       - "6432"
     networks:

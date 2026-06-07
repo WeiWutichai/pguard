@@ -1,5 +1,6 @@
-// B1.2 — Booking create. POST /booking/requests at 50 RPS for 2 min.
-// Captures p50/p95/p99 latency + error rate.
+// B1.2 — Booking create. POST /v1/bookings at 50 RPS (gateway → booking). Write path.
+// v2 body = CreateBookingRequest { address, scheduled_at (RFC3339), hours, guard_count?, tip? }
+// — base_fee is server-set (no lat/lng/description/urgency like v1).
 // Run: k6 run -e TEST_PHONE=08... -e TEST_PASSWORD=... booking-create.js
 import http from 'k6/http';
 import { check } from 'k6';
@@ -17,26 +18,25 @@ export const options = {
     },
   },
   thresholds: {
-    http_req_duration: ['p(99)<1500'], // baseline gate placeholder — replace with measured +20%
+    'http_req_duration{name:booking-create}': ['p(99)<1500'], // tag-scoped → clean p99 (excl. setup login)
     http_req_failed: ['rate<0.01'],
   },
 };
 
-const TOKEN = login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!');
+export function setup() {
+  return { token: login(__ENV.TEST_PHONE || '0820000001', __ENV.TEST_PASSWORD || 'Password123!') };
+}
 
-export default function () {
-  // Matches booking::models::CreateRequestDto (verified against v1).
+export default function (data) {
   const payload = JSON.stringify({
-    location_lat: 13.7563,
-    location_lng: 100.5018,
     address: '123 Sukhumvit Rd, Bangkok',
-    description: 'k6 baseline',
-    urgency: 'medium',
-    booked_hours: 4,
+    scheduled_at: new Date(Date.now() + 86400000).toISOString(), // +1 day
+    hours: 4,
     guard_count: 1,
+    // `tip` is a Decimal (rust_decimal serde-str) → JSON STRING, not a number. Omit ⇒ defaults 0.
   });
-  const res = http.post(`${BASE_URL}/booking/requests`, payload, {
-    headers: authHeaders(TOKEN),
+  const res = http.post(`${BASE_URL}/v1/bookings`, payload, {
+    headers: authHeaders(data.token),
     tags: { name: 'booking-create' },
   });
   check(res, { 'created 2xx': (r) => r.status >= 200 && r.status < 300 });
