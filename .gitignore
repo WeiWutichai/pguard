@@ -50,7 +50,9 @@ target/coverage/
 packages/shared-rust/src/generated/
 packages/shared-events/src/generated/
 apps/mobile/lib/api/generated/
-apps/web-admin/src/api/generated/
+# NOTE: apps/web-admin/src/api/generated/ is intentionally COMMITTED (not ignored) — the prod
+# web-admin Docker builder copies only apps/web-admin/ (no contracts/ dir) so it can't regenerate
+# at build time. Re-run `pnpm gen:api` when contracts change. See apps/web-admin/.gitignore.
 
 # Local secrets
 secrets/

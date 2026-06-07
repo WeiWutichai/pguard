@@ -2,25 +2,34 @@
   "name": "@pguard/web-admin",
   "version": "0.0.0",
   "private": true,
-  "description": "pguard v2 web admin — Next.js 16 App Router (TypeScript strict). v2 scaffold stub.",
+  "description": "pguard v2 web admin — Next.js 16 App Router (TypeScript strict).",
+  "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint",
-    "typecheck": "tsc --noEmit"
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "gen:api": "openapi-typescript ../../contracts/openapi/identity.yaml -o src/api/generated/identity.ts && openapi-typescript ../../contracts/openapi/profile.yaml -o src/api/generated/profile.ts"
   },
   "dependencies": {
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.460.0",
     "next": "^16",
+    "openapi-fetch": "^0.13.0",
     "react": "^19",
-    "react-dom": "^19"
+    "react-dom": "^19",
+    "tailwind-merge": "^3.0.0"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4",
     "@types/node": "^22",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "^16",
+    "openapi-typescript": "^7",
+    "tailwindcss": "^4",
     "typescript": "^5"
   }
 }

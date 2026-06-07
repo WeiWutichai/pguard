@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+/* pguard admin design tokens (kept in sync with apps/design-tokens conceptually; the green brand
+   + neutral surfaces). Tailwind v4 reads these via the @theme inline mapping below. */
+@theme inline {
+  --color-brand: #16a34a;
+  --color-brand-fg: #ffffff;
+  --color-surface: #ffffff;
+  --color-sunken: #f3f5f4;
+  --color-border: #dee5e2;
+  --color-text: #1f2723;
+  --color-muted: #69776f;
+  --color-danger: #e5484d;
+  --color-warning: #f59e0b;
+  --color-success: #16a34a;
+}
+
+:root {
+  color-scheme: light;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background: var(--color-sunken);
+  color: var(--color-text);
+  font-family:
+    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    "Noto Sans Thai", sans-serif;
+}

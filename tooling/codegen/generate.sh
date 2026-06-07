@@ -24,8 +24,16 @@ echo "TODO [rust-events]:   generate serde event types from contracts/asyncapi i
 echo "TODO [dart-client]:   generate Dart client into apps/mobile/lib/api/generated/"
 echo "                      (e.g. openapi-generator dart-dio)"
 
-# --- Target: TS client -> apps/web-admin/src/api/generated/ ---
-echo "TODO [ts-client]:     generate TS client into apps/web-admin/src/api/generated/"
-echo "                      (e.g. openapi-typescript + openapi-fetch)"
+# --- Target: TS client -> apps/web-admin/src/api/generated/ (IMPLEMENTED) ---
+# openapi-typescript emits per-spec `paths`/`components` types; the web-admin `lib/api.ts`
+# pairs them with `openapi-fetch` at runtime. Run from the app so its pinned dev dep is used.
+WEB_ADMIN="${ROOT}/apps/web-admin"
+if [ -d "${WEB_ADMIN}/node_modules/openapi-typescript" ]; then
+  echo "==> [ts-client] generating web-admin TS types (identity, profile)"
+  ( cd "${WEB_ADMIN}" && pnpm gen:api )
+else
+  echo "TODO [ts-client]: run 'pnpm install' in apps/web-admin first, then 'pnpm gen:api'"
+  echo "                  (openapi-typescript → src/api/generated/{identity,profile}.ts; openapi-fetch wraps them in lib/api.ts)"
+fi
 
 echo "==> Done (placeholders only — no files written). Wire targets per tooling/codegen/README.md."
