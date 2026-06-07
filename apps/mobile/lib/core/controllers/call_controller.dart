@@ -1,0 +1,422 @@
+import 'dart:async';
+
+import 'package:flutter/foundation.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../calling/call_engine.dart';
+import '../models/call.dart';
+import '../network/api_exception.dart';
+import '../network/sockets/call_socket.dart';
+import '../providers.dart';
+
+part 'call_controller.g.dart';
+
+/// Drives one WebRTC voice/video call: the call-state machine (idle → dialing|incoming →
+/// connecting → active → ended), the `RTCPeerConnection` (via the plugin-free [CallEngine] seam),
+/// the trickle-ICE queue, and the `/ws/call` signaling socket. ALL media/WebRTC lifecycle lives
+/// here, never in widget state; the screen only renders + binds renderers to the engine streams.
+/// No `Timer.periodic` — everything is event-driven (signals + engine callbacks).
+///
+/// Single active call at a time (keepAlive singleton). The `/ws/call` relay has no presence /
+/// lifecycle push, so the SDP exchange is bootstrapped by a `ready` signal: the callee announces
+/// itself on open and the caller (re)sends the offer in response.
+@Riverpod(keepAlive: true)
+class CallController extends _$CallController {
+  CallEngine? _engine;
+  CallSignalFeed? _feed;
+  StreamSubscription<SignalCandidate>? _localCandSub;
+  StreamSubscription<CallMediaEvent>? _mediaSub;
+  StreamSubscription<void>? _remoteSub;
+  StreamSubscription<CallSignalFrame>? _signalSub;
+
+  /// Inbound ICE candidates that arrived BEFORE the remote description was set (trickle ICE).
+  final List<SignalCandidate> _iceQueue = [];
+  bool _remoteSet = false;
+  bool _maybeAnswering = false; // in-flight guard: prevents a concurrent double-answer
+  bool _accepted = false; // callee has accepted → answer once the offer is in
+  SignalDescription? _pendingOffer; // callee: offer received before accept
+  SignalDescription? _localOffer; // caller: offer to (re)send on the callee's `ready`
+  String? _callId;
+  bool _tornDown = false;
+
+  /// One-shot connect timeout (a single Timer is fine — NOT `Timer.periodic`): ends a call that
+  /// never reaches `active` (callee never answers / media never connects) so it can't hang.
+  Timer? _connectTimeout;
+  static const Duration _connectTimeoutDuration = Duration(seconds: 60);
+
+  @override
+  CallState build() {
+    ref.onDispose(_teardown);
+    return CallState.idle;
+  }
+
+  /// The media engine for the VIEW to bind renderers to (local/remote streams). The controller
+  /// owns the call lifecycle; the screen only renders the streams. `null` before a call starts.
+  CallEngine? get engine => _engine;
+
+  bool get _busy =>
+      state.phase == CallPhase.dialing ||
+      state.phase == CallPhase.incoming ||
+      state.phase == CallPhase.connecting ||
+      state.phase == CallPhase.active;
+
+  // ---------------------------------------------------------------------------
+  // Lifecycle entry points
+  // ---------------------------------------------------------------------------
+
+  /// Place an OUTGOING call to the other participant of [bookingId] (callee derived server-side).
+  Future<void> startOutgoing({
+    required String bookingId,
+    required CallType type,
+  }) async {
+    if (_busy) return; // one call at a time
+    _resetSession();
+    state = CallState(
+      phase: CallPhase.dialing,
+      callType: type,
+      isCaller: true,
+      speakerOn: type.isVideo,
+    );
+    try {
+      final data = await ref.read(pguardApiProvider).post('/calls/initiate',
+          data: {'booking_id': bookingId, 'call_type': type.wire});
+      final call = Call.fromJson(data as Map<String, dynamic>);
+      _callId = call.id;
+      state = state.copyWith(call: call);
+
+      await _setupSession(video: type.isVideo);
+      // Create the offer now but do NOT send it yet — the callee isn't on the relay until it opens
+      // its socket. We send (and re-send) on the callee's `ready` signal, which avoids a wasted
+      // send + a spurious "peer is offline" error frame on the happy path, and means the caller
+      // emits exactly one offer per `ready`.
+      _localOffer = await _engine!.createOffer();
+    } on ApiException catch (e) {
+      _fail(e.message);
+    } on CallException catch (e) {
+      _fail(e.message);
+    } catch (_) {
+      _fail('Could not start the call');
+    }
+  }
+
+  /// Receive an INCOMING call (the call id arrives via a notification / push). Loads the call,
+  /// opens signaling, and announces readiness so the caller sends its offer. Shows the ring UI.
+  Future<void> startIncoming({required String callId}) async {
+    if (_busy) return;
+    _resetSession();
+    _callId = callId;
+    state = const CallState(
+      phase: CallPhase.incoming,
+      callType: CallType.audio,
+      isCaller: false,
+    );
+    try {
+      final data = await ref.read(pguardApiProvider).get('/calls/$callId');
+      final call = Call.fromJson(data as Map<String, dynamic>);
+      if (call.status.isTerminal) {
+        _end(reason: call.endReason ?? call.status.wire);
+        return;
+      }
+      state = state.copyWith(
+        call: call,
+        callType: call.callType,
+        speakerOn: call.callType.isVideo,
+      );
+      await _setupSession(video: call.callType.isVideo);
+      // Relay has no lifecycle push → tell the caller we're here so it (re)sends the offer.
+      _sendSignal(CallSignal.ready());
+    } on ApiException catch (e) {
+      _fail(e.message);
+    } on CallException catch (e) {
+      _fail(e.message);
+    } catch (_) {
+      _fail('Could not load the call');
+    }
+  }
+
+  /// Callee accepts a ringing call → `PUT /calls/{id}/accept`, then answer once the offer is in.
+  Future<void> accept() async {
+    if (state.phase != CallPhase.incoming || _callId == null) return;
+    _accepted = true;
+    state = state.copyWith(phase: CallPhase.connecting);
+    try {
+      await ref.read(pguardApiProvider).put('/calls/$_callId/accept');
+    } on ApiException catch (e) {
+      // A 4xx means the call is already terminal (ended/rejected/missed) — don't negotiate against
+      // a dead call. A transient/network error: proceed (the server may already be `accepted`).
+      if (e.statusCode != null && e.statusCode! >= 400 && e.statusCode! < 500) {
+        _end(reason: 'accept_failed');
+        return;
+      }
+    } catch (_) {
+      // Transient — proceed with the media path.
+    }
+    await _maybeAnswer();
+  }
+
+  /// Callee rejects a ringing call → `PUT /calls/{id}/reject` + a `bye` + teardown.
+  Future<void> reject() async {
+    final id = _callId;
+    if (id == null) {
+      _end(reason: 'rejected');
+      return;
+    }
+    _sendSignal(CallSignal.bye()); // notify the peer immediately (before the REST round-trip)
+    try {
+      await ref.read(pguardApiProvider).put('/calls/$id/reject');
+    } catch (_) {}
+    _end(reason: 'rejected');
+  }
+
+  /// Either party ends the call → `PUT /calls/{id}/end` + a `bye` + teardown.
+  Future<void> end() async {
+    final id = _callId;
+    if (id != null) {
+      _sendSignal(CallSignal.bye()); // notify the peer immediately (before the REST round-trip)
+      try {
+        await ref.read(pguardApiProvider).put('/calls/$id/end');
+      } catch (_) {}
+    }
+    _end(reason: 'hangup');
+  }
+
+  // ---------------------------------------------------------------------------
+  // In-call controls
+  // ---------------------------------------------------------------------------
+
+  Future<void> toggleMute() async {
+    final muted = !state.muted;
+    await _engine?.setMuted(muted);
+    state = state.copyWith(muted: muted);
+  }
+
+  Future<void> toggleSpeaker() async {
+    final on = !state.speakerOn;
+    await _engine?.setSpeaker(on);
+    state = state.copyWith(speakerOn: on);
+  }
+
+  Future<void> switchCamera() async {
+    await _engine?.switchCamera();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Session wiring
+  // ---------------------------------------------------------------------------
+
+  Future<void> _setupSession({required bool video}) async {
+    final api = ref.read(pguardApiProvider);
+
+    final feed = ref.read(callSignalFeedBuilderProvider)(() => api.validAccessToken());
+    _feed = feed;
+    _signalSub = feed.signals.listen(_onSignal);
+    await feed.connect();
+
+    final engine = ref.read(callEngineFactoryProvider)();
+    _engine = engine;
+    await engine.initialize(video: video); // may throw CallException (permission denied)
+    _localCandSub = engine.onLocalCandidate.listen((c) => _sendSignal(
+          CallSignal.candidate(
+            candidate: c.candidate,
+            sdpMid: c.sdpMid,
+            sdpMLineIndex: c.sdpMLineIndex,
+          ),
+        ));
+    _mediaSub = engine.onMediaEvent.listen(_onMediaEvent);
+    _remoteSub = engine.onRemoteStreamChanged.listen((_) {
+      if (state.phase == CallPhase.ended) return;
+      state = state.copyWith(
+        remoteVideoActive: engine.remoteStream != null && state.callType.isVideo,
+      );
+    });
+
+    // One-shot: end the call if it never reaches `active` (callee never answers / media never
+    // connects) so the dialing/connecting screen can't hang. Cancelled on `active` + teardown.
+    _connectTimeout = Timer(_connectTimeoutDuration, () {
+      if (state.phase != CallPhase.active && state.phase != CallPhase.ended) {
+        _end(reason: 'no_answer');
+      }
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Signal routing (relay frames; filtered by call id)
+  // ---------------------------------------------------------------------------
+
+  void _onSignal(CallSignalFrame frame) {
+    if (_tornDown || frame.callId != _callId) return; // not our call
+    switch (frame.signal.kind) {
+      case CallSignalKind.ready:
+        _resendOffer(); // caller re-sends its offer now the callee is connected
+      case CallSignalKind.offer:
+        unawaited(_onRemoteOffer(frame.signal).catchError(_onSignalError));
+      case CallSignalKind.answer:
+        unawaited(_onRemoteAnswer(frame.signal).catchError(_onSignalError));
+      case CallSignalKind.candidate:
+        _onRemoteCandidate(frame.signal);
+      case CallSignalKind.bye:
+        _end(reason: 'remote_hangup');
+    }
+  }
+
+  // A fire-and-forget SDP handler threw (e.g. bad SDP / engine disposed mid-flight) — log it
+  // (no PII) instead of letting it reach the zone's unhandled-error handler.
+  void _onSignalError(Object error, StackTrace _) =>
+      debugPrint('call signal handling failed: $error');
+
+  void _resendOffer() {
+    final offer = _localOffer;
+    if (state.isCaller && offer != null) _sendSignal(CallSignal.offer(offer.sdp));
+  }
+
+  Future<void> _onRemoteOffer(CallSignal signal) async {
+    final sdp = signal.sdp;
+    if (sdp == null) return;
+    _pendingOffer = SignalDescription(type: 'offer', sdp: sdp);
+    await _maybeAnswer();
+  }
+
+  /// Callee: once accepted AND the offer is in, set remote → flush queued ICE → answer.
+  Future<void> _maybeAnswer() async {
+    // `_maybeAnswering` is set SYNCHRONOUSLY so a second entry — a duplicate offer arriving while
+    // the first invocation is suspended at an `await`, before `_remoteSet` flips — is rejected.
+    // Otherwise the peer connection would get two setRemoteDescription calls + two answers.
+    if (_maybeAnswering ||
+        !_accepted ||
+        _pendingOffer == null ||
+        _engine == null ||
+        _remoteSet) {
+      return;
+    }
+    _maybeAnswering = true;
+    try {
+      await _engine!.setRemoteDescription(_pendingOffer!);
+      _remoteSet = true;
+      await _flushIce();
+      final answer = await _engine!.createAnswer();
+      _sendSignal(CallSignal.answer(answer.sdp));
+    } finally {
+      _maybeAnswering = false;
+    }
+  }
+
+  Future<void> _onRemoteAnswer(CallSignal signal) async {
+    final sdp = signal.sdp;
+    if (sdp == null || _engine == null || _remoteSet) return;
+    await _engine!.setRemoteDescription(SignalDescription(type: 'answer', sdp: sdp));
+    _remoteSet = true;
+    await _flushIce();
+    // Caller now traverses `connecting` (matching the callee) until media reports `connected` —
+    // so the failed/closed handler covers the caller too.
+    if (state.phase == CallPhase.dialing) {
+      state = state.copyWith(phase: CallPhase.connecting);
+    }
+  }
+
+  /// Trickle ICE: apply now if the remote description is set, else QUEUE until it is.
+  void _onRemoteCandidate(CallSignal signal) {
+    final candidate = signal.candidate;
+    if (candidate == null) return;
+    final c = SignalCandidate(
+      candidate: candidate,
+      sdpMid: signal.sdpMid,
+      sdpMLineIndex: signal.sdpMLineIndex,
+    );
+    if (_remoteSet && _engine != null) {
+      unawaited(_engine!.addIceCandidate(c));
+    } else {
+      _iceQueue.add(c);
+    }
+  }
+
+  Future<void> _flushIce() async {
+    for (final c in _iceQueue) {
+      await _engine?.addIceCandidate(c);
+    }
+    _iceQueue.clear();
+  }
+
+  Future<void> _onMediaEvent(CallMediaEvent event) async {
+    switch (event) {
+      case CallMediaEvent.connected:
+        if (state.phase != CallPhase.active && state.phase != CallPhase.ended) {
+          _connectTimeout?.cancel();
+          // Only the CALLEE reports accepted→connected (it owns that server transition); the caller
+          // flips its phase locally — avoids a guaranteed cross-participant 409 + an
+          // initiated→connected race.
+          final id = _callId;
+          if (id != null && !state.isCaller) {
+            try {
+              await ref.read(pguardApiProvider).put('/calls/$id/connected');
+            } catch (_) {}
+          }
+          state = state.copyWith(phase: CallPhase.active);
+        }
+      case CallMediaEvent.failed:
+      case CallMediaEvent.closed:
+        // Terminal in ANY live phase (dialing/incoming/connecting/active): the caller doesn't
+        // enter `connecting` until the answer, so guarding on connecting/active alone would strand
+        // a dialing caller when media fails.
+        if (state.phase != CallPhase.idle && state.phase != CallPhase.ended) {
+          _end(reason: 'media_${event.name}');
+        }
+      case CallMediaEvent.connecting:
+        break;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Teardown
+  // ---------------------------------------------------------------------------
+
+  void _sendSignal(CallSignal signal) {
+    final id = _callId;
+    if (id != null) _feed?.send(callId: id, signal: signal);
+  }
+
+  void _fail(String message) {
+    state = state.copyWith(
+        phase: CallPhase.ended, error: message, endReason: 'error');
+    _teardown();
+  }
+
+  void _end({String? reason}) {
+    if (state.phase != CallPhase.ended) {
+      state = state.copyWith(phase: CallPhase.ended, endReason: reason);
+    }
+    _teardown();
+  }
+
+  /// Close the socket + peer connection and release all tracks (idempotent).
+  void _teardown() {
+    if (_tornDown) return;
+    _tornDown = true;
+    _connectTimeout?.cancel();
+    _localCandSub?.cancel();
+    _mediaSub?.cancel();
+    _remoteSub?.cancel();
+    _signalSub?.cancel();
+    _feed?.close();
+    _engine?.dispose();
+  }
+
+  /// Reset for a fresh call after a previous one ended (the singleton is reused app-wide).
+  void _resetSession() {
+    _teardown();
+    _tornDown = false;
+    _iceQueue.clear();
+    _remoteSet = false;
+    _maybeAnswering = false;
+    _accepted = false;
+    _pendingOffer = null;
+    _localOffer = null;
+    _callId = null;
+    _connectTimeout = null;
+    _localCandSub = null;
+    _mediaSub = null;
+    _remoteSub = null;
+    _signalSub = null;
+    _feed = null;
+    _engine = null;
+  }
+}

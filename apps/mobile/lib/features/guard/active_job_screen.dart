@@ -13,6 +13,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
+import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'widgets/check_in_sheet.dart';
 
@@ -39,15 +40,25 @@ class ActiveJobScreen extends ConsumerWidget {
         showBack: true,
         live: true,
         background: PgTokens.colorGreen800,
-        // Guard ↔ customer chat for this job.
+        // Guard ↔ customer call + chat for this job.
         trailing: booking == null
             ? null
-            : ChatEntryButton(
-                requestId: booking.id,
-                requestStatus: booking.status.wire,
-                acting: ChatRole.guard,
-                myUserId: myUserId,
-                counterpartUserId: booking.customerId,
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CallEntryButton(
+                    bookingId: booking.id,
+                    enabled: BookingLifecycle.isActive(booking.status),
+                  ),
+                  const SizedBox(width: PgTokens.space2),
+                  ChatEntryButton(
+                    requestId: booking.id,
+                    requestStatus: booking.status.wire,
+                    acting: ChatRole.guard,
+                    myUserId: myUserId,
+                    counterpartUserId: booking.customerId,
+                  ),
+                ],
               ),
       ),
       body: SafeArea(

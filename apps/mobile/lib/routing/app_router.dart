@@ -21,6 +21,7 @@ import '../features/booking/live_status_screen.dart';
 import '../features/booking/payment_screen.dart';
 import '../features/booking/payment_success_screen.dart';
 import '../features/booking/service_selection_screen.dart';
+import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/home/customer_home_screen.dart';
@@ -118,6 +119,14 @@ GoRouter appRouter(AppRouterRef ref) {
         ),
       ),
       // Guard-side flow: incoming-job detail + active-job working screen.
+      // WebRTC call screen. Outgoing: the entry button starts the call (keepAlive controller)
+      // then pushes `/call`. Incoming: a notification/push navigates to `/call?incoming=<callId>`.
+      GoRoute(
+        path: '/call',
+        builder: (context, state) => CallScreen(
+          incomingCallId: state.uri.queryParameters['incoming'],
+        ),
+      ),
       GoRoute(
         path: '/guard/job/:id',
         builder: (context, state) =>

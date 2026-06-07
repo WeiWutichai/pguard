@@ -10,6 +10,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
+import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
@@ -169,7 +170,12 @@ class _Actions extends ConsumerWidget {
           counterpartUserId: booking.guardId,
         ),
         const SizedBox(width: PgTokens.space2),
-        _IconAction(icon: Icons.call_outlined, onTap: () {}),
+        // Customer → assigned guard call (audio/video). Enabled once a guard is on an active job.
+        CallEntryButton(
+          bookingId: booking.id,
+          enabled: booking.guardId != null &&
+              BookingLifecycle.isActive(booking.status),
+        ),
         const SizedBox(width: PgTokens.space2),
         Expanded(
           child: PgPrimaryButton(
@@ -179,30 +185,6 @@ class _Actions extends ConsumerWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _IconAction extends StatelessWidget {
-  const _IconAction({required this.icon, required this.onTap});
-
-  final IconData icon;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: PgTokens.colorSunken,
-      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: Icon(icon, color: PgTokens.colorPrimary, size: 20),
-        ),
-      ),
     );
   }
 }

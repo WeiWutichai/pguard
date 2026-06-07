@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/location/location_service.dart';
 import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/models/call.dart';
 import 'package:pguard_mobile/core/models/chat.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/core/models/tracking.dart';
@@ -13,6 +15,7 @@ import 'package:pguard_mobile/core/network/api_client.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/network/check_in_service.dart';
 import 'package:pguard_mobile/core/network/sockets/booking_status_socket.dart';
+import 'package:pguard_mobile/core/network/sockets/call_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/chat_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
 import 'package:pguard_mobile/core/storage/prefs_store.dart';
@@ -331,6 +334,129 @@ class FakeDocumentPicker implements DocumentPicker {
     picks.add(source);
     return path;
   }
+}
+
+/// Fake [CallEngine] — records the WebRTC operations and lets tests drive media/ICE events,
+/// with NO `flutter_webrtc` plugin (keeps the call controller off platform channels).
+class FakeCallEngine implements CallEngine {
+  FakeCallEngine({this.throwOnInit});
+
+  /// When set, [initialize] throws this (e.g. a denied-permission [CallException]).
+  final Object? throwOnInit;
+
+  bool initialized = false;
+  bool? initVideo;
+  bool disposed = false;
+  bool? muted;
+  bool? speakerOn;
+  int switchCameraCount = 0;
+  int createOfferCount = 0;
+  int createAnswerCount = 0;
+  final List<SignalDescription> remoteDescriptions = [];
+  final List<SignalCandidate> addedCandidates = [];
+
+  Object? _localStream;
+  Object? _remoteStream;
+
+  final _localCand = StreamController<SignalCandidate>.broadcast();
+  final _mediaEvent = StreamController<CallMediaEvent>.broadcast();
+  final _remoteChanged = StreamController<void>.broadcast();
+
+  @override
+  Future<void> initialize({required bool video}) async {
+    if (throwOnInit != null) throw throwOnInit!;
+    initialized = true;
+    initVideo = video;
+  }
+
+  @override
+  Future<SignalDescription> createOffer() async {
+    createOfferCount++;
+    return const SignalDescription(type: 'offer', sdp: 'OFFER_SDP');
+  }
+
+  @override
+  Future<SignalDescription> createAnswer() async {
+    createAnswerCount++;
+    return const SignalDescription(type: 'answer', sdp: 'ANSWER_SDP');
+  }
+
+  @override
+  Future<void> setRemoteDescription(SignalDescription description) async =>
+      remoteDescriptions.add(description);
+
+  @override
+  Future<void> addIceCandidate(SignalCandidate candidate) async =>
+      addedCandidates.add(candidate);
+
+  @override
+  Stream<SignalCandidate> get onLocalCandidate => _localCand.stream;
+  @override
+  Stream<CallMediaEvent> get onMediaEvent => _mediaEvent.stream;
+  @override
+  Stream<void> get onRemoteStreamChanged => _remoteChanged.stream;
+
+  @override
+  Future<void> setMuted(bool m) async => muted = m;
+  @override
+  Future<void> setSpeaker(bool on) async => speakerOn = on;
+  @override
+  Future<void> switchCamera() async => switchCameraCount++;
+
+  @override
+  Object? get localStream => _localStream;
+  @override
+  Object? get remoteStream => _remoteStream;
+
+  @override
+  Future<void> dispose() async {
+    disposed = true;
+    if (!_localCand.isClosed) await _localCand.close();
+    if (!_mediaEvent.isClosed) await _mediaEvent.close();
+    if (!_remoteChanged.isClosed) await _remoteChanged.close();
+  }
+
+  // Test drivers.
+  void emitLocalCandidate(SignalCandidate c) => _localCand.add(c);
+  void emitMediaEvent(CallMediaEvent e) => _mediaEvent.add(e);
+  void emitRemoteStream(Object? stream) {
+    _remoteStream = stream;
+    _remoteChanged.add(null);
+  }
+}
+
+/// Fake [CallSignalFeed] — records sent signals and lets tests push inbound relay frames, with
+/// no real WebSocket.
+class FakeCallSignalFeed implements CallSignalFeed {
+  final StreamController<CallSignalFrame> _controller =
+      StreamController<CallSignalFrame>.broadcast();
+
+  /// Signals passed to [send], in order (callId + the [CallSignal]).
+  final List<({String callId, CallSignal signal})> sent = [];
+  bool connected = false;
+  bool closed = false;
+
+  @override
+  Stream<CallSignalFrame> get signals => _controller.stream;
+
+  @override
+  Future<void> connect() async => connected = true;
+
+  @override
+  void send({required String callId, required CallSignal signal}) =>
+      sent.add((callId: callId, signal: signal));
+
+  @override
+  Future<void> close() async {
+    closed = true;
+    if (!_controller.isClosed) await _controller.close();
+  }
+
+  void emit(CallSignalFrame frame) => _controller.add(frame);
+
+  /// Convenience: emit a relay frame for [callId] carrying [signal].
+  void emitSignal(String callId, CallSignal signal, {String? from}) =>
+      emit(CallSignalFrame(callId: callId, signal: signal, from: from));
 }
 
 /// Build an UNSIGNED-but-well-formed JWT with the given claims (for client `exp`/`role`
