@@ -9,13 +9,23 @@ name = "pguard-presence"
 path = "src/main.rs"
 
 [dependencies]
-axum = { workspace = true }
+axum = { workspace = true }              # workspace enables the "ws" feature (GPS WebSocket)
 tokio = { workspace = true }
+serde = { workspace = true }             # DTOs + GpsUpdate/event payload derives
 serde_json = { workspace = true }
-sqlx = { workspace = true }              # location_history + retention purge
+sqlx = { workspace = true }              # live store + history + retention purge + read-model
+redis = { workspace = true }            # AuthUser jti blocklist + GPS pub/sub publish
 uuid = { workspace = true }
-chrono = { workspace = true }            # retention cutoff (now - N days)
+chrono = { workspace = true }            # recorded_at / freshness / retention cutoff
+jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) for AuthUser + WS re-auth
+async-nats = { workspace = true }       # durable consumer: booking events → IDOR read-model
+futures = { workspace = true }          # WS stream split + consumer message stream
 tracing = { workspace = true }
 anyhow = { workspace = true }
-shared = { workspace = true }            # DatabaseConfig + create_pool
+shared = { workspace = true }            # config, auth, error, models
+shared-events = { workspace = true }     # EventEnvelope + topic constants (booking.*)
 observability = { workspace = true }
+
+[dev-dependencies]
+tower = { workspace = true }            # ServiceExt::oneshot for router/WS-upgrade tests
+tokio-tungstenite = "0.24"             # real WS client for the GPS e2e
