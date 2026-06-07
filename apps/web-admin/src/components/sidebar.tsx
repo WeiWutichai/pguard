@@ -12,6 +12,8 @@ import {
   Star,
   Wallet,
   Tag,
+  Activity,
+  Settings,
   type LucideIcon,
 } from "lucide-react";
 
@@ -24,9 +26,9 @@ interface NavItem {
   label: TKey;
 }
 
-// Dashboard, applicants, guards, reviews, and map are fully built; customers/pricing/wallet are
-// intentional "API-gap" pages (their admin endpoints aren't in the v2 contracts yet — see
-// ApiGapPage). All nav items stay visible so the gaps are surfaced, not hidden.
+// Dashboard, applicants, guards, reviews, map, and settings are fully built; customers/pricing/
+// wallet/activity are intentional "API-gap" pages (their admin endpoints aren't in the v2
+// contracts yet — see ApiGapPage). All nav items stay visible so the gaps are surfaced, not hidden.
 const NAV: readonly NavItem[] = [
   { href: "/dashboard", icon: LayoutDashboard, label: "nav.dashboard" },
   { href: "/applicants", icon: UserPlus, label: "nav.applicants" },
@@ -36,6 +38,8 @@ const NAV: readonly NavItem[] = [
   { href: "/reviews", icon: Star, label: "nav.reviews" },
   { href: "/wallet", icon: Wallet, label: "nav.wallet" },
   { href: "/pricing", icon: Tag, label: "nav.pricing" },
+  { href: "/activity", icon: Activity, label: "nav.activity" },
+  { href: "/settings", icon: Settings, label: "nav.settings" },
 ];
 
 export function Sidebar() {
