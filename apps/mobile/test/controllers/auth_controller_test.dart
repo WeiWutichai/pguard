@@ -62,10 +62,15 @@ void main() {
 
     expect(await ctrl.verifyOtp('123456'), isTrue);
     expect(c.read(authControllerProvider).step, AuthStep.pin);
+    expect(c.read(authControllerProvider).phoneVerifiedToken, 'pvt',
+        reason: 'phone-verified token captured for the register step');
+    expect(store.phoneVerifiedToken, 'pvt', reason: 'and persisted (secure)');
 
-    expect(await ctrl.loginWithPin('135790'), isTrue);
+    expect(
+        await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isTrue);
     expect(store.refresh, 'r1');
     expect(store.access, isNotNull);
+    expect(store.phone, '0812345678', reason: 'verified phone persisted');
     expect(store.pinHash, isNotNull,
         reason: 'PIN persisted locally for offline unlock');
   });
@@ -95,7 +100,8 @@ void main() {
     final c = container(api: api, store: store);
     final ctrl = c.read(authControllerProvider.notifier);
     ctrl.setPhone('0812345678');
-    expect(await ctrl.loginWithPin('135790'), isFalse);
+    expect(
+        await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isFalse);
     expect(c.read(authControllerProvider).error, 'Invalid credentials');
     expect(store.access, isNull);
   });

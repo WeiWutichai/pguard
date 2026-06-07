@@ -4,6 +4,7 @@ import '../models/auth_models.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'pin_hasher.dart';
 import 'session_controller.dart';
 
 part 'auth_controller.g.dart';
@@ -20,6 +21,7 @@ class AuthFlowState {
     this.phone = '',
     this.challenge,
     this.otpSentAt,
+    this.phoneVerifiedToken,
     this.busy = false,
     this.error,
   });
@@ -28,6 +30,10 @@ class AuthFlowState {
   final String phone;
   final OtpChallenge? challenge;
   final DateTime? otpSentAt;
+
+  /// Single-use phone-verified JWT from `POST /otp/verify`, carried to `POST /auth/register`
+  /// (also persisted to secure storage so a backgrounded flow survives). Null until verified.
+  final String? phoneVerifiedToken;
   final bool busy;
   final String? error;
 
@@ -36,6 +42,7 @@ class AuthFlowState {
     String? phone,
     OtpChallenge? challenge,
     DateTime? otpSentAt,
+    String? phoneVerifiedToken,
     bool? busy,
     Object? error = _unset,
   }) {
@@ -44,6 +51,7 @@ class AuthFlowState {
       phone: phone ?? this.phone,
       challenge: challenge ?? this.challenge,
       otpSentAt: otpSentAt ?? this.otpSentAt,
+      phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
     );
@@ -53,9 +61,11 @@ class AuthFlowState {
 /// Drives the auth flow against `/v1` (otp + identity services). All network orchestration
 /// lives here (not in screens) — screens render [AuthFlowState] and call these methods.
 ///
-/// Final step uses the v1 "PIN doubles as the password" pattern: `POST /auth/login` with
-/// `{ identifier: phone, password: pin }`. (Registration that consumes the phone_verified
-/// token is future backend work — see the spec; the OTP steps already hit the live service.)
+/// Phone → OTP → PIN, then the PIN screen hands off to [RegistrationController] (role → register
+/// → profile → pending). [loginWithPin] (`POST /auth/login` with `password = SHA-256(pin)`, the
+/// same `pin_hash` register stored) is invoked by the registration controller for the 409→login
+/// (returning user) and the pending check-status (approved) paths — `phone` is passed explicitly
+/// so those callers never depend on this controller's transient state.
 @riverpod
 class AuthController extends _$AuthController {
   @override
@@ -104,24 +114,36 @@ class AuthController extends _$AuthController {
     });
   }
 
-  /// `POST /otp/verify` — confirm the SMS code, then advance to the PIN step. The
-  /// phone_verified_token in the response is reserved for the future registration endpoint.
+  /// `POST /otp/verify` — confirm the SMS code, then advance to the PIN step. Capture the
+  /// single-use `phone_verified_token` (state + secure storage) — it is exchanged at
+  /// `POST /auth/register` after the PIN + role are chosen.
   Future<bool> verifyOtp(String code) => _guard(() async {
-        await ref.read(pguardApiProvider).post('/otp/verify', data: {
+        final data = await ref.read(pguardApiProvider).post('/otp/verify', data: {
           'phone': state.phone,
           'code': code,
         });
-        state = state.copyWith(step: AuthStep.pin);
+        final token = (data is Map<String, dynamic>)
+            ? data['phone_verified_token'] as String?
+            : null;
+        if (token != null) {
+          await ref.read(appStoreProvider).savePhoneVerifiedToken(token);
+        }
+        state = state.copyWith(step: AuthStep.pin, phoneVerifiedToken: token);
         return true;
       });
 
-  /// `POST /auth/login` with `{ identifier: phone, password: pin }`. On success, persist the
-  /// token pair and flip the session to authenticated (router lands on the role dashboard).
-  Future<bool> loginWithPin(String pin) => _guard(() async {
+  /// `POST /auth/login` with `{ identifier: phone, password: SHA-256(pin) }`. The password is the
+  /// SAME `pin_hash` registration submitted (identity Argon2's that hash, so login must present
+  /// it — NOT the raw PIN). [phone] is explicit so callers outside the auth flow (the
+  /// registration check-status / 409→login paths) don't depend on this controller's transient
+  /// state. On success, persist the token pair + phone + local PIN and flip the session to
+  /// authenticated (router lands on the role dashboard).
+  Future<bool> loginWithPin({required String phone, required String pin}) =>
+      _guard(() async {
         final data =
             await ref.read(pguardApiProvider).post('/auth/login', data: {
-          'identifier': state.phone,
-          'password': pin,
+          'identifier': phone,
+          'password': const PinHasher().pinHash(pin),
         });
         final tokens = TokenPair.fromJson(data as Map<String, dynamic>);
         final store = ref.read(appStoreProvider);
@@ -129,7 +151,7 @@ class AuthController extends _$AuthController {
             access: tokens.accessToken, refresh: tokens.refreshToken);
         // Persist the verified phone (PII, secure storage) so the profile can show it read-only
         // — it is the login identifier and is not returned by any API.
-        await store.savePhone(state.phone);
+        await store.savePhone(phone);
         // Persist the PIN locally too, so returning cold starts unlock OFFLINE via the lock
         // screen (PinService) without a round-trip. The PIN/hash never leaves the device.
         await ref.read(pinServiceProvider).setup(pin);

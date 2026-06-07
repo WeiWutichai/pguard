@@ -8,6 +8,10 @@ import '../features/auth/otp_screen.dart';
 import '../features/auth/phone_entry_screen.dart';
 import '../features/auth/pin_entry_screen.dart';
 import '../features/auth/pin_lock_screen.dart';
+import '../features/auth/registration/customer_registration_screen.dart';
+import '../features/auth/registration/guard_registration_screen.dart';
+import '../features/auth/registration/registration_pending_screen.dart';
+import '../features/auth/registration/role_selection_screen.dart';
 import '../features/booking/booking_form_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/live_status_screen.dart';
@@ -45,6 +49,10 @@ GoRouter appRouter(AppRouterRef ref) {
           return loc == '/splash' ? null : '/splash';
         case SessionStatus.unauthenticated:
           return loc.startsWith('/auth') ? null : '/auth/phone';
+        case SessionStatus.pendingApproval:
+          // Registered, not yet approved: stay anywhere in the registration sub-flow
+          // (role/profile/pending live under /auth); anything else → the pending screen.
+          return loc.startsWith('/auth') ? null : '/auth/pending';
         case SessionStatus.locked:
           return loc == '/lock' ? null : '/lock';
         case SessionStatus.authenticated:
@@ -60,6 +68,18 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/auth/phone', builder: (_, __) => const PhoneEntryScreen()),
       GoRoute(path: '/auth/otp', builder: (_, __) => const OtpScreen()),
       GoRoute(path: '/auth/pin', builder: (_, __) => const PinEntryScreen()),
+      // Registration sub-flow (role-at-register): role → profile form → pending.
+      GoRoute(
+          path: '/auth/role', builder: (_, __) => const RoleSelectionScreen()),
+      GoRoute(
+          path: '/auth/register/guard',
+          builder: (_, __) => const GuardRegistrationScreen()),
+      GoRoute(
+          path: '/auth/register/customer',
+          builder: (_, __) => const CustomerRegistrationScreen()),
+      GoRoute(
+          path: '/auth/pending',
+          builder: (_, __) => const RegistrationPendingScreen()),
       GoRoute(path: '/lock', builder: (_, __) => const PinLockScreen()),
       GoRoute(
           path: '/home/customer',

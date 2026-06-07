@@ -13,6 +13,17 @@ abstract class SessionStore {
   /// logout. Mirrors v1's `verified_phone` PDPA decision (PII never in SharedPreferences).
   Future<String?> readPhone();
   Future<void> savePhone(String phone);
+
+  /// Single-use registration JWTs (secure storage — they are credentials, never SharedPreferences):
+  ///  - `phone_verified_token` from `POST /otp/verify`, exchanged at `POST /auth/register`;
+  ///  - `profile_token` from `POST /auth/register` (202), exchanged at `POST /profile/{role}`.
+  /// Both are purpose-scoped and consumed single-use server-side; persisted so a backgrounded
+  /// registration survives a brief app restart. Cleared on logout / session drop.
+  Future<String?> readPhoneVerifiedToken();
+  Future<void> savePhoneVerifiedToken(String token);
+  Future<String?> readProfileToken();
+  Future<void> saveProfileToken(String token);
+  Future<void> clearRegistrationTokens();
 }
 
 /// The PIN-persistence surface the PIN service depends on (hash/salt + lockout counters).
@@ -53,6 +64,8 @@ class SecureStore implements AppStore {
   static const _kAccess = 'pg_access_token';
   static const _kRefresh = 'pg_refresh_token';
   static const _kPhone = 'pg_phone';
+  static const _kPhoneVerifiedToken = 'pg_phone_verified_token';
+  static const _kProfileToken = 'pg_profile_token';
   static const _kPinHash = 'pg_pin_hash';
   static const _kPinSalt = 'pg_pin_salt';
   static const _kPinAttempts = 'pg_pin_attempts';
@@ -71,13 +84,14 @@ class SecureStore implements AppStore {
     await _s.write(key: _kRefresh, value: refresh);
   }
 
-  /// Drop the session tokens + phone (logout / unrecoverable 401). Leaves the PIN so the same
-  /// user can re-unlock and re-login.
+  /// Drop the session tokens + phone + any in-flight registration tokens (logout /
+  /// unrecoverable 401). Leaves the PIN so the same user can re-unlock and re-login.
   @override
   Future<void> clearSession() async {
     await _s.delete(key: _kAccess);
     await _s.delete(key: _kRefresh);
     await _s.delete(key: _kPhone);
+    await clearRegistrationTokens();
   }
 
   // ---- phone (PII; the login identifier, shown read-only on the profile) ----
@@ -85,6 +99,23 @@ class SecureStore implements AppStore {
   Future<String?> readPhone() => _s.read(key: _kPhone);
   @override
   Future<void> savePhone(String phone) => _s.write(key: _kPhone, value: phone);
+
+  // ---- registration tokens (single-use; phone-verify → register → profile) ----
+  @override
+  Future<String?> readPhoneVerifiedToken() => _s.read(key: _kPhoneVerifiedToken);
+  @override
+  Future<void> savePhoneVerifiedToken(String token) =>
+      _s.write(key: _kPhoneVerifiedToken, value: token);
+  @override
+  Future<String?> readProfileToken() => _s.read(key: _kProfileToken);
+  @override
+  Future<void> saveProfileToken(String token) =>
+      _s.write(key: _kProfileToken, value: token);
+  @override
+  Future<void> clearRegistrationTokens() async {
+    await _s.delete(key: _kPhoneVerifiedToken);
+    await _s.delete(key: _kProfileToken);
+  }
 
   // ---- PIN (local gate; never sent to the server) ----
   @override

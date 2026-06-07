@@ -5,6 +5,9 @@ import 'package:shared_preferences/shared_preferences.dart';
 abstract class PrefsStore {
   Future<String?> getString(String key);
   Future<void> setString(String key, String value);
+
+  /// Remove a key entirely (so a reader sees it as truly absent, not an empty sentinel).
+  Future<void> remove(String key);
 }
 
 /// Production [PrefsStore] backed by SharedPreferences.
@@ -18,4 +21,8 @@ class SharedPrefsStore implements PrefsStore {
   @override
   Future<void> setString(String key, String value) async =>
       (await SharedPreferences.getInstance()).setString(key, value);
+
+  @override
+  Future<void> remove(String key) async =>
+      (await SharedPreferences.getInstance()).remove(key);
 }
