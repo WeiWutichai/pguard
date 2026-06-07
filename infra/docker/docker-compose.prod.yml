@@ -195,7 +195,7 @@ services:
         condition: service_healthy
 
   nats:
-    image: nats:2
+    image: nats:2-alpine
     container_name: pguard-prod-nats
     restart: unless-stopped
     command: ["-js", "-m", "8222"]
