@@ -5,9 +5,11 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../chat/chat_routes.dart';
 import '../guard/widgets/job_card.dart';
 import '../guard/widgets/online_card.dart';
 import '../notifications/widgets/notification_bell.dart';
@@ -47,6 +49,12 @@ class GuardHomeScreen extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             const NotificationBell(),
+            IconButton(
+              icon: const Icon(Icons.forum_outlined,
+                  color: Colors.white, size: 22),
+              tooltip: 'แชท / Chat',
+              onPressed: () => context.push(ChatRoutes.list(ChatRole.guard)),
+            ),
             IconButton(
               icon: const Icon(Icons.person_outline,
                   color: Colors.white, size: 22),

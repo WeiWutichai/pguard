@@ -16,6 +16,13 @@ class AppConfig {
   static const String _wsHostOverride =
       String.fromEnvironment('PGUARD_WS_HOST', defaultValue: '');
 
+  /// Public host for presigned media (chat attachments). MinIO/S3 presigned URLs carry the
+  /// storage host as the SERVER sees it (e.g. `minio:9000`), which a device can't reach; when set
+  /// (`--dart-define=PGUARD_MEDIA_HOST=https://media.pguard.app`) the scheme+authority is swapped
+  /// to this, preserving the signed path/query. Empty (default) → no rewrite. See [MediaHost].
+  static const String mediaHost =
+      String.fromEnvironment('PGUARD_MEDIA_HOST', defaultValue: '');
+
   /// REST base URL including the `/v1` version prefix the gateway expects.
   static String get apiBaseUrl => '$_apiHost/v1';
 

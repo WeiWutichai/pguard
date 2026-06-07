@@ -6,11 +6,14 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
+import '../chat/widgets/chat_entry_button.dart';
 import 'widgets/check_in_sheet.dart';
 
 /// The active-job working screen: drives the lifecycle transitions (en-route → arrived → start
@@ -25,15 +28,27 @@ class ActiveJobScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(activeJobControllerProvider(bookingId));
+    final booking = async.valueOrNull?.booking;
+    final myUserId = ref.watch(sessionProvider).user?.userId;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
+      appBar: PGuardHeader(
         title: 'งานที่กำลังทำ',
         subtitle: 'Active job',
         showBack: true,
         live: true,
         background: PgTokens.colorGreen800,
+        // Guard ↔ customer chat for this job.
+        trailing: booking == null
+            ? null
+            : ChatEntryButton(
+                requestId: booking.id,
+                requestStatus: booking.status.wire,
+                acting: ChatRole.guard,
+                myUserId: myUserId,
+                counterpartUserId: booking.customerId,
+              ),
       ),
       body: SafeArea(
         child: async.when(

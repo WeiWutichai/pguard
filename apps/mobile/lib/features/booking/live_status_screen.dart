@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
+import '../chat/widgets/chat_entry_button.dart';
 
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
 /// controller, whose state advances from WebSocket PUSH frames — there is NO `Timer.periodic`
@@ -144,19 +147,27 @@ class _GuardCard extends StatelessWidget {
   }
 }
 
-class _Actions extends StatelessWidget {
+class _Actions extends ConsumerWidget {
   const _Actions({required this.booking});
 
   final Booking booking;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final canCancel = !BookingLifecycle.isTerminal(booking.status) &&
         BookingLifecycle.stepIndex(booking.status) <
             BookingLifecycle.stepIndex(BookingStatus.arrived);
+    final myUserId = ref.watch(sessionProvider).user?.userId;
     return Row(
       children: [
-        _IconAction(icon: Icons.chat_bubble_outline, onTap: () {}),
+        // Customer ↔ assigned guard. Enabled once a guard is assigned (guard_id present).
+        ChatEntryButton(
+          requestId: booking.id,
+          requestStatus: booking.status.wire,
+          acting: ChatRole.customer,
+          myUserId: myUserId,
+          counterpartUserId: booking.guardId,
+        ),
         const SizedBox(width: PgTokens.space2),
         _IconAction(icon: Icons.call_outlined, onTap: () {}),
         const SizedBox(width: PgTokens.space2),
