@@ -13,6 +13,8 @@ void main() {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider
           .overrideWithValue(store ?? (InMemoryStore()..access = 't')),
+      // logout() now also clears pending-registration prefs — keep it off real SharedPreferences.
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ]);
     addTearDown(c.dispose);
     return c;

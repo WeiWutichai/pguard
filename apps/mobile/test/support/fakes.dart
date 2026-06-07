@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:pguard_mobile/core/location/location_service.dart';
 import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
+import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/models/chat.dart';
@@ -22,6 +23,8 @@ class InMemoryStore implements AppStore {
   String? access;
   String? refresh;
   String? phone;
+  String? phoneVerifiedToken;
+  String? profileToken;
   String? pinHash;
   String? pinSalt;
   int attempts = 0;
@@ -45,10 +48,27 @@ class InMemoryStore implements AppStore {
   Future<void> savePhone(String phone) async => this.phone = phone;
 
   @override
+  Future<String?> readPhoneVerifiedToken() async => phoneVerifiedToken;
+  @override
+  Future<void> savePhoneVerifiedToken(String token) async =>
+      phoneVerifiedToken = token;
+  @override
+  Future<String?> readProfileToken() async => profileToken;
+  @override
+  Future<void> saveProfileToken(String token) async => profileToken = token;
+  @override
+  Future<void> clearRegistrationTokens() async {
+    phoneVerifiedToken = null;
+    profileToken = null;
+  }
+
+  @override
   Future<void> clearSession() async {
     access = null;
     refresh = null;
     phone = null;
+    phoneVerifiedToken = null;
+    profileToken = null;
   }
 
   @override
@@ -100,6 +120,8 @@ class FakePrefsStore implements PrefsStore {
   Future<String?> getString(String key) async => values[key];
   @override
   Future<void> setString(String key, String value) async => values[key] = value;
+  @override
+  Future<void> remove(String key) async => values.remove(key);
 }
 
 /// Configurable fake [PguardApi] with per-method handlers and a call log (to prove there is
@@ -114,6 +136,10 @@ class FakeApi implements PguardApi {
 
   final List<String> calls = [];
 
+  /// The explicit `bearer` override passed to each `post` (keyed by path) — lets tests assert
+  /// the profile submit carried the single-use `profile_token` rather than the session token.
+  final Map<String, String?> postBearer = {};
+
   @override
   Future<dynamic> get(String path, {Map<String, dynamic>? query}) {
     calls.add('GET $path');
@@ -121,8 +147,9 @@ class FakeApi implements PguardApi {
   }
 
   @override
-  Future<dynamic> post(String path, {Object? data}) {
+  Future<dynamic> post(String path, {Object? data, String? bearer}) {
     calls.add('POST $path');
+    postBearer[path] = bearer;
     return onPost!(path, data);
   }
 
@@ -289,6 +316,21 @@ class FakePhotoCaptureService implements PhotoCaptureService {
   @override
   Future<CapturedPhoto?> capture() async =>
       const CapturedPhoto(path: '/tmp/checkpoint.jpg', sizeBytes: 1024);
+}
+
+/// Fake [DocumentPicker] — records the requested sources and returns a canned path (or null to
+/// simulate the user cancelling). Stands in for the real `image_picker` in widget tests.
+class FakeDocumentPicker implements DocumentPicker {
+  FakeDocumentPicker({this.path = '/tmp/doc.jpg'});
+
+  String? path;
+  final List<DocSource> picks = [];
+
+  @override
+  Future<String?> pick(DocSource source) async {
+    picks.add(source);
+    return path;
+  }
 }
 
 /// Build an UNSIGNED-but-well-formed JWT with the given claims (for client `exp`/`role`

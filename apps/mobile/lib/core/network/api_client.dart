@@ -10,7 +10,12 @@ import 'jwt.dart';
 /// can be unit-tested against a fake without Dio/HTTP.
 abstract class PguardApi {
   Future<dynamic> get(String path, {Map<String, dynamic>? query});
-  Future<dynamic> post(String path, {Object? data});
+
+  /// POST `path`. When [bearer] is supplied (e.g. the single-use `profile_token` during
+  /// registration, before the user can log in), it is sent as the `Authorization` header
+  /// verbatim and the normal session-token attach + proactive/reactive refresh is SKIPPED
+  /// (there is no session yet, and the token is purpose-scoped).
+  Future<dynamic> post(String path, {Object? data, String? bearer});
   Future<dynamic> put(String path, {Object? data});
 
   /// A non-expired access token, refreshing proactively if needed (or `null` if there is no
@@ -72,18 +77,27 @@ class ApiClient implements PguardApi {
   /// token, or `null` if refresh failed.
   Future<String?>? _refreshing;
 
-  /// Paths that must NOT carry a Bearer and must NOT trigger refresh (they mint tokens).
+  /// Paths that must NOT carry a Bearer and must NOT trigger refresh (they mint tokens / run
+  /// pre-session). `/auth/register` is token-minting (it returns a profile_token, not a session)
+  /// and runs before the user can log in — never attach a (possibly stale) access token to it.
   static bool _isPublic(String path) {
     return path.startsWith('/otp/') ||
         path == '/auth/login' ||
-        path == '/auth/refresh';
+        path == '/auth/refresh' ||
+        path == '/auth/register';
   }
 
   // ---------- interceptors ----------
 
+  /// Requests carrying an explicit `bearer` (registration profile_token) set this so the
+  /// interceptor neither attaches the session token nor refreshes on 401 (no session exists).
+  static const _noSessionAuth = 'pg_no_session_auth';
+
   Future<void> _onRequest(
       RequestOptions options, RequestInterceptorHandler handler) async {
-    if (_isPublic(options.path)) {
+    // Public (token-minting) paths and explicit-bearer requests carry no session token and
+    // never trigger refresh — the caller's Authorization header (if any) is already set.
+    if (_isPublic(options.path) || options.extra[_noSessionAuth] == true) {
       return handler.next(options);
     }
     var access = await _store.readAccessToken();
@@ -107,10 +121,13 @@ class ApiClient implements PguardApi {
     final response = err.response;
     final options = err.requestOptions;
     final alreadyRetried = options.extra['pg_retried'] == true;
-    // One reactive refresh+retry on a 401 for a protected, not-yet-retried request.
+    // One reactive refresh+retry on a 401 for a protected, not-yet-retried request. An
+    // explicit-bearer request (registration profile_token) has no session to refresh — let its
+    // 401 surface as-is (a bad/expired/consumed profile_token).
     if (response?.statusCode == 401 &&
         !alreadyRetried &&
-        !_isPublic(options.path)) {
+        !_isPublic(options.path) &&
+        options.extra[_noSessionAuth] != true) {
       final access = await _refreshAccessToken(force: true);
       if (access != null) {
         options.extra['pg_retried'] = true;
@@ -190,8 +207,18 @@ class ApiClient implements PguardApi {
       _send(() => _dio.get<dynamic>(path, queryParameters: query));
 
   @override
-  Future<dynamic> post(String path, {Object? data}) =>
-      _send(() => _dio.post<dynamic>(path, data: data));
+  Future<dynamic> post(String path, {Object? data, String? bearer}) => _send(
+        () => _dio.post<dynamic>(
+          path,
+          data: data,
+          options: bearer == null
+              ? null
+              : Options(
+                  headers: {'Authorization': 'Bearer $bearer'},
+                  extra: {_noSessionAuth: true},
+                ),
+        ),
+      );
 
   @override
   Future<dynamic> put(String path, {Object? data}) =>

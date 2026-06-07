@@ -4,6 +4,7 @@ import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
 import 'media/chat_attachment_service.dart';
+import 'media/document_picker.dart';
 import 'media/photo_capture.dart';
 import 'network/api_client.dart';
 import 'network/check_in_service.dart';
@@ -94,3 +95,9 @@ CheckInService checkInService(CheckInServiceRef ref) =>
 @Riverpod(keepAlive: true)
 PhotoCaptureService photoCaptureService(PhotoCaptureServiceRef ref) =>
     const UnavailablePhotoCaptureService();
+
+/// Picks guard-registration document images via the REAL `image_picker` plugin. Tests override
+/// this with a fake so the guard form is exercisable without platform channels.
+@Riverpod(keepAlive: true)
+DocumentPicker documentPicker(DocumentPickerRef ref) =>
+    ImagePickerDocumentPicker();
