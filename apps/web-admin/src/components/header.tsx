@@ -18,10 +18,14 @@ export function Header() {
   async function logout() {
     setBusy(true);
     // Best-effort server revoke (clears the auth cookies). The CSRF middleware adds
-    // X-Requested-With; credentials:'include' sends the cookie. Always bounce to /login after.
-    await identityApi.POST("/auth/logout", {});
-    router.replace("/login");
-    router.refresh();
+    // X-Requested-With; credentials:'include' sends the cookie. ALWAYS bounce to /login — even if
+    // the revoke fails the cookies may already be invalid, so guarantee the local sign-out.
+    try {
+      await identityApi.POST("/auth/logout", {});
+    } finally {
+      router.replace("/login");
+      router.refresh();
+    }
   }
 
   return (
