@@ -1,0 +1,171 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# pguard v2 — STAGING override (layered ON TOP of docker-compose.prod.yml).
+#
+# Decisions (locked by the user, see docs/PHASE-staging-deploy-spec.md):
+#   • Replace v1 on the existing VPS · manual deploy (CI pushes images, a human
+#     SSHes to pull+up) · nginx + certbot TLS.
+#
+# What this override changes vs prod:
+#   1. PULL, don't build. Every one of the 14 CUSTOM images is repointed at ghcr
+#      (`ghcr.io/<prefix>/<svc>:<tag>`) and its `build:` stanza is cancelled
+#      (`!reset null`) so `docker compose up` on the VPS NEVER recompiles. The
+#      3rd-party images (postgres-replica, pgbouncer, nats, redis, minio, the
+#      observability stack) are inherited from prod unchanged — they already pull.
+#   2. nginx is the single host-published ingress. It terminates TLS on 80/443,
+#      proxies `/v1/*` (REST + the booking-status WS) to the api-gateway and serves
+#      the web-admin UI. The gateway therefore STOPS publishing a host port
+#      (`ports: !reset []`) — it is reachable only on the cluster network now.
+#   3. web-admin joins the staging stack (prod gates it behind the `ui` profile;
+#      here `profiles: !reset []` makes it first-class so nginx can serve it).
+#   4. otp defaults SMS OFF for staging (no SMS spend / no real phone needed) —
+#      see the SMS_DISABLED note on the otp service.
+#
+# Usage (from repo root, ON THE VPS — see docs/STAGING-SETUP.md for the full runbook):
+#   set -a; source infra/.env.staging; set +a
+#   export IMAGE_PREFIX=weiwutichai/pguard IMAGE_TAG=<git-sha|latest> REGISTRY=ghcr.io
+#   docker compose -f infra/docker/docker-compose.prod.yml \
+#                  -f infra/docker/docker-compose.staging.yml config        # validate
+#   docker compose -f infra/docker/docker-compose.prod.yml \
+#                  -f infra/docker/docker-compose.staging.yml pull          # from ghcr
+#   docker compose -f infra/docker/docker-compose.prod.yml \
+#                  -f infra/docker/docker-compose.staging.yml up -d
+#
+# Image coordinates (resolved at `pull`/`up`):
+#   REGISTRY     ghcr.io                         (default if unset)
+#   IMAGE_PREFIX weiwutichai/pguard              (lowercase owner — ghcr rejects uppercase)
+#   IMAGE_TAG    a git SHA (recommended) or `latest`
+#
+# NOTE on the project name: this override does NOT set `name:`, so the merged
+# project stays `pguard-prod` (from the base file) and the containers keep their
+# `pguard-prod-*` names. This is intentional — `tooling/scripts/migrate.sh`
+# defaults COMPOSE_FILE to the prod file and `exec`s into the `postgres` service of
+# that same project, so migrations work unmodified on the staging box.
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  # ═══════════════════════════════ EDGE: nginx (the ONLY host-published service) ═
+  # TLS termination + HTTP→HTTPS + ACME webroot + security headers + rate zones,
+  # in front of the api-gateway (API/WS) and the web-admin UI. Mirrors the v1
+  # nginx.prod.conf hardening; see infra/docker/nginx.staging.conf.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: pguard-prod-nginx
+    restart: unless-stopped
+    # Cheap fleet-wide hardening (CLAUDE.md): a compromised edge can't gain privileges.
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # The ONLY host-published TCP ports in the whole staging stack (mediasoup's
+      # UDP media range, inherited from prod, is the documented WebRTC exception).
+      - "80:80"
+      - "443:443"
+    volumes:
+      # The staging server config (HTTPS + WS upgrade + security headers + rate zones).
+      - ./nginx.staging.conf:/etc/nginx/nginx.conf:ro
+      # Let's Encrypt live + archive (issued by certbot on the HOST — see the runbook).
+      # nginx reads /etc/letsencrypt/live/pguard.innoveraappcenter.com/{fullchain,privkey}.pem.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      # ACME http-01 webroot for `certbot renew --webroot` (zero-downtime renewals).
+      - /var/www/certbot:/var/www/certbot:ro
+    networks:
+      - pguard-prod
+    depends_on:
+      - api-gateway
+      - web-admin
+    healthcheck:
+      # `/health` is an nginx-local 200 (never proxied) — see nginx.staging.conf.
+      test: ["CMD-SHELL", "wget -q -O- http://127.0.0.1/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ═══════════════════════════════ 14 CUSTOM IMAGES → ghcr (pull, never build) ══
+  # postgres-primary (custom replication image), the 11 Rust services, the mediasoup
+  # SFU, and the web-admin. `build: !reset null` cancels each service's build stanza
+  # inherited from prod so `up` only pulls. The compose SERVICE name maps to the ghcr
+  # IMAGE name shown in each comment (e.g. service `postgres` ⇒ image `postgres-primary`).
+
+  # service `postgres` (the primary) ⇒ ghcr image `postgres-primary`
+  postgres:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required (e.g. weiwutichai/pguard)}/postgres-primary:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  api-gateway:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/api-gateway:${IMAGE_TAG:-latest}
+    build: !reset null
+    # nginx fronts the gateway now — drop the host port (prod published it as the
+    # single ingress). The gateway stays reachable on the cluster network at
+    # `api-gateway:3000`; `expose` documents that internal port. `/metrics` (9100)
+    # remains exposed-internal (inherited from prod), never host-published.
+    ports: !reset []
+    expose:
+      - "3000"
+
+  identity:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/identity:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  profile:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/profile:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  otp:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/otp:${IMAGE_TAG:-latest}
+    build: !reset null
+    environment:
+      # Staging defaults the SMS gateway OFF (no SMS spend, no real phone needed).
+      # The otp service gate is PRESENCE-based — ANY value (incl. "false") disables
+      # SMS. So `${SMS_DISABLED:-true}` means: unset ⇒ disabled. To actually SEND
+      # real SMS while load-testing OTP, COMMENT THIS LINE OUT (don't set it to
+      # "false") and supply real INET_SMS_* creds in infra/.env.staging.
+      SMS_DISABLED: ${SMS_DISABLED:-true}
+
+  notification:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/notification:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  booking:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/booking:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  payment:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/payment:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  rating:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/rating:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  calling:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/calling:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  presence:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/presence:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  chat:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/chat:${IMAGE_TAG:-latest}
+    build: !reset null
+
+  mediasoup:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/mediasoup:${IMAGE_TAG:-latest}
+    build: !reset null
+    # MEDIASOUP_ANNOUNCED_IP is already `${MEDIASOUP_ANNOUNCED_IP:?}` in prod — set it
+    # to the VPS PUBLIC IP in infra/.env.staging so WebRTC ICE advertises a reachable
+    # address. The UDP media range (40000-49999/udp) is published by the prod file and
+    # inherited here (the one WebRTC host-port exception). See the runbook for the
+    # Tailscale 41641 / RTC-port conflict workaround.
+
+  # web-admin ⇒ first-class in staging (prod gates it behind the `ui` profile).
+  web-admin:
+    image: ${REGISTRY:-ghcr.io}/${IMAGE_PREFIX:?IMAGE_PREFIX required}/web-admin:${IMAGE_TAG:-latest}
+    build: !reset null
+    # Drop the `ui` profile so web-admin always starts in staging (nginx serves it).
+    profiles: !reset []
+    # Server-side calls (SSR / route handlers) reach the gateway over the cluster
+    # network; the browser uses SAME-ORIGIN `/v1` (nginx → gateway), so the auth
+    # cookie stays first-party. PGUARD_API_BASE_URL is inherited from prod
+    # (http://api-gateway:3000); NEXT_PUBLIC_API_BASE_URL is intentionally left
+    # unset so the client defaults to the same-origin `/v1` path.
