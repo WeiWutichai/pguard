@@ -62,6 +62,13 @@ dev_dependencies:
   riverpod_lint: ^2.3.10
   flutter_lints: ^4.0.0
 
+  # E2E (Patrol) — drives the real app on a device/emulator against the live backend. The
+  # native automation requires an Android emulator or iOS simulator (no headless mode). Runner:
+  # `dart run patrol_cli test -t integration_test/<file>.dart`. See tests/e2e/mobile/README.md.
+  integration_test:
+    sdk: flutter
+  patrol: ^3.13.0
+
 flutter:
   uses-material-design: true
   # TODO: declare fonts (IBM Plex Sans Thai) + l10n (TH/EN) config as features land.

@@ -118,7 +118,11 @@ export default function ReviewsPage() {
       {/* Stat cards — from the API's UNFILTERED stats. */}
       <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
         <StatCard label={t("reviews.stats.total")} value={stats ? String(stats.total) : "—"} />
-        <StatCard label={t("reviews.stats.visible")} value={stats ? String(stats.visible) : "—"} />
+        <StatCard
+          testId="reviews-stat-visible"
+          label={t("reviews.stats.visible")}
+          value={stats ? String(stats.visible) : "—"}
+        />
         <StatCard label={t("reviews.stats.hidden")} value={stats ? String(hidden) : "—"} />
         <StatCard
           label={t("reviews.stats.average")}
@@ -149,6 +153,7 @@ export default function ReviewsPage() {
             <button
               key={v}
               type="button"
+              data-testid={`reviews-filter-${v}`}
               onClick={() => {
                 setLoading(true);
                 setVis(v);
@@ -240,6 +245,8 @@ export default function ReviewsPage() {
                   <td className="px-4 py-3 align-top text-right">
                     <button
                       type="button"
+                      data-testid={`review-toggle-${r.id}`}
+                      aria-pressed={r.is_visible}
                       disabled={actingId === r.id}
                       onClick={() => void toggleVisibility(r)}
                       className={cn(
@@ -272,11 +279,13 @@ export default function ReviewsPage() {
   );
 }
 
-function StatCard({ label, value }: { label: string; value: string }) {
+function StatCard({ label, value, testId }: { label: string; value: string; testId?: string }) {
   return (
     <div className="rounded-xl border border-border bg-surface px-4 py-3">
       <div className="text-xs uppercase text-muted">{label}</div>
-      <div className="mt-1 text-2xl font-semibold">{value}</div>
+      <div className="mt-1 text-2xl font-semibold" data-testid={testId}>
+        {value}
+      </div>
     </div>
   );
 }

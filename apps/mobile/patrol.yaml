@@ -1,0 +1,14 @@
+# Patrol e2e config for the pguard mobile app. Drives the REAL app on a device/emulator against
+# the live backend (tooling/scripts/e2e-stack-up.sh). See tests/e2e/mobile/README.md for the full
+# run guide and the documented prerequisites (native platform folders, an emulator/simulator, and
+# a deterministic-OTP hook).
+#
+# Run:  cd apps/mobile && dart run patrol_cli test -t integration_test/register_login_flow_test.dart \
+#         --dart-define=PGUARD_API_HOST=http://10.0.2.2:3000   # Android emulator → host loopback
+android:
+  # Set once the native project exists (`flutter create --platforms=android,ios .`). Matches the
+  # Android applicationId.
+  package_name: app.pguard.mobile
+ios:
+  # Matches the iOS PRODUCT_BUNDLE_IDENTIFIER.
+  bundle_id: app.pguard.mobile
