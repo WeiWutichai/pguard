@@ -133,7 +133,10 @@ mod tests {
             "content-security-policy",
             "permissions-policy",
         ] {
-            assert!(names.contains(&expected), "missing security header {expected}");
+            assert!(
+                names.contains(&expected),
+                "missing security header {expected}"
+            );
         }
     }
 
@@ -147,7 +150,9 @@ mod tests {
         assert!(get("content-security-policy")
             .unwrap()
             .contains("frame-ancestors 'none'"));
-        assert!(get("strict-transport-security").unwrap().contains("max-age="));
+        assert!(get("strict-transport-security")
+            .unwrap()
+            .contains("max-age="));
     }
 
     // All names lowercase + values valid → `from_static` in the middleware can't panic.
