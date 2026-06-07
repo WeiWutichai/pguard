@@ -35,10 +35,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (stable + rustfmt + clippy)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Pin the Rust toolchain: the slices verified fmt/clippy on 1.93.x, but GitHub's floating
+      # `stable` is newer (1.96) and its rustfmt reformats + clippy adds lints that trip
+      # `-D warnings`. Pin to the verified version for reproducible CI (the image builds keep using
+      # current stable — they only `cargo build`, never fmt/clippy). Bump deliberately.
+      - name: Install Rust 1.93.1 (rustfmt + clippy)
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal --component rustfmt --component clippy
+          rustup default 1.93.1
+          rustc --version
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
@@ -86,8 +91,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.93.1 (pinned — matches the verified toolchain)
+        run: |
+          rustup toolchain install 1.93.1 --profile minimal
+          rustup default 1.93.1
 
       - name: Cache cargo registry + target
         uses: Swatinem/rust-cache@v2
