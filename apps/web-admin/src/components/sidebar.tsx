@@ -24,8 +24,9 @@ interface NavItem {
   label: TKey;
 }
 
-// Applicants is the only fully-built page this slice; the rest are stub routes (nav present,
-// pages built in later slices) per the spec's "stub the ones not built this slice".
+// Dashboard, applicants, guards, reviews, and map are fully built; customers/pricing/wallet are
+// intentional "API-gap" pages (their admin endpoints aren't in the v2 contracts yet — see
+// ApiGapPage). All nav items stay visible so the gaps are surfaced, not hidden.
 const NAV: readonly NavItem[] = [
   { href: "/dashboard", icon: LayoutDashboard, label: "nav.dashboard" },
   { href: "/applicants", icon: UserPlus, label: "nav.applicants" },
