@@ -1,5 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import 'calling/call_engine.dart';
+import 'calling/webrtc_call_engine.dart';
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
@@ -9,6 +11,7 @@ import 'media/photo_capture.dart';
 import 'network/api_client.dart';
 import 'network/check_in_service.dart';
 import 'network/sockets/booking_status_socket.dart';
+import 'network/sockets/call_socket.dart';
 import 'network/sockets/chat_socket.dart';
 import 'network/sockets/presence_socket.dart';
 import 'storage/prefs_store.dart';
@@ -83,6 +86,24 @@ ChatFeedBuilder chatFeedBuilder(ChatFeedBuilderRef ref) =>
 @Riverpod(keepAlive: true)
 ChatAttachmentService chatAttachmentService(ChatAttachmentServiceRef ref) =>
     const UnavailableChatAttachmentService();
+
+/// Builds a fresh WebRTC engine per call. Production returns a real [WebRtcCallEngine]
+/// (flutter_webrtc); tests override this with a factory returning a fake engine (no plugin).
+typedef CallEngineFactory = CallEngine Function();
+
+@Riverpod(keepAlive: true)
+CallEngineFactory callEngineFactory(CallEngineFactoryRef ref) =>
+    WebRtcCallEngine.new;
+
+/// Builds the call-signaling feed (`/ws/call`, Bearer-on-upgrade). Production returns a real
+/// [CallSocket]; tests override this provider to inject a fake feed.
+typedef CallSignalFeedBuilder = CallSignalFeed Function(
+  Future<String?> Function() tokenProvider,
+);
+
+@Riverpod(keepAlive: true)
+CallSignalFeedBuilder callSignalFeedBuilder(CallSignalFeedBuilderRef ref) =>
+    (tokenProvider) => CallSocket(tokenProvider: tokenProvider);
 
 /// Submits hourly check-in progress reports. Default fails (the endpoint isn't built — see
 /// [CheckInService]); tests override with a fake that records submissions.
