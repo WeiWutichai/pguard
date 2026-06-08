@@ -1,9 +1,12 @@
 name: Deploy
 
-# Build + push every production image to ghcr.io on push to main. 13 images:
+# Build + push every production image to ghcr.io on push to main. 14 images:
 # the 11 Rust services (shared parameterized Dockerfile, repo-root context) + the
-# mediasoup SFU (its own context) + the Next.js web-admin. The deploy step itself
-# is intentionally disabled (manual ops) — this proves the image build+push matrix.
+# mediasoup SFU (its own context) + the Next.js web-admin + the custom Postgres
+# PRIMARY image (bakes the streaming-replication bootstrap, C5.3). These are exactly
+# the 14 custom images the staging stack pulls (docker-compose.staging.yml). The
+# deploy step itself is intentionally disabled (manual ops) — this proves the
+# image build+push matrix.
 
 on:
   push:
@@ -54,6 +57,10 @@ jobs:
           - { service: mediasoup, context: services/mediasoup, dockerfile: services/mediasoup/Dockerfile }
           # web-admin (Next.js 16) — repo-root context, its own Dockerfile.
           - { service: web-admin, context: ., dockerfile: infra/docker/web-admin.Dockerfile }
+          # postgres-primary (custom Postgres image baking the C5.3 replication bootstrap)
+          # — repo-root context (its COPY reads infra/db/). No BIN/APP_PORT build-args.
+          # The staging stack's `postgres` service pulls this as `postgres-primary`.
+          - { service: postgres-primary, context: ., dockerfile: infra/docker/postgres-primary.Dockerfile }
 
     steps:
       - uses: actions/checkout@v4

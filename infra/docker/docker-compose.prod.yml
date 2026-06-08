@@ -539,8 +539,12 @@ services:
       - "3011"
     ports:
       # UDP media range only — WebRTC needs host:container 1:1, so this is unavoidable
-      # and is the documented exception to "only the gateway publishes ports".
-      - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-49999}:40000-49999/udp"
+      # and is the documented exception to "only the gateway publishes ports". BOTH
+      # sides are parameterized off RTC_MIN/MAX_PORT (the same vars the SFU worker binds)
+      # so the published range always equals the container range. Default is unchanged
+      # (40000-49999:40000-49999); narrowing the env now yields a valid symmetric range
+      # instead of an unequal-length one Docker rejects.
+      - "${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-49999}:${RTC_MIN_PORT:-40000}-${RTC_MAX_PORT:-49999}/udp"
     networks:
       - pguard-prod
 
