@@ -51,7 +51,7 @@ set -a; # shellcheck disable=SC1090
 source "$ENV_FILE"; set +a
 docker run --rm --network "container:${PROJECT}-minio" --entrypoint sh minio/mc -c \
   "mc alias set m http://localhost:9000 '${MINIO_ROOT_USER}' '${MINIO_ROOT_PASSWORD}' >/dev/null 2>&1 && \
-   mc mb -p --ignore-existing \"m/${S3_BUCKET:-pguard}\"" \
+   mc mb --ignore-existing \"m/${S3_BUCKET:-pguard}\"" \
   || { echo "!! failed to create MinIO bucket ${S3_BUCKET:-pguard}" >&2; exit 1; }
 
 echo "==> contract stack ready (gateway :3000, rating direct :3007, chat via gateway, MinIO bucket ready)"
