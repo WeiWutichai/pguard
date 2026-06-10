@@ -143,9 +143,9 @@ void main() {
         reason: 'completedCheckIns stays slot-indexed for the schedule UI');
   });
 
-  test('submitCheckIn clamps the final end-of-shift slot to hours', () async {
+  test('submitCheckIn maps the last slot (hours-1) 1:1 to hour=hours — no clamp', () async {
     final checkIn = FakeCheckInService();
-    // hours: 8 → slot 8 is the end-of-shift slot; slot+1=9 clamps to 8.
+    // hours: 8 → the schedule has slots 0..7; the last slot (7) maps to hour 8 directly.
     final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
@@ -157,10 +157,11 @@ void main() {
     await c.read(activeJobControllerProvider('b1').future);
     final ctrl = c.read(activeJobControllerProvider('b1').notifier);
     await ctrl.submitCheckIn(
-      slot: 8,
+      slot: 7,
       photo: const CapturedPhoto(path: '/tmp/p.jpg', sizeBytes: 10),
     );
-    expect(checkIn.submitted, [8], reason: 'slot 8 (slot+1=9) clamps to hours=8');
+    expect(checkIn.submitted, [8],
+        reason: 'slot 7 → hour 8 (slot+1, 1:1); the defensive clamp does not trip');
   });
 
   test('submitCheckIn surfaces failure and does not mark the slot done',

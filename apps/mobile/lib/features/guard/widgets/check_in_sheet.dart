@@ -122,7 +122,12 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
             ),
           ),
           const SizedBox(height: PgTokens.space4),
-          Text('ถึงเวลาเช็คอินรอบที่ ${widget.hourNumber}',
+          Text(
+              // widget.hourNumber is the 0-based schedule slot — mirror the screen button label
+              // (slot 0 = the start check-in) so the two surfaces describe the same action.
+              widget.hourNumber == 0
+                  ? 'เช็คอินเริ่มงาน / Start check-in'
+                  : 'เช็คอินชั่วโมงที่ ${widget.hourNumber} / Hour ${widget.hourNumber} check-in',
               style:
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 2),

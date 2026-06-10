@@ -48,8 +48,14 @@ class ApiClient implements PguardApi {
       baseUrl: AppConfig.apiBaseUrl,
       connectTimeout: AppConfig.connectTimeout,
       receiveTimeout: AppConfig.receiveTimeout,
-      // We validate status codes ourselves so the interceptor can react to 401.
-      validateStatus: (s) => s != null && s < 500,
+      // Treat 4xx (except 401) as a "valid" response so `_send` can surface it as a clean
+      // ApiException. A 401 is DELIBERATELY excluded so it becomes a DioException and reaches
+      // the `_onError` interceptor, which runs the one-shot reactive refresh + retry (cloning a
+      // FormData body so multipart uploads survive the retry). Without this, a 401 would be a
+      // normal response and `_onError` would never fire — the reactive path would be dead and a
+      // token revoked mid-session (still structurally valid, so proactive refresh doesn't catch
+      // it) would bounce the user to login instead of refreshing seamlessly.
+      validateStatus: (s) => s != null && s < 500 && s != 401,
       contentType: Headers.jsonContentType,
     );
     _dio.options = base;
@@ -232,7 +238,9 @@ class ApiClient implements PguardApi {
   Future<dynamic> _send(Future<Response<dynamic>> Function() call) async {
     try {
       final res = await call();
-      // 4xx with validateStatus<500 lands here as a normal response — surface as ApiException.
+      // 4xx EXCEPT 401 lands here as a normal response (validateStatus) — surface as
+      // ApiException. A 401 is a DioException handled by `_onError` (reactive refresh+retry); if
+      // that retry doesn't recover it, it arrives in the `on DioException` branch below.
       final status = res.statusCode ?? 0;
       if (status >= 400) {
         throw _errorFromResponse(res);
