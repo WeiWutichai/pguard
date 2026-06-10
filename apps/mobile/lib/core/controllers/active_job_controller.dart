@@ -114,9 +114,10 @@ class ActiveJobController extends _$ActiveJobController {
   ///
   /// Slot↔hour mapping: the UI's [CheckInSchedule] slots are 0-based (slot 0 = the
   /// start-of-work check-in; slot N is due after N elapsed hours), but the server's
-  /// `hour_number` is 1-based (`1..hours`, where hour N opens once N−1 hours have elapsed). By
-  /// timing, slot N aligns with server hour `N+1`; the final end-of-shift slot clamps to
-  /// `hours` (a duplicate the service absorbs idempotently). [completedCheckIns] stays
+  /// `hour_number` is 1-based (`1..hours`). The schedule now exposes exactly `hours` slots
+  /// (0..hours-1), so `slot + 1` lands in `1..hours` with no collision — every slot maps to a
+  /// distinct server hour (no end-of-shift slot to clamp). The `clamp` to `hours` below is kept
+  /// purely DEFENSIVE and can no longer trip for a real slot index. [completedCheckIns] stays
   /// slot-indexed so the schedule UI (dueIndex/missed) is unchanged.
   Future<bool> submitCheckIn({
     required int slot,
@@ -127,7 +128,7 @@ class ActiveJobController extends _$ActiveJobController {
     final current = state.valueOrNull;
     if (current == null) return false;
     final maxHour = current.hours < 1 ? 1 : current.hours;
-    final serverHour = slot + 1 > maxHour ? maxHour : slot + 1;
+    final serverHour = slot + 1 > maxHour ? maxHour : slot + 1; // defensive clamp (never trips)
     state = AsyncData(current.copyWith(busy: true, error: null));
     try {
       await ref.read(checkInServiceProvider).submit(

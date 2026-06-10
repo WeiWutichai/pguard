@@ -301,7 +301,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
             PgPrimaryButton(
               label: dueIndex == 0
                   ? 'เช็คอินเริ่มงาน / Start check-in'
-                  : 'เช็คอินรอบที่ $dueIndex / Check in now',
+                  : 'เช็คอินชั่วโมงที่ $dueIndex / Hour $dueIndex check-in',
               color: PgTokens.colorAccent,
               foreground: PgTokens.colorOnAmber,
               onPressed: () => _checkIn(dueIndex),

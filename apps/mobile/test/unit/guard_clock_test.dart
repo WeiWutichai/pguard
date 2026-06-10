@@ -35,20 +35,27 @@ void main() {
   group('CheckInSchedule', () {
     final s = CheckInSchedule(startedAt: start, hours: 8);
 
-    test('totalSlots = hours + 1 (start + one per hour)', () {
-      expect(s.totalSlots, 9);
+    test('totalSlots = hours (one per booked hour, 1:1 to server hour_number)', () {
+      // PR-#29 trade-off closed: hours slots (0..hours-1) → hours 1..hours, no end-of-shift
+      // slot that would clamp/collide. An 8-hour shift has 8 check-ins, not 9.
+      expect(s.totalSlots, 8);
     });
 
-    test('dueIndex grows one per elapsed hour, capped at hours', () {
+    test('dueIndex grows one per elapsed hour, capped at the last slot (hours-1)', () {
       expect(s.dueIndex(start), 0);
       expect(s.dueIndex(start.add(const Duration(minutes: 59))), 0);
       expect(s.dueIndex(start.add(const Duration(hours: 1, minutes: 5))), 1);
       expect(s.dueIndex(start.add(const Duration(hours: 3))), 3);
-      expect(s.dueIndex(start.add(const Duration(hours: 99))), 8); // capped
+      expect(s.dueIndex(start.add(const Duration(hours: 99))), 7); // capped at hours-1
     });
 
-    test('nextDueAt is the next boundary, null after the last slot', () {
+    test('nextDueAt is the next boundary, null once the last slot (hours-1) is due', () {
       expect(s.nextDueAt(start), start.add(const Duration(hours: 1)));
+      // slot 6 due at +6h → next is slot 7 at +7h.
+      expect(s.nextDueAt(start.add(const Duration(hours: 6))),
+          start.add(const Duration(hours: 7)));
+      // slot 7 (the last) due at +7h → no next slot.
+      expect(s.nextDueAt(start.add(const Duration(hours: 7))), isNull);
       expect(s.nextDueAt(start.add(const Duration(hours: 8))), isNull);
     });
 

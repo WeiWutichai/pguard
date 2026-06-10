@@ -121,11 +121,11 @@ CallSignalFeedBuilder callSignalFeedBuilder(CallSignalFeedBuilderRef ref) =>
 CheckInService checkInService(CheckInServiceRef ref) =>
     ApiCheckInService(api: ref.watch(pguardApiProvider));
 
-/// Captures the check-in checkpoint photo. Default is unavailable (no camera plugin wired);
-/// tests override with a fake.
+/// Captures the check-in checkpoint photo via the real camera (`image_picker`,
+/// `ImageSource.camera`). Tests override with a fake (no platform channels).
 @Riverpod(keepAlive: true)
 PhotoCaptureService photoCaptureService(PhotoCaptureServiceRef ref) =>
-    const UnavailablePhotoCaptureService();
+    ImagePickerPhotoCaptureService();
 
 /// Picks guard-registration document images via the REAL `image_picker` plugin. Tests override
 /// this with a fake so the guard form is exercisable without platform channels.

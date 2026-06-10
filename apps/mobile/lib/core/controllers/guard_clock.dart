@@ -35,29 +35,34 @@ class WorkClock {
   bool isTimeUp(DateTime now) => remaining(now) == Duration.zero;
 }
 
-/// Hourly check-in schedule for a started job. Slots are 0..[hours] inclusive: slot 0 is the
-/// start check-in, slot N is due after N elapsed hours (slot [hours] coincides with the end).
+/// Hourly check-in schedule for a started job. There are exactly [hours] slots, indexed
+/// 0..[hours]-1: slot 0 is the start-of-work check-in, slot N is due after N elapsed hours.
+/// Each slot maps 1:1 to a server `hour_number` (slot N → hour N+1, see
+/// `ActiveJobController.submitCheckIn`), so EVERY check-in has a distinct server record — there
+/// is no end-of-shift slot that would clamp onto the previous hour and get silently absorbed as
+/// a 409 duplicate (the documented PR #29 trade-off, now closed).
 class CheckInSchedule {
   const CheckInSchedule({required this.startedAt, required this.hours});
 
   final DateTime startedAt;
   final int hours;
 
-  /// Total check-in slots over the shift (start + one per hour).
-  int get totalSlots => hours + 1;
+  /// Total check-in slots over the shift — one per booked hour (start + each subsequent hour).
+  int get totalSlots => hours;
 
   /// The highest slot index whose time has arrived by [now] (0 at start, +1 each elapsed hour,
-  /// capped at [hours]).
+  /// capped at the last slot [hours]-1).
   int dueIndex(DateTime now) {
     final elapsedHours = now.difference(startedAt).inMinutes ~/ 60;
     if (elapsedHours < 0) return 0;
-    return elapsedHours > hours ? hours : elapsedHours;
+    final lastSlot = hours > 0 ? hours - 1 : 0;
+    return elapsedHours > lastSlot ? lastSlot : elapsedHours;
   }
 
-  /// When the next not-yet-due slot opens, or null if the final slot is already due.
+  /// When the next not-yet-due slot opens, or null if the final slot ([hours]-1) is already due.
   DateTime? nextDueAt(DateTime now) {
     final next = dueIndex(now) + 1;
-    if (next > hours) return null;
+    if (next >= hours) return null;
     return startedAt.add(Duration(hours: next));
   }
 
