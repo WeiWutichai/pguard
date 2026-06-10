@@ -1,0 +1,2 @@
+# Pinned deps for the Rust event-types generator (gen_rust_events.py). python3 + this only.
+PyYAML==6.0.2

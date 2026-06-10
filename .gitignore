@@ -49,13 +49,18 @@ target/coverage/
 .claude/scheduled_tasks.lock
 .claude/agent-memory/*/scratch/
 
-# Generated code from OpenAPI (commit only source specs)
+# Generated code from OpenAPI/AsyncAPI.
+# Rust Axum handler stubs target is SKIPPED (services are hand-written; see tooling/codegen) —
+# its dir stays ignored so a stray local experiment can't leak in.
 packages/shared-rust/src/generated/
-packages/shared-events/src/generated/
-apps/mobile/lib/api/generated/
-# NOTE: apps/web-admin/src/api/generated/ is intentionally COMMITTED (not ignored) — the prod
-# web-admin Docker builder copies only apps/web-admin/ (no contracts/ dir) so it can't regenerate
-# at build time. Re-run `pnpm gen:api` when contracts change. See apps/web-admin/.gitignore.
+# COMMITTED (not ignored), like the web-admin TS client: the generated artifacts are checked in so
+# the CI stale-check can `git diff --exit-code` after regenerating (catch a contract edited without
+# `./tooling/codegen/generate.sh`). Re-run the generator when contracts change.
+#   - packages/shared-events/src/generated/  (Rust event payload types — committed)
+#   - apps/mobile/lib/api/generated/         (Dart client packages — committed; their *.g.dart
+#                                             build_runner outputs stay ignored by the rule below)
+# NOTE: apps/web-admin/src/api/generated/ is likewise COMMITTED — the prod web-admin Docker builder
+# copies only apps/web-admin/ (no contracts/ dir) so it can't regenerate at build time.
 
 # Local secrets
 secrets/
