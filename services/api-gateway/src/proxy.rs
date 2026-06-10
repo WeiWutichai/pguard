@@ -16,8 +16,11 @@ use axum::response::Response;
 use crate::auth::VerifiedUser;
 use crate::domain::headers::{is_hop_by_hop, is_spoofable_identity};
 
-/// Max buffered request-body size (1 MiB). Large uploads are a future streaming
-/// concern; for now an oversized body is rejected with 413 before allocation grows.
+/// Default buffered request-body cap (1 MiB) — the value used for every route except the
+/// upload carve-outs (see `domain::routing::BodyCap`). Also reused by the WS proxy as the
+/// per-frame cap (`wsproxy::MAX_CLIENT_FRAME_BYTES`); the carve-out raises the REST body cap
+/// per-route via [`forward`]'s `max_body_bytes` argument and does NOT touch this const, so
+/// the WS frame cap stays 1 MiB. `BodyCap::DEFAULT_BYTES` is pinned equal to this by a test.
 pub const MAX_BODY_BYTES: usize = 1024 * 1024;
 
 /// Proxy-stage failures, each with a distinct public HTTP status. Kept separate from
@@ -98,6 +101,8 @@ fn build_forward_headers(
 /// upstream response. `user` is `Some` for authenticated (protected) routes.
 ///
 /// `forward_path` already has the `/v1` prefix stripped (see `domain::routing`).
+/// `max_body_bytes` is the per-route body cap from the route decision
+/// (`domain::routing::BodyCap::bytes`) — [`MAX_BODY_BYTES`] for all but the upload carve-outs.
 #[tracing::instrument(skip(http, request, user), fields(base_url, forward_path))]
 pub async fn forward(
     http: &reqwest::Client,
@@ -106,13 +111,14 @@ pub async fn forward(
     query: Option<&str>,
     request: Request,
     user: Option<&VerifiedUser>,
+    max_body_bytes: usize,
 ) -> Result<Response, ProxyError> {
     let (parts, body) = request.into_parts();
     let method = parts.method.clone();
 
-    // Buffer the body with a hard cap. `to_bytes` with a limit returns Err when the
+    // Buffer the body with the route's hard cap. `to_bytes` with a limit returns Err when the
     // body exceeds it (or when declared Content-Length is too large) → 413.
-    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+    let body_bytes = axum::body::to_bytes(body, max_body_bytes)
         .await
         .map_err(|_| ProxyError::BodyTooLarge)?;
 
@@ -290,11 +296,20 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+            // Drain the request body before responding. A real backend reads the body; if
+            // this handler replied while the client (the gateway via reqwest) was still
+            // writing a large body, HTTP/1.1 could reset the connection → a flaky
+            // `ProxyError::Upstream` on the multi-MiB carve-out tests.
+            let body_len = axum::body::to_bytes(req.into_body(), 64 * 1024 * 1024)
+                .await
+                .map(|b| b.len())
+                .unwrap_or(0);
             let body = serde_json::json!({
                 "got_path": path,
                 "got_query": query,
                 "x_user_id": uid,
                 "x_user_role": role,
+                "got_body_len": body_len,
             });
             let mut resp = axum::Json(body).into_response();
             resp.headers_mut()
@@ -350,6 +365,7 @@ mod tests {
             Some("lang=th"),
             req,
             Some(&user),
+            MAX_BODY_BYTES,
         )
         .await
         .expect("forward succeeds");
@@ -387,7 +403,16 @@ mod tests {
             .unwrap();
         // Reserved-for-docs TEST-NET-1 address; connection will fail/time out fast.
         let req = gateway_request("GET", &[], "");
-        let res = forward(&http, "http://192.0.2.1:9", "/otp/request", None, req, None).await;
+        let res = forward(
+            &http,
+            "http://192.0.2.1:9",
+            "/otp/request",
+            None,
+            req,
+            None,
+            MAX_BODY_BYTES,
+        )
+        .await;
         match res {
             Err(ProxyError::Upstream) => {}
             other => panic!("expected ProxyError::Upstream, got {other:?}"),
@@ -398,14 +423,23 @@ mod tests {
     #[tokio::test]
     async fn forward_rejects_oversized_body() {
         let http = reqwest::Client::new();
-        // Body just over the 1 MiB cap.
+        // Body just over the 1 MiB default cap — unchanged behaviour for normal routes.
         let big = "x".repeat(MAX_BODY_BYTES + 1);
         let req = Request::builder()
             .method("POST")
             .uri("http://gateway.local/v1/otp/request")
             .body(Body::from(big))
             .unwrap();
-        let res = forward(&http, "http://127.0.0.1:1", "/otp/request", None, req, None).await;
+        let res = forward(
+            &http,
+            "http://127.0.0.1:1",
+            "/otp/request",
+            None,
+            req,
+            None,
+            MAX_BODY_BYTES,
+        )
+        .await;
         match res {
             Err(ProxyError::BodyTooLarge) => {}
             other => panic!("expected ProxyError::BodyTooLarge, got {other:?}"),
@@ -414,5 +448,71 @@ mod tests {
             ProxyError::BodyTooLarge.status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
+    }
+
+    // ----- per-route body cap (carve-out) -----
+
+    use crate::domain::routing::BodyCap;
+
+    /// The edge default and the WS frame cap must never drift: `BodyCap::Default` is THE
+    /// 1 MiB value, and `wsproxy::MAX_CLIENT_FRAME_BYTES` is `proxy::MAX_BODY_BYTES`.
+    #[test]
+    fn default_body_cap_equals_max_body_bytes() {
+        assert_eq!(BodyCap::DEFAULT_BYTES, MAX_BODY_BYTES);
+        assert_eq!(BodyCap::Default.bytes(), MAX_BODY_BYTES);
+        assert_eq!(BodyCap::Large.bytes(), 12 * 1024 * 1024);
+    }
+
+    /// A 5 MiB body — over the 1 MiB default but under the 12 MiB carve-out — reaches the
+    /// upstream when forwarded with the `Large` cap (the check-in / attachment upload path).
+    #[tokio::test]
+    async fn forward_large_cap_admits_body_over_default() {
+        let base = spawn_echo_upstream().await;
+        let http = reqwest::Client::new();
+        let body = "x".repeat(5 * 1024 * 1024);
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://gateway.local/v1/bookings/abc/progress-reports")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = forward(
+            &http,
+            &base,
+            "/bookings/abc/progress-reports",
+            None,
+            req,
+            None,
+            BodyCap::Large.bytes(),
+        )
+        .await
+        .expect("5 MiB body under the 12 MiB cap forwards");
+        assert_eq!(resp.status(), StatusCode::OK, "upstream received the body");
+    }
+
+    /// A 13 MiB body exceeds even the `Large` cap → 413 (the carve-out is bounded, not open).
+    #[tokio::test]
+    async fn forward_large_cap_still_rejects_over_12mib() {
+        let http = reqwest::Client::new();
+        let body = "x".repeat(BodyCap::LARGE_BYTES + 1);
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://gateway.local/v1/attachments")
+            .body(Body::from(body))
+            .unwrap();
+        let res = forward(
+            &http,
+            "http://127.0.0.1:1",
+            "/attachments",
+            None,
+            req,
+            None,
+            BodyCap::Large.bytes(),
+        )
+        .await;
+        match res {
+            Err(ProxyError::BodyTooLarge) => {}
+            other => panic!("expected ProxyError::BodyTooLarge, got {other:?}"),
+        }
     }
 }
