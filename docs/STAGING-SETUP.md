@@ -313,10 +313,15 @@ Add a cron entry (e.g. `crontab -e`) that renews and reloads nginx:
   `nginx.staging.conf` needed.** (Follow-up: the web-admin e2e env-gated rewrites
   `PGUARD_RATING_URL`/`PGUARD_PRESENCE_URL` in `apps/web-admin/next.config.ts` can be retired once
   the e2e suite is re-verified against the gateway.)
-- **1 MiB request-body cap on `/v1`.** The gateway buffers request bodies with a hard 1 MiB cap
-  (clean JSON `413`). Document/image uploads larger than that will be rejected until the gateway
-  supports streaming. nginx allows 2 MiB so the gateway returns the clean error rather than nginx's
-  blunt one.
+- **Request-body caps on `/v1` (default 1 MiB; 12 MiB on the two upload routes).** The gateway
+  buffers request bodies with a hard **1 MiB** cap by default (clean JSON `413`), which is also the
+  WS per-frame cap. **Carve-out (closed):** the two multipart upload routes —
+  `POST /v1/attachments` (chat image) and `POST /v1/bookings/{id}/progress-reports` (guard check-in
+  photo) — get a **12 MiB** cap at both nginx (`location`-scoped `client_max_body_size 12m`) and the
+  gateway (`domain::routing::body_cap_for` → `BodyCap::Large`). So a ≤10 MiB image now reaches the
+  backend (which re-validates size + magic bytes). Every other route still caps at 1 MiB (nginx
+  `client_max_body_size 2m` returns the clean gateway `413` for the rest). Bodies over 12 MiB
+  (e.g. large videos) remain rejected through the edge — out of scope.
 - **Observability is internal-only.** Grafana/Tempo/Loki/Prometheus are `expose`d on the cluster
   network, never host-published. Reach Grafana via an SSH/Tailscale tunnel
   (`ssh -L 3000:grafana:3000 …` against the host) or add an authenticated nginx location if you

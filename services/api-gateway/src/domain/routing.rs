@@ -21,6 +21,36 @@ pub enum Tier {
     Api,
 }
 
+/// Per-route request-body cap. The gateway buffers the request body before forwarding;
+/// almost every route uses [`BodyCap::Default`] (1 MiB — a DoS guard, also the WS frame
+/// cap via `proxy::MAX_BODY_BYTES`). The upload routes whose OpenAPI contract allows a
+/// larger body opt into [`BodyCap::Large`] (12 MiB): the check-in photo and chat image
+/// attachments. The cap is decided here (pure) and applied in `proxy::forward`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BodyCap {
+    /// 1 MiB — the edge default for every non-upload route.
+    Default,
+    /// 12 MiB — carve-out for the multipart upload routes (covers a ≤10 MiB image plus
+    /// multipart framing). Large video uploads through the edge are still out of scope.
+    Large,
+}
+
+impl BodyCap {
+    /// 1 MiB. Pinned equal to `crate::proxy::MAX_BODY_BYTES` by a test so the edge default
+    /// and the WS frame cap never drift apart.
+    pub const DEFAULT_BYTES: usize = 1024 * 1024;
+    /// 12 MiB — the carve-out cap.
+    pub const LARGE_BYTES: usize = 12 * 1024 * 1024;
+
+    /// The cap in bytes — what `proxy::forward` buffers up to before a 413.
+    pub fn bytes(self) -> usize {
+        match self {
+            BodyCap::Default => Self::DEFAULT_BYTES,
+            BodyCap::Large => Self::LARGE_BYTES,
+        }
+    }
+}
+
 /// Logical upstream key. The concrete URL is resolved from env at startup
 /// (see `AppState::routes`); the pure layer only deals in keys.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -70,6 +100,8 @@ pub enum RouteDecision {
         /// `true` if no access token is required (login/refresh/otp public endpoints).
         public: bool,
         tier: Tier,
+        /// Max request body the gateway will buffer for this route before a 413.
+        body_cap: BodyCap,
     },
 }
 
@@ -300,6 +332,45 @@ fn has_encoded_separator(path: &str) -> bool {
     lower.contains("%2f") || lower.contains("%5c")
 }
 
+/// The body-cap carve-out for a (post-`/v1`-strip) resource path. Kept SEPARATE from the
+/// routing [`RULES`] (which stay byte-for-byte unchanged) so cap policy and routing policy
+/// don't entangle — and so this can be SEGMENT-BOUNDARY precise where a plain prefix rule
+/// could not: a near-miss like `/attachmentsx` or `/bookings/x/progress-reportsx` keeps the
+/// 1 MiB default. Two upload routes get [`BodyCap::Large`] (12 MiB):
+///   - `POST /attachments`                  — chat image attachment
+///   - `/bookings/{id}/progress-reports`    — guard hourly check-in photo
+///
+/// Method-agnostic (the edge resolves on path only): the sibling GET on each path carries no
+/// request body, so the larger cap is irrelevant to it; and both backends re-validate the
+/// upload (own `DefaultBodyLimit` + magic-byte/size check + IDOR), so a larger gateway buffer
+/// bypasses no backend protection. The cap is still bounded (12 MiB), and per-IP rate limiting
+/// (edge + gateway) bounds concurrent large uploads — peak buffered memory is
+/// `≤ 12 MiB × in-flight-large-uploads`, not unbounded.
+///
+/// NOTE (layer asymmetry, safe direction): this matches a touch WIDER than staging nginx —
+/// deeper subpaths (`/attachments/{id}`, `/bookings/{id}/progress-reports/{n}`) get `Large`
+/// here, while `nginx.staging.conf` carves only the exact upload paths (downloads/deep
+/// subpaths fall to its 2m default). nginx being stricter can never widen the edge; but if a
+/// future slice adds a REAL deep upload subpath, widen the nginx location to match.
+fn body_cap_for(stripped: &str) -> BodyCap {
+    // `POST /attachments` (exact, or a trailing-slash variant) — NOT `/attachmentsx`.
+    if stripped == "/attachments" || stripped.starts_with("/attachments/") {
+        return BodyCap::Large;
+    }
+    // `/bookings/{id}/progress-reports`: exactly one non-empty `{id}` segment, then the
+    // `progress-reports` segment at a boundary (so `…/progress-reportsx` does NOT match).
+    if let Some(rest) = stripped.strip_prefix("/bookings/") {
+        if let Some((id, tail)) = rest.split_once('/') {
+            if !id.is_empty()
+                && (tail == "progress-reports" || tail.starts_with("progress-reports/"))
+            {
+                return BodyCap::Large;
+            }
+        }
+    }
+    BodyCap::Default
+}
+
 /// Resolve an inbound request path (the raw URI path, e.g. `/v1/auth/login`) into a
 /// [`RouteDecision`]. Query strings must be stripped by the caller before this point.
 ///
@@ -309,7 +380,8 @@ fn has_encoded_separator(path: &str) -> bool {
 ///      path so `/internal/...` and `/v1/internal/...` are both blocked).
 ///   3. Require the `/v1` prefix; strip it.
 ///   4. Longest-prefix match against [`RULES`]; unknown → [`RouteDecision::NotFound`].
-///   5. Classify public vs protected via [`PUBLIC_PATHS`].
+///   5. Classify public vs protected via [`PUBLIC_PATHS`]; attach the per-route body cap
+///      ([`body_cap_for`], a carve-out for the two upload routes).
 pub fn resolve(path: &str) -> RouteDecision {
     // Reject percent-encoded path separators outright — they have no legitimate use in
     // our resource paths and would otherwise let an encoded `/internal/` slip the block.
@@ -347,6 +419,7 @@ pub fn resolve(path: &str) -> RouteDecision {
             forward_path: stripped.to_string(),
             public: PUBLIC_PATHS.contains(&stripped),
             tier: rule.tier,
+            body_cap: body_cap_for(stripped),
         },
         None => RouteDecision::NotFound,
     }
@@ -378,7 +451,16 @@ mod tests {
                 forward_path,
                 public,
                 tier,
+                ..
             } => (upstream, forward_path, public, tier),
+            other => panic!("expected Proxy, got {other:?}"),
+        }
+    }
+
+    /// The body cap of a resolved Proxy decision (the carve-out tests assert on this).
+    fn body_cap(d: RouteDecision) -> BodyCap {
+        match d {
+            RouteDecision::Proxy { body_cap, .. } => body_cap,
             other => panic!("expected Proxy, got {other:?}"),
         }
     }
@@ -687,6 +769,90 @@ mod tests {
         assert_eq!(fwd, "/attachments/abc-123");
         assert!(!public, "/attachments requires a token");
         assert_eq!(tier, Tier::Api);
+    }
+
+    // ----- body-cap carve-out (the two upload routes) -----
+
+    #[test]
+    fn carved_upload_routes_get_large_body_cap() {
+        // The exact upload routes the carve-out targets.
+        assert_eq!(
+            body_cap(resolve("/v1/attachments")),
+            BodyCap::Large,
+            "POST /attachments (chat image upload)"
+        );
+        assert_eq!(
+            body_cap(resolve("/v1/bookings/abc-123/progress-reports")),
+            BodyCap::Large,
+            "POST /bookings/{{id}}/progress-reports (guard check-in)"
+        );
+        // The attachment download shares the prefix — Large is harmless (GET has no body),
+        // and the routing is unchanged (still Chat).
+        let d = resolve("/v1/attachments/abc-123");
+        assert_eq!(body_cap(d.clone()), BodyCap::Large);
+        assert_eq!(proxy(d).0, Upstream::Chat);
+    }
+
+    #[test]
+    fn carve_out_does_not_widen_near_miss_paths() {
+        // DoD #1 adversarial set: every near-miss + the unrelated routes keep the 1 MiB
+        // default. A `…x` suffix is a DIFFERENT segment, so it must NOT inherit Large.
+        for p in [
+            "/v1/attachmentsx",                        // different segment, not /attachments
+            "/v1/bookings/abc/progress-reportsx",      // suffix not at a boundary
+            "/v1/bookings/abc",                        // GET one booking
+            "/v1/bookings",                            // collection
+            "/v1/bookings/abc/cancel",                 // a different booking subpath
+            "/v1/bookings//progress-reports",          // empty {id} segment
+            "/v1/bookings/abc/extra/progress-reports", // two segments before the suffix
+            "/v1/auth/login",
+            "/v1/otp/request",
+            "/v1/conversations/abc/messages",
+            "/v1/payments/abc",
+        ] {
+            assert_eq!(
+                body_cap(resolve(p)),
+                BodyCap::Default,
+                "{p} must keep the 1 MiB default cap"
+            );
+        }
+    }
+
+    #[test]
+    fn carve_out_keeps_routing_unchanged_for_near_misses() {
+        // `/attachmentsx` still routes to Chat (pre-existing prefix behaviour) — the carve-out
+        // changed only the CAP function, never the RULES table, so routing is byte-identical.
+        let (up, _, _, _) = proxy(resolve("/v1/attachmentsx"));
+        assert_eq!(up, Upstream::Chat);
+        // `/bookings/{id}/progress-reportsx` still routes to Booking via the plain prefix.
+        let (up, fwd, _, _) = proxy(resolve("/v1/bookings/abc/progress-reportsx"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/bookings/abc/progress-reportsx");
+    }
+
+    #[test]
+    fn ws_paths_never_reach_the_body_cap_proxy() {
+        // The WS upgrade routes are handled by `crate::wsproxy` (axum routes them before the
+        // catch-all), with their OWN 1 MiB frame cap. They are not in RULES, so `resolve`
+        // returns NotFound — they can never pick up a Large REST body cap.
+        for p in [
+            "/v1/ws/chat",
+            "/v1/ws/track",
+            "/v1/ws/call",
+            "/v1/ws/bookings/abc",
+        ] {
+            assert_eq!(resolve(p), RouteDecision::NotFound, "{p}");
+        }
+    }
+
+    #[test]
+    fn deeper_progress_reports_subpath_still_large() {
+        // A hypothetical deeper subpath under the check-in resource stays Large (boundary
+        // match), consistent with the routing suffix semantics elsewhere.
+        assert_eq!(
+            body_cap(resolve("/v1/bookings/abc/progress-reports/99")),
+            BodyCap::Large
+        );
     }
 
     // ----- presence routes -----

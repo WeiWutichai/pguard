@@ -84,7 +84,7 @@ pub async fn gateway(
 
     // 1. Resolve the route (pure).
     let decision = resolve(path);
-    let (upstream, forward_path, public, tier) = match decision {
+    let (upstream, forward_path, public, tier, body_cap) = match decision {
         // 404 for both Block and NotFound — Block uses 404 (not 403) so the existence
         // of /internal endpoints isn't revealed (ports v1's `return 404`).
         RouteDecision::Block | RouteDecision::NotFound => {
@@ -95,7 +95,8 @@ pub async fn gateway(
             forward_path,
             public,
             tier,
-        } => (upstream, forward_path, public, tier),
+            body_cap,
+        } => (upstream, forward_path, public, tier, body_cap),
     };
 
     let headers: HeaderMap = request.headers().clone();
@@ -140,6 +141,7 @@ pub async fn gateway(
         query,
         request,
         user.as_ref(),
+        body_cap.bytes(),
     )
     .await
     {
@@ -259,8 +261,14 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("")
                 .to_string();
+            // Drain the body before responding (see the proxy-test echo note) so the
+            // multi-MiB carve-out pipeline test can't flake on an HTTP/1.1 reset.
+            let body_len = axum::body::to_bytes(req.into_body(), 64 * 1024 * 1024)
+                .await
+                .map(|b| b.len())
+                .unwrap_or(0);
             axum::Json(serde_json::json!({
-                "got_path": path, "x_user_id": uid, "x_user_role": role,
+                "got_path": path, "x_user_id": uid, "x_user_role": role, "got_body_len": body_len,
             }))
             .into_response()
         }
@@ -391,6 +399,135 @@ mod tests {
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "no token → 401 at edge"
+        );
+    }
+
+    /// Mint a valid access token for `role`, clearing any stale trv marker.
+    async fn token_for(conn: &redis::aio::MultiplexedConnection, role: &str) -> (Uuid, String) {
+        let user_id = Uuid::new_v4();
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let (token, _jti) = shared::auth::encode_jwt_with_key(user_id, role, 0, &ek, 60).unwrap();
+        let mut c = conn.clone();
+        let _: () = c.del(format!("user_trv:{user_id}")).await.unwrap();
+        (user_id, token)
+    }
+
+    /// DoD #2: a 5 MiB body — over the 1 MiB default, under the 12 MiB carve — reaches the
+    /// upstream through the carved check-in route END-TO-END (the route decision selects the
+    /// Large cap; nothing is passed manually).
+    #[tokio::test]
+    async fn full_pipeline_carved_route_admits_5mib_body() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = redis::Client::open(redis_url)
+            .unwrap()
+            .get_multiplexed_tokio_connection()
+            .await
+            .unwrap();
+        let upstream = spawn_echo_upstream().await;
+        let state = build_test_state(conn.clone(), &upstream);
+        let (_id, token) = token_for(&conn, "guard").await;
+
+        let body = "x".repeat(5 * 1024 * 1024);
+        let req = AxumRequest::builder()
+            .method("POST")
+            .uri("/v1/bookings/abc/progress-reports")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = test_router(state)
+            .oneshot(with_connect_info(req))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "5 MiB reaches the upstream through the carved route"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["got_path"], "/bookings/abc/progress-reports");
+    }
+
+    /// DoD #2: a 13 MiB body exceeds even the carve-out cap → 413 at the edge (bounded carve).
+    #[tokio::test]
+    async fn full_pipeline_carved_route_rejects_13mib_body() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = redis::Client::open(redis_url)
+            .unwrap()
+            .get_multiplexed_tokio_connection()
+            .await
+            .unwrap();
+        let upstream = spawn_echo_upstream().await;
+        let state = build_test_state(conn.clone(), &upstream);
+        let (_id, token) = token_for(&conn, "guard").await;
+
+        let body = "x".repeat(13 * 1024 * 1024);
+        let req = AxumRequest::builder()
+            .method("POST")
+            .uri("/v1/bookings/abc/progress-reports")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = test_router(state)
+            .oneshot(with_connect_info(req))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "13 MiB exceeds the 12 MiB carve cap → 413"
+        );
+    }
+
+    /// DoD #2: a normal (non-carved) route keeps the 1 MiB default — 1 MiB + 1 → 413,
+    /// unchanged from before the carve-out.
+    #[tokio::test]
+    async fn full_pipeline_normal_route_rejects_over_1mib() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = redis::Client::open(redis_url)
+            .unwrap()
+            .get_multiplexed_tokio_connection()
+            .await
+            .unwrap();
+        let upstream = spawn_echo_upstream().await;
+        let state = build_test_state(conn.clone(), &upstream);
+        let (_id, token) = token_for(&conn, "customer").await;
+
+        let body = "x".repeat(crate::proxy::MAX_BODY_BYTES + 1);
+        let req = AxumRequest::builder()
+            .method("POST")
+            .uri("/v1/bookings/abc") // plain /bookings route → Default cap
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = test_router(state)
+            .oneshot(with_connect_info(req))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "normal route still caps at 1 MiB → 413"
         );
     }
 
