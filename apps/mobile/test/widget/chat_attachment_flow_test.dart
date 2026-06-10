@@ -9,8 +9,12 @@ import 'package:pguard_mobile/features/chat/chat_screen.dart';
 
 import '../support/fakes.dart';
 
+/// Attachment ids are UUIDs per the chat contract — the resolver validates the shape before
+/// building a request path (the id arrives in counterpart-controlled WS frame content).
+const imgId = '7d444840-9dc0-11d1-b245-5ffdce74fad2';
+
 const attachment = Attachment(
-  id: 'att1',
+  id: imgId,
   chatId: 'cv1',
   fileUrl: 'http://media.test/chat/cv1/x.jpg?sig=abc',
   mimeType: 'image/jpeg',
@@ -21,7 +25,7 @@ Map<String, dynamic> imageMsgJson() => {
       'conversation_id': 'cv1',
       'sender_id': 'u_customer',
       'sender_role': 'customer',
-      'content': 'att1',
+      'content': imgId,
       'message_type': 'image',
       'created_at': '2026-06-05T10:00:00Z',
     };
@@ -80,7 +84,7 @@ void main() {
     expect(service.picks.single, ChatAttachmentSource.galleryPhoto);
     expect(feed.sent.single, {
       'conversation_id': 'cv1',
-      'content': 'att1',
+      'content': imgId,
       'message_type': 'image',
       'sender_role': 'guard',
     });
@@ -143,9 +147,9 @@ void main() {
     final feed = FakeChatFeed();
     final api = FakeApi(
       onGet: (path, _) async {
-        if (path == '/attachments/att1') {
+        if (path == '/attachments/$imgId') {
           return {
-            'id': 'att1',
+            'id': imgId,
             'chat_id': 'cv1',
             'file_key': 'chat/cv1/x.jpg',
             'file_url': 'http://media.test/chat/cv1/x.jpg?sig=abc',
@@ -162,7 +166,7 @@ void main() {
     await settle(tester);
     await settle(tester); // attachment resolution round-trip
 
-    expect(api.calls, contains('GET /attachments/att1'),
+    expect(api.calls, contains('GET /attachments/$imgId'),
         reason: 'presigned URL resolved on view, never persisted');
     final image = tester.widget<Image>(find.byType(Image));
     final provider = image.image as NetworkImage;
@@ -171,25 +175,19 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('a video message renders a labelled chip (no inline player)',
-      (tester) async {
+  testWidgets(
+      'a video message renders a labelled chip without resolving the '
+      'attachment (no inline player, no wasted GET)', (tester) async {
     final feed = FakeChatFeed();
     final api = FakeApi(
       onGet: (path, _) async {
-        if (path == '/attachments/att2') {
-          return {
-            'id': 'att2',
-            'chat_id': 'cv1',
-            'file_key': 'chat/cv1/x.mp4',
-            'file_url': 'http://media.test/chat/cv1/x.mp4?sig=abc',
-            'mime_type': 'video/mp4',
-            'created_at': '2026-06-05T10:00:00Z',
-          };
+        if (path.startsWith('/attachments/')) {
+          fail('video bubbles must not resolve attachments');
         }
         return [
           imageMsgJson()
             ..['id'] = 'm2'
-            ..['content'] = 'att2'
+            ..['content'] = imgId
             ..['message_type'] = 'video'
         ];
       },
@@ -202,6 +200,31 @@ void main() {
 
     expect(find.text('วิดีโอ'), findsOneWidget);
     expect(find.byIcon(Icons.videocam_outlined), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a non-UUID attachment id (counterpart-controlled content) is rejected '
+      'client-side — error chip, no API call', (tester) async {
+    final feed = FakeChatFeed();
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path.startsWith('/attachments/')) {
+          fail('malformed ids must never reach the request path');
+        }
+        return [
+          imageMsgJson()..['content'] = 'x/../../me/data-export',
+        ];
+      },
+      onPut: (_, __) async => {'success': true},
+    );
+
+    await tester.pumpWidget(host(api, feed));
+    await settle(tester);
+    await settle(tester);
+
+    expect(find.text('โหลดไฟล์แนบไม่สำเร็จ'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

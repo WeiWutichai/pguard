@@ -133,29 +133,28 @@ class _AttachmentContent extends ConsumerWidget {
     final content = message.content;
     if (content == null || content.isEmpty) return _fallbackChip();
 
+    // Video renders as a labelled chip in every case (no in-app player — documented gap), so
+    // never spend an authenticated GET resolving a presigned URL nothing would play.
+    if (_isVideo) {
+      return _chip(Icons.videocam_outlined, isThai ? 'วิดีโอ' : 'Video');
+    }
+
     if (content.startsWith('http://') || content.startsWith('https://')) {
-      return _isVideo
-          ? _chip(Icons.videocam_outlined, isThai ? 'วิดีโอ' : 'Video')
-          : _BubbleImage(url: MediaHost.forApp(content), isThai: isThai, fg: fg);
+      return _BubbleImage(url: MediaHost.forApp(content), isThai: isThai, fg: fg);
     }
 
     final async = ref.watch(chatAttachmentProvider(content));
     return async.when(
-      loading: () => _chip(
-        _isVideo ? Icons.videocam_outlined : Icons.image_outlined,
-        isThai ? 'กำลังโหลด…' : 'Loading…',
-      ),
+      loading: () => _chip(Icons.image_outlined, isThai ? 'กำลังโหลด…' : 'Loading…'),
       error: (_, __) => _chip(
         Icons.broken_image_outlined,
         isThai ? 'โหลดไฟล์แนบไม่สำเร็จ' : 'Could not load attachment',
       ),
-      data: (attachment) => _isVideo
-          ? _chip(Icons.videocam_outlined, isThai ? 'วิดีโอ' : 'Video')
-          : _BubbleImage(
-              url: MediaHost.forApp(attachment.fileUrl),
-              isThai: isThai,
-              fg: fg,
-            ),
+      data: (attachment) => _BubbleImage(
+        url: MediaHost.forApp(attachment.fileUrl),
+        isThai: isThai,
+        fg: fg,
+      ),
     );
   }
 

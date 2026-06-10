@@ -428,11 +428,16 @@ class _Freshness extends StatelessWidget {
       );
     }
     final now = DateTime.now();
-    final ago = isThai
-        ? RelativeTime.th(guard.recordedAt, now: now)
-        : RelativeTime.en(guard.recordedAt, now: now);
+    final String label;
+    if (isThai) {
+      label = 'อัปเดตล่าสุด ${RelativeTime.th(guard.recordedAt, now: now)}';
+    } else {
+      // RelativeTime.en returns a phrase ('just now') under a minute — don't append 'ago'.
+      final ago = RelativeTime.en(guard.recordedAt, now: now);
+      label = ago == 'just now' ? 'Last seen just now' : 'Last seen $ago ago';
+    }
     return Text(
-      isThai ? 'อัปเดตล่าสุด $ago' : 'Last seen $ago ago',
+      label,
       style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
     );
   }

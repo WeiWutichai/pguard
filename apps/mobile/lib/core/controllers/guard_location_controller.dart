@@ -76,8 +76,14 @@ class GuardLocationController extends _$GuardLocationController {
   }
 
   /// One-shot, user-initiated re-pull (the refresh button) — a gesture, not a timer.
+  /// Errors are NOT rethrown: the provider state already carries them for the UI, and the
+  /// callers are fire-and-forget button handlers (a rethrow would only spam the error zone).
   Future<void> refresh() async {
     ref.invalidateSelf();
-    await future;
+    try {
+      await future;
+    } catch (_) {
+      // state is AsyncError — the screen renders the retry body from it.
+    }
   }
 }

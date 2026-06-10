@@ -132,6 +132,11 @@ class ApiClient implements PguardApi {
       if (access != null) {
         options.extra['pg_retried'] = true;
         options.headers['Authorization'] = 'Bearer $access';
+        // A multipart body finalizes on first send — re-sending the same FormData throws a
+        // StateError. Clone it so one-refresh-and-retry also covers attachment uploads.
+        if (options.data is FormData) {
+          options.data = (options.data as FormData).clone();
+        }
         try {
           final retried = await _dio.fetch(options);
           return handler.resolve(retried);

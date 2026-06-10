@@ -12,14 +12,25 @@ part 'chat_attachment_resolver.g.dart';
 /// AutoDispose family: the URL lives only in provider memory while bubbles are on screen —
 /// it is never written to prefs/secure storage (hard rule: presigned URLs and tokens don't
 /// get cached to disk). Each conversation reopen re-resolves, so a stale URL can't be reused.
+/// (Trade-off: a bubble recycled out of a long list re-resolves on scroll-back; correctness
+/// over bandwidth until an in-memory media cache is worth it.)
 @riverpod
 Future<Attachment> chatAttachment(
     ChatAttachmentRef ref, String attachmentId) async {
+  // The id arrives in a WS frame `content` the COUNTERPART controls — never interpolate an
+  // attacker-shaped string into a request path. The contract says attachment ids are UUIDs.
+  if (!_uuid.hasMatch(attachmentId)) {
+    throw const ApiException(
+        message: 'โหลดไฟล์แนบไม่สำเร็จ / Could not load attachment');
+  }
   final data =
-      await ref.watch(pguardApiProvider).get('/attachments/$attachmentId');
+      await ref.read(pguardApiProvider).get('/attachments/$attachmentId');
   if (data is! Map<String, dynamic>) {
     throw const ApiException(
         message: 'โหลดไฟล์แนบไม่สำเร็จ / Could not load attachment');
   }
   return Attachment.fromJson(data);
 }
+
+final RegExp _uuid = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$');

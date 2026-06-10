@@ -38,6 +38,10 @@ class GeoPoint {
 /// A pure equirectangular viewport: maps WGS84 coordinates onto canvas fractions, the same
 /// local projection the booking map picker uses (no map-tile SDK — see `MapPicker`). The
 /// live-map widget only positions markers; ALL the projection math lives here, unit-tested.
+///
+/// Known inaccuracy (accepted): no cos(lat) correction is applied to the longitude axis, so
+/// markers skew slightly at high latitudes. At Bangkok (~14°N) and street-scale spans the
+/// distortion is < 3% — revisit only if the market ever leaves the tropics.
 class MapViewport {
   const MapViewport({required this.center, required this.span});
 

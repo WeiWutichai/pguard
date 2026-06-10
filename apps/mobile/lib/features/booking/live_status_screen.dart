@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -199,13 +200,14 @@ class _Actions extends ConsumerWidget {
 
 /// Opens the customer live-map (`/booking/{id}/map`) — guard marker + status, pushed by the
 /// booking-status WebSocket (no polling).
-class _TrackGuardTile extends StatelessWidget {
+class _TrackGuardTile extends ConsumerWidget {
   const _TrackGuardTile({required this.bookingId});
 
   final String bookingId;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Material(
       color: PgTokens.colorGreen50,
       borderRadius: BorderRadius.circular(PgTokens.radiusLg),
@@ -220,10 +222,10 @@ class _TrackGuardTile extends StatelessWidget {
               const Icon(Icons.map_outlined,
                   size: 20, color: PgTokens.colorGreen800),
               const SizedBox(width: PgTokens.space2),
-              const Expanded(
+              Expanded(
                 child: Text(
-                  'ดูตำแหน่งเจ้าหน้าที่ / Track guard',
-                  style: TextStyle(
+                  isThai ? 'ดูตำแหน่งเจ้าหน้าที่' : 'Track guard',
+                  style: const TextStyle(
                     fontSize: 13.5,
                     fontWeight: FontWeight.w600,
                     color: PgTokens.colorGreen800,

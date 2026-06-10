@@ -112,8 +112,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // The entry tile is visible because a guard is assigned and the job is active.
-    final tile = find.textContaining('Track guard');
+    // The entry tile is visible because a guard is assigned and the job is active
+    // (default locale is Thai; the label toggles with the locale controller).
+    final tile = find.text('ดูตำแหน่งเจ้าหน้าที่');
     expect(tile, findsOneWidget);
 
     await tester.tap(tile);
@@ -154,7 +155,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.textContaining('Track guard'), findsNothing);
+    expect(find.text('ดูตำแหน่งเจ้าหน้าที่'), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

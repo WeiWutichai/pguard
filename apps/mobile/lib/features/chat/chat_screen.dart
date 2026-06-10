@@ -37,6 +37,7 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final ScrollController _scroll = ScrollController();
   final TextEditingController _input = TextEditingController();
+  bool _attachBusy = false;
 
   @override
   void dispose() {
@@ -64,6 +65,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _attach() async {
+    if (_attachBusy) return; // one picker/upload at a time
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
 
     // 1) Source choice is UI; 2) pick + multipart upload live in the service (testable, no
@@ -76,13 +78,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     final messenger = ScaffoldMessenger.of(context);
     final service = ref.read(chatAttachmentServiceProvider);
+    setState(() => _attachBusy = true);
     try {
       final attachment =
           await service.pickAndUpload(widget.conversationId, source);
-      if (attachment == null) return; // user cancelled the picker — silent
+      // A long upload (videos up to 200MB) can outlive this screen — touching `ref`/`_ctrl`
+      // after dispose throws, so bail out first (the upload itself completed server-side).
+      if (!mounted || attachment == null) return;
       _ctrl.sendAttachment(attachment);
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } finally {
+      if (mounted) setState(() => _attachBusy = false);
     }
   }
 
@@ -147,7 +154,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               _Composer(
                 input: _input,
                 onSend: _send,
-                onAttach: _attach,
+                onAttach: _attachBusy ? null : _attach,
                 isThai: isThai,
               ),
           ],
@@ -262,7 +269,9 @@ class _Composer extends StatelessWidget {
 
   final TextEditingController input;
   final VoidCallback onSend;
-  final VoidCallback onAttach;
+
+  /// Disabled (null) while a pick/upload is already in flight.
+  final VoidCallback? onAttach;
   final bool isThai;
 
   @override

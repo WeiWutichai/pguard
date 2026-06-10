@@ -170,6 +170,28 @@ void main() {
     expect(locationGets(t.api), 2);
   });
 
+  test('refresh() while the backend keeps failing does NOT rethrow into the '
+      'fire-and-forget button handler (state carries the error)', () async {
+    var failNow = false;
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (failNow) {
+        throw const ApiException(message: 'boom', statusCode: 500);
+      }
+      return locationJson(13.75);
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    await t.c.read(guardLocationControllerProvider('b1').future);
+    failNow = true;
+    await t.c
+        .read(guardLocationControllerProvider('b1').notifier)
+        .refresh(); // must complete normally
+    expect(
+        t.c.read(guardLocationControllerProvider('b1')).hasError, isTrue);
+  });
+
   test('dispose cleans up: the booking feed closes and no further fetches run',
       () async {
     final t = make(onGet: (path, _) async {
