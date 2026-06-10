@@ -1,0 +1,71 @@
+{
+  "uid": "pguard-edge",
+  "title": "pguard · edge & gateway",
+  "tags": ["pguard", "round3b", "edge"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "Gateway request rate by status class",
+      "description": "api-gateway http_requests_total grouped by status family. 2xx/3xx = served; 4xx incl. the 429 rate-limit hits; 5xx/502 = upstream failures (e.g. a downed service — see chaos case 4).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 20, "stacking": { "mode": "normal" } } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (status) (rate(http_requests_total{job=\"api-gateway\"}[5m]))", "legendFormat": "{{status}}" } ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Rate-limit hits (429/s) at the edge",
+      "description": "rate(http_requests_total{job=\"api-gateway\",status=\"429\"}). The ceiling sweep (RESULTS.md) showed a single client IP knees at ~10 req/s (auth tier) and ~50 req/s (api tier) → these are the per-IP fixed-window limits. Sustained >5/s for 10m fires GatewayRateLimitSurge.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "bars", "fillOpacity": 50 }, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "orange", "value": 5 } ] } },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "single" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum(rate(http_requests_total{job=\"api-gateway\",status=\"429\"}[5m]))", "legendFormat": "429/s" } ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Gateway p99 latency",
+      "description": "histogram_quantile(0.99) over the gateway's own http_request_duration_seconds. This is edge-observed latency (proxy + upstream round-trip).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "s", "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "single" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job=\"api-gateway\"}[5m])))", "legendFormat": "gateway p99" } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Top edge routes by request rate",
+      "description": "sum by (route) of the gateway's request rate — which public paths carry the traffic. Routes are the post-/v1 templates (e.g. /{*path} for the catch-all proxy).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "reqps", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "topk(10, sum by (route) (rate(http_requests_total{job=\"api-gateway\"}[5m])))", "legendFormat": "{{route}}" } ]
+    },
+    {
+      "id": 5,
+      "type": "text",
+      "title": "Edge capacity & gaps",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 16 },
+      "options": {
+        "mode": "markdown",
+        "content": "**Edge capacity (measured — tests/load/RESULTS.md).** From a SINGLE client IP the per-IP rate limit is the first ceiling: **auth ~10 req/s**, **general API ~50 req/s** (excess → 429, by design, brute-force/abuse protection — NOT a backend failure). True backend ceilings (rate-limit bypassed, direct-to-service): login ~30/s (Argon2 CPU cliff), discovery ~100/s (fan-out+replica), booking ≥100/s, GPS-WS ≥800 concurrent (0 conn failures).\n\n**Gap — active WS sessions:** the gateway/presence do not export a live WS-session gauge today, so there is no edge-WS-sessions panel. The WS ceiling is characterised by the load suite (`ceiling-ws.js`) instead. Exporting a `ws_active_connections` gauge is a tracked follow-up."
+      }
+    }
+  ]
+}

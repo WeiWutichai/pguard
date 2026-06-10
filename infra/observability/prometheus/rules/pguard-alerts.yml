@@ -1,0 +1,138 @@
+# pguard v2 — Prometheus alert rules (Round 3-B).
+#
+# THRESHOLDS ARE DERIVED FROM MEASURED NUMBERS, not guesses. Sources:
+#   • baseline:  v1-audit/perf-baseline/results.md
+#   • ceiling + mixed busy-hour: tests/load/RESULTS.md (this slice)
+# Each rule cites its source inline. SLO targets + rationale: infra/observability/README.md.
+#
+# Validate locally:  promtool check rules infra/observability/prometheus/rules/pguard-alerts.yml
+#
+# NOTE (documented gaps — NOT alerted here, no metric exists):
+#   • read-replica lag — Postgres exposes no Prometheus metric without postgres_exporter
+#     (not deployed). Wiring it + alerting on pg_replication_lag is a tracked follow-up.
+#   • pgbouncer pool saturation — needs pgbouncer_exporter (not deployed).
+#   • active WS session count — no gauge is exported by the gateway/presence today.
+# See README.md "Gaps" for the exporter wiring TODO.
+
+groups:
+  # ── Latency SLOs ─────────────────────────────────────────────────────────────
+  - name: pguard-latency
+    rules:
+      # Non-auth services. Isolated p99 < 30 ms (RESULTS: discovery 30, booking 9, chat 11,
+      # ratings 4). Busy-hour mixed p99 reached ~780 ms (discovery) on a SINGLE node with 0
+      # errors — i.e. the node is contention-bound, not failing. WARNING at 500 ms/10m is the
+      # capacity signal ("scale out — see HPA in k8s"); CRITICAL at 1.5 s/10m is real degradation.
+      - alert: ServiceP99LatencyWarning
+        expr: |
+          histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket{job!="identity"}[5m]))) > 0.5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} p99 latency > 500ms (sustained)"
+          description: "p99 = {{ $value | humanizeDuration }} over 5m for {{ $labels.job }}. Isolated baseline is <30ms; the single-node busy-hour mix peaks ~780ms. Sustained >500ms = node saturated — scale out (k8s HPA tuned from RESULTS.md)."
+      - alert: ServiceP99LatencyCritical
+        expr: |
+          histogram_quantile(0.99, sum by (job, le) (rate(http_request_duration_seconds_bucket{job!="identity"}[5m]))) > 1.5
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} p99 latency > 1.5s (sustained)"
+          description: "p99 = {{ $value | humanizeDuration }} for {{ $labels.job }} — well beyond the measured busy-hour ceiling (~780ms). Investigate DB pool / CPU / downstream."
+
+      # identity is Argon2-bound on purpose. Isolated login p99 ~134ms; backend-direct ceiling
+      # ~178ms @30rps (RESULTS direct); busy-hour mixed p99 644ms. Higher thresholds than the
+      # generic API tier so normal Argon2 cost never pages.
+      - alert: IdentityP99LatencyWarning
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job="identity"}[5m]))) > 1
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "identity (auth) p99 > 1s (sustained)"
+          description: "Argon2 verify is CPU-bound; isolated p99 ~134ms, busy-hour ~644ms. >1s sustained = CPU saturation — add identity replicas (size for login RPS, per RESULTS.md)."
+      - alert: IdentityP99LatencyCritical
+        expr: |
+          histogram_quantile(0.99, sum by (le) (rate(http_request_duration_seconds_bucket{job="identity"}[5m]))) > 2
+        for: 10m
+        labels: { severity: critical }
+        annotations:
+          summary: "identity (auth) p99 > 2s (sustained)"
+          description: "Login is severely degraded (p99 = {{ $value | humanizeDuration }}). Argon2 CPU exhausted — scale identity now."
+
+  # ── Error rates ──────────────────────────────────────────────────────────────
+  - name: pguard-errors
+    rules:
+      # Baseline 5xx fraction = 0% on every path. 5xx EXCLUDES 429 (rate-limit, see below).
+      - alert: ServiceErrorRateWarning
+        expr: |
+          sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "{{ $labels.job }} 5xx error rate > 5%"
+          description: "{{ $value | humanizePercentage }} of {{ $labels.job }} responses are 5xx over 5m (baseline 0%)."
+      - alert: ServiceErrorRateCritical
+        expr: |
+          sum by (job) (rate(http_requests_total{status=~"5.."}[5m]))
+            / clamp_min(sum by (job) (rate(http_requests_total[5m])), 0.001) > 0.2
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} 5xx error rate > 20%"
+          description: "{{ $value | humanizePercentage }} of {{ $labels.job }} responses are 5xx over 5m — service is failing."
+
+      # Gateway 429s = per-IP rate-limit hits. The ceiling sweep showed a SINGLE client IP knees
+      # at ~10/s (auth tier) and ~50/s (api tier) → sustained 429s mean either a misconfigured
+      # client or an attack. Baseline ~0/s. (429 is NOT a 5xx, so it needs its own alert.)
+      - alert: GatewayRateLimitSurge
+        expr: sum(rate(http_requests_total{job="api-gateway",status="429"}[5m])) > 5
+        for: 10m
+        labels: { severity: warning }
+        annotations:
+          summary: "api-gateway 429 rate-limit hits > 5/s (sustained)"
+          description: "{{ $value | printf \"%.1f\" }} 429/s over 10m. Edge per-IP limits (auth ~10/s, api ~50/s) are being hit hard — client misconfig or abuse."
+
+  # ── NATS / outbox health ─────────────────────────────────────────────────────
+  - name: pguard-nats
+    rules:
+      # Baseline pending = 0. The NATS-outage chaos (CHAOS.md case 1) showed the backlog spikes
+      # then DRAINS within seconds once NATS returns — so a 5m sustained backlog means a consumer
+      # is actually stuck (not a transient blip).
+      - alert: NatsConsumerBacklogWarning
+        expr: max by (durable) (nats_consumer_pending) > 50
+        for: 5m
+        labels: { severity: warning }
+        annotations:
+          summary: "NATS consumer '{{ $labels.durable }}' backlog > 50 (5m)"
+          description: "nats_consumer_pending = {{ $value }} for durable {{ $labels.durable }} sustained 5m (baseline 0). The consumer is falling behind or stuck."
+      - alert: NatsConsumerBacklogCritical
+        expr: max by (durable) (nats_consumer_pending) > 500
+        for: 5m
+        labels: { severity: critical }
+        annotations:
+          summary: "NATS consumer '{{ $labels.durable }}' backlog > 500 (5m)"
+          description: "nats_consumer_pending = {{ $value }} for {{ $labels.durable }} — large undrained backlog; downstream effects (notifications, approvals) are delayed."
+
+      # Any signature-rejected event is a fail-closed security signal (HMAC verify failed). It is
+      # never normal; alert on the first occurrence. The metric only appears once it increments.
+      - alert: NatsRejectedEvents
+        expr: increase(nats_rejected_events_total[5m]) > 0
+        for: 0m
+        labels: { severity: critical }
+        annotations:
+          summary: "Rejected (unsigned/forged) NATS events detected"
+          description: "{{ $value }} event(s) failed HMAC verification in 5m on {{ $labels.job }}. Events are dropped fail-closed; investigate a misconfigured signing key or a forgery attempt."
+
+  # ── Liveness ─────────────────────────────────────────────────────────────────
+  - name: pguard-liveness
+    rules:
+      # `up` is truthful because prometheus.yml scrapes the prod-stack container DNS (one instance
+      # per service). 2m avoids flapping on a rolling restart.
+      - alert: ServiceDown
+        expr: up{job=~"api-gateway|identity|profile|otp|notification|booking|payment|rating|calling|presence|chat"} == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations:
+          summary: "{{ $labels.job }} is down (scrape failing 2m)"
+          description: "Prometheus cannot scrape {{ $labels.job }} ({{ $labels.instance }}) for 2m — the container is down or /metrics is unreachable. The chaos suite (CHAOS.md case 4) shows the gateway returns a clean 502 for a downed upstream with no cascade."

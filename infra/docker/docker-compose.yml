@@ -168,6 +168,10 @@ services:
       - "--web.enable-remote-write-receiver"
     volumes:
       - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Round 3-B alert rules (same file both composes). NOTE: prometheus.yml scrape targets are
+      # the PROD-stack container DNS; for this dev-on-host compose swap them to
+      # host.docker.internal:<port> (see the comments in prometheus.yml) or the targets read down.
+      - ../observability/prometheus/rules:/etc/prometheus/rules:ro
     ports:
       - "${PROMETHEUS_PORT:-9090}:9090"
     # Rust services run on the host (`cargo run`); map host.docker.internal so the

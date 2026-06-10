@@ -696,6 +696,8 @@ services:
       - "--web.enable-remote-write-receiver"
     volumes:
       - ../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Round 3-B: provisioned alert rules (rule_files: /etc/prometheus/rules/*.yml).
+      - ../observability/prometheus/rules:/etc/prometheus/rules:ro
     expose:
       - "9090"
     networks:
