@@ -451,9 +451,12 @@ pub async fn create_progress_report(
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {
-            sqlx::Error::Database(d) if d.code().as_deref() == Some("23505") => AppError::Conflict(
-                format!("A check-in for hour {} already exists", report.hour_number),
-            ),
+            sqlx::Error::Database(d) if d.code().as_deref() == Some("23505") => {
+                AppError::ConflictCode {
+                    code: crate::domain::progress::DUPLICATE_CHECK_IN_CODE,
+                    message: format!("A check-in for hour {} already exists", report.hour_number),
+                }
+            }
             _ => AppError::from(e),
         })?;
 
@@ -1581,13 +1584,22 @@ mod db_tests {
             .await
             .expect("exists check"));
 
-        // DUPLICATE hour → 409, and the failed tx enqueues NO second event (atomicity).
+        // DUPLICATE hour → 409 with the DUPLICATE_CHECK_IN sub-code (the unique-index 23505
+        // race path), and the failed tx enqueues NO second event (atomicity).
         let dup = create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
             .await
             .expect_err("duplicate hour must be rejected");
-        assert!(matches!(dup, AppError::Conflict(_)), "got {dup:?}");
+        assert!(
+            matches!(
+                &dup,
+                AppError::ConflictCode { code, .. }
+                    if *code == crate::domain::progress::DUPLICATE_CHECK_IN_CODE
+            ),
+            "duplicate hour must carry DUPLICATE_CHECK_IN, got {dup:?}"
+        );
 
         // Too-early FUTURE hour (work just started → only hour 1 open) → 409, nothing enqueued.
+        // This stays a PLAIN Conflict (code `CONFLICT`) — the sub-code is duplicate-only.
         let early = create_progress_report(&pool, booking_id, guard_id, &report(2), correlation)
             .await
             .expect_err("hour 2 right after start must be too early");

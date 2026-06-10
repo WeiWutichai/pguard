@@ -25,6 +25,14 @@ pub enum AppError {
     #[error("{0}")]
     Conflict(String),
 
+    /// A 409 conflict that carries a machine-readable sub-code (e.g. `DUPLICATE_CHECK_IN`)
+    /// so clients branch on `error.code` instead of matching the message text. Same 409
+    /// status and the same `{ error: { code, message } }` envelope as [`AppError::Conflict`];
+    /// ONLY the `code` string differs (plain `Conflict` keeps `"CONFLICT"`). `code` is
+    /// `&'static str` so only a fixed, vetted set of sub-codes can be emitted.
+    #[error("{message}")]
+    ConflictCode { code: &'static str, message: String },
+
     #[error("{0}")]
     Internal(String),
 
@@ -56,6 +64,8 @@ impl IntoResponse for AppError {
             AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "FORBIDDEN"),
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             AppError::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
+            // Same 409 as Conflict; the variant supplies its own machine-readable code.
+            AppError::ConflictCode { code, .. } => (StatusCode::CONFLICT, *code),
             AppError::Internal(_) => (StatusCode::INTERNAL_SERVER_ERROR, "INTERNAL_ERROR"),
             AppError::Database(e) => {
                 tracing::error!("Database error: {e}");
@@ -115,6 +125,46 @@ mod tests {
     fn conflict_returns_409() {
         let err = AppError::Conflict("email already exists".into());
         assert_eq!(err.into_response().status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn conflict_keeps_plain_code_in_body() {
+        // Backward-compat guard: the plain `Conflict` variant must still serialize the
+        // `"CONFLICT"` code (a sub-code must never leak into existing call sites).
+        let err = AppError::Conflict("illegal transition".into());
+        let body = axum::body::to_bytes(err.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "CONFLICT");
+        assert_eq!(json["error"]["message"], "illegal transition");
+    }
+
+    #[tokio::test]
+    async fn conflict_code_returns_409_with_custom_code_and_same_envelope() {
+        // Same status + envelope SHAPE as Conflict; only the code differs.
+        let err = AppError::ConflictCode {
+            code: "DUPLICATE_CHECK_IN",
+            message: "A check-in for hour 1 already exists".into(),
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "DUPLICATE_CHECK_IN");
+        assert_eq!(
+            json["error"]["message"],
+            "A check-in for hour 1 already exists"
+        );
+        // Envelope shape is exactly `{ error: { code, message } }` — no extra/renamed keys.
+        assert!(json["error"].get("code").is_some() && json["error"].get("message").is_some());
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            1,
+            "top-level is just `error`"
+        );
     }
 
     #[test]

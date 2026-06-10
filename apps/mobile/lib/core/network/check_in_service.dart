@@ -36,8 +36,9 @@ abstract class CheckInService {
 /// Production [CheckInService]: a multipart upload through the authenticated [PguardApi] Dio
 /// client (mirrors `ApiChatAttachmentService`). It maps the merged contract's transport-level
 /// outcomes to friendly, bilingual results so the controller/UI need no status-code knowledge:
-///  - **409 "already exists"** → returns normally (the hour is already recorded — an idempotent
-///    retry is a success, so the controller marks the slot done; nothing is re-uploaded).
+///  - **409 `DUPLICATE_CHECK_IN`** (sub-code; legacy servers: message "already exists") → returns
+///    normally (the hour is already recorded — an idempotent retry is a success, so the controller
+///    marks the slot done; nothing is re-uploaded).
 ///  - **409 other** (too early / not started yet) → a bilingual "not time yet" [ApiException].
 ///  - **413** → a bilingual "photo too large" [ApiException].
 ///  - **403/404** → a bilingual "can't check in for this job" [ApiException].
@@ -115,8 +116,15 @@ class ApiCheckInService implements CheckInService {
   }
 
   /// `true` for the absorbable 409 — the hour is already recorded.
+  ///
+  /// Primary signal is the machine-readable `error.code == 'DUPLICATE_CHECK_IN'` from the
+  /// server envelope (contract: `POST /bookings/{id}/progress-reports` 409). The English
+  /// substring match is a CROSS-VERSION FALLBACK only (a new app talking to an older
+  /// booking service that still emits a plain `CONFLICT` with the "already exists" message)
+  /// — it can be removed once every staging/prod booking service emits the sub-code.
   static bool _isDuplicateHour(ApiException e) {
     if (e.statusCode != 409) return false;
+    if (e.code == 'DUPLICATE_CHECK_IN') return true;
     final msg = e.message.toLowerCase();
     return msg.contains('already exists') || msg.contains('duplicate');
   }

@@ -133,17 +133,39 @@ void main() {
     ApiCheckInService serviceThatThrows(ApiException e) =>
         ApiCheckInService(api: FakeApi(onPost: (_, __) async => throw e));
 
-    test('409 duplicate-hour is ABSORBED as success (idempotent retry)', () async {
+    test('409 DUPLICATE_CHECK_IN sub-code is ABSORBED as success (primary signal)',
+        () async {
+      // Server sends the machine-readable sub-code; the message is irrelevant to the match.
       final service = serviceThatThrows(const ApiException(
-          message: 'A check-in for hour 1 already exists', statusCode: 409));
+          message: 'A check-in for hour 1 already exists',
+          code: 'DUPLICATE_CHECK_IN',
+          statusCode: 409));
       // Completes without throwing → the controller marks the slot done.
       await service.submit(
           bookingId: 'b1', hourNumber: 1, photo: capturedJpg());
     });
 
-    test('409 too-early surfaces a bilingual "not time yet" message', () async {
+    test('409 legacy duplicate (no sub-code) is ABSORBED via message fallback',
+        () async {
+      // Cross-version rollout: an older server still emits plain CONFLICT + the English
+      // message. The fallback substring match must still absorb it.
       final service = serviceThatThrows(const ApiException(
-          message: 'Too early to check in for hour 3', statusCode: 409));
+          message: 'A check-in for hour 1 already exists',
+          code: 'CONFLICT',
+          statusCode: 409));
+      await service.submit(
+          bookingId: 'b1', hourNumber: 1, photo: capturedJpg());
+    });
+
+    test(
+        '409 too-early (CONFLICT, non-duplicate message) is NOT absorbed — surfaces '
+        '"not time yet"', () async {
+      // Neither signal fires: code is CONFLICT (not the sub-code) AND the message has no
+      // duplicate phrase → must throw the friendly too-early message, not silently succeed.
+      final service = serviceThatThrows(const ApiException(
+          message: 'Too early to check in for hour 3',
+          code: 'CONFLICT',
+          statusCode: 409));
       await expectLater(
         () => service.submit(
             bookingId: 'b1', hourNumber: 3, photo: capturedJpg()),

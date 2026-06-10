@@ -14,6 +14,11 @@ use shared::error::AppError;
 
 use crate::domain::state::BookingStatus;
 
+/// Machine-readable `error.code` for a duplicate-hour check-in 409 (both the advisory
+/// pre-flight and the unique-index race emit it). Clients branch on this instead of the
+/// English message — see `AppError::ConflictCode`. Too-early / not-started keep `CONFLICT`.
+pub const DUPLICATE_CHECK_IN_CODE: &str = "DUPLICATE_CHECK_IN";
+
 // ----- check-in photo validation (images only — ported subset of chat's attachment rules) -----
 
 /// 10MB cap for check-in photos (mirrors chat's image cap).

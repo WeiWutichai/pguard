@@ -379,10 +379,10 @@ pub async fn create_progress_report<S: BookingDeps>(
         chrono::Utc::now(),
     )?;
     if repo::progress_report_exists(state.db(), id, form.hour_number).await? {
-        return Err(AppError::Conflict(format!(
-            "A check-in for hour {} already exists",
-            form.hour_number
-        )));
+        return Err(AppError::ConflictCode {
+            code: progress::DUPLICATE_CHECK_IN_CODE,
+            message: format!("A check-in for hour {} already exists", form.hour_number),
+        });
     }
 
     // ----- photo validation (size BEFORE magic bytes) + server-generated key + upload -----
@@ -1360,6 +1360,17 @@ mod tests {
             StatusCode::CONFLICT,
             "duplicate-hour retry must 409 at the pre-flight (a 500 here would mean an S3 \
              upload was attempted against the stub)"
+        );
+        // ...and the body carries the machine-readable sub-code so the mobile client can
+        // absorb the idempotent retry without matching on the English message.
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            v["error"]["code"],
+            crate::domain::progress::DUPLICATE_CHECK_IN_CODE,
+            "pre-flight duplicate 409 must carry the DUPLICATE_CHECK_IN sub-code"
         );
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
