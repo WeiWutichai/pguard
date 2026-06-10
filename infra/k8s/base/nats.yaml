@@ -1,0 +1,84 @@
+# nats — JetStream event bus (signed envelopes; at-least-once durable consumers).
+# StatefulSet + PVC so the JetStream file store survives a restart (compose runs it with
+# an ephemeral store; k8s gives it a durable home — `-sd /data`). Mirrors compose `nats`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: nats
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: event-bus
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: nats
+  ports:
+    - name: client
+      port: 4222
+      targetPort: 4222
+    - name: monitor
+      port: 8222
+      targetPort: 8222
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: nats
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: event-bus
+spec:
+  serviceName: nats
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: nats
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: nats
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: event-bus
+    spec:
+      containers:
+        - name: nats
+          image: nats:2-alpine
+          # -js JetStream, -m 8222 monitoring, -sd durable store on the PVC.
+          args: ["-js", "-sd", "/data", "-m", "8222"]
+          ports:
+            - name: client
+              containerPort: 4222
+            - name: monitor
+              containerPort: 8222
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8222
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          volumeMounts:
+            - name: nats-data
+              mountPath: /data
+  volumeClaimTemplates:
+    - metadata:
+        name: nats-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 5Gi

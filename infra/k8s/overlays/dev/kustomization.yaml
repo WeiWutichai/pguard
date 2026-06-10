@@ -1,0 +1,84 @@
+# pguard v2 — DEV overlay (local / kind). replicas:1, NO HPA, DUMMY secrets (secretGenerator),
+# SMS + push disabled. Single Postgres (no streaming replica) so it runs on a one-node kind
+# cluster; the primary image is overridden to STOCK postgres:17 (the custom replication image
+# isn't needed locally and isn't publicly pullable). The 11 Rust services + mediasoup + web-admin
+# stay on their `pguard/*` names — build them locally and `kind load`, or add an imagePullSecret
+# for ghcr (see infra/k8s/README.md). Secrets here are OBVIOUSLY FAKE and safe to commit.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pguard
+
+resources:
+  - ../../base
+
+# Dev images: only the primary is remapped to a stock image so kind can pull it without auth.
+images:
+  - name: pguard/postgres-primary
+    newName: postgres
+    newTag: "17"
+
+# Dummy secrets — clearly fake, committed for convenience. JWT/HMAC keys are ≥64 chars (the apps
+# length-check them). Stable names (no hash suffix) so README kubectl commands resolve them.
+generatorOptions:
+  disableNameSuffixHash: true
+secretGenerator:
+  - name: pguard-app-secrets
+    literals:
+      - JWT_SECRET=dev_jwt_secret_0000000000000000000000000000000000000000000000000000
+      - SERVICE_JWT_SECRET=dev_service_jwt_secret_000000000000000000000000000000000000000000
+      - EVENT_SIGNING_SECRET=dev_event_signing_secret_0000000000000000000000000000000000000000
+  - name: pguard-db-secrets
+    literals:
+      - POSTGRES_PASSWORD=devpassword
+      - REPLICATION_PASSWORD=devreplication
+      - DATABASE_URL=postgres://pguard:devpassword@pgbouncer:6432/pguard
+      # Dev has no replica → reads also go to the primary.
+      - DATABASE_READ_URL=postgres://pguard:devpassword@postgres:5432/pguard
+  - name: pguard-s3-secrets
+    literals:
+      - MINIO_ROOT_USER=devminio
+      - MINIO_ROOT_PASSWORD=devminiopassword
+      - S3_ACCESS_KEY=devminio
+      - S3_SECRET_KEY=devminiopassword
+  - name: pguard-otp-secrets
+    literals:
+      - INET_SMS_USERNAME=disabled-placeholder
+      - INET_SMS_PASSWORD=disabled-placeholder
+      - INET_SMS_SENDER=PGUARD
+  - name: pguard-turn-secrets
+    literals:
+      - TURN_SECRET=dev_turn_secret_00000000000000000000000000000000000000000000000000000
+  - name: pguard-grafana-secrets
+    literals:
+      - GRAFANA_ADMIN_PASSWORD=devgrafana
+
+patches:
+  # Single-DB dev: no streaming replica (the stock primary has no `replicator` role).
+  - target:
+      kind: StatefulSet
+      name: postgres-replica
+    patch: |-
+      - op: replace
+        path: /spec/replicas
+        value: 0
+  # No SMS spend in dev.
+  - target:
+      kind: Deployment
+      name: otp
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/env/-
+        value:
+          name: SMS_DISABLED
+          value: "true"
+  # No push in dev.
+  - target:
+      kind: Deployment
+      name: notification
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0
+        value:
+          name: FCM_DISABLED
+          value: "true"

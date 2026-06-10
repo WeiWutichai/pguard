@@ -33,7 +33,7 @@
 - [x] **Mobile check-in wiring** (ชิ้นปิดท้ายกลุ่ม A) ✅ PR `feat/mobile-checkin-wiring` (**ยังไม่ merge**) — `ApiCheckInService` ต่อ guard check-in เข้า `POST /v1/bookings/{id}/progress-reports` จริง (multipart `hour_number`/`photo`/`lat`/`lng`/`accuracy`/`note` ตาม contract จริง ไม่ใช่ doc-comment เก่า `message`/`files`) แทน `PendingCheckInService`; 409-duplicate absorb เป็น success · 409-too-early/413/403-404/network = ข้อความ bilingual; **+ แก้ slot↔hour off-by-one** (UI slot 0-based, server `hour_number` 1-based → controller map `slot+1` clamp `hours`; เดิม slot 0 ส่ง hour_number 0 = 400) — รายละเอียด+verify ดู Completed log 2026-06-10. **ปิดกลุ่ม A ครบ**
 
 **กลุ่ม B — production hardening (roadmap Round 2–3, ดู `docs/ROADMAP-remaining.md`):**
-- [ ] contract tests (Pact) · terraform IaC · k8s manifests
+- [~] contract tests (Pact) · terraform IaC · **k8s manifests ✅ PR `feat/k8s-manifests` (ยังไม่ merge)** — base + kustomize overlays (dev/staging) แปลจาก `docker-compose.prod.yml`+staging ครบ 14 custom + stock + observability; `kustomize build` dev(71)/staging(77) exit 0 + `kubeconform -strict` valid ทั้งหมด; kind smoke = stock subset (ghcr custom images = private, ต้อง imagePullSecret — documented). เหลือ: Pact · terraform (Round 2, ชี้ base นี้ได้)
 - [ ] real payment gateway (Omise/2C2P/Stripe TH) แทน simulated — webhooks/idempotency/reconciliation
 - [ ] load + chaos + provisioned Grafana dashboards/alerts
 - [ ] security deepening — NATS subject-ACL/account auth · secret-rotation runbook · `cargo audit` · pen-test checklist

@@ -1,0 +1,71 @@
+# booking — requests, assignments, discovery, check-in (split from v1 booking). DB-backed +
+# signs its own SigV4 presigned URLs for check-in photos (S3 settings from config + s3-secrets).
+apiVersion: v1
+kind: Service
+metadata:
+  name: booking
+  labels:
+    app.kubernetes.io/name: booking
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  selector:
+    app.kubernetes.io/name: booking
+  ports:
+    - name: http
+      port: 3005
+      targetPort: 3005
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: booking
+  labels:
+    app.kubernetes.io/name: booking
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: booking
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: booking
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: booking
+          image: pguard/booking:0.1.0
+          envFrom:
+            - configMapRef: { name: pguard-config } # incl. S3_ENDPOINT/BUCKET/REGION/PUBLIC_URL
+            - secretRef: { name: pguard-app-secrets }
+            - secretRef: { name: pguard-db-secrets }
+            - secretRef: { name: pguard-s3-secrets } # S3_ACCESS_KEY, S3_SECRET_KEY
+          env:
+            - name: PROFILE_URL
+              value: "http://profile:3002"
+            - name: RATING_URL
+              value: "http://rating:3007"
+          ports:
+            - name: http
+              containerPort: 3005
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3005 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3005 }
+            initialDelaySeconds: 10
+            periodSeconds: 10

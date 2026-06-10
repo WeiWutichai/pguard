@@ -1,0 +1,66 @@
+# NetworkPolicy — baseline east-west isolation. Mirrors the compose posture where ONLY the
+# gateway is reachable from outside the network and every backend/DB/Redis/MinIO is
+# cluster-internal. Here that becomes: default-deny ingress, then allow (a) pod-to-pod WITHIN the
+# pguard namespace (service-to-service + DB/Redis/NATS/MinIO) and (b) the ingress controller →
+# the two edge services only.
+#
+# CAVEATS (documented — infra/k8s/README.md → "NetworkPolicy"):
+#   • ENFORCEMENT IS CNI-DEPENDENT. kind's default `kindnet` does NOT enforce NetworkPolicy, so
+#     on the kind smoke test these are inert (no effect on the verification). Enforce with
+#     Calico / Cilium in real clusters.
+#   • LIVENESS/READINESS PROBES originate from the kubelet (node), not a pod. Calico/Cilium allow
+#     host→pod health checks via failsafe ports by default; verify on your CNI, or add a
+#     host-range allow if probes are blocked.
+#   • hostNetwork pods (mediasoup, coturn) are OUTSIDE NetworkPolicy scope (they use the node
+#     netns) — intended: their media/relay ports are meant to be publicly reachable.
+#   • This is east-west DEFENSE IN DEPTH; the gateway remains the app security edge (authn/z).
+---
+# Default-deny all ingress in the namespace; the allow-policies below re-open the minimum.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  labels:
+    app.kubernetes.io/part-of: pguard
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Allow any pod in the pguard namespace to reach any other (service-to-service + datastores).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-same-namespace
+  labels:
+    app.kubernetes.io/part-of: pguard
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector: {}
+---
+# Allow the ingress controller (ingress-nginx namespace) to reach ONLY the two edge services.
+# Adjust the namespaceSelector label to match your ingress-nginx install
+# (kubernetes.io/metadata.name is set automatically by the apiserver on every namespace).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-edge
+  labels:
+    app.kubernetes.io/part-of: pguard
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/name
+        operator: In
+        values: ["api-gateway", "web-admin"]
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx

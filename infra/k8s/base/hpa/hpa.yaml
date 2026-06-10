@@ -1,0 +1,190 @@
+# HorizontalPodAutoscalers — ONLY for genuinely stateless, horizontally-scalable workloads:
+# the gateway + the 11 stateless services + web-admin. EXCLUDED by design: the StatefulSets
+# (postgres/replica/nats/redis/minio/tempo/loki/grafana), pgbouncer (1 pooler is plenty here),
+# prometheus (single TSDB), and mediasoup/coturn (hostNetwork ⇒ one-per-node, scale by adding
+# nodes, never replicas).
+#
+# NOT in base/kustomization.yaml — included only by overlays/staging (dev runs replicas:1, no
+# HPA). When an HPA is active it OWNS that Deployment's replica count (don't also pin replicas).
+# requires metrics-server in the cluster. Target 70% CPU is a conservative starting point — tune
+# from the perf baseline (v1-audit/perf-baseline/results.md).
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: api-gateway }
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: identity
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: identity }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: profile
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: profile }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: otp
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: otp }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: notification
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: notification }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: booking
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: booking }
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: payment
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: payment }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: rating
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: rating }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: calling
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: calling }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: presence
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: presence }
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: chat
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: chat }
+  minReplicas: 2
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-admin
+  labels: { app.kubernetes.io/part-of: pguard }
+spec:
+  scaleTargetRef: { apiVersion: apps/v1, kind: Deployment, name: web-admin }
+  minReplicas: 2
+  maxReplicas: 4
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: { type: Utilization, averageUtilization: 70 }

@@ -1,0 +1,65 @@
+# presence — GPS WebSocket ingest + location history (renamed tracking). DB-backed; raw GPS
+# fans out over Redis pub/sub (db1). Mirrors compose `presence`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: presence
+  labels:
+    app.kubernetes.io/name: presence
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  selector:
+    app.kubernetes.io/name: presence
+  ports:
+    - name: http
+      port: 3009
+      targetPort: 3009
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: presence
+  labels:
+    app.kubernetes.io/name: presence
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: presence
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: presence
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: presence
+          image: pguard/presence:0.1.0
+          envFrom:
+            - configMapRef: { name: pguard-config }
+            - secretRef: { name: pguard-app-secrets }
+            - secretRef: { name: pguard-db-secrets }
+          ports:
+            - name: http
+              containerPort: 3009
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3009 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3009 }
+            initialDelaySeconds: 10
+            periodSeconds: 10

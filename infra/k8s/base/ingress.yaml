@@ -1,0 +1,96 @@
+# Ingress — the edge that REPLACES nginx.staging.conf. Routes /v1/* → api-gateway and / →
+# web-admin, with WebSocket support and the PR #28 upload body-size carve-out.
+#
+# ASSUMPTION: ingress-nginx is the controller (annotations below are ingress-nginx-specific).
+# Install it once per cluster (see infra/k8s/README.md). TLS + the real host are added in the
+# staging overlay; base uses the placeholder host `pguard.local`.
+#
+# WHY THREE Ingress objects: ingress-nginx's proxy-body-size annotation is PER-INGRESS, so the
+# 12 MiB upload carve-out (mirroring the gateway's BodyCap::Large for exactly two routes) lives
+# in its own object; everything else under /v1 keeps the 1 MiB default (matching the gateway's
+# hard cap). The gateway still re-validates every upload (size + magic bytes + IDOR).
+---
+# Web-admin SPA — everything not under /v1. Lowest precedence (shortest prefix).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pguard-web
+  labels:
+    app.kubernetes.io/part-of: pguard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pguard.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web-admin
+                port:
+                  number: 3000
+---
+# API + WebSocket — everything under /v1 → the gateway (it owns auth + routing). Default 1 MiB
+# body cap (= the gateway's default). Long read/send timeouts keep /v1/ws/* sockets alive;
+# ingress-nginx negotiates the Upgrade/Connection headers automatically.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pguard-api
+  labels:
+    app.kubernetes.io/part-of: pguard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pguard.local
+      http:
+        paths:
+          - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000
+---
+# Upload carve-out — POST /v1/attachments + POST /v1/bookings/{id}/progress-reports get 12 MiB
+# (mirrors the nginx staging carve-out / gateway BodyCap::Large from PR #28). use-regex so the
+# bookings path matches any {id}. More-specific than /v1, so these win for their routes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pguard-uploads
+  labels:
+    app.kubernetes.io/part-of: pguard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "12m"
+    nginx.ingress.kubernetes.io/use-regex: "true"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pguard.local
+      http:
+        paths:
+          - path: /v1/attachments
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000
+          - path: /v1/bookings/[^/]+/progress-reports
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000

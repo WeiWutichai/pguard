@@ -1,0 +1,8 @@
+# pguard v2 — namespace for the whole platform.
+# All base resources live here; overlays set `namespace:` so this is the single home.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: pguard
+  labels:
+    app.kubernetes.io/part-of: pguard

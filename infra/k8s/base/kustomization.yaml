@@ -1,0 +1,49 @@
+# pguard v2 — base manifests (env-agnostic). Overlays (dev/staging) set image tags, replicas,
+# env-specific values, and secrets. Translated 1:1 from infra/docker/docker-compose.prod.yml
+# (+ the staging nginx edge → Ingress). See infra/k8s/README.md for the compose→k8s env diff.
+#
+# NOT listed here (intentionally):
+#   • hpa/              — staging-only (dev runs replicas:1, no HPA); overlays/staging adds it.
+#   • secrets.example.yaml — documentation template; real secrets come from overlays / out-of-band.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pguard
+
+resources:
+  # Namespace + shared config
+  - namespace.yaml
+  - configmap.yaml
+  # Stateful infra (StatefulSet + PVC) + the stateless pooler
+  - postgres-primary.yaml
+  - postgres-replica.yaml
+  - pgbouncer.yaml
+  - nats.yaml
+  - redis.yaml
+  - minio.yaml
+  # Edge + app services (11 Rust)
+  - api-gateway.yaml
+  - identity.yaml
+  - profile.yaml
+  - otp.yaml
+  - notification.yaml
+  - booking.yaml
+  - payment.yaml
+  - rating.yaml
+  - calling.yaml
+  - presence.yaml
+  - chat.yaml
+  # Network-special (hostNetwork) + web UI
+  - mediasoup.yaml
+  - coturn.yaml
+  - web-admin.yaml
+  # Observability
+  - otel-collector.yaml
+  - tempo.yaml
+  - loki.yaml
+  - prometheus.yaml
+  - grafana.yaml
+  # Edge routing, migrations, east-west isolation
+  - ingress.yaml
+  - migrate-job.yaml
+  - networkpolicy.yaml

@@ -1,0 +1,8 @@
+# HPA sub-kustomization — referenced ONLY by overlays that want autoscaling (staging/prod),
+# kept out of base/kustomization.yaml so dev runs replicas:1 with no HPA. A sub-kustomization
+# (not a bare file) so an overlay can include it across directories without the file
+# load-restrictor tripping.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - hpa.yaml

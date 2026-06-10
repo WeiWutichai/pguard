@@ -1,0 +1,82 @@
+# otp — OTP, SMS (INET CSGAPI), phone verification (split from v1 auth). DB-backed.
+# SMS gate is VALUE-AWARE: SMS_DISABLED truthy ⇒ no SMS. Base = prod (SMS ENABLED, INET creds
+# required); dev + staging overlays patch SMS_DISABLED=true. INET creds come from the Secret.
+apiVersion: v1
+kind: Service
+metadata:
+  name: otp
+  labels:
+    app.kubernetes.io/name: otp
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  selector:
+    app.kubernetes.io/name: otp
+  ports:
+    - name: http
+      port: 3003
+      targetPort: 3003
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: otp
+  labels:
+    app.kubernetes.io/name: otp
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: otp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: otp
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: service
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: otp
+          image: pguard/otp:0.1.0
+          envFrom:
+            - configMapRef: { name: pguard-config }
+            - secretRef: { name: pguard-app-secrets }
+            - secretRef: { name: pguard-db-secrets }
+            - secretRef: { name: pguard-otp-secrets } # INET_SMS_USERNAME/PASSWORD/SENDER
+          env:
+            - name: INET_SMS_URL
+              value: "https://www.etracker.cc/bulksms/mesapi.aspx"
+            - name: OTP_LENGTH
+              value: "6"
+            - name: OTP_EXPIRY_MINUTES
+              value: "5"
+            - name: OTP_MAX_ATTEMPTS
+              value: "5"
+            - name: OTP_RATE_LIMIT_SECONDS
+              value: "60"
+            - name: DAILY_OTP_LIMIT
+              value: "10"
+            - name: PHONE_VERIFY_TTL_MINUTES
+              value: "30"
+          ports:
+            - name: http
+              containerPort: 3003
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          readinessProbe:
+            httpGet: { path: /healthz, port: 3003 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: 3003 }
+            initialDelaySeconds: 10
+            periodSeconds: 10

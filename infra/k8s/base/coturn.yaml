@@ -1,0 +1,105 @@
+# coturn — STUN/TURN relay for P2P WebRTC NAT traversal. NETWORK-SPECIAL, same constraint as
+# mediasoup: clients reach it DIRECTLY on the node's public IP (3478 + the relay UDP range), and
+# the relayed candidates it hands out must carry a routable --external-ip. hostNetwork binds those
+# ports 1:1 on the node, exactly like the compose port publish.
+#
+# CHOICE — hostNetwork (justified): a TURN relay is useless behind a ClusterIP/NodePort remap —
+# the external-ip and relay ports must be the real reachable host ones. No Service is needed:
+# nothing in-cluster dials coturn; the calling service only SHARES TURN_SECRET to mint creds, and
+# clients connect over the public internet.
+# LIMITATIONS (documented — infra/k8s/README.md):
+#   • One coturn pod per node; TURN_EXTERNAL_IP must be that node's PUBLIC IP (pin with a
+#     nodeSelector; set per overlay). A node behind CGNAT cannot relay — use a managed TURN.
+#   • The relay UDP range (50000–50100) is deliberately OUTSIDE mediasoup's 40000–49999.
+#   • The node firewall must allow 3478/udp+tcp and the relay range inbound.
+#   • The static-auth-secret is injected from the Secret via an env var (never a committed flag).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: coturn
+  labels:
+    app.kubernetes.io/name: coturn
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: turn
+spec:
+  replicas: 1 # one-per-node (hostNetwork)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: coturn
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: coturn
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: turn
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: coturn
+          image: coturn/coturn:4.6.2
+          env:
+            - name: TURN_SECRET
+              valueFrom: { secretKeyRef: { name: pguard-turn-secrets, key: TURN_SECRET } }
+            - name: TURN_REALM
+              value: "pguard.app"
+            # PATCH per overlay → the node PUBLIC IP (routable relayed ICE candidates).
+            - name: TURN_EXTERNAL_IP
+              value: "203.0.113.10"
+            - name: TURN_MIN_PORT
+              value: "50000"
+            - name: TURN_MAX_PORT
+              value: "50100"
+          # The secret is interpolated from $TURN_SECRET at runtime (never a committed flag).
+          # Flags mirror compose coturn exactly (no --no-loopback-peers: removed in coturn 4.6;
+          # loopback denied by default + the explicit denied-peer-ip list below).
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              exec turnserver \
+                -n \
+                --log-file=stdout \
+                --listening-port=3478 \
+                --fingerprint \
+                --use-auth-secret \
+                --static-auth-secret="$TURN_SECRET" \
+                --realm="$TURN_REALM" \
+                --external-ip="$TURN_EXTERNAL_IP" \
+                --min-port="$TURN_MIN_PORT" \
+                --max-port="$TURN_MAX_PORT" \
+                --no-cli \
+                --no-multicast-peers \
+                --denied-peer-ip=127.0.0.0-127.255.255.255 \
+                --denied-peer-ip=::1 \
+                --denied-peer-ip=10.0.0.0-10.255.255.255 \
+                --denied-peer-ip=172.16.0.0-172.31.255.255 \
+                --denied-peer-ip=192.168.0.0-192.168.255.255 \
+                --denied-peer-ip=169.254.0.0-169.254.255.255 \
+                --denied-peer-ip=100.64.0.0-100.127.255.255 \
+                --denied-peer-ip=::ffff:0:0-::ffff:255.255.255.255 \
+                --denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff \
+                --denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+          ports:
+            - name: turn-udp
+              containerPort: 3478
+              protocol: UDP
+            - name: turn-tcp
+              containerPort: 3478
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          readinessProbe:
+            tcpSocket:
+              port: 3478
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3478
+            initialDelaySeconds: 15
+            periodSeconds: 10

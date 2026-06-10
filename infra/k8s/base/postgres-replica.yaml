@@ -1,0 +1,105 @@
+# postgres-replica — streaming READ replica (C5.3). Stock postgres:17. On first boot it
+# pg_basebackup's from the primary (-R writes standby.signal + primary_conninfo), then runs
+# as a hot standby. list/report/discovery reads hit it via DATABASE_READ_URL. Mirrors compose
+# `postgres-replica` (the bash bootstrap is identical, escaping un-escaped for k8s).
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres-replica
+  labels:
+    app.kubernetes.io/name: postgres-replica
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres-replica
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-replica
+  labels:
+    app.kubernetes.io/name: postgres-replica
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres-replica
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-replica
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-replica
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: database
+    spec:
+      securityContext:
+        runAsUser: 999 # postgres
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: postgres:17 # stock — pulls without auth
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_USER } }
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_DB } }
+            # pg_basebackup authenticates as `replicator` with this password.
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: REPLICATION_PASSWORD } }
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          command:
+            - bash
+            - -c
+            - |
+              set -e
+              if [ ! -s "${PGDATA}/PG_VERSION" ]; then
+                echo "replica: base-backup from primary…"
+                until pg_basebackup -h postgres -p 5432 -U replicator -D "${PGDATA}" -Fp -Xs -P -R -S replica_1; do
+                  echo "replica: primary not ready, retrying…"; sleep 2
+                done
+              fi
+              exec docker-entrypoint.sh postgres -c hot_standby=on
+          ports:
+            - name: postgres
+              containerPort: 5432
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          # Generous start window covers the first-boot base-backup (compose start_period 120s).
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: pg-replica-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-replica-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
