@@ -15,7 +15,7 @@
 ## 📍 สถานะปัจจุบัน (2026-06-10) — อ่านก่อน
 
 **Staging LIVE บน VPS แล้ว** 🎉 — pguard v2 deploy จริงบน `pguard.innoveraappcenter.com` (72.61.119.230)
-- `main = 46916ac` (push แล้ว) · v1 (`/root/guard-dispatch`) stop ไว้เป็น reference · v2 อยู่ `/root/pguard`
+- `main` = merge ครบ 3 slice ขนาน 2026-06-10 (PR #25 gateway routing + #27 booking deps + #26 mobile live-map/chat) · v1 (`/root/guard-dispatch`) stop ไว้เป็น reference · v2 อยู่ `/root/pguard`
 - 26 images (14 custom ghcr + stock) pull + up · TLS cert เดิมใช้ได้ · secrets ใน `infra/.env.staging` (gitignored)
 - deploy runbook: `docs/STAGING-SETUP.md` · session handoff ละเอียด: `docs/STAGING-DEPLOY-SESSION.md`
 - **gotcha ที่แก้ตอน deploy:** coturn relay 50000-50100 ชน Linux ephemeral pool → หด ephemeral เป็น `32768 41999` (`/etc/sysctl.d/99-pguard-ports.conf`) กัน kernel หยิบพอร์ต ≥42000
@@ -24,16 +24,12 @@
 
 ### 🔜 งานที่เหลือ (~30% to production) — เลือกทำต่อ
 
-**⚠️ ค้างก่อน: commit + push repo hot-fix จาก deploy** (working tree มี 3 ไฟล์ modified, ยัง uncommitted — รอ wei audit):
-- `infra/docker/docker-compose.prod.yml` — coturn ports symmetric ทั้งสองฝั่ง (mirror mediasoup) + ลบ `--no-loopback-peers` (ถูกถอดใน coturn 4.6 → exit 255) + deny loopback explicit (`127.0.0.0/8` + `::1`)
-- `infra/docker/docker-compose.staging.yml` — nginx healthcheck ใส่ `Host` header
-- `infra/docker/nginx.staging.conf` — เพิ่ม `location = /health` ใน block :80
-- → audit diff แล้ว `git add` 3 ไฟล์นี้ + commit + push เพื่อให้ VPS `git pull` converge (ตอนนี้ VPS รัน hot-fix ตรงๆ ต่างจาก repo จนกว่าจะ push)
+**✅ hot-fix จาก deploy:** commit `d6cd046` push + VPS `git pull` converge แล้ว (2026-06-10)
 
 **กลุ่ม A — functional gap (ปิดต่อ, กระทบ staging demo มากสุด):**
-- [x] **Gateway routing gap** — ปิดแล้ว (branch `feat/gateway-routing-gap`, own PR off main **รอ wei audit + merge**): api-gateway route `chat · presence · rating` REST ครบ + **generic WS proxy ตัวแรก** `/v1/ws/{chat,track,call}` → staging ได้ครบทุก feature ทันทีที่ image ใหม่ deploy (nginx ไม่ต้องแก้ — `location /v1/ws/` ส่งเข้า gateway อยู่แล้ว) — รายละเอียด+verify ดู Completed log 2026-06-10
-- [ ] **Gateway body-cap carve-out** (จาก review ของ `feat/booking-backend-deps`) — gateway buffer ทุก proxied body ที่ **1 MiB** (`proxy.rs MAX_BODY_BYTES` → 413) + nginx staging `client_max_body_size 2m` → check-in photo ≤10MB **ผ่าน edge ไม่ได้** ต้องมี per-route cap ≥12 MiB สำหรับ `POST /v1/bookings/{id}/progress-reports` + nginx location override — **hard dependency ก่อน mobile wiring ของ check-in** (เหมาะรวมเข้า slice gateway ที่กำลังทำอยู่; OpenAPI ระบุ dependency นี้ไว้บน operation แล้ว)
-- [x] **Booking backend deps** — progress-report endpoint + open-job discovery ✅ PR `feat/booking-backend-deps` (**ยังไม่ merge**; mobile check-in wiring รอ body-cap carve-out ข้างบน — open-job discovery ใช้ได้ทันทีไม่ติด cap)
+- [x] **Gateway routing gap** — ปิดแล้ว (PR #25 — **audited + merged เข้า main แล้ว 2026-06-10**): api-gateway route `chat · presence · rating` REST ครบ + **generic WS proxy ตัวแรก** `/v1/ws/{chat,track,call}` → staging ได้ครบทุก feature ทันทีที่ image ใหม่ deploy (nginx ไม่ต้องแก้ — `location /v1/ws/` ส่งเข้า gateway อยู่แล้ว) — รายละเอียด+verify ดู Completed log 2026-06-10
+- [ ] **Gateway body-cap carve-out** (จาก review ของ `feat/booking-backend-deps`) — gateway buffer ทุก proxied body ที่ **1 MiB** (`proxy.rs MAX_BODY_BYTES` → 413) + nginx staging `client_max_body_size 2m` → check-in photo ≤10MB **ผ่าน edge ไม่ได้** ต้องมี per-route cap ≥12 MiB สำหรับ `POST /v1/bookings/{id}/progress-reports` + nginx location override — **hard dependency ก่อน mobile wiring ของ check-in** (slice gateway merge ไปแล้วโดยยังไม่มี carve-out — เป็น slice ถัดไปของกลุ่ม A; รวม `/attachments` ของ chat ที่เพิ่ง expose ผ่าน edge ด้วย — โดน cap เดียวกัน; OpenAPI ระบุ dependency ไว้บน operation แล้ว)
+- [x] **Booking backend deps** — progress-report endpoint + open-job discovery ✅ PR #27 — **audited + merged เข้า main แล้ว 2026-06-10** (mobile check-in wiring รอ body-cap carve-out ข้างบน — open-job discovery ใช้ได้ทันทีไม่ติด cap)
 
 **กลุ่ม B — production hardening (roadmap Round 2–3, ดู `docs/ROADMAP-remaining.md`):**
 - [ ] contract tests (Pact) · terraform IaC · k8s manifests
