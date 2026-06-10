@@ -156,6 +156,13 @@ class Conversation {
       );
 }
 
+/// Total unread messages across [conversations], optionally narrowed to one booking's
+/// conversation(s) via [requestId]. PURE — drives the entry-point unread badges.
+int unreadTotal(Iterable<Conversation> conversations, {String? requestId}) =>
+    conversations
+        .where((c) => requestId == null || c.requestId == requestId)
+        .fold(0, (sum, c) => sum + c.unreadCount);
+
 /// A participant for `POST /conversations` — booking-derived role + optional display data
 /// supplied inline by the creator (v2 forbids the cross-schema JOIN v1 used to resolve names).
 class ParticipantInput {

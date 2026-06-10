@@ -1,0 +1,123 @@
+import 'dart:io';
+
+import 'package:dio/dio.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
+import 'package:pguard_mobile/core/media/chat_media_picker.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
+
+import '../support/fakes.dart';
+
+Map<String, dynamic> attachmentJson() => {
+      'id': 'att1',
+      'chat_id': 'cv1',
+      'file_key': 'chat/cv1/x.jpg',
+      'file_url': 'http://minio:9000/chat/cv1/x.jpg?sig=abc',
+      'file_size': 1024,
+      'mime_type': 'image/jpeg',
+      'created_at': '2026-06-10T00:00:00Z',
+    };
+
+void main() {
+  late Directory tmp;
+  late File photo;
+
+  setUp(() async {
+    tmp = await Directory.systemTemp.createTemp('pguard_att_test');
+    photo = File('${tmp.path}/photo.jpg')
+      ..writeAsBytesSync(List<int>.filled(64, 7));
+  });
+
+  tearDown(() => tmp.delete(recursive: true));
+
+  test('pick → multipart POST /attachments → returns the stored Attachment',
+      () async {
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(path: photo.path, mimeType: 'image/jpeg'));
+    FormData? sent;
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/attachments');
+      sent = data as FormData;
+      return attachmentJson();
+    });
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    final attachment =
+        await service.pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto);
+
+    expect(picker.picks.single, ChatAttachmentSource.galleryPhoto);
+    expect(attachment, isNotNull);
+    expect(attachment!.id, 'att1');
+    expect(attachment.fileUrl, contains('sig=abc'));
+
+    // The multipart form carries the contract fields with the declared MIME.
+    final fields = {for (final f in sent!.fields) f.key: f.value};
+    expect(fields['conversation_id'], 'cv1');
+    final file = sent!.files.single;
+    expect(file.key, 'file');
+    expect(file.value.filename, 'photo.jpg');
+    expect('${file.value.contentType?.type}/${file.value.contentType?.subtype}',
+        'image/jpeg');
+  });
+
+  test('user cancels the picker → null, and nothing is uploaded', () async {
+    final picker = FakeChatMediaPicker(media: null);
+    final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    final attachment =
+        await service.pickAndUpload('cv1', ChatAttachmentSource.cameraPhoto);
+
+    expect(attachment, isNull);
+    expect(api.calls, isEmpty);
+  });
+
+  test('unsupported MIME fails fast client-side (no upload attempt)',
+      () async {
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(path: '${tmp.path}/a.gif', mimeType: 'image/gif'));
+    final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    await expectLater(
+      service.pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto),
+      throwsA(isA<ApiException>()),
+    );
+    expect(api.calls, isEmpty);
+  });
+
+  test('server rejection (size/MIME gate) propagates the friendly ApiException',
+      () async {
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(path: photo.path, mimeType: 'image/jpeg'));
+    final api = FakeApi(onPost: (_, __) async {
+      throw const ApiException(
+          message: 'ไฟล์ใหญ่เกินไป / File too large', statusCode: 400);
+    });
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    await expectLater(
+      service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo),
+      throwsA(isA<ApiException>()
+          .having((e) => e.statusCode, 'statusCode', 400)),
+    );
+  });
+
+  test('video picks upload with the video MIME', () async {
+    final video = File('${tmp.path}/clip.mp4')
+      ..writeAsBytesSync(List<int>.filled(64, 9));
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(path: video.path, mimeType: 'video/mp4'));
+    final api = FakeApi(onPost: (_, __) async {
+      return attachmentJson()
+        ..['mime_type'] = 'video/mp4'
+        ..['file_key'] = 'chat/cv1/x.mp4';
+    });
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    final attachment =
+        await service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo);
+    expect(attachment!.mimeType, 'video/mp4');
+    expect(attachment.messageType.wire, 'video');
+  });
+}

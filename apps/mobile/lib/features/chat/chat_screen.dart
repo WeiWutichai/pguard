@@ -4,6 +4,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/chat_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/media/chat_media_picker.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
@@ -63,19 +64,22 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Future<void> _attach() async {
-    final messenger = ScaffoldMessenger.of(context);
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+
+    // 1) Source choice is UI; 2) pick + multipart upload live in the service (testable, no
+    // platform channels here); 3) the WS send stays in the controller.
+    final source = await showModalBottomSheet<ChatAttachmentSource>(
+      context: context,
+      builder: (sheet) => _AttachmentSourceSheet(isThai: isThai),
+    );
+    if (source == null || !mounted) return;
+
+    final messenger = ScaffoldMessenger.of(context);
     final service = ref.read(chatAttachmentServiceProvider);
     try {
-      final attachment = await service.pickAndUpload(widget.conversationId);
-      if (attachment == null) {
-        messenger.showSnackBar(SnackBar(
-          content: Text(isThai
-              ? 'การแนบไฟล์ยังไม่พร้อมใช้งาน'
-              : 'Attachments are not available yet'),
-        ));
-        return;
-      }
+      final attachment =
+          await service.pickAndUpload(widget.conversationId, source);
+      if (attachment == null) return; // user cancelled the picker — silent
       _ctrl.sendAttachment(attachment);
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
@@ -148,6 +152,45 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Bottom sheet: where the attachment comes from (camera photo / gallery photo / video).
+class _AttachmentSourceSheet extends StatelessWidget {
+  const _AttachmentSourceSheet({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ListTile(
+            leading: const Icon(Icons.photo_camera_outlined,
+                color: PgTokens.colorPrimary),
+            title: Text(isThai ? 'ถ่ายรูป' : 'Take a photo'),
+            onTap: () =>
+                Navigator.pop(context, ChatAttachmentSource.cameraPhoto),
+          ),
+          ListTile(
+            leading: const Icon(Icons.photo_library_outlined,
+                color: PgTokens.colorPrimary),
+            title: Text(isThai ? 'เลือกรูปจากคลัง' : 'Choose a photo'),
+            onTap: () =>
+                Navigator.pop(context, ChatAttachmentSource.galleryPhoto),
+          ),
+          ListTile(
+            leading: const Icon(Icons.video_library_outlined,
+                color: PgTokens.colorPrimary),
+            title: Text(isThai ? 'เลือกวิดีโอจากคลัง' : 'Choose a video'),
+            onTap: () =>
+                Navigator.pop(context, ChatAttachmentSource.galleryVideo),
+          ),
+        ],
       ),
     );
   }

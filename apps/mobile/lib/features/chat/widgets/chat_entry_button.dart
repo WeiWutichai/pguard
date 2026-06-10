@@ -4,9 +4,11 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/chat_launcher.dart';
+import '../../../core/controllers/chat_list_controller.dart';
 import '../../../core/models/chat.dart';
 import '../../../core/network/api_exception.dart';
 import '../chat_routes.dart';
+import 'chat_unread_badge.dart';
 
 /// A chat-open button for an entry-point screen (guard active job / customer live status). On tap
 /// it resolves the booking's conversation (find-or-create — `POST /conversations` is not
@@ -72,7 +74,7 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
         ],
       );
       if (!mounted) return;
-      router.push(
+      await router.push(
         ChatRoutes.conversation(
           conversationId,
           acting: widget.acting,
@@ -80,6 +82,9 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
         ),
         extra: widget.counterpartName,
       );
+      // Opening the conversation marked it read server-side; re-pull the list so the
+      // unread badge catches up (gesture-driven, not a poll).
+      if (mounted) ref.invalidate(chatListControllerProvider(widget.acting));
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
     } catch (_) {
@@ -92,27 +97,31 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: PgTokens.colorSunken,
-      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      child: InkWell(
-        onTap: _enabled ? _open : null,
+    return ChatUnreadBadge(
+      acting: widget.acting,
+      requestId: widget.requestId,
+      child: Material(
+        color: PgTokens.colorSunken,
         borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        child: SizedBox(
-          width: 44,
-          height: 44,
-          child: _busy
-              ? const Padding(
-                  padding: EdgeInsets.all(12),
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : Icon(
-                  Icons.chat_bubble_outline,
-                  size: 20,
-                  color: _enabled
-                      ? PgTokens.colorPrimary
-                      : PgTokens.colorTextFaint,
-                ),
+        child: InkWell(
+          onTap: _enabled ? _open : null,
+          borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: _busy
+                ? const Padding(
+                    padding: EdgeInsets.all(12),
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Icon(
+                    Icons.chat_bubble_outline,
+                    size: 20,
+                    color: _enabled
+                        ? PgTokens.colorPrimary
+                        : PgTokens.colorTextFaint,
+                  ),
+          ),
         ),
       ),
     );

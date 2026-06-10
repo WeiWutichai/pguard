@@ -1,0 +1,192 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/controllers/guard_location_controller.dart';
+import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/models/geo.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
+import 'package:pguard_mobile/core/providers.dart';
+
+import '../support/fakes.dart';
+
+Map<String, dynamic> bookingJson({String? guardId, String status = 'accepted'}) => {
+      'id': 'b1',
+      'customer_id': 'c1',
+      'guard_id': guardId,
+      'status': status,
+      'address': 'หมู่บ้านลัดดารมย์ ซ.5',
+    };
+
+Map<String, dynamic> locationJson(double lat) => {
+      'guard_id': 'g1',
+      'lat': lat,
+      'lng': 100.5018,
+      'accuracy': 8.0,
+      'recorded_at': '2026-06-10T10:30:45Z',
+      'is_online': true,
+      'is_live': true,
+    };
+
+({
+  ProviderContainer c,
+  FakeBookingFeed feed,
+  FakeApi api,
+  FakeLocationService loc,
+}) make({
+  required Future<dynamic> Function(String path, Map<String, dynamic>? query)
+      onGet,
+}) {
+  final feed = FakeBookingFeed();
+  final loc = FakeLocationService();
+  final api = FakeApi(onGet: onGet);
+  final c = ProviderContainer(overrides: [
+    pguardApiProvider.overrideWithValue(api),
+    appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+    locationServiceProvider.overrideWithValue(loc),
+  ]);
+  addTearDown(c.dispose);
+  return (c: c, feed: feed, api: api, loc: loc);
+}
+
+int locationGets(FakeApi api) =>
+    api.calls.where((c) => c == 'GET /guards/g1/location').length;
+
+void main() {
+  test(
+      'one snapshot per trigger: build fetches once, each WS status push '
+      'refetches once — and the booking REST is never re-pulled (NO polling)',
+      () async {
+    var lat = 13.70;
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (path == '/guards/g1/location') return locationJson(lat += 0.01);
+      fail('unexpected GET $path');
+    });
+
+    final sub =
+        t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.guard?.lat, closeTo(13.71, 1e-9));
+    expect(track.status, BookingStatus.accepted);
+    expect(track.reference, GeoPoint.bangkok,
+        reason: 'device fix becomes the reference marker');
+    expect(locationGets(t.api), 1);
+
+    // A pushed status frame (guard_en_route) re-runs the build → ONE fresh snapshot.
+    t.feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.enRoute,
+        occurredAt: DateTime.utc(2026)));
+    await Future<void>.delayed(Duration.zero);
+    final updated =
+        await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(updated.status, BookingStatus.enRoute);
+    expect(updated.guard?.lat, closeTo(13.72, 1e-9),
+        reason: 'event-driven snapshot refresh picked up the new fix');
+    expect(locationGets(t.api), 2);
+
+    // The booking snapshot itself was fetched exactly once (status came from the push).
+    expect(t.api.calls.where((c) => c == 'GET /bookings/b1').length, 1);
+
+    // Distance guard ↔ reference is derived in the model (no widget math).
+    expect(updated.distanceFromReference, isNotNull);
+  });
+
+  test('no guard assigned → no location fetch; assignment event starts it',
+      () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: null);
+      if (path == '/guards/g1/location') return locationJson(13.75);
+      fail('unexpected GET $path');
+    });
+
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.guard, isNull);
+    expect(track.guardId, isNull);
+    expect(locationGets(t.api), 0, reason: 'nothing to fetch yet');
+
+    // Guard gets assigned via the push → the next build fetches the location.
+    t.feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.accepted,
+        occurredAt: DateTime.utc(2026),
+        guardId: 'g1'));
+    await Future<void>.delayed(Duration.zero);
+    final assigned =
+        await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(assigned.guard?.guardId, 'g1');
+    expect(locationGets(t.api), 1);
+  });
+
+  test('404 (no fix recorded) and 403 (booking not active) degrade to '
+      'guard=null instead of erroring the screen', () async {
+    var status = 404;
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      throw ApiException(message: 'nope', statusCode: status);
+    });
+
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.guard, isNull);
+    expect(track.booking.address, 'หมู่บ้านลัดดารมย์ ซ.5',
+        reason: 'the rest of the state still renders');
+
+    status = 403;
+    await t.c.read(guardLocationControllerProvider('b1').notifier).refresh();
+    expect(
+        t.c.read(guardLocationControllerProvider('b1')).value?.guard, isNull);
+  });
+
+  test('other API failures surface as errors (screen shows retry)', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      throw const ApiException(message: 'boom', statusCode: 500);
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await expectLater(t.c.read(guardLocationControllerProvider('b1').future),
+        throwsA(isA<ApiException>()));
+  });
+
+  test('refresh() is a one-shot gesture re-pull', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      return locationJson(13.75);
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(locationGets(t.api), 1);
+    await t.c.read(guardLocationControllerProvider('b1').notifier).refresh();
+    expect(locationGets(t.api), 2);
+  });
+
+  test('dispose cleans up: the booking feed closes and no further fetches run',
+      () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      return locationJson(13.75);
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    await t.c.read(guardLocationControllerProvider('b1').future);
+    final fetchesBeforeDispose = t.api.calls.length;
+
+    sub.close();
+    t.c.dispose();
+    await Future<void>.delayed(Duration.zero);
+
+    expect(t.feed.closed, isTrue,
+        reason: 'watch chain released → booking WS closed (ref.onDispose)');
+    expect(t.api.calls.length, fetchesBeforeDispose,
+        reason: 'nothing fetches after dispose');
+  });
+}

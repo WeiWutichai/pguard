@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/location/location_service.dart';
 import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
+import 'package:pguard_mobile/core/media/chat_media_picker.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
@@ -234,17 +235,36 @@ class FakeChatFeed implements ChatFeed {
   void emit(ChatMessage message) => _controller.add(message);
 }
 
-/// Fake [ChatAttachmentService] — returns a canned attachment (or throws a canned error).
+/// Fake [ChatAttachmentService] — returns a canned attachment (or throws a canned error) and
+/// records the requested sources.
 class FakeChatAttachmentService implements ChatAttachmentService {
   FakeChatAttachmentService({this.attachment, this.error});
 
   final Attachment? attachment;
   final Object? error;
+  final List<ChatAttachmentSource> picks = [];
 
   @override
-  Future<Attachment?> pickAndUpload(String conversationId) async {
+  Future<Attachment?> pickAndUpload(
+      String conversationId, ChatAttachmentSource source) async {
+    picks.add(source);
     if (error != null) throw error!;
     return attachment;
+  }
+}
+
+/// Fake [ChatMediaPicker] — records the requested sources and returns a canned media (or null
+/// to simulate the user cancelling). Stands in for the real `image_picker` in service tests.
+class FakeChatMediaPicker implements ChatMediaPicker {
+  FakeChatMediaPicker({this.media});
+
+  PickedMedia? media;
+  final List<ChatAttachmentSource> picks = [];
+
+  @override
+  Future<PickedMedia?> pick(ChatAttachmentSource source) async {
+    picks.add(source);
+    return media;
   }
 }
 
@@ -282,13 +302,16 @@ class FakeLocationService implements LocationService {
   final StreamController<GpsSample> _positions =
       StreamController<GpsSample>.broadcast();
 
+  /// What [currentLocation] resolves to (settable; `null` = no GPS fix).
+  GeoPoint? current = GeoPoint.bangkok;
+
   void emit(GpsSample sample) => _positions.add(sample);
 
   @override
   Stream<GpsSample> positionStream() => _positions.stream;
 
   @override
-  Future<GeoPoint?> currentLocation() async => GeoPoint.bangkok;
+  Future<GeoPoint?> currentLocation() async => current;
 
   @override
   Future<String> reverseGeocode(GeoPoint point) async => 'fake place';
