@@ -17,6 +17,15 @@ pub use sig::{
     verify_message, SIGNATURE_HEADER,
 };
 
+/// Generated event-payload types — `pguard.events.*` payload structs codegen'd from
+/// `contracts/asyncapi/events.yaml` (see `generated/events.rs`). CONTRACT-LOCK only: services
+/// still build payloads inline today, and `tests/drift_lock.rs` pins each generated struct to the
+/// exact JSON the producers emit, so an un-regenerated contract edit turns the suite red.
+/// Adopting these in the services is a documented follow-up (out of scope for the codegen slice).
+pub mod generated {
+    pub mod events;
+}
+
 /// The standard event envelope wrapping a typed `payload`.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct EventEnvelope<T> {

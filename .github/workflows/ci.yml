@@ -380,3 +380,43 @@ jobs:
           name: contract-results
           path: tests/contract/contract-results.xml
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Codegen stale-check (Dart client + Rust event types) — sibling of the TS stale-check inside
+  # contract-tests. Regenerates the committed Dart client + Rust event payload types from the
+  # contracts and fails on any diff (a contract or generator edited without
+  # `./tooling/codegen/generate.sh`). Fast, no stack. Additive + independent of the other jobs.
+  codegen-stale:
+    name: Codegen stale-check (Dart + Rust events)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: tooling/codegen/pnpm-lock.yaml
+
+      # openapi-generator (dart-dio) runs on the JVM — generator 7.14.0 is pinned via
+      # tooling/codegen/openapitools.json, so output is generator-version-deterministic (JVM-independent).
+      - name: Set up Java 17 (openapi-generator)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Python 3 (rust-events generator)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate Dart + Rust event types and fail on drift
+        run: tests/contract/check-generated-codegen.sh
