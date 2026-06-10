@@ -47,6 +47,12 @@ spec:
           env:
             - name: BOOKING_URL
               value: "http://booking:3005"
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "payment"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_PAYMENT_PASSWORD }
           ports:
             - name: http
               containerPort: 3006

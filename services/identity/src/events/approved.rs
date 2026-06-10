@@ -58,7 +58,7 @@ pub async fn run_consumer(state: AppState, nats_url: &str) {
 /// One connect+consume session: bind the durable consumer and drain until the stream ends or
 /// a fatal error. Returns to [`run_consumer`], which reconnects.
 async fn connect_and_consume(state: &AppState, nats_url: &str) -> Result<(), AppError> {
-    let client = async_nats::connect(nats_url)
+    let client = shared_events::connect(nats_url)
         .await
         .map_err(|e| AppError::Internal(format!("NATS connect failed: {e}")))?;
     let jetstream = async_nats::jetstream::new(client);
@@ -317,7 +317,9 @@ mod e2e_tests {
             ),
         };
 
-        let client = async_nats::connect(&nats_url).await.expect("nats connect");
+        let client = shared_events::connect(&nats_url)
+            .await
+            .expect("nats connect");
         let js = async_nats::jetstream::new(client);
         js.get_or_create_stream(async_nats::jetstream::stream::Config {
             name: STREAM.to_string(),
@@ -455,7 +457,9 @@ mod e2e_tests {
             ),
         };
 
-        let client = async_nats::connect(&nats_url).await.expect("nats connect");
+        let client = shared_events::connect(&nats_url)
+            .await
+            .expect("nats connect");
         let js = async_nats::jetstream::new(client);
         js.get_or_create_stream(async_nats::jetstream::stream::Config {
             name: STREAM.to_string(),

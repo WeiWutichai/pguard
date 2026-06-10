@@ -61,6 +61,24 @@ jobs:
         run: cargo test --workspace
 
   # ---------------------------------------------------------------------------
+  # Rust — dependency audit (RustSec advisories) against the COMMITTED Cargo.lock.
+  # Fails on a high-severity advisory; the justified + dated ignore list lives in
+  # .cargo/audit.toml (each entry has a reason + a review date). Independent job so a
+  # new advisory is a loud signal without blocking unrelated stacks.
+  # ---------------------------------------------------------------------------
+  cargo-audit:
+    name: Rust — cargo audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cargo-audit (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+      - name: Audit (reads .cargo/audit.toml ignore list)
+        run: cargo audit
+
+  # ---------------------------------------------------------------------------
   # Rust — the DB/NATS/Redis-gated suites, with real service containers + the
   # per-service migrations applied. Single-service gated tests now run; the
   # cross-service e2e tests (BOOKING_URL/PROFILE_URL/RATING_URL) stay skipped
@@ -110,6 +128,26 @@ jobs:
             echo "waiting for nats ($i)…"; sleep 1
           done
 
+      - name: Start NATS (auth — for the subject-ACL test)
+        # A SECOND broker on :4223 running the REAL infra/docker/nats.conf with per-service
+        # users, so packages/shared-events/tests/nats_acl.rs proves the ACL is enforced (not
+        # just valid). All NATS_*_PASSWORD set to one value here (NATS_AUTHZ_PASSWORD); prod
+        # uses a distinct password per user.
+        run: |
+          docker run -d --name nats-authz -p 4223:4222 \
+            -v "$PWD/infra/docker/nats.conf:/etc/nats/nats.conf:ro" \
+            -e NATS_BOOKING_PASSWORD=ciauth -e NATS_PAYMENT_PASSWORD=ciauth \
+            -e NATS_RATING_PASSWORD=ciauth -e NATS_CALLING_PASSWORD=ciauth \
+            -e NATS_CHAT_PASSWORD=ciauth -e NATS_PROFILE_PASSWORD=ciauth \
+            -e NATS_IDENTITY_PASSWORD=ciauth -e NATS_NOTIFICATION_PASSWORD=ciauth \
+            -e NATS_PRESENCE_PASSWORD=ciauth -e NATS_GATEWAY_PASSWORD=ciauth \
+            -e NATS_MONITORING_PASSWORD=ciauth \
+            nats:2-alpine -c /etc/nats/nats.conf
+          for i in $(seq 1 20); do
+            (exec 3<>/dev/tcp/localhost/4223) 2>/dev/null && { exec 3>&-; echo "nats-authz up"; break; }
+            echo "waiting for nats-authz ($i)…"; sleep 1
+          done
+
       - name: Apply per-service DB migrations
         env:
           PGPASSWORD: pguard
@@ -133,6 +171,10 @@ jobs:
           DATABASE_URL: postgres://pguard:pguard@localhost:5432/pguard
           DATABASE_READ_URL: postgres://pguard:pguard@localhost:5432/pguard
           NATS_URL: nats://localhost:4222
+          # The auth broker (:4223) + shared test password drive the NATS subject-ACL test
+          # (shared-events/tests/nats_acl.rs); unset elsewhere → that test skips.
+          NATS_AUTHZ_URL: nats://localhost:4223
+          NATS_AUTHZ_PASSWORD: ciauth
           REDIS_CACHE_URL: redis://localhost:6379
           TEST_REDIS_URL: redis://localhost:6379
           # Dummy (CI-only) — long enough for the ≥64-char signing/JWT guards.
@@ -200,6 +242,34 @@ jobs:
         run: pnpm exec tsc --noEmit
 
       - run: pnpm build
+
+  # ---------------------------------------------------------------------------
+  # npm dependency audit (pnpm) — web-admin + the Playwright e2e suite. Intentionally
+  # NON-BLOCKING for now (a warn, not a gate): the Next.js 16 + Playwright dep trees carry the
+  # usual churn of transitive moderate/low advisories, and a security-deepening baseline should
+  # surface them without gating unrelated merges. Threshold is `high` (filters the moderate/low
+  # noise); promote to blocking (drop `|| true`, lower the level) once the baseline is clean.
+  # (tests/load is owned by a parallel slice — not audited here.)
+  # ---------------------------------------------------------------------------
+  pnpm-audit:
+    name: npm — pnpm audit (non-blocking warn)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Audit web-admin (high; non-blocking)
+        working-directory: apps/web-admin
+        run: pnpm audit --audit-level high || true
+      - name: Audit e2e tests (high; non-blocking)
+        working-directory: tests/e2e
+        run: pnpm audit --audit-level high || true
 
   # ---------------------------------------------------------------------------
   # mediasoup (Node SFU) — lint · test (native engine is an optionalDependency,

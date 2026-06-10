@@ -13,7 +13,9 @@ node_modules/
 .flutter-plugins
 .flutter-plugins-dependencies
 .pub/
-Cargo.lock
+# Cargo.lock IS committed: this workspace ships BINARY services (not a library), so the lock is
+# the reproducible-build + `cargo audit` source of truth (Rust convention for bins). See
+# .github/workflows/ci.yml (cargo audit) + docs/SECRET-ROTATION.md / PENTEST-CHECKLIST.md.
 
 # Env files
 .env

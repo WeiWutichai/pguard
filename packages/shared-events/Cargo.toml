@@ -20,3 +20,7 @@ anyhow = { workspace = true }
 # booking→NATS→notification flow is one distributed trace (C5.1). No cycle: observability
 # does not depend on shared-events.
 observability = { workspace = true }
+
+[dev-dependencies]
+# `#[tokio::test]` for the gated NATS-ACL integration test (tests/nats_acl.rs).
+tokio = { workspace = true }

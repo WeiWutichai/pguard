@@ -44,6 +44,13 @@ spec:
             - configMapRef: { name: pguard-config }
             - secretRef: { name: pguard-app-secrets }
             - secretRef: { name: pguard-db-secrets }
+          env:
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "profile"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_PROFILE_PASSWORD }
           ports:
             - name: http
               containerPort: 3002

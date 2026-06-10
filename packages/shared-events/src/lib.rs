@@ -11,7 +11,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+mod nats;
 mod sig;
+pub use nats::connect;
 pub use sig::{
     init_signing_key, init_signing_key_from_env, publish_signed, sign_bytes, verify_bytes,
     verify_message, SIGNATURE_HEADER,
