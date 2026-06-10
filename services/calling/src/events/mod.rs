@@ -22,7 +22,7 @@ pub struct JetStreamPublisher {
 
 impl JetStreamPublisher {
     pub async fn connect(nats_url: &str) -> Result<Self, anyhow::Error> {
-        let client = async_nats::connect(nats_url).await?;
+        let client = shared_events::connect(nats_url).await?;
         let jetstream = async_nats::jetstream::new(client);
         jetstream
             .get_or_create_stream(async_nats::jetstream::stream::Config {

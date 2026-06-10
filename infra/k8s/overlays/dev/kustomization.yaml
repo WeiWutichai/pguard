@@ -52,6 +52,20 @@ secretGenerator:
   - name: pguard-grafana-secrets
     literals:
       - GRAFANA_ADMIN_PASSWORD=devgrafana
+  # Dummy per-service NATS passwords (the dev broker enforces the same ACL; values are fake).
+  - name: pguard-nats-secrets
+    literals:
+      - NATS_BOOKING_PASSWORD=dev_nats_booking
+      - NATS_PAYMENT_PASSWORD=dev_nats_payment
+      - NATS_RATING_PASSWORD=dev_nats_rating
+      - NATS_CALLING_PASSWORD=dev_nats_calling
+      - NATS_CHAT_PASSWORD=dev_nats_chat
+      - NATS_PROFILE_PASSWORD=dev_nats_profile
+      - NATS_IDENTITY_PASSWORD=dev_nats_identity
+      - NATS_NOTIFICATION_PASSWORD=dev_nats_notification
+      - NATS_PRESENCE_PASSWORD=dev_nats_presence
+      - NATS_GATEWAY_PASSWORD=dev_nats_gateway
+      - NATS_MONITORING_PASSWORD=dev_nats_monitoring
 
 patches:
   # Single-DB dev: no streaming replica (the stock primary has no `replicator` role).

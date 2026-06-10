@@ -1,0 +1,27 @@
+# cargo-audit config (RustSec). CI runs `cargo audit` against the committed Cargo.lock.
+#
+# Each ignore MUST carry a reason + a review date. These are all TRANSITIVE advisories from
+# `async-nats 0.38` (which hard-links `tokio-rustls`/`rustls-webpki` — TLS is not an optional
+# feature) and `rustls-pemfile`. pguard connects to NATS over PLAINTEXT in-cluster (`nats://`,
+# see infra/docker/nats.conf + the NATS_URL envs) and NEVER `tls://`, so the affected paths —
+# webpki certificate / CRL / name-constraint validation, and PEM parsing — are compiled in but
+# NEVER EXERCISED at runtime. The real fix is bumping `async-nats` once it adopts
+# rustls-webpki ≥0.103; that is a separate dependency-bump slice (it touches the whole event
+# layer). Re-evaluate every ignore by the review date; drop it the moment async-nats is bumped.
+[advisories]
+ignore = [
+    # rustls-webpki <0.103.x TLS-validation bugs — unreachable (plaintext NATS only).
+    "RUSTSEC-2026-0104", # reachable panic in CRL parsing — review by 2026-09-30
+    "RUSTSEC-2026-0098", # URI name-constraint accepted — review by 2026-09-30
+    "RUSTSEC-2026-0099", # wildcard name-constraint accepted — review by 2026-09-30
+    "RUSTSEC-2026-0049", # CRL distribution-point matching — review by 2026-09-30
+    # rustls-pemfile unmaintained (warning) — no PEM parsing on the plaintext NATS path.
+    "RUSTSEC-2025-0134", # rustls-pemfile unmaintained — review by 2026-09-30
+    # rsa Marvin timing sidechannel — NO upstream fix exists. The VULNERABLE `rsa` crate is a
+    # sqlx MySQL-backend transitive with NO active dependent for pguard's build (`cargo tree -i
+    # rsa` → nothing; pguard runs Postgres, the mysql feature is off), so it is not even
+    # compiled. NB pguard DOES use RSA elsewhere — FCM RS256 (notification/src/fcm.rs via
+    # `jsonwebtoken` → `ring`) — but that does NOT use the `rsa` crate, so the advisory is
+    # unreachable. Drop if a fixed `rsa` ships or sqlx drops the dep. Review by 2026-09-30.
+    "RUSTSEC-2023-0071",
+]

@@ -48,7 +48,7 @@ const HUB_RETRY: Duration = Duration::from_secs(2);
 /// Spawned by `main`.
 pub async fn run_status_hub(nats_url: String, tx: broadcast::Sender<StatusUpdate>) {
     loop {
-        let client = match async_nats::connect(&nats_url).await {
+        let client = match shared_events::connect(&nats_url).await {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("status-WS hub: NATS connect failed: {e}; retrying");
@@ -497,7 +497,7 @@ mod e2e_tests {
         assert_eq!(v["status"], "accepted");
 
         // 3b) publish an en_route event to NATS → expect a live frame.
-        let nc = async_nats::connect(&nats).await.unwrap();
+        let nc = shared_events::connect(&nats).await.unwrap();
         let envelope = serde_json::json!({
             "event_id": Uuid::new_v4().to_string(),
             "event_type": shared_events::topics::BOOKING_GUARD_EN_ROUTE,

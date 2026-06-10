@@ -22,7 +22,7 @@ const DURABLE: &str = "notification";
 /// Connect to NATS JetStream and run the consume loop until the stream ends or errors.
 /// Spawned as a background task by `main`; resilient (logs and returns on fatal error).
 pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppError> {
-    let client = async_nats::connect(nats_url)
+    let client = shared_events::connect(nats_url)
         .await
         .map_err(|e| AppError::Internal(format!("NATS connect failed: {e}")))?;
     let jetstream = async_nats::jetstream::new(client);

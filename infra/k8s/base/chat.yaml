@@ -46,6 +46,13 @@ spec:
             - secretRef: { name: pguard-app-secrets }
             - secretRef: { name: pguard-db-secrets }
             - secretRef: { name: pguard-s3-secrets } # S3_ACCESS_KEY, S3_SECRET_KEY
+          env:
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "chat"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_CHAT_PASSWORD }
           ports:
             - name: http
               containerPort: 3010

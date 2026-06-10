@@ -60,6 +60,12 @@ spec:
               value: "turn:turn.pguard.local:3478?transport=udp,turn:turn.pguard.local:3478?transport=tcp"
             - name: TURN_CRED_TTL_SECS
               value: "3600"
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "calling"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_CALLING_PASSWORD }
           ports:
             - name: http
               containerPort: 3008

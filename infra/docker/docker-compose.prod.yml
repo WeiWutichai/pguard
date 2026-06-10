@@ -221,7 +221,24 @@ services:
     image: nats:2-alpine
     container_name: pguard-prod-nats
     restart: unless-stopped
-    command: ["-js", "-m", "8222"]
+    # Auth + JetStream from the mounted config (per-service users + subject ACL). The config
+    # resolves `$NATS_*_PASSWORD` from this container's env (passed below); JetStream + the
+    # monitoring port are declared in the file, so the command only points at it.
+    command: ["-c", "/etc/nats/nats.conf"]
+    environment:
+      NATS_BOOKING_PASSWORD: ${NATS_BOOKING_PASSWORD:?NATS_BOOKING_PASSWORD is required}
+      NATS_PAYMENT_PASSWORD: ${NATS_PAYMENT_PASSWORD:?NATS_PAYMENT_PASSWORD is required}
+      NATS_RATING_PASSWORD: ${NATS_RATING_PASSWORD:?NATS_RATING_PASSWORD is required}
+      NATS_CALLING_PASSWORD: ${NATS_CALLING_PASSWORD:?NATS_CALLING_PASSWORD is required}
+      NATS_CHAT_PASSWORD: ${NATS_CHAT_PASSWORD:?NATS_CHAT_PASSWORD is required}
+      NATS_PROFILE_PASSWORD: ${NATS_PROFILE_PASSWORD:?NATS_PROFILE_PASSWORD is required}
+      NATS_IDENTITY_PASSWORD: ${NATS_IDENTITY_PASSWORD:?NATS_IDENTITY_PASSWORD is required}
+      NATS_NOTIFICATION_PASSWORD: ${NATS_NOTIFICATION_PASSWORD:?NATS_NOTIFICATION_PASSWORD is required}
+      NATS_PRESENCE_PASSWORD: ${NATS_PRESENCE_PASSWORD:?NATS_PRESENCE_PASSWORD is required}
+      NATS_GATEWAY_PASSWORD: ${NATS_GATEWAY_PASSWORD:?NATS_GATEWAY_PASSWORD is required}
+      NATS_MONITORING_PASSWORD: ${NATS_MONITORING_PASSWORD:?NATS_MONITORING_PASSWORD is required}
+    volumes:
+      - ./nats.conf:/etc/nats/nats.conf:ro
     expose:
       - "4222"
       - "8222"
@@ -285,6 +302,9 @@ services:
         APP_PORT: "3000"
     environment:
       <<: *rust-env
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: gateway
+      NATS_PASSWORD: ${NATS_GATEWAY_PASSWORD:?NATS_GATEWAY_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:?CORS_ALLOWED_ORIGINS is required}
       # /metrics is unauthenticated — keep it on the internal admin port, never published.
@@ -334,6 +354,9 @@ services:
         APP_PORT: "3001"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: identity
+      NATS_PASSWORD: ${NATS_IDENTITY_PASSWORD:?NATS_IDENTITY_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-15}
     expose:
@@ -351,6 +374,9 @@ services:
         APP_PORT: "3002"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: profile
+      NATS_PASSWORD: ${NATS_PROFILE_PASSWORD:?NATS_PROFILE_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
     expose:
       - "3002"
@@ -397,6 +423,9 @@ services:
         APP_PORT: "3004"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: notification
+      NATS_PASSWORD: ${NATS_NOTIFICATION_PASSWORD:?NATS_NOTIFICATION_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       FCM_DISABLED: ${FCM_DISABLED:-false}
       FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/fcm-service-account.json}
@@ -415,6 +444,9 @@ services:
         APP_PORT: "3005"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: booking
+      NATS_PASSWORD: ${NATS_BOOKING_PASSWORD:?NATS_BOOKING_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       PROFILE_URL: http://profile:3002
       RATING_URL: http://rating:3007
@@ -443,6 +475,9 @@ services:
         APP_PORT: "3006"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: payment
+      NATS_PASSWORD: ${NATS_PAYMENT_PASSWORD:?NATS_PAYMENT_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       BOOKING_URL: http://booking:3005
     expose:
@@ -460,6 +495,9 @@ services:
         APP_PORT: "3007"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: rating
+      NATS_PASSWORD: ${NATS_RATING_PASSWORD:?NATS_RATING_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       BOOKING_URL: http://booking:3005
     expose:
@@ -477,6 +515,9 @@ services:
         APP_PORT: "3008"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: calling
+      NATS_PASSWORD: ${NATS_CALLING_PASSWORD:?NATS_CALLING_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       BOOKING_URL: http://booking:3005
       MEDIASOUP_URL: http://mediasoup:3011
@@ -502,6 +543,9 @@ services:
         APP_PORT: "3009"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: presence
+      NATS_PASSWORD: ${NATS_PRESENCE_PASSWORD:?NATS_PRESENCE_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
     expose:
       - "3009"
@@ -518,6 +562,9 @@ services:
         APP_PORT: "3010"
     environment:
       <<: [*rust-env, *db-env]
+      # Per-service NATS credentials (least-privilege subject ACL — infra/docker/nats.conf).
+      NATS_USER: chat
+      NATS_PASSWORD: ${NATS_CHAT_PASSWORD:?NATS_CHAT_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       # Attachment object store (MinIO/R2). chat signs its own SigV4 presigned URLs.
       S3_ENDPOINT: http://minio:9000

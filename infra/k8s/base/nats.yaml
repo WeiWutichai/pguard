@@ -1,6 +1,63 @@
 # nats — JetStream event bus (signed envelopes; at-least-once durable consumers).
 # StatefulSet + PVC so the JetStream file store survives a restart (compose runs it with
 # an ephemeral store; k8s gives it a durable home — `-sd /data`). Mirrors compose `nats`.
+#
+# The server config (per-service users + subject ACL) is the SAME content as
+# infra/docker/nats.conf — keep the two in sync (the ACL is documented in
+# contracts/asyncapi/nats-acl.md). Passwords resolve from $NATS_*_PASSWORD (the
+# pguard-nats-secrets Secret, injected via envFrom on the StatefulSet).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pguard-nats-config
+  labels:
+    app.kubernetes.io/name: nats
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: event-bus
+data:
+  nats.conf: |
+    # Mirrors infra/docker/nats.conf — see contracts/asyncapi/nats-acl.md.
+    jetstream {}
+    http: 8222
+    authorization {
+      users: [
+        { user: "booking", password: $NATS_BOOKING_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.booking.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "payment", password: $NATS_PAYMENT_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.payment.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "rating", password: $NATS_RATING_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.rating.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "calling", password: $NATS_CALLING_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.calling.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "chat", password: $NATS_CHAT_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.chat.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "profile", password: $NATS_PROFILE_PASSWORD, permissions: {
+            publish:   { allow: ["pguard.events.user.>", "$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "identity", password: $NATS_IDENTITY_PASSWORD, permissions: {
+            # Consumer-only in production (no NATS publish) — see infra/docker/nats.conf.
+            publish:   { allow: ["$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "notification", password: $NATS_NOTIFICATION_PASSWORD, permissions: {
+            publish:   { allow: ["$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "presence", password: $NATS_PRESENCE_PASSWORD, permissions: {
+            publish:   { allow: ["$JS.API.>", "$JS.ACK.>"] }
+            subscribe: { allow: ["_INBOX.>"] } } }
+        { user: "gateway", password: $NATS_GATEWAY_PASSWORD, permissions: {
+            publish:   { allow: [] }
+            subscribe: { allow: ["pguard.events.booking.>", "_INBOX.>"] } } }
+        { user: "monitoring", password: $NATS_MONITORING_PASSWORD, permissions: {
+            publish:   { allow: ["$SYS.REQ.>", "$JS.API.INFO"] }
+            subscribe: { allow: ["_INBOX.>", "$SYS.>"] } } }
+      ]
+    }
+---
 apiVersion: v1
 kind: Service
 metadata:
@@ -45,8 +102,14 @@ spec:
       containers:
         - name: nats
           image: nats:2-alpine
-          # -js JetStream, -m 8222 monitoring, -sd durable store on the PVC.
-          args: ["-js", "-sd", "/data", "-m", "8222"]
+          # Auth + JetStream from the mounted config (mirrors compose nats.conf): per-service
+          # users + subject ACL. `-sd /data` overrides the config's default store dir onto the
+          # durable PVC (CLI flags beat config). The config resolves $NATS_*_PASSWORD from env.
+          args: ["-c", "/etc/nats/nats.conf", "-sd", "/data"]
+          # Per-service passwords for the ACL (server side). Same values the service Deployments
+          # consume as NATS_PASSWORD — created out-of-band (see secrets.example.yaml).
+          envFrom:
+            - secretRef: { name: pguard-nats-secrets }
           ports:
             - name: client
               containerPort: 4222
@@ -74,6 +137,13 @@ spec:
           volumeMounts:
             - name: nats-data
               mountPath: /data
+            - name: nats-config
+              mountPath: /etc/nats
+              readOnly: true
+      volumes:
+        - name: nats-config
+          configMap:
+            name: pguard-nats-config
   volumeClaimTemplates:
     - metadata:
         name: nats-data

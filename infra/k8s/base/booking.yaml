@@ -51,6 +51,12 @@ spec:
               value: "http://profile:3002"
             - name: RATING_URL
               value: "http://rating:3007"
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "booking"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_BOOKING_PASSWORD }
           ports:
             - name: http
               containerPort: 3005

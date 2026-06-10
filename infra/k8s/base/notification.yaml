@@ -52,6 +52,12 @@ spec:
               value: "false"
             - name: FCM_SERVICE_ACCOUNT_PATH
               value: "/run/secrets/fcm-service-account.json"
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "notification"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_NOTIFICATION_PASSWORD }
           ports:
             - name: http
               containerPort: 3004

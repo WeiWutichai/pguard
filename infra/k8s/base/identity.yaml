@@ -47,6 +47,12 @@ spec:
           env:
             - name: JWT_EXPIRY_MINUTES
               value: "15"
+            # Per-service NATS credentials (subject ACL — see contracts/asyncapi/nats-acl.md).
+            - name: NATS_USER
+              value: "identity"
+            - name: NATS_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: pguard-nats-secrets, key: NATS_IDENTITY_PASSWORD }
           ports:
             - name: http
               containerPort: 3001
