@@ -303,9 +303,10 @@ export interface paths {
          *     `pguard.events.booking.progress_reported` into the outbox in the SAME transaction.
          *
          *     Rules: `hour_number` must be within `1..=hours`; hour N opens once N−1 hours have
-         *     elapsed since `work_started_at` (409 too-early otherwise); one check-in per hour —
-         *     a duplicate `hour_number` is 409 (checked BEFORE the upload), so a client retry can
-         *     never double-report and uploads nothing. Strictly the assigned guard (no admin
+         *     elapsed since `work_started_at` (409 `CONFLICT` too-early otherwise); one check-in
+         *     per hour — a duplicate `hour_number` is 409 `DUPLICATE_CHECK_IN` (checked BEFORE the
+         *     upload), so a client retry can never double-report and uploads nothing; clients
+         *     branch on `error.code`, not the message. Strictly the assigned guard (no admin
          *     bypass — a report is the guard's first-person attestation of presence). GPS is
          *     optional (the guard may be offline at capture); when sent, `lat`+`lng` must come
          *     together.
@@ -953,7 +954,24 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /**
+             * @description Conflict — `error.code` is the machine-readable discriminator (the envelope
+             *     shape is the standard `ErrorBody`, unchanged):
+             *       - `DUPLICATE_CHECK_IN` — a check-in for this `hour_number` already exists
+             *         (caught at the pre-flight before the upload, and again by the unique index
+             *         inside the insert transaction). An idempotent client retry SHOULD treat
+             *         this as success — the hour is already recorded and nothing was re-uploaded.
+             *       - `CONFLICT` — the hour is not open yet (hour N opens once N−1 hours have
+             *         elapsed since `work_started_at`) or the job has not been started.
+             */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             /** @description Body too large. Today this fires at the EDGE for >1 MiB (gateway buffer cap; see the deployment-dependency note above) — once the per-route carve-out lands, the service's own 12 MiB route cap produces it. */
             413: {
                 headers: {

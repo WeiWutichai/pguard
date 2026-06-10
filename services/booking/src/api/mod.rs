@@ -1368,7 +1368,8 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            v["error"]["code"], "DUPLICATE_CHECK_IN",
+            v["error"]["code"],
+            crate::domain::progress::DUPLICATE_CHECK_IN_CODE,
             "pre-flight duplicate 409 must carry the DUPLICATE_CHECK_IN sub-code"
         );
 
