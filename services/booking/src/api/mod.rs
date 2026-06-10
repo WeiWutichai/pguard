@@ -330,11 +330,13 @@ pub async fn list_open_bookings<S: BookingDeps>(
 /// (multipart: photo + GPS + hour_number + note).
 ///
 /// Order: coarse role gate → participation/assignment pre-flight (BEFORE the multipart body
-/// is even buffered — a non-participant never makes the server read a 10MB photo, and fails
-/// BEFORE the S3 upload so rejected attempts orphan nothing; the repo re-validates every
-/// gate inside the row lock, which stays authoritative) → parse → state/hour validation →
-/// photo validation (size before magic bytes) → S3 upload under a SERVER-generated key →
-/// atomic insert + outbox.
+/// is even buffered — a non-participant never makes the server read a 10MB photo) → parse →
+/// state/hour + DUPLICATE-HOUR pre-flight (before the S3 upload, so the designed-for guard
+/// retry of an already-filed hour orphans nothing) → photo validation (size before magic
+/// bytes) → S3 upload under a SERVER-generated key → atomic insert + outbox. The repo
+/// re-validates every gate inside the row lock (authoritative; the pre-flights are
+/// advisory), and a race that fails the in-lock re-check triggers a best-effort delete of
+/// the just-uploaded object — only a crash in that window can orphan one.
 ///
 /// NO admin bypass: a check-in is the guard's first-person attestation of presence — the
 /// coarse gate here rejects every non-guard role (including admin), and the repo enforces
@@ -344,7 +346,7 @@ pub async fn create_progress_report<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-    mut multipart: Multipart,
+    multipart: Multipart,
 ) -> Result<Json<ApiResponse<ProgressReportResponse>>, AppError> {
     if user.role != ROLE_GUARD {
         return Err(AppError::Forbidden(
@@ -365,7 +367,77 @@ pub async fn create_progress_report<S: BookingDeps>(
         ));
     }
 
-    // ----- parse multipart parts (photo buffered; bounded by the route's DefaultBodyLimit) -----
+    let form = parse_check_in_form(multipart).await?;
+
+    // State/hour legality + duplicate-hour — both advisory, both BEFORE the S3 upload so
+    // rejected attempts (incl. the spec's idempotent guard-retry 409) upload nothing.
+    progress::validate_check_in(
+        core.status,
+        core.work_started_at,
+        core.hours,
+        form.hour_number,
+        chrono::Utc::now(),
+    )?;
+    if repo::progress_report_exists(state.db(), id, form.hour_number).await? {
+        return Err(AppError::Conflict(format!(
+            "A check-in for hour {} already exists",
+            form.hour_number
+        )));
+    }
+
+    // ----- photo validation (size BEFORE magic bytes) + server-generated key + upload -----
+    let canonical_mime =
+        progress::validate_photo_upload(&form.declared_mime, form.photo.len(), &form.photo)?;
+    let ext = progress::mime_to_extension(canonical_mime);
+    let photo_key = format!("booking/{id}/checkins/{}.{ext}", Uuid::new_v4());
+    state
+        .s3()
+        .upload(&photo_key, form.photo, canonical_mime)
+        .await?;
+
+    // ----- atomic insert + outbox (the authoritative gates re-run inside the tx) -----
+    let report = NewProgressReport {
+        hour_number: form.hour_number,
+        photo_key,
+        lat: form.lat,
+        lng: form.lng,
+        accuracy_m: form.accuracy_m,
+        note: form.note,
+    };
+    let row =
+        match repo::create_progress_report(state.db(), id, user.user_id, &report, Uuid::new_v4())
+            .await
+        {
+            Ok(row) => row,
+            Err(e) => {
+                // A concurrent duplicate / late state change failed the in-lock re-check
+                // after we uploaded — compensate so the object doesn't orphan.
+                state.s3().delete_best_effort(&report.photo_key).await;
+                return Err(e);
+            }
+        };
+    let photo_url = state.s3().download_url(&row.photo_key);
+    Ok(Json(ApiResponse::success(
+        ProgressReportResponse::from_row(row, photo_url),
+    )))
+}
+
+/// The parsed + field-validated check-in form (photo buffered, bounded by the route's
+/// `DefaultBodyLimit`).
+struct CheckInForm {
+    hour_number: i32,
+    photo: Vec<u8>,
+    declared_mime: String,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    accuracy_m: Option<f32>,
+    note: Option<String>,
+}
+
+/// Parse the check-in multipart parts and run the FIELD-level validations: required
+/// hour_number + photo, GPS both-or-neither in range, note trimmed + capped, junk accuracy
+/// sanitized to `None` (presence precedent). Booking-level legality stays in the handler.
+async fn parse_check_in_form(mut multipart: Multipart) -> Result<CheckInForm, AppError> {
     let mut hour_number: Option<i32> = None;
     let mut photo: Option<Vec<u8>> = None;
     let mut declared_mime: Option<String> = None;
@@ -408,6 +480,7 @@ pub async fn create_progress_report<S: BookingDeps>(
                     .map_err(|e| AppError::BadRequest(format!("Invalid note: {e}")))?;
                 let trimmed = text.trim();
                 if !trimmed.is_empty() {
+                    progress::validate_note(trimmed)?;
                     note = Some(trimmed.to_string());
                 }
             }
@@ -427,41 +500,20 @@ pub async fn create_progress_report<S: BookingDeps>(
 
     let hour_number =
         hour_number.ok_or_else(|| AppError::BadRequest("hour_number is required".to_string()))?;
-    let data = photo.ok_or_else(|| AppError::BadRequest("photo is required".to_string()))?;
+    let photo = photo.ok_or_else(|| AppError::BadRequest("photo is required".to_string()))?;
     let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
     // GPS is optional (guard may be offline at capture) but must be a valid pair when sent.
     progress::validate_coords(lat, lng)?;
 
-    // State/hour legality (advisory pre-flight — fails fast before the S3 upload).
-    progress::validate_check_in(
-        core.status,
-        core.work_started_at,
-        core.hours,
+    Ok(CheckInForm {
         hour_number,
-        chrono::Utc::now(),
-    )?;
-
-    // ----- photo validation (size BEFORE magic bytes) + server-generated key + upload -----
-    let canonical_mime = progress::validate_photo_upload(&declared_mime, data.len(), &data)?;
-    let ext = progress::mime_to_extension(canonical_mime);
-    let photo_key = format!("booking/{id}/checkins/{}.{ext}", Uuid::new_v4());
-    state.s3().upload(&photo_key, data, canonical_mime).await?;
-
-    // ----- atomic insert + outbox (the authoritative gates re-run inside the tx) -----
-    let report = NewProgressReport {
-        hour_number,
-        photo_key,
+        photo,
+        declared_mime,
         lat,
         lng,
-        accuracy_m,
+        accuracy_m: progress::sanitize_accuracy(accuracy_m),
         note,
-    };
-    let row =
-        repo::create_progress_report(state.db(), id, user.user_id, &report, Uuid::new_v4()).await?;
-    let photo_url = state.s3().download_url(&row.photo_key);
-    Ok(Json(ApiResponse::success(
-        ProgressReportResponse::from_row(row, photo_url),
-    )))
+    })
 }
 
 /// Parse one multipart text part as `f64` (for the optional GPS fields).
@@ -1245,6 +1297,69 @@ mod tests {
             res.status(),
             StatusCode::FORBIDDEN,
             "stranger guard cannot check in on another guard's job"
+        );
+
+        // POST duplicate hour: 409 at the advisory pre-flight, BEFORE any S3 upload — the
+        // s3 stub points at a closed/dummy endpoint, so a 409 (not 500) also proves no
+        // upload was attempted for the spec's idempotent guard-retry path. Drive the
+        // booking to in-progress, file hour 1 via the repo, then retry hour 1 over HTTP
+        // with a real multipart body (valid tiny JPEG).
+        for status in [BookingStatus::EnRoute, BookingStatus::Arrived] {
+            repo::transition(&db, created.id, guard, false, status, None, Uuid::new_v4())
+                .await
+                .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+        repo::start_job(&db, created.id, guard, false)
+            .await
+            .expect("start");
+        repo::create_progress_report(
+            &db,
+            created.id,
+            guard,
+            &NewProgressReport {
+                hour_number: 1,
+                photo_key: format!("booking/{}/checkins/{}.jpg", created.id, Uuid::new_v4()),
+                lat: None,
+                lng: None,
+                accuracy_m: None,
+                note: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("seed hour-1 report");
+
+        const TINY_JPEG: &[u8] = &[0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10];
+        let mut body = Vec::new();
+        body.extend_from_slice(
+            b"--BNDRY\r\nContent-Disposition: form-data; name=\"hour_number\"\r\n\r\n1\r\n",
+        );
+        body.extend_from_slice(
+            b"--BNDRY\r\nContent-Disposition: form-data; name=\"photo\"; filename=\"p.jpg\"\r\nContent-Type: image/jpeg\r\n\r\n",
+        );
+        body.extend_from_slice(TINY_JPEG);
+        body.extend_from_slice(b"\r\n--BNDRY--\r\n");
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/bookings/{}/progress-reports", created.id))
+                    .header("content-type", "multipart/form-data; boundary=BNDRY")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token_for(guard, "guard")),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "duplicate-hour retry must 409 at the pre-flight (a 500 here would mean an S3 \
+             upload was attempted against the stub)"
         );
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")

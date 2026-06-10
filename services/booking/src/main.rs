@@ -137,7 +137,11 @@ async fn main() -> anyhow::Result<()> {
         .route("/bookings/open", get(api::list_open_bookings::<AppState>))
         .route("/bookings/{id}", get(api::get_booking::<AppState>))
         // Guard hourly check-in (multipart photo ≤ 10MB; the explicit body cap replaces
-        // Axum's ~2MB default) + the participant-readable report list.
+        // Axum's ~2MB default) + the participant-readable report list. NOTE: routing needs
+        // no gateway change (the /bookings prefix rule covers it), but the gateway's 1 MiB
+        // proxy body buffer + staging nginx's 2 MB cap currently 413 real photos at the
+        // edge — a per-route body-cap carve-out is a TRACKED HARD DEPENDENCY for the
+        // mobile wiring slice (see PROGRESS.md + the OpenAPI operation note).
         .route(
             "/bookings/{id}/progress-reports",
             post(api::create_progress_report::<AppState>)

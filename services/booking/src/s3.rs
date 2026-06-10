@@ -88,7 +88,9 @@ impl S3Client {
             .send()
             .await
             .map_err(|e| {
-                tracing::warn!("S3 upload transport error: {e}");
+                // `without_url()` — reqwest's Display embeds the request URL, which here is
+                // a LIVE presigned PUT (signature included); never log it.
+                tracing::warn!("S3 upload transport error: {}", e.without_url());
                 AppError::Internal("check-in photo upload failed".to_string())
             })?;
         if !resp.status().is_success() {
@@ -100,6 +102,31 @@ impl S3Client {
             ));
         }
         Ok(())
+    }
+
+    /// Best-effort delete of `key` — compensation when the post-upload DB insert fails
+    /// (e.g. a concurrent duplicate-hour race), so rejected check-ins don't accumulate
+    /// orphaned objects. Booking EXTENSION over the chat original (chat never deletes).
+    /// Errors are logged, never returned: an orphaned object is acceptable, failing the
+    /// caller's (already-failed) request differently is not.
+    pub async fn delete_best_effort(&self, key: &str) {
+        let url = self.presign(&self.endpoint, "DELETE", key, UPLOAD_TTL_SECS, Utc::now());
+        match self.http.delete(&url).send().await {
+            // 404 = already gone — fine for a best-effort compensation.
+            Ok(resp)
+                if resp.status().is_success()
+                    || resp.status() == reqwest::StatusCode::NOT_FOUND => {}
+            Ok(resp) => {
+                tracing::warn!(status = %resp.status(), key, "S3 best-effort delete failed (orphaned object)");
+            }
+            Err(e) => {
+                tracing::warn!(
+                    key,
+                    "S3 best-effort delete transport error: {}",
+                    e.without_url()
+                );
+            }
+        }
     }
 
     /// A fresh presigned GET URL (TTL 1h) for `key`, signed against the PUBLIC endpoint so the

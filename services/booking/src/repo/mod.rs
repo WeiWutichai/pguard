@@ -469,6 +469,26 @@ pub async fn create_progress_report(
     Ok(row)
 }
 
+/// Advisory duplicate-hour pre-flight: `true` iff a report for `(booking_id, hour_number)`
+/// already exists. The handler calls this BEFORE the S3 upload so the spec's idempotent
+/// guard-retry 409s without uploading (no orphaned object); the unique index inside
+/// [`create_progress_report`]'s transaction remains the authoritative gate.
+pub async fn progress_report_exists(
+    db: &sqlx::PgPool,
+    booking_id: Uuid,
+    hour_number: i32,
+) -> Result<bool, AppError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM booking.progress_reports \
+         WHERE booking_id = $1 AND hour_number = $2)",
+    )
+    .bind(booking_id)
+    .bind(hour_number)
+    .fetch_one(db)
+    .await?;
+    Ok(exists)
+}
+
 /// A booking's check-in reports in hour order (paginated). The IDOR gate (customer-owner /
 /// assigned guard / admin) lives in the handler against the booking row — by the time this
 /// runs the caller is a verified participant.
@@ -614,6 +634,9 @@ pub async fn mark_published(db: &sqlx::PgPool, id: Uuid) -> Result<(), AppError>
 /// PDPA §19/§32 data export: a user's OWN bookings — as the customer OR the assigned guard.
 /// Money fields are cast to text so they cross the wire as exact-decimal strings (CLAUDE.md
 /// money rule) without pulling a Decimal type through the export path. Scoped to `user_id`.
+/// Includes the (customer-supplied) site lat/lng. NOTE: the guard's check-in rows (their
+/// GPS/notes/photo keys) are a tracked follow-up — exporting them changes the shape the
+/// identity aggregator consumes, a cross-service contract bump this slice doesn't own.
 pub async fn export_user_bookings(db: &sqlx::PgPool, user_id: Uuid) -> Result<Value, AppError> {
     #[allow(clippy::type_complexity)]
     let rows: Vec<(
@@ -630,9 +653,12 @@ pub async fn export_user_bookings(db: &sqlx::PgPool, user_id: Uuid) -> Result<Va
         Option<DateTime<Utc>>,
         DateTime<Utc>,
         DateTime<Utc>,
+        Option<f64>,
+        Option<f64>,
     )> = sqlx::query_as(
         "SELECT id, customer_id, guard_id, address, scheduled_at, hours, status::text, \
-                base_fee::text, guard_count, tip::text, work_started_at, created_at, updated_at \
+                base_fee::text, guard_count, tip::text, work_started_at, created_at, updated_at, \
+                lat, lng \
          FROM booking.bookings WHERE customer_id = $1 OR guard_id = $1 \
          ORDER BY created_at DESC",
     )
@@ -657,6 +683,8 @@ pub async fn export_user_bookings(db: &sqlx::PgPool, user_id: Uuid) -> Result<Va
                 work_started_at,
                 created_at,
                 updated_at,
+                lat,
+                lng,
             ) = r;
             // `role` tells the user how they relate to each booking.
             let role = if Some(user_id) == guard_id {
@@ -676,6 +704,8 @@ pub async fn export_user_bookings(db: &sqlx::PgPool, user_id: Uuid) -> Result<Va
                 "base_fee": base_fee,
                 "guard_count": guard_count,
                 "tip": tip,
+                "lat": lat,
+                "lng": lng,
                 "work_started_at": work_started_at,
                 "created_at": created_at,
                 "updated_at": updated_at,
@@ -1542,6 +1572,14 @@ mod db_tests {
         assert_eq!(envelope.payload["guard_id"], serde_json::json!(guard_id));
         assert_eq!(envelope.payload["report_id"], serde_json::json!(row.id));
         assert_eq!(envelope.payload["hour_number"], serde_json::json!(1));
+
+        // The advisory pre-flight the handler runs before the S3 upload sees the row.
+        assert!(progress_report_exists(&pool, booking_id, 1)
+            .await
+            .expect("exists check"));
+        assert!(!progress_report_exists(&pool, booking_id, 2)
+            .await
+            .expect("exists check"));
 
         // DUPLICATE hour → 409, and the failed tx enqueues NO second event (atomicity).
         let dup = create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)

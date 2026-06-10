@@ -304,10 +304,19 @@ export interface paths {
          *
          *     Rules: `hour_number` must be within `1..=hours`; hour N opens once N−1 hours have
          *     elapsed since `work_started_at` (409 too-early otherwise); one check-in per hour —
-         *     a duplicate `hour_number` is 409, so a client retry can never double-report.
-         *     Strictly the assigned guard (no admin bypass — a report is the guard's first-person
-         *     attestation of presence). GPS is optional (the guard may be offline at capture);
-         *     when sent, `lat`+`lng` must come together.
+         *     a duplicate `hour_number` is 409 (checked BEFORE the upload), so a client retry can
+         *     never double-report and uploads nothing. Strictly the assigned guard (no admin
+         *     bypass — a report is the guard's first-person attestation of presence). GPS is
+         *     optional (the guard may be offline at capture); when sent, `lat`+`lng` must come
+         *     together.
+         *
+         *     > **⚠️ Deployment dependency (tracked, NOT yet satisfied):** the booking service
+         *     > accepts bodies up to 12 MiB on this route, but the api-gateway currently buffers
+         *     > EVERY proxied body at a hard 1 MiB (`proxy.rs MAX_BODY_BYTES` → 413) and staging
+         *     > nginx caps at 2 MB (`client_max_body_size 2m`). Until the gateway grows a
+         *     > per-route body-cap carve-out (≥ 12 MiB for this route; in-flight gateway slice)
+         *     > + a location-scoped nginx override, photos over ~1 MiB get **413 at the edge**
+         *     > and never reach this endpoint. Mobile wiring MUST gate on that follow-up.
          */
         post: operations["createProgressReport"];
         delete?: never;
@@ -453,10 +462,10 @@ export interface components {
             lng?: number;
             /**
              * Format: float
-             * @description GPS accuracy in meters (optional).
+             * @description GPS accuracy in meters (optional; non-finite/negative/absurd values are discarded server-side
              */
             accuracy?: number;
-            /** @description Optional free-text note (trimmed; empty treated as absent). */
+            /** @description Optional free-text note (trimmed; empty treated as absent; max 2000 characters). */
             note?: string;
         };
         /**
@@ -945,6 +954,13 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+            /** @description Body too large. Today this fires at the EDGE for >1 MiB (gateway buffer cap; see the deployment-dependency note above) — once the per-route carve-out lands, the service's own 12 MiB route cap produces it. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getInternalBooking: {

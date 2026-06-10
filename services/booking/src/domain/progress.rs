@@ -131,6 +131,29 @@ pub fn validate_check_in(
     Ok(())
 }
 
+// ----- note + accuracy sanitation -----
+
+/// Max characters for the optional free-text note (it is echoed to the customer on every
+/// list read — without a cap an assigned guard could persist megabytes of TEXT per hour).
+pub const MAX_NOTE_CHARS: usize = 2000;
+
+/// Validate the (already-trimmed, non-empty) note length.
+pub fn validate_note(note: &str) -> Result<(), AppError> {
+    if note.chars().count() > MAX_NOTE_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "note must be at most {MAX_NOTE_CHARS} characters"
+        )));
+    }
+    Ok(())
+}
+
+/// Sanitize GPS accuracy (meters): non-finite, negative, or absurd values become `None`
+/// rather than persisted junk — mirrors presence's `sane(0.0..10_000.0)` precedent
+/// (`NaN::real` would otherwise round-trip inconsistently: stored as NaN, served as null).
+pub fn sanitize_accuracy(accuracy_m: Option<f32>) -> Option<f32> {
+    accuracy_m.filter(|a| a.is_finite() && (0.0..=10_000.0).contains(a))
+}
+
 // ----- GPS + open-job discovery query validation -----
 
 /// A validated geo filter for open-job discovery.
@@ -363,6 +386,27 @@ mod tests {
         }
         // Exactly at the cap passes.
         assert!(validate_photo_upload("image/jpeg", MAX_PHOTO_SIZE, JPEG).is_ok());
+    }
+
+    // ----- note + accuracy sanitation -----
+
+    #[test]
+    fn note_capped_at_max_chars() {
+        assert!(validate_note(&"ก".repeat(MAX_NOTE_CHARS)).is_ok());
+        assert!(validate_note(&"ก".repeat(MAX_NOTE_CHARS + 1)).is_err());
+        assert!(validate_note("perimeter clear").is_ok());
+    }
+
+    #[test]
+    fn accuracy_junk_becomes_none() {
+        assert_eq!(sanitize_accuracy(Some(8.5)), Some(8.5));
+        assert_eq!(sanitize_accuracy(Some(0.0)), Some(0.0));
+        assert_eq!(sanitize_accuracy(Some(10_000.0)), Some(10_000.0));
+        assert_eq!(sanitize_accuracy(Some(-1.0)), None);
+        assert_eq!(sanitize_accuracy(Some(10_000.1)), None);
+        assert_eq!(sanitize_accuracy(Some(f32::NAN)), None);
+        assert_eq!(sanitize_accuracy(Some(f32::INFINITY)), None);
+        assert_eq!(sanitize_accuracy(None), None);
     }
 
     // ----- coords + open-job query validation -----
