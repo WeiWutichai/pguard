@@ -584,7 +584,11 @@ services:
       # NOTE: pguard-prod is IPv4-only (no enable_ipv6) — but we deny IPv6 private/link-local/ULA
       # + IPv4-mapped too, so the deny posture holds even on a host with a routable public IPv6 and
       # can't be re-opened by anyone later flipping IPv6 on without also revisiting this list.
-      - --no-loopback-peers
+      # (no --no-loopback-peers: the flag was REMOVED in coturn 4.6 — loopback peers are
+      # denied by default; passing it makes turnserver exit 255. 127.0.0.0/8 + ::1 are
+      # additionally covered by the denied-peer-ip list below.)
+      - --denied-peer-ip=127.0.0.0-127.255.255.255
+      - --denied-peer-ip=::1
       - --denied-peer-ip=10.0.0.0-10.255.255.255
       - --denied-peer-ip=172.16.0.0-172.31.255.255
       - --denied-peer-ip=192.168.0.0-192.168.255.255
@@ -598,7 +602,9 @@ services:
       # (WebRTC constraint). Documented exception to "only the gateway publishes ports".
       - "${TURN_LISTEN_PORT:-3478}:3478/udp"
       - "${TURN_LISTEN_PORT:-3478}:3478/tcp"
-      - "${TURN_MIN_PORT:-50000}-${TURN_MAX_PORT:-50100}:50000-50100/udp"
+      # BOTH sides parameterized (same pattern as mediasoup above) so overriding
+      # TURN_MIN/MAX_PORT yields a valid symmetric range instead of one Docker rejects.
+      - "${TURN_MIN_PORT:-50000}-${TURN_MAX_PORT:-50100}:${TURN_MIN_PORT:-50000}-${TURN_MAX_PORT:-50100}/udp"
     networks:
       - pguard-prod
 
