@@ -1,0 +1,171 @@
+# pguard v2 — STAGING overlay. Pulls the 14 custom images from ghcr, real host + TLS on the
+# Ingress, HPAs enabled, narrowed WebRTC range, SMS/push off. Secrets are NOT generated here —
+# create them out-of-band (the `.env.staging.example` pattern); see infra/k8s/README.md →
+# "Secrets". The ghcr images are private ⇒ create an imagePullSecret + reference it (README).
+#
+# Image TAG: defaults to `latest`. For a pinned rollback, run from this dir:
+#   kustomize edit set image ghcr.io/weiwutichai/pguard/api-gateway=ghcr.io/weiwutichai/pguard/api-gateway:<sha>
+#   (repeat per image) — or edit the `newTag` values below.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: pguard
+
+resources:
+  - ../../base
+  - ../../base/hpa # HPAs are staging-only (sub-kustomization)
+
+# 14 custom images → ghcr.io/<lowercase-owner>/pguard/<svc>:<tag>.
+images:
+  - name: pguard/postgres-primary
+    newName: ghcr.io/weiwutichai/pguard/postgres-primary
+    newTag: latest
+  - name: pguard/api-gateway
+    newName: ghcr.io/weiwutichai/pguard/api-gateway
+    newTag: latest
+  - name: pguard/identity
+    newName: ghcr.io/weiwutichai/pguard/identity
+    newTag: latest
+  - name: pguard/profile
+    newName: ghcr.io/weiwutichai/pguard/profile
+    newTag: latest
+  - name: pguard/otp
+    newName: ghcr.io/weiwutichai/pguard/otp
+    newTag: latest
+  - name: pguard/notification
+    newName: ghcr.io/weiwutichai/pguard/notification
+    newTag: latest
+  - name: pguard/booking
+    newName: ghcr.io/weiwutichai/pguard/booking
+    newTag: latest
+  - name: pguard/payment
+    newName: ghcr.io/weiwutichai/pguard/payment
+    newTag: latest
+  - name: pguard/rating
+    newName: ghcr.io/weiwutichai/pguard/rating
+    newTag: latest
+  - name: pguard/calling
+    newName: ghcr.io/weiwutichai/pguard/calling
+    newTag: latest
+  - name: pguard/presence
+    newName: ghcr.io/weiwutichai/pguard/presence
+    newTag: latest
+  - name: pguard/chat
+    newName: ghcr.io/weiwutichai/pguard/chat
+    newTag: latest
+  - name: pguard/mediasoup
+    newName: ghcr.io/weiwutichai/pguard/mediasoup
+    newTag: latest
+  - name: pguard/web-admin
+    newName: ghcr.io/weiwutichai/pguard/web-admin
+    newTag: latest
+
+patches:
+  # ── Ingress (ALL 5): real host + TLS + force HTTPS redirect. One patch targets every Ingress
+  #    object (same host/cert/redirect for the whole edge). TLS secret `pguard-tls` is created
+  #    out-of-band or by cert-manager. force-ssl-redirect is a first-class annotation (no snippet
+  #    flag needed); HSTS rides in the base pguard-web snippet (active now that TLS is on). ──
+  - target: { kind: Ingress }
+    patch: |-
+      - op: replace
+        path: /spec/rules/0/host
+        value: pguard.innoveraappcenter.com
+      - op: add
+        path: /spec/tls
+        value:
+          - hosts: [pguard.innoveraappcenter.com]
+            secretName: pguard-tls
+      - op: add
+        path: /metadata/annotations/nginx.ingress.kubernetes.io~1force-ssl-redirect
+        value: "true"
+  # ── Gateway: CORS + WS Origin = the public HTTPS origin ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: api-gateway
+      spec:
+        template:
+          spec:
+            containers:
+              - name: api-gateway
+                env:
+                  - name: CORS_ALLOWED_ORIGINS
+                    value: https://pguard.innoveraappcenter.com
+  # ── otp: SMS off for staging (value-aware gate) ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: otp
+      spec:
+        template:
+          spec:
+            containers:
+              - name: otp
+                env:
+                  - name: SMS_DISABLED
+                    value: "true"
+  # ── notification: push off for staging ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: notification
+      spec:
+        template:
+          spec:
+            containers:
+              - name: notification
+                env:
+                  - name: FCM_DISABLED
+                    value: "true"
+  # ── calling: public TURN URLs ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: calling
+      spec:
+        template:
+          spec:
+            containers:
+              - name: calling
+                env:
+                  - name: TURN_URLS
+                    value: turn:pguard.innoveraappcenter.com:3478?transport=udp,turn:pguard.innoveraappcenter.com:3478?transport=tcp
+  # ── mediasoup: narrowed media range (avoids Tailscale 41641 + a 10k-port publish) +
+  #    announced IP. SET MEDIASOUP_ANNOUNCED_IP to the node PUBLIC IP before deploy. ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mediasoup
+      spec:
+        template:
+          spec:
+            containers:
+              - name: mediasoup
+                env:
+                  - name: RTC_MIN_PORT
+                    value: "42000"
+                  - name: RTC_MAX_PORT
+                    value: "42199"
+                  - name: MEDIASOUP_ANNOUNCED_IP
+                    value: "CHANGE_ME__node_public_ip"
+  # ── coturn: external IP + realm. SET TURN_EXTERNAL_IP to the node PUBLIC IP before deploy. ──
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: coturn
+      spec:
+        template:
+          spec:
+            containers:
+              - name: coturn
+                env:
+                  - name: TURN_EXTERNAL_IP
+                    value: "CHANGE_ME__node_public_ip"
+                  - name: TURN_REALM
+                    value: pguard.innoveraappcenter.com

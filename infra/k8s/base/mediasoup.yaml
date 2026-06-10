@@ -1,0 +1,94 @@
+# mediasoup — WebRTC SFU (Node). NETWORK-SPECIAL: the SFU binds a wide contiguous UDP media
+# range (RTC_MIN_PORT..RTC_MAX_PORT) and advertises MEDIASOUP_ANNOUNCED_IP in ICE candidates,
+# which clients must reach directly. k8s has no clean equivalent of compose's host:container 1:1
+# UDP publish, so we use hostNetwork.
+#
+# CHOICE — hostNetwork (justified): a Service/NodePort cannot express a ~10k contiguous host UDP
+# range, and a relayed ClusterIP would break ICE (the announced candidate must be the real
+# reachable host:port). hostNetwork binds the range straight on the node, 1:1, exactly like the
+# compose port publish.
+# LIMITATIONS (documented — infra/k8s/README.md "Network-special"):
+#   • The pod uses the node's net namespace ⇒ at most ONE mediasoup pod per node (no two pods
+#     can bind the same host range) ⇒ scale by adding nodes, NOT replicas. No HPA.
+#   • MEDIASOUP_ANNOUNCED_IP MUST equal the PUBLIC IP of the node this pod lands on — pin it with
+#     a nodeSelector and set the matching IP per overlay (or narrow the range on a media node).
+#   • The node's firewall/SG must allow the UDP range inbound.
+#   • dnsPolicy ClusterFirstWithHostNet keeps cluster DNS working under hostNetwork.
+# The 3011 CONTROL plane stays a normal ClusterIP Service (calling → http://mediasoup:3011);
+# only the media UDP range needs the host network.
+apiVersion: v1
+kind: Service
+metadata:
+  name: mediasoup
+  labels:
+    app.kubernetes.io/name: mediasoup
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: sfu
+spec:
+  selector:
+    app.kubernetes.io/name: mediasoup
+  ports:
+    - name: control
+      port: 3011
+      targetPort: 3011
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mediasoup
+  labels:
+    app.kubernetes.io/name: mediasoup
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: sfu
+spec:
+  replicas: 1 # one-per-node (hostNetwork) — scale by nodes, not replicas
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mediasoup
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mediasoup
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: sfu
+    spec:
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: mediasoup
+          image: pguard/mediasoup:0.1.0
+          env:
+            - name: NODE_ENV
+              value: "production"
+            - name: MEDIASOUP_PORT
+              value: "3011"
+            # Default media range matches compose; narrow on a shared node (and the host firewall).
+            - name: RTC_MIN_PORT
+              value: "40000"
+            - name: RTC_MAX_PORT
+              value: "49999"
+            - name: SERVICE_JWT_SECRET
+              valueFrom: { secretKeyRef: { name: pguard-app-secrets, key: SERVICE_JWT_SECRET } }
+            # PATCH per overlay to the public IP of the node this pod runs on.
+            - name: MEDIASOUP_ANNOUNCED_IP
+              value: "203.0.113.10"
+          ports:
+            - name: control
+              containerPort: 3011
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "2"
+              memory: 1Gi
+          readinessProbe:
+            tcpSocket:
+              port: 3011
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 3011
+            initialDelaySeconds: 15
+            periodSeconds: 10

@@ -1,0 +1,92 @@
+# migrate — one-shot migrator Job (services do NOT auto-migrate). Connects psql DIRECTLY to the
+# PRIMARY (postgres:5432, bypassing pgbouncer — DDL belongs on the primary; the replica picks it
+# up over WAL). Applies every per-service migration in filename order, idempotently, tracking
+# applied files in public._k8s_migrations. Mirrors tooling/scripts/migrate.sh.
+#
+# The migration SQL is provided by a `pguard-migrations` ConfigMap created OUT-OF-BAND from
+# contracts/db/migrations (one flat key per file, `<svc>__<file>.sql`) — see infra/k8s/README.md
+# → "Migrations" for the exact `kubectl create configmap` command. RUN AFTER the DB is Ready and
+# BEFORE (or alongside) the services roll out: `kubectl -n pguard apply` this Job, or
+# `kubectl create job --from=...`. Re-running is a clean no-op (ledger-guarded).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: pguard-migrate-runner
+  labels:
+    app.kubernetes.io/name: migrate
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: migrate
+data:
+  run.sh: |
+    #!/bin/sh
+    set -eu
+    echo "==> ensuring migration ledger (public._k8s_migrations)"
+    psql -v ON_ERROR_STOP=1 -q -c \
+      "CREATE TABLE IF NOT EXISTS public._k8s_migrations (file text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());"
+    applied=0
+    skipped=0
+    # Ledger is public._k8s_migrations — DELIBERATELY separate from compose migrate.sh's
+    # public._perf_migrations. Don't run both paths against ONE database (the two ledgers would
+    # diverge and a file could be applied twice); pick one migrator per DB.
+    # Flat keys sort service-then-numeric (e.g. booking__0001_…), matching migrate.sh order.
+    for sql in $(ls /migrations/*.sql | sort); do
+      key=$(basename "$sql")
+      if [ -n "$(psql -tAc "SELECT 1 FROM public._k8s_migrations WHERE file = '$key'" | tr -d '[:space:]')" ]; then
+        skipped=$((skipped + 1)); continue
+      fi
+      echo "  -> applying $key"
+      psql -v ON_ERROR_STOP=1 -q -f "$sql"
+      psql -v ON_ERROR_STOP=1 -q -c "INSERT INTO public._k8s_migrations(file) VALUES ('$key');"
+      applied=$((applied + 1))
+    done
+    echo "==> migrations: $applied applied, $skipped already-applied"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: pguard-migrate
+  labels:
+    app.kubernetes.io/name: migrate
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: migrate
+spec:
+  backoffLimit: 3
+  # ttlSecondsAfterFinished: keep a finished migrate Job 1h for log inspection, then GC.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migrate
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: postgres:17 # psql client; runs against the primary
+          command: ["/bin/sh", "/runner/run.sh"]
+          env:
+            # Direct to the PRIMARY (not pgbouncer) for DDL.
+            - name: PGHOST
+              value: postgres
+            - name: PGPORT
+              value: "5432"
+            - name: PGUSER
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_USER } }
+            - name: PGDATABASE
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_DB } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: POSTGRES_PASSWORD } }
+          volumeMounts:
+            - name: runner
+              mountPath: /runner
+            - name: migrations
+              mountPath: /migrations
+      volumes:
+        - name: runner
+          configMap:
+            name: pguard-migrate-runner
+        # Created out-of-band from contracts/db/migrations (see README → Migrations).
+        - name: migrations
+          configMap:
+            name: pguard-migrations

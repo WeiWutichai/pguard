@@ -1,0 +1,91 @@
+# pgbouncer — connection pooler (transaction mode) fronting the primary. Stateless ⇒
+# Deployment (not a StatefulSet). Writes + read-after-write go THROUGH this on :6432
+# (DATABASE_URL); list/report reads bypass it for the replica. Mirrors compose `pgbouncer`,
+# including the hard-won settings: LISTEN_PORT 6432, scram-sha-256, and the transaction-mode
+# prepared-statement cache (sqlx named statements collide without it).
+apiVersion: v1
+kind: Service
+metadata:
+  name: pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database-pooler
+spec:
+  selector:
+    app.kubernetes.io/name: pgbouncer
+  ports:
+    - name: pgbouncer
+      port: 6432
+      targetPort: 6432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: pgbouncer
+  labels:
+    app.kubernetes.io/name: pgbouncer
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database-pooler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: pgbouncer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: pgbouncer
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: database-pooler
+    spec:
+      containers:
+        - name: pgbouncer
+          image: edoburu/pgbouncer:v1.23.1-p3
+          env:
+            - name: DB_HOST
+              value: postgres
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_USER
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_USER } }
+            - name: DB_NAME
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_DB } }
+            - name: DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: POSTGRES_PASSWORD } }
+            # Services' DATABASE_URL + this Service both use 6432 (edoburu defaults to 5432).
+            - name: LISTEN_PORT
+              value: "6432"
+            # postgres:17 negotiates scram-sha-256 upstream.
+            - name: AUTH_TYPE
+              value: scram-sha-256
+            - name: POOL_MODE
+              value: transaction
+            - name: MAX_CLIENT_CONN
+              value: "1000"
+            - name: DEFAULT_POOL_SIZE
+              value: "20"
+            # Transaction-mode prepared-statement support (≥1.21) — without it sqlx's
+            # sqlx_s_N named statements collide across reused backend conns.
+            - name: MAX_PREPARED_STATEMENTS
+              value: "256"
+          ports:
+            - name: pgbouncer
+              containerPort: 6432
+          resources:
+            requests:
+              cpu: 50m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          readinessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket:
+              port: 6432
+            initialDelaySeconds: 15
+            periodSeconds: 10

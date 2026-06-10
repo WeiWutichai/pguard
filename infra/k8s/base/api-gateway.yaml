@@ -1,0 +1,109 @@
+# api-gateway — the security edge (JWT/jti/trv validation, CSRF, per-IP rate limit, identity
+# header injection, `/v1` strip, routing). In compose it is the only host-published service;
+# in k8s the Ingress fronts it (TLS, host routing). NO DB — uses x-rust-env + SERVICE_JWT_SECRET
+# only. /metrics is on a SEPARATE admin port (9100), never on the public 3000. Mirrors compose.
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: gateway
+spec:
+  selector:
+    app.kubernetes.io/name: api-gateway
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+    - name: metrics # prometheus scrapes api-gateway:9100 (admin port, never ingress-exposed)
+      port: 9100
+      targetPort: 9100
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+  labels:
+    app.kubernetes.io/name: api-gateway
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: gateway
+spec:
+  replicas: 1 # overlays scale; HPA in base/hpa.yaml (staging)
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api-gateway
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: gateway
+    spec:
+      securityContext:
+        runAsNonRoot: true # image runs as appuser (rust-service.Dockerfile)
+      containers:
+        - name: api-gateway
+          image: pguard/api-gateway:0.1.0 # overlays → ghcr.io/<prefix>/api-gateway:<tag>
+          envFrom:
+            - configMapRef: { name: pguard-config }
+            - secretRef: { name: pguard-app-secrets } # JWT_SECRET, SERVICE_JWT_SECRET, EVENT_SIGNING_SECRET
+          env:
+            # /metrics + /healthz on the internal admin port, never the public edge.
+            - name: METRICS_ADDR
+              value: "0.0.0.0:9100"
+            # WS Origin + CORS allow-list — PATCH per overlay (dev localhost vs staging domain).
+            - name: CORS_ALLOWED_ORIGINS
+              value: "http://localhost"
+            - name: RATE_API_PER_SEC
+              value: "50"
+            - name: RATE_AUTH_PER_SEC
+              value: "10"
+            - name: RATE_OTP_PER_MIN
+              value: "3"
+            # Upstream service map (cluster DNS).
+            - name: IDENTITY_URL
+              value: "http://identity:3001"
+            - name: PROFILE_URL
+              value: "http://profile:3002"
+            - name: OTP_URL
+              value: "http://otp:3003"
+            - name: NOTIFICATION_URL
+              value: "http://notification:3004"
+            - name: BOOKING_URL
+              value: "http://booking:3005"
+            - name: PAYMENT_URL
+              value: "http://payment:3006"
+            - name: RATING_URL
+              value: "http://rating:3007"
+            - name: CALLING_URL
+              value: "http://calling:3008"
+            - name: PRESENCE_URL
+              value: "http://presence:3009"
+            - name: CHAT_URL
+              value: "http://chat:3010"
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9100
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10

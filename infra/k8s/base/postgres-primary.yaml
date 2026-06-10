@@ -1,0 +1,113 @@
+# postgres-primary — streaming-replication PRIMARY (C5.3). Custom image bakes the
+# replication bootstrap into /docker-entrypoint-initdb.d (infra/docker/postgres-primary.Dockerfile)
+# so the `replicator` role + pg_hba entry always exist at initdb. Mirrors compose `postgres`.
+#
+# Service name MUST be `postgres`: pgbouncer's DB_HOST, the replica's pg_basebackup host,
+# and DATABASE_URL all resolve `postgres:5432`.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    app.kubernetes.io/name: postgres-primary
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database
+spec:
+  clusterIP: None # headless — stable DNS for the StatefulSet pod
+  selector:
+    app.kubernetes.io/name: postgres-primary
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres-primary
+  labels:
+    app.kubernetes.io/name: postgres-primary
+    app.kubernetes.io/part-of: pguard
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres-primary
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres-primary
+        app.kubernetes.io/part-of: pguard
+        app.kubernetes.io/component: database
+    spec:
+      securityContext:
+        # postgres:17 runs as uid 999; let the volume be group-writable by it.
+        fsGroup: 999
+      containers:
+        - name: postgres
+          image: pguard/postgres-primary:0.1.0 # overlays rewrite to ghcr.io/<prefix>/postgres-primary:<tag>
+          args:
+            # Streaming-replication primary tuning (compose `command:`).
+            - "postgres"
+            - "-c"
+            - "wal_level=replica"
+            - "-c"
+            - "max_wal_senders=10"
+            - "-c"
+            - "max_replication_slots=10"
+            - "-c"
+            - "hot_standby=on"
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_USER } }
+            - name: POSTGRES_DB
+              valueFrom: { configMapKeyRef: { name: pguard-config, key: POSTGRES_DB } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: POSTGRES_PASSWORD } }
+            # The standby streams as this role; the baked initdb script creates it.
+            - name: REPLICATION_PASSWORD
+              valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: REPLICATION_PASSWORD } }
+            # Subdir (not the volume root) is the standard k8s pattern — a cloud PVC's lost+found
+            # at the mount root makes initdb refuse to run. The baked /docker-entrypoint-initdb.d
+            # replication bootstrap still fires on a FRESH PGDATA wherever it points (the postgres
+            # entrypoint runs init scripts after initdb regardless of dir). Replica uses the same
+            # subdir, so both sides are consistent. (Compose used the default root dir; the kind
+            # smoke confirmed first-init works under the subdir.)
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          # Conservative starting point — tune from the perf baseline (v1-audit/perf-baseline).
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          readinessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "pg_isready -U $POSTGRES_USER -d $POSTGRES_DB"]
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+          volumeMounts:
+            - name: pg-data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+    - metadata:
+        name: pg-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 10Gi
