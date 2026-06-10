@@ -30,7 +30,14 @@ restore() {
 trap 'echo; echo "[trap] restoring stopped containers…"; restore' EXIT INT TERM
 
 down() { echo "  [chaos] STOP $1"; docker stop -t 0 "$1" >/dev/null 2>&1; STOPPED+=("$1"); }
-up()   { echo "  [chaos] START $1"; docker start "$1" >/dev/null 2>&1; STOPPED=("${STOPPED[@]/$1}"); }
+up()   {
+  echo "  [chaos] START $1"; docker start "$1" >/dev/null 2>&1
+  # Drop $1 from STOPPED by REBUILD (bash-3.2-safe — `${arr[@]/x}` would leave an empty-string
+  # element, not remove it).
+  local keep=(); local c
+  for c in "${STOPPED[@]:-}"; do [ -n "$c" ] && [ "$c" != "$1" ] && keep+=("$c"); done
+  STOPPED=("${keep[@]:-}")
+}
 
 # curl on the compose network (host can't always reach internal services; the gateway is the
 # only published port but we keep everything on-network for uniformity).
@@ -137,9 +144,18 @@ case3_redis() {
   up "${PFX}-redis"; wait_healthy "${PFX}-redis" 40
   sleep 2
   local rec; rec="$(status "$GW/v1/auth/me" -H "Authorization: Bearer $c")"
-  echo "  protected /v1/auth/me (redis recovered) http=$rec"
+  echo "  protected /v1/auth/me (redis recovered) http=$rec (FINDING: stays 500 — gateway didn't reconnect)"
   local survived="YES"; [ "$hz" = "200" ] || survived="NO"
   echo "  CHAOS_RESULT case=redis gateway_healthz=$hz protected_during=$prot login_during=$lg protected_recovered=$rec gateway_survived=$survived"
+  # REMEDIATION = the case-3 finding itself: the gateway's startup redis connection stays wedged
+  # after redis restarts (protected routes 500 indefinitely), so bounce it now. This keeps a
+  # `run-chaos.sh all` honest — cases 4 & 5 auth through the edge and would otherwise inherit the
+  # wedge and mis-report (false cascade / WS won't open). The recovered=500 above already captured
+  # the finding before this heal.
+  if [ "$rec" != "200" ]; then
+    echo "  [remediate] restarting ${PFX}-api-gateway to clear the wedged redis connection (finding #1)"
+    docker restart "${PFX}-api-gateway" >/dev/null 2>&1; wait_healthy "${PFX}-api-gateway" 40
+  fi
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

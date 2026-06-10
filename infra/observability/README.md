@@ -23,8 +23,8 @@ cross-linked for trace→logs→metrics correlation.
 ### Metrics actually exported (build against these, not wishes)
 
 `http_requests_total{job,method,route,status}` · `http_request_duration_seconds_bucket{…,le}` ·
-`nats_consumer_pending{durable}` · `nats_rejected_events_total{job}` (lazily created on first
-rejection) · `up{job}` (Prometheus scrape liveness).
+`nats_consumer_pending{durable}` · `nats_rejected_events_total{durable}` (+ `job` added at scrape;
+lazily created on first rejection) · `up{job}` (Prometheus scrape liveness).
 
 ## SLOs (targets) + where the numbers come from
 
@@ -38,7 +38,7 @@ busy-hour numbers are the concurrent mixed-workload run (both in `RESULTS.md`).
 | General API (read/write) | < 30 ms | up to ~780 ms | p99 < 500 ms | **500 ms → 1.5 s** (10m) | discovery 30 ms iso / 782 ms mixed |
 | 5xx error rate | 0 % | 0 % | < 1 % | **5 % → 20 %** (5m) | baseline 0 % on every path |
 | Edge 429 (rate-limit) | ~0/s | ~0/s | n/a (by design) | **> 5/s** (10m) | per-IP limits: auth ~10/s, api ~50/s |
-| NATS consumer backlog | 0 | — | ~0 | **> 50 → > 500** (5m) | chaos: transient spike drains in seconds |
+| NATS consumer backlog | 0 | — | ~0 | **> 50 → > 500** (5m) | chosen headroom (not a measured ceiling): baseline 0 + chaos shows transient spikes drain in seconds, so a 5m-sustained backlog = stuck. Tune to consumer throughput. |
 | Rejected events | 0 | — | 0 | **> 0** (immediate) | fail-closed HMAC verify |
 | Service liveness | up | — | up | **down 2m** | chaos case 4: clean 502, no cascade |
 

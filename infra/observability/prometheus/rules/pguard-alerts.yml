@@ -122,7 +122,7 @@ groups:
         labels: { severity: critical }
         annotations:
           summary: "Rejected (unsigned/forged) NATS events detected"
-          description: "{{ $value }} event(s) failed HMAC verification in 5m on {{ $labels.job }}. Events are dropped fail-closed; investigate a misconfigured signing key or a forgery attempt."
+          description: "{{ $value }} event(s) failed HMAC verification in 5m on {{ $labels.job }} (durable {{ $labels.durable }}). The expr keeps all labels, so job + durable both identify the source. Events are dropped fail-closed; investigate a misconfigured signing key or a forgery attempt."
 
   # ── Liveness ─────────────────────────────────────────────────────────────────
   - name: pguard-liveness

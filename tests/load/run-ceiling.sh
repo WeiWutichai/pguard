@@ -50,6 +50,11 @@ http_ladder() { # http_ladder <endpoint> <rps...>
     echo "  $line"
     p99="$(echo "$line" | sed -n 's/.*p99_ms=\([0-9.]*\).*/\1/p')"
     err="$(echo "$line" | sed -n 's/.*err_rate=\([0-9.]*\)%.*/\1/p')"
+    # A fully-dead step prints p99_ms=NaN → the digit-only sed yields ''. Treat a non-numeric
+    # p99 as "past the knee" (a step with ~0 completed reqs IS the ceiling); default err to 0 so
+    # the awk test below never sees an empty operand (which would be a syntax error → false no-op).
+    case "$p99" in ''|*[!0-9.]*) echo "  → KNEE at rps=$rps (no usable p99 — step collapsed)."; break;; esac
+    err="${err:-0}"
     if awk "BEGIN{exit !($p99>$KNEE_MS || $err>$ERR_KNEE)}"; then
       echo "  → KNEE at rps=$rps (p99=${p99}ms err=${err}%). Ceiling ≈ previous clean step."
       break
