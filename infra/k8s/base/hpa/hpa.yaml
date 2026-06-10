@@ -1,5 +1,6 @@
 # HorizontalPodAutoscalers — ONLY for genuinely stateless, horizontally-scalable workloads:
-# the gateway + the 11 stateless services + web-admin. EXCLUDED by design: the StatefulSets
+# the 11 Rust services (the gateway IS one of them) + web-admin = 12 HPAs. EXCLUDED by design:
+# the StatefulSets
 # (postgres/replica/nats/redis/minio/tempo/loki/grafana), pgbouncer (1 pooler is plenty here),
 # prometheus (single TSDB), and mediasoup/coturn (hostNetwork ⇒ one-per-node, scale by adding
 # nodes, never replicas).

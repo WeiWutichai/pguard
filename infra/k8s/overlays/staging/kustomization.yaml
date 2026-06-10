@@ -61,8 +61,11 @@ images:
     newTag: latest
 
 patches:
-  # ── Ingress: real host + TLS (cert secret created out-of-band / by cert-manager) ──
-  - target: { kind: Ingress, name: pguard-web }
+  # ── Ingress (ALL 5): real host + TLS + force HTTPS redirect. One patch targets every Ingress
+  #    object (same host/cert/redirect for the whole edge). TLS secret `pguard-tls` is created
+  #    out-of-band or by cert-manager. force-ssl-redirect is a first-class annotation (no snippet
+  #    flag needed); HSTS rides in the base pguard-web snippet (active now that TLS is on). ──
+  - target: { kind: Ingress }
     patch: |-
       - op: replace
         path: /spec/rules/0/host
@@ -72,26 +75,9 @@ patches:
         value:
           - hosts: [pguard.innoveraappcenter.com]
             secretName: pguard-tls
-  - target: { kind: Ingress, name: pguard-api }
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/host
-        value: pguard.innoveraappcenter.com
       - op: add
-        path: /spec/tls
-        value:
-          - hosts: [pguard.innoveraappcenter.com]
-            secretName: pguard-tls
-  - target: { kind: Ingress, name: pguard-uploads }
-    patch: |-
-      - op: replace
-        path: /spec/rules/0/host
-        value: pguard.innoveraappcenter.com
-      - op: add
-        path: /spec/tls
-        value:
-          - hosts: [pguard.innoveraappcenter.com]
-            secretName: pguard-tls
+        path: /metadata/annotations/nginx.ingress.kubernetes.io~1force-ssl-redirect
+        value: "true"
   # ── Gateway: CORS + WS Origin = the public HTTPS origin ──
   - patch: |-
       apiVersion: apps/v1

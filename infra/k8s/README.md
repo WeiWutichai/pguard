@@ -134,9 +134,12 @@ ClusterIP/NodePort can't express for a wide contiguous UDP range. Both use **`ho
 - **`MEDIASOUP_ANNOUNCED_IP` / `TURN_EXTERNAL_IP` must equal that node's PUBLIC IP** (set per
   overlay — staging has `CHANGE_ME__node_public_ip` placeholders). A node behind CGNAT cannot
   relay; use a managed TURN (Twilio/Cloudflare) and point `TURN_URLS` at it.
-- The **node firewall/security-group** must allow inbound: mediasoup `RTC_MIN..RTC_MAX/udp`
+- The **node firewall/security-group** must allow inbound ONLY: mediasoup `RTC_MIN..RTC_MAX/udp`
   (staging 42000–42199), coturn `3478/udp+tcp` + `50000–50100/udp`. The relay range is
-  deliberately outside mediasoup's to avoid a collision.
+  deliberately outside mediasoup's to avoid a collision. **DENY inbound mediasoup `3011/tcp`** (the
+  SFU control plane) — under hostNetwork it would otherwise be node-reachable; it must stay
+  in-cluster (calling → `http://mediasoup:3011`), unlike everything else which is internal by
+  default. Compose kept 3011 on `expose` (internal); hostNetwork can't, so the firewall enforces it.
 - hostNetwork pods are **outside NetworkPolicy scope** (intended — their ports are public).
 
 ## NetworkPolicy
@@ -147,6 +150,27 @@ is reachable from outside; everything else is cluster-internal): **default-deny 
 Caveats: enforcement is **CNI-dependent** (kindnet ignores it); liveness/readiness probes come from
 the kubelet — Calico/Cilium allow host→pod health checks by default, **verify on your CNI** or add a
 host-range allow; the `ingress-nginx` namespaceSelector label may need adjusting to your install.
+
+## Edge (Ingress) hardening — match the nginx.staging.conf controls
+
+The Ingress reproduces the edge controls the proven nginx staging edge enforced; two depend on
+**controller-level** config you must set (they can't live in the Ingress object alone):
+
+- **X-Forwarded-For / client IP** — the gateway's per-IP rate limiter (OTP/auth brute-force,
+  v1-audit risks #4/#5) trusts the left-most XFF hop. ingress-nginx's DEFAULT
+  (`use-forwarded-headers: "false"`) overwrites XFF with the real peer — **keep it false**, exactly
+  like nginx's `proxy_set_header X-Forwarded-For $remote_addr`. Only set it `"true"` if a trusted L7
+  LB fronts the controller, and then ALSO pin `proxy-real-ip-cidr` to that LB — never open.
+- **Edge rate limits** — coarse per-IP limits mirroring the nginx zones are set as first-class
+  annotations: `/v1` + uploads 30 r/s, `/v1/auth` 5 r/s, `/v1/otp` 10 r/min. Defense-in-depth in
+  front of the gateway's own Redis limiter.
+- **Security headers** — the `pguard-web` Ingress carries the SPA's response headers (nosniff,
+  X-Frame-Options, Referrer-Policy, Permissions-Policy, + HSTS) via a `configuration-snippet`
+  (`more_set_headers`). This requires the controller flag **`allow-snippet-annotations: "true"`**
+  (default false since ingress-nginx 1.9). If you keep snippets disabled, set the same headers via
+  the controller's global **`add-headers` ConfigMap** or in the Next.js app's `headers()` — the
+  manifest annotation is the documented default, those are the equivalents.
+- **HTTPS redirect** — the staging overlay adds `force-ssl-redirect: "true"` to every Ingress.
 
 ## Verify
 

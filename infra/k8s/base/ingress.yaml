@@ -1,16 +1,30 @@
 # Ingress — the edge that REPLACES nginx.staging.conf. Routes /v1/* → api-gateway and / →
-# web-admin, with WebSocket support and the PR #28 upload body-size carve-out.
+# web-admin, with WebSocket support, the PR #28 upload body-size carve-out, and a COARSE per-IP
+# edge rate-limit layer (defense-in-depth in FRONT of the gateway's own Redis limiter — mirrors
+# the nginx auth/otp/api zones).
 #
 # ASSUMPTION: ingress-nginx is the controller (annotations below are ingress-nginx-specific).
-# Install it once per cluster (see infra/k8s/README.md). TLS + the real host are added in the
-# staging overlay; base uses the placeholder host `pguard.local`.
+# Install it once per cluster (see infra/k8s/README.md). TLS + the real host + HTTPS-redirect are
+# added in the staging overlay; base uses the placeholder host `pguard.local` (plain HTTP, dev).
 #
-# WHY THREE Ingress objects: ingress-nginx's proxy-body-size annotation is PER-INGRESS, so the
-# 12 MiB upload carve-out (mirroring the gateway's BodyCap::Large for exactly two routes) lives
-# in its own object; everything else under /v1 keeps the 1 MiB default (matching the gateway's
-# hard cap). The gateway still re-validates every upload (size + magic bytes + IDOR).
+# CLIENT-IP / X-FORWARDED-FOR (security — the gateway's per-IP rate limiter depends on this):
+#   The gateway trusts the LEFT-MOST X-Forwarded-For hop as the client IP. ingress-nginx MUST NOT
+#   trust a client-supplied XFF, or an attacker spoofs the limit key and bypasses the OTP/auth
+#   brute-force limits (v1-audit risks #4/#5). Keep the controller default `use-forwarded-headers:
+#   "false"` (it overwrites XFF with the real peer, exactly like nginx.staging.conf's
+#   `proxy_set_header X-Forwarded-For $remote_addr`). If the controller sits behind an L7 LB that
+#   already sets XFF, set `use-forwarded-headers: "true"` AND a correct `proxy-real-ip-cidr` so
+#   only the trusted LB hop is honored — never enable it open. See README → "Edge / X-Forwarded-For".
+#
+# WHY MULTIPLE Ingress objects: ingress-nginx's proxy-body-size + rate-limit annotations are
+# PER-INGRESS, so the 12 MiB upload carve-out and the tighter auth/otp limits each live in their
+# own object. Longest-prefix wins, so /v1/auth and /v1/otp (and the upload regex paths) take
+# precedence over the generic /v1. The gateway still re-validates every request (authn/z + its own
+# limiter + upload size/magic-bytes/IDOR).
 ---
-# Web-admin SPA — everything not under /v1. Lowest precedence (shortest prefix).
+# Web-admin SPA — everything not under /v1. Lowest precedence (shortest prefix). Non-HSTS security
+# headers (HSTS is added with TLS in the staging overlay) for the SPA, which does NOT pass through
+# the gateway (so it doesn't inherit the gateway's header set).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -19,6 +33,19 @@ metadata:
     app.kubernetes.io/part-of: pguard
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "2m"
+    nginx.ingress.kubernetes.io/limit-rps: "30"
+    # Security headers for the web-admin (mirrors nginx.staging.conf, minus HSTS which the staging
+    # overlay adds with TLS). Requires the controller flag `allow-snippet-annotations: "true"`
+    # (default false since ingress-nginx 1.9); ALTERNATIVELY set these via the controller's global
+    # `add-headers` ConfigMap, or in the Next.js app's `headers()` — see README → "Security headers".
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      more_set_headers "X-Content-Type-Options: nosniff";
+      more_set_headers "X-Frame-Options: SAMEORIGIN";
+      more_set_headers "Referrer-Policy: strict-origin-when-cross-origin";
+      more_set_headers "X-XSS-Protection: 0";
+      more_set_headers "Permissions-Policy: camera=(self), microphone=(self), geolocation=(self)";
+      # HSTS is honored by browsers only over TLS (ignored on the dev HTTP listener) — safe here.
+      more_set_headers "Strict-Transport-Security: max-age=31536000; includeSubDomains";
 spec:
   ingressClassName: nginx
   rules:
@@ -35,7 +62,8 @@ spec:
 ---
 # API + WebSocket — everything under /v1 → the gateway (it owns auth + routing). Default 1 MiB
 # body cap (= the gateway's default). Long read/send timeouts keep /v1/ws/* sockets alive;
-# ingress-nginx negotiates the Upgrade/Connection headers automatically.
+# ingress-nginx negotiates the Upgrade/Connection headers automatically. Coarse edge limit 30 r/s
+# (mirrors nginx `api_limit`).
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -46,6 +74,7 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: "1m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/limit-rps: "30"
 spec:
   ingressClassName: nginx
   rules:
@@ -53,6 +82,55 @@ spec:
       http:
         paths:
           - path: /v1
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000
+---
+# Auth — brute-force sensitive (login/refresh/register/data-export). Tighter edge limit 5 r/s
+# (mirrors nginx `auth_limit`). Longer prefix than /v1, so it wins for /v1/auth/*.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pguard-auth
+  labels:
+    app.kubernetes.io/part-of: pguard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/limit-rps: "5"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pguard.local
+      http:
+        paths:
+          - path: /v1/auth
+            pathType: Prefix
+            backend:
+              service:
+                name: api-gateway
+                port:
+                  number: 3000
+---
+# OTP — SMS-cost sensitive, tightest. Edge limit 10 r/min (mirrors nginx `otp_limit` 10r/m).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pguard-otp
+  labels:
+    app.kubernetes.io/part-of: pguard
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "1m"
+    nginx.ingress.kubernetes.io/limit-rpm: "10"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: pguard.local
+      http:
+        paths:
+          - path: /v1/otp
             pathType: Prefix
             backend:
               service:
@@ -74,6 +152,7 @@ metadata:
     nginx.ingress.kubernetes.io/use-regex: "true"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
     nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/limit-rps: "30"
 spec:
   ingressClassName: nginx
   rules:

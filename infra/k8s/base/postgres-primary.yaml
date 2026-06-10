@@ -69,6 +69,12 @@ spec:
             # The standby streams as this role; the baked initdb script creates it.
             - name: REPLICATION_PASSWORD
               valueFrom: { secretKeyRef: { name: pguard-db-secrets, key: REPLICATION_PASSWORD } }
+            # Subdir (not the volume root) is the standard k8s pattern — a cloud PVC's lost+found
+            # at the mount root makes initdb refuse to run. The baked /docker-entrypoint-initdb.d
+            # replication bootstrap still fires on a FRESH PGDATA wherever it points (the postgres
+            # entrypoint runs init scripts after initdb regardless of dir). Replica uses the same
+            # subdir, so both sides are consistent. (Compose used the default root dir; the kind
+            # smoke confirmed first-init works under the subdir.)
             - name: PGDATA
               value: /var/lib/postgresql/data/pgdata
           ports:

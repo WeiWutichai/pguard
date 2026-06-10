@@ -38,6 +38,8 @@ spec:
         app.kubernetes.io/part-of: pguard
         app.kubernetes.io/component: web
     spec:
+      securityContext:
+        runAsNonRoot: true # web-admin.Dockerfile runtime stage runs as USER node (non-root)
       containers:
         - name: web-admin
           image: pguard/web-admin:0.1.0

@@ -25,6 +25,9 @@ data:
       "CREATE TABLE IF NOT EXISTS public._k8s_migrations (file text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now());"
     applied=0
     skipped=0
+    # Ledger is public._k8s_migrations — DELIBERATELY separate from compose migrate.sh's
+    # public._perf_migrations. Don't run both paths against ONE database (the two ledgers would
+    # diverge and a file could be applied twice); pick one migrator per DB.
     # Flat keys sort service-then-numeric (e.g. booking__0001_…), matching migrate.sh order.
     for sql in $(ls /migrations/*.sql | sort); do
       key=$(basename "$sql")
