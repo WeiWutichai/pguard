@@ -304,13 +304,15 @@ Add a cron entry (e.g. `crontab -e`) that renews and reloads nginx:
 
 ## Known limitations (as of `main`)
 
-- **Gateway routing gap.** nginx hands all `/v1/*` to the api-gateway, which currently routes
-  `auth · otp · profile · bookings · available-guards · payments · notifications · tokens · admin/guard-profiles`
-  plus the booking-status WebSocket (`/v1/ws/bookings/{id}`). The gateway does **not** yet route
-  `chat · presence · calling · rating` (or their WS: `/v1/ws/chat`, `/v1/ws/track`, `/v1/ws/call`),
-  so those mobile/web features return 404 at the edge until the gateway gains those routes (in
-  progress — e.g. calling/TURN). When it does, staging picks them up automatically — **no change to
-  `nginx.staging.conf` needed.**
+- **Gateway routing gap — closed.** The api-gateway now routes every service: REST
+  `auth · otp · profile · bookings · available-guards · payments · calls · notifications · tokens ·
+  admin/guard-profiles · conversations/attachments (chat) · locations + guards/{id}/location·history
+  (presence) · guards/{id}/ratings + assignments/{id}/review + admin/reviews (rating)`, the
+  booking-status WebSocket (`/v1/ws/bookings/{id}`), and the generic WS proxies `/v1/ws/chat`,
+  `/v1/ws/track`, `/v1/ws/call`. Staging picks these up with the next gateway image — **no change to
+  `nginx.staging.conf` needed.** (Follow-up: the web-admin e2e env-gated rewrites
+  `PGUARD_RATING_URL`/`PGUARD_PRESENCE_URL` in `apps/web-admin/next.config.ts` can be retired once
+  the e2e suite is re-verified against the gateway.)
 - **1 MiB request-body cap on `/v1`.** The gateway buffers request bodies with a hard 1 MiB cap
   (clean JSON `413`). Document/image uploads larger than that will be rejected until the gateway
   supports streaming. nginx allows 2 MiB so the gateway returns the clean error rather than nginx's

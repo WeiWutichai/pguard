@@ -54,6 +54,15 @@ impl UpstreamTable {
             Upstream::Calling,
             env_url("CALLING_URL", "http://localhost:3008"),
         );
+        urls.insert(
+            Upstream::Rating,
+            env_url("RATING_URL", "http://localhost:3007"),
+        );
+        urls.insert(
+            Upstream::Presence,
+            env_url("PRESENCE_URL", "http://localhost:3009"),
+        );
+        urls.insert(Upstream::Chat, env_url("CHAT_URL", "http://localhost:3010"));
         Self { urls }
     }
 
@@ -131,6 +140,9 @@ mod tests {
             Upstream::Payment,
             Upstream::Notification,
             Upstream::Calling,
+            Upstream::Rating,
+            Upstream::Presence,
+            Upstream::Chat,
         ] {
             let url = t.base_url(up).expect("every upstream resolves");
             assert!(url.starts_with("http://"), "{up:?} -> {url}");

@@ -25,7 +25,7 @@ shared-events = { workspace = true }         # booking topic constants for the s
 async-nats = { workspace = true }            # subscribe to pguard.events.booking.* (status fan-out)
 futures = { workspace = true }               # WS stream split + NATS subscriber stream
 observability = { workspace = true }
+tokio-tungstenite = "0.24"                   # WS client side of the generic edge WS proxy (+ the gated WS e2e tests)
 
 [dev-dependencies]
 tower = { workspace = true }
-tokio-tungstenite = "0.24"                   # real WS client for the gated status-WS e2e test

@@ -37,10 +37,14 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Public guard ratings — visible reviews + aggregate summary
-         * @description Public discovery (no auth). Returns the guard's VISIBLE reviews (newest first) plus the
+         * Guard ratings — visible reviews + aggregate summary
+         * @description Discovery ratings for one guard: the guard's VISIBLE reviews (newest first) plus the
          *     aggregate `{ average, count }` of visible overall ratings. Admin-hidden reviews are
          *     excluded from both the list and the summary.
+         *
+         *     Requires a valid access token — the api-gateway enforces edge auth on every
+         *     `/guards/…` route (all discovery surfaces are token-gated, like `/available-guards`).
+         *     "Public" here means visible-to-customers (the `is_visible` filter), not unauthenticated.
          */
         get: operations["getGuardRatings"];
         put?: never;
@@ -317,7 +321,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The guard's public ratings */
+            /** @description The guard's visible ratings */
             200: {
                 headers: {
                     [name: string]: unknown;
