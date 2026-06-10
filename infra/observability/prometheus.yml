@@ -1,18 +1,30 @@
-# pguard v2 — Prometheus config (C5.1: per-service /metrics scrape)
+# pguard v2 — Prometheus config (C5.1 scrape + Round 3-B alert rules)
 #
-# Scrapes the otel-collector's own telemetry AND each Rust service's `/metrics`
-# endpoint (exposed by the `observability` package: http_requests_total,
-# http_request_duration_seconds, nats_consumer_pending). The Grafana "pguard ·
-# service overview" dashboard reads these. See CLAUDE.md → Observability.
+# Scrapes each service's `/metrics` (exposed by the `observability` package:
+# http_requests_total{method,route,status}, http_request_duration_seconds{...,le},
+# nats_consumer_pending{durable}, and nats_rejected_events_total once a rejection occurs).
 #
-# Rust services run on the HOST in dev (`cargo run`), so from inside the compose
-# network they live at host.docker.internal:<port>. The `prometheus` compose
-# service maps host.docker.internal → host-gateway so this resolves on Linux too.
+# ── TOPOLOGY (read this before changing targets) ───────────────────────────────
+# Targets below are the COMPOSE-NETWORK service DNS names — i.e. the LOCAL PROD STACK
+# (`docker-compose.prod.yml`, every service a container on `pguard-prod`). This is the stack the
+# perf/load/chaos work and the provisioned dashboards+alerts run against, so `up{job=…}` is a
+# truthful per-service liveness signal (the "service down" alert depends on it).
+#
+# The DEV compose runs the Rust services on the HOST (`cargo run`), where they live at
+# host.docker.internal:<port> instead. To scrape that topology, swap each target to
+# `host.docker.internal:<port>` (commented beside each job). Don't keep BOTH — a permanently-dead
+# instance pollutes `up` and would false-fire the ServiceDown alert.
+#
 # The `job` label = service name; dashboards aggregate by it.
 
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
+
+# Alert + recording rules (Round 3-B). Thresholds are derived from the measured
+# baseline + ceiling (tests/load/RESULTS.md) — see each rule's comment for the source.
+rule_files:
+  - /etc/prometheus/rules/*.yml
 
 scrape_configs:
   # The collector exposes its own internal telemetry here.
@@ -25,28 +37,28 @@ scrape_configs:
     static_configs:
       - targets: ["localhost:9090"]
 
-  # ── Per-service /metrics jobs (host ports per service main.rs) ──────────────
-  # api-gateway serves /metrics on a SEPARATE admin port (METRICS_PORT 9100), NOT its
-  # public edge port 3000 — so the registry isn't scrapable from the internet.
+  # ── Per-service /metrics jobs (PROD-stack container DNS; dev-on-host alt in comments) ──
+  # api-gateway serves /metrics on a SEPARATE admin port (METRICS_PORT 9100), NOT its public
+  # edge port 3000 — so the registry isn't scrapable from the internet.
   - job_name: api-gateway
-    static_configs: [{ targets: ["host.docker.internal:9100"] }]
+    static_configs: [{ targets: ["api-gateway:9100"] }]   # dev-on-host: host.docker.internal:9100
   - job_name: identity
-    static_configs: [{ targets: ["host.docker.internal:3001"] }]
+    static_configs: [{ targets: ["identity:3001"] }]       # dev-on-host: host.docker.internal:3001
   - job_name: profile
-    static_configs: [{ targets: ["host.docker.internal:3002"] }]
+    static_configs: [{ targets: ["profile:3002"] }]        # dev-on-host: host.docker.internal:3002
   - job_name: otp
-    static_configs: [{ targets: ["host.docker.internal:3003"] }]
+    static_configs: [{ targets: ["otp:3003"] }]            # dev-on-host: host.docker.internal:3003
   - job_name: notification
-    static_configs: [{ targets: ["host.docker.internal:3004"] }]
+    static_configs: [{ targets: ["notification:3004"] }]   # dev-on-host: host.docker.internal:3004
   - job_name: booking
-    static_configs: [{ targets: ["host.docker.internal:3005"] }]
+    static_configs: [{ targets: ["booking:3005"] }]        # dev-on-host: host.docker.internal:3005
   - job_name: payment
-    static_configs: [{ targets: ["host.docker.internal:3006"] }]
+    static_configs: [{ targets: ["payment:3006"] }]        # dev-on-host: host.docker.internal:3006
   - job_name: rating
-    static_configs: [{ targets: ["host.docker.internal:3007"] }]
+    static_configs: [{ targets: ["rating:3007"] }]         # dev-on-host: host.docker.internal:3007
   - job_name: calling
-    static_configs: [{ targets: ["host.docker.internal:3008"] }]
+    static_configs: [{ targets: ["calling:3008"] }]        # dev-on-host: host.docker.internal:3008
   - job_name: presence
-    static_configs: [{ targets: ["host.docker.internal:3009"] }]
+    static_configs: [{ targets: ["presence:3009"] }]       # dev-on-host: host.docker.internal:3009
   - job_name: chat
-    static_configs: [{ targets: ["host.docker.internal:3010"] }]
+    static_configs: [{ targets: ["chat:3010"] }]           # dev-on-host: host.docker.internal:3010

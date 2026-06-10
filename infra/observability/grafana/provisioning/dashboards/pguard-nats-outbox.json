@@ -1,0 +1,80 @@
+{
+  "uid": "pguard-nats-outbox",
+  "title": "pguard · NATS & outbox health",
+  "tags": ["pguard", "round3b", "nats"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "annotations": { "list": [] },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "JetStream consumer backlog (pending) by durable",
+      "description": "nats_consumer_pending — undelivered messages per durable consumer. Baseline 0. The NATS-outage chaos (CHAOS.md case 1) spikes this, then it drains within seconds on recovery (at-least-once). Sustained >50 for 5m fires NatsConsumerBacklogWarning.",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short", "min": 0, "custom": { "drawStyle": "line", "fillOpacity": 10 },
+          "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 500 } ] }
+        },
+        "overrides": []
+      },
+      "options": { "legend": { "displayMode": "table", "placement": "right", "calcs": ["lastNotNull", "max"] }, "tooltip": { "mode": "multi", "sort": "desc" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max by (durable) (nats_consumer_pending)", "legendFormat": "{{durable}}" } ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Max consumer backlog (now)",
+      "description": "Worst current pending across all durables. Green <50, red ≥500 (alert thresholds).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "yellow", "value": 50 }, { "color": "red", "value": 500 } ] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "area" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "max(nats_consumer_pending)" } ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Service liveness (up)",
+      "description": "up{job=...} per scraped service. 1 = scrape OK, 0 = down (ServiceDown alert at 0 for 2m). Truthful because prometheus scrapes the prod-stack container DNS (one instance/service).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 0 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "mappings": [ { "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "up", "color": "green" } } } ], "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 1 } ] } },
+        "overrides": []
+      },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"], "fields": "" }, "colorMode": "background", "graphMode": "none", "textMode": "value_and_name" },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "up{job=~\"api-gateway|identity|profile|otp|notification|booking|payment|rating|calling|presence|chat\"}", "legendFormat": "{{job}}", "instant": true } ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Rejected (unsigned/forged) events — rate",
+      "description": "rate(nats_rejected_events_total) — events that FAILED HMAC verification and were dropped fail-closed. Normally absent/zero; ANY increase fires NatsRejectedEvents (critical). The series only appears once a rejection has occurred (lazy counter registration).",
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "fieldConfig": { "defaults": { "unit": "short", "min": 0, "custom": { "drawStyle": "bars", "fillOpacity": 40 } }, "overrides": [] },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [ { "refId": "A", "datasource": { "type": "prometheus", "uid": "prometheus" }, "expr": "sum by (job, durable) (rate(nats_rejected_events_total[5m]))", "legendFormat": "{{job}} / {{durable}}" } ]
+    },
+    {
+      "id": 5,
+      "type": "text",
+      "title": "About this dashboard",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "options": {
+        "mode": "markdown",
+        "content": "**NATS & outbox health.**\n\nThe v2 cross-service contract is JetStream events via a transactional outbox (booking/etc. write the row + the event in one DB tx; a relay publishes async).\n\n- **Backlog (pending)** rising + sustained → a consumer is stuck (downstream delays). The NATS-outage chaos proves at-least-once: backlog drains within seconds of recovery.\n- **Rejected events** → HMAC verify failed (fail-closed). Any non-zero is a security signal.\n\n**Gap:** there is no per-topic publish-rate metric and no outbox-table-depth metric exported to Prometheus today; the outbox drain is verified via SQL in the chaos suite (`booking.outbox WHERE published_at IS NULL`). Exporting an `outbox_pending` gauge from the relay is a tracked follow-up."
+      }
+    }
+  ]
+}
