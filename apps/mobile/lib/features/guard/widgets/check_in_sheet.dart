@@ -77,7 +77,7 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
     final ok = await ref
         .read(activeJobControllerProvider(widget.bookingId).notifier)
         .submitCheckIn(
-          hourNumber: widget.hourNumber,
+          slot: widget.hourNumber, // widget.hourNumber is the 0-based schedule slot (dueIndex)
           photo: photo,
           gps: _gps,
           note: _note.text.trim().isEmpty ? null : _note.text.trim(),
