@@ -6,6 +6,7 @@ import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
 import 'media/chat_attachment_service.dart';
+import 'media/chat_media_picker.dart';
 import 'media/document_picker.dart';
 import 'media/photo_capture.dart';
 import 'network/api_client.dart';
@@ -81,11 +82,20 @@ typedef ChatFeedBuilder = ChatFeed Function(
 ChatFeedBuilder chatFeedBuilder(ChatFeedBuilderRef ref) =>
     (tokenProvider) => ChatSocket(tokenProvider: tokenProvider);
 
-/// Picks + uploads chat attachments. Default is unavailable (no picker plugin wired — see
-/// [ChatAttachmentService]); tests override with a fake that returns a canned attachment.
+/// Picks chat media via the REAL `image_picker` plugin (the same plugin the guard-document
+/// picker already uses — no new package). Tests override with a fake (no platform channels).
+@Riverpod(keepAlive: true)
+ChatMediaPicker chatMediaPicker(ChatMediaPickerRef ref) =>
+    ImagePickerChatMediaPicker();
+
+/// Picks + uploads chat attachments (multipart `POST /v1/attachments` through the
+/// authenticated Dio client). Tests override with a fake that returns a canned attachment.
 @Riverpod(keepAlive: true)
 ChatAttachmentService chatAttachmentService(ChatAttachmentServiceRef ref) =>
-    const UnavailableChatAttachmentService();
+    ApiChatAttachmentService(
+      api: ref.watch(pguardApiProvider),
+      picker: ref.watch(chatMediaPickerProvider),
+    );
 
 /// Builds a fresh WebRTC engine per call. Production returns a real [WebRtcCallEngine]
 /// (flutter_webrtc); tests override this with a factory returning a fake engine (no plugin).

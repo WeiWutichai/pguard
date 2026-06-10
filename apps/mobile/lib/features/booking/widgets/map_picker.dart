@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/models/geo.dart';
 import '../../../core/providers.dart';
+import 'map_canvas.dart';
 
 /// An inline location picker: a draggable pin over a styled map canvas plus a "use current
 /// location" action. Tapping or dragging moves the pin, which maps to a real lat/lng (a local
@@ -96,8 +97,8 @@ class _MapPickerState extends ConsumerState<MapPicker> {
                   onPanEnd: (_) => _resolve(),
                   child: Stack(
                     children: [
-                      Positioned.fill(
-                        child: CustomPaint(painter: _MapBackdropPainter()),
+                      const Positioned.fill(
+                        child: CustomPaint(painter: MapBackdropPainter()),
                       ),
                       Positioned(
                         left: frac.dx * size.width - 18,
@@ -172,37 +173,4 @@ class _Pin extends StatelessWidget {
       ],
     );
   }
-}
-
-/// A lightweight stylised "map" backdrop (grid + faux roads) in the brand palette — stands in
-/// for tiled imagery without any network dependency.
-class _MapBackdropPainter extends CustomPainter {
-  @override
-  void paint(Canvas canvas, Size size) {
-    final bg = Paint()..color = PgTokens.colorGreen50;
-    canvas.drawRect(Offset.zero & size, bg);
-
-    final grid = Paint()
-      ..color = PgTokens.colorGreen100
-      ..strokeWidth = 1;
-    const step = 28.0;
-    for (var x = 0.0; x < size.width; x += step) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), grid);
-    }
-    for (var y = 0.0; y < size.height; y += step) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), grid);
-    }
-
-    final road = Paint()
-      ..color = PgTokens.colorGreen200
-      ..strokeWidth = 6
-      ..strokeCap = StrokeCap.round;
-    canvas.drawLine(Offset(0, size.height * 0.7),
-        Offset(size.width, size.height * 0.35), road);
-    canvas.drawLine(Offset(size.width * 0.3, 0),
-        Offset(size.width * 0.55, size.height), road);
-  }
-
-  @override
-  bool shouldRepaint(covariant _MapBackdropPainter oldDelegate) => false;
 }

@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -76,6 +78,13 @@ class _LiveBody extends StatelessWidget {
               children: [
                 _GuardCard(booking: booking),
                 const SizedBox(height: PgTokens.space4),
+                // Live-map entry: visible once a guard is assigned and the job is still
+                // running (the map screen itself handles every state safely on deep link).
+                if (booking.guardId != null &&
+                    !BookingLifecycle.isTerminal(booking.status)) ...[
+                  _TrackGuardTile(bookingId: booking.id),
+                  const SizedBox(height: PgTokens.space4),
+                ],
                 BookingStatusStepper(status: booking.status),
                 const SizedBox(height: PgTokens.space4),
                 _Actions(booking: booking),
@@ -185,6 +194,50 @@ class _Actions extends ConsumerWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Opens the customer live-map (`/booking/{id}/map`) — guard marker + status, pushed by the
+/// booking-status WebSocket (no polling).
+class _TrackGuardTile extends ConsumerWidget {
+  const _TrackGuardTile({required this.bookingId});
+
+  final String bookingId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Material(
+      color: PgTokens.colorGreen50,
+      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      child: InkWell(
+        onTap: () => context.push('/booking/$bookingId/map'),
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(
+              horizontal: PgTokens.space3, vertical: PgTokens.space3),
+          child: Row(
+            children: [
+              const Icon(Icons.map_outlined,
+                  size: 20, color: PgTokens.colorGreen800),
+              const SizedBox(width: PgTokens.space2),
+              Expanded(
+                child: Text(
+                  isThai ? 'ดูตำแหน่งเจ้าหน้าที่' : 'Track guard',
+                  style: const TextStyle(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorGreen800,
+                  ),
+                ),
+              ),
+              Icon(Icons.chevron_right,
+                  size: 18, color: PgTokens.colorGreen800.withValues(alpha: 0.7)),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

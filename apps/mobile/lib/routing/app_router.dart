@@ -17,6 +17,7 @@ import '../features/auth/registration/registration_pending_screen.dart';
 import '../features/auth/registration/role_selection_screen.dart';
 import '../features/booking/booking_form_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
+import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
 import '../features/booking/payment_screen.dart';
 import '../features/booking/payment_success_screen.dart';
@@ -153,6 +154,12 @@ GoRouter appRouter(AppRouterRef ref) {
         path: '/booking/:id/live',
         builder: (context, state) =>
             LiveStatusScreen(bookingId: state.pathParameters['id']!),
+      ),
+      // Customer live-map: where is my assigned guard (entered from the live-status screen).
+      GoRoute(
+        path: '/booking/:id/map',
+        builder: (context, state) =>
+            GuardMapScreen(bookingId: state.pathParameters['id']!),
       ),
     ],
   );
