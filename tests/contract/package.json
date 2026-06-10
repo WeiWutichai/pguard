@@ -1,0 +1,22 @@
+{
+  "name": "@pguard/contract-tests",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "pguard v2 contract tests — provider verification of services against contracts/openapi/*.yaml, event-payload verification against contracts/asyncapi/events.yaml, and a stale-generated-client guard. Runs against the REAL e2e stack.",
+  "scripts": {
+    "test": "vitest run",
+    "test:http": "vitest run http",
+    "test:events": "vitest run events",
+    "test:watch": "vitest",
+    "check:stale-clients": "./check-generated-clients.sh",
+    "stack:up": "./stack-up.sh"
+  },
+  "devDependencies": {
+    "@apidevtools/json-schema-ref-parser": "^11.7.2",
+    "@types/node": "^20.19.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "vitest": "^2.1.8"
+  }
+}

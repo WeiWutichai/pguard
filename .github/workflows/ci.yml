@@ -321,3 +321,62 @@ jobs:
           name: playwright-report
           path: tests/e2e/playwright-report
           retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Contract tests — provider verification of the services against contracts/openapi/*.yaml + event
+  # payload verification against contracts/asyncapi/events.yaml, plus a stale-generated-client guard.
+  # Three steps: (1) the stale-client check needs only the web-admin toolchain (no stack); (2) bring
+  # the REAL stack up (reuses the e2e harness + the extra chat service); (3) run the suite. Builds
+  # the service images → heavyweight, bounded by timeout-minutes (mirrors e2e-web).
+  # ---------------------------------------------------------------------------
+  contract-tests:
+    name: Contract tests (provider + event + stale-client)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          cache-dependency-path: |
+            apps/web-admin/pnpm-lock.yaml
+            tests/contract/pnpm-lock.yaml
+
+      # (1) Consumer drift: the committed web-admin TS client must still match the OpenAPI specs.
+      # Fast, no stack — fail early if a contract changed without `pnpm gen:api`.
+      - name: Stale generated-client check
+        run: tests/contract/check-generated-clients.sh
+
+      # (2) Bring up the real stack: e2e-stack-up.sh (build + migrate + seed-v2) + the chat service
+      # (not in the happy-path e2e SERVICES list, but the chat contract tests need it).
+      - name: Bring up the contract stack (build + migrate + seed + chat)
+        run: tests/contract/stack-up.sh
+
+      # (3) Install the suite's deps and run it against the live stack.
+      - name: Install contract-test deps
+        working-directory: tests/contract
+        run: pnpm install --frozen-lockfile
+
+      - name: Run contract suite
+        working-directory: tests/contract
+        env:
+          CI: "true"
+          PGUARD_API_BASE_URL: http://localhost:3000
+          PGUARD_RATING_URL: http://localhost:3007
+        run: pnpm test
+
+      - name: Upload contract test report on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-results
+          path: tests/contract/contract-results.xml
+          retention-days: 7
