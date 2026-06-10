@@ -252,6 +252,10 @@ jobs:
           INET_SMS_PASSWORD: ci
           INET_SMS_SENDER: ci
           MEDIASOUP_ANNOUNCED_IP: 127.0.0.1
+          # TURN/coturn (added by feat/r1-calling-turn; ${VAR:?} fail-fast in compose)
+          TURN_URLS: turn:127.0.0.1:3478?transport=udp
+          TURN_SECRET: ci
+          TURN_EXTERNAL_IP: 127.0.0.1
         run: docker compose -f infra/docker/docker-compose.prod.yml config --quiet
 
   # ---------------------------------------------------------------------------
