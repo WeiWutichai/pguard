@@ -16,12 +16,18 @@ use uuid::Uuid;
 use shared::error::AppError;
 use shared_events::EventEnvelope;
 
+use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
-use crate::domain::{event_for_status, CompletionInfo, EventMapping};
-use crate::models::{BookingResponse, CreateBookingRequest, InternalBooking};
+use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
+use crate::models::{
+    BookingResponse, CreateBookingRequest, InternalBooking, NewProgressReport, ProgressReportRow,
+};
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
-     scheduled_at, hours, base_fee, guard_count, tip, created_at, updated_at";
+     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, created_at, updated_at";
+
+const PROGRESS_REPORT_COLUMNS: &str =
+    "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
 
 // ----- Outbox row (for the relay) -----
 
@@ -98,8 +104,8 @@ pub async fn create_booking(
 ) -> Result<BookingResponse, AppError> {
     let sql = format!(
         r#"
-        INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip)
-        VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6)
+        INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng)
+        VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8)
         RETURNING {BOOKING_COLUMNS}
         "#
     );
@@ -110,52 +116,69 @@ pub async fn create_booking(
         .bind(req.hours)
         .bind(guard_count)
         .bind(tip)
+        .bind(req.lat)
+        .bind(req.lng)
         .fetch_one(db)
         .await
         .map_err(AppError::from)
 }
 
-/// A booking's locked current state for a transition decision.
-struct LockedBooking {
-    status: BookingStatus,
-    customer_id: Uuid,
-    guard_id: Option<Uuid>,
-    hours: i32,
+/// A booking's authoritative decision inputs: status + participant ids + proration clock.
+/// Read row-locked inside transactions ([`locked_current`]) and plain for handler
+/// pre-flight checks ([`get_booking_core`]).
+pub struct BookingCore {
+    pub status: BookingStatus,
+    pub customer_id: Uuid,
+    pub guard_id: Option<Uuid>,
+    pub hours: i32,
     /// When the guard STARTED work (set by `start_job`); the proration basis. `None` until then.
-    work_started_at: Option<DateTime<Utc>>,
+    pub work_started_at: Option<DateTime<Utc>>,
 }
 
-/// Raw row shape returned by [`locked_current`]'s query: status text, customer, guard,
-/// booked hours, work-start clock. Aliased to keep the query type readable (clippy
-/// `type_complexity`).
-type LockedRow = (String, Uuid, Option<Uuid>, i32, Option<DateTime<Utc>>);
+/// Raw row shape returned by the core queries: status text, customer, guard, booked hours,
+/// work-start clock. Aliased to keep the query type readable (clippy `type_complexity`).
+type CoreRow = (String, Uuid, Option<Uuid>, i32, Option<DateTime<Utc>>);
 
-/// Read a booking's current status + ids + proration inputs inside a transaction
-/// (row-locked) so a transition validates against state that cannot change underneath it.
-async fn locked_current(
-    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    id: Uuid,
-) -> Result<LockedBooking, AppError> {
-    let row: Option<LockedRow> = sqlx::query_as(
-        "SELECT status::text, customer_id, guard_id, hours, work_started_at \
-         FROM booking.bookings WHERE id = $1 FOR UPDATE",
-    )
-    .bind(id)
-    .fetch_optional(&mut **tx)
-    .await?;
+const CORE_QUERY: &str = "SELECT status::text, customer_id, guard_id, hours, work_started_at \
+     FROM booking.bookings WHERE id = $1";
 
+fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
     let (status_str, customer_id, guard_id, hours, work_started_at) =
         row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
         .map_err(AppError::Internal)?;
-    Ok(LockedBooking {
+    Ok(BookingCore {
         status,
         customer_id,
         guard_id,
         hours,
         work_started_at,
     })
+}
+
+/// Read a booking's current status + ids + proration inputs inside a transaction
+/// (row-locked) so a decision validates against state that cannot change underneath it.
+async fn locked_current(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<BookingCore, AppError> {
+    let row: Option<CoreRow> = sqlx::query_as(&format!("{CORE_QUERY} FOR UPDATE"))
+        .bind(id)
+        .fetch_optional(&mut **tx)
+        .await?;
+    core_from_row(row)
+}
+
+/// Plain (un-locked) read of the same decision inputs — handler pre-flight only. Never
+/// authoritative: any write path MUST re-validate via [`locked_current`] inside its own
+/// transaction (the pre-flight just fails fast before expensive work like an S3 upload).
+pub async fn get_booking_core(db: &sqlx::PgPool, id: Uuid) -> Result<BookingCore, AppError> {
+    let row: Option<CoreRow> = sqlx::query_as(CORE_QUERY)
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    core_from_row(row)
 }
 
 /// Atomically transition a booking to `new_status` and, when the change maps to an event,
@@ -178,7 +201,7 @@ pub async fn transition(
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
 
-    let LockedBooking {
+    let BookingCore {
         status: current,
         customer_id,
         guard_id: existing_guard,
@@ -316,7 +339,7 @@ pub async fn start_job(
     is_admin: bool,
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
-    let LockedBooking {
+    let BookingCore {
         status,
         guard_id: existing_guard,
         work_started_at,
@@ -351,6 +374,199 @@ pub async fn start_job(
         .await?;
     tx.commit().await?;
     Ok(updated)
+}
+
+// ----- Progress reports (hourly check-in) -----
+
+/// Atomically persist an hourly check-in AND enqueue its
+/// `pguard.events.booking.progress_reported` event — both in ONE transaction
+/// (transactional outbox), with every gate re-validated inside the row lock (no TOCTOU;
+/// the handler's pre-flight is advisory only).
+///
+/// Authz: STRICTLY the assigned guard — `actor == guard_id`, NO admin bypass (a check-in
+/// is the guard's first-person attestation of presence; nobody files it on their behalf).
+/// A non-participant gets the same generic 403 as everywhere else (no status leak).
+/// Legality: the pure [`crate::domain::progress::validate_check_in`] (status `arrived` +
+/// started + hour window). Duplicate hour: the `uq_progress_reports_booking_hour` unique
+/// index fires inside this tx → mapped to 409 `Conflict`, which also makes a guard's
+/// network-retry idempotent-safe under concurrency (the booking row lock serializes
+/// same-booking check-ins; the survivor of a race gets the 409).
+#[tracing::instrument(skip(db, report), fields(booking_id = %booking_id, hour = report.hour_number))]
+pub async fn create_progress_report(
+    db: &sqlx::PgPool,
+    booking_id: Uuid,
+    actor: Uuid,
+    report: &NewProgressReport,
+    correlation_id: Uuid,
+) -> Result<ProgressReportRow, AppError> {
+    let mut tx = db.begin().await?;
+    let core = locked_current(&mut tx, booking_id).await?;
+
+    // PARTICIPATION GATE first (generic 403 — a stranger must not learn job state), then the
+    // assignment gate (a participant customer may know only the assigned guard checks in).
+    let is_participant = core.customer_id == actor || core.guard_id == Some(actor);
+    if !is_participant {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "Not a participant in this booking".to_string(),
+        ));
+    }
+    if core.guard_id != Some(actor) {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "Only the assigned guard can check in".to_string(),
+        ));
+    }
+
+    if let Err(e) = crate::domain::progress::validate_check_in(
+        core.status,
+        core.work_started_at,
+        core.hours,
+        report.hour_number,
+        Utc::now(),
+    ) {
+        tx.rollback().await?;
+        return Err(e);
+    }
+
+    // 1) the business row. The unique (booking_id, hour_number) index turns a duplicate
+    //    hour into 409 here, inside the same tx — so a failed insert enqueues NO event.
+    let sql = format!(
+        r#"
+        INSERT INTO booking.progress_reports
+            (booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        RETURNING {PROGRESS_REPORT_COLUMNS}
+        "#
+    );
+    let row = sqlx::query_as::<_, ProgressReportRow>(&sql)
+        .bind(booking_id)
+        .bind(actor)
+        .bind(report.hour_number)
+        .bind(&report.photo_key)
+        .bind(report.lat)
+        .bind(report.lng)
+        .bind(report.accuracy_m)
+        .bind(&report.note)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(d) if d.code().as_deref() == Some("23505") => AppError::Conflict(
+                format!("A check-in for hour {} already exists", report.hour_number),
+            ),
+            _ => AppError::from(e),
+        })?;
+
+    // 2) the event — same transaction (transactional outbox).
+    let mapping =
+        event_for_progress_report(booking_id, core.customer_id, actor, row.id, row.hour_number);
+    let envelope = EventEnvelope::new(mapping.topic, correlation_id, mapping.payload);
+    let envelope_json = serde_json::to_value(&envelope)
+        .map_err(|e| AppError::Internal(format!("serialize event envelope: {e}")))?;
+    enqueue_outbox(&mut tx, mapping.topic, &envelope_json).await?;
+
+    tx.commit().await?;
+    Ok(row)
+}
+
+/// A booking's check-in reports in hour order (paginated). The IDOR gate (customer-owner /
+/// assigned guard / admin) lives in the handler against the booking row — by the time this
+/// runs the caller is a verified participant.
+pub async fn list_progress_reports(
+    db: &sqlx::PgPool,
+    booking_id: Uuid,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<ProgressReportRow>, AppError> {
+    let sql = format!(
+        r#"
+        SELECT {PROGRESS_REPORT_COLUMNS}
+        FROM booking.progress_reports
+        WHERE booking_id = $1
+        ORDER BY hour_number
+        LIMIT $2 OFFSET $3
+        "#
+    );
+    let rows = sqlx::query_as::<_, ProgressReportRow>(&sql)
+        .bind(booking_id)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+// ----- Open-job discovery -----
+
+/// Open jobs a guard can claim: `status = 'requested' AND guard_id IS NULL`. A SEPARATE
+/// query from [`list_bookings`] — the participant list's semantics (`customer_id = $1 OR
+/// guard_id = $1`) are untouched (PHASE spec §B3).
+///
+/// With a [`GeoFilter`]: only bookings that HAVE coordinates, within `radius_km`
+/// great-circle distance (pure-SQL haversine — plain `postgres:17`, no PostGIS/extension
+/// precedent), nearest first. Without: newest first (bookings without coordinates included).
+/// The haversine's `asin` input is clamped with `least(1, …)` — float rounding can push the
+/// formula marginally past 1.0, and Postgres `asin(>1)` errors.
+pub async fn list_open_bookings(
+    db: &sqlx::PgPool,
+    geo: Option<GeoFilter>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<BookingResponse>, AppError> {
+    let rows = match geo {
+        None => {
+            let sql = format!(
+                r#"
+                SELECT {BOOKING_COLUMNS}
+                FROM booking.bookings
+                WHERE status = 'requested'::booking.booking_status AND guard_id IS NULL
+                ORDER BY created_at DESC
+                LIMIT $1 OFFSET $2
+                "#
+            );
+            sqlx::query_as::<_, BookingResponse>(&sql)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(db)
+                .await?
+        }
+        Some(GeoFilter {
+            lat,
+            lng,
+            radius_km,
+        }) => {
+            let sql = format!(
+                r#"
+                SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
+                       base_fee, guard_count, tip, lat, lng, created_at, updated_at
+                FROM (
+                    SELECT {BOOKING_COLUMNS},
+                           2 * 6371 * asin(least(1, sqrt(
+                               power(sin(radians(lat - $1) / 2), 2)
+                               + cos(radians($1)) * cos(radians(lat))
+                                 * power(sin(radians(lng - $2) / 2), 2)
+                           ))) AS distance_km
+                    FROM booking.bookings
+                    WHERE status = 'requested'::booking.booking_status
+                      AND guard_id IS NULL
+                      AND lat IS NOT NULL AND lng IS NOT NULL
+                ) AS open_jobs
+                WHERE distance_km <= $3
+                ORDER BY distance_km, created_at DESC
+                LIMIT $4 OFFSET $5
+                "#
+            );
+            sqlx::query_as::<_, BookingResponse>(&sql)
+                .bind(lat)
+                .bind(lng)
+                .bind(radius_km)
+                .bind(limit)
+                .bind(offset)
+                .fetch_all(db)
+                .await?
+        }
+    };
+    Ok(rows)
 }
 
 /// Insert one outbox row inside the caller's transaction.
@@ -565,6 +781,8 @@ mod db_tests {
                 hours: 4,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -658,6 +876,8 @@ mod db_tests {
                 hours: 2,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -746,6 +966,8 @@ mod db_tests {
                 hours: 4,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -894,6 +1116,8 @@ mod db_tests {
                 hours: 2,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -995,6 +1219,8 @@ mod db_tests {
                 hours: 3,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -1135,6 +1361,8 @@ mod db_tests {
                 hours: 2,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,
@@ -1182,6 +1410,371 @@ mod db_tests {
             .await;
     }
 
+    /// Build a CreateBookingRequest for tests (optionally with site coordinates).
+    fn booking_req(address: &str, hours: i32, coords: Option<(f64, f64)>) -> CreateBookingRequest {
+        CreateBookingRequest {
+            address: address.to_string(),
+            scheduled_at: Utc::now(),
+            hours,
+            guard_count: None,
+            tip: None,
+            lat: coords.map(|c| c.0),
+            lng: coords.map(|c| c.1),
+        }
+    }
+
+    /// Drive a fresh booking to `arrived` + started (the check-in-able state). Returns
+    /// (booking_id, customer_id, guard_id).
+    async fn started_booking(pool: &sqlx::PgPool) -> (Uuid, Uuid, Uuid) {
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let created = create_booking(
+            pool,
+            customer_id,
+            &booking_req("1 CheckIn Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create");
+        for (status, assign) in [
+            (BookingStatus::Accepted, Some(guard_id)),
+            (BookingStatus::EnRoute, None),
+            (BookingStatus::Arrived, None),
+        ] {
+            transition(
+                pool,
+                created.id,
+                guard_id,
+                false,
+                status,
+                assign,
+                correlation,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+        start_job(pool, created.id, guard_id, false)
+            .await
+            .expect("start");
+        (created.id, customer_id, guard_id)
+    }
+
+    fn report(hour: i32) -> NewProgressReport {
+        NewProgressReport {
+            hour_number: hour,
+            photo_key: format!("booking/test/checkins/{}.jpg", Uuid::new_v4()),
+            lat: Some(13.7563),
+            lng: Some(100.5018),
+            accuracy_m: Some(8.5),
+            note: Some("perimeter clear".to_string()),
+        }
+    }
+
+    async fn cleanup_booking(pool: &sqlx::PgPool, id: Uuid) {
+        // progress_reports cascade-deletes with the booking (FK ON DELETE CASCADE).
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(id.to_string())
+                .execute(pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await;
+    }
+
+    /// The check-in's transactional outbox, end-to-end: a valid hour-1 check-in writes the
+    /// report row AND exactly one `booking.progress_reported` outbox row in ONE tx (valid
+    /// envelope, correct payload); a DUPLICATE hour is 409 and — atomicity of the failure
+    /// path — enqueues NOTHING; a too-early future hour is 409; an out-of-range hour is 400.
+    /// Run against a 0004-migrated DB:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-booking -- progress_report_outbox --nocapture
+    #[tokio::test]
+    async fn progress_report_outbox_atomic_and_duplicate_hour_conflict() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, customer_id, guard_id) = started_booking(&pool).await;
+        let correlation = Uuid::new_v4();
+
+        // Valid hour-1 check-in → row + exactly one outbox event.
+        let row = create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect("hour-1 check-in");
+        assert_eq!(row.booking_id, booking_id);
+        assert_eq!(row.guard_id, guard_id);
+        assert_eq!(row.hour_number, 1);
+        assert!(row.photo_key.starts_with("booking/"));
+
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_PROGRESS_REPORTED)
+        .bind(booking_id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one progress_reported event enqueued"
+        );
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(envelope.event_type, topics::BOOKING_PROGRESS_REPORTED);
+        assert_eq!(envelope.correlation_id, correlation);
+        assert_eq!(
+            envelope.payload["customer_id"],
+            serde_json::json!(customer_id),
+            "event carries the notification-routing customer_id"
+        );
+        assert_eq!(envelope.payload["guard_id"], serde_json::json!(guard_id));
+        assert_eq!(envelope.payload["report_id"], serde_json::json!(row.id));
+        assert_eq!(envelope.payload["hour_number"], serde_json::json!(1));
+
+        // DUPLICATE hour → 409, and the failed tx enqueues NO second event (atomicity).
+        let dup = create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect_err("duplicate hour must be rejected");
+        assert!(matches!(dup, AppError::Conflict(_)), "got {dup:?}");
+
+        // Too-early FUTURE hour (work just started → only hour 1 open) → 409, nothing enqueued.
+        let early = create_progress_report(&pool, booking_id, guard_id, &report(2), correlation)
+            .await
+            .expect_err("hour 2 right after start must be too early");
+        assert!(matches!(early, AppError::Conflict(_)), "got {early:?}");
+
+        // Out-of-range hour → 400.
+        let out = create_progress_report(&pool, booking_id, guard_id, &report(99), correlation)
+            .await
+            .expect_err("hour beyond the booked hours must be rejected");
+        assert!(matches!(out, AppError::BadRequest(_)), "got {out:?}");
+
+        let count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM booking.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_PROGRESS_REPORTED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 1, "failed check-ins must enqueue no events");
+
+        cleanup_booking(&pool, booking_id).await;
+    }
+
+    /// Check-in IDOR + state gates against Postgres: a STRANGER guard and the CUSTOMER are
+    /// both Forbidden (generic — no job-state leak in the message); a not-yet-started
+    /// booking is 409; and the strictness is owner-only (no admin path exists in the repo
+    /// signature by design). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn progress_report_rejects_strangers_and_unstarted_job() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, customer_id, _guard_id) = started_booking(&pool).await;
+        let stranger = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        // Stranger → generic Forbidden; the message must not disclose the booking's status.
+        let err = create_progress_report(&pool, booking_id, stranger, &report(1), correlation)
+            .await
+            .expect_err("stranger must not check in");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+        assert!(
+            !err.to_string().to_lowercase().contains("arrived"),
+            "error must not disclose the booking's status, got: {err}"
+        );
+
+        // The customer is a participant but NOT the assigned guard → Forbidden.
+        let err = create_progress_report(&pool, booking_id, customer_id, &report(1), correlation)
+            .await
+            .expect_err("the customer cannot file the guard's check-in");
+        assert!(matches!(err, AppError::Forbidden(_)), "got {err:?}");
+
+        // A booking whose job was never started (still accepted) → Conflict for its OWN guard.
+        let customer2 = Uuid::new_v4();
+        let guard2 = Uuid::new_v4();
+        let unstarted = create_booking(
+            &pool,
+            customer2,
+            &booking_req("2 NotStarted Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create");
+        transition(
+            &pool,
+            unstarted.id,
+            guard2,
+            false,
+            BookingStatus::Accepted,
+            Some(guard2),
+            correlation,
+        )
+        .await
+        .expect("accept");
+        let err = create_progress_report(&pool, unstarted.id, guard2, &report(1), correlation)
+            .await
+            .expect_err("check-in before the job is in progress must be rejected");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        // No rows and no events leaked from any rejected path.
+        let reports: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM booking.progress_reports WHERE booking_id = $1 OR booking_id = $2")
+                .bind(booking_id)
+                .bind(unstarted.id)
+                .fetch_one(&pool)
+                .await
+                .expect("count reports");
+        assert_eq!(reports, 0, "every rejected path must persist nothing");
+
+        cleanup_booking(&pool, booking_id).await;
+        cleanup_booking(&pool, unstarted.id).await;
+    }
+
+    /// Open-job discovery filter: returns ONLY `requested AND guard_id IS NULL` rows —
+    /// never another guard's accepted job; the geo filter returns only coordinate-bearing
+    /// bookings within the radius (nearest first) and never the coordinate-less ones.
+    /// Membership-only assertions (the shared test DB runs other suites concurrently).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn open_jobs_filter_requested_unassigned_and_radius() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        // An isolated reference point in the Gulf of Thailand — far from anything other
+        // concurrent tests might create (they create coordinate-less bookings anyway).
+        let (ref_lat, ref_lng) = (10.123456, 101.654321);
+
+        // A: requested + coords near the reference point → must appear in the geo search.
+        let near = create_booking(
+            &pool,
+            customer,
+            &booking_req("A Near Rd", 4, Some((ref_lat + 0.01, ref_lng))), // ~1.1km north
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create near");
+        // B: requested, NO coords → in the plain list, never in a geo-filtered one.
+        let no_coords = create_booking(
+            &pool,
+            customer,
+            &booking_req("B NoCoords Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create no-coords");
+        // C: near coords but ACCEPTED (assigned) → never an open job.
+        let taken = create_booking(
+            &pool,
+            customer,
+            &booking_req("C Taken Rd", 4, Some((ref_lat, ref_lng))),
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create taken");
+        transition(
+            &pool,
+            taken.id,
+            guard,
+            false,
+            BookingStatus::Accepted,
+            Some(guard),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("accept C");
+        // D: requested + coords ~110km away → outside the 5km radius.
+        let far = create_booking(
+            &pool,
+            customer,
+            &booking_req("D Far Rd", 4, Some((ref_lat + 1.0, ref_lng))),
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create far");
+
+        // Plain list (no geo): open jobs include A and B, never the accepted C.
+        let open = list_open_bookings(&pool, None, 200, 0)
+            .await
+            .expect("plain open list");
+        assert!(open.iter().any(|b| b.id == near.id), "A (near) is open");
+        assert!(
+            open.iter().any(|b| b.id == no_coords.id),
+            "B (no coords) is open in the plain list"
+        );
+        assert!(
+            !open.iter().any(|b| b.id == taken.id),
+            "C (accepted) must never appear as an open job"
+        );
+
+        // Geo search (5km around the reference): only A — not B (no coords), not C
+        // (assigned), not D (110km away). Nearest-first ordering is implicit (A is the
+        // only in-radius row); the formula itself is pinned by the distance bound.
+        let geo = list_open_bookings(
+            &pool,
+            Some(GeoFilter {
+                lat: ref_lat,
+                lng: ref_lng,
+                radius_km: 5.0,
+            }),
+            200,
+            0,
+        )
+        .await
+        .expect("geo open list");
+        assert!(geo.iter().any(|b| b.id == near.id), "A within 5km");
+        assert!(
+            !geo.iter().any(|b| b.id == no_coords.id),
+            "coordinate-less bookings never match a radius filter"
+        );
+        assert!(!geo.iter().any(|b| b.id == taken.id), "C is assigned");
+        assert!(!geo.iter().any(|b| b.id == far.id), "D is ~110km away");
+
+        // The response rows carry the coordinates (mobile renders distance client-side).
+        let a = geo.iter().find(|b| b.id == near.id).expect("A row");
+        assert_eq!(a.lat, Some(ref_lat + 0.01));
+        assert_eq!(a.lng, Some(ref_lng));
+
+        for id in [near.id, no_coords.id, taken.id, far.id] {
+            cleanup_booking(&pool, id).await;
+        }
+    }
+
     /// `start_job`'s three load-bearing guards, end-to-end against Postgres: (1) a second start
     /// is an idempotent no-op (work_started_at NOT re-stamped — the proration clock must not
     /// reset); (2) starting before `arrived` → Conflict; (3) a non-assigned guard → Forbidden
@@ -1212,6 +1805,8 @@ mod db_tests {
                 hours: 4,
                 guard_count: None,
                 tip: None,
+                lat: None,
+                lng: None,
             },
             1,
             rust_decimal::Decimal::ZERO,

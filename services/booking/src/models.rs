@@ -25,6 +25,12 @@ pub struct CreateBookingRequest {
     /// Optional tip the customer adds up front (default 0; folded into the expected total).
     #[serde(default)]
     pub tip: Option<Decimal>,
+    /// Optional site coordinates (both-or-neither; validated ranges) — feed open-job radius
+    /// discovery. Coordinates are NOT money: f64 per the presence house style.
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
 }
 
 /// Customer's verdict on a guard's completion request (`pending_completion`).
@@ -51,8 +57,95 @@ pub struct BookingResponse {
     pub base_fee: Decimal,
     pub guard_count: i32,
     pub tip: Decimal,
+    /// Site coordinates — `None` when the customer did not provide them at create.
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+// ----- Progress reports (hourly check-in) -----
+
+/// A `booking.progress_reports` row as stored. Only the S3 `photo_key` is persisted —
+/// signed URLs are minted fresh per read (the chat-attachment pattern), never stored as
+/// the source of truth.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ProgressReportRow {
+    pub id: Uuid,
+    pub booking_id: Uuid,
+    pub guard_id: Uuid,
+    pub hour_number: i32,
+    pub photo_key: String,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub accuracy_m: Option<f32>,
+    pub note: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The client view of a progress report: the row plus a FRESH presigned GET URL (TTL 1h)
+/// signed from `photo_key` at response time.
+#[derive(Debug, Serialize)]
+pub struct ProgressReportResponse {
+    pub id: Uuid,
+    pub booking_id: Uuid,
+    pub guard_id: Uuid,
+    pub hour_number: i32,
+    pub photo_key: String,
+    pub photo_url: String,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub accuracy_m: Option<f32>,
+    pub note: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl ProgressReportResponse {
+    /// Attach a freshly-signed download URL to a stored row.
+    pub fn from_row(row: ProgressReportRow, photo_url: String) -> Self {
+        Self {
+            id: row.id,
+            booking_id: row.booking_id,
+            guard_id: row.guard_id,
+            hour_number: row.hour_number,
+            photo_key: row.photo_key,
+            photo_url,
+            lat: row.lat,
+            lng: row.lng,
+            accuracy_m: row.accuracy_m,
+            note: row.note,
+            created_at: row.created_at,
+        }
+    }
+}
+
+/// The validated, ready-to-persist check-in (built by the handler AFTER multipart parsing,
+/// photo validation, and the S3 upload; the repo re-validates legality inside the row lock).
+#[derive(Debug)]
+pub struct NewProgressReport {
+    pub hour_number: i32,
+    pub photo_key: String,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub accuracy_m: Option<f32>,
+    pub note: Option<String>,
+}
+
+/// Query params for `GET /bookings/{id}/progress-reports` (house limit/offset pagination).
+#[derive(Debug, Deserialize)]
+pub struct ListProgressReportsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Query params for `GET /bookings/open` (open-job discovery).
+#[derive(Debug, Deserialize)]
+pub struct OpenJobsQuery {
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+    pub radius_km: Option<f64>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
 }
 
 /// One entry in the `/available-guards` discovery list: an approved guard (from profile's

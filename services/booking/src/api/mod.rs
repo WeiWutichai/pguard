@@ -5,7 +5,7 @@
 //! Handlers are generic over [`BookingDeps`] so the `AuthUser` guard is unit-testable
 //! with a lightweight state (no live DB/NATS), mirroring notification's seam pattern.
 
-use axum::extract::{Path, State};
+use axum::extract::{Multipart, Path, Query, State};
 use axum::Json;
 use uuid::Uuid;
 
@@ -17,9 +17,12 @@ use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
 use crate::discovery_client::{GuardCatalog, RatingReader};
+use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
-    AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking, ReviewCompletionRequest,
+    AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking,
+    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, ProgressReportResponse,
+    ReviewCompletionRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -33,6 +36,23 @@ const MAX_CONCURRENT_RATING: usize = 8;
 const MAX_BOOKING_HOURS: i32 = 168; // 1 week
 /// Guard-count bounds (mirror the DB CHECK + v1's 1..=20).
 const MAX_GUARD_COUNT: i32 = 20;
+
+/// Check-in multipart body cap — a little above the 10MB photo limit for multipart framing;
+/// `domain::progress::validate_photo_upload` is the precise per-photo check. Set as
+/// `DefaultBodyLimit` on the progress-reports route in main.rs (Axum's default is ~2MB).
+pub const MAX_CHECK_IN_BODY_BYTES: usize = 12 * 1024 * 1024;
+
+/// House limit/offset pagination (chat/rating/notification convention: default 50, max 200).
+const DEFAULT_PAGE_LIMIT: i64 = 50;
+const MAX_PAGE_LIMIT: i64 = 200;
+
+/// Clamp optional limit/offset query params to the house bounds.
+fn page(limit: Option<i64>, offset: Option<i64>) -> (i64, i64) {
+    (
+        limit.unwrap_or(DEFAULT_PAGE_LIMIT).clamp(1, MAX_PAGE_LIMIT),
+        offset.unwrap_or(0).max(0),
+    )
+}
 
 const ROLE_GUARD: &str = "guard";
 const ROLE_CUSTOMER: &str = "customer";
@@ -101,6 +121,8 @@ pub async fn create_booking<S: BookingDeps>(
     if tip < rust_decimal::Decimal::ZERO {
         return Err(AppError::BadRequest("tip must not be negative".to_string()));
     }
+    // Optional site coordinates: both-or-neither, in range (feeds open-job radius discovery).
+    progress::validate_coords(req.lat, req.lng)?;
     let booking = repo::create_booking(state.db(), user.user_id, &req, guard_count, tip).await?;
     Ok(Json(ApiResponse::success(booking)))
 }
@@ -285,6 +307,211 @@ pub async fn list_bookings<S: BookingDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
+/// GET /bookings/open — open-job discovery: `requested` bookings with no guard yet, which
+/// the calling guard can claim via accept. Guard-only (admin may browse — a read-only
+/// moderation view). Optional `lat`/`lng`/`radius_km` geo filter (validated in pure
+/// domain); without coordinates the list is newest-first. A SEPARATE endpoint —
+/// `GET /bookings` (the participant list) keeps its exact semantics.
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id))]
+pub async fn list_open_bookings<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(query): Query<OpenJobsQuery>,
+) -> Result<Json<ApiResponse<Vec<BookingResponse>>>, AppError> {
+    require_role(&user, ROLE_GUARD)?;
+    let geo = progress::validate_open_jobs_query(query.lat, query.lng, query.radius_km)?;
+    let (limit, offset) = page(query.limit, query.offset);
+    // Discovery is a pure list read → replica (C5.3), like list_bookings.
+    let items = repo::list_open_bookings(state.db_read(), geo, limit, offset).await?;
+    Ok(Json(ApiResponse::success(items)))
+}
+
+/// POST /bookings/{id}/progress-reports — the ASSIGNED guard's hourly check-in
+/// (multipart: photo + GPS + hour_number + note).
+///
+/// Order: coarse role gate → participation/assignment pre-flight (BEFORE the multipart body
+/// is even buffered — a non-participant never makes the server read a 10MB photo, and fails
+/// BEFORE the S3 upload so rejected attempts orphan nothing; the repo re-validates every
+/// gate inside the row lock, which stays authoritative) → parse → state/hour validation →
+/// photo validation (size before magic bytes) → S3 upload under a SERVER-generated key →
+/// atomic insert + outbox.
+///
+/// NO admin bypass: a check-in is the guard's first-person attestation of presence — the
+/// coarse gate here rejects every non-guard role (including admin), and the repo enforces
+/// `actor == guard_id` strictly.
+#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id, booking_id = %id))]
+pub async fn create_progress_report<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    mut multipart: Multipart,
+) -> Result<Json<ApiResponse<ProgressReportResponse>>, AppError> {
+    if user.role != ROLE_GUARD {
+        return Err(AppError::Forbidden(
+            "Only the assigned guard can check in".to_string(),
+        ));
+    }
+
+    // ----- pre-flight (advisory; the repo re-checks inside the row lock) -----
+    let core = repo::get_booking_core(state.db(), id).await?;
+    if core.customer_id != user.user_id && core.guard_id != Some(user.user_id) {
+        return Err(AppError::Forbidden(
+            "Not a participant in this booking".to_string(),
+        ));
+    }
+    if core.guard_id != Some(user.user_id) {
+        return Err(AppError::Forbidden(
+            "Only the assigned guard can check in".to_string(),
+        ));
+    }
+
+    // ----- parse multipart parts (photo buffered; bounded by the route's DefaultBodyLimit) -----
+    let mut hour_number: Option<i32> = None;
+    let mut photo: Option<Vec<u8>> = None;
+    let mut declared_mime: Option<String> = None;
+    let mut lat: Option<f64> = None;
+    let mut lng: Option<f64> = None;
+    let mut accuracy_m: Option<f32> = None;
+    let mut note: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "hour_number" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Invalid hour_number: {e}")))?;
+                hour_number = Some(text.trim().parse::<i32>().map_err(|_| {
+                    AppError::BadRequest("hour_number must be an integer".to_string())
+                })?);
+            }
+            "lat" => lat = Some(parse_f64_field(field, "lat").await?),
+            "lng" => lng = Some(parse_f64_field(field, "lng").await?),
+            "accuracy" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Invalid accuracy: {e}")))?;
+                accuracy_m =
+                    Some(text.trim().parse::<f32>().map_err(|_| {
+                        AppError::BadRequest("accuracy must be a number".to_string())
+                    })?);
+            }
+            "note" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Invalid note: {e}")))?;
+                let trimmed = text.trim();
+                if !trimmed.is_empty() {
+                    note = Some(trimmed.to_string());
+                }
+            }
+            "photo" => {
+                declared_mime = field.content_type().map(|s| s.to_string());
+                photo = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(format!("Failed to read photo: {e}")))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let hour_number =
+        hour_number.ok_or_else(|| AppError::BadRequest("hour_number is required".to_string()))?;
+    let data = photo.ok_or_else(|| AppError::BadRequest("photo is required".to_string()))?;
+    let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
+    // GPS is optional (guard may be offline at capture) but must be a valid pair when sent.
+    progress::validate_coords(lat, lng)?;
+
+    // State/hour legality (advisory pre-flight — fails fast before the S3 upload).
+    progress::validate_check_in(
+        core.status,
+        core.work_started_at,
+        core.hours,
+        hour_number,
+        chrono::Utc::now(),
+    )?;
+
+    // ----- photo validation (size BEFORE magic bytes) + server-generated key + upload -----
+    let canonical_mime = progress::validate_photo_upload(&declared_mime, data.len(), &data)?;
+    let ext = progress::mime_to_extension(canonical_mime);
+    let photo_key = format!("booking/{id}/checkins/{}.{ext}", Uuid::new_v4());
+    state.s3().upload(&photo_key, data, canonical_mime).await?;
+
+    // ----- atomic insert + outbox (the authoritative gates re-run inside the tx) -----
+    let report = NewProgressReport {
+        hour_number,
+        photo_key,
+        lat,
+        lng,
+        accuracy_m,
+        note,
+    };
+    let row =
+        repo::create_progress_report(state.db(), id, user.user_id, &report, Uuid::new_v4()).await?;
+    let photo_url = state.s3().download_url(&row.photo_key);
+    Ok(Json(ApiResponse::success(
+        ProgressReportResponse::from_row(row, photo_url),
+    )))
+}
+
+/// Parse one multipart text part as `f64` (for the optional GPS fields).
+async fn parse_f64_field(
+    field: axum::extract::multipart::Field<'_>,
+    name: &str,
+) -> Result<f64, AppError> {
+    let text = field
+        .text()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Invalid {name}: {e}")))?;
+    text.trim()
+        .parse::<f64>()
+        .map_err(|_| AppError::BadRequest(format!("{name} must be a number")))
+}
+
+/// GET /bookings/{id}/progress-reports — a booking's check-in reports, hour order, each
+/// with a FRESHLY presigned photo URL (the stored key is re-signed per read; signed URLs
+/// are never persisted as the source of truth). Participants only — the customer (owner)
+/// and the assigned guard; admin bypasses (same gate as `get_booking`, so a missing
+/// booking is 404 and a non-participant 403, consistent with the rest of this service).
+/// Primary-pool read: a guard lists right after checking in (read-after-write).
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id, booking_id = %id))]
+pub async fn list_progress_reports<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ListProgressReportsQuery>,
+) -> Result<Json<ApiResponse<Vec<ProgressReportResponse>>>, AppError> {
+    let core = repo::get_booking_core(state.db(), id).await?;
+    if user.role != ROLE_ADMIN
+        && core.customer_id != user.user_id
+        && core.guard_id != Some(user.user_id)
+    {
+        return Err(AppError::Forbidden(
+            "Not a participant in this booking".to_string(),
+        ));
+    }
+    let (limit, offset) = page(query.limit, query.offset);
+    let rows = repo::list_progress_reports(state.db(), id, limit, offset).await?;
+    let items: Vec<ProgressReportResponse> = rows
+        .into_iter()
+        .map(|row| {
+            let url = state.s3().download_url(&row.photo_key);
+            ProgressReportResponse::from_row(row, url)
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(items)))
+}
+
 /// GET /available-guards — discovery: the approved guard catalog (from profile) enriched
 /// with each guard's live rating summary (from rating). booking owns discovery but neither
 /// the catalog nor reviews, so it reads both owners over service-JWT and aggregates here.
@@ -385,11 +612,26 @@ mod tests {
 
     const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-booking-test!!!";
 
+    /// Stub S3 client — presigning is pure (no network until an actual PUT), so the auth/
+    /// role-gate tests need no live MinIO (mirrors chat's `s3_stub`).
+    fn s3_stub() -> crate::s3::S3Client {
+        crate::s3::S3Client::new(
+            reqwest::Client::new(),
+            "http://localhost:9000".to_string(),
+            None,
+            "test".to_string(),
+            "us-east-1".to_string(),
+            "k".to_string(),
+            "s".to_string(),
+        )
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
         redis: redis::aio::MultiplexedConnection,
+        s3: crate::s3::S3Client,
     }
 
     impl HasJwtSecret for TestDeps {
@@ -406,6 +648,9 @@ mod tests {
     impl BookingDeps for TestDeps {
         fn db(&self) -> &sqlx::PgPool {
             &self.db
+        }
+        fn s3(&self) -> &crate::s3::S3Client {
+            &self.s3
         }
     }
 
@@ -437,24 +682,60 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db,
             redis,
+            s3: s3_stub(),
         };
-        Some(
-            Router::new()
-                .route("/bookings", post(create_booking::<TestDeps>))
-                .route("/bookings/{id}/accept", post(accept_booking::<TestDeps>))
-                .route("/bookings/{id}/decline", put(decline_booking::<TestDeps>))
-                .route("/bookings/{id}/en-route", put(en_route_booking::<TestDeps>))
-                .route("/bookings/{id}/arrived", put(arrived_booking::<TestDeps>))
-                .route("/bookings/{id}/start", put(start_booking::<TestDeps>))
-                .route("/bookings/{id}/complete", put(complete_booking::<TestDeps>))
-                .route(
-                    "/bookings/{id}/review-completion",
-                    put(review_completion::<TestDeps>),
-                )
-                .route("/bookings/{id}/cancel", put(cancel_booking::<TestDeps>))
-                .route("/bookings/{id}", get(get_booking::<TestDeps>))
-                .with_state(deps),
-        )
+        Some(routes(deps))
+    }
+
+    /// The route table under test — same shape as prod (main.rs), so the literal-segment
+    /// `/bookings/open` beside `/bookings/{id}` exercises the static-wins routing.
+    fn routes(deps: TestDeps) -> Router {
+        Router::new()
+            .route("/bookings", post(create_booking::<TestDeps>))
+            .route("/bookings/{id}/accept", post(accept_booking::<TestDeps>))
+            .route("/bookings/{id}/decline", put(decline_booking::<TestDeps>))
+            .route("/bookings/{id}/en-route", put(en_route_booking::<TestDeps>))
+            .route("/bookings/{id}/arrived", put(arrived_booking::<TestDeps>))
+            .route("/bookings/{id}/start", put(start_booking::<TestDeps>))
+            .route("/bookings/{id}/complete", put(complete_booking::<TestDeps>))
+            .route(
+                "/bookings/{id}/review-completion",
+                put(review_completion::<TestDeps>),
+            )
+            .route("/bookings/{id}/cancel", put(cancel_booking::<TestDeps>))
+            .route("/bookings/open", get(list_open_bookings::<TestDeps>))
+            .route("/bookings/{id}", get(get_booking::<TestDeps>))
+            .route(
+                "/bookings/{id}/progress-reports",
+                post(create_progress_report::<TestDeps>).get(list_progress_reports::<TestDeps>),
+            )
+            .with_state(deps)
+    }
+
+    /// Like [`router`], but over the REAL database (for the IDOR matrix that needs seeded
+    /// rows). Gated on BOTH `DATABASE_URL` and a test Redis — `None` → the caller SKIPs.
+    async fn router_with_real_db() -> Option<(Router, sqlx::PgPool)> {
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let redis = redis::Client::open(redis_url)
+            .ok()?
+            .get_multiplexed_tokio_connection()
+            .await
+            .ok()?;
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .ok()?;
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db: db.clone(),
+            redis,
+            s3: s3_stub(),
+        };
+        Some((routes(deps), db))
     }
 
     fn create_body() -> Body {
@@ -665,6 +946,311 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    // ----- progress reports + open-job discovery: hermetic gate tests -----
+    //
+    // These run over the LAZY pool (closed port): a 401/403/400 also proves the request was
+    // rejected before any DB access — and the s3 stub proves no S3 traffic either (the
+    // photo path is never reached). Redis-gated like the other AuthUser router tests.
+
+    /// A minimal multipart request shell (empty body) — the gates under test all fire
+    /// BEFORE the body is parsed, which is itself part of the contract (a rejected caller
+    /// never makes the server buffer a photo).
+    fn multipart_req(method: &str, uri: String, token: Option<String>) -> Request<Body> {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "multipart/form-data; boundary=x");
+        if let Some(tok) = token {
+            builder = builder.header("authorization", format!("Bearer {tok}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn progress_report_post_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(multipart_req(
+                "POST",
+                format!("/bookings/{id}/progress-reports"),
+                None,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn progress_report_post_rejects_non_guard_before_db() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(multipart_req(
+                "POST",
+                format!("/bookings/{id}/progress-reports"),
+                Some(user_token("customer")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn progress_report_post_has_no_admin_bypass() {
+        // A check-in is the assigned guard's first-person attestation — even an admin's
+        // valid token is rejected at the coarse gate (before any DB/S3 access).
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(multipart_req(
+                "POST",
+                format!("/bookings/{id}/progress-reports"),
+                Some(user_token("admin")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn list_progress_reports_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/bookings/{id}/progress-reports"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn open_jobs_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/bookings/open")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn open_jobs_static_route_wins_and_rejects_non_guard() {
+        // PHASE spec §C: confirm `/bookings/open` is NOT swallowed by `/bookings/{id}`.
+        // A customer hitting the open handler gets the role-gate 403; had the request been
+        // routed to get_booking, `Path<Uuid>` would reject the literal "open" with a 400.
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/bookings/open")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "403 from the open-jobs role gate proves the static route won (a {{id}} parse \
+             failure would be 400)"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_jobs_validates_geo_before_db() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // lat without lng / radius without coords / zero radius — all 400 BEFORE any DB
+        // access (the lazy pool would otherwise 500).
+        for bad in [
+            "/bookings/open?lat=13.75",
+            "/bookings/open?radius_km=5",
+            "/bookings/open?lat=13.75&lng=100.5&radius_km=0",
+            "/bookings/open?lat=91&lng=0",
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(bad)
+                        .header("authorization", format!("Bearer {}", user_token("guard")))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "uri: {bad}");
+        }
+    }
+
+    // ----- progress reports: router-level IDOR matrix (real DB + Redis; hermetic SKIP) -----
+
+    /// Mint a token for a SPECIFIC user id (the IDOR matrix needs participant tokens).
+    fn user_token_for(user_id: Uuid, role: &str) -> String {
+        use shared::auth::encode_jwt_with_key;
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, _jti) = encode_jwt_with_key(user_id, role, 0, &ek, 15).unwrap();
+        tok
+    }
+
+    /// Full-router IDOR matrix for the progress-report endpoints (chat-style). Needs a
+    /// MIGRATED database (0004) + Redis; SKIPs hermetically otherwise. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///   TEST_REDIS_URL=redis://localhost:6379 \
+    ///     cargo test -p pguard-booking -- progress_reports_idor_matrix --nocapture
+    #[tokio::test]
+    async fn progress_reports_idor_matrix() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+
+        // Seed: a booking with an assigned guard (accepted is enough for the READ gate).
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let stranger = Uuid::new_v4();
+        let created = repo::create_booking(
+            &db,
+            customer,
+            &CreateBookingRequest {
+                address: "1 IDOR Matrix Rd".to_string(),
+                scheduled_at: chrono::Utc::now(),
+                hours: 4,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create");
+        repo::transition(
+            &db,
+            created.id,
+            guard,
+            false,
+            BookingStatus::Accepted,
+            Some(guard),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("accept");
+
+        let get_reports = |token: String, id: Uuid| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/bookings/{id}/progress-reports"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        // GET matrix: stranger → 403 (generic; no report content leaks); participants → 200;
+        // admin → 200 (read-side moderation bypass, mirroring get_booking).
+        assert_eq!(
+            get_reports(user_token_for(stranger, "guard"), created.id).await,
+            StatusCode::FORBIDDEN,
+            "stranger guard must not read another job's check-ins"
+        );
+        assert_eq!(
+            get_reports(user_token_for(stranger, "customer"), created.id).await,
+            StatusCode::FORBIDDEN,
+            "another customer must not read this job's check-ins"
+        );
+        assert_eq!(
+            get_reports(user_token_for(customer, "customer"), created.id).await,
+            StatusCode::OK,
+            "the booking's customer reads their job's check-ins"
+        );
+        assert_eq!(
+            get_reports(user_token_for(guard, "guard"), created.id).await,
+            StatusCode::OK,
+            "the assigned guard reads their own check-ins"
+        );
+        assert_eq!(
+            get_reports(user_token_for(stranger, "admin"), created.id).await,
+            StatusCode::OK,
+            "admin read bypass (moderation)"
+        );
+        // Missing booking → 404 for everyone (booking's house pattern: get_booking is
+        // fetch-then-gate; booking ids are unguessable UUIDv4s).
+        assert_eq!(
+            get_reports(user_token_for(stranger, "guard"), Uuid::new_v4()).await,
+            StatusCode::NOT_FOUND
+        );
+
+        // POST: a stranger guard is 403 at the pre-flight — BEFORE the multipart body is
+        // read (empty body never reaches the parser) and before any S3 traffic (stub).
+        let res = app
+            .clone()
+            .oneshot(multipart_req(
+                "POST",
+                format!("/bookings/{}/progress-reports", created.id),
+                Some(user_token_for(stranger, "guard")),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "stranger guard cannot check in on another guard's job"
+        );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&db)
+            .await;
     }
 
     // ----- internal read: service-JWT guard (no Redis/DB needed) -----

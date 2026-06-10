@@ -8,6 +8,7 @@ use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
 use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, RatingReader};
+use crate::s3::S3Client;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -24,6 +25,8 @@ pub struct AppState {
     pub service_jwt_config: ServiceJwtConfig,
     /// Discovery reads: the service-JWT'd profile catalog + rating summary clients.
     pub discovery: HttpDiscoveryClient,
+    /// S3/MinIO presigner for check-in photos (upload + fresh signed download URLs).
+    pub s3: S3Client,
 }
 
 impl HasJwtSecret for AppState {
@@ -55,6 +58,9 @@ pub trait BookingDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn db_read(&self) -> &PgPool {
         self.db()
     }
+    /// S3 presigner for check-in photos (mirrors chat's `ChatDeps::s3()` seam — presigning
+    /// is pure, so test doubles use a stub client with dummy credentials).
+    fn s3(&self) -> &S3Client;
 }
 
 impl BookingDeps for AppState {
@@ -63,6 +69,9 @@ impl BookingDeps for AppState {
     }
     fn db_read(&self) -> &PgPool {
         &self.db_read
+    }
+    fn s3(&self) -> &S3Client {
+        &self.s3
     }
 }
 

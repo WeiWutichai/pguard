@@ -65,6 +65,10 @@ pub mod topics {
     pub const BOOKING_COMPLETED: &str = "pguard.events.booking.completed";
     pub const BOOKING_GUARD_EN_ROUTE: &str = "pguard.events.booking.guard_en_route";
     pub const BOOKING_ARRIVED: &str = "pguard.events.booking.arrived";
+    /// Guard hourly check-in persisted (photo key + GPS). NOT a lifecycle status change —
+    /// the gateway's booking-status WS ignores it (`status_from_topic` → None). Future
+    /// consumer: notification ("your guard checked in").
+    pub const BOOKING_PROGRESS_REPORTED: &str = "pguard.events.booking.progress_reported";
 
     // payment context
     pub const PAYMENT_COMPLETED: &str = "pguard.events.payment.completed";
