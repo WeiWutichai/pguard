@@ -13,7 +13,7 @@
 >   COMPOSE="docker compose -f infra/docker/docker-compose.prod.yml -f infra/docker/docker-compose.staging.yml --env-file infra/.env.staging"
 >   ```
 > - Generators: `openssl rand -hex 48` (JWT/service-JWT/event-signing/TURN, ≥64 chars),
->   `openssl rand -hex 24` (NATS / DB / MinIO passwords).
+>   `openssl rand -hex 24` (DB / MinIO passwords) — **ยกเว้น NATS: ใช้ `np$(openssl rand -hex 23)`** (ค่าใน nats.conf ที่ขึ้นต้นด้วยตัวเลขทำ parser พัง → broker boot fail; เจอจริง 2026-06-10).
 > - Edit secrets in `infra/.env.staging` (NEVER committed — it is gitignored; the tracked
 >   template is `infra/.env.staging.example`).
 
