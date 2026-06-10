@@ -299,7 +299,10 @@ services:
       NOTIFICATION_URL: http://notification:3004
       BOOKING_URL: http://booking:3005
       PAYMENT_URL: http://payment:3006
+      RATING_URL: http://rating:3007
       CALLING_URL: http://calling:3008
+      PRESENCE_URL: http://presence:3009
+      CHAT_URL: http://chat:3010
     # The ONLY service that publishes a host port. In real prod an ingress/nginx
     # terminates TLS in front of this; here the gateway is the single ingress.
     ports:

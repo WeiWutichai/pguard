@@ -32,6 +32,9 @@ pub enum Upstream {
     Payment,
     Notification,
     Calling,
+    Rating,
+    Presence,
+    Chat,
 }
 
 impl Upstream {
@@ -45,6 +48,9 @@ impl Upstream {
             Upstream::Payment => "payment",
             Upstream::Notification => "notification",
             Upstream::Calling => "calling",
+            Upstream::Rating => "rating",
+            Upstream::Presence => "presence",
+            Upstream::Chat => "chat",
         }
     }
 }
@@ -69,10 +75,53 @@ pub enum RouteDecision {
 
 /// A single longest-prefix routing rule. `prefix` matches against the post-`/v1`
 /// resource path (e.g. `/auth/`, `/bookings`).
+///
+/// `suffix` (rarely set) disambiguates rules that share a prefix but split by the
+/// segment AFTER one wildcard path segment: a rule with `prefix: "/guards/"` and
+/// `suffix: "/ratings"` matches `/guards/{id}/ratings` (and deeper subpaths) but not
+/// `/guards/{id}/location`. This keeps `/guards/{id}/ratings` → rating while
+/// `/guards/{id}/location`·`/history` → presence, with plain segment comparison —
+/// no regex in the hot path. Suffix-less rules keep the original pure-prefix
+/// semantics untouched.
 struct Rule {
     prefix: &'static str,
+    /// `Some("/seg")` → require `prefix` + exactly one wildcard segment + `/seg`
+    /// (at a segment boundary). `None` → plain prefix match (the common case).
+    suffix: Option<&'static str>,
     upstream: Upstream,
     tier: Tier,
+}
+
+impl Rule {
+    /// `true` if `path` (post-`/v1` strip) matches this rule.
+    fn matches(&self, path: &str) -> bool {
+        if !path.starts_with(self.prefix) {
+            return false;
+        }
+        let Some(suffix) = self.suffix else {
+            return true;
+        };
+        // One wildcard segment (the `{id}`) must sit between the prefix and the suffix.
+        let rest = &path[self.prefix.len()..];
+        let Some((id, tail)) = rest.split_once('/') else {
+            return false; // no segment after the wildcard → suffix can't match
+        };
+        if id.is_empty() {
+            return false; // an empty `{id}` segment (`/guards//ratings`) is not a match
+        }
+        // `tail` must BE the suffix segment(s) or continue past a segment boundary.
+        match tail.strip_prefix(&suffix[1..]) {
+            Some(after) => after.is_empty() || after.starts_with('/'),
+            None => false,
+        }
+    }
+
+    /// Specificity key for longest-match selection: prefix length first (the original
+    /// longest-prefix semantics), then suffix length so a suffixed rule outranks a
+    /// hypothetical suffix-less rule on the same prefix.
+    fn specificity(&self) -> (usize, usize) {
+        (self.prefix.len(), self.suffix.map_or(0, str::len))
+    }
 }
 
 /// The routing table, ordered longest-prefix-first so `/admin/guard-profiles` wins
@@ -80,11 +129,21 @@ struct Rule {
 const RULES: &[Rule] = &[
     Rule {
         prefix: "/admin/guard-profiles",
+        suffix: None,
         upstream: Upstream::Profile,
         tier: Tier::Api,
     },
     Rule {
+        // Review moderation (list + visibility). Admin authz is the rating service's own
+        // job (role check on its side) — same pattern as `/admin/guard-profiles` → profile.
+        prefix: "/admin/reviews",
+        suffix: None,
+        upstream: Upstream::Rating,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
+        suffix: None,
         upstream: Upstream::Identity,
         tier: Tier::Auth,
     },
@@ -92,52 +151,114 @@ const RULES: &[Rule] = &[
         // PDPA §19/§32 data export (identity aggregates across services). A specific prefix
         // (not bare `/me`) so it can't over-match a future `/me…` resource.
         prefix: "/me/data-export",
+        suffix: None,
         upstream: Upstream::Identity,
         tier: Tier::Api,
     },
     Rule {
         prefix: "/otp/",
+        suffix: None,
         upstream: Upstream::Otp,
         tier: Tier::Otp,
     },
     Rule {
         prefix: "/profile/",
+        suffix: None,
         upstream: Upstream::Profile,
         tier: Tier::Api,
     },
     Rule {
         prefix: "/bookings",
+        suffix: None,
         upstream: Upstream::Booking,
         tier: Tier::Api,
     },
     Rule {
         // Guard discovery (booking owns it; aggregates profile catalog + rating summaries).
         prefix: "/available-guards",
+        suffix: None,
         upstream: Upstream::Booking,
         tier: Tier::Api,
     },
     Rule {
         prefix: "/payments",
+        suffix: None,
         upstream: Upstream::Payment,
         tier: Tier::Api,
     },
     Rule {
         // WebRTC call control (REST): initiate/get/accept/reject/connected/end + the served ICE
         // config (`/calls/ice`). All require a token (bearerAuth in calling.yaml). The `/ws/call`
-        // signaling upgrade is NOT here — generic WS proxying through the gateway is a separate
-        // platform gap (tracked in §2.5), like the status-WS hub's bespoke handling.
+        // signaling upgrade is NOT here — it goes through the generic edge WS proxy
+        // (`/v1/ws/{chat,track,call}`, see `crate::wsproxy`), which axum routes before this
+        // catch-all table, like the status-WS hub's bespoke `/v1/ws/bookings/{id}`.
         prefix: "/calls",
+        suffix: None,
         upstream: Upstream::Calling,
         tier: Tier::Api,
     },
     Rule {
         prefix: "/notifications",
+        suffix: None,
         upstream: Upstream::Notification,
         tier: Tier::Api,
     },
     Rule {
         prefix: "/tokens",
+        suffix: None,
         upstream: Upstream::Notification,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Chat threads: collection + `/conversations/{id}/messages`·`/read` subpaths.
+        prefix: "/conversations",
+        suffix: None,
+        upstream: Upstream::Chat,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Chat attachment download/upload (`/attachments/{id}`).
+        prefix: "/attachments",
+        suffix: None,
+        upstream: Upstream::Chat,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Live guard locations (admin map list).
+        prefix: "/locations",
+        suffix: None,
+        upstream: Upstream::Presence,
+        tier: Tier::Api,
+    },
+    // `/guards/{id}/…` splits by the segment after the id: location/history → presence,
+    // ratings → rating. The suffix mechanism (see [`Rule`]) keeps this a plain segment
+    // comparison; an unknown `/guards/{id}/other` matches nothing → 404 at the edge.
+    Rule {
+        prefix: "/guards/",
+        suffix: Some("/location"),
+        upstream: Upstream::Presence,
+        tier: Tier::Api,
+    },
+    Rule {
+        prefix: "/guards/",
+        suffix: Some("/history"),
+        upstream: Upstream::Presence,
+        tier: Tier::Api,
+    },
+    Rule {
+        prefix: "/guards/",
+        suffix: Some("/ratings"),
+        upstream: Upstream::Rating,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Review submission (`/assignments/{id}/review`). Suffixed so ONLY the review
+        // resource routes to rating — booking exposes no `/assignments` at the edge today,
+        // and a future booking-owned `/assignments/{id}/…` resource can still be added
+        // without colliding with this rule.
+        prefix: "/assignments/",
+        suffix: Some("/review"),
+        upstream: Upstream::Rating,
         tier: Tier::Api,
     },
 ];
@@ -205,11 +326,12 @@ pub fn resolve(path: &str) -> RouteDecision {
     }
 
     // Longest-prefix match. RULES is ordered, but we also pick the longest match
-    // explicitly so ordering mistakes can't silently misroute.
+    // explicitly so ordering mistakes can't silently misroute. Suffix length breaks
+    // prefix-length ties (a suffixed rule is the more specific one).
     let best = RULES
         .iter()
-        .filter(|r| stripped.starts_with(r.prefix))
-        .max_by_key(|r| r.prefix.len());
+        .filter(|r| r.matches(stripped))
+        .max_by_key(|r| r.specificity());
 
     match best {
         Some(rule) => RouteDecision::Proxy {
@@ -527,5 +649,174 @@ mod tests {
     fn upstream_as_str_is_stable() {
         assert_eq!(Upstream::Identity.as_str(), "identity");
         assert_eq!(Upstream::Notification.as_str(), "notification");
+        assert_eq!(Upstream::Rating.as_str(), "rating");
+        assert_eq!(Upstream::Presence.as_str(), "presence");
+        assert_eq!(Upstream::Chat.as_str(), "chat");
+    }
+
+    // ----- chat routes (gateway routing gap) -----
+
+    #[test]
+    fn conversations_route_to_chat_api_tier_protected() {
+        for p in [
+            "/v1/conversations",
+            "/v1/conversations/abc-123",
+            "/v1/conversations/abc/messages",
+            "/v1/conversations/abc/read",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Chat, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn attachments_route_to_chat() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/attachments/abc-123"));
+        assert_eq!(up, Upstream::Chat);
+        assert_eq!(fwd, "/attachments/abc-123");
+        assert!(!public, "/attachments requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    // ----- presence routes -----
+
+    #[test]
+    fn locations_route_to_presence_protected() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/locations"));
+        assert_eq!(up, Upstream::Presence);
+        assert_eq!(fwd, "/locations");
+        assert!(!public, "/locations requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    // ----- rating routes -----
+
+    #[test]
+    fn assignment_review_routes_to_rating_protected() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/assignments/abc-123/review"));
+        assert_eq!(up, Upstream::Rating);
+        assert_eq!(fwd, "/assignments/abc-123/review");
+        assert!(!public, "review submission requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn assignments_without_review_suffix_are_not_found() {
+        // Only the review resource is rating's; the bare collection/item has no owner at
+        // the edge (booking exposes no /assignments) so it must stay 404.
+        assert_eq!(resolve("/v1/assignments"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/assignments/abc-123"), RouteDecision::NotFound);
+        assert_eq!(
+            resolve("/v1/assignments/abc/reviewers"),
+            RouteDecision::NotFound,
+            "a longer word merely starting with 'review' is NOT the segment"
+        );
+    }
+
+    #[test]
+    fn admin_reviews_route_to_rating() {
+        for p in ["/v1/admin/reviews", "/v1/admin/reviews/abc/visibility"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Rating, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn admin_reviews_do_not_disturb_admin_guard_profiles() {
+        // Both live under /admin/ — each goes to its own service, nothing else matches.
+        let (up, _, _, _) = proxy(resolve("/v1/admin/guard-profiles/abc"));
+        assert_eq!(up, Upstream::Profile);
+        let (up, _, _, _) = proxy(resolve("/v1/admin/reviews/abc"));
+        assert_eq!(up, Upstream::Rating);
+        assert_eq!(resolve("/v1/admin/other"), RouteDecision::NotFound);
+    }
+
+    // ----- the /guards/{id}/… prefix collision (the slice's design point) -----
+
+    #[test]
+    fn guards_id_ratings_routes_to_rating() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/guards/abc-123/ratings"));
+        assert_eq!(up, Upstream::Rating);
+        assert_eq!(fwd, "/guards/abc-123/ratings");
+        assert!(!public);
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn guards_id_location_and_history_route_to_presence() {
+        for p in ["/v1/guards/abc-123/location", "/v1/guards/abc-123/history"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Presence, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn guards_suffix_subpaths_keep_their_upstream() {
+        // Deeper subpaths after the discriminating segment stay with the same service.
+        let (up, _, _, _) = proxy(resolve("/v1/guards/abc/ratings/summary"));
+        assert_eq!(up, Upstream::Rating);
+        let (up, _, _, _) = proxy(resolve("/v1/guards/abc/history/2026-06"));
+        assert_eq!(up, Upstream::Presence);
+    }
+
+    #[test]
+    fn guards_without_a_known_suffix_are_not_found() {
+        assert_eq!(resolve("/v1/guards"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/guards/"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/guards/abc-123"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/guards/abc/profile"), RouteDecision::NotFound);
+        // Suffix must sit at a segment boundary: a longer word doesn't match.
+        assert_eq!(resolve("/v1/guards/abc/locations"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/guards/abc/ratingsx"), RouteDecision::NotFound);
+        // Exactly ONE wildcard segment between prefix and suffix.
+        assert_eq!(
+            resolve("/v1/guards/a/b/ratings"),
+            RouteDecision::NotFound,
+            "suffix after two segments must not match"
+        );
+        // An empty wildcard segment is not a match.
+        assert_eq!(resolve("/v1/guards//ratings"), RouteDecision::NotFound);
+    }
+
+    #[test]
+    fn guards_adversarial_ids_resolve_by_segment_position_only() {
+        // An id that *spells* another rule's suffix must not confuse the match — only the
+        // segment AFTER the id discriminates.
+        let (up, _, _, _) = proxy(resolve("/v1/guards/ratings/location"));
+        assert_eq!(up, Upstream::Presence, "id='ratings' is just an id");
+        let (up, _, _, _) = proxy(resolve("/v1/guards/location/ratings"));
+        assert_eq!(up, Upstream::Rating, "id='location' is just an id");
+    }
+
+    // ----- /internal block must hold for the new upstreams -----
+
+    #[test]
+    fn internal_paths_of_new_upstreams_are_blocked() {
+        for p in [
+            "/v1/conversations/internal/x",
+            "/v1/attachments/internal",
+            "/v1/locations/internal",
+            "/v1/guards/abc/ratings/internal",
+            "/v1/guards/abc/location/internal/x",
+            "/v1/assignments/abc/review/internal",
+            "/v1/admin/reviews/internal/x",
+        ] {
+            assert_eq!(resolve(p), RouteDecision::Block, "{p} must be blocked");
+        }
+        // Encoded-separator smuggling stays blocked for the new prefixes too.
+        assert_eq!(
+            resolve("/v1/conversations%2finternal/x"),
+            RouteDecision::Block
+        );
+        assert_eq!(resolve("/v1/guards/abc%2finternal"), RouteDecision::Block);
     }
 }

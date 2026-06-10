@@ -45,8 +45,9 @@ pub async fn security_headers_mw(
 }
 
 /// Build a generic `ApiResponse` error body (`{ success:false, error:"…" }`) with a
-/// status. Used for all gateway-originated errors so the edge contract is uniform.
-fn err(status: StatusCode, message: &str) -> Response {
+/// status. Used for all gateway-originated errors so the edge contract is uniform
+/// (shared with the WS proxy's pre-upgrade failures).
+pub(crate) fn err(status: StatusCode, message: &str) -> Response {
     let body = ApiResponse::<()> {
         success: false,
         data: None,

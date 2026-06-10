@@ -19,6 +19,7 @@ mod proxy;
 mod ratelimit;
 mod state;
 mod ws;
+mod wsproxy;
 
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -112,13 +113,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- public router: gateway's own /healthz (never proxied) + the booking-status WS
-    // (specific route, matches before the catch-all) + the catch-all edge handler. The EDGE
-    // telemetry middleware starts a fresh root trace — an untrusted client must not be able to
-    // supply the trace context (forge trace_id / force sampling). `/metrics` is NOT here; it
-    // lives on the admin listener above. ---
+    // (bespoke NATS hub) + the generic WS proxies (chat/track/call) — all specific routes
+    // that match before the catch-all — + the catch-all edge handler. The EDGE telemetry
+    // middleware starts a fresh root trace — an untrusted client must not be able to
+    // supply the trace context (forge trace_id / force sampling). `/metrics` is NOT here;
+    // it lives on the admin listener above. ---
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/v1/ws/bookings/{id}", get(ws::ws_bookings))
+        .route("/v1/ws/chat", get(wsproxy::ws_chat))
+        .route("/v1/ws/track", get(wsproxy::ws_track))
+        .route("/v1/ws/call", get(wsproxy::ws_call))
         .route("/{*path}", any(handler::gateway))
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(
