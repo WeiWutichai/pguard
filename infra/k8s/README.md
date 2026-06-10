@@ -194,12 +194,12 @@ kind delete cluster --name pguard-smoke
 ```
 
 > **Verification status (this PR):**
-> - `kustomize build` — dev (71 resources) + staging (77) both exit 0.
+> - `kustomize build` — dev (73 resources) + staging (79) both exit 0 (71/77 ก่อน fold เพิ่ม auth/otp Ingress; นับใหม่หลัง fold).
 > - `kubeconform -strict` — all valid for both overlays (0 errors, 0 skipped).
 > - **kind** — on a real one-node `kind` cluster, applying the dev overlay's stock subset brought
 >   **postgres-primary + redis + nats to Ready** with health probes responding (`pg_isready` →
 >   *accepting connections*, `redis-cli ping` → *PONG*, nats `/healthz` → `{"status":"ok"}`), and the
->   **full dev overlay (all 71 resources) passed server-side validation** (`kubectl apply -k
+>   **full dev overlay passed server-side validation** (รันก่อน fold ที่เพิ่ม 2 Ingress; post-fold ผ่าน kustomize+kubeconform) (`kubectl apply -k
 >   overlays/dev --dry-run=server`) against the live API server. The 14 custom images
 >   (identity, api-gateway, …) are private on ghcr, so on a real apply they ImagePullBackOff until
 >   the imagePullSecret above is attached — proven via the stock subset + server dry-run per the
