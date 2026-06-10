@@ -109,8 +109,14 @@ impl Rule {
         if id.is_empty() {
             return false; // an empty `{id}` segment (`/guards//ratings`) is not a match
         }
+        // Suffix literals are segment paths ("/seg") — strip the leading '/' without
+        // indexing so a malformed future rule can't panic in the request path (a test
+        // pins the invariant for every RULES entry).
+        let Some(seg) = suffix.strip_prefix('/') else {
+            return false;
+        };
         // `tail` must BE the suffix segment(s) or continue past a segment boundary.
-        match tail.strip_prefix(&suffix[1..]) {
+        match tail.strip_prefix(seg) {
             Some(after) => after.is_empty() || after.starts_with('/'),
             None => false,
         }
@@ -246,6 +252,8 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Token-gated like every discovery surface — rating.yaml's getGuardRatings was
+        // amended to bearerAuth to match (visibility filtering is the "public" part).
         prefix: "/guards/",
         suffix: Some("/ratings"),
         upstream: Upstream::Rating,
@@ -785,6 +793,21 @@ mod tests {
         );
         // An empty wildcard segment is not a match.
         assert_eq!(resolve("/v1/guards//ratings"), RouteDecision::NotFound);
+    }
+
+    #[test]
+    fn every_rule_suffix_is_a_well_formed_segment_path() {
+        // Pins the invariant Rule::matches relies on: a suffix is "/<segment…>" with a
+        // non-empty segment. A malformed entry would silently never match.
+        for r in RULES {
+            if let Some(s) = r.suffix {
+                assert!(
+                    s.starts_with('/') && s.len() >= 2,
+                    "rule {}+{s:?} has a malformed suffix",
+                    r.prefix
+                );
+            }
+        }
     }
 
     #[test]

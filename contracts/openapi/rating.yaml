@@ -88,12 +88,17 @@ paths:
   /guards/{id}/ratings:
     get:
       tags: [Reviews]
-      summary: Public guard ratings — visible reviews + aggregate summary
+      summary: Guard ratings — visible reviews + aggregate summary
       description: |
-        Public discovery (no auth). Returns the guard's VISIBLE reviews (newest first) plus the
+        Discovery ratings for one guard: the guard's VISIBLE reviews (newest first) plus the
         aggregate `{ average, count }` of visible overall ratings. Admin-hidden reviews are
         excluded from both the list and the summary.
+
+        Requires a valid access token — the api-gateway enforces edge auth on every
+        `/guards/…` route (all discovery surfaces are token-gated, like `/available-guards`).
+        "Public" here means visible-to-customers (the `is_visible` filter), not unauthenticated.
       operationId: getGuardRatings
+      security: [{ bearerAuth: [] }]
       parameters:
         - name: id
           in: path
@@ -101,7 +106,7 @@ paths:
           schema: { type: string, format: uuid }
       responses:
         '200':
-          description: The guard's public ratings
+          description: The guard's visible ratings
           content:
             application/json:
               schema:

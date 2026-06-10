@@ -21,18 +21,16 @@ pub const WS_PROXY_ROUTES: &[(&str, Upstream, &str)] = &[
 
 /// Derive the backend WebSocket handshake URL from an upstream base URL (as resolved by
 /// `UpstreamTable`, e.g. `http://chat:3010`) and the backend WS path (e.g. `/ws/chat`).
-/// `http` → `ws`, `https` → `wss`; any other scheme is refused (`None`) — the proxy
-/// must not dial a URL it doesn't understand.
+/// `http` → `ws` ONLY; anything else (including `https`) is refused (`None`): the
+/// gateway's WS client is compiled without a TLS backend, so a `wss://` dial would fail
+/// at runtime anyway — upstreams are plaintext in-cluster DNS names by design. Refusing
+/// here keeps the contract honest instead of promising a hop the binary can't make.
 pub fn backend_ws_url(base_url: &str, ws_path: &str) -> Option<String> {
-    let rest = base_url
-        .strip_prefix("http://")
-        .map(|r| ("ws://", r))
-        .or_else(|| base_url.strip_prefix("https://").map(|r| ("wss://", r)));
-    let (scheme, host) = rest?;
+    let host = base_url.strip_prefix("http://")?;
     if host.is_empty() {
         return None;
     }
-    Some(format!("{scheme}{host}{ws_path}"))
+    Some(format!("ws://{host}{ws_path}"))
 }
 
 #[cfg(test)]
@@ -65,13 +63,16 @@ mod tests {
             Some("ws://chat:3010/ws/chat")
         );
         assert_eq!(
-            backend_ws_url("https://presence.internal", "/ws/track").as_deref(),
-            Some("wss://presence.internal/ws/track")
+            backend_ws_url("http://presence:3009", "/ws/track").as_deref(),
+            Some("ws://presence:3009/ws/track")
         );
     }
 
     #[test]
-    fn backend_url_refuses_unknown_or_empty() {
+    fn backend_url_refuses_non_plaintext_http_or_empty() {
+        // https is refused too — no TLS backend is compiled into the WS client, so a
+        // wss:// promise would only ever surface as a runtime 502.
+        assert_eq!(backend_ws_url("https://chat.internal", "/ws/chat"), None);
         assert_eq!(backend_ws_url("ftp://chat:3010", "/ws/chat"), None);
         assert_eq!(backend_ws_url("chat:3010", "/ws/chat"), None);
         assert_eq!(backend_ws_url("http://", "/ws/chat"), None);

@@ -9,36 +9,50 @@
 //!      cover WS handshakes).
 //!   3. **Bearer-on-upgrade** auth via [`crate::auth::validate`] — jti + trv, token from
 //!      the `Authorization` header or `access_token` cookie, NEVER the URL.
-//!   4. **Dial the backend** WS (`UpstreamTable` base URL, `http→ws`), forwarding the
-//!      original `Authorization`/`Cookie` headers so the backend re-validates the same
-//!      token itself (defense-in-depth — backends keep their own auth + mid-session
-//!      re-auth and close on expiry/revoke; the proxy stays a transparent relay).
-//!   5. **Upgrade** the client and relay frames until either side closes.
+//!   4. **Concurrent-session cap** (global semaphore) — live relays are bounded, not
+//!      just the upgrade rate.
+//!   5. **Dial the backend** WS (`UpstreamTable` base URL, `http→ws`), forwarding the
+//!      original `Authorization` + a minimized `access_token` cookie so the backend
+//!      re-validates the same token itself (defense-in-depth — backends keep their own
+//!      auth + mid-session re-auth and close on expiry/revoke; the proxy stays a
+//!      transparent relay).
+//!   6. **Upgrade** the client and relay frames until either side closes.
 //!
 //! The backend is dialed BEFORE the client upgrade so a down/rejecting backend still
 //! gets a real HTTP status (502 / 401) instead of a connect-then-instant-close.
 //! Route → upstream mapping is pure ([`crate::domain::wsproxy::WS_PROXY_ROUTES`]).
+//!
+//! Documented limits (deliberate for the current contracts):
+//!   - **No subprotocol negotiation** — `Sec-WebSocket-Protocol` is neither echoed nor
+//!     forwarded; no pguard WS contract uses subprotocols.
+//!   - **Plaintext upstreams only** — the WS client has no TLS backend compiled in;
+//!     `https://` upstream URLs are refused at the pure layer (502, loud log).
+//!   - **No per-frame rate limiting** — the relay is transparent; message-rate policy
+//!     stays with the owning service (presence caps 1/s; chat/calling own theirs).
+//!   - **Global concurrent-session cap** (`WS_PROXY_MAX_CONNECTIONS`, default 4096) on
+//!     top of the per-IP upgrade rate limit; a per-user cap is a tracked follow-up.
 
 use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
 use axum::extract::ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
-use axum::response::{IntoResponse, Response};
+use axum::response::Response;
 use futures::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
+use tokio::sync::Semaphore;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame as TCloseFrame;
 use tokio_tungstenite::tungstenite::{Error as TError, Message as TMsg};
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use shared::error::AppError;
-
 use crate::domain::ratelimit::RateDecision;
 use crate::domain::routing::Tier;
 use crate::domain::wsproxy::{backend_ws_url, WS_PROXY_ROUTES};
-use crate::handler::err;
+use crate::handler::{auth_err, err};
 use crate::ratelimit;
 use crate::state::AppState;
 
@@ -47,6 +61,29 @@ use crate::state::AppState;
 /// JSON; an oversized client frame fails the read and tears the session down. The
 /// backend side is trusted and keeps the library defaults.
 const MAX_CLIENT_FRAME_BYTES: usize = crate::proxy::MAX_BODY_BYTES;
+
+/// Upper bound for one relayed frame to be accepted by the receiving peer. A peer that
+/// stops draining its socket for this long gets the session torn down (the relay holds
+/// only one frame in flight, so a stuck send would otherwise hang the relay forever).
+const RELAY_SEND_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default global cap on concurrent proxied WS sessions (each holds one client and one
+/// backend socket). Override with `WS_PROXY_MAX_CONNECTIONS`.
+const DEFAULT_MAX_CONNECTIONS: usize = 4096;
+
+/// Global concurrent-session permits, sized once from env on first use.
+static WS_PERMITS: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn ws_permits() -> &'static Arc<Semaphore> {
+    WS_PERMITS.get_or_init(|| {
+        let cap = std::env::var("WS_PROXY_MAX_CONNECTIONS")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_MAX_CONNECTIONS);
+        Arc::new(Semaphore::new(cap))
+    })
+}
 
 /// `GET /v1/ws/chat` → chat `/ws/chat`.
 pub async fn ws_chat(
@@ -116,9 +153,11 @@ async fn proxy_upgrade(
     }
 
     // 2) CSWSH gate: reject a present-but-disallowed Origin (browser cookie clients).
+    // (`err`, not raw AppError — every gateway-originated response wears the uniform
+    // ApiResponse envelope, same as the REST edge.)
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     if !crate::domain::ws::origin_allowed(origin, &state.allowed_origins) {
-        return AppError::Forbidden("Origin not allowed".to_string()).into_response();
+        return err(StatusCode::FORBIDDEN, "Origin not allowed");
     }
 
     // 3) Bearer-on-upgrade auth at the edge (jti/trv parity with every /v1 route; the
@@ -128,11 +167,24 @@ async fn proxy_upgrade(
         if let Err(e) =
             crate::auth::validate(&headers, &Method::GET, &state.jwt_config, &mut redis).await
         {
-            return e.into_response();
+            return auth_err(e);
         }
     }
 
-    // 4) Dial the backend WS, forwarding the caller's credentials for its own re-check.
+    // 4) Concurrent-session cap. The per-IP limiter above bounds upgrade RATE; this
+    // bounds the number of LIVE relays (each holds a gateway↔backend socket pair), so
+    // an authenticated client can't exhaust file descriptors by accumulating sessions.
+    // Checked after auth so anonymous floods can't consume permits. (A per-user cap is
+    // a tracked follow-up.)
+    let Ok(permit) = ws_permits().clone().try_acquire_owned() else {
+        tracing::warn!(ws_path = public_path, "WS proxy at connection capacity");
+        return err(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Too many concurrent connections",
+        );
+    };
+
+    // 5) Dial the backend WS, forwarding the caller's credentials for its own re-check.
     let Some(base) = state.routes.base_url(upstream) else {
         // Should never happen — UpstreamTable inserts every variant.
         tracing::error!(upstream = upstream.as_str(), "no base URL for upstream");
@@ -142,7 +194,7 @@ async fn proxy_upgrade(
         tracing::error!(
             upstream = upstream.as_str(),
             base,
-            "non-http(s) upstream URL"
+            "unsupported upstream URL scheme for a WS dial (plaintext http:// only)"
         );
         return err(StatusCode::BAD_GATEWAY, "Upstream service unavailable");
     };
@@ -153,9 +205,26 @@ async fn proxy_upgrade(
             return err(StatusCode::BAD_GATEWAY, "Upstream service unavailable");
         }
     };
-    for name in [header::AUTHORIZATION, header::COOKIE] {
-        if let Some(v) = headers.get(&name) {
-            backend_req.headers_mut().insert(name.clone(), v.clone());
+    // Deliberate ALLOWLIST: only the caller's credentials cross to the backend — no
+    // client x-user-* (identity comes from the backend's own token validation), no
+    // client trace context, no Sec-WebSocket-Protocol (no pguard WS contract uses
+    // subprotocols; the proxy doesn't negotiate them).
+    if let Some(v) = headers.get(header::AUTHORIZATION) {
+        backend_req
+            .headers_mut()
+            .insert(header::AUTHORIZATION, v.clone());
+    }
+    // Cookie is minimized to the access_token — refresh/CSRF cookies stay scoped to
+    // the identity service and never reach chat/presence/calling.
+    if let Some(tok) = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| shared::auth::extract_cookie_value(c, shared::auth::ACCESS_TOKEN_COOKIE))
+    {
+        if let Ok(hv) =
+            HeaderValue::from_str(&format!("{}={tok}", shared::auth::ACCESS_TOKEN_COOKIE))
+        {
+            backend_req.headers_mut().insert(header::COOKIE, hv);
         }
     }
     // Propagate the edge trace context so the backend's WS span joins THIS trace (the
@@ -171,12 +240,8 @@ async fn proxy_upgrade(
             let status = resp.status();
             tracing::warn!(upstream = upstream.as_str(), %status, "backend WS upgrade refused");
             return match status {
-                StatusCode::UNAUTHORIZED => {
-                    AppError::Unauthorized("Unauthorized".to_string()).into_response()
-                }
-                StatusCode::FORBIDDEN => {
-                    AppError::Forbidden("Forbidden".to_string()).into_response()
-                }
+                StatusCode::UNAUTHORIZED => err(StatusCode::UNAUTHORIZED, "Unauthorized"),
+                StatusCode::FORBIDDEN => err(StatusCode::FORBIDDEN, "Forbidden"),
                 _ => err(StatusCode::BAD_GATEWAY, "Upstream service unavailable"),
             };
         }
@@ -186,16 +251,25 @@ async fn proxy_upgrade(
         }
     };
 
-    // 5) Upgrade the client and relay. Client frames are size-capped at the edge.
+    // 6) Upgrade the client and relay. Client frames are size-capped at the edge; the
+    // session permit travels with the relay and frees on disconnect.
     ws.max_message_size(MAX_CLIENT_FRAME_BYTES)
         .max_frame_size(MAX_CLIENT_FRAME_BYTES)
-        .on_upgrade(move |client| relay(client, backend))
+        .on_upgrade(move |client| async move {
+            let _permit = permit;
+            relay(client, backend).await;
+        })
 }
 
 /// Relay frames between the client (axum) and backend (tungstenite) sockets until
 /// either side closes or errors. Close frames propagate (code + reason preserved);
 /// after the loop both sinks get a best-effort close so neither side is left hanging.
-/// One frame in flight per direction — awaiting each `send` is the backpressure.
+///
+/// ONE frame in flight total (the `select!` couples the directions): awaiting each
+/// `send` is the backpressure, and nothing is buffered beyond that frame. The cost is
+/// head-of-line blocking across directions — a peer that stops reading stalls the
+/// relay — so every forward is bounded by [`RELAY_SEND_TIMEOUT`]; a send that can't
+/// complete within it tears the session down instead of leaking a hung relay.
 async fn relay(client: WebSocket, backend: WebSocketStream<MaybeTlsStream<TcpStream>>) {
     let (mut c_sink, mut c_stream) = client.split();
     let (mut b_sink, mut b_stream) = backend.split();
@@ -205,13 +279,13 @@ async fn relay(client: WebSocket, backend: WebSocketStream<MaybeTlsStream<TcpStr
             inbound = c_stream.next() => match inbound {
                 Some(Ok(msg)) => {
                     let closing = matches!(msg, Message::Close(_));
-                    if b_sink.send(client_to_backend(msg)).await.is_err() || closing {
+                    if !timed_send(&mut b_sink, client_to_backend(msg)).await || closing {
                         break;
                     }
                 }
                 // Abrupt client drop / read error → tell the backend we're done.
                 Some(Err(_)) | None => {
-                    let _ = b_sink.send(TMsg::Close(None)).await;
+                    let _ = timed_send(&mut b_sink, TMsg::Close(None)).await;
                     break;
                 }
             },
@@ -220,7 +294,7 @@ async fn relay(client: WebSocket, backend: WebSocketStream<MaybeTlsStream<TcpStr
                     let closing = matches!(msg, TMsg::Close(_));
                     // `Frame` (raw, never produced in normal reads) converts to None.
                     if let Some(m) = backend_to_client(msg) {
-                        if c_sink.send(m).await.is_err() {
+                        if !timed_send(&mut c_sink, m).await {
                             break;
                         }
                     }
@@ -229,7 +303,7 @@ async fn relay(client: WebSocket, backend: WebSocketStream<MaybeTlsStream<TcpStr
                     }
                 }
                 Some(Err(_)) | None => {
-                    let _ = c_sink.send(Message::Close(None)).await;
+                    let _ = timed_send(&mut c_sink, Message::Close(None)).await;
                     break;
                 }
             },
@@ -240,6 +314,18 @@ async fn relay(client: WebSocket, backend: WebSocketStream<MaybeTlsStream<TcpStr
     // a side that already closed just rejects the duplicate).
     let _ = b_sink.close().await;
     let _ = c_sink.close().await;
+}
+
+/// Send one frame with [`RELAY_SEND_TIMEOUT`]. `false` on error OR timeout — either
+/// way the relay loop exits and both sides get closed.
+async fn timed_send<S, M>(sink: &mut S, msg: M) -> bool
+where
+    S: futures::Sink<M> + Unpin,
+{
+    matches!(
+        tokio::time::timeout(RELAY_SEND_TIMEOUT, sink.send(msg)).await,
+        Ok(Ok(()))
+    )
 }
 
 /// axum WS frame → tungstenite frame (client → backend direction).
@@ -415,6 +501,12 @@ mod e2e_tests {
                                 break;
                             }
                         }
+                        // Echo binary unchanged (proves binary frames cross the relay).
+                        Message::Binary(b) => {
+                            if socket.send(Message::Binary(b)).await.is_err() {
+                                break;
+                            }
+                        }
                         Message::Close(_) => {
                             let _ = stub.events.send("close-received".to_string());
                             break;
@@ -579,6 +671,24 @@ mod e2e_tests {
         ws.send(TMsg::Text("hello".to_string())).await.unwrap();
         assert_eq!(read_text(&mut ws).await.as_deref(), Some("echo:hello"));
 
+        // Binary frames cross the relay intact too.
+        ws.send(TMsg::Binary(vec![0xde, 0xad, 0xbe, 0xef]))
+            .await
+            .unwrap();
+        let mut got_binary = None;
+        while let Ok(Some(Ok(msg))) = tokio::time::timeout(Duration::from_secs(5), ws.next()).await
+        {
+            if let TMsg::Binary(b) = msg {
+                got_binary = Some(b);
+                break;
+            }
+        }
+        assert_eq!(
+            got_binary.as_deref(),
+            Some(&[0xde, 0xad, 0xbe, 0xef][..]),
+            "binary frame must relay unchanged"
+        );
+
         // 4) BACKEND-initiated close propagates to the client with code + reason.
         ws.send(TMsg::Text("please-close".to_string()))
             .await
@@ -610,5 +720,20 @@ mod e2e_tests {
             "client Close must reach the backend session"
         );
         assert_eq!(next_event(&mut events).await.as_deref(), Some("ended"));
+    }
+
+    #[tokio::test]
+    async fn wsproxy_e2e_backend_down_is_502() {
+        let Some(redis) = redis_url() else {
+            eprintln!("SKIP: TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Chat upstream pointed at a port nothing listens on → the pre-upgrade dial
+        // fails and the client gets a real 502, not a connect-then-drop.
+        let addr = spawn_gateway(&redis, "http://127.0.0.1:1").await;
+        match connect(addr, Some(&token()), None).await {
+            Err(Some(status)) => assert_eq!(status, StatusCode::BAD_GATEWAY),
+            other => panic!("backend-down upgrade must be 502, got {other:?}"),
+        }
     }
 }
