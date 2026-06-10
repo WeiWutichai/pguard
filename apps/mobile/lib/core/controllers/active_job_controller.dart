@@ -109,28 +109,37 @@ class ActiveJobController extends _$ActiveJobController {
     }
   }
 
-  /// Submit the hour [hourNumber] check-in (photo + optional GPS/note) via [CheckInService].
-  /// On success the slot is marked done. The endpoint is a documented backend dependency.
+  /// Submit the check-in for schedule slot [slot] (photo + optional GPS/note) via
+  /// [CheckInService]. On success the slot is marked done.
+  ///
+  /// Slot↔hour mapping: the UI's [CheckInSchedule] slots are 0-based (slot 0 = the
+  /// start-of-work check-in; slot N is due after N elapsed hours), but the server's
+  /// `hour_number` is 1-based (`1..hours`, where hour N opens once N−1 hours have elapsed). By
+  /// timing, slot N aligns with server hour `N+1`; the final end-of-shift slot clamps to
+  /// `hours` (a duplicate the service absorbs idempotently). [completedCheckIns] stays
+  /// slot-indexed so the schedule UI (dueIndex/missed) is unchanged.
   Future<bool> submitCheckIn({
-    required int hourNumber,
+    required int slot,
     required CapturedPhoto photo,
     GpsSample? gps,
     String? note,
   }) async {
     final current = state.valueOrNull;
     if (current == null) return false;
+    final maxHour = current.hours < 1 ? 1 : current.hours;
+    final serverHour = slot + 1 > maxHour ? maxHour : slot + 1;
     state = AsyncData(current.copyWith(busy: true, error: null));
     try {
       await ref.read(checkInServiceProvider).submit(
             bookingId: current.booking.id,
-            hourNumber: hourNumber,
+            hourNumber: serverHour,
             photo: photo,
             gps: gps,
             note: note,
           );
       state = AsyncData(current.copyWith(
         busy: false,
-        completedCheckIns: {...current.completedCheckIns, hourNumber},
+        completedCheckIns: {...current.completedCheckIns, slot},
       ));
       return true;
     } on ApiException catch (e) {

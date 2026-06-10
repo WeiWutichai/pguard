@@ -105,8 +105,47 @@ void main() {
     expect(api.calls, contains('PUT /bookings/b1/decline'));
   });
 
-  test('submitCheckIn records the slot via the check-in service', () async {
+  test(
+      'submitCheckIn maps the 0-based UI slot to the 1-based server hour_number '
+      '(slot N → hour N+1) and marks the slot (not the hour) done', () async {
     final checkIn = FakeCheckInService();
+    final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      checkInServiceProvider.overrideWithValue(checkIn),
+    ]);
+    addTearDown(c.dispose);
+
+    await c.read(activeJobControllerProvider('b1').future); // hours: 8
+    final ctrl = c.read(activeJobControllerProvider('b1').notifier);
+    Set<int> done() =>
+        c.read(activeJobControllerProvider('b1')).value!.completedCheckIns;
+
+    // slot 0 (the start-of-work check-in) → server hour_number 1 (never the invalid 0).
+    expect(
+      await ctrl.submitCheckIn(
+        slot: 0,
+        photo: const CapturedPhoto(path: '/tmp/p.jpg', sizeBytes: 10),
+      ),
+      isTrue,
+    );
+    // slot 1 → server hour_number 2.
+    expect(
+      await ctrl.submitCheckIn(
+        slot: 1,
+        photo: const CapturedPhoto(path: '/tmp/p.jpg', sizeBytes: 10),
+      ),
+      isTrue,
+    );
+    expect(checkIn.submitted, [1, 2], reason: 'slots 0,1 → hours 1,2');
+    expect(done(), containsAll(<int>[0, 1]),
+        reason: 'completedCheckIns stays slot-indexed for the schedule UI');
+  });
+
+  test('submitCheckIn clamps the final end-of-shift slot to hours', () async {
+    final checkIn = FakeCheckInService();
+    // hours: 8 → slot 8 is the end-of-shift slot; slot+1=9 clamps to 8.
     final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
@@ -117,15 +156,11 @@ void main() {
 
     await c.read(activeJobControllerProvider('b1').future);
     final ctrl = c.read(activeJobControllerProvider('b1').notifier);
-
-    final ok = await ctrl.submitCheckIn(
-      hourNumber: 1,
+    await ctrl.submitCheckIn(
+      slot: 8,
       photo: const CapturedPhoto(path: '/tmp/p.jpg', sizeBytes: 10),
     );
-    expect(ok, isTrue);
-    expect(checkIn.submitted, [1]);
-    expect(c.read(activeJobControllerProvider('b1')).value!.completedCheckIns,
-        contains(1));
+    expect(checkIn.submitted, [8], reason: 'slot 8 (slot+1=9) clamps to hours=8');
   });
 
   test('submitCheckIn surfaces failure and does not mark the slot done',
@@ -142,7 +177,7 @@ void main() {
     await c.read(activeJobControllerProvider('b1').future);
     final ctrl = c.read(activeJobControllerProvider('b1').notifier);
     final ok = await ctrl.submitCheckIn(
-      hourNumber: 1,
+      slot: 1,
       photo: const CapturedPhoto(path: '/tmp/p.jpg', sizeBytes: 10),
     );
     expect(ok, isFalse);

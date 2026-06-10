@@ -115,11 +115,11 @@ typedef CallSignalFeedBuilder = CallSignalFeed Function(
 CallSignalFeedBuilder callSignalFeedBuilder(CallSignalFeedBuilderRef ref) =>
     (tokenProvider) => CallSocket(tokenProvider: tokenProvider);
 
-/// Submits hourly check-in progress reports. Default fails (the endpoint isn't built — see
-/// [CheckInService]); tests override with a fake that records submissions.
+/// Submits hourly check-in progress reports (multipart `POST /v1/bookings/{id}/progress-reports`
+/// through the authenticated Dio client). Tests override with a fake that records submissions.
 @Riverpod(keepAlive: true)
 CheckInService checkInService(CheckInServiceRef ref) =>
-    const PendingCheckInService();
+    ApiCheckInService(api: ref.watch(pguardApiProvider));
 
 /// Captures the check-in checkpoint photo. Default is unavailable (no camera plugin wired);
 /// tests override with a fake.
