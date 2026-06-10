@@ -12,7 +12,7 @@
 #     tooling (Java/■ extra deps) to merge allOf and then un-merge the envelope.
 #   - Reproducible on any CI runner: python3 + PyYAML only (no Java, no Docker). Pinned via
 #     tooling/codegen/requirements.txt.
-#   - Output is rustfmt-clean by construction (see generate.sh, which `cargo fmt --check`s it).
+#   - Output is rustfmt-clean by construction; the workspace `cargo fmt --check` CI job gates it.
 #
 # Deterministic: schema + field order follow the YAML; struct name = the schema key minus the
 # `EnvelopeOf_` prefix. Re-running on an unchanged contract produces byte-identical output (the
@@ -29,8 +29,10 @@ OUT = ROOT / "packages" / "shared-events" / "src" / "generated" / "events.rs"
 PREFIX = "EnvelopeOf_"
 
 
-def rust_type(prop):
-    """Map a JSON-Schema leaf to a Rust type. Unknown shapes fail loudly (no silent Value)."""
+def rust_type(prop, ctx=""):
+    """Map a JSON-Schema SCALAR leaf to a Rust type. Only flat scalars are supported today
+    (string/integer/number/boolean); a nested object, array, or $ref fails LOUDLY (never a silent
+    `Value`) — extend this + the field walker if a future event payload needs one."""
     t = prop.get("type")
     fmt = prop.get("format")
     if t == "string":
@@ -45,7 +47,10 @@ def rust_type(prop):
         return "f64"
     if t == "boolean":
         return "bool"
-    raise SystemExit(f"gen_rust_events: unsupported schema leaf {prop!r} — extend rust_type()")
+    raise SystemExit(
+        f"gen_rust_events: unsupported non-scalar schema leaf at {ctx or '<unknown>'}: {prop!r} "
+        f"— extend rust_type() (object/array/$ref payloads aren't supported yet)."
+    )
 
 
 def payload_schema(env_schema):
@@ -70,7 +75,7 @@ def main():
         required = set(payload.get("required", []))
         fields = []
         for fname, prop in payload.get("properties", {}).items():
-            ty = rust_type(prop)
+            ty = rust_type(prop, ctx=f"{name}.{fname}")
             if ty == "DateTime<Utc>":
                 needs_chrono = True
             fields.append((fname, ty, fname not in required))

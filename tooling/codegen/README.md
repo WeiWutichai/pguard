@@ -36,8 +36,11 @@ PyYAML version, the openapi-typescript major); CI regenerates and fails on any d
 1. Add `contracts/openapi/<svc>.yaml` (or a new schema to `contracts/asyncapi/events.yaml`).
 2. **TS:** add the spec to `apps/web-admin` `gen:api` (package.json).
 3. **Dart:** add `<svc>` to the `SPECS=(…)` array in `generate.sh`.
-4. **Rust events:** nothing — `gen_rust_events.py` emits a struct for every `EnvelopeOf_*` schema
-   automatically; add a drift-lock test in `packages/shared-events/tests/drift_lock.rs` for it.
+4. **Rust events:** `gen_rust_events.py` emits a struct for every `EnvelopeOf_*` schema
+   automatically — for a **flat scalar** payload there is nothing to do but add a drift-lock test
+   in `packages/shared-events/tests/drift_lock.rs`. A payload with a **nested object, array, or
+   `$ref`** is not supported yet: codegen fails loudly (`unsupported non-scalar schema leaf at
+   <Struct>.<field>`) — extend `rust_type()` + the field walker first.
 5. `./tooling/codegen/generate.sh` && commit the generated output.
 
 ## Why dart-dio + `--skip-validate-spec`

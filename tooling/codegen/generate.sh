@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # pguard v2 — code generation entrypoint. OpenAPI 3.1 (contracts/openapi) + AsyncAPI
-# (contracts/asyncapi) are the source of truth; generated output is committed (the CI
-# stale-check regenerates + `git diff --exit-code`s it — see tests/contract/check-generated-clients.sh).
+# (contracts/asyncapi) are the source of truth; generated output is committed (CI stale-checks
+# regenerate + `git diff --exit-code` it — TS via tests/contract/check-generated-clients.sh,
+# Dart + Rust events via tests/contract/check-generated-codegen.sh).
 #
 # Idempotent: re-running on unchanged contracts produces byte-identical output (every generator
 # here is pinned + deterministic). Each target checks its toolchain and SKIPs (loudly) if absent,

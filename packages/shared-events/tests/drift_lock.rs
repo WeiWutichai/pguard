@@ -200,7 +200,10 @@ fn chat_message_sent_locks_participants() {
 }
 
 // ── user / security ────────────────────────────────────────────────────────────
-// Ref: identity consumer ApprovedPayload (user.approved) + reserved user.compromised shape.
+// Ref: user.approved PRODUCER = services/profile/src/repo/mod.rs (emits {user_id, role,
+// approved_at}); identity's consumer reads only {user_id}, so we lock the richer PRODUCER shape.
+// user.compromised has NO in-repo producer yet (reserved topic) — locked to the CONTRACT
+// (events.yaml required:[user_id, reason]); identity's consumer reads only {user_id}.
 
 #[test]
 fn user_compromised_locks_reason() {
