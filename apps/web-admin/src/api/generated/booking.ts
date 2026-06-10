@@ -53,6 +53,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bookings/open": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Open-job discovery — requested bookings with no guard yet (guard only)
+         * @description Bookings a guard can claim: `status = requested AND guard_id IS NULL`. Guard/admin
+         *     only (403 otherwise). A literal path segment registered beside `/bookings/{id}` —
+         *     static segments win in the router (same precedent as calling's `/calls/ice`), and
+         *     the gateway's existing `/bookings` prefix rule routes it with no gateway change.
+         *
+         *     Filtering: with `lat`+`lng` (and optional `radius_km`, default 10) only bookings
+         *     that HAVE coordinates within the radius are returned, nearest first. Without
+         *     coordinates, all open bookings are returned newest-first (coordinates on bookings
+         *     are optional). `lat`/`lng` must be sent together; `radius_km` requires them.
+         *     Paginated with `limit`/`offset`.
+         */
+        get: operations["listOpenBookings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bookings/{id}": {
         parameters: {
             query?: never;
@@ -247,6 +276,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bookings/{id}/progress-reports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List a booking's check-in reports (participants only)
+         * @description The booking's customer (owner) and assigned guard may read (admin bypasses) —
+         *     IDOR-gated both ways; a non-participant gets 403. Reports are returned in
+         *     `hour_number` order, each with a FRESHLY presigned photo URL (the stored key is
+         *     re-signed on every read — signed URLs are never persisted as the source of truth).
+         */
+        get: operations["listProgressReports"];
+        put?: never;
+        /**
+         * Assigned guard submits an hourly check-in (photo + GPS)
+         * @description The ASSIGNED guard checks in for `hour_number` of a job IN PROGRESS (status
+         *     `arrived` with `work_started_at` stamped by start). `multipart/form-data` —
+         *     server-mediated upload following the chat-attachment house pattern: the photo is
+         *     validated (size before magic bytes; JPEG/PNG/WEBP ≤ 10MB), the SERVER uploads it
+         *     to S3/MinIO under a server-generated key (clients never supply keys or see
+         *     credentials), and only the key + metadata are persisted. Enqueues
+         *     `pguard.events.booking.progress_reported` into the outbox in the SAME transaction.
+         *
+         *     Rules: `hour_number` must be within `1..=hours`; hour N opens once N−1 hours have
+         *     elapsed since `work_started_at` (409 too-early otherwise); one check-in per hour —
+         *     a duplicate `hour_number` is 409 (checked BEFORE the upload), so a client retry can
+         *     never double-report and uploads nothing. Strictly the assigned guard (no admin
+         *     bypass — a report is the guard's first-person attestation of presence). GPS is
+         *     optional (the guard may be offline at capture); when sent, `lat`+`lng` must come
+         *     together.
+         *
+         *     > **⚠️ Deployment dependency (tracked, NOT yet satisfied):** the booking service
+         *     > accepts bodies up to 12 MiB on this route, but the api-gateway currently buffers
+         *     > EVERY proxied body at a hard 1 MiB (`proxy.rs MAX_BODY_BYTES` → 413) and staging
+         *     > nginx caps at 2 MB (`client_max_body_size 2m`). Until the gateway grows a
+         *     > per-route body-cap carve-out (≥ 12 MiB for this route; in-flight gateway slice)
+         *     > + a location-scoped nginx override, photos over ~1 MiB get **413 at the edge**
+         *     > and never reach this endpoint. Mobile wiring MUST gate on that follow-up.
+         */
+        post: operations["createProgressReport"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/bookings/{id}": {
         parameters: {
             query?: never;
@@ -305,6 +383,16 @@ export interface components {
              * @default 0
              */
             tip: string;
+            /**
+             * Format: double
+             * @description Optional site latitude (must be paired with `lng`) — feeds open-job radius discovery.
+             */
+            lat?: number | null;
+            /**
+             * Format: double
+             * @description Optional site longitude (must be paired with `lat`).
+             */
+            lng?: number | null;
         };
         Booking: {
             /** Format: uuid */
@@ -331,10 +419,81 @@ export interface components {
              * @example 0
              */
             tip: string;
+            /**
+             * Format: double
+             * @description Site latitude (null when not provided at create).
+             */
+            lat?: number | null;
+            /**
+             * Format: double
+             * @description Site longitude (null when not provided at create).
+             */
+            lng?: number | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        /**
+         * @description multipart/form-data parts for the hourly check-in. The photo part's Content-Type
+         *     must be the declared MIME (image/jpeg, image/png or image/webp, ≤ 10MB) and must
+         *     match the actual bytes (magic-byte verified server-side).
+         */
+        ProgressReportUploadForm: {
+            /**
+             * Format: int32
+             * @description Which job-hour this check-in covers (1-based, ≤ the booking's `hours`).
+             */
+            hour_number: number;
+            /**
+             * Format: binary
+             * @description The check-in photo (JPEG/PNG/WEBP, ≤ 10MB).
+             */
+            photo: string;
+            /**
+             * Format: double
+             * @description GPS at capture time (optional; pair with `lng`).
+             */
+            lat?: number;
+            /**
+             * Format: double
+             * @description GPS at capture time (optional; pair with `lat`).
+             */
+            lng?: number;
+            /**
+             * Format: float
+             * @description GPS accuracy in meters (optional; non-finite/negative/absurd values are discarded server-side
+             */
+            accuracy?: number;
+            /** @description Optional free-text note (trimmed; empty treated as absent; max 2000 characters). */
+            note?: string;
+        };
+        /**
+         * @description One hourly check-in. `photo_url` is a FRESH presigned GET URL (TTL 1h) signed per
+         *     read from the stored `photo_key` — the bucket and credentials are never exposed.
+         */
+        ProgressReport: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /** Format: uuid */
+            guard_id: string;
+            /** Format: int32 */
+            hour_number: number;
+            /** @description S3 object key (internal reference; not directly fetchable). */
+            photo_key: string;
+            /** @description Fresh presigned download URL (TTL 1h). */
+            photo_url: string;
+            /** Format: double */
+            lat?: number | null;
+            /** Format: double */
+            lng?: number | null;
+            /** Format: float */
+            accuracy_m?: number | null;
+            note?: string | null;
+            /** Format: date-time */
+            created_at: string;
         };
         /**
          * @description The authoritative subset exposed to internal (service-JWT'd) callers — the fields the
@@ -454,6 +613,10 @@ export interface components {
     };
     parameters: {
         BookingId: string;
+        /** @description Page size (max 200). */
+        Limit: number;
+        /** @description Rows to skip. */
+        Offset: number;
     };
     requestBodies: never;
     headers: never;
@@ -524,6 +687,42 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    listOpenBookings: {
+        parameters: {
+            query?: {
+                /** @description Guard's latitude (must be paired with `lng`). */
+                lat?: number;
+                /** @description Guard's longitude (must be paired with `lat`). */
+                lng?: number;
+                /** @description Great-circle search radius in km (requires `lat`+`lng`). */
+                radius_km?: number;
+                /** @description Page size (max 200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Rows to skip. */
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Open bookings (claimable by the caller) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Booking"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getBooking: {
@@ -690,6 +889,78 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listProgressReports: {
+        parameters: {
+            query?: {
+                /** @description Page size (max 200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Rows to skip. */
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["BookingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The booking's progress reports, hour order */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["ProgressReport"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    createProgressReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["BookingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["ProgressReportUploadForm"];
+            };
+        };
+        responses: {
+            /** @description The created progress report (with a fresh presigned photo URL, TTL 1h) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["ProgressReport"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+            /** @description Body too large. Today this fires at the EDGE for >1 MiB (gateway buffer cap; see the deployment-dependency note above) — once the per-route carve-out lands, the service's own 12 MiB route cap produces it. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     getInternalBooking: {

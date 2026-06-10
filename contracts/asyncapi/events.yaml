@@ -48,6 +48,15 @@ channels:
   bookingArrived:
     address: pguard.events.booking.arrived
     messages: { arrived: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingProgressReported:
+    address: pguard.events.booking.progress_reported
+    description: >-
+      Guard hourly check-in submitted (photo + GPS persisted by booking). Producer =
+      booking (transactional outbox, atomic with the progress_reports insert). No consumer
+      yet — the notification service will use this to tell the customer their guard
+      checked in (follow-up slice). NOT a lifecycle status change: the gateway's booking
+      status WS ignores it (status_from_topic → None).
+    messages: { progressReported: { $ref: '#/components/messages/BookingProgressReported' } }
   paymentCompleted:
     address: pguard.events.payment.completed
     messages: { paymentCompleted: { $ref: '#/components/messages/PaymentCompleted' } }
@@ -121,6 +130,10 @@ components:
       name: BookingCompleted
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_BookingCompleted' }
+    BookingProgressReported:
+      name: BookingProgressReported
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_ProgressReported' }
     PaymentCompleted:
       name: PaymentCompleted
       contentType: application/json
@@ -208,6 +221,21 @@ components:
                     Seconds actually worked (now − work_started_at). Null if the guard never
                     started → payment keeps the full charge (no proration basis). The payment
                     service consumes this to finalize proration/refund idempotently.
+
+    EnvelopeOf_ProgressReported:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id, customer_id, guard_id, report_id, hour_number]
+              properties:
+                booking_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid, description: Notification target (the customer). }
+                guard_id: { type: string, format: uuid, description: The reporting (assigned) guard. }
+                report_id: { type: string, format: uuid }
+                hour_number: { type: integer, format: int32, minimum: 1 }
 
     EnvelopeOf_PaymentRef:
       allOf:

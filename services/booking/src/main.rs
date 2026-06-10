@@ -13,17 +13,20 @@ mod domain;
 mod events;
 mod models;
 mod repo;
+mod s3;
 mod state;
 
 use anyhow::Context;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_redis_client;
 
 use crate::discovery_client::HttpDiscoveryClient;
+use crate::s3::S3Client;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "booking";
@@ -48,6 +51,15 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("PROFILE_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
     let rating_url =
         std::env::var("RATING_URL").unwrap_or_else(|_| "http://localhost:3007".to_string());
+    // S3/MinIO for check-in photos (fail-fast: S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/
+    // S3_BUCKET required). Region + public URL are read ad-hoc exactly like chat's main.rs:
+    // an empty `${S3_PUBLIC_URL:-}` from compose is treated as absent (single-host dev
+    // falls back to the internal endpoint).
+    let s3_config = S3Config::from_env()?;
+    let s3_region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let s3_public_url = std::env::var("S3_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -74,6 +86,21 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config.ttl_secs,
     );
 
+    let s3_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("build S3 HTTP client")?;
+    let s3 = S3Client::new(
+        s3_http,
+        s3_config.endpoint,
+        s3_public_url,
+        s3_config.bucket,
+        s3_region,
+        s3_config.access_key,
+        s3_config.secret_key,
+    );
+
     let state = AppState {
         db: db.clone(),
         db_read,
@@ -81,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_jwt_config,
         discovery,
+        s3,
     };
 
     // --- background outbox relay (the producer half of Phase 1) ---
@@ -103,7 +131,23 @@ async fn main() -> anyhow::Result<()> {
             "/bookings",
             post(api::create_booking::<AppState>).get(api::list_bookings::<AppState>),
         )
+        // Open-job discovery — a LITERAL segment beside `/bookings/{id}`: the router gives
+        // static segments priority over captures (house precedent: calling's `/calls/ice`),
+        // and the gateway's `/bookings` prefix rule already routes it (no gateway change).
+        .route("/bookings/open", get(api::list_open_bookings::<AppState>))
         .route("/bookings/{id}", get(api::get_booking::<AppState>))
+        // Guard hourly check-in (multipart photo ≤ 10MB; the explicit body cap replaces
+        // Axum's ~2MB default) + the participant-readable report list. NOTE: routing needs
+        // no gateway change (the /bookings prefix rule covers it), but the gateway's 1 MiB
+        // proxy body buffer + staging nginx's 2 MB cap currently 413 real photos at the
+        // edge — a per-route body-cap carve-out is a TRACKED HARD DEPENDENCY for the
+        // mobile wiring slice (see PROGRESS.md + the OpenAPI operation note).
+        .route(
+            "/bookings/{id}/progress-reports",
+            post(api::create_progress_report::<AppState>)
+                .get(api::list_progress_reports::<AppState>)
+                .layer(DefaultBodyLimit::max(api::MAX_CHECK_IN_BODY_BYTES)),
+        )
         // Discovery: approved guard catalog (profile) + rating summaries (rating).
         .route("/available-guards", get(api::available_guards::<AppState>))
         .route(

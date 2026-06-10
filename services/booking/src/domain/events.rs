@@ -104,6 +104,30 @@ pub fn event_for_status(
     Some(EventMapping { topic, payload })
 }
 
+/// Map a persisted hourly check-in to its `pguard.events.booking.progress_reported` event.
+/// Pure: the repo enqueues this into the outbox in the SAME transaction as the
+/// `progress_reports` insert. Carries `customer_id` so the (future) notification consumer
+/// can route "your guard checked in" without a read back into booking. NOT a lifecycle
+/// status change — the gateway's booking-status WS ignores this topic.
+pub fn event_for_progress_report(
+    booking_id: Uuid,
+    customer_id: Uuid,
+    guard_id: Uuid,
+    report_id: Uuid,
+    hour_number: i32,
+) -> EventMapping {
+    EventMapping {
+        topic: topics::BOOKING_PROGRESS_REPORTED,
+        payload: json!({
+            "booking_id": booking_id,
+            "customer_id": customer_id,
+            "guard_id": guard_id,
+            "report_id": report_id,
+            "hour_number": hour_number,
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +309,21 @@ mod tests {
         .expect("cancelled must emit");
         assert_eq!(m.topic, topics::BOOKING_CANCELLED);
         assert_eq!(m.payload["guard_id"], json!(g));
+    }
+
+    #[test]
+    fn progress_report_event_carries_all_routing_ids_and_hour() {
+        let booking = Uuid::new_v4();
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let report = Uuid::new_v4();
+        let m = event_for_progress_report(booking, customer, guard, report, 3);
+        assert_eq!(m.topic, topics::BOOKING_PROGRESS_REPORTED);
+        assert_eq!(m.payload["booking_id"], json!(booking));
+        assert_eq!(m.payload["customer_id"], json!(customer));
+        assert_eq!(m.payload["guard_id"], json!(guard));
+        assert_eq!(m.payload["report_id"], json!(report));
+        assert_eq!(m.payload["hour_number"], json!(3));
     }
 
     #[test]
