@@ -606,6 +606,11 @@ pub async fn export_user(db: &PgPool, user_id: Uuid) -> Result<serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Used by the auth-hardening regression tests at the bottom of this module.
+    use crate::domain::rotation::{decide, RotationDecision};
+    use crate::domain::token;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
 
     #[test]
     fn dummy_hash_is_valid_and_never_matches() {
@@ -866,12 +871,15 @@ mod tests {
     // Auth-hardening regression net (PR #37 shipped H1/H2 with no tests). All DB-gated on
     // DATABASE_URL (migrated identity 0001+); hermetic SKIP otherwise. refresh_tokens has no FK
     // to users, so these seed token rows directly with a random user_id (no user needed).
+    //
+    // COVERAGE NOTE (recorded follow-up): these lock the rotation DECISION + the repo primitives
+    // (rotate/revoke_family/find). They do NOT drive the `refresh()` HTTP handler's match arms
+    // end-to-end (ReuseDetected → revoke_family, CeilingExceeded → generic 401), because that
+    // handler takes the concrete `AppState` (which mandates a live Redis the refresh path never
+    // uses) rather than a lightweight deps seam like revoke-all/register. A handler-level
+    // wiring test is a follow-up for the next auth slice (would need a Redis-backed AppState or a
+    // `RefreshDeps` seam — both out of scope for a test-only slice). The arms are correct today.
     // ─────────────────────────────────────────────────────────────────────────────
-
-    use crate::domain::rotation::{decide, RotationDecision};
-    use crate::domain::token;
-    use std::sync::Arc;
-    use tokio::sync::Barrier;
 
     /// Connect a real pool (≥2 conns so the race tasks run truly concurrently), or `None` to SKIP.
     async fn gated_pool() -> Option<PgPool> {
@@ -930,6 +938,11 @@ mod tests {
     /// the loser is rejected (Ok(None)) WITHOUT killing the family (a benign double-fire ≠ reuse).
     /// Looped to shake out scheduling flake; the conditional UPDATE + row lock make the outcome
     /// deterministic, not probabilistic, so this is a real race, not a sequential fake.
+    ///
+    /// NOTE: even if the two tasks happen to SERIALIZE (no true overlap), the assertion still holds
+    /// and is still meaningful — the conditional `UPDATE … WHERE revoked = FALSE` guarantees
+    /// exactly-one in either ordering. Do NOT "strengthen" this with timing assumptions; that would
+    /// only make it flaky without testing anything more.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn concurrent_rotation_mints_exactly_one_successor() {
         let Some(pool) = gated_pool().await else {
@@ -968,6 +981,21 @@ mod tests {
                 live_tokens_in_family(&pool, family_id).await,
                 1,
                 "iter {i}: race loser must not revoke the family (winner's successor stays live)"
+            );
+            // The winner's returned token resolves to exactly that lone live row (no stale/dup id).
+            let winner = a.or(b).expect("a winner exists");
+            let (winner_rid, _) = token::parse(&winner).expect("parse winner");
+            let winner_row = find_refresh_by_rotation(&pool, winner_rid)
+                .await
+                .expect("find winner")
+                .expect("winner row exists");
+            assert!(
+                !winner_row.stored.revoked,
+                "iter {i}: the winner's token is live"
+            );
+            assert_eq!(
+                winner_row.family_id, family_id,
+                "iter {i}: successor stays in the family"
             );
         }
 
