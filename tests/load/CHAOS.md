@@ -51,6 +51,9 @@
 `CHAOS_RESULT case=redis gateway_healthz=200 readyz_down=503 protected_during=500 login_during=200 protected_recovered=200 readyz_recovered=200 verdict=PASS`
 
 > Re-run after `feat/redis-reconnect` (gateway holds a reconnecting `redis::aio::ConnectionManager`
+
+> ⚠️ บรรทัดผลด้านล่างเป็น **expected output — ยังไม่ได้รัน live บน prod stack** (hermetic FlakyRedis tests + config validation คือหลักฐานจริงของ PR #41); ให้รัน `run-chaos.sh 3` จริงตอน deploy-smoke แล้วแทนที่บล็อกนี้ด้วย log จริง
+
 > + a redis-aware `/readyz`). The original buggy transcript is preserved in git history /
 > `RESULTS.md`. Run: `tests/load/chaos/run-chaos.sh 3`.
 

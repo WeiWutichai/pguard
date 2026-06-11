@@ -311,7 +311,7 @@ Add a cron entry (e.g. `crontab -e`) that renews and reloads nginx:
   booking-status WebSocket (`/v1/ws/bookings/{id}`), and the generic WS proxies `/v1/ws/chat`,
   `/v1/ws/track`, `/v1/ws/call`. Staging picks these up with the next gateway image — **no change to
   `nginx.staging.conf` needed.** (Follow-up: the web-admin e2e env-gated rewrites
-  `PGUARD_RATING_URL`/`PGUARD_PRESENCE_URL` in `apps/web-admin/next.config.ts` can be retired once
+  `PGUARD_RATING_URL`/`PGUARD_PRESENCE_URL` in `apps/web-admin/next.config.ts` retired 2026-06-11 (PR #39) — historical note: could be retired once
   the e2e suite is re-verified against the gateway.)
 - **Request-body caps on `/v1` (default 1 MiB; 12 MiB on the two upload routes).** The gateway
   buffers request bodies with a hard **1 MiB** cap by default (clean JSON `413`), which is also the

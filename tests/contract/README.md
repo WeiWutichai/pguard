@@ -54,7 +54,6 @@ defense-in-depth, pre-smoke-cleanup #3). The auth-required assertion still hits 
 surface the contract promises to protect): an unauthenticated `GET /v1/guards/{id}/ratings` must be
 `401`. If the route is ever made edge-public again, that test goes red.
 
-**409 sub-code (in flight).** `POST /bookings/{id}/progress-reports` duplicate-hour 409 is being
 re-coded from `CONFLICT` → `DUPLICATE_CHECK_IN` by the parallel `feat/checkin-409-subcode` slice.
 The duplicate test asserts the *envelope shape* (stable) and accepts **either** code, so it stays
 green across that merge. **Rebase after that slice lands** and tighten to `DUPLICATE_CHECK_IN`.
