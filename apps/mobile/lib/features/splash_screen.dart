@@ -13,15 +13,15 @@ class SplashScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Container(
-        // Design: linear-gradient(165deg, --green-700, --green-950). Those two stops have
-        // no exact tokens — nearest are colorGreen800 → colorBrand (flag for token regen).
-        // 165deg CSS angle → unit vector (sin165°, −cos165°) = (0.259, 0.966 downward),
-        // mirrored for begin (same exact-axis pattern as PgNavFab's 150deg gradient).
+        // Design: linear-gradient(165deg, --green-700, --green-950) — exact tokens since
+        // the full-ramp regen (PR #45). 165deg CSS angle → unit vector (sin165°, −cos165°)
+        // = (0.259, 0.966 downward), mirrored for begin (same exact-axis pattern as
+        // PgNavFab's 150deg gradient).
         decoration: const BoxDecoration(
           gradient: LinearGradient(
             begin: Alignment(-0.259, -0.966),
             end: Alignment(0.259, 0.966),
-            colors: [PgTokens.colorGreen800, PgTokens.colorBrand],
+            colors: [PgTokens.colorGreen700, PgTokens.colorGreen950],
           ),
         ),
         child: CustomPaint(

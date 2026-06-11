@@ -157,8 +157,8 @@ class _RegistrationPendingScreenState
   }
 }
 
-/// Design `.ic`: 96px tinted circle — guard = warning-bg + clock, customer = amber-100 + check
-/// (both icons in amber-700, the nearest token to the design's amber-600/700 pair).
+/// Design `.ic`: 96px tinted circle — guard = warning-bg + amber-600 clock, customer =
+/// amber-100 + amber-700 check (exact tokens since the full-ramp regen).
 class _HeroCircle extends StatelessWidget {
   const _HeroCircle({required this.isGuard});
 
@@ -176,7 +176,7 @@ class _HeroCircle extends StatelessWidget {
       child: Icon(
         isGuard ? Icons.schedule : Icons.check,
         size: 44,
-        color: PgTokens.colorAmber700,
+        color: isGuard ? PgTokens.colorAmber600 : PgTokens.colorAmber700,
       ),
     );
   }

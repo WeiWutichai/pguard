@@ -270,9 +270,7 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
   }
 }
 
-/// Design `.refund-note`: clock icon + 13px info-blue copy on a light info wash.
-/// NOTE: PgTokens has NO info-bg token — nearest pattern is [PgTokens.colorInfo] at 12%
-/// alpha (flag for token regen alongside `--info-bg`).
+/// Design `.refund-note`: clock icon + 13px info-blue copy on the `--info-bg` wash.
 class _RefundNote extends StatelessWidget {
   const _RefundNote({this.totalSatang});
 
@@ -287,7 +285,7 @@ class _RefundNote extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
       decoration: BoxDecoration(
-        color: PgTokens.colorInfo.withValues(alpha: 0.12),
+        color: PgTokens.colorInfoBg,
         borderRadius: BorderRadius.circular(PgTokens.radiusXl),
       ),
       child: Row(

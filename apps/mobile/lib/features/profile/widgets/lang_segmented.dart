@@ -52,12 +52,12 @@ class _Segment extends StatelessWidget {
         decoration: BoxDecoration(
           color: selected ? PgTokens.colorSurface : Colors.transparent,
           borderRadius: BorderRadius.circular(PgTokens.radiusFull),
-          // Design `.seg-sm .on` elevation: --sh-xs (0 1px 2px rgba(8,38,25,.06)
-          // ≈ colorText at 6% — nearest token to the design's shadow ink).
+          // Design `.seg-sm .on` elevation: --sh-sm (0 1px 2px rgba(8,38,25,.06) —
+          // the shadow ink rgb(8,38,25) IS green-950, exact since the full-ramp regen).
           boxShadow: selected
               ? [
                   BoxShadow(
-                    color: PgTokens.colorText.withValues(alpha: 0.06),
+                    color: PgTokens.colorGreen950.withValues(alpha: 0.06),
                     offset: const Offset(0, 1),
                     blurRadius: 2,
                   ),

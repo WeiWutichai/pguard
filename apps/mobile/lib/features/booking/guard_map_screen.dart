@@ -253,8 +253,8 @@ class _ReferenceMarker extends StatelessWidget {
 
 /// The tracking pill over the map: amber live dot + customer-directed copy while the guard
 /// is en route ("กำลังเดินทางมาหาคุณ" — a screen-local override; the shared lifecycle labels
-/// stay guard-neutral), lifecycle labels otherwise. Amber-400 has no token; colorAccent
-/// (amber-500) is the nearest.
+/// stay guard-neutral), lifecycle labels otherwise. Dot = the design's amber-400 (exact
+/// token since the full-ramp regen).
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status, required this.isThai});
 
@@ -289,7 +289,7 @@ class _StatusChip extends StatelessWidget {
               width: 8,
               height: 8,
               decoration: const BoxDecoration(
-                color: PgTokens.colorAccent,
+                color: PgTokens.colorAmber400,
                 shape: BoxShape.circle,
               ),
             ),

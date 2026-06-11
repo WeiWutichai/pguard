@@ -49,10 +49,10 @@ class GuardJobCard extends StatelessWidget {
           padding: const EdgeInsets.all(PgTokens.space4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-            // Soft amber-300-style border (colorAmber100 = nearest token).
+            // Design's soft amber-300 border (exact token since the full-ramp regen).
             border: Border.all(
                 color: highlight
-                    ? PgTokens.colorAmber100
+                    ? PgTokens.colorAmber300
                     : PgTokens.colorBorder),
           ),
           child: Column(
