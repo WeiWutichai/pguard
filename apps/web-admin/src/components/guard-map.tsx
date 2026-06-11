@@ -14,10 +14,12 @@ import { useLanguage, type TKey } from "@/lib/i18n";
 export type GuardStatus = "active" | "idle" | "offline";
 export type MapGuard = components["schemas"]["GuardLocation"] & { status: GuardStatus };
 
+// Guard live-status tokens (tokens.css --status-*); the divIcon html lands in the DOM, so
+// CSS vars resolve there — markers stay token-driven and theme-aware, no raw hex.
 const STATUS_COLOR: Record<GuardStatus, string> = {
-  active: "#16a34a", // brand/success green
-  idle: "#f59e0b", // warning amber
-  offline: "#69776f", // muted gray
+  active: "var(--status-active)",
+  idle: "var(--status-working)",
+  offline: "var(--status-offline)",
 };
 const STATUS_LABEL: Record<GuardStatus, TKey> = {
   active: "map.status.active",
@@ -36,7 +38,7 @@ function iconFor(status: GuardStatus): L.DivIcon {
   // server/guard-provided field into this string.
   const icon = L.divIcon({
     className: "",
-    html: `<span style="display:block;width:14px;height:14px;border-radius:9999px;background:${STATUS_COLOR[status]};border:2px solid #fff;box-shadow:0 0 0 1px rgba(0,0,0,.25)"></span>`,
+    html: `<span style="display:block;width:14px;height:14px;border-radius:9999px;background:${STATUS_COLOR[status]};border:2px solid var(--bg-surface);box-shadow:0 0 0 1px rgba(0,0,0,.25)"></span>`,
     iconSize: [14, 14],
     iconAnchor: [7, 7],
   });

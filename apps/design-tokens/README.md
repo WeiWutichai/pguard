@@ -1,29 +1,38 @@
-<!-- pguard v2 scaffold stub — design tokens package. See CLAUDE.md "apps/design-tokens". -->
 # Design tokens
 
-Single source of design primitives, **generated from the hi-fi design system**:
-`redesign-pguard/project/pguard/Design System.html` (brand: Deep Forest green + Amber
-accent, IBM Plex Sans Thai). Bilingual TH/EN platform per CLAUDE.md.
+Single source of design primitives, **extracted from the hi-fi design**:
+`redesign-pguard/project/pguard/tokens.css` (brand: Deep Forest green `#0E3B2E` +
+interactive `#1FA971` + Amber accent · IBM Plex Sans Thai). Bilingual TH/EN platform
+per CLAUDE.md.
 
-This package holds three outputs that **must stay in sync** (same token names + values):
+## Layout
 
-| File | Consumer |
+| File | Role |
 |---|---|
-| `tokens.css` | Next.js web admin (`apps/web-admin`) |
-| `tokens.dart` | Flutter mobile (`apps/mobile`) |
-| `tokens.ts`  | TS-side theming / Storybook / shared web utilities |
+| `source/tokens.css` | **Committed snapshot** of the design's token sheet (the in-repo source of truth — `redesign-pguard/` is a gitignored local artifact, so CI regenerates from this snapshot) |
+| `extract.mjs` | The extractor (node-only, no deps, byte-deterministic) |
+| `tokens.css` | GENERATED → web-admin (CSS custom properties, light + `[data-theme="dark"]`) |
+| `tokens.ts` | GENERATED → TS consumers (typed object incl. dark overrides) |
+| `lib/pguard_design_tokens.dart` | GENERATED → Flutter mobile (`PgTokens` + `PgTokensDark`) |
 
-## Status
+## Regenerating
 
-The current files are **PLACEHOLDER** subsets (a handful of color/spacing/radius tokens)
-carrying the real brand values, marked `GENERATED PLACEHOLDER`. They exist so consumers
-can import token names now.
+```bash
+node apps/design-tokens/extract.mjs     # or: ./tooling/codegen/generate.sh
+```
 
-## Regeneration
+Do not hand-edit the generated trio. To change a value: update the hi-fi design,
+re-copy `redesign-pguard/project/pguard/tokens.css` → `source/tokens.css`, regenerate,
+commit all four. CI (`codegen-stale` job → `tests/contract/check-generated-codegen.sh`)
+fails if the committed outputs drift from the snapshot.
 
-Regenerate all three from `Design System.html` (full palette, semantic aliases, dark
-theme, typography, spacing scale, radii). Do not hand-edit — change the design source,
-then re-export so CSS/Dart/TS remain identical in name and value.
+## Guarantees
 
-> TODO: wire the extraction step (Design System.html → tokens.{css,dart,ts}) and pin it
-> in `tooling/codegen/` or a dedicated token build script.
+- **Every `--var` in the snapshot must be claimed by the extractor's mapping** (and
+  vice-versa) — an unmapped token fails the run, so a design-side token change can't be
+  silently dropped.
+- **Dart API is an additive superset**: every member the original stub exposed keeps its
+  name and value (the 36 members `apps/mobile` consumes are pinned by that contract), so
+  regeneration cannot break mobile.
+- `color.onAmber` (`#2A1500`) is carried from the design's component sheet
+  (`admin.css` `.btn.accent` text) — the one token not in tokens.css.
