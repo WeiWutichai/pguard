@@ -54,6 +54,17 @@ else
   echo "SKIPPED [dart-client]: need Java 11+ and 'pnpm install' in tooling/codegen (openapi-generator-cli)."
 fi
 
+# ── Target: design tokens → apps/design-tokens/{tokens.css,tokens.ts,lib/…dart} ──
+# Extracts the full token set from the committed hi-fi snapshot (apps/design-tokens/
+# source/tokens.css — redesign-pguard is a gitignored local artifact, so the snapshot is
+# the in-repo source of truth). Node-only, no deps; byte-deterministic.
+if command -v node >/dev/null 2>&1; then
+  echo "==> [design-tokens] regenerating tokens.css / tokens.ts / pguard_design_tokens.dart"
+  node "${ROOT}/apps/design-tokens/extract.mjs"
+else
+  echo "SKIPPED [design-tokens]: node not found."
+fi
+
 # ── Target: Rust event serde types → packages/shared-events/src/generated/events.rs ──
 # Small in-repo generator (python3 + PyYAML). Output is rustfmt-clean by construction.
 if python3 -c 'import yaml' >/dev/null 2>&1; then
