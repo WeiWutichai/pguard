@@ -326,6 +326,19 @@ jobs:
           TURN_URLS: turn:127.0.0.1:3478?transport=udp
           TURN_SECRET: ci
           TURN_EXTERNAL_IP: 127.0.0.1
+          # Per-service NATS ACL credentials (added by feat/security-deepening + nats.conf;
+          # ${VAR:?} fail-fast in compose). Structure/drift check only — dummy values.
+          NATS_BOOKING_PASSWORD: ci
+          NATS_PAYMENT_PASSWORD: ci
+          NATS_RATING_PASSWORD: ci
+          NATS_CALLING_PASSWORD: ci
+          NATS_CHAT_PASSWORD: ci
+          NATS_PROFILE_PASSWORD: ci
+          NATS_IDENTITY_PASSWORD: ci
+          NATS_NOTIFICATION_PASSWORD: ci
+          NATS_PRESENCE_PASSWORD: ci
+          NATS_GATEWAY_PASSWORD: ci
+          NATS_MONITORING_PASSWORD: ci
         run: docker compose -f infra/docker/docker-compose.prod.yml config --quiet
 
   # ---------------------------------------------------------------------------
