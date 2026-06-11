@@ -102,12 +102,12 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
           PgNavTab(
             icon: Icons.calendar_today_outlined,
             label: 'การจอง / Bookings',
-            onTap: () => PgBottomNav.comingSoon(context),
+            onTap: () => context.push('/bookings-history'),
           ),
           PgNavTab(
             icon: Icons.account_balance_wallet_outlined,
             label: 'กระเป๋า / Wallet',
-            onTap: () => PgBottomNav.comingSoon(context),
+            onTap: () => context.push('/wallet'),
           ),
           PgNavTab(
             icon: Icons.person_outline,
