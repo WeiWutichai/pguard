@@ -274,20 +274,27 @@ pub async fn authenticate_token(
     let claims = decode_jwt_with_key(token, decoding_key)?;
     let mut redis = redis.clone();
 
+    // FAIL CLOSED on a Redis error: a revocation/force-revoke lookup that cannot run must DENY,
+    // not allow — otherwise a Redis outage silently re-validates logged-out / force-revoked
+    // tokens for their full TTL (defeating the jti blocklist + `trv`). This mirrors the gateway
+    // edge (`api-gateway/src/auth.rs`), which already maps the same lookups to a failure. This
+    // validator is the SOLE gate on the WS re-auth loops (chat/calling/presence/status) and any
+    // east-west/direct service call, so it must not be more permissive than the edge.
     let is_revoked: bool = redis
         .exists(format!("revoked_jti:{}", claims.jti))
         .await
-        .unwrap_or(false);
+        .map_err(|e| AppError::Internal(format!("revocation check unavailable: {e}")))?;
     if is_revoked {
         return Err(AppError::Unauthorized("Token has been revoked".to_string()));
     }
 
     // Per-user force-revoke-all: a token stamped with a version older than the user's current
-    // one is rejected. `user_trv:{user_id}` absent ⇒ version 0 (never revoked).
+    // one is rejected. `user_trv:{user_id}` absent ⇒ version 0 (never revoked); a Redis error
+    // (vs. an absent key) fails closed.
     let current_trv: i64 = redis
         .get::<_, Option<i64>>(format!("user_trv:{}", claims.sub))
         .await
-        .unwrap_or(None)
+        .map_err(|e| AppError::Internal(format!("revocation-version check unavailable: {e}")))?
         .unwrap_or(0);
     if claims.trv < current_trv {
         return Err(AppError::Unauthorized("Token has been revoked".to_string()));

@@ -86,7 +86,9 @@ impl S3Client {
             .send()
             .await
             .map_err(|e| {
-                tracing::warn!("S3 upload transport error: {e}");
+                // `without_url()` — reqwest's Display embeds the request URL, which here is a
+                // LIVE presigned PUT (X-Amz-Credential + signature, ~5 min TTL); never log it.
+                tracing::warn!("S3 upload transport error: {}", e.without_url());
                 AppError::Internal("attachment upload failed".to_string())
             })?;
         if !resp.status().is_success() {
