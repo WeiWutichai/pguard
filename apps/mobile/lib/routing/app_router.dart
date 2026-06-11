@@ -17,6 +17,7 @@ import '../features/auth/registration/guard_registration_screen.dart';
 import '../features/auth/registration/registration_pending_screen.dart';
 import '../features/auth/registration/role_selection_screen.dart';
 import '../features/booking/booking_form_screen.dart';
+import '../features/booking/bookings_list_screen.dart';
 import '../features/booking/cancellation_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
@@ -26,6 +27,7 @@ import '../features/booking/payment_success_screen.dart';
 import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
+import '../features/guard/earnings_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
@@ -34,6 +36,7 @@ import '../features/notifications/notification_screen.dart';
 import '../features/profile/profile_edit_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/splash_screen.dart';
+import '../features/wallet/wallet_screen.dart';
 
 part 'app_router.g.dart';
 
@@ -104,6 +107,12 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
           path: '/profile/edit',
           builder: (_, __) => const ProfileEditScreen()),
+      // Bottom-nav tab destinations: customer booking history + wallet, guard earnings.
+      GoRoute(
+          path: '/bookings-history',
+          builder: (_, __) => const BookingsListScreen()),
+      GoRoute(path: '/wallet', builder: (_, __) => const WalletScreen()),
+      GoRoute(path: '/earnings', builder: (_, __) => const EarningsScreen()),
       // Chat: the conversation list (acting role in `?role=`) + a single conversation
       // (`?role=`/`?readonly=` so a deep link works without `extra`; the counterpart name,
       // when known, rides in `extra` for the header).

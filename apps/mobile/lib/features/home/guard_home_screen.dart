@@ -110,7 +110,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
           PgNavTab(
             icon: Icons.payments_outlined,
             label: 'รายได้ / Earnings',
-            onTap: () => PgBottomNav.comingSoon(context),
+            onTap: () => context.push('/earnings'),
           ),
           PgNavTab(
             icon: Icons.person_outline,
