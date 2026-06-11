@@ -30,7 +30,7 @@ use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
-use shared::redis_client::create_redis_client;
+use shared::redis_client::{create_connection_manager, create_redis_client};
 
 use crate::s3::S3Client;
 use crate::state::AppState;
@@ -69,23 +69,24 @@ async fn main() -> anyhow::Result<()> {
     let db = create_pool(&db_config).await?;
     let db_read = create_read_pool(&db_config).await?;
 
-    let cache_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = cache_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals
+    // instead of wedging the AuthUser revocation check + WS re-auth tick forever (chaos case 3).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
 
-    // The pub/sub plane (separate URL/db when provided) — a multiplexed conn for PUBLISH + the
-    // client each WS session opens a dedicated SUBSCRIBE connection on.
+    // The pub/sub plane (separate URL/db when provided) — a reconnecting manager for PUBLISH + the
+    // client each WS session opens a dedicated SUBSCRIBE connection on (the subscriber stays a raw
+    // Client: a new session reconnects on its own; an in-flight subscriber that drops is replaced
+    // when the client reconnects after its re-auth tick fails closed).
     let pubsub_url = redis_config
         .pubsub_url
         .clone()
         .unwrap_or_else(|| redis_config.cache_url.clone());
     let pubsub_client = create_redis_client(&pubsub_url)?;
-    let pubsub_conn = pubsub_client
-        .get_multiplexed_tokio_connection()
+    let pubsub_conn = create_connection_manager(&pubsub_url)
         .await
-        .context("Redis pub/sub connection")?;
+        .context("Redis pub/sub connection (reconnecting)")?;
 
     let s3_http = reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(2))

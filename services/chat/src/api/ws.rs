@@ -237,7 +237,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         pubsub_client: redis::Client,
         s3: S3Client,
     }
@@ -248,7 +248,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -259,7 +259,7 @@ mod tests {
         fn db_read(&self) -> &sqlx::PgPool {
             &self.db
         }
-        fn pubsub_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn pubsub_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
         fn pubsub_client(&self) -> &redis::Client {
@@ -286,8 +286,10 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .ok()?;
         let client = redis::Client::open(redis_url).ok()?;
-        let redis = client.get_multiplexed_tokio_connection().await.ok()?;
         let db = PgPoolOptions::new()
             .acquire_timeout(Duration::from_millis(200))
             .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
@@ -413,11 +415,10 @@ mod tests {
             .connect(&db_url)
             .await
             .expect("connect Postgres");
-        let client = redis::Client::open(redis_url).expect("redis client");
-        let redis = client
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .expect("redis conn");
+        let client = redis::Client::open(redis_url).expect("redis client");
 
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();

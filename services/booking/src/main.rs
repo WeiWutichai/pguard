@@ -23,7 +23,7 @@ use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::discovery_client::HttpDiscoveryClient;
 use crate::s3::S3Client;
@@ -65,11 +65,11 @@ async fn main() -> anyhow::Result<()> {
     let db = create_pool(&db_config).await?;
     // Read-replica pool (C5.3) for list/discovery reads; falls back to primary if unset.
     let db_read = create_read_pool(&db_config).await?;
-    let redis_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = redis_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals
+    // in the background instead of wedging the AuthUser revocation check forever (chaos case 3).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
 
     // Bounded timeouts so one stalled upstream can't hang a discovery fan-out (each lookup
     // then surfaces as a generic error → best-effort default for that guard).

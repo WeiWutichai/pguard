@@ -24,7 +24,7 @@ pub const GPS_CHANNEL: &str = "presence:gps";
 /// treats a failure as log-and-continue — the DB write already succeeded and the next fix
 /// re-publishes, so a transient Redis blip never blocks GPS ingestion.
 pub async fn publish_gps(
-    redis: &redis::aio::MultiplexedConnection,
+    redis: &redis::aio::ConnectionManager,
     event: &GpsEvent,
 ) -> Result<(), AppError> {
     let payload = serde_json::to_string(event)

@@ -141,8 +141,8 @@ async fn session(
     guard_id: Uuid,
     token: Option<String>,
     db: sqlx::PgPool,
-    redis_pub: redis::aio::MultiplexedConnection,
-    redis_cache: redis::aio::MultiplexedConnection,
+    redis_pub: redis::aio::ConnectionManager,
+    redis_cache: redis::aio::ConnectionManager,
     decoding_key: DecodingKey,
 ) {
     let (mut sink, mut stream) = socket.split();
@@ -284,7 +284,7 @@ async fn session(
 /// ack). The heartbeat is gated on its OWN clock so it can never consume the GPS 1/sec slot.
 async fn handle_text(
     db: &sqlx::PgPool,
-    redis_pub: &redis::aio::MultiplexedConnection,
+    redis_pub: &redis::aio::ConnectionManager,
     tx: &mpsc::UnboundedSender<Message>,
     guard_id: Uuid,
     text: &str,
@@ -408,7 +408,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         authz: StubAuthz,
     }
     impl HasJwtSecret for TestDeps {
@@ -418,7 +418,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -430,7 +430,7 @@ mod tests {
         fn booking_authz(&self) -> &StubAuthz {
             &self.authz
         }
-        fn redis_pub(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_pub(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -439,9 +439,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         let db = PgPoolOptions::new()
@@ -569,9 +567,7 @@ mod tests {
             .connect(&db_url)
             .await
             .expect("connect Postgres");
-        let redis = redis::Client::open(redis_url)
-            .expect("redis client")
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .expect("redis conn");
 

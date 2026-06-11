@@ -312,7 +312,7 @@ mod tests {
         dec: Arc<DecodingKey>,
         svc_dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         pubsub_client: redis::Client,
         s3: S3Client,
     }
@@ -323,7 +323,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -339,7 +339,7 @@ mod tests {
         fn db_read(&self) -> &sqlx::PgPool {
             &self.db
         }
-        fn pubsub_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn pubsub_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
         fn pubsub_client(&self) -> &redis::Client {
@@ -380,8 +380,10 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .ok()?;
         let redis_client = redis::Client::open(redis_url).ok()?;
-        let redis = redis_client.get_multiplexed_tokio_connection().await.ok()?;
         Some(TestDeps {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             svc_dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),

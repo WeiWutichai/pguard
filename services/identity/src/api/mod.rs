@@ -467,7 +467,7 @@ mod tests {
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
-        fn revocation_redis(&self) -> Option<redis::aio::MultiplexedConnection> {
+        fn revocation_redis(&self) -> Option<redis::aio::ConnectionManager> {
             None
         }
     }
@@ -558,7 +558,7 @@ mod tests {
     #[derive(Clone)]
     struct RegisterTestDeps {
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         ek: EncodingKey,
         dk: DecodingKey,
     }
@@ -566,7 +566,7 @@ mod tests {
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
-        fn redis(&self) -> redis::aio::MultiplexedConnection {
+        fn redis(&self) -> redis::aio::ConnectionManager {
             self.redis.clone()
         }
         fn jwt_encoding_key(&self) -> &EncodingKey {
@@ -578,17 +578,15 @@ mod tests {
     }
 
     /// Build the register router over a lightweight state. Like otp's handler tests, this is
-    /// Redis-gated (state requires a real `MultiplexedConnection`); without a test Redis it
+    /// Redis-gated (state requires a real `ConnectionManager`); without a test Redis it
     /// returns `None` and the caller SKIPs. The lazy DB pool to a closed port is only reached
     /// by paths that get past validation + the single-use GETDEL (the happy path additionally
     /// requires `DATABASE_URL`).
-    async fn register_router() -> Option<(Router, redis::aio::MultiplexedConnection)> {
+    async fn register_router() -> Option<(Router, redis::aio::ConnectionManager)> {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         // Prefer a real DB when DATABASE_URL is set (happy-path test); else a lazy closed pool.

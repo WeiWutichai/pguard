@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | 1 | NATS down → up | outbox holds, drains on recovery (at-least-once) | tx committed w/ NATS down; backlog held; **drained in 0 s** on recovery | ✅ as designed |
 | 2 | postgres-replica down | read fallback? | replica-served reads **500 (no fallback)**; primary/writes fine | ⚠️ **finding** — hard dependency |
-| 3 | redis down → up | gateway survives; auth fail-closes while down; **self-heals on recovery** | process survives (`/healthz` 200); `/readyz` 503 while down; auth fail-closed 5xx while down; **recovers to 200 with NO restart** | ✅ fixed (was 🐛) — reconnect + `/readyz` |
+| 3 | redis down → up | gateway AND every backend survive; auth fail-closes while down; **self-heals on recovery** | process survives (`/healthz` 200); `/readyz` 503 while down; auth fail-closed 5xx while down; **recovers to 200 with NO restart** — gateway (PR #41) + all backends incl. WS re-auth (`feat/backend-redis-reconnect`) | ✅ fixed (was 🐛) — reconnect + `/readyz` |
 | 4 | booking (mid-tier) down | gateway 502, no cascade | `/bookings`+`/available-guards` **502**; identity+profile **200**; **no cascade**; recovers 404 | ✅ as designed |
 | 5 | WS backend killed mid-stream | client Close + reconnect | client got **close+error** after 5 acks; **reconnect opened cleanly** | ✅ as designed |
 
@@ -73,10 +73,17 @@
   generic over the connection type so the same fail-closed gate works over the reconnecting manager;
   a hermetic regression test (`packages/shared-rust` + `api-gateway` `FlakyRedis` doubles) proves
   fail-closed-while-down → self-heal-on-recovery at both the auth and rate-limit layers.
-- **Note on other services:** backend auth connections flow through `HasJwtSecret::redis_conn()`
-  (typed `&MultiplexedConnection`) and were out of scope here; the gateway is the single edge chokepoint
-  all authed traffic crosses, so its reconnect closes the blast radius. The shared primitives
-  (`create_connection_manager` + generic `authenticate_token`) are in place for a later per-service pass.
+- **Backend services (extended in `feat/backend-redis-reconnect`):** the per-service pass landed.
+  `HasJwtSecret::redis_conn()` now returns a reconnecting `&redis::aio::ConnectionManager`, so EVERY
+  backend that runs the `AuthUser` revocation check (identity, profile, booking, payment, rating,
+  chat, calling, presence, notification) and otp's captcha/rate-limit/lockout connection now self-heal
+  after a redis restart — instead of each holding a one-shot `MultiplexedConnection` that wedged
+  forever (so a single redis blip 500'd direct/east-west auth + killed every live WS on its next
+  60s re-auth tick until a manual `docker restart`). The WS re-auth loops (chat/calling/presence)
+  clone the reconnecting state connection, so they self-heal too. Fail-closed posture during the
+  outage is unchanged. Hermetic proof: `packages/shared-rust` `authenticate_token_denies_while_down_then_self_heals`
+  (a `FlakyRedis` double that errors then recovers); the live end-to-end proof is the staging
+  `restart redis → /v1/auth/me self-heals with no service restart` check (see the PR).
 
 ## Case 4 — booking (mid-tier) down → gateway 502, no cascade ✅
 
