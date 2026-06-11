@@ -35,7 +35,8 @@ enum PaymentMethod {
   final String labelEn;
 }
 
-/// A payment as returned by `POST /v1/payments` (money fields are decimal STRINGS).
+/// A payment as returned by `POST /v1/payments` / `GET /v1/payments` (money fields are
+/// decimal STRINGS).
 class Payment {
   const Payment({
     required this.id,
@@ -46,7 +47,10 @@ class Payment {
     this.guardId,
     this.expectedTotal,
     this.paymentMethod,
+    this.finalAmount,
+    this.refundAmount,
     this.paidAt,
+    this.createdAt,
   });
 
   final String id;
@@ -60,8 +64,16 @@ class Payment {
   /// Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
   final String? expectedTotal;
   final String? paymentMethod;
+
+  /// Prorated amount after completion (decimal string) — what the customer ultimately pays
+  /// once the booking finalizes; `null` until proration runs.
+  final String? finalAmount;
+
+  /// Amount returned to the customer (decimal string), when a refund is owed.
+  final String? refundAmount;
   final PaymentStatus status;
   final DateTime? paidAt;
+  final DateTime? createdAt;
 
   bool get isCompleted => status == PaymentStatus.completed;
 
@@ -75,10 +87,15 @@ class Payment {
         amount: (json['amount'] as Object?)?.toString() ?? '0',
         expectedTotal: (json['expected_total'] as Object?)?.toString(),
         paymentMethod: json['payment_method'] as String?,
+        finalAmount: (json['final_amount'] as Object?)?.toString(),
+        refundAmount: (json['refund_amount'] as Object?)?.toString(),
         status: PaymentStatus.tryParse(json['status'] as String?) ??
             PaymentStatus.pending,
         paidAt: json['paid_at'] != null
             ? DateTime.tryParse(json['paid_at'] as String)
+            : null,
+        createdAt: json['created_at'] != null
+            ? DateTime.tryParse(json['created_at'] as String)
             : null,
       );
 }

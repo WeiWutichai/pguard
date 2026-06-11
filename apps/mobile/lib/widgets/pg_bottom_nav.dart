@@ -118,8 +118,9 @@ class PgBottomNav extends StatelessWidget {
   final List<PgNavTab> tabs;
   final PgNavFab fab;
 
-  /// SnackBar for tabs whose destination doesn't exist yet (การจอง, กระเป๋า, รายได้) —
-  /// no dead navigation, no fake routes.
+  /// SnackBar for tabs whose destination doesn't exist yet —
+  /// no dead navigation, no fake routes. (No current tab uses it: การจอง / กระเป๋า /
+  /// รายได้ now route to /bookings-history, /wallet and /earnings.)
   static void comingSoon(BuildContext context) =>
       ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('เร็วๆ นี้ / Coming soon')));
