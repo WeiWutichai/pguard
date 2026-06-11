@@ -29,9 +29,6 @@ use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
 const REFRESH_COOKIE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 /// Refresh cookie is scoped to the auth paths only (it is never needed elsewhere).
 const REFRESH_COOKIE_PATH: &str = "/auth";
-/// Absolute lifetime ceiling for a refresh-token FAMILY: even with continuous rotation, a family
-/// older than this must re-authenticate (defense-in-depth beyond the 7-day per-token expiry).
-const FAMILY_MAX_DAYS: i64 = 30;
 /// Single-use profile-token lifetime (minutes) — short window to submit the onboarding
 /// profile right after registering.
 const PROFILE_TOKEN_TTL_MINUTES: i64 = 15;
@@ -228,17 +225,11 @@ pub async fn refresh(
             Err(generic_401())
         }
         RotationDecision::Expired => Err(generic_401()),
+        // Absolute rotation ceiling (RFC-6749-aligned hardening) — now decided in
+        // `domain::rotation::decide` (family older than FAMILY_MAX_DAYS). Benign: force re-login,
+        // no family kill. Generic 401, same as expiry.
+        RotationDecision::CeilingExceeded => Err(generic_401()),
         RotationDecision::Rotate => {
-            // Absolute rotation ceiling (RFC-6749-aligned hardening): a family that has been
-            // continuously rotated for more than FAMILY_MAX_DAYS must re-authenticate, so a
-            // single leaked-then-rotated lineage cannot live indefinitely past the 7-day
-            // per-token expiry. Benign (force re-login), so no family kill.
-            if chrono::Utc::now() - located.family_started_at
-                > chrono::TimeDelta::days(FAMILY_MAX_DAYS)
-            {
-                return Err(generic_401());
-            }
-
             // Re-read the user's current role + revocation version for the new access token.
             let meta = repo::user_auth_meta(&state.db, located.user_id)
                 .await?
