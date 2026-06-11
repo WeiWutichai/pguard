@@ -532,9 +532,7 @@ mod e2e_tests {
     /// Boot the gateway's `/v1/ws/chat` proxy route over real Redis with the chat
     /// upstream pointed at the stub backend.
     async fn spawn_gateway(redis_url: &str, chat_url: &str) -> SocketAddr {
-        let redis_conn = shared::redis_client::create_redis_client(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let redis_conn = shared::redis_client::create_connection_manager(redis_url)
             .await
             .unwrap();
         let jwt_config = JwtConfig {

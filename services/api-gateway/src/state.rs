@@ -7,9 +7,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use jsonwebtoken::DecodingKey;
-
-use shared::auth::HasJwtSecret;
 use shared::config::JwtConfig;
 
 use tokio::sync::broadcast;
@@ -94,8 +91,12 @@ fn env_url(key: &str, default: &str) -> String {
 pub struct AppState {
     /// Outbound HTTP client (connection-pooled) used to forward to upstreams.
     pub http: reqwest::Client,
-    /// Multiplexed Redis connection for jti/trv checks + the rate-limit counters.
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    /// **Reconnecting** Redis connection for jti/trv checks + the rate-limit counters. A
+    /// [`ConnectionManager`](redis::aio::ConnectionManager) (not a raw `MultiplexedConnection`)
+    /// so a Redis restart doesn't wedge the edge forever — it self-heals in the background
+    /// (chaos case 3 / the HIGH resilience finding). While Redis is down, commands error and the
+    /// auth layers fail closed; `/readyz` reflects the outage so orchestration sees it.
+    pub redis_conn: redis::aio::ConnectionManager,
     /// User-JWT validation config (decoding key + secret) for edge auth.
     pub jwt_config: JwtConfig,
     /// Env-resolved upstream base URLs.
@@ -111,18 +112,11 @@ pub struct AppState {
     pub allowed_origins: Arc<[String]>,
 }
 
-/// Lets the gateway reuse shared auth helpers/typing that key off [`HasJwtSecret`].
-impl HasJwtSecret for AppState {
-    fn jwt_secret(&self) -> &str {
-        &self.jwt_config.secret
-    }
-    fn decoding_key(&self) -> &DecodingKey {
-        &self.jwt_config.decoding_key
-    }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
-        &self.redis_conn
-    }
-}
+// NOTE: the gateway deliberately does NOT implement `shared::auth::HasJwtSecret` / use the
+// `AuthUser` extractor — it validates tokens at the edge via `crate::auth::validate` (which
+// takes the connection directly). That decoupling is what lets the held connection be a
+// reconnecting `ConnectionManager` (the `HasJwtSecret::redis_conn` trait fixes the type to
+// `&MultiplexedConnection`, which would block the swap). Backends keep `AuthUser` (unchanged).
 
 #[cfg(test)]
 mod tests {

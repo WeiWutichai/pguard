@@ -14,7 +14,7 @@
 |---|---|---|---|---|
 | 1 | NATS down → up | outbox holds, drains on recovery (at-least-once) | tx committed w/ NATS down; backlog held; **drained in 0 s** on recovery | ✅ as designed |
 | 2 | postgres-replica down | read fallback? | replica-served reads **500 (no fallback)**; primary/writes fine | ⚠️ **finding** — hard dependency |
-| 3 | redis down → up | gateway survives; auth degrades | gateway process survives; auth fail-closed 500 while down; **stays 500 after recovery** | 🐛 **finding** — no reconnect |
+| 3 | redis down → up | gateway survives; auth fail-closes while down; **self-heals on recovery** | process survives (`/healthz` 200); `/readyz` 503 while down; auth fail-closed 5xx while down; **recovers to 200 with NO restart** | ✅ fixed (was 🐛) — reconnect + `/readyz` |
 | 4 | booking (mid-tier) down | gateway 502, no cascade | `/bookings`+`/available-guards` **502**; identity+profile **200**; **no cascade**; recovers 404 | ✅ as designed |
 | 5 | WS backend killed mid-stream | client Close + reconnect | client got **close+error** after 5 acks; **reconnect opened cleanly** | ✅ as designed |
 
@@ -46,26 +46,34 @@
 - **Finding (filed, not fixed here):** add read fallback (retry on primary when the replica connection
   fails) OR run ≥2 replicas + a read load-balancer so a single replica loss isn't total. → PROGRESS.
 
-## Case 3 — redis down → up 🐛 FINDING (real bug)
+## Case 3 — redis down → up ✅ FIXED (was 🐛, the HIGH finding)
 
-`CHAOS_RESULT case=redis gateway_healthz=200 protected_during=500 login_during=200 protected_recovered=500 gateway_survived=YES`
+`CHAOS_RESULT case=redis gateway_healthz=200 readyz_down=503 protected_during=500 login_during=200 protected_recovered=200 readyz_recovered=200 verdict=PASS`
 
-- **While redis was down:** the gateway **process survived** (`/healthz` 200). Protected routes
-  (`/v1/auth/me`) returned **500** — edge auth does jti/trv lookups in redis and **fail-closes** (correct:
-  it must not admit a token it can't verify isn't revoked). Public login still returned **200** (no edge
-  auth; rate-limit is fail-open).
-- **After redis recovered (healthy):** protected routes **still 500**. Confirmed out-of-band: with every
-  container healthy and a fresh valid token, `/v1/auth/me` and `/v1/available-guards` stayed **500** until
-  the gateway was **restarted** — after which they immediately returned **200**.
-- **Root cause:** the gateway opens a single multiplexed redis connection at startup; when redis
-  restarts, that connection breaks and is **never re-established**, so edge auth errors indefinitely.
-  Because `/healthz` doesn't probe redis, an orchestrator won't auto-heal it.
-- **Severity:** high for resilience — a transient redis blip (restart, failover, OOM) silently bricks
-  **all protected traffic** at the edge until a manual gateway restart. (Likely affects other services
-  that hold a long-lived multiplexed redis connection too — to be checked.)
-- **Finding (filed, not fixed here):** the redis client must reconnect (connection-manager with retry /
-  recreate-on-error), and `/healthz` (or a `/readyz`) should reflect redis reachability so orchestration
-  can restart a wedged instance. → PROGRESS item.
+> Re-run after `feat/redis-reconnect` (gateway holds a reconnecting `redis::aio::ConnectionManager`
+> + a redis-aware `/readyz`). The original buggy transcript is preserved in git history /
+> `RESULTS.md`. Run: `tests/load/chaos/run-chaos.sh 3`.
+
+- **While redis was down:** the gateway **process survived** (`/healthz` 200 — liveness never touches
+  redis) and **`/readyz` flipped to 503** (it `PING`s redis, so orchestration now *sees* the outage —
+  the old `/healthz`-only probe hid it). Protected routes (`/v1/auth/me`) returned **5xx** — edge auth
+  does jti/trv lookups in redis and **fail-closes** (correct: it must not admit a token it can't verify
+  isn't revoked). The fail-closed posture is **unchanged** from before. Public login still returned
+  **200** (no edge auth; rate-limit is fail-open).
+- **After redis recovered:** protected routes returned to **200 with NO gateway restart**, and `/readyz`
+  self-healed to **200**. The `ConnectionManager` re-establishes the socket in the background (bounded
+  exponential backoff, cap ≤2s) the moment redis is back — no manual intervention, no busy-retry storm.
+- **Fix:** `services/api-gateway` now builds its held redis connection via
+  `shared::redis_client::create_connection_manager` (reconnecting) instead of a one-shot
+  `MultiplexedConnection`; `/readyz` reports redis reachability while `/healthz` stays a pure liveness
+  signal (so a redis blip never triggers a k8s restart loop). The shared `authenticate_token` was made
+  generic over the connection type so the same fail-closed gate works over the reconnecting manager;
+  a hermetic regression test (`packages/shared-rust` + `api-gateway` `FlakyRedis` doubles) proves
+  fail-closed-while-down → self-heal-on-recovery at both the auth and rate-limit layers.
+- **Note on other services:** backend auth connections flow through `HasJwtSecret::redis_conn()`
+  (typed `&MultiplexedConnection`) and were out of scope here; the gateway is the single edge chokepoint
+  all authed traffic crosses, so its reconnect closes the blast radius. The shared primitives
+  (`create_connection_manager` + generic `authenticate_token`) are in place for a later per-service pass.
 
 ## Case 4 — booking (mid-tier) down → gateway 502, no cascade ✅
 
@@ -92,11 +100,13 @@
 
 ---
 
-## Findings filed to PROGRESS (NOT fixed in this slice — chaos must not touch service code)
+## Findings
 
-1. **Gateway does not reconnect to redis after a redis restart** (case 3) — protected routes 500
-   indefinitely until gateway restart; `/healthz` doesn't reflect it. *High.* Fix: reconnecting redis
-   client + redis-aware readiness probe.
-2. **No read fallback when the replica is down** (case 2) — all replica-served reads 500 on a single
-   replica loss though the primary is healthy. *Medium.* Fix: primary-retry on replica failure and/or
-   ≥2 replicas behind a read LB.
+1. ✅ **RESOLVED** (`feat/redis-reconnect`) — **Gateway did not reconnect to redis after a redis restart**
+   (case 3) — protected routes 500'd indefinitely until a gateway restart and `/healthz` hid it. *Was
+   High.* Fixed: the gateway holds a reconnecting `redis::aio::ConnectionManager` (self-heals in the
+   background) + a redis-aware `/readyz` (liveness stays redis-blind so no restart loop). Re-run of
+   case 3 now `verdict=PASS`. See the case-3 section above.
+2. ⏳ **OPEN** — **No read fallback when the replica is down** (case 2) — all replica-served reads 500 on a
+   single replica loss though the primary is healthy. *Medium.* Fix: primary-retry on replica failure
+   and/or ≥2 replicas behind a read LB. (Out of scope for this slice — separate design trade-off.)

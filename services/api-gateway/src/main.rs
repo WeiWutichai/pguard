@@ -18,6 +18,8 @@ mod handler;
 mod proxy;
 mod ratelimit;
 mod state;
+#[cfg(test)]
+mod test_support;
 mod ws;
 mod wsproxy;
 
@@ -29,7 +31,7 @@ use axum::routing::{any, get};
 use axum::{Json, Router};
 
 use shared::config::{JwtConfig, RedisConfig};
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::domain::ratelimit::Limits;
 use crate::state::{AppState, UpstreamTable};
@@ -57,9 +59,10 @@ async fn main() -> anyhow::Result<()> {
     let routes = UpstreamTable::from_env();
 
     // --- infrastructure ---
-    let redis_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = redis_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting Redis (ConnectionManager): a Redis restart no longer wedges the edge — it
+    // re-establishes in the background (chaos case 3). The initial connect is awaited here, so a
+    // Redis that's down at startup still fails fast (unchanged startup posture).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
         .context("Redis cache connection")?;
     let http = reqwest::Client::builder()
@@ -120,6 +123,7 @@ async fn main() -> anyhow::Result<()> {
     // it lives on the admin listener above. ---
     let app = Router::new()
         .route("/healthz", get(healthz))
+        .route("/readyz", get(readyz))
         .route("/v1/ws/bookings/{id}", get(ws::ws_bookings))
         .route("/v1/ws/chat", get(wsproxy::ws_chat))
         .route("/v1/ws/track", get(wsproxy::ws_track))
@@ -164,11 +168,61 @@ fn parse_env(key: &str, default: u32) -> u32 {
         .unwrap_or(default)
 }
 
-/// Liveness/readiness probe — the gateway's own endpoint (not proxied).
+/// **Liveness** probe — the gateway's own endpoint (not proxied). Deliberately does NOT touch
+/// Redis: liveness must reflect only "is the process running". Tying it to Redis would make a
+/// transient Redis outage trigger a k8s **restart loop** (kill a perfectly-alive gateway), which
+/// is exactly the wrong response — the gateway self-heals its Redis connection on its own.
+/// Redis reachability is reported by [`readyz`] instead.
 async fn healthz() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "status": "ok",
         "service": SERVICE_NAME,
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// **Readiness** probe — reflects whether the gateway can actually serve authed traffic, i.e.
+/// whether Redis (the jti/trv revocation store + rate-limiter) is reachable. `PING`s through the
+/// held reconnecting connection: `200 ready` on PONG, `503 degraded` on error/timeout. The PING
+/// is bounded by an explicit 2s `tokio::time::timeout`; this is belt-and-suspenders over the
+/// `ConnectionManager`'s own 2s response timeout (`REDIS_OP_TIMEOUT`) — the outer bound also covers
+/// any path that resolves before a command is dispatched, so the probe can never hang. The k8s
+/// `readinessProbe.timeoutSeconds` (3s) is set to exceed both.
+///
+/// k8s wires this to the **readiness** probe (pull a Redis-blind pod from the Service so it stops
+/// receiving traffic) while keeping **liveness** on [`healthz`] (never restart for a Redis blip).
+/// Because the connection self-heals, readiness flips back to `200` on its own once Redis returns.
+async fn readyz(
+    axum::extract::State(state): axum::extract::State<AppState>,
+) -> (axum::http::StatusCode, Json<serde_json::Value>) {
+    use axum::http::StatusCode;
+    let mut conn = state.redis_conn.clone();
+    let ping = tokio::time::timeout(Duration::from_secs(2), async {
+        redis::cmd("PING").query_async::<String>(&mut conn).await
+    })
+    .await;
+    match ping {
+        Ok(Ok(_)) => (
+            StatusCode::OK,
+            Json(serde_json::json!({ "status": "ready", "service": SERVICE_NAME, "redis": "up" })),
+        ),
+        Ok(Err(e)) => {
+            tracing::warn!(error = %e, "readyz: redis PING failed");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    serde_json::json!({ "status": "degraded", "service": SERVICE_NAME, "redis": "down" }),
+                ),
+            )
+        }
+        Err(_) => {
+            tracing::warn!("readyz: redis PING timed out");
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(
+                    serde_json::json!({ "status": "degraded", "service": SERVICE_NAME, "redis": "timeout" }),
+                ),
+            )
+        }
+    }
 }

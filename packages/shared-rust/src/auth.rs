@@ -266,11 +266,20 @@ pub fn extract_cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'
 /// or `Unauthorized` if expired/revoked. Shared by the [`AuthUser`] extractor (one-shot, per
 /// request) AND by long-lived sessions (e.g. the calling WS relay) that must RE-validate
 /// periodically — an open socket must not outlive token expiry or a force-revoke-all.
-pub async fn authenticate_token(
+///
+/// Generic over the Redis connection type so the SAME revocation gate works over a one-shot
+/// [`redis::aio::MultiplexedConnection`] (the `AuthUser` extractor, via [`HasJwtSecret`]) AND a
+/// reconnecting [`redis::aio::ConnectionManager`] (the gateway edge + WS re-auth, which must
+/// survive a Redis restart — chaos case 3). Both satisfy `ConnectionLike + Clone`, so existing
+/// `&MultiplexedConnection` callers are unaffected.
+pub async fn authenticate_token<C>(
     token: &str,
     decoding_key: &DecodingKey,
-    redis: &redis::aio::MultiplexedConnection,
-) -> Result<JwtClaims, AppError> {
+    redis: &C,
+) -> Result<JwtClaims, AppError>
+where
+    C: redis::aio::ConnectionLike + Clone + Send,
+{
     let claims = decode_jwt_with_key(token, decoding_key)?;
     let mut redis = redis.clone();
 
@@ -635,5 +644,57 @@ mod tests {
         );
 
         let _: () = c.del(format!("user_trv:{user_id}")).await.expect("cleanup");
+    }
+
+    /// A `ConnectionLike` that always errors — simulates a Redis outage with NO real Redis, so
+    /// this test is hermetic (runs in plain `cargo test`). Both `req_packed_command(s)` return an
+    /// `IoError` (the kind a dropped connection produces).
+    #[derive(Clone)]
+    struct BrokenRedis;
+    impl redis::aio::ConnectionLike for BrokenRedis {
+        fn req_packed_command<'a>(
+            &'a mut self,
+            _cmd: &'a redis::Cmd,
+        ) -> redis::RedisFuture<'a, redis::Value> {
+            Box::pin(async {
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::IoError,
+                    "simulated redis outage",
+                )))
+            })
+        }
+        fn req_packed_commands<'a>(
+            &'a mut self,
+            _cmd: &'a redis::Pipeline,
+            _offset: usize,
+            _count: usize,
+        ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+            Box::pin(async {
+                Err(redis::RedisError::from((
+                    redis::ErrorKind::IoError,
+                    "simulated redis outage",
+                )))
+            })
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+    }
+
+    /// H3 fail-closed regression (the gated case PR #37 omitted): a token whose SIGNATURE is
+    /// valid must STILL be denied when the Redis revocation lookup cannot run — the outage must
+    /// not silently re-validate logged-out / force-revoked tokens. Hermetic (mock connection).
+    #[tokio::test]
+    async fn authenticate_token_fails_closed_when_redis_errors() {
+        let user_id = Uuid::new_v4();
+        let (token, _jti) = encode_jwt(user_id, "guard", 0, TEST_SECRET, 60).unwrap();
+        let key = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+
+        let result = authenticate_token(&token, &key, &BrokenRedis).await;
+
+        assert!(
+            result.is_err(),
+            "a Redis error during the revocation lookup MUST fail closed (deny), not allow"
+        );
     }
 }

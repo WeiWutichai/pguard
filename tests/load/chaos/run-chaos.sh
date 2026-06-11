@@ -128,34 +128,40 @@ case2_replica() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 case3_redis() {
-  echo "═══ CASE 3 — redis down → edge auth / rate-limit degrade; does the gateway survive? ═══"
+  echo "═══ CASE 3 — redis down → up: edge fail-closes while down, SELF-HEALS on recovery (no restart) ═══"
   local c; c="$(login 0820000001 Password123!)"
   [ -n "$c" ] || echo "  (note: could not pre-fetch token)"
+  # Readiness reflects redis BEFORE the outage (expect 200).
+  local ready_before; ready_before="$(status "$GW/readyz")"
+  echo "  gateway /readyz (redis up) http=$ready_before (expect 200)"
   down "${PFX}-redis"; sleep 3
-  # gateway PROCESS alive? (its own /healthz never touches redis)
+  # Liveness must stay green: /healthz never touches redis, so a redis blip must NOT cause a
+  # k8s restart loop (the gateway self-heals — restarting it would be the wrong response).
   local hz; hz="$(status "$GW/healthz")"
-  echo "  gateway /healthz (redis down) http=$hz (expect 200 — process survives)"
-  # protected route: edge does jti/trv lookups in redis → fail-closed (5xx) expected
+  echo "  gateway /healthz (redis down) http=$hz (expect 200 — liveness, process survives)"
+  # Readiness must flip to 503 so orchestration SEES the degraded state (the old /healthz hid it).
+  local ready_down; ready_down="$(status "$GW/readyz")"
+  echo "  gateway /readyz (redis down) http=$ready_down (expect 503 — readiness reflects redis)"
+  # Protected route: edge does jti/trv lookups in redis → fail-closed (5xx), never allow.
   local prot; prot="$(status "$GW/v1/auth/me" -H "Authorization: Bearer $c")"
-  echo "  protected /v1/auth/me (redis down) http=$prot"
-  # fresh login (redis-dependent on identity + edge rate-limit fail-open)
+  echo "  protected /v1/auth/me (redis down) http=$prot (expect 5xx — fail-closed)"
+  # Public login still works (no edge auth; rate-limit is fail-open).
   local lg; lg="$(status -X POST "$GW/v1/auth/login" -H 'Content-Type: application/json' -d '{"identifier":"0820000001","password":"Password123!"}')"
   echo "  fresh login (redis down) http=$lg"
   up "${PFX}-redis"; wait_healthy "${PFX}-redis" 40
-  sleep 2
+  # NO gateway restart. Give the ConnectionManager a moment to reconnect in the background
+  # (bounded backoff, cap ≤2s) — the next protected request must then succeed on its own.
+  sleep 4
   local rec; rec="$(status "$GW/v1/auth/me" -H "Authorization: Bearer $c")"
-  echo "  protected /v1/auth/me (redis recovered) http=$rec (FINDING: stays 500 — gateway didn't reconnect)"
-  local survived="YES"; [ "$hz" = "200" ] || survived="NO"
-  echo "  CHAOS_RESULT case=redis gateway_healthz=$hz protected_during=$prot login_during=$lg protected_recovered=$rec gateway_survived=$survived"
-  # REMEDIATION = the case-3 finding itself: the gateway's startup redis connection stays wedged
-  # after redis restarts (protected routes 500 indefinitely), so bounce it now. This keeps a
-  # `run-chaos.sh all` honest — cases 4 & 5 auth through the edge and would otherwise inherit the
-  # wedge and mis-report (false cascade / WS won't open). The recovered=500 above already captured
-  # the finding before this heal.
-  if [ "$rec" != "200" ]; then
-    echo "  [remediate] restarting ${PFX}-api-gateway to clear the wedged redis connection (finding #1)"
-    docker restart "${PFX}-api-gateway" >/dev/null 2>&1; wait_healthy "${PFX}-api-gateway" 40
-  fi
+  echo "  protected /v1/auth/me (redis recovered) http=$rec (expect 200 — gateway reconnected, NO restart)"
+  local ready_rec; ready_rec="$(status "$GW/readyz")"
+  echo "  gateway /readyz (redis recovered) http=$ready_rec (expect 200 — readiness self-healed)"
+  # PASS only if: liveness stayed up, edge fail-CLOSED while down, AND it self-healed w/o a restart.
+  local verdict="PASS"
+  [ "$hz" = "200" ] || verdict="FAIL(liveness)"
+  case "$prot" in 5*) ;; *) verdict="FAIL(not-fail-closed:$prot)";; esac
+  [ "$rec" = "200" ] || verdict="FAIL(no-self-heal:$rec)"
+  echo "  CHAOS_RESULT case=redis gateway_healthz=$hz readyz_down=$ready_down protected_during=$prot login_during=$lg protected_recovered=$rec readyz_recovered=$ready_rec verdict=$verdict"
 }
 
 # ─────────────────────────────────────────────────────────────────────────────

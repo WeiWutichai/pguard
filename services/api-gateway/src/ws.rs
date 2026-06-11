@@ -220,7 +220,7 @@ async fn session(
     snapshot: StatusUpdate,
     mut rx: broadcast::Receiver<StatusUpdate>,
     decoding_key: DecodingKey,
-    redis: redis::aio::MultiplexedConnection,
+    redis: redis::aio::ConnectionManager,
 ) {
     let (mut sink, mut stream) = socket.split();
     let id_str = id.to_string();
@@ -364,9 +364,7 @@ mod e2e_tests {
     /// Boot the gateway WS route over real Redis + the NATS hub + the stub booking upstream.
     /// Returns the gateway base addr + the broadcast sender (unused) kept alive via AppState.
     async fn spawn_gateway(nats: &str, redis_url: &str, booking_url: &str) -> SocketAddr {
-        let redis_conn = shared::redis_client::create_redis_client(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let redis_conn = shared::redis_client::create_connection_manager(redis_url)
             .await
             .unwrap();
         let jwt_config = JwtConfig {
