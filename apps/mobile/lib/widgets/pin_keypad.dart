@@ -47,10 +47,12 @@ class PinKeypad extends StatelessWidget {
         onTap: enabled ? () => onDigit(d) : null,
         child: Text(
           d,
+          // Design `.key`: 24px w600 in --font-mono.
           style: const TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
             color: PgTokens.colorText,
+            fontFamily: 'IBMPlexMono',
           ),
         ),
       );

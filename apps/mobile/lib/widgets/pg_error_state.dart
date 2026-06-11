@@ -36,6 +36,7 @@ class PgErrorState extends StatelessWidget {
               height: 96,
               decoration: BoxDecoration(
                 color: PgTokens.colorDangerBg,
+                // Design: 28px — nearest token is radius2xl (18); flag for token regen.
                 borderRadius: BorderRadius.circular(PgTokens.radius2xl),
               ),
               child: Icon(icon, size: 44, color: PgTokens.colorDanger),
