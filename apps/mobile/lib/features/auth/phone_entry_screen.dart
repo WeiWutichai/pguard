@@ -93,10 +93,11 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
                   focusNode: _focusNode,
                   autofocus: true,
                   keyboardType: TextInputType.phone,
-                  // Spaced digits to echo the design's `81 234 5678` field.
+                  // Spaced mono digits to echo the design's `81 234 5678` field.
                   style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.w600,
+                      fontFamily: 'IBMPlexMono',
                       letterSpacing: 1.2),
                   inputFormatters: [
                     FilteringTextInputFormatter.digitsOnly,

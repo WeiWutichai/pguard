@@ -308,7 +308,7 @@ class _LockoutPanel extends StatelessWidget {
               strong: 'ผิด 5 ครั้ง — ล็อกชั่วคราว',
               body: 'ลองใหม่อีกครั้งเมื่อหมดเวลา',
             ),
-            // Big danger countdown (design `.timer-big`: 40/600 m:ss, 8px vertical padding).
+            // Big danger countdown (design `.timer-big`: 40/600 mono m:ss, 8px vertical padding).
             Padding(
               padding: const EdgeInsets.symmetric(vertical: PgTokens.space2),
               child: Text(
@@ -317,6 +317,8 @@ class _LockoutPanel extends StatelessWidget {
                 style: const TextStyle(
                   fontSize: 40,
                   fontWeight: FontWeight.w600,
+                  fontFamily: 'IBMPlexMono',
+                  fontFeatures: [FontFeature.tabularFigures()],
                   color: PgTokens.colorDanger,
                 ),
               ),

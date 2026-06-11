@@ -12,6 +12,7 @@ import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
@@ -71,17 +72,12 @@ class ActiveJobScreen extends ConsumerWidget {
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(PgTokens.space6),
-              child: Text(
-                e is ApiException
-                    ? e.message
-                    : 'โหลดงานไม่สำเร็จ / Could not load this job',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted),
-              ),
-            ),
+          // Shared hi-fi error state (Mobile - System.html) — retry re-fetches the job.
+          error: (e, _) => PgErrorState(
+            title: 'โหลดงานไม่สำเร็จ / Could not load this job',
+            message: e is ApiException ? e.message : null,
+            onRetry: () =>
+                ref.invalidate(activeJobControllerProvider(bookingId)),
           ),
           data: (state) => _Body(bookingId: bookingId, state: state),
         ),
@@ -534,15 +530,6 @@ class _TransitionBar extends ConsumerWidget {
     if (yes == true) await notifier.complete();
   }
 
-  Future<void> _withdraw(BuildContext context, WidgetRef ref) async {
-    final notifier = ref.read(activeJobControllerProvider(bookingId).notifier);
-    final yes = await _confirm(context, 'ปฏิเสธงาน / Withdraw?',
-        'ถอนตัวจากงานนี้ — ย้อนกลับไม่ได้\nThis releases the job and cannot be undone.');
-    if (yes != true) return;
-    final ok = await notifier.withdraw();
-    if (ok && context.mounted) context.go('/home/guard');
-  }
-
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
@@ -569,9 +556,13 @@ class _TransitionBar extends ConsumerWidget {
               onPressed: busy ? null : () => ctrl.enRoute(),
             ),
             const SizedBox(height: PgTokens.space1),
+            // Opens the full withdraw flow (warning banner + reason + admin notes) —
+            // replaces the old bare AlertDialog confirm.
             PgGhostButton(
               label: 'ปฏิเสธงาน / Withdraw',
-              onPressed: busy ? null : () => _withdraw(context, ref),
+              onPressed: busy
+                  ? null
+                  : () => context.push('/guard/active/$bookingId/withdraw'),
             ),
           ],
         ));

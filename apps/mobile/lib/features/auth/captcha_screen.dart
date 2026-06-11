@@ -85,7 +85,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                           fontSize: 12.5, color: PgTokens.colorTextMuted),
                     ),
                     const SizedBox(height: PgTokens.space1),
-                    // Big bold math problem (design: 26/700 mono; mono family not bundled yet).
+                    // Big bold math problem (design: 26/700 mono).
                     Text(
                       question ?? 'กำลังโหลดคำถาม… / Loading…',
                       style: question == null
@@ -94,6 +94,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                           : const TextStyle(
                               fontSize: 26,
                               fontWeight: FontWeight.w700,
+                              fontFamily: 'IBMPlexMono',
                               color: PgTokens.colorText,
                             ),
                     ),

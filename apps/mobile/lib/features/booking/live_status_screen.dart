@@ -12,13 +12,16 @@ import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
+import '../../core/models/money.dart';
 import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
+import 'cancellation_screen.dart';
 
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
 /// controller, whose state advances from WebSocket PUSH frames — there is NO `Timer.periodic`
@@ -45,12 +48,15 @@ class LiveStatusScreen extends ConsumerWidget {
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           // Only surface the server's already-generic message; never leak a raw exception
-          // toString() (e.g. a parse TypeError) to the user.
-          error: (e, _) => _ErrorBody(
-            bookingId: bookingId,
+          // toString() (e.g. a parse TypeError) to the user. Shared hi-fi error state —
+          // retry re-runs the snapshot + WS subscribe; no raw booking id on screen.
+          error: (e, _) => PgErrorState(
+            title: 'ยังเชื่อมต่อสถานะงานไม่ได้ / Could not load live status',
             message: e is ApiException
                 ? e.message
                 : 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้',
+            onRetry: () =>
+                ref.invalidate(bookingStatusControllerProvider(bookingId)),
           ),
           data: (booking) => _LiveBody(booking: booking),
         ),
@@ -488,11 +494,31 @@ class _Actions extends ConsumerWidget {
 
   final Booking booking;
 
+  /// The cancellable window, exactly per the contract (`cancelBooking` in
+  /// booking.yaml): PRE-ARRIVAL only — `requested`/`accepted`/`en_route`.
+  static const Set<BookingStatus> _cancellable = {
+    BookingStatus.requested,
+    BookingStatus.accepted,
+    BookingStatus.enRoute,
+  };
+
+  /// Display total in satang for the cancellation screen's refund banner; `null` when
+  /// the server-owned rate isn't known yet (the banner then omits the amount).
+  int? get _totalSatang {
+    final baseFeeSatang = Money.satangFromString(booking.baseFee);
+    final hours = booking.hours ?? 0;
+    if (baseFeeSatang <= 0 || hours <= 0) return null;
+    return Money.total(
+      baseFeeSatang: baseFeeSatang,
+      hours: hours,
+      guardCount: booking.guardCount ?? 1,
+      tipSatang: Money.satangFromString(booking.tip),
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final canCancel = !BookingLifecycle.isTerminal(booking.status) &&
-        BookingLifecycle.stepIndex(booking.status) <
-            BookingLifecycle.stepIndex(BookingStatus.arrived);
+    final canCancel = _cancellable.contains(booking.status);
     final myUserId = ref.watch(sessionProvider).user?.userId;
     return Row(
       children: [
@@ -514,12 +540,19 @@ class _Actions extends ConsumerWidget {
         const SizedBox(width: PgTokens.space2),
         Expanded(
           // Pre-arrival the design's cancel affordance is a GHOST (outline) button, not a
-          // filled danger block. Wiring lands with the cancellation-flow slice.
+          // filled danger block. It opens the cancellation flow, passing what this screen
+          // already knows (address + display total) so the header/banner render instantly.
           child: canCancel
               ? SizedBox(
                   height: 52,
                   child: TextButton(
-                    onPressed: () {},
+                    onPressed: () => context.push(
+                      '/booking/${booking.id}/cancel',
+                      extra: CancellationArgs(
+                        address: booking.address,
+                        totalSatang: _totalSatang,
+                      ),
+                    ),
                     style: TextButton.styleFrom(
                       foregroundColor: PgTokens.colorDanger,
                       shape: RoundedRectangleBorder(
@@ -586,47 +619,6 @@ class _TrackGuardTile extends ConsumerWidget {
                   size: 18, color: PgTokens.colorGreen800.withValues(alpha: 0.7)),
             ],
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorBody extends StatelessWidget {
-  const _ErrorBody({required this.bookingId, required this.message});
-
-  final String bookingId;
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(PgTokens.space6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.cloud_off_outlined,
-                size: 40, color: PgTokens.colorTextMuted),
-            const SizedBox(height: PgTokens.space3),
-            const Text(
-              'ยังเชื่อมต่อสถานะงานไม่ได้',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
-            ),
-            const SizedBox(height: PgTokens.space2),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style:
-                  const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
-            ),
-            const SizedBox(height: PgTokens.space2),
-            Text(
-              'booking: $bookingId',
-              style:
-                  const TextStyle(color: PgTokens.colorTextFaint, fontSize: 11),
-            ),
-          ],
         ),
       ),
     );

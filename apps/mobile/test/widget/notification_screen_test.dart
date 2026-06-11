@@ -38,8 +38,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.text('หัวข้อ n1'), findsOneWidget);
-    expect(find.text('หัวข้อ n2'), findsOneWidget);
+    // The tile renders one '<bold title> · body' run, so match on the substring.
+    expect(find.textContaining('หัวข้อ n1'), findsOneWidget);
+    expect(find.textContaining('หัวข้อ n2'), findsOneWidget);
     // There is an unread item → the "mark all read" action shows.
     expect(find.text('อ่านทั้งหมด'), findsOneWidget);
 

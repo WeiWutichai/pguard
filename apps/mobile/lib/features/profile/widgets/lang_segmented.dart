@@ -48,10 +48,21 @@ class _Segment extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 150),
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
         decoration: BoxDecoration(
           color: selected ? PgTokens.colorSurface : Colors.transparent,
           borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+          // Design `.seg-sm .on` elevation: --sh-xs (0 1px 2px rgba(8,38,25,.06)
+          // ≈ colorText at 6% — nearest token to the design's shadow ink).
+          boxShadow: selected
+              ? [
+                  BoxShadow(
+                    color: PgTokens.colorText.withValues(alpha: 0.06),
+                    offset: const Offset(0, 1),
+                    blurRadius: 2,
+                  ),
+                ]
+              : null,
         ),
         child: Text(
           label,

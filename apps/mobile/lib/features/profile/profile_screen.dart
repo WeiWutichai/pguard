@@ -7,7 +7,9 @@ import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/models/profile.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
+import '../../widgets/primary_button.dart';
 import 'widgets/lang_segmented.dart';
 
 /// Profile + settings: identity header (avatar/name/role/approval), personal-info entry (→ edit),
@@ -20,22 +22,9 @@ class ProfileScreen extends ConsumerWidget {
     final notifier = ref.read(profileControllerProvider.notifier);
     final yes = await showDialog<bool>(
       context: context,
-      builder: (c) => AlertDialog(
-        title: const Text('ออกจากระบบ? / Log out?'),
-        content: const Text(
-            'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง — ต้องเข้าสู่ระบบด้วย PIN อีกครั้ง\n'
-            'Your session is revoked and local tokens cleared.'),
-        actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(c, false),
-              child: const Text('ยกเลิก')),
-          TextButton(
-            onPressed: () => Navigator.pop(c, true),
-            style: TextButton.styleFrom(foregroundColor: PgTokens.colorDanger),
-            child: const Text('ออกจากระบบ'),
-          ),
-        ],
-      ),
+      // Design overlay rgba(8,20,15,0.55) has no token — nearest is colorBrand @ 55%.
+      barrierColor: PgTokens.colorBrand.withValues(alpha: 0.55),
+      builder: (c) => const _LogoutDialog(),
     );
     if (yes != true) return;
     // On success the session flips to unauthenticated and the router redirects to auth.
@@ -56,17 +45,10 @@ class ProfileScreen extends ConsumerWidget {
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(PgTokens.space6),
-              child: Text(
-                e is ApiException
-                    ? e.message
-                    : 'โหลดโปรไฟล์ไม่สำเร็จ / Could not load profile',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted),
-              ),
-            ),
+          error: (e, _) => PgErrorState(
+            title: 'โหลดโปรไฟล์ไม่สำเร็จ / Could not load profile',
+            message: e is ApiException ? e.message : null,
+            onRetry: () => ref.invalidate(profileControllerProvider),
           ),
           data: (profile) => ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
@@ -119,6 +101,71 @@ class ProfileScreen extends ConsumerWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The designed logout confirmation (Mobile - System.html dialog): danger icon circle,
+/// centered title/description, then stacked full-width danger CTA + sunken cancel.
+/// Pops `true` to confirm — the logout call itself stays in [ProfileScreen._logout].
+class _LogoutDialog extends StatelessWidget {
+  const _LogoutDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      backgroundColor: PgTokens.colorSurface,
+      shape: RoundedRectangleBorder(
+        // Design 22px corners — nearest token is radius2xl (18).
+        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+      ),
+      child: Padding(
+        // Design: 26px 24px dialog padding (non-token design metric).
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 26),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 60,
+              height: 60,
+              decoration: const BoxDecoration(
+                color: PgTokens.colorDangerBg,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.logout,
+                  size: 26, color: PgTokens.colorDanger),
+            ),
+            // Design: 18px below the icon circle (non-token design metric).
+            const SizedBox(height: 18),
+            const Text(
+              'ออกจากระบบ? / Log out?',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: PgTokens.space2),
+            const Text(
+              'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง\n'
+              'Session revoked and local tokens cleared. Sign in with your PIN again.',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
+            ),
+            const SizedBox(height: PgTokens.space6),
+            PgPrimaryButton(
+              label: 'ออกจากระบบ / Log out',
+              color: PgTokens.colorDanger,
+              onPressed: () => Navigator.pop(context, true),
+            ),
+            // Design: 10px between the stacked buttons (non-token design metric).
+            const SizedBox(height: 10),
+            PgPrimaryButton(
+              label: 'ยกเลิก / Cancel',
+              color: PgTokens.colorSunken,
+              foreground: PgTokens.colorText,
+              onPressed: () => Navigator.pop(context, false),
+            ),
+          ],
         ),
       ),
     );

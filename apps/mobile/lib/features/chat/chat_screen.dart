@@ -9,6 +9,7 @@ import '../../core/media/chat_media_picker.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import 'widgets/chat_bubble.dart';
 
@@ -141,20 +142,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               child: async.when(
                 loading: () =>
                     const Center(child: CircularProgressIndicator()),
-                error: (e, _) => Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(PgTokens.space6),
-                    child: Text(
-                      e is ApiException
-                          ? e.message
-                          : 'โหลดข้อความไม่สำเร็จ / Could not load messages',
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(color: PgTokens.colorTextMuted),
-                    ),
-                  ),
+                error: (e, _) => PgErrorState(
+                  title: 'โหลดข้อความไม่สำเร็จ / Could not load messages',
+                  message: e is ApiException ? e.message : null,
+                  onRetry: () => ref.invalidate(provider),
                 ),
                 data: (messages) => messages.isEmpty
-                    ? _EmptyBody(isThai: isThai)
+                    ? const _EmptyBody()
                     : ListView.builder(
                         controller: _scroll,
                         padding: const EdgeInsets.symmetric(
@@ -213,6 +207,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 }
 
 /// Bottom sheet: where the attachment comes from (camera photo / gallery photo / video).
+/// Design sheet-opt rows: grab handle, 42px sunken icon circle, 15px w600 label.
 class _AttachmentSourceSheet extends StatelessWidget {
   const _AttachmentSourceSheet({required this.isThai});
 
@@ -224,24 +219,32 @@ class _AttachmentSourceSheet extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          ListTile(
-            leading: const Icon(Icons.photo_camera_outlined,
-                color: PgTokens.colorPrimary),
-            title: Text(isThai ? 'ถ่ายรูป' : 'Take a photo'),
+          // Grab handle: ~40×4, border colour, fully rounded.
+          Container(
+            width: 40,
+            height: 4,
+            margin: const EdgeInsets.only(
+                top: PgTokens.space3, bottom: PgTokens.space2),
+            decoration: BoxDecoration(
+              color: PgTokens.colorBorder,
+              borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+            ),
+          ),
+          _SheetOption(
+            icon: Icons.photo_camera_outlined,
+            label: isThai ? 'ถ่ายรูป' : 'Take a photo',
             onTap: () =>
                 Navigator.pop(context, ChatAttachmentSource.cameraPhoto),
           ),
-          ListTile(
-            leading: const Icon(Icons.photo_library_outlined,
-                color: PgTokens.colorPrimary),
-            title: Text(isThai ? 'เลือกรูปจากคลัง' : 'Choose a photo'),
+          _SheetOption(
+            icon: Icons.photo_library_outlined,
+            label: isThai ? 'เลือกรูปจากคลัง' : 'Choose a photo',
             onTap: () =>
                 Navigator.pop(context, ChatAttachmentSource.galleryPhoto),
           ),
-          ListTile(
-            leading: const Icon(Icons.video_library_outlined,
-                color: PgTokens.colorPrimary),
-            title: Text(isThai ? 'เลือกวิดีโอจากคลัง' : 'Choose a video'),
+          _SheetOption(
+            icon: Icons.video_library_outlined,
+            label: isThai ? 'เลือกวิดีโอจากคลัง' : 'Choose a video',
             onTap: () =>
                 Navigator.pop(context, ChatAttachmentSource.galleryVideo),
           ),
@@ -251,19 +254,71 @@ class _AttachmentSourceSheet extends StatelessWidget {
   }
 }
 
-class _EmptyBody extends StatelessWidget {
-  const _EmptyBody({required this.isThai});
+/// One design .sheet-opt row (icon circle + semibold label, 16px 24px padding).
+class _SheetOption extends StatelessWidget {
+  const _SheetOption({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
 
-  final bool isThai;
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        isThai
-            ? 'ยังไม่มีข้อความ — เริ่มพิมพ์ได้เลย'
-            : 'No messages yet — say hello',
-        style: const TextStyle(color: PgTokens.colorTextMuted),
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: PgTokens.space6),
+      leading: Container(
+        width: 42,
+        height: 42,
+        decoration: const BoxDecoration(
+          color: PgTokens.colorSunken,
+          shape: BoxShape.circle,
+        ),
+        child: Icon(icon, size: 20, color: PgTokens.colorText),
+      ),
+      title: Text(
+        label,
+        style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: PgTokens.colorText),
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+/// Empty conversation — same icon + title + subtitle hierarchy as the sibling
+/// chat-list/notification empty states (cross-state hero pattern).
+class _EmptyBody extends StatelessWidget {
+  const _EmptyBody();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.forum_outlined, size: 48, color: PgTokens.colorTextFaint),
+          SizedBox(height: PgTokens.space3),
+          Text(
+            'ยังไม่มีข้อความ\nNo messages yet',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorText),
+          ),
+          SizedBox(height: PgTokens.space2),
+          Text(
+            'เริ่มพิมพ์ได้เลย / Say hello',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+          ),
+        ],
       ),
     );
   }

@@ -11,6 +11,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
+import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../booking/service_selection_screen.dart' show serviceIcon;
@@ -90,13 +91,47 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
           ],
         ),
       ),
+      // Design state 5 (hirer nav + book FAB) — additive chrome; body content unchanged.
+      bottomNavigationBar: PgBottomNav(
+        tabs: [
+          const PgNavTab(
+            icon: Icons.home_outlined,
+            label: 'หน้าหลัก / Home',
+            active: true,
+          ),
+          PgNavTab(
+            icon: Icons.calendar_today_outlined,
+            label: 'การจอง / Bookings',
+            onTap: () => PgBottomNav.comingSoon(context),
+          ),
+          PgNavTab(
+            icon: Icons.account_balance_wallet_outlined,
+            label: 'กระเป๋า / Wallet',
+            onTap: () => PgBottomNav.comingSoon(context),
+          ),
+          PgNavTab(
+            icon: Icons.person_outline,
+            label: 'โปรไฟล์ / Profile',
+            onTap: () => context.push('/profile'),
+          ),
+        ],
+        fab: PgNavFab.book(
+          label: 'เรียก รปภ. / Book',
+          onTap: () => context.push('/book'),
+        ),
+      ),
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: () =>
               ref.read(customerHomeControllerProvider.notifier).refresh(),
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
-            padding: const EdgeInsets.all(PgTokens.space4),
+            // Extra bottom inset keeps the last row clear of the FAB overhang.
+            padding: const EdgeInsets.fromLTRB(
+                PgTokens.space4,
+                PgTokens.space4,
+                PgTokens.space4,
+                PgTokens.space4 + PgBottomNav.fabOverhang),
             children: [
               const _SectionHeading('บริการ / Services'),
               const SizedBox(height: PgTokens.space3),

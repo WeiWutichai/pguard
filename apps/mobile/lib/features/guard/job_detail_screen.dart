@@ -8,6 +8,7 @@ import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 
@@ -52,17 +53,11 @@ class JobDetailScreen extends ConsumerWidget {
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(PgTokens.space6),
-              child: Text(
-                e is ApiException
-                    ? e.message
-                    : 'โหลดงานไม่สำเร็จ / Could not load this job',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted),
-              ),
-            ),
+          error: (e, _) => PgErrorState(
+            title: 'โหลดงานไม่สำเร็จ / Could not load this job',
+            message: e is ApiException ? e.message : null,
+            onRetry: () =>
+                ref.invalidate(activeJobControllerProvider(bookingId)),
           ),
           data: (state) => _Body(
             booking: state.booking,
@@ -131,9 +126,11 @@ class _Body extends StatelessWidget {
                     booking.scheduledAt, hours, DateTime.now()),
                 trailing: Text(
                   Money.format(_feeSatang),
+                  // Design --font-mono for money figures (now bundled).
                   style: const TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w600,
+                      fontFamily: 'IBMPlexMono',
                       fontFeatures: [FontFeature.tabularFigures()]),
                 ),
               ),

@@ -4,10 +4,12 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_jobs_controller.dart';
+import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../chat/chat_routes.dart';
@@ -18,12 +20,21 @@ import '../notifications/widgets/notification_bell.dart';
 
 /// Guard dashboard (role landing): online/standby GPS toggle + the guard's jobs (incoming to
 /// accept, active to work). UI per `Mobile - Guard App.html` / `Mobile - Active Standby.html`.
-class GuardHomeScreen extends ConsumerWidget {
+class GuardHomeScreen extends ConsumerStatefulWidget {
   const GuardHomeScreen({super.key});
 
-  Future<void> _accept(BuildContext context, WidgetRef ref, String id) async {
+  @override
+  ConsumerState<GuardHomeScreen> createState() => _GuardHomeScreenState();
+}
+
+class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
+  /// Anchors the jobs section so the "งาน / Jobs" tab can scroll to it — the jobs list
+  /// *is* this screen's content (v2 has no separate jobs route).
+  final GlobalKey _jobsKey = GlobalKey();
+
+  Future<void> _accept(String id) async {
     final err = await ref.read(guardJobsControllerProvider.notifier).accept(id);
-    if (!context.mounted) return;
+    if (!mounted) return;
     if (err != null) {
       _snack(context, err);
     } else {
@@ -32,15 +43,28 @@ class GuardHomeScreen extends ConsumerWidget {
   }
 
   // First-come-accept: an unaccepted offer can't be "declined" server-side — just hide it.
-  void _dismiss(WidgetRef ref, String id) =>
+  void _dismiss(String id) =>
       ref.read(guardJobsControllerProvider.notifier).dismiss(id);
 
   static void _snack(BuildContext context, String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
+  void _scrollToJobs() {
+    final jobsContext = _jobsKey.currentContext;
+    if (jobsContext == null) return; // jobs not loaded yet — nothing to scroll to
+    Scrollable.ensureVisible(jobsContext,
+        duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
+  }
+
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  Widget build(BuildContext context) {
     final jobs = ref.watch(guardJobsControllerProvider);
+    // Duty FAB mirrors the same controller the OnlineCard switch drives.
+    final online =
+        ref.watch(trackingControllerProvider.select((s) => s.online));
+    final incomingCount =
+        GuardJobsController.incoming(jobs.valueOrNull ?? const <Booking>[])
+            .length;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -69,12 +93,54 @@ class GuardHomeScreen extends ConsumerWidget {
           ],
         ),
       ),
+      // Design state 4 (guard nav + duty FAB) — additive chrome; body content unchanged.
+      bottomNavigationBar: PgBottomNav(
+        tabs: [
+          const PgNavTab(
+            icon: Icons.home_outlined,
+            label: 'หน้าหลัก / Home',
+            active: true,
+          ),
+          PgNavTab(
+            icon: Icons.inbox_outlined,
+            label: 'งาน / Jobs',
+            badgeCount: incomingCount,
+            onTap: _scrollToJobs,
+          ),
+          PgNavTab(
+            icon: Icons.payments_outlined,
+            label: 'รายได้ / Earnings',
+            onTap: () => PgBottomNav.comingSoon(context),
+          ),
+          PgNavTab(
+            icon: Icons.person_outline,
+            label: 'โปรไฟล์ / Profile',
+            onTap: () => context.push('/profile'),
+          ),
+        ],
+        fab: online
+            ? PgNavFab.onDuty(
+                label: 'พร้อมรับงาน / On duty',
+                onTap: () =>
+                    ref.read(trackingControllerProvider.notifier).toggle(),
+              )
+            : PgNavFab.offline(
+                label: 'ออฟไลน์ / Offline',
+                onTap: () =>
+                    ref.read(trackingControllerProvider.notifier).toggle(),
+              ),
+      ),
       body: SafeArea(
         child: RefreshIndicator(
           onRefresh: () =>
               ref.read(guardJobsControllerProvider.notifier).refresh(),
           child: ListView(
-            padding: const EdgeInsets.all(PgTokens.space4),
+            // Extra bottom inset keeps the last card clear of the FAB overhang.
+            padding: const EdgeInsets.fromLTRB(
+                PgTokens.space4,
+                PgTokens.space4,
+                PgTokens.space4,
+                PgTokens.space4 + PgBottomNav.fabOverhang),
             children: [
               const OnlineCard(),
               const SizedBox(height: PgTokens.space4),
@@ -94,10 +160,11 @@ class GuardHomeScreen extends ConsumerWidget {
                     _StatsRow(bookings: all),
                     const SizedBox(height: PgTokens.space4),
                     _JobsBody(
+                      key: _jobsKey,
                       incoming: GuardJobsController.incoming(all),
                       active: GuardJobsController.active(all),
-                      onAccept: (id) => _accept(context, ref, id),
-                      onDismiss: (id) => _dismiss(ref, id),
+                      onAccept: _accept,
+                      onDismiss: _dismiss,
                       onOpenActive: (id) => context.push('/guard/active/$id'),
                       onOpenDetail: (id) => context.push('/guard/job/$id'),
                     ),
@@ -220,6 +287,7 @@ class _StatCard extends StatelessWidget {
 
 class _JobsBody extends StatelessWidget {
   const _JobsBody({
+    super.key,
     required this.incoming,
     required this.active,
     required this.onAccept,
