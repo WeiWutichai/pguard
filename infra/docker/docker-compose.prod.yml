@@ -329,6 +329,16 @@ services:
       - "${GATEWAY_PORT:-3000}:3000"
     expose:
       - "9100"
+    # Gateway-only override of the image's baked /healthz HEALTHCHECK → /readyz, which PINGs redis
+    # (200 only when redis is reachable). Makes a redis outage VISIBLE (`unhealthy`) instead of the
+    # old always-green /healthz. `restart: unless-stopped` does NOT restart on unhealthy, so there's
+    # no restart loop — the gateway self-heals its reconnecting redis connection on its own.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:3000/readyz || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
     depends_on:
       postgres:
         condition: service_healthy

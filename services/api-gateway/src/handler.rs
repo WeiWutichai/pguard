@@ -281,7 +281,7 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn build_test_state(redis: redis::aio::MultiplexedConnection, booking_url: &str) -> AppState {
+    fn build_test_state(redis: redis::aio::ConnectionManager, booking_url: &str) -> AppState {
         use shared::config::JwtConfig;
         let jwt_config = JwtConfig {
             secret: TEST_SECRET.to_string(),
@@ -326,9 +326,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
 
@@ -381,9 +379,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
         let upstream = spawn_echo_upstream().await;
@@ -403,7 +399,7 @@ mod tests {
     }
 
     /// Mint a valid access token for `role`, clearing any stale trv marker.
-    async fn token_for(conn: &redis::aio::MultiplexedConnection, role: &str) -> (Uuid, String) {
+    async fn token_for(conn: &redis::aio::ConnectionManager, role: &str) -> (Uuid, String) {
         let user_id = Uuid::new_v4();
         let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
         let (token, _jti) = shared::auth::encode_jwt_with_key(user_id, role, 0, &ek, 60).unwrap();
@@ -423,9 +419,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
         let upstream = spawn_echo_upstream().await;
@@ -465,9 +459,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
         let upstream = spawn_echo_upstream().await;
@@ -503,9 +495,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
         let upstream = spawn_echo_upstream().await;
@@ -541,9 +531,7 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .unwrap()
-            .get_multiplexed_tokio_connection()
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .unwrap();
         let upstream = spawn_echo_upstream().await;

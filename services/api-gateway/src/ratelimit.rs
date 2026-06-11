@@ -36,13 +36,16 @@ pub fn client_ip(headers: &HeaderMap, peer: SocketAddr) -> String {
 ///
 /// Returns the pure [`RateDecision`]. On any Redis error this **fails open**
 /// (returns [`RateDecision::Allow`]) after logging — see module docs.
+///
+/// Generic over the connection type so the gateway passes its reconnecting
+/// [`redis::aio::ConnectionManager`] (chaos case 3): after a Redis blip the limiter resumes
+/// ENFORCING on the next request (no wedge), while still failing OPEN for the duration of the
+/// outage (availability > enforcement at the edge).
 #[tracing::instrument(skip(redis, limits), fields(tier = ?tier))]
-pub async fn check(
-    redis: &mut redis::aio::MultiplexedConnection,
-    limits: &Limits,
-    tier: Tier,
-    ip: &str,
-) -> RateDecision {
+pub async fn check<C>(redis: &mut C, limits: &Limits, tier: Tier, ip: &str) -> RateDecision
+where
+    C: redis::aio::ConnectionLike + Send,
+{
     let window = limits.window_for(tier);
 
     // Bucket the current time into window-sized slots so each window has its own key.
@@ -125,5 +128,42 @@ mod tests {
         assert_eq!(tier_tag(Tier::Auth), "auth");
         assert_eq!(tier_tag(Tier::Otp), "otp");
         assert_eq!(tier_tag(Tier::Api), "api");
+    }
+
+    // ----- reconnect / fail-open behaviour (hermetic, via the FlakyRedis double) -----
+
+    /// Fail-OPEN during a Redis outage: a Redis error must not take down edge traffic — the
+    /// limiter allows (logged) rather than 500-ing every request.
+    #[tokio::test]
+    async fn check_fails_open_when_redis_errors() {
+        let mut redis = crate::test_support::FlakyRedis::always_broken();
+        let d = check(&mut redis, &Limits::default(), Tier::Api, "203.0.113.7").await;
+        assert!(
+            matches!(d, RateDecision::Allow),
+            "rate-limit MUST fail OPEN on a Redis error (availability > enforcement)"
+        );
+    }
+
+    /// Self-heal: while down it fails open (Allow); once Redis is back the INCR returns a count
+    /// well over the limit, so the limiter ENFORCES again (Deny) — proving it re-queries Redis
+    /// after recovery instead of staying stuck in fail-open.
+    #[tokio::test]
+    async fn check_enforces_again_after_recovery() {
+        // 1 command errors (outage), then INCR replies 1_000_000 (Redis back, far over any limit).
+        let mut redis = crate::test_support::FlakyRedis::new(1, 1_000_000);
+        assert!(
+            matches!(
+                check(&mut redis, &Limits::default(), Tier::Api, "203.0.113.7").await,
+                RateDecision::Allow
+            ),
+            "fail-open during the outage"
+        );
+        assert!(
+            matches!(
+                check(&mut redis, &Limits::default(), Tier::Api, "203.0.113.7").await,
+                RateDecision::Deny { .. }
+            ),
+            "after recovery the limiter enforces again (not stuck fail-open)"
+        );
     }
 }
