@@ -259,11 +259,13 @@ class _ReadonlyField extends StatelessWidget {
         const SizedBox(height: PgTokens.space1),
         Container(
           width: double.infinity,
+          // Design .minput: 12px 14px padding; read-only shares the editable
+          // inputs' radius (themed inputs use radiusXl).
           padding: const EdgeInsets.symmetric(
-              horizontal: PgTokens.space3, vertical: 14),
+              horizontal: 14, vertical: PgTokens.space3),
           decoration: BoxDecoration(
             color: PgTokens.colorSunken,
-            borderRadius: BorderRadius.circular(PgTokens.radiusMd),
+            borderRadius: BorderRadius.circular(PgTokens.radiusXl),
           ),
           child: Row(
             children: [

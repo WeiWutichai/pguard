@@ -39,7 +39,8 @@ class GuardJobCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Material(
-      color: highlight ? PgTokens.colorAmber100 : PgTokens.colorSurface,
+      // Design pending card: pale amber-50 wash, not a saturated amber block.
+      color: highlight ? PgTokens.colorWarningBg : PgTokens.colorSurface,
       borderRadius: BorderRadius.circular(PgTokens.radius2xl),
       child: InkWell(
         onTap: onTap,
@@ -48,9 +49,10 @@ class GuardJobCard extends StatelessWidget {
           padding: const EdgeInsets.all(PgTokens.space4),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+            // Soft amber-300-style border (colorAmber100 = nearest token).
             border: Border.all(
                 color: highlight
-                    ? PgTokens.colorAccent
+                    ? PgTokens.colorAmber100
                     : PgTokens.colorBorder),
           ),
           child: Column(
@@ -82,9 +84,13 @@ class GuardJobCard extends StatelessWidget {
                   Column(
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
+                      // Design fee: 17/600 in the mono numeric face.
                       Text(Money.format(_feeSatang),
                           style: const TextStyle(
-                              fontSize: 16, fontWeight: FontWeight.w700)),
+                              fontSize: 17,
+                              fontWeight: FontWeight.w600,
+                              fontFamily: 'IBMPlexMono',
+                              fontFeatures: [FontFeature.tabularFigures()])),
                       Text('${booking.guardCount ?? 1} คน',
                           style: const TextStyle(
                               fontSize: 11, color: PgTokens.colorTextFaint)),

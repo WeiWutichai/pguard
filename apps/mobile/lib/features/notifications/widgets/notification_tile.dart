@@ -29,8 +29,9 @@ class NotificationTile extends ConsumerWidget {
       child: InkWell(
         onTap: onTap,
         child: Container(
+          // Design `.notif`: padding 14px 20px (20 = space4+space1; no 20px token).
           padding: const EdgeInsets.symmetric(
-              horizontal: PgTokens.space4, vertical: PgTokens.space3),
+              horizontal: PgTokens.space4 + PgTokens.space1, vertical: 14),
           decoration: const BoxDecoration(
             border: Border(bottom: BorderSide(color: PgTokens.colorBorder)),
           ),
@@ -44,30 +45,30 @@ class NotificationTile extends ConsumerWidget {
                   color: style.color.withValues(alpha: 0.14),
                   borderRadius: BorderRadius.circular(PgTokens.radiusLg),
                 ),
-                child: Icon(style.icon, color: style.color, size: 20),
+                child: Icon(style.icon, color: style.color, size: 18),
               ),
-              const SizedBox(width: PgTokens.space3),
+              const SizedBox(width: 13), // design `.notif` gap: 13px
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      notification.title,
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight:
-                            unread ? FontWeight.w700 : FontWeight.w600,
-                        color: PgTokens.colorText,
+                    // Design `.nt`: one 13.5px run, '<bold title> · body' —
+                    // unread is conveyed by the row tint + dot only.
+                    Text.rich(
+                      TextSpan(
+                        children: [
+                          TextSpan(
+                            text: notification.title,
+                            style:
+                                const TextStyle(fontWeight: FontWeight.w600),
+                          ),
+                          if (notification.body.isNotEmpty)
+                            TextSpan(text: ' · ${notification.body}'),
+                        ],
                       ),
+                      style: const TextStyle(
+                          fontSize: 13.5, color: PgTokens.colorText),
                     ),
-                    if (notification.body.isNotEmpty) ...[
-                      const SizedBox(height: 2),
-                      Text(
-                        notification.body,
-                        style: const TextStyle(
-                            fontSize: 12.5, color: PgTokens.colorTextMuted),
-                      ),
-                    ],
                     const SizedBox(height: 3),
                     Text(
                       rel,
@@ -79,7 +80,7 @@ class NotificationTile extends ConsumerWidget {
               ),
               if (unread)
                 Container(
-                  margin: const EdgeInsets.only(left: PgTokens.space2, top: 4),
+                  margin: const EdgeInsets.only(left: PgTokens.space2, top: 6),
                   width: 8,
                   height: 8,
                   decoration: const BoxDecoration(

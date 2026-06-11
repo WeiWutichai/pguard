@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/booking_status_controller.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
@@ -82,5 +83,79 @@ void main() {
     c.dispose();
     await Future<void>.delayed(Duration.zero);
     expect(feed.closed, isTrue);
+  });
+
+  test(
+      'cancel PUTs /bookings/{id}/cancel with NO body (contract: cancelBooking '
+      'takes none — reason is display-only) and folds the cancelled booking in',
+      () async {
+    final api = FakeApi(
+      onGet: (_, __) async => {
+        'id': 'b1',
+        'customer_id': 'c1',
+        'status': 'accepted',
+        'guard_id': null,
+      },
+      onPut: (path, data) async {
+        expect(path, '/bookings/b1/cancel');
+        expect(data, isNull, reason: 'the contract endpoint takes no body');
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'cancelled',
+          'guard_id': null,
+        };
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(bookingStatusControllerProvider('b1').future);
+
+    final error = await c
+        .read(bookingStatusControllerProvider('b1').notifier)
+        .cancel(reason: 'เปลี่ยนแผน / Changed plans');
+    expect(error, isNull);
+    expect(api.calls, contains('PUT /bookings/b1/cancel'));
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.cancelled);
+  });
+
+  test('cancel surfaces the server error message and keeps the booking',
+      () async {
+    final api = FakeApi(
+      onGet: (_, __) async => {
+        'id': 'b1',
+        'customer_id': 'c1',
+        'status': 'arrived',
+        'guard_id': 'g1',
+      },
+      onPut: (path, _) async => throw const ApiException(
+          message: 'ยกเลิกไม่ได้หลังเจ้าหน้าที่ถึงแล้ว',
+          code: 'CONFLICT',
+          statusCode: 409),
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(bookingStatusControllerProvider('b1').future);
+
+    final error =
+        await c.read(bookingStatusControllerProvider('b1').notifier).cancel();
+    expect(error, 'ยกเลิกไม่ได้หลังเจ้าหน้าที่ถึงแล้ว');
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.arrived, reason: 'state unchanged on failure');
   });
 }

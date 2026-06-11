@@ -71,7 +71,7 @@ class _OtpInputState extends State<OtpInput> {
                         BoxShadow(
                             color: PgTokens.colorFocusRing,
                             blurRadius: 0,
-                            spreadRadius: 3)
+                            spreadRadius: 4)
                       ]
                     : null,
               ),
@@ -80,6 +80,7 @@ class _OtpInputState extends State<OtpInput> {
                 style: const TextStyle(
                   fontSize: 23,
                   fontWeight: FontWeight.w600,
+                  fontFamily: 'IBMPlexMono',
                   color: PgTokens.colorText,
                 ),
               ),

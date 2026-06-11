@@ -33,18 +33,12 @@ class PaymentSuccessScreen extends ConsumerWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: PgTokens.space6),
-              Center(
-                child: Container(
-                  width: 84,
-                  height: 84,
-                  decoration: const BoxDecoration(
-                    color: PgTokens.colorSuccessBg,
-                    shape: BoxShape.circle,
-                  ),
-                  child: const Icon(Icons.check_rounded,
-                      size: 44, color: PgTokens.colorSuccess),
-                ),
+              // Design success hero: a bare 48px success-stroke checkmark (no tinted circle)
+              // with ~56px top breathing room (space7 + the page's space6 padding).
+              const SizedBox(height: PgTokens.space7),
+              const Center(
+                child: Icon(Icons.check_rounded,
+                    size: 48, color: PgTokens.colorSuccess),
               ),
               const SizedBox(height: PgTokens.space4),
               const Text(
@@ -88,11 +82,17 @@ class _SummaryCard extends StatelessWidget {
 
   final BookingFlowState state;
 
-  String _formatWhen(DateTime? when) {
-    if (when == null) return '—';
+  /// The booked time RANGE per the design ("วันนี้ 14:00 – 22:00"): date + start – end.
+  /// The end instant is the pure [BookingFlowState.scheduledEndAt] (start + booked hours).
+  String _formatRange(DateTime? start, DateTime? end) {
+    if (start == null) return '—';
     String two(int n) => n.toString().padLeft(2, '0');
-    final l = when.toLocal();
-    return '${two(l.day)}/${two(l.month)}/${l.year}  ${two(l.hour)}:${two(l.minute)} น.';
+    final s = start.toLocal();
+    final date = '${two(s.day)}/${two(s.month)}/${s.year}';
+    final from = '${two(s.hour)}:${two(s.minute)}';
+    if (end == null) return '$date  $from น.';
+    final e = end.toLocal();
+    return '$date  $from – ${two(e.hour)}:${two(e.minute)} น.';
   }
 
   @override
@@ -110,7 +110,7 @@ class _SummaryCard extends StatelessWidget {
           _Row(
             icon: Icons.event_outlined,
             label: 'เวลา / Time',
-            value: _formatWhen(state.scheduledAt),
+            value: _formatRange(state.scheduledAt, state.scheduledEndAt),
           ),
           const SizedBox(height: PgTokens.space3),
           _Row(

@@ -21,24 +21,35 @@ void main() {
         ),
       );
 
-  testWidgets('address is required and must meet a minimum length', (tester) async {
+  testWidgets('address is required and must meet a minimum length',
+      (tester) async {
     await pump(tester);
 
-    await tester.tap(find.text('บันทึกและส่ง / Submit'));
+    await tester.tap(find.text('สร้างบัญชี / Create account'));
     await tester.pump();
     expect(find.textContaining('Address is required'), findsOneWidget);
 
-    await tester.enterText(find.byType(TextFormField).last, 'short');
-    await tester.tap(find.text('บันทึกและส่ง / Submit'));
+    await tester.enterText(find.byKey(const Key('reg_address')), 'short');
+    await tester.tap(find.text('สร้างบัญชี / Create account'));
     await tester.pump();
     expect(find.textContaining('too short'), findsOneWidget);
+    // The live ✓ helper does not appear for an invalid address.
+    expect(find.textContaining('✓ ที่อยู่ครบถ้วน'), findsNothing);
   });
 
-  testWidgets('a valid address clears the validation errors', (tester) async {
+  testWidgets('a valid address clears the errors and shows the live ✓ helper',
+      (tester) async {
     await pump(tester);
-    await tester.enterText(
-        find.byType(TextFormField).last, '99/1 Sukhumvit Rd, Bangkok 10110');
-    await tester.tap(find.text('บันทึกและส่ง / Submit'));
+    await tester.enterText(find.byKey(const Key('reg_address')),
+        '99/1 Sukhumvit Rd, Bangkok 10110');
+    await tester.pump();
+    // The design's live success helper appears once min length is met.
+    expect(
+        find.text(
+            '✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร) / ✓ Valid (min 10 characters)'),
+        findsOneWidget);
+
+    await tester.tap(find.text('สร้างบัญชี / Create account'));
     await tester.pump();
     expect(find.textContaining('Address is required'), findsNothing);
     expect(find.textContaining('too short'), findsNothing);
