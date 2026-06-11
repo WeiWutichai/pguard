@@ -30,6 +30,7 @@ import {
   PanelHead,
 } from "@/components/ui";
 import { useLanguage } from "@/lib/i18n";
+import { fmtCappedCount } from "@/lib/format";
 
 import { COPY } from "./copy";
 import { MiniMap } from "./mini-map";
@@ -154,40 +155,39 @@ export default function DashboardPage() {
         </div>
       ) : (
         <>
-          {/* KPI strip — the mockup's 4 design cells first (active jobs + revenue have NO v2
+          {/* KPI strip — icons render PLAIN/faint per admin.css `.kpi .ic` (its !important beats
+              the mockup HTML's inline tints — the stylesheet is the rendered truth). The mockup's 4 design cells first (active jobs + revenue have NO v2
               admin endpoint: honest gap chips, never invented numbers), then the real metrics
               this console already loads (profile + rating) as a second strip row. */}
           <KpiGrid>
             <KpiCard
-              icon={<KpiIconBadge className="bg-brand-int text-white" icon={<Shield />} />}
+              icon={<Shield />}
               label={c.kpiActiveJobs}
               value={<Badge tone="gray">{c.awaitingApi}</Badge>}
               caption={c.noAdminEndpoint}
             />
             <KpiCard
-              icon={<KpiIconBadge className="bg-success-bg text-success" icon={<Target />} />}
+              icon={<Target />}
               label={t("dashboard.card.onlineGuards")}
               value={m.online == null ? "—" : String(m.online)}
             />
             <KpiCard
-              icon={
-                <KpiIconBadge className="bg-amber-100 text-amber-600" icon={<Banknote />} />
-              }
+              icon={<Banknote />}
               label={c.kpiRevenueToday}
               value={<Badge tone="gray">{c.awaitingApi}</Badge>}
               caption={c.noAdminEndpoint}
             />
             <KpiCard
-              icon={<KpiIconBadge className="bg-warning-bg text-amber-600" icon={<Users />} />}
+              icon={<Users />}
               label={c.kpiPendingApprovals}
-              value={fmtCount(m.pending)}
+              value={fmtCappedCount(m.pending)}
             />
             {/* Row 2 — cell borders re-anchored (KpiGrid's built-ins only cover one row of 4). */}
             <KpiCard
               className="border-l-0 border-t"
               icon={<ShieldCheck />}
               label={t("dashboard.card.approvedGuards")}
-              value={fmtCount(m.approved)}
+              value={fmtCappedCount(m.approved)}
             />
             <KpiCard
               className="min-[1101px]:border-t"
@@ -258,20 +258,7 @@ export default function DashboardPage() {
   );
 }
 
-function fmtCount(n: number | null): string {
-  if (n == null) return "—";
-  return n >= LIST_CAP ? `${LIST_CAP}+` : String(n);
-}
 
-/** Mockup KPI icon badge — 22px rounded square, semantic bg + icon ink (fills KpiCard's
- * 22px icon slot; the slot's [&_svg]:size-4 sizes the glyph). */
-function KpiIconBadge({ className, icon }: { className: string; icon: ReactNode }) {
-  return (
-    <span className={`flex size-full items-center justify-center rounded-md ${className}`}>
-      {icon}
-    </span>
-  );
-}
 
 /** Honest API-gap body for a designed panel/cell with no v2 endpoint — chip + what's
  * missing. Never renders fabricated numbers. */

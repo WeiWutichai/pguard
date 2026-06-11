@@ -155,14 +155,16 @@ export default function SettingsPage() {
                 {gapChip}
               </PanelHead>
               <PanelBody className="py-1">
+                {/* Unchecked on purpose: a checked state would imply a real config value
+                    that no endpoint backs (the mockup's ON states are demo data). */}
                 <KvRow label={c.payPromptpay} sub={c.payPromptpaySub} end>
-                  <Toggle checked disabled onChange={noop} aria-label={c.payPromptpay} />
+                  <Toggle checked={false} disabled onChange={noop} aria-label={c.payPromptpay} />
                 </KvRow>
                 <KvRow label={c.payCard} sub={c.payCardSub} end>
-                  <Toggle checked disabled onChange={noop} aria-label={c.payCard} />
+                  <Toggle checked={false} disabled onChange={noop} aria-label={c.payCard} />
                 </KvRow>
                 <KvRow label={c.payWallet} sub={c.payWalletSub} end>
-                  <Toggle checked disabled onChange={noop} aria-label={c.payWallet} />
+                  <Toggle checked={false} disabled onChange={noop} aria-label={c.payWallet} />
                 </KvRow>
               </PanelBody>
             </Panel>
@@ -205,7 +207,7 @@ export default function SettingsPage() {
                 <KvRow label={c.jwtExpiry}>
                   <PillSelect
                     aria-label={c.jwtExpiry}
-                    value="1h"
+                    value={null}
                     disabled
                     options={[
                       { value: "15m", label: "15m" },
@@ -217,7 +219,7 @@ export default function SettingsPage() {
                 <KvRow label={c.otpTtl}>
                   <PillSelect
                     aria-label={c.otpTtl}
-                    value="5 min"
+                    value={null}
                     disabled
                     options={[
                       { value: "5 min", label: "5 min" },
@@ -310,7 +312,8 @@ function PillSelect<T extends string>({
   "aria-label": ariaLabel,
 }: {
   options: readonly { value: T; label: string }[];
-  value: T;
+  /** `null` = no selection (gap-chipped sections must not fake a configured value). */
+  value: T | null;
   onChange?: (next: T) => void;
   disabled?: boolean;
   "aria-label"?: string;

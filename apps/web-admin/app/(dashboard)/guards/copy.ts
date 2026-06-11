@@ -7,7 +7,7 @@ import type { Lang } from "@/lib/lang";
 export interface GuardsCopy {
   title: string;
   /** Design subtitle carries the live count: "เจ้าหน้าที่ที่อนุมัติแล้ว 384 คน". */
-  subtitle: (n: number) => string;
+  subtitle: (n: string) => string;
   kpiOnline: string;
   kpiOnJob: string;
   kpiAvgRating: string;

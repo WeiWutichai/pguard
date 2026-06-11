@@ -17,6 +17,7 @@ import {
 import type { components } from "@/api/generated/profile";
 import { profileApi } from "@/lib/api";
 import { useLanguage, type TKey } from "@/lib/i18n";
+import { fmtCappedCount } from "@/lib/format";
 import {
   Avatar,
   Badge,
@@ -213,17 +214,17 @@ export default function ApplicantsPage() {
         <KpiCard
           icon={<Clock />}
           label={copy.kpiPending}
-          value={counts.pending ?? t("common.none")}
+          value={counts.pending == null ? t("common.none") : fmtCappedCount(counts.pending)}
         />
         <KpiCard
           icon={<CheckCircle2 />}
           label={copy.kpiApproved}
-          value={counts.approved ?? t("common.none")}
+          value={counts.approved == null ? t("common.none") : fmtCappedCount(counts.approved)}
         />
         <KpiCard
           icon={<XCircle />}
           label={copy.kpiRejected}
-          value={counts.rejected ?? t("common.none")}
+          value={counts.rejected == null ? t("common.none") : fmtCappedCount(counts.rejected)}
         />
         <KpiCard
           icon={<Timer />}
@@ -237,7 +238,7 @@ export default function ApplicantsPage() {
           so the customers tab is an honest gap chip instead of a dead tab. */}
       <Tabs>
         {STATUSES.map((s) => (
-          <Tab key={s} active={status === s} count={counts[s]} onClick={() => selectStatus(s)}>
+          <Tab key={s} active={status === s} count={counts[s] == null ? undefined : fmtCappedCount(counts[s])} onClick={() => selectStatus(s)}>
             {statusLabel(s)}
           </Tab>
         ))}

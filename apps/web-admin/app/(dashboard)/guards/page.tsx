@@ -22,6 +22,7 @@ import {
 } from "@/components/ui";
 import { profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { fmtCappedCount } from "@/lib/format";
 
 import { COPY } from "./copy";
 import { GuardDetailModal } from "./guard-detail-modal";
@@ -95,7 +96,7 @@ export default function GuardsPage() {
     <div>
       <PageIntro
         title={c.title}
-        lead={loading || hasError ? t("guards.subtitle") : c.subtitle(guards.length)}
+        lead={loading || hasError ? t("guards.subtitle") : c.subtitle(fmtCappedCount(guards.length))}
       >
         <Button variant="secondary" size="sm" onClick={reload}>
           <RefreshCw size={15} />
