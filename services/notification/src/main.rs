@@ -22,7 +22,7 @@ use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::create_pool;
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::fcm::{FcmConfig, FcmPusher, NoopPusher, Pusher};
 use crate::state::AppState;
@@ -44,11 +44,11 @@ async fn main() -> anyhow::Result<()> {
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
-    let redis_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = redis_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals
+    // in the background instead of wedging the AuthUser revocation check forever (chaos case 3).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
     let http_client = reqwest::Client::builder()
         .timeout(Duration::from_secs(10))
         .connect_timeout(Duration::from_secs(5))

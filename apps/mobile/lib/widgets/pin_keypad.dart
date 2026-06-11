@@ -19,13 +19,16 @@ class PinKeypad extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GridView.count(
-      crossAxisCount: 3,
+    return GridView(
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      mainAxisSpacing: PgTokens.space2,
-      crossAxisSpacing: PgTokens.space2,
-      childAspectRatio: 1.7,
+      // Design `.key`: fixed 56px tall keys with 8px gaps (not aspect-ratio derived).
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        mainAxisSpacing: PgTokens.space2,
+        crossAxisSpacing: PgTokens.space2,
+        mainAxisExtent: 56,
+      ),
       children: [
         for (final d in ['1', '2', '3', '4', '5', '6', '7', '8', '9'])
           _digit(d),
@@ -44,10 +47,12 @@ class PinKeypad extends StatelessWidget {
         onTap: enabled ? () => onDigit(d) : null,
         child: Text(
           d,
+          // Design `.key`: 24px w600 in --font-mono.
           style: const TextStyle(
             fontSize: 24,
             fontWeight: FontWeight.w600,
             color: PgTokens.colorText,
+            fontFamily: 'IBMPlexMono',
           ),
         ),
       );

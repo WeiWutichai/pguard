@@ -1,0 +1,124 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
+import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/features/booking/widgets/reason_tile.dart';
+import 'package:pguard_mobile/features/guard/active_job_screen.dart';
+import 'package:pguard_mobile/features/guard/withdraw_screen.dart';
+
+import '../support/fakes.dart';
+
+Map<String, dynamic> bookingJson(String status) => {
+      'id': 'b1',
+      'customer_id': 'c1',
+      'guard_id': 'g1',
+      'status': status,
+      'address': 'โรงงาน ปทุม',
+      'hours': 8,
+      'base_fee': '500.00',
+      'guard_count': 1,
+      'tip': '0',
+    };
+
+GoRouter buildRouter() => GoRouter(
+      initialLocation: '/guard/active/b1',
+      routes: [
+        GoRoute(
+          path: '/guard/active/:id',
+          builder: (_, s) =>
+              ActiveJobScreen(bookingId: s.pathParameters['id']!),
+        ),
+        GoRoute(
+          path: '/guard/active/:id/withdraw',
+          builder: (_, s) =>
+              WithdrawScreen(bookingId: s.pathParameters['id']!),
+        ),
+        GoRoute(
+          path: '/home/guard',
+          builder: (_, __) =>
+              const Scaffold(body: Text('GUARD HOME STUB')),
+        ),
+      ],
+    );
+
+Future<void> pumpFlow(WidgetTester tester, FakeApi api) async {
+  await tester.pumpWidget(ProviderScope(
+    overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ],
+    child: MaterialApp.router(routerConfig: buildRouter()),
+  ));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 20));
+}
+
+void main() {
+  testWidgets(
+      'active-job Withdraw navigates to the withdraw screen (no AlertDialog): '
+      'warning banner + 3 reasons + notes-gated submit', (tester) async {
+    final api = FakeApi(onGet: (_, __) async => bookingJson('accepted'));
+    await pumpFlow(tester, api);
+
+    await tester.tap(find.text('ปฏิเสธงาน / Withdraw'));
+    await tester.pumpAndSettle();
+
+    expect(find.byType(WithdrawScreen), findsOneWidget);
+    expect(find.byType(AlertDialog), findsNothing);
+    expect(find.text('ขอถอนจากงาน'), findsOneWidget);
+    expect(find.textContaining('โรงงาน ปทุม'), findsOneWidget); // subtitle
+    // EXACT escalation copy from the design.
+    expect(
+        find.textContaining(
+            'การถอนงานเป็นกรณีพิเศษ จะถูกส่งให้แอดมินตรวจสอบ และอาจมีผลต่อคะแนนของคุณ'),
+        findsOneWidget);
+
+    // 3 reasons, "เหตุฉุกเฉินส่วนตัว" pre-selected.
+    expect(find.byType(PgReasonTile), findsNWidgets(3));
+    expect(
+        tester
+            .widget<PgReasonTile>(find.widgetWithText(
+                PgReasonTile, 'เหตุฉุกเฉินส่วนตัว / Personal emergency'))
+            .selected,
+        isTrue);
+    expect(find.text('ป่วย / Sick'), findsOneWidget);
+    expect(find.text("เดินทางไปไม่ได้ / Can't reach site"), findsOneWidget);
+
+    // Submit is disabled until the admin notes are filled (design interaction note).
+    final submit = find.widgetWithText(
+        ElevatedButton, 'ส่งคำขอถอนงาน / Submit request');
+    expect(tester.widget<ElevatedButton>(submit).onPressed, isNull);
+
+    await tester.enterText(find.byType(TextField), 'รถเสียกลางทาง');
+    await tester.pump();
+    expect(tester.widget<ElevatedButton>(submit).onPressed, isNotNull);
+  });
+
+  testWidgets(
+      'submit PUTs /bookings/b1/decline (reason/notes display-only — no API '
+      'fields) and returns to the guard dashboard', (tester) async {
+    final api = FakeApi(
+      onGet: (_, __) async => bookingJson('accepted'),
+      onPut: (path, data) async {
+        expect(path, '/bookings/b1/decline');
+        expect(data, isNull, reason: 'decline takes no body');
+        return bookingJson('declined');
+      },
+    );
+    await pumpFlow(tester, api);
+
+    await tester.tap(find.text('ปฏิเสธงาน / Withdraw'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ป่วย / Sick'));
+    await tester.enterText(find.byType(TextField), 'มีไข้สูง');
+    await tester.pump();
+    await tester.tap(find.text('ส่งคำขอถอนงาน / Submit request'));
+    await tester.pumpAndSettle();
+
+    expect(api.calls, contains('PUT /bookings/b1/decline'));
+    expect(find.text('GUARD HOME STUB'), findsOneWidget);
+    expect(find.text('ส่งคำขอถอนงานแล้ว / Withdrawal submitted'),
+        findsOneWidget);
+  });
+}

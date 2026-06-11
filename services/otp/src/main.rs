@@ -28,7 +28,7 @@ use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
 use shared::db::create_pool;
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::config::OtpConfig;
 use crate::sms::{InetConfig, InetSender, NoopSender, SmsSender};
@@ -50,11 +50,11 @@ async fn main() -> anyhow::Result<()> {
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
-    let redis_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = redis_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals
+    // in the background instead of wedging the AuthUser revocation check forever (chaos case 3).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
     // --- SMS backend (fail-fast unless explicitly disabled for dev). The HTTP client is
     // built only when a real sender is used; InetSender owns it (no copy on state). ---
     let sms: Arc<dyn SmsSender> =

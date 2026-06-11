@@ -397,7 +397,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
     }
 
     impl HasJwtSecret for TestDeps {
@@ -407,7 +407,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -418,7 +418,7 @@ mod tests {
     }
 
     /// Build the profile router over a lightweight test state. The `AuthUser` extractor
-    /// requires `HasJwtSecret`, which mandates a real [`redis::aio::MultiplexedConnection`]
+    /// requires `HasJwtSecret`, which mandates a real [`redis::aio::ConnectionManager`]
     /// for the jti revocation blocklist — there is no public way to construct one without
     /// connecting. So, exactly like booking's router tests, these are hermetic by default
     /// and only run when a test Redis is provided via `TEST_REDIS_URL` (falling back to
@@ -431,9 +431,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         let db = PgPoolOptions::new()
@@ -621,13 +619,11 @@ mod tests {
 
     /// Router (guard + customer POST routes) plus the live Redis conn, so the profile_token
     /// tests can seed/inspect the single-use `profile_jti` marker. Redis-gated like `router()`.
-    async fn token_router() -> Option<(Router, redis::aio::MultiplexedConnection)> {
+    async fn token_router() -> Option<(Router, redis::aio::ConnectionManager)> {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         let db = PgPoolOptions::new()
@@ -764,9 +760,7 @@ mod tests {
             .connect(&db_url)
             .await
             .expect("connect Postgres");
-        let mut redis = redis::Client::open(redis_url)
-            .expect("redis client")
-            .get_multiplexed_tokio_connection()
+        let mut redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .expect("redis conn");
 

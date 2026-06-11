@@ -267,11 +267,11 @@ pub fn extract_cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'
 /// request) AND by long-lived sessions (e.g. the calling WS relay) that must RE-validate
 /// periodically — an open socket must not outlive token expiry or a force-revoke-all.
 ///
-/// Generic over the Redis connection type so the SAME revocation gate works over a one-shot
-/// [`redis::aio::MultiplexedConnection`] (the `AuthUser` extractor, via [`HasJwtSecret`]) AND a
-/// reconnecting [`redis::aio::ConnectionManager`] (the gateway edge + WS re-auth, which must
-/// survive a Redis restart — chaos case 3). Both satisfy `ConnectionLike + Clone`, so existing
-/// `&MultiplexedConnection` callers are unaffected.
+/// Generic over the Redis connection type (`ConnectionLike + Clone`) so the SAME revocation gate
+/// works over the reconnecting [`redis::aio::ConnectionManager`] every caller now holds — the
+/// `AuthUser` extractor (via [`HasJwtSecret`]), the WS re-auth loops, and the gateway edge — all of
+/// which must survive a Redis restart (chaos case 3). The generic bound also lets the hermetic
+/// tests drive it with a `ConnectionLike` double (no real Redis).
 pub async fn authenticate_token<C>(
     token: &str,
     decoding_key: &DecodingKey,
@@ -373,10 +373,18 @@ where
 }
 
 /// State requirement for the [`AuthUser`] extractor.
+///
+/// `redis_conn` returns a **reconnecting** [`redis::aio::ConnectionManager`] (not a raw
+/// `MultiplexedConnection`): the `AuthUser` revocation check runs on every protected request and
+/// on the WS re-auth tick, so a Redis restart must NOT wedge it forever (chaos case 3 / the HIGH
+/// resilience finding fixed for the gateway in PR #41, now extended to every backend). The manager
+/// reconnects in the background with bounded backoff — fail-closed while down, self-heal on
+/// recovery, no service restart. `authenticate_token` is generic over the connection type, so the
+/// SAME validator works here and on the gateway edge.
 pub trait HasJwtSecret {
     fn jwt_secret(&self) -> &str;
     fn decoding_key(&self) -> &DecodingKey;
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection;
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager;
 }
 
 impl<T: HasJwtSecret> HasJwtSecret for std::sync::Arc<T> {
@@ -386,7 +394,7 @@ impl<T: HasJwtSecret> HasJwtSecret for std::sync::Arc<T> {
     fn decoding_key(&self) -> &DecodingKey {
         T::decoding_key(self)
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         T::redis_conn(self)
     }
 }
@@ -581,15 +589,13 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let conn = redis::Client::open(redis_url)
-            .expect("redis client")
-            .get_multiplexed_tokio_connection()
+        let conn = crate::redis_client::create_connection_manager(&redis_url)
             .await
             .expect("redis conn");
 
         struct St {
             key: DecodingKey,
-            redis: redis::aio::MultiplexedConnection,
+            redis: redis::aio::ConnectionManager,
         }
         impl HasJwtSecret for St {
             fn jwt_secret(&self) -> &str {
@@ -598,7 +604,7 @@ mod tests {
             fn decoding_key(&self) -> &DecodingKey {
                 &self.key
             }
-            fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+            fn redis_conn(&self) -> &redis::aio::ConnectionManager {
                 &self.redis
             }
         }
@@ -695,6 +701,110 @@ mod tests {
         assert!(
             result.is_err(),
             "a Redis error during the revocation lookup MUST fail closed (deny), not allow"
+        );
+    }
+
+    /// A `ConnectionLike` that errors for its first `fail_remaining` commands (Redis "down") then
+    /// succeeds, returning `Int(0)` (→ `EXISTS`=not-revoked, `GET<Option<i64>>`=trv 0). Models a
+    /// reconnecting connection recovering: the auth layer must DENY while down and PASS once it's
+    /// back — proving `authenticate_token` doesn't permanently wedge after an outage. The counter
+    /// is shared across `.clone()` (authenticate_token clones the conn) so the recovery persists.
+    #[derive(Clone)]
+    struct FlakyRedis {
+        fail_remaining: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+    impl FlakyRedis {
+        fn new(fails: usize) -> Self {
+            Self {
+                fail_remaining: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(fails)),
+            }
+        }
+        fn still_down(&self) -> bool {
+            // Consume one "down" tick if any remain.
+            let mut cur = self
+                .fail_remaining
+                .load(std::sync::atomic::Ordering::SeqCst);
+            while cur > 0 {
+                match self.fail_remaining.compare_exchange(
+                    cur,
+                    cur - 1,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                ) {
+                    Ok(_) => return true,
+                    Err(c) => cur = c,
+                }
+            }
+            false
+        }
+    }
+    impl redis::aio::ConnectionLike for FlakyRedis {
+        fn req_packed_command<'a>(
+            &'a mut self,
+            _cmd: &'a redis::Cmd,
+        ) -> redis::RedisFuture<'a, redis::Value> {
+            let down = self.still_down();
+            Box::pin(async move {
+                if down {
+                    Err(redis::RedisError::from((
+                        redis::ErrorKind::IoError,
+                        "simulated redis outage",
+                    )))
+                } else {
+                    Ok(redis::Value::Int(0))
+                }
+            })
+        }
+        fn req_packed_commands<'a>(
+            &'a mut self,
+            _cmd: &'a redis::Pipeline,
+            _offset: usize,
+            _count: usize,
+        ) -> redis::RedisFuture<'a, Vec<redis::Value>> {
+            let down = self.still_down();
+            Box::pin(async move {
+                if down {
+                    Err(redis::RedisError::from((
+                        redis::ErrorKind::IoError,
+                        "simulated redis outage",
+                    )))
+                } else {
+                    Ok(vec![redis::Value::Int(0)])
+                }
+            })
+        }
+        fn get_db(&self) -> i64 {
+            0
+        }
+    }
+
+    /// Self-heal at the auth layer: while the connection errors the validator DENIES (fail-closed),
+    /// but once the connection recovers the SAME validator PASSES again — no permanent wedge. This
+    /// is the unit-level analogue of the reconnecting `ConnectionManager` healing after a Redis
+    /// restart (the end-to-end proof is the gated/staging restart-redis check). Hermetic.
+    #[tokio::test]
+    async fn authenticate_token_denies_while_down_then_self_heals() {
+        let user_id = Uuid::new_v4();
+        let (token, _jti) = encode_jwt(user_id, "guard", 0, TEST_SECRET, 60).unwrap();
+        let key = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        // Two "down" ticks, then healthy. ASSUMPTION (pinned to authenticate_token's command order
+        // above): the jti `EXISTS` runs FIRST and short-circuits via `?`, so each failing call
+        // consumes exactly ONE tick. If that order ever changes (e.g. a pipeline, or trv-before-jti),
+        // a failing call would burn two ticks and shift the deny/heal boundary — this comment is the
+        // tripwire for that reorder.
+        let conn = FlakyRedis::new(2);
+
+        assert!(
+            authenticate_token(&token, &key, &conn).await.is_err(),
+            "down (1/2): must deny"
+        );
+        assert!(
+            authenticate_token(&token, &key, &conn).await.is_err(),
+            "down (2/2): must deny"
+        );
+        assert!(
+            authenticate_token(&token, &key, &conn).await.is_ok(),
+            "recovered: must self-heal and pass (not permanently wedged)"
         );
     }
 }

@@ -30,7 +30,7 @@ use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::booking_client::HttpBookingReader;
 use crate::state::AppState;
@@ -59,11 +59,11 @@ async fn main() -> anyhow::Result<()> {
     let db = create_pool(&db_config).await?;
     // Read-replica pool (C5.3) for the payment list + export reads; primary fallback.
     let db_read = create_read_pool(&db_config).await?;
-    let redis_client = create_redis_client(&redis_config.cache_url)?;
-    let redis_conn = redis_client
-        .get_multiplexed_tokio_connection()
+    // Reconnecting manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals
+    // in the background instead of wedging the AuthUser revocation check forever (chaos case 3).
+    let redis_conn = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
 
     let booking_reader = HttpBookingReader::new(
         reqwest::Client::new(),

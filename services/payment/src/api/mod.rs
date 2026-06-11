@@ -215,7 +215,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         reader: StubReader,
     }
 
@@ -226,7 +226,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -241,7 +241,7 @@ mod tests {
     }
 
     /// Build the payment router over a lightweight test state. The `AuthUser` extractor
-    /// requires a real `redis::aio::MultiplexedConnection` (the jti blocklist), which can't
+    /// requires a real `redis::aio::ConnectionManager` (the jti blocklist), which can't
     /// be constructed without connecting. So these router tests are hermetic by default and
     /// only run when a test Redis is provided via `TEST_REDIS_URL` (falling back to
     /// `REDIS_CACHE_URL`). Returns `None` → the caller SKIPs. The auth-reject paths never
@@ -250,9 +250,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         let db = PgPoolOptions::new()

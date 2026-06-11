@@ -7,6 +7,7 @@ import '../../core/controllers/chat_list_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import 'chat_routes.dart';
 import 'widgets/conversation_tile.dart';
@@ -28,17 +29,16 @@ class ChatListScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: const PGuardHeader(
-        title: 'แชท',
+        title: 'ข้อความ',
         subtitle: 'Messages',
         showBack: true,
       ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => _ErrorBody(
-            message: e is ApiException
-                ? e.message
-                : 'โหลดแชทไม่สำเร็จ / Could not load chats',
+          error: (e, _) => PgErrorState(
+            title: 'โหลดแชทไม่สำเร็จ / Could not load chats',
+            message: e is ApiException ? e.message : null,
             onRetry: ctrl.refresh,
           ),
           data: (list) => RefreshIndicator(
@@ -47,8 +47,9 @@ class ChatListScreen extends ConsumerWidget {
                 ? const _EmptyBody()
                 : ListView.separated(
                     itemCount: list.length,
+                    // Design: full-bleed 1px border under each row (no avatar indent).
                     separatorBuilder: (_, __) => const Divider(
-                        height: 1, color: PgTokens.colorBorder, indent: 76),
+                        height: 1, color: PgTokens.colorBorder),
                     itemBuilder: (_, i) {
                       final c = list[i];
                       return ConversationTile(
@@ -102,36 +103,6 @@ class _EmptyBody extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-class _ErrorBody extends StatelessWidget {
-  const _ErrorBody({required this.message, required this.onRetry});
-
-  final String message;
-  final Future<void> Function() onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(PgTokens.space6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.cloud_off_outlined,
-                size: 40, color: PgTokens.colorTextMuted),
-            const SizedBox(height: PgTokens.space3),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted)),
-            const SizedBox(height: PgTokens.space3),
-            TextButton(
-                onPressed: onRetry, child: const Text('ลองใหม่ / Retry')),
-          ],
-        ),
-      ),
     );
   }
 }

@@ -8,14 +8,18 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
 import '../../../core/providers.dart';
+import '../../../widgets/auth_head.dart';
 import '../../../widgets/pguard_header.dart';
 import '../../../widgets/primary_button.dart';
 
 /// Shown after the profile is submitted: the account is registered but PENDING approval (no
-/// tokens, can't log in yet). Renders the submitted summary and a "check status" action that
-/// attempts `loginWithPin` — which succeeds only once the account is approved (then the session
-/// flips to authenticated and the router redirects to the dashboard); otherwise it stays pending.
-/// There is no editing of a submitted profile (v2).
+/// tokens, can't log in yet). Hi-fi layout: role-tinted hero circle + per-role heading/body +
+/// role badge pill, then a flexible spacer and the bottom-pinned "check status" CTA. The
+/// persisted (masked) summary still backs the cold-start role detection — it is no longer
+/// rendered (the design shows no summary list). "Check status" attempts `loginWithPin` — which
+/// succeeds only once the account is approved (then the session flips to authenticated and the
+/// router redirects to the dashboard); otherwise it stays pending. There is no editing of a
+/// submitted profile (v2).
 class RegistrationPendingScreen extends ConsumerStatefulWidget {
   const RegistrationPendingScreen({super.key});
 
@@ -32,7 +36,7 @@ class _RegistrationPendingScreenState
   void initState() {
     super.initState();
     // Live flow: the summary is on the controller. Cold start (fresh keepAlive controller): load
-    // the masked summary persisted to prefs at submit.
+    // the masked summary persisted to prefs at submit (it carries the role for the hero/badge).
     _summary = ref.read(registrationControllerProvider).submitted;
     if (_summary == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadFromPrefs());
@@ -100,8 +104,7 @@ class _RegistrationPendingScreenState
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(registrationControllerProvider);
-    final summary = _summary;
-    final isGuard = summary?.role.isGuard ?? false;
+    final isGuard = _summary?.role.isGuard ?? false;
 
     return Scaffold(
       appBar: const PGuardHeader(
@@ -109,87 +112,111 @@ class _RegistrationPendingScreenState
         subtitle: 'Pending approval',
       ),
       body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(PgTokens.space6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: PgTokens.space4),
-              const Icon(Icons.hourglass_top,
-                  size: 56, color: PgTokens.colorWarning),
-              const SizedBox(height: PgTokens.space4),
-              Text(
-                isGuard
-                    ? 'ส่งข้อมูลแล้ว · รอแอดมินตรวจสอบ'
-                    : 'สมัครเรียบร้อย · รอการยืนยัน',
-                textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+        child: Column(
+          children: [
+            // Hero (design: text-align center, padding 50 30 20).
+            Padding(
+              padding: const EdgeInsets.fromLTRB(30, 50, 30, 20),
+              child: Column(
+                children: [
+                  AuthHead(
+                    icon: _HeroCircle(isGuard: isGuard),
+                    title: isGuard
+                        ? 'กำลังตรวจสอบใบสมัคร / Application under review'
+                        : 'เกือบเสร็จแล้ว! / Almost there!',
+                    subtitle: isGuard
+                        ? 'ทีมงานกำลังตรวจสอบเอกสารของคุณ\n'
+                            'โดยปกติใช้เวลา 1–2 วันทำการ / '
+                            'Our team is verifying your documents.\n'
+                            'This usually takes 1–2 business days.'
+                        : 'บัญชีของคุณกำลังรอการยืนยัน\n'
+                            'เราจะแจ้งเตือนทันทีที่พร้อมใช้งาน / '
+                            "Your account is awaiting verification.\n"
+                            "We'll notify you the moment it's ready.",
+                  ),
+                  const SizedBox(height: PgTokens.space4),
+                  _RoleBadge(isGuard: isGuard),
+                ],
               ),
-              const SizedBox(height: PgTokens.space2),
-              const Text(
-                'จะเข้าสู่ระบบได้เมื่อได้รับการอนุมัติ\n'
-                "You can sign in once your account is approved",
-                textAlign: TextAlign.center,
-                style: TextStyle(color: PgTokens.colorTextMuted),
-              ),
-              const SizedBox(height: PgTokens.space6),
-              if (summary != null) _SummaryCard(summary: summary),
-              const SizedBox(height: PgTokens.space6),
-              PgPrimaryButton(
+            ),
+            const Spacer(),
+            // Footer: CTA pinned above the home indicator.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(
+                  20, PgTokens.space4, 20, PgTokens.space4),
+              child: PgPrimaryButton(
                 label: 'ตรวจสอบสถานะ / Check status',
                 busy: state.busy,
                 onPressed: state.busy ? null : _checkStatus,
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.summary});
+/// Design `.ic`: 96px tinted circle — guard = warning-bg + clock, customer = amber-100 + check
+/// (both icons in amber-700, the nearest token to the design's amber-600/700 pair).
+class _HeroCircle extends StatelessWidget {
+  const _HeroCircle({required this.isGuard});
 
-  final RegistrationSummary summary;
+  final bool isGuard;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(PgTokens.space4),
+      width: 96,
+      height: 96,
       decoration: BoxDecoration(
-        color: PgTokens.colorSunken,
-        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        color: isGuard ? PgTokens.colorWarningBg : PgTokens.colorAmber100,
+        shape: BoxShape.circle,
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Icon(
+        isGuard ? Icons.schedule : Icons.check,
+        size: 44,
+        color: PgTokens.colorAmber700,
+      ),
+    );
+  }
+}
+
+/// Design role badge pill: guard = green-900 (brand) on white text + shield; customer =
+/// amber-100 with amber-700 text + user icon.
+class _RoleBadge extends StatelessWidget {
+  const _RoleBadge({required this.isGuard});
+
+  final bool isGuard;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = isGuard ? Colors.white : PgTokens.colorAmber700;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+      decoration: BoxDecoration(
+        color: isGuard ? PgTokens.colorBrand : PgTokens.colorAmber100,
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          Text(
-            summary.role.isGuard
-                ? 'ข้อมูลที่ส่ง · เจ้าหน้าที่'
-                : 'ข้อมูลที่ส่ง · ลูกค้า',
-            style: const TextStyle(fontWeight: FontWeight.w600),
+          Icon(
+            isGuard ? Icons.shield_outlined : Icons.person_outline,
+            size: 14,
+            color: fg,
           ),
-          const SizedBox(height: PgTokens.space3),
-          for (final line in summary.lines)
-            Padding(
-              padding: const EdgeInsets.only(bottom: PgTokens.space2),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  SizedBox(
-                    width: 130,
-                    child: Text(line.label,
-                        style: const TextStyle(
-                            color: PgTokens.colorTextMuted, fontSize: 13)),
-                  ),
-                  Expanded(
-                      child: Text(line.value,
-                          style: const TextStyle(fontSize: 14))),
-                ],
-              ),
+          const SizedBox(width: 7),
+          Text(
+            isGuard
+                ? 'เจ้าหน้าที่ รปภ. / Security Guard'
+                : 'ลูกค้าจ้างงาน / Hirer',
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: fg,
             ),
+          ),
         ],
       ),
     );

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/booking.dart';
+import '../network/api_exception.dart';
 import '../providers.dart';
 
 part 'booking_status_controller.g.dart';
@@ -42,5 +43,26 @@ class BookingStatusController extends _$BookingStatusController {
     await feed.connect();
 
     return booking;
+  }
+
+  /// `PUT /v1/bookings/{id}/cancel` — the customer cancels PRE-ARRIVAL
+  /// (`requested`/`accepted`/`en_route` → `cancelled`), per `cancelBooking` in
+  /// `contracts/openapi/booking.yaml`. The contract takes NO request body, so [reason]
+  /// is DISPLAY-ONLY (the cancellation screen collects it for UX; it is never sent —
+  /// no such API field exists). On success the returned booking is folded into state
+  /// immediately (the WS `cancelled` frame that follows is idempotent).
+  ///
+  /// Returns `null` on success, else a human-readable error message for a SnackBar.
+  Future<String?> cancel({String? reason}) async {
+    try {
+      final data =
+          await ref.read(pguardApiProvider).put('/bookings/$bookingId/cancel');
+      state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
+      return null;
+    } on ApiException catch (e) {
+      return e.message;
+    } catch (_) {
+      return 'เกิดข้อผิดพลาด / Something went wrong';
+    }
   }
 }

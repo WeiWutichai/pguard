@@ -15,7 +15,7 @@ use crate::fcm::Pusher;
 pub struct AppState {
     pub db: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
     pub service_jwt_config: ServiceJwtConfig,
     pub pusher: Arc<dyn Pusher>,
@@ -28,7 +28,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_conn
     }
 }

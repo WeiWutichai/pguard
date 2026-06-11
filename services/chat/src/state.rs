@@ -27,9 +27,9 @@ pub struct AppState {
     /// Read replica — the enriched conversation list (a read-heavy list query, C5.3).
     pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (AuthUser).
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     /// Multiplexed Redis connection used to PUBLISH chat broadcasts (`chat:{conversation_id}`).
-    pub pubsub_conn: redis::aio::MultiplexedConnection,
+    pub pubsub_conn: redis::aio::ConnectionManager,
     /// Redis client a WS session opens a dedicated SUBSCRIBER on (`psubscribe chat:*`).
     pub pubsub_client: redis::Client,
     pub jwt_config: JwtConfig,
@@ -46,7 +46,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_conn
     }
 }
@@ -63,7 +63,7 @@ impl HasServiceJwt for AppState {
 pub trait ChatDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
     fn db_read(&self) -> &PgPool;
-    fn pubsub_conn(&self) -> &redis::aio::MultiplexedConnection;
+    fn pubsub_conn(&self) -> &redis::aio::ConnectionManager;
     fn pubsub_client(&self) -> &redis::Client;
     fn s3(&self) -> &S3Client;
 }
@@ -75,7 +75,7 @@ impl ChatDeps for AppState {
     fn db_read(&self) -> &PgPool {
         &self.db_read
     }
-    fn pubsub_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn pubsub_conn(&self) -> &redis::aio::ConnectionManager {
         &self.pubsub_conn
     }
     fn pubsub_client(&self) -> &redis::Client {

@@ -113,10 +113,10 @@ pub struct AppState {
 }
 
 // NOTE: the gateway deliberately does NOT implement `shared::auth::HasJwtSecret` / use the
-// `AuthUser` extractor — it validates tokens at the edge via `crate::auth::validate` (which
-// takes the connection directly). That decoupling is what lets the held connection be a
-// reconnecting `ConnectionManager` (the `HasJwtSecret::redis_conn` trait fixes the type to
-// `&MultiplexedConnection`, which would block the swap). Backends keep `AuthUser` (unchanged).
+// `AuthUser` extractor — it validates tokens at the edge via `crate::auth::validate` (which takes
+// the connection directly), so it simply doesn't need the extractor. (`HasJwtSecret::redis_conn`
+// now returns a reconnecting `&ConnectionManager` too — every backend self-heals after a Redis
+// restart, the `feat/backend-redis-reconnect` pass — so the type no longer differs from the edge.)
 
 #[cfg(test)]
 mod tests {

@@ -37,15 +37,24 @@ class GuardCard extends StatelessWidget {
           ),
           child: Row(
             children: [
-              CircleAvatar(
-                radius: 25,
-                backgroundColor: PgTokens.colorGreen100,
-                child: Text(
-                  guard.shortHandle,
-                  style: const TextStyle(
-                      color: PgTokens.colorGreen800,
-                      fontWeight: FontWeight.w700,
-                      fontSize: 13),
+              // Design avatar: 50×50 rounded square (radius 14) on green-100, 17px w600.
+              Container(
+                width: 50,
+                height: 50,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: PgTokens.colorGreen100,
+                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+                ),
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  child: Text(
+                    guard.shortHandle,
+                    style: const TextStyle(
+                        color: PgTokens.colorGreen800,
+                        fontWeight: FontWeight.w600,
+                        fontSize: 17),
+                  ),
                 ),
               ),
               const SizedBox(width: PgTokens.space3),

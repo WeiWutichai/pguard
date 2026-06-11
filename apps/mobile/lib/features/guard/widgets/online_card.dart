@@ -63,7 +63,7 @@ class _StatusText extends StatelessWidget {
       sub = 'Connecting to dispatch';
     } else {
       title = 'พร้อมรับงาน / You\'re online';
-      sub = 'มองเห็นโดยลูกค้าใกล้เคียง · Visible to customers';
+      sub = 'มองเห็นโดยลูกค้าใกล้เคียง · Visible to nearby customers';
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -126,11 +126,14 @@ class _GpsLine extends StatelessWidget {
           ),
         ),
         if (metres != null)
+          // Design accuracy readout: mono w600 numerals.
           Text('${metres.toStringAsFixed(0)} ม.',
               style: const TextStyle(
                   color: Colors.white,
                   fontSize: 13,
-                  fontWeight: FontWeight.w700)),
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'IBMPlexMono',
+                  fontFeatures: [FontFeature.tabularFigures()])),
       ],
     );
   }

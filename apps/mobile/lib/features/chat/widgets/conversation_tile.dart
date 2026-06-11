@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
-import '../../../core/controllers/relative_time.dart';
+import '../../../core/controllers/chat_format.dart';
 import '../../../core/models/chat.dart';
 
 /// One row in the conversation list: counterpart avatar (initials fallback — no avatar endpoint
-/// in v2), name, last message preview, last-message relative time, and an unread badge.
+/// in v2), name, last message preview, last-message time bucket (design: absolute — clock time
+/// today, "เมื่อวาน" yesterday, short date older), and an unread badge.
 class ConversationTile extends StatelessWidget {
   const ConversationTile({
     super.key,
@@ -18,16 +19,6 @@ class ConversationTile extends StatelessWidget {
   final bool isThai;
   final VoidCallback onTap;
 
-  static String _initials(String? name) {
-    final n = (name ?? '').trim();
-    if (n.isEmpty) return '?';
-    final parts = n.split(RegExp(r'\s+'));
-    if (parts.length >= 2 && parts[1].isNotEmpty) {
-      return (parts[0][0] + parts[1][0]).toUpperCase();
-    }
-    return n.substring(0, n.length >= 2 ? 2 : 1).toUpperCase();
-  }
-
   @override
   Widget build(BuildContext context) {
     final name = conversation.participantName ??
@@ -37,29 +28,27 @@ class ConversationTile extends StatelessWidget {
     final when = conversation.lastMessageAt;
     final time = when == null
         ? ''
-        : (isThai
-            ? RelativeTime.th(when, now: DateTime.now().toUtc())
-            : RelativeTime.en(when, now: DateTime.now().toUtc()));
+        : ChatFormat.listTime(when, now: DateTime.now(), thai: isThai);
     final unread = conversation.hasUnread;
 
     return InkWell(
       onTap: onTap,
       child: Padding(
-        padding: const EdgeInsets.symmetric(
-            horizontal: PgTokens.space4, vertical: PgTokens.space3),
+        // Design: row padding 14px 20px, gap 13px (non-token design metrics).
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14),
         child: Row(
           children: [
             CircleAvatar(
-              radius: 23,
+              radius: 24, // design: 48px list avatar
               backgroundColor: PgTokens.colorGreen100,
               child: Text(
-                _initials(conversation.participantName),
+                ChatFormat.initials(conversation.participantName),
                 style: const TextStyle(
                     color: PgTokens.colorGreen800,
                     fontWeight: FontWeight.w600),
               ),
             ),
-            const SizedBox(width: PgTokens.space3),
+            const SizedBox(width: 13),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -69,7 +58,7 @@ class ConversationTile extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
-                      fontSize: 15,
+                      fontSize: 14.5,
                       fontWeight: unread ? FontWeight.w700 : FontWeight.w600,
                     ),
                   ),
@@ -80,6 +69,8 @@ class ConversationTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13,
+                      fontWeight:
+                          unread ? FontWeight.w500 : FontWeight.w400,
                       color: unread
                           ? PgTokens.colorText
                           : PgTokens.colorTextMuted,

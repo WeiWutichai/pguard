@@ -3,23 +3,30 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/chat_attachment_resolver.dart';
+import '../../../core/controllers/chat_format.dart';
 import '../../../core/media/media_host.dart';
 import '../../../core/models/chat.dart';
 
 /// One message bubble. Side is decided by `sender_role == acting` ([ChatMessage.isFromRole]) —
 /// right for the caller's own role, left for the counterpart — NEVER by sender id. Own bubbles
-/// carry a delivered tick (the message is persisted once it echoes back).
+/// carry a delivered tick (the message is persisted once it echoes back); counterpart bubbles
+/// carry a small 26px initials avatar (design row-them, [counterpartName]).
 class ChatBubble extends StatelessWidget {
   const ChatBubble({
     super.key,
     required this.message,
     required this.acting,
     required this.isThai,
+    this.counterpartName,
   });
 
   final ChatMessage message;
   final ChatRole acting;
   final bool isThai;
+
+  /// Display name of the other participant — drives the initials avatar beside
+  /// from-other bubbles (null → "?" initials).
+  final String? counterpartName;
 
   static String _hm(DateTime utc) {
     final d = utc.toLocal();
@@ -46,52 +53,91 @@ class ChatBubble extends StatelessWidget {
     }
 
     final mine = message.isFromRole(acting);
-    final fg = mine ? Colors.white : PgTokens.colorText;
+    // Design: own bubble is white-on-brand-int; them bubble is text-strong (= colorBrand
+    // 0xFF0E3B2E, exactly the design's --text-strong light value) on white.
+    final fg = mine ? Colors.white : PgTokens.colorBrand;
 
-    return Align(
-      alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
-      child: Container(
-        constraints: BoxConstraints(
-            maxWidth: MediaQuery.sizeOf(context).width * 0.76),
-        margin: const EdgeInsets.symmetric(
-            vertical: 3, horizontal: PgTokens.space4),
-        padding: const EdgeInsets.symmetric(
-            horizontal: PgTokens.space3, vertical: PgTokens.space2),
-        decoration: BoxDecoration(
-          color: mine ? PgTokens.colorPrimary : PgTokens.colorSurface,
-          border: mine ? null : Border.all(color: PgTokens.colorBorder),
-          borderRadius: BorderRadius.only(
-            topLeft: const Radius.circular(PgTokens.radiusLg),
-            topRight: const Radius.circular(PgTokens.radiusLg),
-            bottomLeft: Radius.circular(mine ? PgTokens.radiusLg : 2),
-            bottomRight: Radius.circular(mine ? 2 : PgTokens.radiusLg),
-          ),
-        ),
-        child: Column(
-          crossAxisAlignment:
-              mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _content(fg),
-            const SizedBox(height: 3),
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  _hm(message.createdAt),
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    color: mine ? Colors.white70 : PgTokens.colorTextFaint,
-                  ),
+    final bubble = Container(
+      constraints:
+          BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width * 0.74),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      decoration: BoxDecoration(
+        color: mine ? PgTokens.colorPrimary : PgTokens.colorSurface,
+        // Design (them): borderless with a subtle xs shadow.
+        boxShadow: mine
+            ? null
+            : [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.05),
+                  blurRadius: 4,
+                  offset: const Offset(0, 1),
                 ),
-                if (mine) ...[
-                  const SizedBox(width: 3),
-                  const Icon(Icons.done_all, size: 13, color: Colors.white70),
-                ],
               ],
-            ),
-          ],
+        borderRadius: BorderRadius.only(
+          topLeft: const Radius.circular(PgTokens.radius2xl),
+          topRight: const Radius.circular(PgTokens.radius2xl),
+          bottomLeft: Radius.circular(mine ? PgTokens.radius2xl : 5),
+          bottomRight: Radius.circular(mine ? 5 : PgTokens.radius2xl),
         ),
+      ),
+      child: Column(
+        crossAxisAlignment:
+            mine ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _content(fg),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                _hm(message.createdAt),
+                style: TextStyle(
+                  fontSize: 10,
+                  // Design: timestamp row at 0.7 opacity of the bubble text color.
+                  color: mine
+                      ? Colors.white70
+                      : PgTokens.colorBrand.withValues(alpha: 0.7),
+                ),
+              ),
+              if (mine) ...[
+                const SizedBox(width: 3),
+                const Icon(Icons.done_all, size: 13, color: Colors.white70),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+
+    return Padding(
+      padding:
+          const EdgeInsets.symmetric(vertical: 3, horizontal: PgTokens.space4),
+      child: Align(
+        alignment: mine ? Alignment.centerRight : Alignment.centerLeft,
+        child: mine
+            ? bubble
+            // Design row-them: 26px initials avatar, 8px gap, bottom-aligned.
+            : Row(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  CircleAvatar(
+                    radius: 13,
+                    backgroundColor: PgTokens.colorGreen100,
+                    child: Text(
+                      ChatFormat.initials(counterpartName),
+                      style: const TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w600,
+                        color: PgTokens.colorGreen800,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: PgTokens.space2),
+                  Flexible(child: bubble),
+                ],
+              ),
       ),
     );
   }
@@ -104,7 +150,7 @@ class ChatBubble extends StatelessWidget {
       case ChatMessageType.text:
       case ChatMessageType.system:
         return Text(message.content ?? '',
-            style: TextStyle(fontSize: 14.5, color: fg));
+            style: TextStyle(fontSize: 14, height: 1.45, color: fg));
     }
   }
 }

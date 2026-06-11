@@ -5,12 +5,14 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/resend_policy.dart';
+import '../../widgets/auth_head.dart';
 import '../../widgets/otp_input.dart';
 import '../../widgets/pguard_header.dart';
-import '../../widgets/primary_button.dart';
 
-/// Step 2: enter the 6-digit OTP. UI per `Mobile - Auth.html`. The resend countdown is a
-/// pure display ticker (NOT polling, and NOT the booking-status path).
+/// Step 2: enter the 6-digit OTP. UI per `Mobile - Auth.html` screen ② — centered head,
+/// 6 OTP boxes that auto-submit on the 6th digit (no footer CTA in the design), and a
+/// centered resend countdown with the attempt counter. The countdown is a pure display
+/// ticker (NOT polling, and NOT the booking-status path).
 class OtpScreen extends ConsumerStatefulWidget {
   const OtpScreen({super.key});
 
@@ -42,10 +44,10 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: PgTokens.space4),
-              Text(
-                'กรอกรหัส 6 หลักที่ส่งไปยัง +66 ${state.phone}',
-                style:
-                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              AuthHead(
+                title: 'กรอกรหัส 6 หลัก / Enter 6-digit code',
+                subtitle:
+                    'ส่งไปที่ +66 ${state.phone} / Sent to +66 ${state.phone}',
               ),
               const SizedBox(height: PgTokens.space6),
               OtpInput(
@@ -58,19 +60,18 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
               ),
               const SizedBox(height: PgTokens.space4),
               if (sentAt != null)
-                _ResendCountdown(sentAt: sentAt, policy: _resend),
+                _ResendCountdown(
+                  sentAt: sentAt,
+                  policy: _resend,
+                  attempt: state.otpRequestCount.clamp(1, 5),
+                ),
               const SizedBox(height: PgTokens.space4),
               if (state.error != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: PgTokens.space3),
-                  child: Text(state.error!,
-                      style: const TextStyle(color: PgTokens.colorDanger)),
+                Text(
+                  state.error!,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: PgTokens.colorDanger),
                 ),
-              PgPrimaryButton(
-                label: 'ยืนยัน / Verify',
-                busy: state.busy,
-                onPressed: _code.length == 6 ? _verify : null,
-              ),
             ],
           ),
         ),
@@ -79,14 +80,20 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   }
 }
 
-/// Shows "Resend in m:ss" counting down, then a Resend action that returns to the captcha step
-/// to re-solve the bot-check (which re-sends the SMS to the same number). Rebuilds once per second
-/// via a display stream (no network poll).
+/// The design `.resend` line: "ส่งรหัสอีกครั้งใน 0:42 · พยายาม 1/5" centered, 13px muted, with the
+/// timer and attempt counter emphasized in the faint ink. Once elapsed it becomes a Resend action
+/// that returns to the captcha step to re-solve the bot-check (which re-sends the SMS to the same
+/// number). Rebuilds once per second via a display stream (no network poll).
 class _ResendCountdown extends StatelessWidget {
-  const _ResendCountdown({required this.sentAt, required this.policy});
+  const _ResendCountdown(
+      {required this.sentAt, required this.policy, required this.attempt});
 
   final DateTime sentAt;
   final ResendPolicy policy;
+  final int attempt;
+
+  static const TextStyle _strong = TextStyle(
+      fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
 
   @override
   Widget build(BuildContext context) {
@@ -96,14 +103,26 @@ class _ResendCountdown extends StatelessWidget {
         final remaining =
             policy.secondsRemaining(sentAt, DateTime.now().toUtc());
         if (remaining > 0) {
-          return Text(
-            'ขอรหัสใหม่ได้ใน ${policy.format(remaining)} · Resend in ${policy.format(remaining)}',
+          final timer = policy.format(remaining);
+          return Text.rich(
+            TextSpan(
+              children: [
+                const TextSpan(text: 'ส่งรหัสอีกครั้งใน '),
+                TextSpan(text: timer, style: _strong),
+                const TextSpan(text: ' · พยายาม '),
+                TextSpan(text: '$attempt/5', style: _strong),
+                const TextSpan(text: ' / Resend in '),
+                TextSpan(text: timer, style: _strong),
+                const TextSpan(text: ' · attempt '),
+                TextSpan(text: '$attempt/5', style: _strong),
+              ],
+            ),
+            textAlign: TextAlign.center,
             style:
                 const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
           );
         }
-        return Align(
-          alignment: Alignment.centerLeft,
+        return Center(
           child: TextButton(
             onPressed: () => context.go('/auth/captcha'),
             child: const Text('ไม่ได้รับรหัส? ขอใหม่ / Resend code'),

@@ -65,9 +65,32 @@ class _ServiceCard extends StatelessWidget {
   final SecurityService service;
   final VoidCallback onTap;
 
+  /// Per-service icon treatment from the design (each card is color-coded):
+  /// หมู่บ้าน green-900/white · คอนโด green-100/green-700 · โรงงาน amber-100/amber-700 ·
+  /// อื่นๆ sunken/muted. green-700 has no token; colorGreen800 is the nearest.
+  ({Color bg, Color fg}) get _iconColors {
+    switch (service) {
+      case SecurityService.village:
+        return (bg: PgTokens.colorBrand, fg: Colors.white);
+      case SecurityService.condo:
+        return (bg: PgTokens.colorGreen100, fg: PgTokens.colorGreen800);
+      case SecurityService.factory:
+        return (bg: PgTokens.colorAmber100, fg: PgTokens.colorAmber700);
+      case SecurityService.other:
+        return (bg: PgTokens.colorSunken, fg: PgTokens.colorTextMuted);
+    }
+  }
+
+  /// Display title — the design's "Other" card carries a parenthetical the catalog id keeps
+  /// out of the enum: "อื่นๆ (ระบุเอง)".
+  String get _title => service == SecurityService.other
+      ? 'อื่นๆ (ระบุเอง) · ${service.labelEn}'
+      : '${service.labelTh} · ${service.labelEn}';
+
   @override
   Widget build(BuildContext context) {
     final estimate = service.indicativeHourlySatang;
+    final colors = _iconColors;
     return Material(
       color: PgTokens.colorSurface,
       borderRadius: BorderRadius.circular(PgTokens.radius2xl),
@@ -75,10 +98,11 @@ class _ServiceCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(PgTokens.radius2xl),
         child: Container(
-          padding: const EdgeInsets.all(PgTokens.space4),
+          padding:
+              const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-            border: Border.all(color: PgTokens.colorBorder),
+            border: Border.all(color: PgTokens.colorBorder, width: 1.5),
           ),
           child: Row(
             children: [
@@ -86,11 +110,10 @@ class _ServiceCard extends StatelessWidget {
                 width: 52,
                 height: 52,
                 decoration: BoxDecoration(
-                  color: PgTokens.colorGreen50,
-                  borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+                  color: colors.bg,
+                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                 ),
-                child: Icon(serviceIcon(service),
-                    color: PgTokens.colorGreen800, size: 24),
+                child: Icon(serviceIcon(service), color: colors.fg, size: 24),
               ),
               const SizedBox(width: PgTokens.space3),
               Expanded(
@@ -98,7 +121,7 @@ class _ServiceCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      '${service.labelTh} · ${service.labelEn}',
+                      _title,
                       style: const TextStyle(
                           fontSize: 16,
                           fontWeight: FontWeight.w600,
@@ -113,17 +136,19 @@ class _ServiceCard extends StatelessWidget {
                   ],
                 ),
               ),
-              const SizedBox(width: PgTokens.space2),
-              Text(
-                estimate != null
-                    ? 'เริ่ม ${Money.format(estimate)}/ชม.'
-                    : 'ตามจริง',
-                textAlign: TextAlign.right,
-                style: const TextStyle(
-                    fontSize: 12.5,
-                    fontWeight: FontWeight.w600,
-                    color: PgTokens.colorTextMuted),
-              ),
+              // Design: exact "฿230/ชม." (monospace 13px muted); the Other card shows NO price.
+              if (estimate != null) ...[
+                const SizedBox(width: PgTokens.space2),
+                Text(
+                  '${Money.format(estimate)}/ชม.',
+                  textAlign: TextAlign.right,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: PgTokens.colorTextMuted,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
             ],
           ),
         ),

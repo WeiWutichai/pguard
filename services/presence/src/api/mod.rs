@@ -155,7 +155,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         authz: StubAuthz,
     }
     impl HasJwtSecret for TestDeps {
@@ -165,7 +165,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -177,7 +177,7 @@ mod tests {
         fn booking_authz(&self) -> &StubAuthz {
             &self.authz
         }
-        fn redis_pub(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_pub(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -186,9 +186,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         // A lazy pool to an invalid DB: authz failures return BEFORE any query (hermetic); a
