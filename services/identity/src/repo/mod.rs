@@ -224,11 +224,47 @@ pub async fn approve_user_on_event(
     }
 }
 
+/// Max concurrent live refresh families (≈ logged-in sessions) per user. A new login beyond
+/// this evicts the least-recently-active family, so a login loop / token-minting abuse cannot
+/// grow unbounded session state (the only other ceiling is natural 7-day expiry).
+const MAX_SESSIONS_PER_USER: i64 = 5;
+
 /// Persist a freshly-issued refresh token (new family on login). Returns the opaque
-/// token the client receives (`{rotation_id}.{secret}`).
+/// token the client receives (`{rotation_id}.{secret}`). Enforces the per-user session cap
+/// first (evict oldest beyond the cap).
 pub async fn create_refresh_family(db: &PgPool, user_id: Uuid) -> Result<String, AppError> {
+    enforce_session_cap(db, user_id).await?;
     let family_id = Uuid::new_v4();
     issue_refresh(db, user_id, family_id).await
+}
+
+/// Revoke the least-recently-active refresh families beyond `MAX_SESSIONS_PER_USER - 1`, so that
+/// after the caller adds the new family the user ends at most at the cap. "Recency" is the
+/// family's most recent rotation (`MAX(created_at)`), i.e. LRU eviction. (A rare concurrent-login
+/// race may transiently leave cap+1 families; it self-corrects on the next login and is a
+/// hardening control, not a hard invariant — so we don't pay for a serializing lock here.)
+async fn enforce_session_cap(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
+    let stale: Vec<(Uuid,)> = sqlx::query_as(
+        r#"
+        SELECT family_id FROM (
+            SELECT family_id, MAX(created_at) AS last_active
+            FROM identity.refresh_tokens
+            WHERE user_id = $1 AND revoked = FALSE
+            GROUP BY family_id
+            ORDER BY last_active DESC
+            OFFSET $2
+        ) evictable
+        "#,
+    )
+    .bind(user_id)
+    .bind(MAX_SESSIONS_PER_USER - 1)
+    .fetch_all(db)
+    .await?;
+
+    for (family_id,) in stale {
+        revoke_family(db, family_id).await?;
+    }
+    Ok(())
 }
 
 /// Insert one refresh-token row in `family_id` and return its opaque token. Used for the
@@ -269,6 +305,9 @@ pub struct LocatedRefresh {
     pub user_id: Uuid,
     pub family_id: Uuid,
     pub stored: StoredRefresh,
+    /// When this family was first issued (oldest row's `created_at`) — used for the absolute
+    /// rotation ceiling so a continuously-rotated family can't live forever.
+    pub family_started_at: DateTime<Utc>,
     secret_hash: String,
 }
 
@@ -284,15 +323,21 @@ impl LocatedRefresh {
 }
 
 /// Locate a refresh-token row by its public `rotation_id`.
+// The row tuple gains a 6th column (family_started_at) for the absolute-rotation ceiling; the
+// file consistently uses positional tuples for ad-hoc row reads, so allow the wider shape here.
+#[allow(clippy::type_complexity)]
 pub async fn find_refresh_by_rotation(
     db: &PgPool,
     rotation_id: Uuid,
 ) -> Result<Option<LocatedRefresh>, AppError> {
-    let row: Option<(Uuid, Uuid, bool, DateTime<Utc>, String)> = sqlx::query_as(
+    let row: Option<(Uuid, Uuid, bool, DateTime<Utc>, DateTime<Utc>, String)> = sqlx::query_as(
         r#"
-        SELECT user_id, family_id, revoked, expires_at, secret_hash
-        FROM identity.refresh_tokens
-        WHERE rotation_id = $1
+        SELECT rt.user_id, rt.family_id, rt.revoked, rt.expires_at,
+               (SELECT MIN(created_at) FROM identity.refresh_tokens f
+                WHERE f.family_id = rt.family_id) AS family_started_at,
+               rt.secret_hash
+        FROM identity.refresh_tokens rt
+        WHERE rt.rotation_id = $1
         "#,
     )
     .bind(rotation_id)
@@ -300,14 +345,17 @@ pub async fn find_refresh_by_rotation(
     .await?;
 
     Ok(row.map(
-        |(user_id, family_id, revoked, expires_at, secret_hash)| LocatedRefresh {
-            user_id,
-            family_id,
-            stored: StoredRefresh {
-                revoked,
-                expires_at,
-            },
-            secret_hash,
+        |(user_id, family_id, revoked, expires_at, family_started_at, secret_hash)| {
+            LocatedRefresh {
+                user_id,
+                family_id,
+                stored: StoredRefresh {
+                    revoked,
+                    expires_at,
+                },
+                family_started_at,
+                secret_hash,
+            }
         },
     ))
 }
@@ -315,18 +363,31 @@ pub async fn find_refresh_by_rotation(
 /// Atomically revoke the presented rotation and mint its successor in the SAME family.
 /// One transaction: prevents a window where the old token is dead but the new one is not
 /// yet recorded (RFC 6749 §6 rotation).
+///
+/// Returns `Ok(None)` when the presented rotation was ALREADY revoked by the time the
+/// conditional UPDATE ran — i.e. a concurrent refresh of the very same token (double-spend
+/// race) won the row first. In that case we mint NO successor, so one refresh token can never
+/// yield two live chains; the caller rejects the loser with 401.
 pub async fn rotate(
     db: &PgPool,
     user_id: Uuid,
     family_id: Uuid,
     presented_rotation_id: Uuid,
-) -> Result<String, AppError> {
+) -> Result<Option<String>, AppError> {
     let mut tx = db.begin().await?;
 
-    sqlx::query("UPDATE identity.refresh_tokens SET revoked = TRUE WHERE rotation_id = $1")
-        .bind(presented_rotation_id)
-        .execute(&mut *tx)
-        .await?;
+    // Conditional revoke: only the FIRST rotation of this token flips revoked false→true and
+    // affects a row. A concurrent second rotation sees 0 rows and must abort (no successor).
+    let revoked = sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE WHERE rotation_id = $1 AND revoked = FALSE",
+    )
+    .bind(presented_rotation_id)
+    .execute(&mut *tx)
+    .await?;
+    if revoked.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(None);
+    }
 
     // Re-issue inside the family. We hash + insert here rather than calling `issue_refresh`
     // so the whole rotate stays in one tx.
@@ -357,7 +418,7 @@ pub async fn rotate(
 
     tx.commit().await?;
 
-    Ok(crate::domain::token::assemble(rotation_id, &secret))
+    Ok(Some(crate::domain::token::assemble(rotation_id, &secret)))
 }
 
 /// Revoke every token in a family (logout, or reuse-detection kill-switch).

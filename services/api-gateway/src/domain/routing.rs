@@ -308,6 +308,17 @@ const RULES: &[Rule] = &[
 const PUBLIC_PATHS: &[&str] = &[
     "/auth/login",
     "/auth/refresh",
+    // Registration is unauthenticated at the HTTP layer — it carries a single-use
+    // `phone_verified_token` in the BODY (consumed internally), not an access token. Without
+    // this, the edge access-token validator rejects every register attempt (401) and new-user
+    // onboarding cannot complete through the gateway.
+    "/auth/register",
+    // Initial profile submission is DUAL-AUTH: the client presents a purpose-scoped
+    // `profile_token` (not an access token) as Bearer, which the profile service validates
+    // itself (or an `AuthUser` for later updates). The edge access-token validator cannot
+    // decode a purpose token, so these must be edge-public; profile enforces auth internally.
+    "/profile/guard",
+    "/profile/customer",
     "/otp/challenge",
     "/otp/request",
     "/otp/verify",
@@ -497,6 +508,27 @@ mod tests {
         assert_eq!(fwd, "/auth/login");
         assert!(public, "/auth/login is public");
         assert_eq!(tier, Tier::Auth);
+    }
+
+    #[test]
+    fn register_and_initial_profile_submission_are_public() {
+        // Registration carries a phone_verified_token in the body (no access token); initial
+        // profile submission carries a purpose-scoped profile_token the profile service validates
+        // itself. Both MUST be edge-public or onboarding is rejected (401) at the gateway.
+        for path in [
+            "/v1/auth/register",
+            "/v1/profile/guard",
+            "/v1/profile/customer",
+        ] {
+            let (_, _, public, _) = proxy(resolve(path));
+            assert!(
+                public,
+                "{path} must be public at the edge (dual-auth onboarding)"
+            );
+        }
+        // …but the authenticated profile read stays protected.
+        let (_, _, public, _) = proxy(resolve("/v1/profile/me"));
+        assert!(!public, "/profile/me requires a token");
     }
 
     #[test]

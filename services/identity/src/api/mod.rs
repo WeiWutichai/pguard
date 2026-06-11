@@ -29,6 +29,9 @@ use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
 const REFRESH_COOKIE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
 /// Refresh cookie is scoped to the auth paths only (it is never needed elsewhere).
 const REFRESH_COOKIE_PATH: &str = "/auth";
+/// Absolute lifetime ceiling for a refresh-token FAMILY: even with continuous rotation, a family
+/// older than this must re-authenticate (defense-in-depth beyond the 7-day per-token expiry).
+const FAMILY_MAX_DAYS: i64 = 30;
 /// Single-use profile-token lifetime (minutes) — short window to submit the onboarding
 /// profile right after registering.
 const PROFILE_TOKEN_TTL_MINUTES: i64 = 15;
@@ -226,13 +229,34 @@ pub async fn refresh(
         }
         RotationDecision::Expired => Err(generic_401()),
         RotationDecision::Rotate => {
+            // Absolute rotation ceiling (RFC-6749-aligned hardening): a family that has been
+            // continuously rotated for more than FAMILY_MAX_DAYS must re-authenticate, so a
+            // single leaked-then-rotated lineage cannot live indefinitely past the 7-day
+            // per-token expiry. Benign (force re-login), so no family kill.
+            if chrono::Utc::now() - located.family_started_at
+                > chrono::TimeDelta::days(FAMILY_MAX_DAYS)
+            {
+                return Err(generic_401());
+            }
+
             // Re-read the user's current role + revocation version for the new access token.
             let meta = repo::user_auth_meta(&state.db, located.user_id)
                 .await?
                 .ok_or_else(generic_401)?;
 
-            let refresh_token =
-                repo::rotate(&state.db, located.user_id, located.family_id, rotation_id).await?;
+            let Some(refresh_token) =
+                repo::rotate(&state.db, located.user_id, located.family_id, rotation_id).await?
+            else {
+                // A concurrent refresh of this exact token already rotated the row (double-spend
+                // race). Minting a second successor would create two live chains from one token,
+                // so reject this loser. We do NOT kill the family: the winner holds a brand-new
+                // token in it, and a benign client double-fire must not log itself out.
+                tracing::warn!(
+                    user_id = %located.user_id,
+                    "concurrent refresh rotation lost the race — rejecting (no second chain minted)"
+                );
+                return Err(generic_401());
+            };
             let (access_token, _jti) = encode_jwt_with_key(
                 meta.id,
                 &meta.role,

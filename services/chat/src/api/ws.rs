@@ -41,8 +41,18 @@ pub async fn ws_chat<S: ChatDeps>(
     State(state): State<S>,
 ) -> Response {
     let token = token_from_headers(&headers);
-    ws.on_upgrade(move |socket| session(socket, user, token, state))
+    // Cap inbound frames/messages hard: chat carries small JSON control frames (text + a
+    // conversation_id); binary attachments go over REST, never the socket. Without this the
+    // frame is bounded only by the edge body cap (~1 MiB) or, hit directly, tungstenite's
+    // 64 MiB default — an authenticated write-amplification DoS against chat.messages/outbox.
+    ws.max_message_size(MAX_WS_FRAME_BYTES)
+        .max_frame_size(MAX_WS_FRAME_BYTES)
+        .on_upgrade(move |socket| session(socket, user, token, state))
 }
+
+/// Upper bound on a single inbound chat WS frame/message (64 KiB — far above any legitimate
+/// chat text frame, far below a memory-pressure payload).
+const MAX_WS_FRAME_BYTES: usize = 64 * 1024;
 
 /// The token the `AuthUser` extractor validated (Bearer header, else `access_token` cookie),
 /// captured so the session can re-validate it on the re-auth tick.
