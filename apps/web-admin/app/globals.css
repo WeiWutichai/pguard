@@ -1,22 +1,148 @@
 @import "tailwindcss";
+/* The full pguard token sheet (light + [data-theme="dark"]), GENERATED from the hi-fi
+   design — apps/design-tokens/extract.mjs writes this committed copy (the Docker build
+   only ships apps/web-admin/, so the sheet must live in-app). DO NOT hand-edit. */
+@import "./tokens.css";
 
-/* pguard admin design tokens (kept in sync with apps/design-tokens conceptually; the green brand
-   + neutral surfaces). Tailwind v4 reads these via the @theme inline mapping below. */
-@theme inline {
-  --color-brand: #16a34a;
-  --color-brand-fg: #ffffff;
-  --color-surface: #ffffff;
-  --color-sunken: #f3f5f4;
-  --color-border: #dee5e2;
-  --color-text: #1f2723;
-  --color-muted: #69776f;
-  --color-danger: #e5484d;
-  --color-warning: #f59e0b;
-  --color-success: #16a34a;
-}
+/* Dark mode keys off the same attribute the hi-fi shell uses (admin-shell.js). */
+@custom-variant dark ([data-theme="dark"] &);
 
+/* Thread the self-hosted next/font faces (set as variables on <html> in app/layout.tsx)
+   into the token font stacks — the literal "IBM Plex …" families in tokens.css are the
+   design's reference; at runtime the next/font face must come first. */
 :root {
   color-scheme: light;
+  --font-thai: var(--font-plex-thai), var(--font-plex), "IBM Plex Sans Thai",
+    "IBM Plex Sans", system-ui, sans-serif;
+  --font-latin: var(--font-plex), var(--font-plex-thai), "IBM Plex Sans",
+    "IBM Plex Sans Thai", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+}
+
+/* ── Tailwind theme ← design tokens (every value resolves to a tokens.css var; no raw
+   hex here — the palette has ONE home). `inline` so utilities track the var at use-site,
+   which is what makes [data-theme="dark"] flip semantic colors automatically. ── */
+@theme inline {
+  /* fonts — reference the next/font vars (NOT the same-named :root token, which would
+     emit a self-referential declaration inside @layer theme: it only resolves today
+     because unlayered :root wins the cascade, and would silently break if tokens.css
+     ever moved into a layer). Chains mirror the :root overrides above. */
+  --font-sans: var(--font-thai);
+  --font-latin: var(--font-plex), var(--font-plex-thai), "IBM Plex Sans",
+    "IBM Plex Sans Thai", system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), "IBM Plex Mono", ui-monospace, monospace;
+
+  /* color ramps */
+  --color-green-50: var(--green-50);
+  --color-green-100: var(--green-100);
+  --color-green-200: var(--green-200);
+  --color-green-300: var(--green-300);
+  --color-green-400: var(--green-400);
+  --color-green-500: var(--green-500);
+  --color-green-600: var(--green-600);
+  --color-green-700: var(--green-700);
+  --color-green-800: var(--green-800);
+  --color-green-900: var(--green-900);
+  --color-green-950: var(--green-950);
+  --color-amber-50: var(--amber-50);
+  --color-amber-100: var(--amber-100);
+  --color-amber-200: var(--amber-200);
+  --color-amber-300: var(--amber-300);
+  --color-amber-400: var(--amber-400);
+  --color-amber-500: var(--amber-500);
+  --color-amber-600: var(--amber-600);
+  --color-amber-700: var(--amber-700);
+  --color-amber-800: var(--amber-800);
+  --color-amber-900: var(--amber-900);
+  --color-n-0: var(--n-0);
+  --color-n-50: var(--n-50);
+  --color-n-100: var(--n-100);
+  --color-n-200: var(--n-200);
+  --color-n-300: var(--n-300);
+  --color-n-400: var(--n-400);
+  --color-n-500: var(--n-500);
+  --color-n-600: var(--n-600);
+  --color-n-700: var(--n-700);
+  --color-n-800: var(--n-800);
+  --color-n-900: var(--n-900);
+  --color-n-950: var(--n-950);
+
+  /* semantic */
+  --color-success: var(--success);
+  --color-success-bg: var(--success-bg);
+  --color-warning: var(--warning);
+  --color-warning-bg: var(--warning-bg);
+  --color-danger: var(--danger);
+  --color-danger-bg: var(--danger-bg);
+  --color-info: var(--info);
+  --color-info-bg: var(--info-bg);
+
+  /* guard live status */
+  --color-status-active: var(--status-active);
+  --color-status-working: var(--status-working);
+  --color-status-offline: var(--status-offline);
+  --color-status-active-ring: var(--status-active-ring);
+  --color-status-working-ring: var(--status-working-ring);
+  --color-status-offline-ring: var(--status-offline-ring);
+
+  /* surfaces + text (theme-aware aliases) */
+  --color-app: var(--bg-app);
+  --color-surface: var(--bg-surface);
+  --color-raised: var(--bg-raised);
+  --color-sunken: var(--bg-sunken);
+  --color-inverse: var(--bg-inverse);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text-strong: var(--text-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-on-brand: var(--text-on-brand);
+  --color-on-amber: var(--on-amber);
+
+  /* brand — `brand` is the ANCHOR (#0E3B2E deep forest); interactive surfaces use
+     `brand-int` (#1FA971), per the design's --brand / --brand-int split. */
+  --color-brand: var(--brand);
+  --color-brand-int: var(--brand-int);
+  --color-brand-int-hover: var(--brand-int-hover);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-focus-ring: var(--focus-ring);
+  /* legacy alias kept for existing pages (white-on-brand text) */
+  --color-brand-fg: var(--text-on-brand);
+
+  /* type scale (additive: lg/base/sm/xs defaults already equal the design's 18/16/14/12) */
+  --text-2xs: var(--t-2xs);
+  --text-2xs--line-height: var(--lh-snug);
+  --text-display: var(--t-display);
+  --text-display--line-height: var(--lh-tight);
+  --text-h1: var(--t-h1);
+  --text-h1--line-height: var(--lh-tight);
+  --text-h2: var(--t-h2);
+  --text-h2--line-height: var(--lh-tight);
+  --text-h3: var(--t-h3);
+  --text-h3--line-height: var(--lh-snug);
+
+  /* radius (design's tightened scale) */
+  --radius-xs: var(--r-xs);
+  --radius-sm: var(--r-sm);
+  --radius-md: var(--r-md);
+  --radius-lg: var(--r-lg);
+  --radius-xl: var(--r-xl);
+  --radius-2xl: var(--r-2xl);
+
+  /* elevation */
+  --shadow-xs: var(--sh-xs);
+  --shadow-sm: var(--sh-sm);
+  --shadow-md: var(--sh-md);
+  --shadow-lg: var(--sh-lg);
+  --shadow-xl: var(--sh-xl);
+  --shadow-brand: var(--sh-brand);
+  --shadow-accent: var(--sh-accent);
 }
 
 html,
@@ -24,10 +150,27 @@ body {
   height: 100%;
 }
 
+/* admin.css .overlay/.modal entrance (opacity + scale .96→1, .2s). */
+@keyframes pg-fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes pg-modal-in {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+/* Base typography per tokens.css: Thai-tuned rhythm (looser line-height + tiny positive
+   tracking so stacked Thai vowels/tone marks don't cramp). */
 body {
-  background: var(--color-sunken);
-  color: var(--color-text);
-  font-family:
-    ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    "Noto Sans Thai", sans-serif;
+  background: var(--bg-app);
+  color: var(--text);
+  font-family: var(--font-thai);
+  letter-spacing: var(--ls-thai);
+  line-height: var(--lh-base);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }

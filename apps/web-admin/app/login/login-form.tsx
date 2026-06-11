@@ -2,11 +2,13 @@
 
 import { useRouter } from "next/navigation";
 import { useState, type FormEvent } from "react";
-import { LogIn, ShieldCheck } from "lucide-react";
+import { LogIn } from "lucide-react";
 
 import { identityApi } from "@/lib/api";
+import { PgMark, PgWordmark } from "@/components/shell/logo";
+import { Button } from "@/components/ui/button";
+import { Field, Input } from "@/components/ui/input";
 import { useLanguage } from "@/lib/i18n";
-import { cn } from "@/lib/cn";
 
 /**
  * Admin sign-in form. POSTs the gateway login (cookie path): on success identity sets the httpOnly
@@ -39,52 +41,41 @@ export function LoginForm() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-sunken p-4">
+    <main className="flex min-h-screen items-center justify-center bg-app p-4">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-surface p-8 shadow-sm">
-        <div className="mb-6 flex items-center gap-2 text-brand">
-          <ShieldCheck className="size-7" />
-          <span className="text-lg font-semibold text-text">{t("app.title")}</span>
+        <div className="mb-6 flex items-center gap-2.5">
+          <PgMark size={28} />
+          <PgWordmark />
         </div>
-        <h1 className="mb-6 text-xl font-semibold">{t("login.title")}</h1>
-        <form onSubmit={onSubmit} className="flex flex-col gap-4">
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">{t("login.identifier")}</span>
-            <input
+        <h1 className="mb-6 text-xl font-semibold text-text-strong">{t("login.title")}</h1>
+        <form onSubmit={onSubmit} className="flex flex-col">
+          <Field label={t("login.identifier")}>
+            <Input
               type="text"
               autoComplete="username"
               value={identifier}
               onChange={(e) => setIdentifier(e.target.value)}
               required
-              className="rounded-lg border border-border px-3 py-2 outline-none focus:border-brand"
             />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            <span className="font-medium">{t("login.password")}</span>
-            <input
+          </Field>
+          <Field label={t("login.password")}>
+            <Input
               type="password"
               autoComplete="current-password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
-              className="rounded-lg border border-border px-3 py-2 outline-none focus:border-brand"
             />
-          </label>
+          </Field>
           {error && (
-            <p className="text-sm text-danger" role="alert">
+            <p className="mb-3 text-sm text-danger" role="alert">
               {t("login.error")}
             </p>
           )}
-          <button
-            type="submit"
-            disabled={busy}
-            className={cn(
-              "mt-2 flex items-center justify-center gap-2 rounded-lg bg-brand px-4 py-2 font-medium text-brand-fg",
-              busy && "opacity-60",
-            )}
-          >
+          <Button type="submit" disabled={busy} className="mt-1 w-full">
             <LogIn className="size-4" />
             {t("login.submit")}
-          </button>
+          </Button>
         </form>
       </div>
     </main>

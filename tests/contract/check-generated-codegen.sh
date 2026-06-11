@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# Stale-codegen guard for the Dart client + Rust event types (sibling of
-# check-generated-clients.sh, which covers the web-admin TS client). Regenerates both committed
-# artifacts from the contracts and fails if anything changed — i.e. someone edited a contract (or
-# a generator) but forgot to `./tooling/codegen/generate.sh`. That drift would mean the committed
-# Dart client / Rust payload types no longer describe the contract they claim to.
+# Stale-codegen guard for the Dart client + Rust event types + design tokens (sibling of
+# check-generated-clients.sh, which covers the web-admin TS client). Regenerates the committed
+# artifacts from the contracts and fails if anything changed — i.e. someone edited a contract /
+# the token snapshot (or a generator) but forgot to `./tooling/codegen/generate.sh`. That drift
+# would mean the committed Dart client / Rust payload types / token trio no longer describe the
+# source they claim to. Tokens regen from apps/design-tokens/source/tokens.css (node-only).
 #
 # Toolchains (the CI job sets these up; pinned for reproducibility):
 #   - Dart client : openapi-generator-cli 2.15.3 → generator 7.14.0 (tooling/codegen pnpm pkg) + Java 11+
@@ -17,7 +18,11 @@ set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/../.." && pwd)"
-PATHS=("apps/mobile/lib/api/generated" "packages/shared-events/src/generated")
+PATHS=("apps/mobile/lib/api/generated" "packages/shared-events/src/generated" "apps/design-tokens/tokens.css" "apps/design-tokens/tokens.ts" "apps/design-tokens/lib" "apps/web-admin/app/tokens.css")
+
+# Fail-closed: generate.sh soft-SKIPs the design-tokens target when node is absent, which
+# would silently pass the stale gate — assert the toolchain here instead.
+command -v node >/dev/null 2>&1 || { echo "!! node is required (design-tokens regen)" >&2; exit 1; }
 
 echo "==> installing pinned Dart codegen toolchain (tooling/codegen)"
 ( cd "${REPO_ROOT}/tooling/codegen" && pnpm install --frozen-lockfile )
