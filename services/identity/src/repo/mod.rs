@@ -304,10 +304,9 @@ async fn issue_refresh(db: &PgPool, user_id: Uuid, family_id: Uuid) -> Result<St
 pub struct LocatedRefresh {
     pub user_id: Uuid,
     pub family_id: Uuid,
+    /// Rotation-decision inputs (revoked/expiry/family age) — the family-age ceiling now lives in
+    /// `StoredRefresh::family_started_at` so `domain::rotation::decide` owns the whole decision.
     pub stored: StoredRefresh,
-    /// When this family was first issued (oldest row's `created_at`) — used for the absolute
-    /// rotation ceiling so a continuously-rotated family can't live forever.
-    pub family_started_at: DateTime<Utc>,
     secret_hash: String,
 }
 
@@ -352,8 +351,8 @@ pub async fn find_refresh_by_rotation(
                 stored: StoredRefresh {
                     revoked,
                     expires_at,
+                    family_started_at,
                 },
-                family_started_at,
                 secret_hash,
             }
         },
@@ -861,5 +860,346 @@ mod tests {
             .bind(user_id)
             .execute(&pool)
             .await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Auth-hardening regression net (PR #37 shipped H1/H2 with no tests). All DB-gated on
+    // DATABASE_URL (migrated identity 0001+); hermetic SKIP otherwise. refresh_tokens has no FK
+    // to users, so these seed token rows directly with a random user_id (no user needed).
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    use crate::domain::rotation::{decide, RotationDecision};
+    use crate::domain::token;
+    use std::sync::Arc;
+    use tokio::sync::Barrier;
+
+    /// Connect a real pool (≥2 conns so the race tasks run truly concurrently), or `None` to SKIP.
+    async fn gated_pool() -> Option<PgPool> {
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        Some(
+            sqlx::postgres::PgPoolOptions::new()
+                .max_connections(8)
+                .acquire_timeout(std::time::Duration::from_secs(5))
+                .connect(&db_url)
+                .await
+                .expect("connect real Postgres"),
+        )
+    }
+
+    /// (rotation_id, family_id) for a freshly-minted opaque token.
+    async fn ids_of(pool: &PgPool, opaque: &str) -> (Uuid, Uuid) {
+        let (rid, _secret) = token::parse(opaque).expect("parse opaque token");
+        let loc = find_refresh_by_rotation(pool, rid)
+            .await
+            .expect("find")
+            .expect("row exists");
+        (rid, loc.family_id)
+    }
+
+    async fn live_family_count(pool: &PgPool, user_id: Uuid) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(DISTINCT family_id) FROM identity.refresh_tokens \
+             WHERE user_id = $1 AND revoked = FALSE",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("count live families");
+        n
+    }
+
+    async fn live_tokens_in_family(pool: &PgPool, family_id: Uuid) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM identity.refresh_tokens WHERE family_id = $1 AND revoked = FALSE",
+        )
+        .bind(family_id)
+        .fetch_one(pool)
+        .await
+        .expect("count live tokens");
+        n
+    }
+
+    async fn cleanup_user(pool: &PgPool, user_id: Uuid) {
+        let _ = sqlx::query("DELETE FROM identity.refresh_tokens WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await;
+    }
+
+    /// H1 — concurrent refresh of the SAME token mints EXACTLY ONE successor (no double-spend), and
+    /// the loser is rejected (Ok(None)) WITHOUT killing the family (a benign double-fire ≠ reuse).
+    /// Looped to shake out scheduling flake; the conditional UPDATE + row lock make the outcome
+    /// deterministic, not probabilistic, so this is a real race, not a sequential fake.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_rotation_mints_exactly_one_successor() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the concurrent-rotation race test");
+            return;
+        };
+        let user_id = Uuid::new_v4();
+
+        for i in 0..20 {
+            let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+            let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
+
+            // Two tasks rotate the very same rotation_id, released together by a barrier.
+            let barrier = Arc::new(Barrier::new(2));
+            let spawn_one = || {
+                let p = pool.clone();
+                let b = barrier.clone();
+                tokio::spawn(async move {
+                    b.wait().await;
+                    rotate(&p, user_id, family_id, rotation_id).await
+                })
+            };
+            let (a, b) = tokio::join!(spawn_one(), spawn_one());
+            let a = a.expect("task a joined").expect("rotate a ok");
+            let b = b.expect("task b joined").expect("rotate b ok");
+
+            // Exactly one successor; never two live chains from one token.
+            assert!(
+                a.is_some() != b.is_some(),
+                "iter {i}: exactly one rotate must win (got a={}, b={})",
+                a.is_some(),
+                b.is_some()
+            );
+            // The family is NOT revoked: the winner's successor is the lone live token.
+            assert_eq!(
+                live_tokens_in_family(&pool, family_id).await,
+                1,
+                "iter {i}: race loser must not revoke the family (winner's successor stays live)"
+            );
+        }
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// H1 — sequential REUSE of a spent token is detected and kills the WHOLE family. Locks the
+    /// chain the conditional UPDATE underpins: spend marks the row revoked → a replay is seen as
+    /// revoked → `decide` returns ReuseDetected → the handler revokes the family (incl. the live
+    /// successor). Breaking the `WHERE revoked = FALSE` guard would silently break this.
+    #[tokio::test]
+    async fn sequential_reuse_revokes_whole_family() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the sequential-reuse test");
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
+
+        // First use: live → Rotate → a successor is minted (the family now has a live token).
+        let loc = find_refresh_by_rotation(&pool, rotation_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(decide(&loc.stored, Utc::now()), RotationDecision::Rotate);
+        let successor = rotate(&pool, user_id, family_id, rotation_id)
+            .await
+            .expect("rotate")
+            .expect("successor minted");
+        assert_eq!(live_tokens_in_family(&pool, family_id).await, 1);
+
+        // Replay the now-spent rotation_id: it must read as revoked → ReuseDetected.
+        let replayed = find_refresh_by_rotation(&pool, rotation_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            decide(&replayed.stored, Utc::now()),
+            RotationDecision::ReuseDetected,
+            "a spent token must be marked revoked so replay is detected (guards the conditional UPDATE)"
+        );
+
+        // The reuse handler kills the family — including the live successor.
+        revoke_family(&pool, family_id)
+            .await
+            .expect("revoke family");
+        assert_eq!(
+            live_tokens_in_family(&pool, family_id).await,
+            0,
+            "reuse detection must revoke the entire family"
+        );
+        // The successor is now dead too: presenting it reads as revoked (would be ReuseDetected).
+        let (succ_rid, _) = token::parse(&successor).expect("parse successor");
+        let succ = find_refresh_by_rotation(&pool, succ_rid)
+            .await
+            .expect("find")
+            .expect("row");
+        assert!(
+            succ.stored.revoked,
+            "the family-kill revoked the live successor too"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// H2 — the per-user session cap evicts the LEAST-recently-active family (LRU) rather than
+    /// rejecting the new login, and the surviving families remain usable.
+    #[tokio::test]
+    async fn session_cap_evicts_oldest_family_lru() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the session-cap test");
+            return;
+        };
+        let user_id = Uuid::new_v4();
+
+        // Create the cap's worth of families (MAX_SESSIONS_PER_USER = 5) and backdate each to a
+        // DISTINCT created_at so the LRU order is deterministic (oldest = the first one).
+        let mut fams: Vec<(Uuid, Uuid)> = Vec::new(); // (rotation_id, family_id)
+        for i in 0..MAX_SESSIONS_PER_USER {
+            let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+            let (rid, fid) = ids_of(&pool, &opaque).await;
+            // family 0 oldest … family 4 newest (minutes ago: 50,40,30,20,10).
+            let mins_ago = (MAX_SESSIONS_PER_USER - i) as i32 * 10;
+            sqlx::query(
+                "UPDATE identity.refresh_tokens SET created_at = now() - make_interval(mins => $2) \
+                 WHERE family_id = $1",
+            )
+            .bind(fid)
+            .bind(mins_ago)
+            .execute(&pool)
+            .await
+            .expect("backdate family");
+            fams.push((rid, fid));
+        }
+        assert_eq!(
+            live_family_count(&pool, user_id).await,
+            MAX_SESSIONS_PER_USER,
+            "all {MAX_SESSIONS_PER_USER} families live before the cap-breaking login"
+        );
+
+        // The cap+1'th login: evict the oldest (fams[0]), keep the rest, add the new one.
+        let new_opaque = create_refresh_family(&pool, user_id)
+            .await
+            .expect("cap+1 login");
+        let (_new_rid, new_fid) = ids_of(&pool, &new_opaque).await;
+
+        assert_eq!(
+            live_family_count(&pool, user_id).await,
+            MAX_SESSIONS_PER_USER,
+            "login is NOT rejected at the cap — it evicts, holding the live count at the cap"
+        );
+        assert_eq!(
+            live_tokens_in_family(&pool, fams[0].1).await,
+            0,
+            "the least-recently-active family is evicted (LRU)"
+        );
+        for (_, fid) in &fams[1..] {
+            assert!(
+                live_tokens_in_family(&pool, *fid).await > 0,
+                "a more-recent family must survive eviction"
+            );
+        }
+        assert!(
+            live_tokens_in_family(&pool, new_fid).await > 0,
+            "the new family is live"
+        );
+
+        // A surviving family is still usable (rotates successfully).
+        let survivor_rid = fams[1].0;
+        let survivor_fid = fams[1].1;
+        assert!(
+            rotate(&pool, user_id, survivor_fid, survivor_rid)
+                .await
+                .expect("rotate survivor")
+                .is_some(),
+            "a surviving family must still rotate"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// H2 — a family that started rotating more than FAMILY_MAX_DAYS ago is rejected by the ceiling
+    /// with a GENERIC outcome (CeilingExceeded → 401), and is NOT mis-classified as reuse: the
+    /// token/family stay live (the ceiling is benign re-login, not a kill).
+    #[tokio::test]
+    async fn family_past_ceiling_rejected_without_kill() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the rotation-ceiling test");
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
+
+        // Backdate the family's only row so family_started_at (MIN created_at) is past the ceiling.
+        sqlx::query(
+            "UPDATE identity.refresh_tokens SET created_at = now() - interval '31 days' \
+             WHERE family_id = $1",
+        )
+        .bind(family_id)
+        .execute(&pool)
+        .await
+        .expect("backdate family start");
+
+        let loc = find_refresh_by_rotation(&pool, rotation_id)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            decide(&loc.stored, Utc::now()),
+            RotationDecision::CeilingExceeded,
+            "family older than FAMILY_MAX_DAYS hits the ceiling"
+        );
+        // Benign: the token is NOT revoked, the family is NOT killed (wrong-type-revoke guard).
+        assert!(
+            !loc.stored.revoked,
+            "ceiling must not mark the token revoked"
+        );
+        assert_eq!(
+            live_tokens_in_family(&pool, family_id).await,
+            1,
+            "ceiling is force-relogin, not a family revoke"
+        );
+
+        cleanup_user(&pool, user_id).await;
+    }
+
+    /// H2 edge — `family_started_at` is `MIN(created_at)` across ALL rows in the family, so a family
+    /// that has rotated many times (newest token is fresh) still hits the ceiling on its true age.
+    #[tokio::test]
+    async fn family_started_at_is_min_across_all_rotations() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the family-age MIN edge test");
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let (rid0, family_id) = ids_of(&pool, &opaque).await;
+
+        // Rotate twice → 3 rows in the family (rid0, rid1 revoked; rid2 live, freshly created).
+        let t1 = rotate(&pool, user_id, family_id, rid0)
+            .await
+            .expect("rotate 1")
+            .expect("successor 1");
+        let (rid1, _) = token::parse(&t1).expect("parse t1");
+        let t2 = rotate(&pool, user_id, family_id, rid1)
+            .await
+            .expect("rotate 2")
+            .expect("successor 2");
+        let (rid2, _) = token::parse(&t2).expect("parse t2");
+
+        // Backdate ONLY the OLDEST row past the ceiling; the live token (rid2) is brand-new.
+        sqlx::query(
+            "UPDATE identity.refresh_tokens SET created_at = now() - interval '31 days' \
+             WHERE rotation_id = $1",
+        )
+        .bind(rid0)
+        .execute(&pool)
+        .await
+        .expect("backdate oldest row");
+
+        let live = find_refresh_by_rotation(&pool, rid2)
+            .await
+            .expect("find")
+            .expect("row");
+        assert_eq!(
+            decide(&live.stored, Utc::now()),
+            RotationDecision::CeilingExceeded,
+            "the family's age is MIN(created_at) across every row — a fresh newest token can't escape it"
+        );
+
+        cleanup_user(&pool, user_id).await;
     }
 }
