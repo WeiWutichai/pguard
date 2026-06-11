@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
 import '../core/models/chat.dart';
+import '../features/auth/captcha_screen.dart';
 import '../features/auth/otp_screen.dart';
 import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
@@ -71,6 +72,9 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
       GoRoute(
           path: '/auth/phone', builder: (_, __) => const PhoneEntryScreen()),
+      // Bot-check step between phone and OTP (the design keeps the phone screen clean).
+      GoRoute(
+          path: '/auth/captcha', builder: (_, __) => const CaptchaScreen()),
       GoRoute(path: '/auth/otp', builder: (_, __) => const OtpScreen()),
       GoRoute(path: '/auth/pin', builder: (_, __) => const PinEntryScreen()),
       // Registration sub-flow (role-at-register): role → profile form → pending.
