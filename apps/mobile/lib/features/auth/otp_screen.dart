@@ -79,8 +79,9 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   }
 }
 
-/// Shows "Resend in m:ss" counting down, then a Resend action that returns to the phone step
-/// to re-solve the captcha. Rebuilds once per second via a display stream (no network poll).
+/// Shows "Resend in m:ss" counting down, then a Resend action that returns to the captcha step
+/// to re-solve the bot-check (which re-sends the SMS to the same number). Rebuilds once per second
+/// via a display stream (no network poll).
 class _ResendCountdown extends StatelessWidget {
   const _ResendCountdown({required this.sentAt, required this.policy});
 
@@ -104,7 +105,7 @@ class _ResendCountdown extends StatelessWidget {
         return Align(
           alignment: Alignment.centerLeft,
           child: TextButton(
-            onPressed: () => context.go('/auth/phone'),
+            onPressed: () => context.go('/auth/captcha'),
             child: const Text('ไม่ได้รับรหัส? ขอใหม่ / Resend code'),
           ),
         );
