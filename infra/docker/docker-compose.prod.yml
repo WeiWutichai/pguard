@@ -394,10 +394,10 @@ services:
     environment:
       <<: [*rust-env, *db-env]
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
-      # NOTE: the otp service disables SMS when SMS_DISABLED is *present* in the env
-      # (presence-based gate, any value incl. "false"), so it is intentionally NOT set
-      # here — prod runs with SMS ENABLED and the INET creds below required. To disable
-      # the SMS gateway, add `SMS_DISABLED: "1"` to this service.
+      # NOTE: otp's SMS_DISABLED is VALUE-AWARE (only a truthy value disables SMS — same
+      # parse_env_bool gate as notification's FCM_DISABLED), so it's intentionally NOT set
+      # here: prod runs with SMS ENABLED and the INET creds below required. To disable the
+      # SMS gateway, add `SMS_DISABLED: "true"` (a falsy value like "false" does NOT disable).
       INET_SMS_URL: ${INET_SMS_URL:-https://www.etracker.cc/bulksms/mesapi.aspx}
       INET_SMS_USERNAME: ${INET_SMS_USERNAME:?INET_SMS_USERNAME is required (or set SMS_DISABLED=true)}
       INET_SMS_PASSWORD: ${INET_SMS_PASSWORD:?INET_SMS_PASSWORD is required (or set SMS_DISABLED=true)}

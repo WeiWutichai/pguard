@@ -1,6 +1,6 @@
 // Provider verification — rating service. Rating is reachable two ways in the e2e stack: via the
-// gateway (:3000 /v1) AND on a direct host port (:3007, the documented gateway-gap accommodation).
-// We deliberately use BOTH, because auth for rating lives in different places:
+// gateway (:3000 /v1) AND on a direct host port (:3007, published for THIS suite). We deliberately
+// use BOTH, because we verify auth at two different surfaces:
 //
 //  - getGuardRatings (GET /guards/{id}/ratings) — the CANONICAL DRIFT this suite must catch. The
 //    contract declares `security: [{bearerAuth: []}]` and its description states auth is enforced
