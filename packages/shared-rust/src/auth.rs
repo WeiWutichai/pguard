@@ -267,11 +267,11 @@ pub fn extract_cookie_value<'a>(cookie_header: &'a str, name: &str) -> Option<&'
 /// request) AND by long-lived sessions (e.g. the calling WS relay) that must RE-validate
 /// periodically — an open socket must not outlive token expiry or a force-revoke-all.
 ///
-/// Generic over the Redis connection type so the SAME revocation gate works over a one-shot
-/// [`redis::aio::MultiplexedConnection`] (the `AuthUser` extractor, via [`HasJwtSecret`]) AND a
-/// reconnecting [`redis::aio::ConnectionManager`] (the gateway edge + WS re-auth, which must
-/// survive a Redis restart — chaos case 3). Both satisfy `ConnectionLike + Clone`, so existing
-/// `&MultiplexedConnection` callers are unaffected.
+/// Generic over the Redis connection type (`ConnectionLike + Clone`) so the SAME revocation gate
+/// works over the reconnecting [`redis::aio::ConnectionManager`] every caller now holds — the
+/// `AuthUser` extractor (via [`HasJwtSecret`]), the WS re-auth loops, and the gateway edge — all of
+/// which must survive a Redis restart (chaos case 3). The generic bound also lets the hermetic
+/// tests drive it with a `ConnectionLike` double (no real Redis).
 pub async fn authenticate_token<C>(
     token: &str,
     decoding_key: &DecodingKey,
@@ -787,8 +787,11 @@ mod tests {
         let user_id = Uuid::new_v4();
         let (token, _jti) = encode_jwt(user_id, "guard", 0, TEST_SECRET, 60).unwrap();
         let key = DecodingKey::from_secret(TEST_SECRET.as_bytes());
-        // Two "down" ticks, then healthy. Each failing call consumes exactly one tick (the EXISTS
-        // lookup errors and short-circuits before the GET).
+        // Two "down" ticks, then healthy. ASSUMPTION (pinned to authenticate_token's command order
+        // above): the jti `EXISTS` runs FIRST and short-circuits via `?`, so each failing call
+        // consumes exactly ONE tick. If that order ever changes (e.g. a pipeline, or trv-before-jti),
+        // a failing call would burn two ticks and shift the deny/heal boundary — this comment is the
+        // tripwire for that reorder.
         let conn = FlakyRedis::new(2);
 
         assert!(
