@@ -29,6 +29,42 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
     if (ok && mounted) context.go('/book/success');
   }
 
+  /// The "ระบุ" (custom) tip option: a numeric-amount dialog feeding the existing
+  /// [BookingFlowController.setTipSatang] (parsing via the pure [Money] helper).
+  Future<void> _promptCustomTip() async {
+    final input = TextEditingController();
+    final satang = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('ระบุทิป / Custom tip'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(
+            prefixText: '฿ ',
+            labelText: 'จำนวนเงิน (บาท) / Amount (THB)',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('ยกเลิก / Cancel'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(ctx, Money.satangFromString(input.text)),
+            child: const Text('ตกลง / OK'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (satang != null && mounted) {
+      ref.read(bookingFlowControllerProvider.notifier).setTipSatang(satang);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = ref.watch(bookingFlowControllerProvider);
@@ -69,6 +105,7 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
                           presets: _tipPresets,
                           selected: state.tipSatang,
                           onSelect: ctrl.setTipSatang,
+                          onCustom: _promptCustomTip,
                         ),
                         const SizedBox(height: PgTokens.space4),
                         const _Label('วิธีชำระเงิน / Payment method'),
@@ -217,40 +254,54 @@ class _TipChips extends StatelessWidget {
     required this.presets,
     required this.selected,
     required this.onSelect,
+    required this.onCustom,
   });
 
   final List<int> presets;
   final int selected;
   final ValueChanged<int> onSelect;
+  final VoidCallback onCustom;
+
+  ChoiceChip _chip({
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return ChoiceChip(
+      label: Text(label),
+      selected: selected,
+      onSelected: (_) => onTap(),
+      selectedColor: PgTokens.colorGreen50,
+      labelStyle: TextStyle(
+        fontWeight: FontWeight.w600,
+        color: selected ? PgTokens.colorGreen800 : PgTokens.colorText,
+      ),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+        side: BorderSide(
+          color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder,
+        ),
+      ),
+      backgroundColor: PgTokens.colorSurface,
+      showCheckmark: false,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    // A tip outside the presets means the "ระบุ" (custom) option is active.
+    final customActive = !presets.contains(selected);
     return Wrap(
       spacing: PgTokens.space2,
       children: [
+        // Design pills: "฿0" · "฿50" · "฿100" · "ระบุ".
         for (final tip in presets)
-          ChoiceChip(
-            label: Text(tip == 0 ? 'ไม่มี' : Money.format(tip)),
+          _chip(
+            label: Money.format(tip),
             selected: tip == selected,
-            onSelected: (_) => onSelect(tip),
-            selectedColor: PgTokens.colorGreen50,
-            labelStyle: TextStyle(
-              fontWeight: FontWeight.w600,
-              color: tip == selected
-                  ? PgTokens.colorGreen800
-                  : PgTokens.colorText,
-            ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(PgTokens.radiusFull),
-              side: BorderSide(
-                color: tip == selected
-                    ? PgTokens.colorPrimary
-                    : PgTokens.colorBorder,
-              ),
-            ),
-            backgroundColor: PgTokens.colorSurface,
-            showCheckmark: false,
+            onTap: () => onSelect(tip),
           ),
+        _chip(label: 'ระบุ', selected: customActive, onTap: onCustom),
       ],
     );
   }

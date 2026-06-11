@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
+import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -87,18 +88,131 @@ class GuardHomeScreen extends ConsumerWidget {
                       ? e.message
                       : 'โหลดงานไม่สำเร็จ / Could not load jobs',
                 ),
-                data: (all) => _JobsBody(
-                  incoming: GuardJobsController.incoming(all),
-                  active: GuardJobsController.active(all),
-                  onAccept: (id) => _accept(context, ref, id),
-                  onDismiss: (id) => _dismiss(ref, id),
-                  onOpenActive: (id) => context.push('/guard/active/$id'),
-                  onOpenDetail: (id) => context.push('/guard/job/$id'),
+                data: (all) => Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _StatsRow(bookings: all),
+                    const SizedBox(height: PgTokens.space4),
+                    _JobsBody(
+                      incoming: GuardJobsController.incoming(all),
+                      active: GuardJobsController.active(all),
+                      onAccept: (id) => _accept(context, ref, id),
+                      onDismiss: (id) => _dismiss(ref, id),
+                      onOpenActive: (id) => context.push('/guard/active/$id'),
+                      onOpenDetail: (id) => context.push('/guard/job/$id'),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Pure derivations for the dashboard stat cards (Screen 1 "Stats cards"). Static + widget-free
+/// so they are unit-testable. NOTE: the design's fix sketch put these on GuardJobsController,
+/// but `core/controllers` is outside this slice's ownership — the pure logic lives here instead.
+class GuardHomeStats {
+  const GuardHomeStats._();
+
+  static bool _isToday(DateTime? scheduledAt, DateTime now) {
+    final local = scheduledAt?.toLocal();
+    return local != null &&
+        local.year == now.year &&
+        local.month == now.month &&
+        local.day == now.day;
+  }
+
+  /// Today's earnings in satang: Σ base_fee × hours × guard_count over the guard's
+  /// completed/active jobs scheduled today.
+  static int earningsTodaySatang(List<Booking> all, DateTime now) {
+    var sum = 0;
+    for (final b in all) {
+      final earns = b.status == BookingStatus.completed ||
+          BookingLifecycle.isActive(b.status);
+      if (!earns || !_isToday(b.scheduledAt, now)) continue;
+      sum += Money.total(
+        baseFeeSatang: Money.satangFromString(b.baseFee),
+        hours: b.hours ?? 0,
+        guardCount: b.guardCount ?? 1,
+      );
+    }
+    return sum;
+  }
+
+  /// Number of the guard's jobs scheduled today.
+  static int jobsToday(List<Booking> all, DateTime now) =>
+      all.where((b) => _isToday(b.scheduledAt, now)).length;
+}
+
+/// Screen 1 stats row — 3 equal cards: today's earnings / jobs today / rating.
+class _StatsRow extends StatelessWidget {
+  const _StatsRow({required this.bookings});
+
+  final List<Booking> bookings;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: _StatCard(
+            value: Money.format(
+                GuardHomeStats.earningsTodaySatang(bookings, now)),
+            label: 'รายได้วันนี้ / Today',
+          ),
+        ),
+        const SizedBox(width: PgTokens.space3),
+        Expanded(
+          child: _StatCard(
+            value: '${GuardHomeStats.jobsToday(bookings, now)}',
+            label: 'งานวันนี้ / Jobs',
+          ),
+        ),
+        const SizedBox(width: PgTokens.space3),
+        // Rating stays a placeholder until GET /v1/guards/{id}/ratings stats is wired.
+        const Expanded(
+          child: _StatCard(value: '—', label: 'คะแนน / Rating'),
+        ),
+      ],
+    );
+  }
+}
+
+class _StatCard extends StatelessWidget {
+  const _StatCard({required this.value, required this.label});
+
+  final String value;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSurface,
+        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+        border: Border.all(color: PgTokens.colorBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(value,
+              style: const TextStyle(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorText,
+                  fontFeatures: [FontFeature.tabularFigures()])),
+          const SizedBox(height: 2),
+          Text(label,
+              style: const TextStyle(
+                  fontSize: 11, color: PgTokens.colorTextMuted)),
+        ],
       ),
     );
   }
@@ -133,7 +247,9 @@ class _JobsBody extends StatelessWidget {
             const SizedBox(height: PgTokens.space3),
           ],
         ],
-        const _SectionHeader('งานรอตอบรับ / Incoming'),
+        _SectionHeader(incoming.isEmpty
+            ? 'งานรอตอบรับ / Incoming'
+            : 'งานรอตอบรับ ${incoming.length} / Incoming'),
         if (incoming.isEmpty)
           const _EmptyIncoming()
         else
@@ -145,7 +261,7 @@ class _JobsBody extends StatelessWidget {
               actions: Row(
                 children: [
                   SizedBox(
-                    width: 96,
+                    width: 80,
                     child: PgGhostButton(
                       label: 'ข้าม',
                       onPressed: () => onDismiss(b.id),

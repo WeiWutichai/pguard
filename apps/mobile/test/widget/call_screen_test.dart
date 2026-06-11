@@ -95,6 +95,9 @@ void main() {
     expect(find.byIcon(Icons.call), findsOneWidget, reason: 'accept');
     expect(find.byIcon(Icons.call_end), findsOneWidget, reason: 'reject');
 
+    // Finish the route push transition first: the accept button sits at the design's right-edge
+    // position and is off-screen mid-slide (tap() would miss it).
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.byIcon(Icons.call)); // accept (does not pop)
     await settle(tester);
     expect(h.api.calls, contains('PUT /calls/call1/accept'));
@@ -138,7 +141,7 @@ void main() {
     await tester.tap(find.text('GO'));
     await settle(tester);
 
-    expect(find.textContaining('กำลังโทร'), findsOneWidget);
+    expect(find.textContaining('กำลังเรียก'), findsOneWidget);
     expect(find.byIcon(Icons.call_end), findsOneWidget, reason: 'cancel');
 
     await tester.pumpWidget(const SizedBox());

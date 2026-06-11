@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/chat_launcher.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -14,6 +16,7 @@ import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
 import '../call/widgets/call_entry_button.dart';
+import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'widgets/check_in_sheet.dart';
 
@@ -29,17 +32,21 @@ class ActiveJobScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final async = ref.watch(activeJobControllerProvider(bookingId));
-    final booking = async.valueOrNull?.booking;
+    final state = async.valueOrNull;
+    final booking = state?.booking;
+    final stage = state == null ? null : stageOf(state);
+    final header = _headerFor(stage);
     final myUserId = ref.watch(sessionProvider).user?.userId;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'งานที่กำลังทำ',
-        subtitle: 'Active job',
+        title: header.title,
+        subtitle: header.subtitle,
         showBack: true,
-        live: true,
-        background: PgTokens.colorGreen800,
+        // Design: only the G4 Working header carries the LIVE indicator.
+        live: stage == JobStage.working,
+        background: header.background,
         // Guard ↔ customer call + chat for this job.
         trailing: booking == null
             ? null
@@ -98,6 +105,48 @@ JobStage stageOf(ActiveJobState s) {
       return JobStage.awaiting;
     default:
       return JobStage.done;
+  }
+}
+
+/// Header (title, subtitle, background) for the current lifecycle stage, per the design's
+/// per-state guard headers: G2 En route (blue), G3 Arrived (green-800), G4 Working (green-800),
+/// G5 Awaiting customer (sand → amber-700, nearest token). The journey phase (accepted +
+/// travelling) maps to G2; the at-location-not-started stage maps to G3. Falls back to the
+/// generic active-job header while loading / after completion.
+({String title, String subtitle, Color background}) _headerFor(JobStage? stage) {
+  switch (stage) {
+    case JobStage.enRoute:
+    case JobStage.arrived:
+      return (
+        title: 'กำลังเดินทาง',
+        subtitle: 'En route',
+        background: PgTokens.colorInfo, // nearest token to design #1F5FC2
+      );
+    case JobStage.start:
+      return (
+        title: 'ถึงที่หมายแล้ว',
+        subtitle: 'Arrived',
+        background: PgTokens.colorGreen800,
+      );
+    case JobStage.working:
+      return (
+        title: 'งานกำลังดำเนินอยู่',
+        subtitle: 'Working',
+        background: PgTokens.colorGreen800,
+      );
+    case JobStage.awaiting:
+      return (
+        title: 'รอลูกค้าตรวจสอบ',
+        subtitle: 'Awaiting customer',
+        background: PgTokens.colorAmber700, // nearest token to design sand #C26A1E
+      );
+    case JobStage.done:
+    case null:
+      return (
+        title: 'งานที่กำลังทำ',
+        subtitle: 'Active job',
+        background: PgTokens.colorGreen800,
+      );
   }
 }
 
@@ -161,25 +210,69 @@ class _AddressCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radius2xl),
         border: Border.all(color: PgTokens.colorGreen100),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(Icons.place_outlined,
-              color: PgTokens.colorGreen800, size: 22),
-          const SizedBox(width: PgTokens.space3),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text('สถานที่ลูกค้า / Customer location',
-                    style: TextStyle(
-                        fontSize: 11, color: PgTokens.colorTextMuted)),
-                Text(address ?? '—',
-                    style: const TextStyle(
-                        fontSize: 14, fontWeight: FontWeight.w600)),
-              ],
+          Row(
+            children: [
+              const Icon(Icons.place_outlined,
+                  color: PgTokens.colorGreen800, size: 22),
+              const SizedBox(width: PgTokens.space3),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('สถานที่ลูกค้า / Customer location',
+                        style: TextStyle(
+                            fontSize: 11, color: PgTokens.colorTextMuted)),
+                    Text(address ?? '—',
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: PgTokens.space3),
+          const _MiniMapBand(),
+        ],
+      ),
+    );
+  }
+}
+
+/// Design `.sb-mini-map`: a decorative 50px map band with a teardrop location pin (no real map —
+/// the v2 booking has no lat/lng, and no ETA badge for the same reason).
+class _MiniMapBand extends StatelessWidget {
+  const _MiniMapBand();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 50,
+      decoration: BoxDecoration(
+        color: PgTokens.colorSunken, // nearest token to design #E7ECE7
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Center(
+        // Design `.gpin`: 18px teardrop — `border-radius: 50% 50% 50% 2px` rotated 45deg.
+        child: Transform.rotate(
+          angle: math.pi / 4,
+          child: Container(
+            width: 18,
+            height: 18,
+            decoration: BoxDecoration(
+              color: PgTokens.colorPrimary, // status-working green
+              border: Border.all(color: PgTokens.colorSurface, width: 2),
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(9),
+                topRight: Radius.circular(9),
+                bottomRight: Radius.circular(9),
+                bottomLeft: Radius.circular(2),
+              ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
@@ -215,9 +308,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     super.dispose();
   }
 
+  /// Design G4 countdown reads H:MM:SS with no leading zero on the hours ("3:24:15").
   static String _fmt(Duration d) {
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(d.inHours)}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
+    return '${d.inHours}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
   }
 
   Future<void> _checkIn(int hour) async {
@@ -260,30 +354,52 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Text('เวลาที่เหลือ / Time remaining',
-              style: TextStyle(fontSize: 12, color: PgTokens.colorTextMuted)),
-          const SizedBox(height: 2),
-          Text(_fmt(remaining),
-              style: const TextStyle(
-                  fontSize: 30,
-                  fontWeight: FontWeight.w700,
-                  fontFeatures: [FontFeature.tabularFigures()])),
+          // Design `.sb-count`: big number first, side label with the booked total.
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.baseline,
+            textBaseline: TextBaseline.alphabetic,
+            children: [
+              Text(_fmt(remaining),
+                  style: const TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.w600,
+                      color: PgTokens.colorText,
+                      letterSpacing: -0.3,
+                      fontFeatures: [FontFeature.tabularFigures()])),
+              // Design gap 14px → space3, nearest token.
+              const SizedBox(width: PgTokens.space3),
+              Expanded(
+                child: Text(
+                  'เหลือ · จาก ${clock.hours} ชม. / left · of ${clock.hours} h',
+                  style: const TextStyle(
+                      fontSize: 11.5, color: PgTokens.colorTextMuted),
+                ),
+              ),
+            ],
+          ),
           const SizedBox(height: PgTokens.space3),
           ClipRRect(
-            borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+            // Design `.sb-bar`: 7px tall, 4px radius.
+            borderRadius: BorderRadius.circular(4),
             child: LinearProgressIndicator(
               value: progress,
-              minHeight: 8,
+              minHeight: 7,
               backgroundColor: PgTokens.colorSunken,
               valueColor:
                   const AlwaysStoppedAnimation(PgTokens.colorPrimary),
             ),
           ),
           const SizedBox(height: PgTokens.space3),
+          _SlotTracker(
+            total: schedule.totalSlots,
+            dueIndex: dueIndex,
+            completed: state.completedCheckIns,
+          ),
+          const SizedBox(height: PgTokens.space3),
           Row(
             children: [
-              const Icon(Icons.fact_check_outlined,
-                  size: 16, color: PgTokens.colorTextMuted),
+              const Icon(Icons.schedule,
+                  size: 13, color: PgTokens.colorTextMuted),
               const SizedBox(width: PgTokens.space1),
               Expanded(
                 child: Text(
@@ -316,6 +432,45 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   static String _hm(DateTime d) {
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(d.hour)}:${two(d.minute)} น.';
+  }
+}
+
+/// Design `.sb-slots`: per-hour check-in segments — done → success green, the currently due
+/// slot → amber, pending → sunken. Pure render of the existing [CheckInSchedule] state.
+class _SlotTracker extends StatelessWidget {
+  const _SlotTracker({
+    required this.total,
+    required this.dueIndex,
+    required this.completed,
+  });
+
+  final int total;
+  final int dueIndex;
+  final Set<int> completed;
+
+  @override
+  Widget build(BuildContext context) {
+    if (total <= 0) return const SizedBox.shrink();
+    return Row(
+      children: [
+        for (var i = 0; i < total; i++) ...[
+          if (i > 0) const SizedBox(width: 5),
+          Expanded(
+            child: Container(
+              height: 6,
+              decoration: BoxDecoration(
+                color: completed.contains(i)
+                    ? PgTokens.colorSuccess
+                    : i == dueIndex
+                        ? PgTokens.colorWarning // amber-500
+                        : PgTokens.colorSunken,
+                borderRadius: BorderRadius.circular(3),
+              ),
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 
@@ -422,21 +577,24 @@ class _TransitionBar extends ConsumerWidget {
         ));
       case JobStage.arrived:
         return bar(PgPrimaryButton(
-          label: 'ถึงจุดนัดแล้ว / Arrived',
+          label: 'ถึงแล้ว / Arrived',
           busy: busy,
           onPressed: busy ? null : () => ctrl.arrived(),
         ));
       case JobStage.start:
-        return bar(PgPrimaryButton(
-          label: 'เริ่มงาน / Start job',
-          color: PgTokens.colorAccent,
-          foreground: PgTokens.colorOnAmber,
-          busy: busy,
-          onPressed: busy ? null : () => ctrl.start(),
+        // Design G3: the start CTA pulses (`.sb-btn.amber.pulse`).
+        return bar(_PulsingGlow(
+          child: PgPrimaryButton(
+            label: 'เริ่มงาน / Start job',
+            color: PgTokens.colorAccent,
+            foreground: PgTokens.colorOnAmber,
+            busy: busy,
+            onPressed: busy ? null : () => ctrl.start(),
+          ),
         ));
       case JobStage.working:
         return bar(PgPrimaryButton(
-          label: 'จบงาน / Complete',
+          label: 'จบงาน / End',
           busy: busy,
           onPressed: busy ? null : () => _complete(context, ref),
         ));
@@ -448,6 +606,8 @@ class _TransitionBar extends ConsumerWidget {
                 textAlign: TextAlign.center,
                 style: TextStyle(color: PgTokens.colorTextMuted)),
             const SizedBox(height: PgTokens.space2),
+            // Design G5: the primary CTA for this state is chatting the customer.
+            _ChatCustomerButton(booking: state.booking),
             PgGhostButton(
               label: 'ดูสถานะสด / View live status',
               onPressed: () => context.push('/booking/$bookingId/live'),
@@ -460,5 +620,114 @@ class _TransitionBar extends ConsumerWidget {
           onPressed: () => context.push('/booking/$bookingId/live'),
         ));
     }
+  }
+}
+
+/// Design `@keyframes btnpulse`: a 1.8s repeating glow — a [PgTokens.colorAccent] shadow that
+/// spreads 0→8px while fading 0.4→0 opacity. Display-only animation around the start CTA.
+class _PulsingGlow extends StatefulWidget {
+  const _PulsingGlow({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PulsingGlow> createState() => _PulsingGlowState();
+}
+
+class _PulsingGlowState extends State<_PulsingGlow>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1800),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_controller.value);
+        return DecoratedBox(
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+            boxShadow: [
+              BoxShadow(
+                color: PgTokens.colorAccent.withValues(alpha: 0.4 * (1 - t)),
+                spreadRadius: 8 * t,
+              ),
+            ],
+          ),
+          child: child,
+        );
+      },
+      child: widget.child,
+    );
+  }
+}
+
+/// Design G5's single CTA: chat the customer. Same find-or-create conversation flow as
+/// [ChatEntryButton] (guarded by a busy flag — `POST /conversations` is not idempotent).
+class _ChatCustomerButton extends ConsumerStatefulWidget {
+  const _ChatCustomerButton({required this.booking});
+
+  final Booking booking;
+
+  @override
+  ConsumerState<_ChatCustomerButton> createState() =>
+      _ChatCustomerButtonState();
+}
+
+class _ChatCustomerButtonState extends ConsumerState<_ChatCustomerButton> {
+  bool _busy = false;
+
+  Future<void> _open() async {
+    final booking = widget.booking;
+    final myUserId = ref.read(sessionProvider).user?.userId;
+    if (myUserId == null || _busy) return;
+
+    final router = GoRouter.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final launcher = ref.read(chatLauncherProvider);
+
+    setState(() => _busy = true);
+    try {
+      final conversationId = await launcher.resolveConversationId(
+        requestId: booking.id,
+        acting: ChatRole.guard,
+        requestStatus: booking.status.wire,
+        participants: [
+          ParticipantInput(userId: myUserId, role: ChatRole.guard),
+          ParticipantInput(
+              userId: booking.customerId, role: ChatRole.customer),
+        ],
+      );
+      if (!mounted) return;
+      await router.push(ChatRoutes.conversation(
+        conversationId,
+        acting: ChatRole.guard,
+        readOnly: ChatReadOnly.fromStatus(booking.status.wire),
+      ));
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(const SnackBar(
+          content: Text('เปิดแชทไม่สำเร็จ / Could not open chat')));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PgGhostButton(
+      label: 'แชตหาลูกค้า / Chat customer',
+      onPressed: _busy ? null : _open,
+    );
   }
 }

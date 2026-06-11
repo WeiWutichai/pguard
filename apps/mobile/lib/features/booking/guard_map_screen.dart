@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
@@ -5,11 +7,15 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/guard_location_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/relative_time.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/tracking.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
+import '../call/widgets/call_entry_button.dart';
+import '../chat/widgets/chat_entry_button.dart';
 import 'widgets/map_canvas.dart';
 
 /// The customer live-map: where is my guard right now? Watches ONLY
@@ -101,6 +107,17 @@ class _MapBody extends StatelessWidget {
                           child:
                               CustomPaint(painter: MapBackdropPainter()),
                         ),
+                        // The design's dashed brand route between the guard pin and the
+                        // reference point (pure paint — projection stays in MapViewport).
+                        if (guard != null && track.reference != null)
+                          Positioned.fill(
+                            child: CustomPaint(
+                              painter: _RoutePathPainter(
+                                from: viewport.fractionFor(guard.point),
+                                to: viewport.fractionFor(track.reference!),
+                              ),
+                            ),
+                          ),
                         if (track.reference != null)
                           _placed(
                             viewport.fractionFor(track.reference!),
@@ -234,12 +251,24 @@ class _ReferenceMarker extends StatelessWidget {
   }
 }
 
-/// En-route / arrived / … chip over the map, straight from the booking lifecycle labels.
+/// The tracking pill over the map: amber live dot + customer-directed copy while the guard
+/// is en route ("กำลังเดินทางมาหาคุณ" — a screen-local override; the shared lifecycle labels
+/// stay guard-neutral), lifecycle labels otherwise. Amber-400 has no token; colorAccent
+/// (amber-500) is the nearest.
 class _StatusChip extends StatelessWidget {
   const _StatusChip({required this.status, required this.isThai});
 
   final BookingStatus status;
   final bool isThai;
+
+  String get _label {
+    if (status == BookingStatus.enRoute) {
+      return isThai ? 'กำลังเดินทางมาหาคุณ' : 'On the way to you';
+    }
+    return isThai
+        ? BookingLifecycle.labelTh(status)
+        : BookingLifecycle.labelEn(status);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -252,15 +281,66 @@ class _StatusChip extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusFull),
         boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 5)],
       ),
-      child: Text(
-        isThai
-            ? BookingLifecycle.labelTh(status)
-            : BookingLifecycle.labelEn(status),
-        style: const TextStyle(
-            color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w600),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (!negative) ...[
+            Container(
+              width: 8,
+              height: 8,
+              decoration: const BoxDecoration(
+                color: PgTokens.colorAccent,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: PgTokens.space1),
+          ],
+          Text(
+            _label,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600),
+          ),
+        ],
       ),
     );
   }
+}
+
+/// The design's dashed route between the guard pin and the destination marker: brand
+/// interactive at 70% opacity, 5px stroke, round caps, dash pattern "2 12". Inputs are
+/// viewport FRACTIONS — all geo→canvas math stays in [MapViewport].
+class _RoutePathPainter extends CustomPainter {
+  const _RoutePathPainter({required this.from, required this.to});
+
+  final ({double x, double y}) from;
+  final ({double x, double y}) to;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final a = Offset(from.x * size.width, from.y * size.height);
+    final b = Offset(to.x * size.width, to.y * size.height);
+    final total = (b - a).distance;
+    if (total <= 0) return;
+
+    final paint = Paint()
+      ..color = PgTokens.colorPrimary.withValues(alpha: 0.7)
+      ..strokeWidth = 5
+      ..strokeCap = StrokeCap.round;
+
+    final dir = (b - a) / total;
+    // 2px dash + 12px gap stepped along the segment (round caps render the short
+    // dashes as the design's dotted path).
+    for (var d = 0.0; d < total; d += 14) {
+      final end = math.min(d + 2, total);
+      canvas.drawLine(a + dir * d, a + dir * end, paint);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _RoutePathPainter oldDelegate) =>
+      oldDelegate.from != from || oldDelegate.to != to;
 }
 
 /// Centre overlay when there is no guard fix to draw (unassigned / no signal / job ended).
@@ -311,9 +391,9 @@ class _NoFixCard extends StatelessWidget {
   }
 }
 
-/// Bottom card: freshness (LIVE / last-seen), accuracy band, distance-from-you, address +
-/// the one-shot refresh gesture.
-class _InfoPanel extends StatelessWidget {
+/// Bottom card: freshness (LIVE / last-seen), accuracy band, distance-from-you, the design's
+/// chat/call action row, address + the one-shot refresh gesture.
+class _InfoPanel extends ConsumerWidget {
   const _InfoPanel({
     required this.track,
     required this.isThai,
@@ -325,9 +405,11 @@ class _InfoPanel extends StatelessWidget {
   final Future<void> Function() onRefresh;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final guard = track.guard;
     final distance = track.distanceFromReference;
+    final booking = track.booking;
+    final myUserId = ref.watch(sessionProvider).user?.userId;
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(PgTokens.space4),
@@ -375,6 +457,42 @@ class _InfoPanel extends StatelessWidget {
               style: const TextStyle(
                   fontSize: 12, color: PgTokens.colorTextMuted),
             ),
+          // The design's tracking-sheet action row: chat + call (same enable rules as the
+          // live-status screen — chat once a guard is assigned, call while the job is active).
+          const SizedBox(height: PgTokens.space3),
+          Row(
+            children: [
+              ChatEntryButton(
+                requestId: booking.id,
+                requestStatus: booking.status.wire,
+                acting: ChatRole.customer,
+                myUserId: myUserId,
+                counterpartUserId: booking.guardId,
+              ),
+              const SizedBox(width: PgTokens.space2),
+              Text(
+                isThai ? 'แชต' : 'Chat',
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorPrimary),
+              ),
+              const SizedBox(width: PgTokens.space4),
+              CallEntryButton(
+                bookingId: booking.id,
+                enabled: booking.guardId != null &&
+                    BookingLifecycle.isActive(booking.status),
+              ),
+              const SizedBox(width: PgTokens.space2),
+              Text(
+                isThai ? 'โทร' : 'Call',
+                style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorPrimary),
+              ),
+            ],
+          ),
           if (track.booking.address != null) ...[
             const SizedBox(height: PgTokens.space2),
             Row(

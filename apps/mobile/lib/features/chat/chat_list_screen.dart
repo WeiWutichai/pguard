@@ -28,7 +28,7 @@ class ChatListScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: const PGuardHeader(
-        title: 'แชท',
+        title: 'ข้อความ',
         subtitle: 'Messages',
         showBack: true,
       ),
@@ -47,8 +47,9 @@ class ChatListScreen extends ConsumerWidget {
                 ? const _EmptyBody()
                 : ListView.separated(
                     itemCount: list.length,
+                    // Design: full-bleed 1px border under each row (no avatar indent).
                     separatorBuilder: (_, __) => const Divider(
-                        height: 1, color: PgTokens.colorBorder, indent: 76),
+                        height: 1, color: PgTokens.colorBorder),
                     itemBuilder: (_, i) {
                       final c = list[i];
                       return ConversationTile(

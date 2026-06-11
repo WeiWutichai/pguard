@@ -71,7 +71,7 @@ class _OtpInputState extends State<OtpInput> {
                         BoxShadow(
                             color: PgTokens.colorFocusRing,
                             blurRadius: 0,
-                            spreadRadius: 3)
+                            spreadRadius: 4)
                       ]
                     : null,
               ),

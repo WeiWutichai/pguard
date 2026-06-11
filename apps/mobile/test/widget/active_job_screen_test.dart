@@ -45,7 +45,7 @@ void main() {
 
     // Arrived but not started → Start action, no countdown yet.
     expect(find.textContaining('เริ่มงาน'), findsOneWidget);
-    expect(find.textContaining('เวลาที่เหลือ'), findsNothing);
+    expect(find.textContaining('เหลือ · จาก'), findsNothing);
     expect(find.text('หมู่บ้านลัดดารมย์ ซ.5'), findsOneWidget); // address shown
 
     // Tap "Start job" → records start time → working panel appears.
@@ -53,8 +53,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.textContaining('เวลาที่เหลือ'), findsOneWidget); // countdown label
-    expect(find.textContaining('จบงาน'), findsOneWidget); // complete action
+    // Countdown side label (design: "เหลือ · จาก 8 ชม." beside the big number).
+    expect(find.textContaining('เหลือ · จาก'), findsOneWidget);
+    expect(find.textContaining('จบงาน'), findsOneWidget); // end action
     expect(api.calls, contains('PUT /bookings/b1/start'));
 
     // Unmount to cancel the display ticker (no pending timers at teardown).

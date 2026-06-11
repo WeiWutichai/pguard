@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
+import '../../widgets/auth_head.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 
@@ -59,33 +60,44 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               const SizedBox(height: PgTokens.space4),
-              const Text(
-                'ยืนยันว่าไม่ใช่บอท',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: PgTokens.space1),
-              Text(
-                'ตอบคำถามเพื่อส่งรหัส OTP ไปยัง +66 ${state.phone} / Solve to send your OTP',
-                style: const TextStyle(color: PgTokens.colorTextMuted),
+              AuthHead(
+                title: 'ยืนยันว่าไม่ใช่บอท / Quick check',
+                subtitle:
+                    'ตอบคำถามเพื่อส่งรหัส OTP ไปที่ +66 ${state.phone} / Solve to send the OTP to +66 ${state.phone}',
               ),
               const SizedBox(height: PgTokens.space6),
+              // Design question card: white surface, 1.5px strong border, radius 16 (→ radiusXl).
               Container(
-                padding: const EdgeInsets.all(PgTokens.space4),
+                padding: const EdgeInsets.fromLTRB(
+                    PgTokens.space4, PgTokens.space4, PgTokens.space4, 18),
                 decoration: BoxDecoration(
-                  color: PgTokens.colorSunken,
+                  color: PgTokens.colorSurface,
+                  border: Border.all(
+                      color: PgTokens.colorBorderStrong, width: 1.5),
                   borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                 ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      question == null
-                          ? 'กำลังโหลดคำถาม… / Loading…'
-                          : 'คำถาม / Question:  $question',
-                      style: const TextStyle(
-                          fontWeight: FontWeight.w600, fontSize: 16),
+                    const Text(
+                      'คำถาม / Question',
+                      style: TextStyle(
+                          fontSize: 12.5, color: PgTokens.colorTextMuted),
                     ),
-                    const SizedBox(height: PgTokens.space2),
+                    const SizedBox(height: PgTokens.space1),
+                    // Big bold math problem (design: 26/700 mono; mono family not bundled yet).
+                    Text(
+                      question ?? 'กำลังโหลดคำถาม… / Loading…',
+                      style: question == null
+                          ? const TextStyle(
+                              fontSize: 12.5, color: PgTokens.colorTextMuted)
+                          : const TextStyle(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w700,
+                              color: PgTokens.colorText,
+                            ),
+                    ),
+                    const SizedBox(height: 14),
                     TextField(
                       controller: _answer,
                       autofocus: true,
@@ -100,6 +112,13 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                   ],
                 ),
               ),
+              const SizedBox(height: PgTokens.space3),
+              const Text(
+                'ช่วยกันบอทและกันการส่ง SMS เกินจำเป็น / Helps stop bots and unwanted SMS',
+                textAlign: TextAlign.center,
+                style:
+                    TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+              ),
               const SizedBox(height: PgTokens.space4),
               if (state.error != null)
                 Padding(
@@ -110,7 +129,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                   ),
                 ),
               PgPrimaryButton(
-                label: 'ยืนยันและส่ง OTP / Verify & send',
+                label: 'ยืนยันและส่ง OTP / Verify & send OTP',
                 busy: state.busy,
                 onPressed: state.challenge == null ? null : _verify,
               ),
