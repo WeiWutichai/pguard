@@ -31,7 +31,7 @@ use serde_json::{json, Value};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
 use shared::db::create_pool;
-use shared::redis_client::create_redis_client;
+use shared::redis_client::create_connection_manager;
 
 use crate::state::{AppState, DbBookingAuthz};
 
@@ -60,21 +60,21 @@ async fn main() -> anyhow::Result<()> {
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
 
-    // Cache connection: the AuthUser revocation blocklist + the WS re-auth tick.
-    let redis_cache = create_redis_client(&redis_config.cache_url)?
-        .get_multiplexed_tokio_connection()
+    // Cache connection: the AuthUser revocation blocklist + the WS re-auth tick. A reconnecting
+    // manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals instead of
+    // wedging the re-auth tick → killing every live GPS socket on the next tick (chaos case 3).
+    let redis_cache = create_connection_manager(&redis_config.cache_url)
         .await
-        .context("Redis cache connection")?;
+        .context("Redis cache connection (reconnecting)")?;
     // Pub/sub connection: republish raw GPS to the admin live map. Falls back to the cache URL
-    // when REDIS_PUBSUB_URL is unset (single-node dev).
+    // when REDIS_PUBSUB_URL is unset (single-node dev). Also reconnecting.
     let pubsub_url = redis_config
         .pubsub_url
         .clone()
         .unwrap_or_else(|| redis_config.cache_url.clone());
-    let redis_pub = create_redis_client(&pubsub_url)?
-        .get_multiplexed_tokio_connection()
+    let redis_pub = create_connection_manager(&pubsub_url)
         .await
-        .context("Redis pub/sub connection")?;
+        .context("Redis pub/sub connection (reconnecting)")?;
 
     let state = AppState {
         db: db.clone(),

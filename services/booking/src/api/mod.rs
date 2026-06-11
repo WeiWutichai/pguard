@@ -682,7 +682,7 @@ mod tests {
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         s3: crate::s3::S3Client,
     }
 
@@ -693,7 +693,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -707,7 +707,7 @@ mod tests {
     }
 
     /// Build the booking router over a lightweight test state. The `AuthUser` extractor
-    /// requires `HasJwtSecret`, which mandates a real [`redis::aio::MultiplexedConnection`]
+    /// requires `HasJwtSecret`, which mandates a real [`redis::aio::ConnectionManager`]
     /// for the jti revocation blocklist — there is no public way to construct one without
     /// connecting. So, exactly like the repo's real-DB test, these router tests are
     /// hermetic by default and only run when a test Redis is provided via `TEST_REDIS_URL`
@@ -719,9 +719,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         // Lazy pool to a closed port — never connects unless a handler queries (rejected
@@ -771,9 +769,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         let db = PgPoolOptions::new()
@@ -1519,7 +1515,7 @@ mod tests {
     #[derive(Clone)]
     struct DiscoveryTestDeps {
         dec: Arc<DecodingKey>,
-        redis: redis::aio::MultiplexedConnection,
+        redis: redis::aio::ConnectionManager,
         catalog: StubCatalog,
         rater: StubRater,
     }
@@ -1530,7 +1526,7 @@ mod tests {
         fn decoding_key(&self) -> &DecodingKey {
             &self.dec
         }
-        fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+        fn redis_conn(&self) -> &redis::aio::ConnectionManager {
             &self.redis
         }
     }
@@ -1549,9 +1545,7 @@ mod tests {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        let redis = redis::Client::open(redis_url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
         // available_guards never touches the DB (only the readers) — no pool needed.

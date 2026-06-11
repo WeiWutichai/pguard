@@ -255,9 +255,7 @@ mod e2e_tests {
         let redis = match std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
         {
-            Ok(url) => redis::Client::open(url)
-                .expect("redis client")
-                .get_multiplexed_tokio_connection()
+            Ok(url) => shared::redis_client::create_connection_manager(&url)
                 .await
                 .expect("redis conn"),
             Err(_) => {
@@ -410,9 +408,7 @@ mod e2e_tests {
             .connect(&db_url)
             .await
             .expect("connect Postgres");
-        let redis = redis::Client::open(redis_url)
-            .expect("redis client")
-            .get_multiplexed_tokio_connection()
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .expect("redis conn");
 

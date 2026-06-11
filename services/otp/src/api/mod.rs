@@ -247,7 +247,7 @@ mod tests {
     //! Router-level tests of the PUBLIC `verify` handler. The malformed-input paths
     //! (bad code length, invalid phone) reject in pure `domain` validation BEFORE any
     //! Redis/Postgres access, so they run hermetically. Building [`AppState`] requires a
-    //! `MultiplexedConnection`, which can only be obtained by connecting — so these are
+    //! reconnecting `ConnectionManager`, which can only be obtained by connecting — so these are
     //! Redis-gated (skip without `TEST_REDIS_URL`/`REDIS_CACHE_URL`), matching the
     //! gated-integration pattern used across the workspace. The happy-path Redis/DB flow
     //! is covered by `repo`'s gated integration test + the pure `domain` units.
@@ -267,7 +267,7 @@ mod tests {
 
     const SECRET: &str = "test-secret-key-at-least-64-chars-long-for-testing-purposes-only!!";
 
-    async fn test_state(redis_conn: redis::aio::MultiplexedConnection) -> AppState {
+    async fn test_state(redis_conn: redis::aio::ConnectionManager) -> AppState {
         // Lazy pool to a closed port: never connects unless a handler queries. The
         // pre-IO rejection paths return before any DB use, so it stays offline.
         let db = PgPoolOptions::new()
@@ -297,13 +297,11 @@ mod tests {
     }
 
     /// Connect a real Redis if a URL is configured; otherwise `None` (test self-skips).
-    async fn maybe_redis() -> Option<redis::aio::MultiplexedConnection> {
+    async fn maybe_redis() -> Option<redis::aio::ConnectionManager> {
         let url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
-        redis::Client::open(url)
-            .ok()?
-            .get_multiplexed_tokio_connection()
+        shared::redis_client::create_connection_manager(&url)
             .await
             .ok()
     }

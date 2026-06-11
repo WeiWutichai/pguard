@@ -17,7 +17,7 @@ pub struct AppState {
     /// `DATABASE_READ_URL` is unset. Writes + read-after-write use `db`.
     pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
     /// Separate secret for service-to-service JWTs — guards the `/internal/*` read that
     /// the payment/rating services call, and signs the discovery reads booking MINTS
@@ -36,7 +36,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_conn
     }
 }

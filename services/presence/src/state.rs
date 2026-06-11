@@ -48,9 +48,9 @@ impl BookingAuthz for DbBookingAuthz {
 pub struct AppState {
     pub db: PgPool,
     /// Cache Redis — the `AuthUser` jti/force-revoke blocklist + the WS re-auth tick.
-    pub redis_cache: redis::aio::MultiplexedConnection,
+    pub redis_cache: redis::aio::ConnectionManager,
     /// Pub/sub Redis — republish raw GPS to the admin live map (channel `presence:gps`).
-    pub redis_pub: redis::aio::MultiplexedConnection,
+    pub redis_pub: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
     pub booking_authz: DbBookingAuthz,
 }
@@ -62,7 +62,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_cache
     }
 }
@@ -77,7 +77,7 @@ pub trait PresenceDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
     fn booking_authz(&self) -> &Self::Authz;
     /// Redis connection raw GPS is published on (WS path).
-    fn redis_pub(&self) -> &redis::aio::MultiplexedConnection;
+    fn redis_pub(&self) -> &redis::aio::ConnectionManager;
 }
 
 impl PresenceDeps for AppState {
@@ -89,7 +89,7 @@ impl PresenceDeps for AppState {
     fn booking_authz(&self) -> &Self::Authz {
         &self.booking_authz
     }
-    fn redis_pub(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_pub(&self) -> &redis::aio::ConnectionManager {
         &self.redis_pub
     }
 }

@@ -32,7 +32,7 @@ pub fn channel_for(conversation_id: Uuid) -> String {
 /// Publish a persisted message to its conversation channel (best-effort; the durable record is
 /// the DB row + the outbox event — pub/sub is the real-time accelerator). Never fails the send.
 pub async fn publish_chat_message(
-    conn: &redis::aio::MultiplexedConnection,
+    conn: &redis::aio::ConnectionManager,
     message: &OutgoingChatMessage,
 ) {
     let channel = channel_for(message.conversation_id);

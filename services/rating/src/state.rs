@@ -20,7 +20,7 @@ pub struct AppState {
     /// primary fallback. Writes (submit, visibility toggle) use `db`.
     pub db_read: PgPool,
     /// Multiplexed Redis connection for the jti revocation blocklist (user auth).
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
     /// Verifies inbound service-JWTs on the internal rating-summary endpoint.
     pub service_decoding_key: DecodingKey,
@@ -35,7 +35,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_conn
     }
 }

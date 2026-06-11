@@ -13,7 +13,7 @@ use shared::service_jwt::HasServiceJwt;
 pub struct AppState {
     pub db: PgPool,
     /// Multiplexed Redis connection for the access-jti revocation blocklist.
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
     pub service_jwt_config: ServiceJwtConfig,
     /// PDPA data-export aggregator: fans out to the data owners' internal export reads.
@@ -27,7 +27,7 @@ impl HasJwtSecret for AppState {
     fn decoding_key(&self) -> &DecodingKey {
         &self.jwt_config.decoding_key
     }
-    fn redis_conn(&self) -> &redis::aio::MultiplexedConnection {
+    fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_conn
     }
 }
@@ -46,14 +46,14 @@ pub trait RevokeAllDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
     /// A clonable Redis connection for publishing the revocation marker, or `None` in
     /// tests that only exercise the service-JWT guard (which never reaches Redis).
-    fn revocation_redis(&self) -> Option<redis::aio::MultiplexedConnection>;
+    fn revocation_redis(&self) -> Option<redis::aio::ConnectionManager>;
 }
 
 impl RevokeAllDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
     }
-    fn revocation_redis(&self) -> Option<redis::aio::MultiplexedConnection> {
+    fn revocation_redis(&self) -> Option<redis::aio::ConnectionManager> {
         Some(self.redis_conn.clone())
     }
 }
@@ -65,7 +65,7 @@ impl RevokeAllDeps for AppState {
 /// `RevokeAllDeps` seam.
 pub trait RegisterDeps: Clone + Send + Sync + 'static {
     fn db(&self) -> &PgPool;
-    fn redis(&self) -> redis::aio::MultiplexedConnection;
+    fn redis(&self) -> redis::aio::ConnectionManager;
     fn jwt_encoding_key(&self) -> &EncodingKey;
     fn jwt_decoding_key(&self) -> &DecodingKey;
 }
@@ -74,7 +74,7 @@ impl RegisterDeps for AppState {
     fn db(&self) -> &PgPool {
         &self.db
     }
-    fn redis(&self) -> redis::aio::MultiplexedConnection {
+    fn redis(&self) -> redis::aio::ConnectionManager {
         self.redis_conn.clone()
     }
     fn jwt_encoding_key(&self) -> &EncodingKey {
@@ -91,7 +91,7 @@ impl RegisterDeps for AppState {
 /// the source of truth and refresh families are already revoked. No TTL: this marker is the
 /// authoritative cache the decode path reads for force-revoke-all.
 pub async fn mark_user_revoked(
-    redis: &mut redis::aio::MultiplexedConnection,
+    redis: &mut redis::aio::ConnectionManager,
     user_id: Uuid,
     version: i32,
 ) {

@@ -17,7 +17,7 @@ use crate::sms::SmsSender;
 pub struct AppState {
     pub db: PgPool,
     /// Multiplexed Redis connection for captcha / cooldown / daily / lockout / jti keys.
-    pub redis_conn: redis::aio::MultiplexedConnection,
+    pub redis_conn: redis::aio::ConnectionManager,
     pub otp_config: OtpConfig,
     /// Used to sign (encoding_key) and self-issue the phone-verified token.
     pub jwt_config: JwtConfig,
