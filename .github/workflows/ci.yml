@@ -392,9 +392,9 @@ jobs:
         working-directory: tests/e2e
         env:
           CI: "true"
+          # Single proxy target: the web-admin routes all /v1 through the gateway (which routes
+          # every service since PR #25). No PGUARD_RATING_URL/PGUARD_PRESENCE_URL bypass.
           PGUARD_API_BASE_URL: http://localhost:3000
-          PGUARD_RATING_URL: http://localhost:3007
-          PGUARD_PRESENCE_URL: http://localhost:3009
         run: pnpm test:web
 
       - name: Upload Playwright report on failure

@@ -3,9 +3,9 @@
 # pguard v2 — bring up the REAL stack for e2e, migrate, and seed.
 #
 # Reuses the perf harness (migrate.sh + seed-v2.sql) and the prod compose, plus the e2e override
-# (infra/docker/docker-compose.e2e.yml): SMS disabled (deterministic OTP path) and the two
-# gateway-gapped services — rating (:3007) / presence (:3009) — published so the host web-admin can
-# reach them directly for the reviews + map pages.
+# (infra/docker/docker-compose.e2e.yml): SMS disabled (deterministic OTP path) and rating published
+# on :3007 for the CONTRACT suite (RATING_DIRECT). The gateway now routes every service (PR #25), so
+# the web-admin reviews + map pages reach rating/presence THROUGH the gateway (no host bypass).
 #
 # Idempotent: re-running re-applies only new migrations (ledger) and re-seeds (seed-v2 upserts).
 #
@@ -72,7 +72,7 @@ dc exec -T postgres psql -q -v ON_ERROR_STOP=1 \
   < v1-audit/perf-baseline/scripts/seed-v2.sql
 
 echo "==> e2e stack ready"
-echo "    gateway   http://localhost:${GATEWAY_PORT:-3000}"
-echo "    rating    http://localhost:3007   (gateway-gapped — direct for web-admin reviews)"
-echo "    presence  http://localhost:3009   (gateway-gapped — direct for web-admin map)"
+echo "    gateway   http://localhost:${GATEWAY_PORT:-3000}   (web-admin + e2e go through here)"
+echo "    rating    http://localhost:3007   (published for the CONTRACT suite RATING_DIRECT only)"
+echo "    presence  via the gateway (/v1/locations) — no host port"
 echo "    next:     cd tests/e2e && pnpm install && npx playwright install chromium && pnpm test:web"

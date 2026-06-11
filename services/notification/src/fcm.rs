@@ -32,7 +32,20 @@ pub trait Pusher: Send + Sync {
     async fn push(&self, msg: &PushMessage) -> Result<(), AppError>;
 }
 
-/// Dev/test pusher — logs and succeeds. Selected when `FCM_DISABLED` is set.
+/// notification's FCM-gating policy: real push is disabled ONLY when `FCM_DISABLED` carries a
+/// truthy value (`true`/`1`/`yes`/`on`, case-insensitive). `false`/`0`/empty/unset keep real
+/// push ENABLED. Pass `std::env::var("FCM_DISABLED").ok().as_deref()`.
+///
+/// Fixes the footgun where presence-based `std::env::var("FCM_DISABLED").is_ok()` treated *any*
+/// value — including `"false"` — as "disable", so `FCM_DISABLED=false` silently dropped all push
+/// (compose.prod's `${FCM_DISABLED:-false}` default = prod push off forever, unnoticed). Mirrors
+/// otp's `sms_disabled`. When push is ENABLED, `FcmConfig::from_env` fail-fasts without creds —
+/// so a misconfig is loud at boot, never a silent no-op.
+pub fn fcm_disabled(raw: Option<&str>) -> bool {
+    shared::config::parse_env_bool(raw)
+}
+
+/// Dev/test pusher — logs and succeeds. Selected when `FCM_DISABLED` is truthy.
 pub struct NoopPusher;
 
 #[async_trait]
@@ -279,5 +292,23 @@ impl Pusher for FcmPusher {
             self.send_one(&access, token, msg).await;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fcm_disabled;
+
+    #[test]
+    fn fcm_disabled_is_value_aware_not_presence_based() {
+        // Truthy → disabled.
+        for v in ["true", "TRUE", "1", "yes", "on", "  true  "] {
+            assert!(fcm_disabled(Some(v)), "{v:?} should disable FCM");
+        }
+        // Falsy / empty / unset → push ENABLED (the old presence-based gate wrongly disabled these).
+        for v in ["false", "FALSE", "0", "no", "off", ""] {
+            assert!(!fcm_disabled(Some(v)), "{v:?} must NOT disable FCM");
+        }
+        assert!(!fcm_disabled(None), "unset must NOT disable FCM");
     }
 }

@@ -48,11 +48,11 @@ the gateway's own `{success:false,error:"<string>"}` envelope — a known diverg
 assert the status + rejection, not the service schema.
 
 **rating `getGuardRatings` is the canonical historical drift.** Its contract declares
-`security: bearerAuth` and documents that auth is enforced *at the edge* (the service handler is
-intentionally public — `services/rating/src/api/mod.rs` `guard_ratings` takes no `AuthUser`). So the
-auth-required assertion hits the **gateway** (the surface the contract promises to protect): an
-unauthenticated `GET /v1/guards/{id}/ratings` must be `401`. If the route is ever made edge-public
-again, that test goes red.
+`security: bearerAuth` and documents that auth is enforced *at the edge*. The service handler now
+also validates (`services/rating/src/api/mod.rs` `guard_ratings` takes an `AuthUser` —
+defense-in-depth, pre-smoke-cleanup #3). The auth-required assertion still hits the **gateway** (the
+surface the contract promises to protect): an unauthenticated `GET /v1/guards/{id}/ratings` must be
+`401`. If the route is ever made edge-public again, that test goes red.
 
 **409 sub-code (in flight).** `POST /bookings/{id}/progress-reports` duplicate-hour 409 is being
 re-coded from `CONFLICT` → `DUPLICATE_CHECK_IN` by the parallel `feat/checkin-409-subcode` slice.

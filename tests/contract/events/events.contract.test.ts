@@ -109,13 +109,9 @@ describe("event contracts (real emissions → outbox → AsyncAPI schema)", () =
     await assertEventMatchesSchema("EnvelopeOf_ProgressReported", envelope);
     expect((envelope as { payload: { hour_number: number } }).payload.hour_number).toBe(1);
 
-    // Duplicate hour → 409. The ENVELOPE shape is contract-stable; the CODE is in flux: the parallel
-    // feat/checkin-409-subcode slice splits the duplicate code CONFLICT → DUPLICATE_CHECK_IN. Accept
-    // either so this stays green across that merge in either order.
-    // REQUIRED FOLLOW-UP (not optional): after feat/checkin-409-subcode merges, rebase and TIGHTEN
-    // the array below to exactly ["DUPLICATE_CHECK_IN"]. The 409 response schema is a free-form
-    // ErrorBody, so nothing else pins the new code — leaving the array loose lets the old code pass
-    // forever. This is the only thing that actually enforces the sub-code split.
+    // Duplicate hour → 409 with the machine-readable sub-code `DUPLICATE_CHECK_IN` (PR #31 merged).
+    // The 409 response schema is a free-form ErrorBody, so this exact-code assertion is the ONLY
+    // thing pinning the sub-code split — keep it exact (not a loose set).
     const dup = await http(gatewayUrl(`/bookings/${bookingId}/progress-reports`), {
       method: "POST",
       headers: bearer(guardToken),
@@ -129,6 +125,6 @@ describe("event contracts (real emissions → outbox → AsyncAPI schema)", () =
     expect(dup.status).toBe(409);
     await assertResponseMatchesSpec("booking", "post", "/bookings/{id}/progress-reports", dup);
     const code = (dup.body as { error: { code: string } }).error.code;
-    expect(["CONFLICT", "DUPLICATE_CHECK_IN"]).toContain(code);
+    expect(code).toBe("DUPLICATE_CHECK_IN");
   });
 });

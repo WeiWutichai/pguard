@@ -1,8 +1,8 @@
 // pguard v2 — Playwright config for the web-admin happy-path e2e (runs against the REAL stack).
 // See tests/e2e/README.md + docs/PHASE-r1-e2e-tests-spec.md. The backend is brought up by the perf
 // harness (tooling/scripts/migrate.sh + seed-v2.sql) via the e2e compose override; web-admin runs
-// on :3100 with the same-origin `/v1` proxy pointed at the gateway (:3000) and — for the two
-// gateway-gapped services — directly at rating (:3007) / presence (:3009).
+// on :3100 with the same-origin `/v1` proxy pointed at the gateway (:3000), which routes EVERY
+// service (PR #25) — so the suite exercises the same gateway path as prod (no per-service bypass).
 import { defineConfig, devices } from "@playwright/test";
 import path from "node:path";
 
@@ -60,10 +60,10 @@ export default defineConfig({
     stderr: "pipe",
     env: {
       PORT: "3100",
-      // Server-side proxy targets (next.config rewrites).
+      // Server-side proxy target (next.config rewrite): everything goes through the gateway, which
+      // now routes every service (PR #25) — so no per-service bypass (PGUARD_RATING_URL/
+      // PGUARD_PRESENCE_URL) is needed; the e2e suite exercises the SAME gateway path as prod.
       PGUARD_API_BASE_URL: process.env.PGUARD_API_BASE_URL ?? "http://localhost:3000",
-      PGUARD_RATING_URL: process.env.PGUARD_RATING_URL ?? "http://localhost:3007",
-      PGUARD_PRESENCE_URL: process.env.PGUARD_PRESENCE_URL ?? "http://localhost:3009",
     },
   },
 });

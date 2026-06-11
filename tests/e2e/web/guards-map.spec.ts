@@ -1,5 +1,6 @@
 // The two live-data read pages render real seeded data without crashing: guards (approved guard
-// profiles via the gateway) and the live map (presence locations via the env-gated rewrite).
+// profiles) and the live map (presence locations) — both via the gateway (which routes every
+// service since PR #25; the old env-gated rewrite bypass was removed).
 import { test, expect } from "@playwright/test";
 
 test("guards page lists approved guards (live data via the gateway)", async ({ page }) => {
@@ -9,7 +10,7 @@ test("guards page lists approved guards (live data via the gateway)", async ({ p
   expect(await rows.count()).toBeGreaterThan(0);
 });
 
-test("map page mounts the live guard map (presence via rewrite)", async ({ page }) => {
+test("map page mounts the live guard map (presence via the gateway)", async ({ page }) => {
   const pageErrors: string[] = [];
   page.on("pageerror", (e) => pageErrors.push(e.message));
 

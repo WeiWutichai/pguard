@@ -36,11 +36,11 @@ Tear down: `docker compose --env-file infra/.env.e2e -f infra/docker/docker-comp
 
 ### How it reaches the backend
 
-web-admin proxies a same-origin `/v1` to the gateway (`:3000`). Two services the gateway does **not
-yet route** — rating (reviews) and presence (map) — are reached directly via **env-gated**
-`next.config` rewrites (`PGUARD_RATING_URL` / `PGUARD_PRESENCE_URL`, set only for e2e; prod keeps the
-single `/v1`→gateway rule). Both services validate the same httpOnly cookie. The `infra/.env.e2e`
-override also disables SMS so the OTP path is deterministic (no real SMS).
+web-admin proxies a same-origin `/v1` to the gateway (`:3000`), which routes **every** service
+(rating reviews, presence map, etc.) since PR #25 — so the e2e suite reaches the backend through the
+gateway exactly like prod. (The old `PGUARD_RATING_URL`/`PGUARD_PRESENCE_URL` env-gated `next.config`
+rewrites — a stopgap from when the gateway 404'd those routes — were removed once it routed them.)
+The `infra/.env.e2e` override also disables SMS so the OTP path is deterministic (no real SMS).
 
 ### Determinism
 

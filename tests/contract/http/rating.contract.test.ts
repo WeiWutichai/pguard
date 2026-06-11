@@ -1,16 +1,15 @@
 // Provider verification — rating service. Rating is reachable two ways in the e2e stack: via the
-// gateway (:3000 /v1) AND on a direct host port (:3007, the documented gateway-gap accommodation).
-// We deliberately use BOTH, because auth for rating lives in different places:
+// gateway (:3000 /v1) AND on a direct host port (:3007, published for THIS suite). We deliberately
+// use BOTH, because we verify auth at two different surfaces:
 //
 //  - getGuardRatings (GET /guards/{id}/ratings) — the CANONICAL DRIFT this suite must catch. The
 //    contract declares `security: [{bearerAuth: []}]` and its description states auth is enforced
 //    AT THE EDGE ("the api-gateway enforces edge auth on every /guards/… route; 'public' means
-//    visible-to-customers, not unauthenticated"). And indeed the SERVICE handler is intentionally
-//    public — services/rating/src/api/mod.rs:100 `guard_ratings` takes NO AuthUser extractor. So
-//    the faithful test of "auth is required" hits the GATEWAY (the client-facing surface where the
-//    contract promises enforcement): an unauthenticated GET must be REJECTED (401). If the route is
-//    ever made edge-public (the historical drift), this turns green→200 and the test fails. Hitting
-//    :3007 here would prove nothing (the service ignores auth by design).
+//    visible-to-customers, not unauthenticated"). The SERVICE handler now ALSO takes an `AuthUser`
+//    extractor (defense-in-depth — pre-smoke-cleanup #3), so a tokenless request to :3007 directly
+//    would 401 too. We still test "auth is required" at the GATEWAY (the client-facing surface
+//    where the contract promises enforcement): an unauthenticated GET must be REJECTED (401). If
+//    the route is ever made edge-public (the historical drift), this turns green→200 and fails.
 //
 //  - submitReview / admin endpoints — these DO take AuthUser at the service (mod.rs:41,119,154), so
 //    the service itself enforces auth+role. We test those DIRECTLY on :3007 to verify the service's

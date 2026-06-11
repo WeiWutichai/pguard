@@ -394,10 +394,10 @@ services:
     environment:
       <<: [*rust-env, *db-env]
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
-      # NOTE: the otp service disables SMS when SMS_DISABLED is *present* in the env
-      # (presence-based gate, any value incl. "false"), so it is intentionally NOT set
-      # here — prod runs with SMS ENABLED and the INET creds below required. To disable
-      # the SMS gateway, add `SMS_DISABLED: "1"` to this service.
+      # NOTE: otp's SMS_DISABLED is VALUE-AWARE (only a truthy value disables SMS — same
+      # parse_env_bool gate as notification's FCM_DISABLED), so it's intentionally NOT set
+      # here: prod runs with SMS ENABLED and the INET creds below required. To disable the
+      # SMS gateway, add `SMS_DISABLED: "true"` (a falsy value like "false" does NOT disable).
       INET_SMS_URL: ${INET_SMS_URL:-https://www.etracker.cc/bulksms/mesapi.aspx}
       INET_SMS_USERNAME: ${INET_SMS_USERNAME:?INET_SMS_USERNAME is required (or set SMS_DISABLED=true)}
       INET_SMS_PASSWORD: ${INET_SMS_PASSWORD:?INET_SMS_PASSWORD is required (or set SMS_DISABLED=true)}
@@ -427,7 +427,13 @@ services:
       NATS_USER: notification
       NATS_PASSWORD: ${NATS_NOTIFICATION_PASSWORD:?NATS_NOTIFICATION_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
-      FCM_DISABLED: ${FCM_DISABLED:-false}
+      # FCM_DISABLED is now VALUE-AWARE (notification fcm::fcm_disabled): only a TRUTHY value
+      # (true/1/yes/on) disables push; false/0/empty keep it ENABLED — and an enabled pusher
+      # FAIL-FASTS at boot without real FCM creds (FCM_SERVICE_ACCOUNT_PATH). Default = "true"
+      # because no FCM creds are provisioned yet (none exist in any env), so the stack boots with
+      # an explicit NoopPusher (logged) instead of crash-looping. To enable REAL push: set
+      # FCM_DISABLED=false AND mount a valid service-account at FCM_SERVICE_ACCOUNT_PATH.
+      FCM_DISABLED: ${FCM_DISABLED:-true}
       FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/fcm-service-account.json}
     expose:
       - "3004"
