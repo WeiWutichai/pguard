@@ -1,31 +1,122 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Check, X, AlertTriangle, RefreshCw, Loader2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  CheckCircle2,
+  Clock,
+  Inbox,
+  Loader2,
+  RefreshCw,
+  Timer,
+  X,
+  XCircle,
+} from "lucide-react";
 
 import type { components } from "@/api/generated/profile";
 import { profileApi } from "@/lib/api";
 import { useLanguage, type TKey } from "@/lib/i18n";
-import { cn } from "@/lib/cn";
+import { fmtCappedCount } from "@/lib/format";
+import {
+  Avatar,
+  Badge,
+  Button,
+  KpiCard,
+  KpiGrid,
+  PageIntro,
+  Pagination,
+  Panel,
+  Tab,
+  Table,
+  Tabs,
+  Td,
+  Th,
+  Tr,
+} from "@/components/ui";
 
 type GuardProfile = components["schemas"]["GuardProfile"];
 type ApprovalStatus = components["schemas"]["ApprovalStatus"];
 
 const STATUSES: readonly ApprovalStatus[] = ["pending", "approved", "rejected"];
-const STATUS_LABEL: Record<ApprovalStatus, TKey> = {
+
+// pending/approved reuse the existing i18n keys (they already equal the design copy);
+// rejected differs (design chip says "ปฏิเสธ", i18n has "ปฏิเสธแล้ว") so it lives in COPY.
+const STATUS_TKEY: Partial<Record<ApprovalStatus, TKey>> = {
   pending: "status.pending",
   approved: "status.approved",
-  rejected: "status.rejected",
 };
 
+// Design status badges: amber/green/red pill with a 7px dot (admin.css `.bdg .d`).
+const STATUS_TONE: Record<ApprovalStatus, "amber" | "green" | "red"> = {
+  pending: "amber",
+  approved: "green",
+  rejected: "red",
+};
+const STATUS_DOT: Record<ApprovalStatus, string> = {
+  pending: "bg-amber-500", // design: dot var(--amber-500)
+  approved: "bg-success",
+  rejected: "bg-danger",
+};
+
+// Screen-local design copy (exact TH/EN strings from the hi-fi spec). Shared i18n.tsx is
+// single-writer — new design copy must NOT be added there.
+const COPY = {
+  th: {
+    title: "ผู้สมัคร",
+    lead: "อนุมัติเจ้าหน้าที่และลูกค้าใหม่",
+    kpiPending: "รออนุมัติ",
+    kpiApproved: "อนุมัติแล้ว (รวม)",
+    kpiRejected: "ปฏิเสธ",
+    kpiAvgTime: "เวลาอนุมัติเฉลี่ย",
+    awaitingApi: "รอ API",
+    customersGap: "ผู้เรียก รปภ. — รอ API",
+    statusRejected: "ปฏิเสธ",
+    typeGuard: "เจ้าหน้าที่ รปภ.",
+    colApplicant: "ผู้สมัคร",
+    colType: "ประเภท",
+    colStatus: "สถานะ",
+  },
+  en: {
+    title: "Applicants",
+    lead: "Approve new guards & customers",
+    kpiPending: "Pending",
+    kpiApproved: "Approved total",
+    kpiRejected: "Rejected",
+    kpiAvgTime: "Avg. approval time",
+    awaitingApi: "awaiting API",
+    customersGap: "Customers — awaiting API",
+    statusRejected: "Rejected",
+    typeGuard: "Guard",
+    colApplicant: "Applicant",
+    colType: "Type",
+    colStatus: "Status",
+  },
+} as const;
+
+// Design paginates the list at 12 rows ("แสดง 1–12 จาก 12 รายการ"). Pagination is
+// CLIENT-SIDE over the already-fetched list — the admin list endpoint has no page param.
+const PAGE_SIZE = 12;
+
 export default function ApplicantsPage() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  const copy = COPY[lang];
   const [status, setStatus] = useState<ApprovalStatus>("pending");
   const [profiles, setProfiles] = useState<GuardProfile[]>([]);
+  // Per-status counts, cached from each tab's last successful fetch. Tab pills + KPI
+  // values only show a number once that status' data has actually been loaded — counts
+  // for unvisited tabs stay undefined (shown as "—"), never faked.
+  const [counts, setCounts] = useState<Partial<Record<ApprovalStatus, number>>>({});
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [page, setPage] = useState(1);
+
+  function statusLabel(s: ApprovalStatus): string {
+    const key = STATUS_TKEY[s];
+    return key ? t(key) : copy.statusRejected;
+  }
 
   // Fetch + apply the result via a promise callback (NOT synchronously) so the effect that calls
   // this never sets state during its synchronous phase (react-hooks/set-state-in-effect). The
@@ -35,8 +126,10 @@ export default function ApplicantsPage() {
       .GET("/admin/guard-profiles", { params: { query: { approval_status: s } } })
       .then(({ data, error }) => {
         if (!alive()) return;
+        const list = error ? [] : (data?.data ?? []);
         setHasError(Boolean(error));
-        setProfiles(error ? [] : (data?.data ?? []));
+        setProfiles(list);
+        setCounts((cur) => ({ ...cur, [s]: error ? undefined : list.length }));
         setLoading(false);
       });
   }, []);
@@ -54,23 +147,27 @@ export default function ApplicantsPage() {
   function selectStatus(next: ApprovalStatus) {
     if (next === status) return;
     setLoading(true); // event handler — synchronous setState here is fine
+    setPage(1);
     setStatus(next);
   }
 
   function reload() {
     setLoading(true);
     setHasError(false);
+    setPage(1);
     setReloadNonce((n) => n + 1); // re-run the alive-guarded effect
   }
 
   // Approve/reject only run from the `pending` view, so the row LEAVES the list on success →
-  // optimistic remove, rollback (restore the snapshot) + error banner on failure. This is an
-  // event handler, so the synchronous setState calls are fine.
+  // optimistic remove (list + cached count), rollback (restore both snapshots) + error banner on
+  // failure. This is an event handler, so the synchronous setState calls are fine.
   async function act(userId: string, action: "approve" | "reject") {
     const snapshot = profiles;
+    const countsSnapshot = counts;
     setHasError(false);
     setActingId(userId);
     setProfiles((cur) => cur.filter((p) => p.user_id !== userId));
+    setCounts((cur) => ({ ...cur, [status]: Math.max(0, (cur[status] ?? 1) - 1) }));
 
     const { error } =
       action === "approve"
@@ -85,146 +182,192 @@ export default function ApplicantsPage() {
     setActingId(null);
     if (error) {
       setProfiles(snapshot); // rollback
+      setCounts(countsSnapshot);
       setHasError(true);
     }
   }
 
-  return (
-    <div className="mx-auto max-w-5xl">
-      <h1 className="text-2xl font-semibold">{t("applicants.title")}</h1>
-      <p className="mt-1 text-muted">{t("applicants.subtitle")}</p>
+  // Client-side pagination window, clamped so the optimistic remove of the last row on a
+  // trailing page can never strand the view on an empty page.
+  const total = profiles.length;
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const curPage = Math.min(page, pageCount);
+  const pageRows = profiles.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
+  const from = total === 0 ? 0 : (curPage - 1) * PAGE_SIZE + 1;
+  const to = Math.min(curPage * PAGE_SIZE, total);
+  const summary =
+    lang === "th" ? `แสดง ${from}–${to} จาก ${total} รายการ` : `Showing ${from}–${to} of ${total}`;
 
-      <div className="mt-5 flex items-center gap-3">
-        <div className="inline-flex overflow-hidden rounded-lg border border-border text-sm">
-          {STATUSES.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => selectStatus(s)}
-              className={cn(
-                "px-4 py-1.5 font-medium",
-                status === s
-                  ? "bg-brand text-brand-fg"
-                  : "bg-surface text-muted hover:bg-sunken",
-              )}
-            >
-              {t(STATUS_LABEL[s])}
-            </button>
-          ))}
-        </div>
-        {!loading && (
-          <span className="text-sm text-muted">
-            {profiles.length} {t(STATUS_LABEL[status])}
-          </span>
-        )}
-        <button
-          type="button"
-          onClick={reload}
-          className="ml-auto flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-sunken"
-        >
+  return (
+    <div className="mx-auto max-w-6xl">
+      <PageIntro title={copy.title} lead={copy.lead}>
+        <Button variant="secondary" size="sm" onClick={reload}>
           <RefreshCw className="size-4" />
           {t("common.retry")}
-        </button>
-      </div>
+        </Button>
+      </PageIntro>
+
+      {/* KPI strip (design: pending / approved total / rejected / avg approval time).
+          Counts come from the loaded lists only; avg approval time has NO endpoint
+          (needs /profile/approvals stats with created_at→approved_at) → honest gap chip. */}
+      <KpiGrid>
+        <KpiCard
+          icon={<Clock />}
+          label={copy.kpiPending}
+          value={counts.pending == null ? t("common.none") : fmtCappedCount(counts.pending)}
+        />
+        <KpiCard
+          icon={<CheckCircle2 />}
+          label={copy.kpiApproved}
+          value={counts.approved == null ? t("common.none") : fmtCappedCount(counts.approved)}
+        />
+        <KpiCard
+          icon={<XCircle />}
+          label={copy.kpiRejected}
+          value={counts.rejected == null ? t("common.none") : fmtCappedCount(counts.rejected)}
+        />
+        <KpiCard
+          icon={<Timer />}
+          label={copy.kpiAvgTime}
+          value={<Badge tone="gray">{copy.awaitingApi}</Badge>}
+        />
+      </KpiGrid>
+
+      {/* Status tabs; pills show counts only once that tab's data has loaded. The design
+          also tabs guard vs CUSTOMER applicants — v2 has no customer-approval endpoint,
+          so the customers tab is an honest gap chip instead of a dead tab. */}
+      <Tabs>
+        {STATUSES.map((s) => (
+          <Tab key={s} active={status === s} count={counts[s] == null ? undefined : fmtCappedCount(counts[s])} onClick={() => selectStatus(s)}>
+            {statusLabel(s)}
+          </Tab>
+        ))}
+        <Badge tone="gray" className="ml-1 self-center">
+          {copy.customersGap}
+        </Badge>
+      </Tabs>
 
       {hasError && (
         <div
           role="alert"
-          className="mt-4 flex items-center gap-2 rounded-lg border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger"
+          className="mb-4 flex items-center gap-2 rounded-md border border-danger/35 bg-danger-bg px-4 py-2.5 text-sm text-danger"
         >
-          <AlertTriangle className="size-4" />
+          <AlertTriangle className="size-4 flex-none" />
           {t("applicants.error")}
+          <Button variant="danger-ghost" size="sm" className="ml-auto" onClick={reload}>
+            {t("common.retry")}
+          </Button>
         </div>
       )}
 
-      <div className="mt-4 overflow-hidden rounded-xl border border-border bg-surface">
+      <Panel>
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-muted">
             <Loader2 className="size-5 animate-spin" />
             {t("common.loading")}
           </div>
-        ) : profiles.length === 0 ? (
-          <div className="py-16 text-center text-muted">{t("applicants.empty")}</div>
+        ) : total === 0 ? (
+          <div className="flex flex-col items-center gap-3 py-16">
+            <span className="flex size-12 items-center justify-center rounded-full bg-sunken text-faint">
+              <Inbox className="size-6" />
+            </span>
+            <p className="text-sm text-muted">{t("applicants.empty")}</p>
+          </div>
         ) : (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-border bg-sunken text-xs uppercase text-muted">
-              <tr>
-                <th className="px-4 py-3 font-medium">{t("applicants.col.guard")}</th>
-                <th className="px-4 py-3 font-medium">{t("applicants.col.experience")}</th>
-                <th className="px-4 py-3 font-medium">{t("applicants.col.workplace")}</th>
-                <th className="px-4 py-3 font-medium">{t("applicants.col.bank")}</th>
-                <th className="px-4 py-3 text-right font-medium">{t("applicants.col.actions")}</th>
-              </tr>
-            </thead>
-            <tbody>
-              {profiles.map((p) => (
-                <tr key={p.user_id} className="border-b border-border last:border-0">
-                  <td className="px-4 py-3 align-top">
-                    <div className="font-mono text-xs text-muted">{p.user_id}</div>
-                    {p.gender && <div className="text-xs text-muted">{p.gender}</div>}
-                    {p.date_of_birth && (
-                      <div className="text-xs text-muted">{p.date_of_birth}</div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    {p.years_of_experience != null
-                      ? `${p.years_of_experience} ${t("applicants.years")}`
-                      : t("common.none")}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    {p.previous_workplace ?? t("common.none")}
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    {p.bank_name ? (
-                      <div>
-                        <div>{p.bank_name}</div>
-                        <div className="font-mono text-xs text-muted">
-                          {p.account_number ?? t("common.none")}
-                        </div>
-                        {p.account_name && (
-                          <div className="text-xs text-muted">{p.account_name}</div>
-                        )}
-                      </div>
-                    ) : (
-                      t("common.none")
-                    )}
-                  </td>
-                  <td className="px-4 py-3 align-top text-right">
-                    {status === "pending" ? (
-                      <div className="inline-flex gap-2">
-                        <button
-                          type="button"
-                          data-testid={`applicant-approve-${p.user_id}`}
-                          disabled={actingId === p.user_id}
-                          onClick={() => void act(p.user_id, "approve")}
-                          className="inline-flex items-center gap-1 rounded-lg bg-success px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
-                        >
-                          <Check className="size-3.5" />
-                          {t("applicants.approve")}
-                        </button>
-                        <button
-                          type="button"
-                          data-testid={`applicant-reject-${p.user_id}`}
-                          disabled={actingId === p.user_id}
-                          onClick={() => void act(p.user_id, "reject")}
-                          className="inline-flex items-center gap-1 rounded-lg border border-danger px-3 py-1.5 text-xs font-medium text-danger disabled:opacity-60"
-                        >
-                          <X className="size-3.5" />
-                          {t("applicants.reject")}
-                        </button>
-                      </div>
-                    ) : (
-                      <span className="text-xs text-muted">
-                        {t(STATUS_LABEL[p.approval_status])}
-                      </span>
-                    )}
-                  </td>
+          <>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>{copy.colApplicant}</Th>
+                  <Th>{copy.colType}</Th>
+                  <Th>{t("applicants.col.experience")}</Th>
+                  <Th>{t("applicants.col.workplace")}</Th>
+                  <Th>{t("applicants.col.bank")}</Th>
+                  <Th>{copy.colStatus}</Th>
+                  <Th className="text-right">{t("applicants.col.actions")}</Th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {pageRows.map((p) => (
+                  <Tr key={p.user_id} className="cursor-default">
+                    <Td>
+                      {/* Design `.cell-user`: avatar + name + ID sub. v2 GuardProfile has
+                          no name field → the uuid leads, gender·dob as the sub line. */}
+                      <div className="flex items-center gap-[11px]">
+                        <Avatar>{p.user_id.slice(0, 2).toUpperCase()}</Avatar>
+                        <div className="min-w-0">
+                          <div className="font-mono text-xs text-text-strong">{p.user_id}</div>
+                          <div className="text-xs text-muted">
+                            {[p.gender, p.date_of_birth].filter(Boolean).join(" · ") ||
+                              t("common.none")}
+                          </div>
+                        </div>
+                      </div>
+                    </Td>
+                    <Td>
+                      <Badge tone="blue">{copy.typeGuard}</Badge>
+                    </Td>
+                    <Td>
+                      {p.years_of_experience != null
+                        ? `${p.years_of_experience} ${t("applicants.years")}`
+                        : t("common.none")}
+                    </Td>
+                    <Td>{p.previous_workplace ?? t("common.none")}</Td>
+                    <Td>
+                      {p.bank_name ? (
+                        <div>
+                          <div>{p.bank_name}</div>
+                          <div className="font-mono text-xs text-muted">
+                            {p.account_number ?? t("common.none")}
+                          </div>
+                          {p.account_name && (
+                            <div className="text-xs text-muted">{p.account_name}</div>
+                          )}
+                        </div>
+                      ) : (
+                        t("common.none")
+                      )}
+                    </Td>
+                    <Td>
+                      <Badge tone={STATUS_TONE[p.approval_status]} dot={STATUS_DOT[p.approval_status]}>
+                        {statusLabel(p.approval_status)}
+                      </Badge>
+                    </Td>
+                    <Td className="text-right">
+                      {status === "pending" ? (
+                        <div className="inline-flex gap-2">
+                          <Button
+                            size="sm"
+                            data-testid={`applicant-approve-${p.user_id}`}
+                            disabled={actingId === p.user_id}
+                            onClick={() => void act(p.user_id, "approve")}
+                          >
+                            <Check className="size-3.5" />
+                            {t("applicants.approve")}
+                          </Button>
+                          <Button
+                            variant="danger-ghost"
+                            size="sm"
+                            data-testid={`applicant-reject-${p.user_id}`}
+                            disabled={actingId === p.user_id}
+                            onClick={() => void act(p.user_id, "reject")}
+                          >
+                            <X className="size-3.5" />
+                            {t("applicants.reject")}
+                          </Button>
+                        </div>
+                      ) : (
+                        <span className="text-xs text-muted">{t("common.none")}</span>
+                      )}
+                    </Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+            <Pagination page={curPage} pageCount={pageCount} onPage={setPage} summary={summary} />
+          </>
         )}
-      </div>
+      </Panel>
     </div>
   );
 }

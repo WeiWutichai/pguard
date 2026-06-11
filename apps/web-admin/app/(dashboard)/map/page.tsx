@@ -1,14 +1,23 @@
 "use client";
 
+// Live Map (hi-fi spec: Web_Admin_Live_Map) — PageIntro + toolbar (search · online-only),
+// map stage with floating status stat-chips (the legend), bottom-left detail card overlay,
+// and the 320px online-guards roster rail (filter chips + cards). Data layer is unchanged:
+// one `presenceApi.GET /locations` fetch, status derived from the freshness flags, search
+// filtering client-side.
 import { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import { AlertTriangle, Loader2, RefreshCw, Search } from "lucide-react";
+import { AlertTriangle, Loader2, RefreshCw } from "lucide-react";
 
 import type { components } from "@/api/generated/presence";
 import type { GuardStatus, MapGuard } from "@/components/guard-map";
+import { Button, PageIntro, SearchField, Toggle } from "@/components/ui";
 import { presenceApi } from "@/lib/api";
-import { useLanguage, type TKey } from "@/lib/i18n";
+import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import { COPY, STATUS_DOT, STATUS_LABEL_KEY, STATUS_ORDER, formatAgoLong } from "./copy";
+import { DetailCard } from "./detail-card";
+import { RosterPanel, type StatusFilter } from "./roster";
 
 type GuardLocation = components["schemas"]["GuardLocation"];
 
@@ -17,7 +26,7 @@ type GuardLocation = components["schemas"]["GuardLocation"];
 const GuardMap = dynamic(() => import("@/components/guard-map"), {
   ssr: false,
   loading: () => (
-    <div className="flex h-[62vh] items-center justify-center rounded-xl border border-border bg-surface text-muted">
+    <div className="flex h-full items-center justify-center text-muted">
       <Loader2 className="size-5 animate-spin" />
     </div>
   ),
@@ -30,18 +39,15 @@ function statusOf(loc: GuardLocation): GuardStatus {
   return loc.is_live ? "active" : "idle";
 }
 
-const LEGEND: { status: GuardStatus; color: string; labelKey: TKey }[] = [
-  { status: "active", color: "bg-success", labelKey: "map.status.active" },
-  { status: "idle", color: "bg-warning", labelKey: "map.status.idle" },
-  { status: "offline", color: "bg-muted", labelKey: "map.status.offline" },
-];
-
 export default function MapPage() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  const c = COPY[lang];
   const [locations, setLocations] = useState<GuardLocation[]>([]);
   const [onlineOnly, setOnlineOnly] = useState(false);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
+  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -90,80 +96,143 @@ export default function MapPage() {
     [locations, search],
   );
 
+  // Stat-chip / filter-chip counts over the WHOLE fetched dataset (not the search filter).
+  const counts = useMemo(() => {
+    const acc: Record<GuardStatus, number> = { active: 0, idle: 0, offline: 0 };
+    for (const l of locations) acc[statusOf(l)] += 1;
+    return acc;
+  }, [locations]);
+
+  // Roster list: search + status filter, freshest update first (the design sorts by distance,
+  // but no admin-to-guard geo endpoint exists — recency is the honest live-map ordering).
+  const rosterGuards = useMemo(
+    () =>
+      guards
+        .filter((g) => statusFilter === "all" || g.status === statusFilter)
+        .sort((a, b) => b.recorded_at.localeCompare(a.recorded_at)),
+    [guards, statusFilter],
+  );
+
+  const latest = useMemo(
+    () =>
+      locations.reduce<string | null>(
+        (acc, l) => (acc === null || l.recorded_at > acc ? l.recorded_at : acc),
+        null,
+      ),
+    [locations],
+  );
+
+  const selected = useMemo(
+    () => guards.find((g) => g.guard_id === selectedId) ?? null,
+    [guards, selectedId],
+  );
+
   return (
-    <div className="mx-auto max-w-6xl">
-      <h1 className="text-2xl font-semibold">{t("map.title")}</h1>
-      <p className="mt-1 text-muted">{t("map.subtitle")}</p>
+    <div>
+      <PageIntro
+        title={
+          lang === "th" ? (
+            // Design topbar h1: "แผนที่สด · Live Map" (faint latin suffix).
+            <>
+              {t("nav.map")} <span className="font-normal text-faint">· Live Map</span>
+            </>
+          ) : (
+            t("nav.map")
+          )
+        }
+        lead={
+          latest
+            ? `${t("map.subtitle")} · ${t("map.lastSeen")} ${formatAgoLong(latest, c)}`
+            : t("map.subtitle")
+        }
+      >
+        <Button variant="secondary" size="sm" onClick={reload}>
+          <RefreshCw className="size-4" />
+          {t("common.retry")}
+        </Button>
+      </PageIntro>
 
-      <div className="mt-5 flex flex-wrap items-center gap-3">
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder={t("map.search")}
-            className="rounded-lg border border-border bg-surface py-1.5 pl-8 pr-3 text-sm"
-          />
-        </div>
-
-        <label className="inline-flex cursor-pointer items-center gap-2 text-sm">
-          <input
-            type="checkbox"
+      <div className="mb-4 flex flex-wrap items-center gap-4">
+        <SearchField
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder={t("map.search")}
+          aria-label={t("map.search")}
+        />
+        <label className="flex cursor-pointer items-center gap-2 text-sm">
+          <Toggle
             checked={onlineOnly}
-            onChange={(e) => {
+            onChange={(next) => {
               setLoading(true);
-              setOnlineOnly(e.target.checked);
+              setOnlineOnly(next);
             }}
-            className="size-4 accent-brand"
+            aria-label={t("map.onlineOnly")}
           />
           {t("map.onlineOnly")}
         </label>
-
-        {/* Legend — the 3 statuses. */}
-        <div className="flex items-center gap-3 text-xs text-muted">
-          {LEGEND.map((l) => (
-            <span key={l.status} className="inline-flex items-center gap-1.5">
-              <span className={cn("size-2.5 rounded-full", l.color)} />
-              {t(l.labelKey)}
-            </span>
-          ))}
-        </div>
-
-        {!loading && <span className="text-sm text-muted">{guards.length}</span>}
-
-        <button
-          type="button"
-          onClick={reload}
-          className="ml-auto flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-sunken"
-        >
-          <RefreshCw className="size-4" />
-          {t("common.retry")}
-        </button>
       </div>
 
       {hasError && (
         <div
           role="alert"
-          className="mt-4 flex items-center gap-2 rounded-lg border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger"
+          className="mb-4 flex items-center gap-2 rounded-md border border-danger/40 bg-danger-bg px-4 py-2 text-sm text-danger"
         >
           <AlertTriangle className="size-4" />
           {t("map.error")}
         </div>
       )}
 
-      <div className="mt-4">
-        {loading ? (
-          <div className="flex h-[62vh] items-center justify-center gap-2 rounded-xl border border-border bg-surface text-muted">
-            <Loader2 className="size-5 animate-spin" />
-            {t("common.loading")}
-          </div>
-        ) : guards.length === 0 ? (
-          <div className="flex h-[62vh] items-center justify-center rounded-xl border border-border bg-surface text-muted">
-            {t("map.empty")}
-          </div>
-        ) : (
-          <GuardMap guards={guards} />
-        )}
+      {/* Stage + roster (design §4/§5) — map fills the left, 320px guard rail on the right. */}
+      <div className="flex h-[68vh] min-h-[480px] overflow-hidden rounded-lg border border-border bg-surface shadow-sm">
+        <div className="relative min-w-0 flex-1">
+          {loading ? (
+            <div className="flex h-full items-center justify-center gap-2 text-muted">
+              <Loader2 className="size-5 animate-spin" />
+              {t("common.loading")}
+            </div>
+          ) : (
+            <>
+              <GuardMap
+                guards={guards}
+                selectedId={selectedId}
+                onSelect={(id) => setSelectedId(id)}
+              />
+
+              {/* Floating stat chips (design §4.5) — live counts double as the status legend. */}
+              <div className="pointer-events-none absolute left-4 top-4 z-[1000] flex flex-wrap gap-2.5">
+                {STATUS_ORDER.map((s) => (
+                  <div
+                    key={s}
+                    className="flex items-center gap-[9px] rounded-md border border-border bg-surface px-3.5 py-[9px] shadow-sm"
+                  >
+                    <span className={cn("size-[9px] rounded-full", STATUS_DOT[s])} />
+                    <span className="font-mono text-base font-semibold text-text-strong">
+                      {counts[s]}
+                    </span>
+                    <span className="whitespace-nowrap text-xs text-muted">
+                      {t(STATUS_LABEL_KEY[s])}
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              {selected && (
+                <DetailCard guard={selected} onClose={() => setSelectedId(null)} />
+              )}
+            </>
+          )}
+        </div>
+
+        <RosterPanel
+          guards={rosterGuards}
+          counts={counts}
+          total={locations.length}
+          loading={loading}
+          filter={statusFilter}
+          onFilter={setStatusFilter}
+          selectedId={selectedId}
+          onSelect={(id) => setSelectedId((cur) => (cur === id ? null : id))}
+        />
       </div>
     </div>
   );

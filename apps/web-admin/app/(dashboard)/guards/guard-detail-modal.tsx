@@ -1,0 +1,131 @@
+"use client";
+
+import type { ReactNode } from "react";
+
+import type { components } from "@/api/generated/profile";
+import { Avatar, Badge, Button, Modal } from "@/components/ui";
+import { useLanguage } from "@/lib/i18n";
+
+import { COPY } from "./copy";
+import { initialsOf } from "./guard-identity";
+
+type GuardProfile = components["schemas"]["GuardProfile"];
+
+/** Hi-fi drawer `.stat-mini` — sunken box, 11.5px label over a mono value. Page-local
+ * (no ui/ primitive for it; ui/ is single-writer). */
+function StatMini({ label, value }: { label: ReactNode; value: ReactNode }) {
+  return (
+    <div className="rounded-md bg-sunken px-3.5 py-[13px]">
+      <div className="text-[11.5px] text-muted">{label}</div>
+      <div className="mt-1 font-mono text-[19px] font-semibold text-text-strong tabular-nums">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+/** Guard detail — same data as before (the full admin-scoped profile, incl. the FULL
+ * account number the contract returns to admins; the list keeps the masked form),
+ * rebuilt on ui/Modal to the hi-fi drawer's content structure. */
+export function GuardDetailModal({
+  guard,
+  onClose,
+}: {
+  guard: GuardProfile;
+  onClose: () => void;
+}) {
+  const { t, lang } = useLanguage();
+  const c = COPY[lang];
+  const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
+
+  const rows: { key: string; label: string; value: string | null | undefined }[] = [
+    { key: "gender", label: t("guards.detail.gender"), value: guard.gender },
+    { key: "dob", label: t("guards.detail.dob"), value: guard.date_of_birth },
+    { key: "workplace", label: t("guards.col.workplace"), value: guard.previous_workplace },
+  ];
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={t("guards.detail.title")}
+      footer={
+        <>
+          {/* Drawer-foot actions from the design — no job-history / suspend endpoints in
+              v2 yet, so they stay disabled behind an honest gap chip (never a fake toast). */}
+          {gap}
+          <Button variant="secondary" size="sm" disabled>
+            {c.jobHistory}
+          </Button>
+          <Button variant="danger-ghost" size="sm" disabled>
+            {c.suspend}
+          </Button>
+        </>
+      }
+    >
+      {/* Drawer head: avatar + name + full id (the list shows the short form only). */}
+      <div className="flex items-center gap-3">
+        <Avatar size="lg">{initialsOf(guard.account_name, guard.user_id)}</Avatar>
+        <div className="min-w-0">
+          <div className="truncate text-lg font-semibold text-text-strong">
+            {guard.account_name ?? t("common.none")}
+          </div>
+          <div className="truncate font-mono text-xs text-muted">{guard.user_id}</div>
+        </div>
+      </div>
+
+      {/* Stat line — rating + jobs have no v2 endpoint (gap chips); experience is real. */}
+      <div className="mt-4 grid grid-cols-3 gap-2">
+        <StatMini label={`★ ${c.statRating}`} value={gap} />
+        <StatMini label={c.statJobs} value={gap} />
+        <StatMini
+          label={c.statExp}
+          value={
+            guard.years_of_experience != null
+              ? `${guard.years_of_experience} ${t("applicants.years")}`
+              : t("common.none")
+          }
+        />
+      </div>
+
+      <dl className="mt-4 text-sm">
+        {rows.map((r) => (
+          <div
+            key={r.key}
+            className="flex justify-between gap-4 border-b border-border py-2 last:border-0"
+          >
+            <dt className="text-muted">{r.label}</dt>
+            <dd className="text-right text-text-strong">{r.value ?? t("common.none")}</dd>
+          </div>
+        ))}
+      </dl>
+
+      {/* Documents panel from the design — no /guards/{id}/documents endpoint in v2. */}
+      <div className="mt-4 rounded-lg border border-border">
+        <div className="flex items-center gap-2 px-4 py-3">
+          <span className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+            {c.docsHead}
+          </span>
+          {gap}
+        </div>
+      </div>
+
+      {/* Bank panel — real data. Admin detail keeps showing the FULL account number the
+          contract returns to admins (the at-a-glance list stays masked — PDPA). */}
+      <div className="mt-3 rounded-lg border border-border px-4 py-3">
+        <div className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
+          {t("guards.col.bank")}
+        </div>
+        <div className="mt-1.5 text-sm font-semibold text-text-strong">
+          {guard.bank_name ?? t("common.none")}
+          {guard.account_number ? (
+            <span className="font-mono font-medium"> · {guard.account_number}</span>
+          ) : null}
+        </div>
+        <div className="mt-0.5 text-[12.5px] text-muted">
+          {t("guards.detail.accountName")}: {guard.account_name ?? t("common.none")}
+        </div>
+      </div>
+    </Modal>
+  );
+}

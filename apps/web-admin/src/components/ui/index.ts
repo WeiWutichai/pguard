@@ -9,6 +9,8 @@ export { Field, Input, Select, Textarea, type InputProps } from "./input";
 export { KpiCard, KpiGrid, type KpiCardProps } from "./kpi-card";
 export { Modal, type ModalProps } from "./modal";
 export { Panel, PanelBody, PanelHead } from "./panel";
+export { PageIntro } from "./page-intro";
+export { Pagination, type PaginationProps } from "./pagination";
 export { SearchField, type SearchFieldProps } from "./search-field";
 export { Table, Td, Th, Tr } from "./table";
 export { Tab, Tabs, type TabProps } from "./tabs";

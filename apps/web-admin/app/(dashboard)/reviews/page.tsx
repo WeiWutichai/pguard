@@ -1,21 +1,99 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Eye, EyeOff, Loader2, RefreshCw, Search, Star } from "lucide-react";
+import {
+  AlertTriangle,
+  Clock,
+  EyeOff,
+  Loader2,
+  MessageCircle,
+  RefreshCw,
+  Star,
+} from "lucide-react";
 
 import type { components } from "@/api/generated/rating";
 import { ratingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
+import {
+  Avatar,
+  Badge,
+  Button,
+  Chip,
+  KpiCard,
+  KpiGrid,
+  Modal,
+  PageIntro,
+  Panel,
+  SearchField,
+  Table,
+  Td,
+  Th,
+  Tr,
+} from "@/components/ui";
 
 type AdminReview = components["schemas"]["AdminReview"];
 type AdminReviewStats = components["schemas"]["AdminReviewStats"];
 
 type VisFilter = "all" | "visible" | "hidden";
-const RATINGS = [0, 5, 4, 3, 2, 1] as const; // 0 = any
+const STAR_FILTERS = [5, 4, 3, 2, 1] as const; // rating 0 = the UI-only "any" sentinel
+
+// Screen-local design copy (exact strings from the hi-fi Reviews mockup) for text the shared
+// i18n catalog doesn't carry. Shared keys (nav/common/reviews.*) still come from t().
+const COPY = {
+  th: {
+    sub: "คะแนนและความคิดเห็นจากลูกค้า",
+    kpiAvg: "คะแนนเฉลี่ย",
+    kpiTotal: "รีวิวทั้งหมด",
+    kpiHidden: "ถูกซ่อน",
+    kpiMonth: "รีวิวเดือนนี้",
+    awaitingApi: "รอ API",
+    allRatings: "ทุกคะแนน",
+    visAll: "ทั้งหมด",
+    visVisible: "แสดง",
+    visHidden: "ซ่อน",
+    searchPlaceholder: "ค้นหา…",
+    colComment: "ความคิดเห็น",
+    detailTitle: "รายละเอียดรีวิว",
+    reviewedBy: "รีวิวโดย",
+    breakdown: "คะแนนแยกหมวด",
+    catOverall: "ภาพรวม",
+    catPunctuality: "ตรงเวลา",
+    catProfessionalism: "มืออาชีพ",
+    catCommunication: "การสื่อสาร",
+    catAppearance: "การแต่งกาย",
+    hideReview: "ซ่อนรีวิว",
+    showReview: "แสดงรีวิว",
+  },
+  en: {
+    sub: "Customer ratings & feedback",
+    kpiAvg: "Avg rating",
+    kpiTotal: "Total reviews",
+    kpiHidden: "Hidden",
+    kpiMonth: "This month",
+    awaitingApi: "awaiting API",
+    allRatings: "All ratings",
+    visAll: "All",
+    visVisible: "Visible",
+    visHidden: "Hidden",
+    searchPlaceholder: "Search…",
+    colComment: "Comment",
+    detailTitle: "Review detail",
+    reviewedBy: "by",
+    breakdown: "Category breakdown",
+    catOverall: "Overall",
+    catPunctuality: "Punctuality",
+    catProfessionalism: "Professionalism",
+    catCommunication: "Communication",
+    catAppearance: "Appearance",
+    hideReview: "Hide review",
+    showReview: "Show review",
+  },
+} as const;
 
 export default function ReviewsPage() {
-  const { t } = useLanguage();
+  const { t, lang } = useLanguage();
+  const c = COPY[lang];
   const [reviews, setReviews] = useState<AdminReview[]>([]);
   const [stats, setStats] = useState<AdminReviewStats | null>(null);
   const [rating, setRating] = useState(0);
@@ -26,6 +104,7 @@ export default function ReviewsPage() {
   const [hasError, setHasError] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [selected, setSelected] = useState<AdminReview | null>(null);
 
   // Debounce the free-text search into the query that triggers a fetch. Show the loading state
   // when the debounced value actually changes (parity with the other filters). The early-return
@@ -112,97 +191,108 @@ export default function ReviewsPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <h1 className="text-2xl font-semibold">{t("reviews.title")}</h1>
-      <p className="mt-1 text-muted">{t("reviews.subtitle")}</p>
+      <PageIntro title={t("reviews.title")} lead={c.sub}>
+        <Button variant="secondary" size="sm" onClick={reload}>
+          <RefreshCw size={15} />
+          {t("common.retry")}
+        </Button>
+      </PageIntro>
 
-      {/* Stat cards — from the API's UNFILTERED stats. */}
-      <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label={t("reviews.stats.total")} value={stats ? String(stats.total) : "—"} />
-        <StatCard
-          testId="reviews-stat-visible"
-          label={t("reviews.stats.visible")}
-          value={stats ? String(stats.visible) : "—"}
-        />
-        <StatCard label={t("reviews.stats.hidden")} value={stats ? String(hidden) : "—"} />
-        <StatCard
-          label={t("reviews.stats.average")}
+      {/* KPI strip — from the API's UNFILTERED stats. "This month" has no backing field in
+          AdminReviewStats (total/visible/average only) → honest gap chip, never a fake number. */}
+      <KpiGrid>
+        <KpiCard
+          icon={<Star />}
+          label={c.kpiAvg}
           value={stats?.average ?? t("common.none")}
         />
-      </div>
+        <KpiCard
+          icon={<MessageCircle />}
+          label={c.kpiTotal}
+          value={stats ? stats.total.toLocaleString("en-US") : t("common.none")}
+          caption={
+            <>
+              {t("reviews.stats.visible")}{" "}
+              <span data-testid="reviews-stat-visible">
+                {stats ? String(stats.visible) : t("common.none")}
+              </span>
+            </>
+          }
+        />
+        <KpiCard
+          icon={<EyeOff />}
+          label={c.kpiHidden}
+          value={stats ? String(hidden) : t("common.none")}
+        />
+        <KpiCard
+          icon={<Clock />}
+          label={c.kpiMonth}
+          value={<Badge tone="gray">{c.awaitingApi}</Badge>}
+        />
+      </KpiGrid>
 
-      {/* Filters. */}
-      <div className="mt-5 flex flex-wrap items-center gap-3">
-        <select
-          value={rating}
-          onChange={(e) => {
+      {/* Filters row — mutually-exclusive chip groups + hairline divider + search. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2.5">
+        <Chip
+          active={rating === 0}
+          onClick={() => {
             setLoading(true);
-            setRating(Number(e.target.value));
+            setRating(0);
           }}
-          aria-label={t("reviews.filter.rating")}
-          className="rounded-lg border border-border bg-surface px-3 py-1.5 text-sm"
         >
-          {RATINGS.map((r) => (
-            <option key={r} value={r}>
-              {r === 0 ? t("reviews.ratingAny") : `${r} ★`}
-            </option>
-          ))}
-        </select>
+          {c.allRatings}
+        </Chip>
+        {STAR_FILTERS.map((r) => (
+          <Chip
+            key={r}
+            active={rating === r}
+            onClick={() => {
+              setLoading(true);
+              setRating(r);
+            }}
+          >
+            {r}★
+          </Chip>
+        ))}
 
-        <div className="inline-flex overflow-hidden rounded-lg border border-border text-sm">
-          {(["all", "visible", "hidden"] as const).map((v) => (
-            <button
-              key={v}
-              type="button"
-              data-testid={`reviews-filter-${v}`}
-              onClick={() => {
-                setLoading(true);
-                setVis(v);
-              }}
-              className={cn(
-                "px-3 py-1.5 font-medium",
-                vis === v ? "bg-brand text-brand-fg" : "bg-surface text-muted hover:bg-sunken",
-              )}
-            >
-              {v === "all"
-                ? t("common.all")
-                : v === "visible"
-                  ? t("reviews.visible")
-                  : t("reviews.hidden")}
-            </button>
-          ))}
-        </div>
+        <span aria-hidden className="mx-1 h-6 w-px bg-border" />
 
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-          <input
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            placeholder={t("reviews.filter.search")}
-            className="rounded-lg border border-border bg-surface py-1.5 pl-8 pr-3 text-sm"
-          />
-        </div>
+        {(["all", "visible", "hidden"] as const).map((v) => (
+          <Chip
+            key={v}
+            data-testid={`reviews-filter-${v}`}
+            active={vis === v}
+            onClick={() => {
+              setLoading(true);
+              setVis(v);
+            }}
+          >
+            {v === "all" ? c.visAll : v === "visible" ? c.visVisible : c.visHidden}
+          </Chip>
+        ))}
 
-        <button
-          type="button"
-          onClick={reload}
-          className="ml-auto flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-sunken"
-        >
-          <RefreshCw className="size-4" />
-          {t("common.retry")}
-        </button>
+        <span className="flex-1" />
+
+        <SearchField
+          size="sm"
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
+          placeholder={c.searchPlaceholder}
+          aria-label={t("reviews.filter.search")}
+        />
       </div>
 
       {hasError && (
         <div
           role="alert"
-          className="mt-4 flex items-center gap-2 rounded-lg border border-danger/40 bg-danger/10 px-4 py-2 text-sm text-danger"
+          className="mb-4 flex items-center gap-2 rounded-md border border-danger/40 bg-danger-bg px-4 py-2 text-sm text-danger"
         >
           <AlertTriangle className="size-4" />
           {t("reviews.error")}
         </div>
       )}
 
-      <div className="mt-4 overflow-hidden rounded-xl border border-border bg-surface">
+      <Panel>
         {loading ? (
           <div className="flex items-center justify-center gap-2 py-16 text-muted">
             <Loader2 className="size-5 animate-spin" />
@@ -211,81 +301,214 @@ export default function ReviewsPage() {
         ) : reviews.length === 0 ? (
           <div className="py-16 text-center text-muted">{t("reviews.empty")}</div>
         ) : (
-          <table className="w-full text-left text-sm">
-            <thead className="border-b border-border bg-sunken text-xs uppercase text-muted">
+          <Table>
+            <thead>
               <tr>
-                <th className="px-4 py-3 font-medium">{t("reviews.col.guard")}</th>
-                <th className="px-4 py-3 font-medium">{t("reviews.col.rating")}</th>
-                <th className="px-4 py-3 font-medium">{t("reviews.col.review")}</th>
-                <th className="px-4 py-3 font-medium">{t("reviews.col.date")}</th>
-                <th className="px-4 py-3 text-right font-medium">{t("reviews.col.actions")}</th>
+                <Th>{t("reviews.col.guard")}</Th>
+                <Th>{t("reviews.col.customer")}</Th>
+                <Th>{t("reviews.col.rating")}</Th>
+                <Th>{c.colComment}</Th>
+                <Th>{t("reviews.col.date")}</Th>
+                <Th>{t("reviews.show")}</Th>
               </tr>
             </thead>
             <tbody>
               {reviews.map((r) => (
-                <tr key={r.id} className="border-b border-border last:border-0">
-                  <td className="px-4 py-3 align-top">
-                    <div className="font-mono text-xs text-muted">{r.guard_id}</div>
-                    <div className="text-xs text-muted">
-                      {t("reviews.col.customer")}: {r.customer_id.slice(0, 8)}
-                    </div>
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <span className="inline-flex items-center gap-1">
-                      <Star className="size-3.5 fill-warning text-warning" />
-                      {r.overall_rating}
+                <Tr key={r.id} onClick={() => setSelected(r)}>
+                  <Td>
+                    <span className="flex items-center gap-3">
+                      <Avatar>{initials(r.guard_id)}</Avatar>
+                      {/* Contract exposes IDs only (no guard/customer names on this screen). */}
+                      <span className="font-mono text-xs font-semibold text-text-strong">
+                        {r.guard_id}
+                      </span>
                     </span>
-                  </td>
-                  <td className="px-4 py-3 align-top">
-                    <div className="max-w-md text-pretty">{r.review_text ?? t("common.none")}</div>
-                  </td>
-                  <td className="px-4 py-3 align-top text-xs text-muted">
-                    {r.created_at.slice(0, 10)}
-                  </td>
-                  <td className="px-4 py-3 align-top text-right">
-                    <button
-                      type="button"
-                      data-testid={`review-toggle-${r.id}`}
-                      aria-pressed={r.is_visible}
+                  </Td>
+                  <Td className="font-mono text-xs text-muted">
+                    {r.customer_id.slice(0, 8)}
+                  </Td>
+                  <Td>
+                    <Stars value={r.overall_rating} />
+                  </Td>
+                  <Td className="max-w-[280px] truncate text-muted" title={r.review_text ?? undefined}>
+                    {r.review_text ?? t("common.none")}
+                  </Td>
+                  <Td className="whitespace-nowrap font-mono text-[13px] text-muted">
+                    {shortDate(r.created_at, lang)}
+                  </Td>
+                  <Td>
+                    <VisToggle
+                      checked={r.is_visible}
                       disabled={actingId === r.id}
-                      onClick={() => void toggleVisibility(r)}
-                      className={cn(
-                        "inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-medium disabled:opacity-60",
-                        r.is_visible
-                          ? "border-border hover:bg-sunken"
-                          : "border-danger/40 text-danger hover:bg-danger/10",
-                      )}
-                    >
-                      {r.is_visible ? (
-                        <>
-                          <Eye className="size-3.5" />
-                          {t("reviews.visible")}
-                        </>
-                      ) : (
-                        <>
-                          <EyeOff className="size-3.5" />
-                          {t("reviews.hidden")}
-                        </>
-                      )}
-                    </button>
-                  </td>
-                </tr>
+                      testId={`review-toggle-${r.id}`}
+                      label={t("reviews.filter.visibility")}
+                      onToggle={() => void toggleVisibility(r)}
+                    />
+                  </Td>
+                </Tr>
               ))}
             </tbody>
-          </table>
+          </Table>
         )}
-      </div>
+      </Panel>
+
+      {/* Review detail modal — populated from the already-fetched row (no extra endpoint). */}
+      {selected && (
+        <Modal
+          open
+          onClose={() => setSelected(null)}
+          title={c.detailTitle}
+          footer={
+            <>
+              <Button
+                variant="danger-ghost"
+                size="sm"
+                onClick={() => {
+                  const row = selected;
+                  setSelected(null);
+                  void toggleVisibility(row);
+                }}
+              >
+                {selected.is_visible ? c.hideReview : c.showReview}
+              </Button>
+              <Button variant="secondary" size="sm" onClick={() => setSelected(null)}>
+                {t("common.close")}
+              </Button>
+            </>
+          }
+        >
+          <div className="flex items-center gap-3">
+            <Avatar size="lg" className="size-[46px] text-base">
+              {initials(selected.guard_id)}
+            </Avatar>
+            <div className="min-w-0">
+              <div className="truncate font-mono text-[13px] font-semibold text-text-strong">
+                {selected.guard_id}
+              </div>
+              <div className="text-[12.5px] text-muted">
+                {c.reviewedBy} {selected.customer_id.slice(0, 8)} ·{" "}
+                {fullDate(selected.created_at, lang)}
+              </div>
+            </div>
+            <div className="ml-auto flex flex-none flex-col items-end gap-1">
+              <span className="font-mono text-2xl font-semibold text-text-strong">
+                {selected.overall_rating.toFixed(1)}
+              </span>
+              <Stars value={selected.overall_rating} />
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-xl bg-sunken px-4 py-3.5 text-[14.5px] leading-[1.6] text-text">
+            {selected.review_text ?? t("common.none")}
+          </div>
+
+          <div className="mt-5">
+            <div className="mb-3.5 text-[13px] font-semibold text-text">{c.breakdown}</div>
+            <CatBar label={c.catOverall} value={selected.overall_rating} />
+            <CatBar label={c.catPunctuality} value={selected.punctuality} />
+            <CatBar label={c.catProfessionalism} value={selected.professionalism} />
+            <CatBar label={c.catCommunication} value={selected.communication} />
+            <CatBar label={c.catAppearance} value={selected.appearance} />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
 
-function StatCard({ label, value, testId }: { label: string; value: string; testId?: string }) {
+/** Two-character "initials" from the guard UUID — the contract carries IDs, not names. */
+function initials(id: string): string {
+  return id.slice(0, 2).toUpperCase();
+}
+
+/** Table date per the design: abbreviated day+month (e.g. "3 มิ.ย."). Gregorian calendar so the
+ * modal year matches the design's CE year, not the th-TH default Buddhist era. */
+function shortDate(iso: string, lang: "th" | "en"): string {
+  return new Intl.DateTimeFormat(lang === "th" ? "th-TH-u-ca-gregory" : "en-GB", {
+    day: "numeric",
+    month: "short",
+  }).format(new Date(iso));
+}
+
+/** Modal date per the design: "3 มิ.ย. 2026". */
+function fullDate(iso: string, lang: "th" | "en"): string {
+  return new Intl.DateTimeFormat(lang === "th" ? "th-TH-u-ca-gregory" : "en-GB", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(iso));
+}
+
+/** Design `.stars-sm` — five 14px amber stars, filled up to `value`, outlined after. */
+function Stars({ value }: { value: number }) {
   return (
-    <div className="rounded-xl border border-border bg-surface px-4 py-3">
-      <div className="text-xs uppercase text-muted">{label}</div>
-      <div className="mt-1 text-2xl font-semibold" data-testid={testId}>
-        {value}
-      </div>
+    <span className="inline-flex items-center gap-[2px] text-amber-400">
+      {[1, 2, 3, 4, 5].map((i) => (
+        <Star key={i} size={14} className={i <= value ? "fill-current" : "fill-none"} />
+      ))}
+    </span>
+  );
+}
+
+/** Design `.catbar` — 130px label, amber fill on a sunken track, mono value. Sub-ratings are
+ * nullable in the contract; a missing category renders an empty track + em dash (never faked). */
+function CatBar({ label, value }: { label: string; value?: number | null }) {
+  return (
+    <div className="mb-3 flex items-center gap-3 last:mb-0">
+      <span className="w-[130px] flex-none text-[13px] text-text">{label}</span>
+      <span className="h-2 flex-1 overflow-hidden rounded-[4px] bg-sunken">
+        {value != null ? (
+          <span
+            className="block h-full rounded-[4px] bg-amber-400"
+            style={{ width: `${Math.min(100, (value / 5) * 100)}%` }}
+          />
+        ) : null}
+      </span>
+      <span className="w-8 flex-none text-right font-mono text-[13px] font-semibold text-text-strong">
+        {value != null ? value.toFixed(1) : "—"}
+      </span>
     </div>
+  );
+}
+
+/** Design `.tgl` (44×26 switch) carrying the e2e contract: data-testid="review-toggle-<id>" +
+ * aria-pressed. Page-local because the shared ui/Toggle can't take the testid/aria-pressed pair.
+ * stopPropagation keeps the toggle from also opening the row's detail modal. */
+function VisToggle({
+  checked,
+  disabled,
+  testId,
+  label,
+  onToggle,
+}: {
+  checked: boolean;
+  disabled?: boolean;
+  testId: string;
+  label: string;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      data-testid={testId}
+      aria-pressed={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        onToggle();
+      }}
+      className={cn(
+        "relative h-[26px] w-11 flex-none cursor-pointer rounded-full transition-colors duration-200 disabled:cursor-not-allowed disabled:opacity-50",
+        checked ? "bg-brand-int" : "bg-n-300",
+      )}
+    >
+      <span
+        className={cn(
+          "absolute top-[3px] size-5 rounded-full bg-white shadow-xs transition-[left] duration-200",
+          checked ? "left-[21px]" : "left-[3px]",
+        )}
+      />
+    </button>
   );
 }

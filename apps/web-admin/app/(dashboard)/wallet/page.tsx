@@ -4,11 +4,14 @@ import { ApiGapPage } from "@/components/api-gap-page";
 // `payment.refund_processed` — "no admin step needed", per payment.yaml). There is no admin
 // payments-bulk list, refunds list, or refund-process endpoint; `GET /payments` is
 // customer-scoped ("the caller's payments"). Documented gap until an admin wallet API is added.
+// Title/lead = the hi-fi mockup's topbar copy (Wallet.md: "Wallet & Refunds").
 export default function WalletPage() {
   return (
     <ApiGapPage
       titleKey="nav.wallet"
       reasonKey="gap.wallet"
+      title={{ th: "กระเป๋าเงิน", en: "Wallet & Refunds" }}
+      lead={{ th: "คิวคืนเงินและธุรกรรมการชำระ", en: "Refund queue & payment ledger" }}
       endpoints={[
         "GET /v1/admin/payments (payment — not implemented; /payments is customer-scoped)",
         "GET /v1/admin/refunds?status= (payment — not implemented)",

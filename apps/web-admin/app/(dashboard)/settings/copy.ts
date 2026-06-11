@@ -1,0 +1,104 @@
+// Screen-local bilingual copy for the settings rebuild — design strings quoted EXACTLY
+// from the hi-fi mockup spec (Settings.md). Keys that already exist in src/lib/i18n
+// (settings.title/.subtitle/.account/.role/.userId/.language/.session, header.logout)
+// are used via t(); i18n.tsx is single-writer, so NEW design copy lives here.
+//
+// Where the mockup's EN string is missing (nav items 3/6/7 per the spec), the spec's own
+// gloss is used: "Payment channels", "Security", "Team & roles".
+export const COPY = {
+  th: {
+    // Left set-nav (design order; "แบรนด์/Branding" omitted — the mockup specs no panel
+    // for it, and we don't ship dead links).
+    navCompany: "บริษัท",
+    navPayments: "ช่องทางชำระเงิน",
+    navSms: "SMS · FCM",
+    navStorage: "Storage",
+    navSecurity: "ความปลอดภัย",
+    navTeam: "ทีม & สิทธิ์",
+    // Company profile
+    companyTitle: "โปรไฟล์บริษัท",
+    companySub: "ข้อมูลที่แสดงบนใบเสร็จและในแอป",
+    companyName: "ชื่อบริษัท",
+    taxId: "เลขผู้เสียภาษี",
+    address: "ที่อยู่",
+    // Payment gateways
+    payTitle: "ช่องทางชำระเงิน",
+    paySub: "เปิด/ปิดวิธีชำระเงินที่ลูกค้าใช้ได้",
+    payPromptpay: "PromptPay",
+    payPromptpaySub: "QR · พร้อมเพย์",
+    payCard: "บัตรเครดิต/เดบิต",
+    payCardSub: "Omise · 2C2P",
+    payWallet: "pguard Wallet",
+    payWalletSub: "กระเป๋าเงินในแอป",
+    // SMS & notifications
+    smsTitle: "SMS & การแจ้งเตือน",
+    smsSub: "ผู้ให้บริการ OTP และ push",
+    smsProvider: "SMS Provider",
+    smsProviderSub: "OTP delivery",
+    fcmKey: "FCM Server Key",
+    fcmKeySub: "Firebase push",
+    // Storage & security
+    storageTitle: "ที่จัดเก็บไฟล์ & ความปลอดภัย",
+    storageSub: "S3/R2, JWT, OTP TTL, rate limit, CORS",
+    bucket: "S3 / R2 Bucket",
+    jwtExpiry: "JWT expiry",
+    otpTtl: "OTP TTL",
+    rateLimit: "Rate limit",
+    rateLimitSub: "per IP / min",
+    cors: "CORS origins",
+    // Team & roles
+    teamTitle: "ทีมงาน & สิทธิ์",
+    teamSub: "ผู้ดูแลระบบและระดับสิทธิ์",
+    invite: "เชิญผู้ดูแล",
+    teamGap:
+      "รายชื่อทีมและระดับสิทธิ์ต้องใช้ endpoint รายชื่อผู้ดูแล ซึ่งยังไม่มีในสัญญา API ของ v2",
+    // Footer
+    cancel: "ยกเลิก",
+    save: "บันทึกการเปลี่ยนแปลง",
+    // Honest gap chip — sections whose backing admin-settings API doesn't exist in v2.
+    awaitingApi: "รอ API",
+  },
+  en: {
+    navCompany: "Company",
+    navPayments: "Payment channels",
+    navSms: "SMS · FCM",
+    navStorage: "Storage",
+    navSecurity: "Security",
+    navTeam: "Team & roles",
+    companyTitle: "Company profile",
+    companySub: "Shown on receipts and in-app",
+    companyName: "Company name",
+    taxId: "Tax ID",
+    address: "Address",
+    payTitle: "Payment gateways",
+    paySub: "Toggle available methods",
+    payPromptpay: "PromptPay",
+    payPromptpaySub: "QR · PromptPay",
+    payCard: "Card",
+    payCardSub: "Omise · 2C2P",
+    payWallet: "pguard Wallet",
+    payWalletSub: "In-app wallet",
+    smsTitle: "SMS & notifications",
+    smsSub: "OTP & push providers",
+    smsProvider: "SMS Provider",
+    smsProviderSub: "OTP delivery",
+    fcmKey: "FCM Server Key",
+    fcmKeySub: "Firebase push",
+    storageTitle: "Storage & security",
+    storageSub: "S3/R2, JWT, OTP TTL, rate limits, CORS",
+    bucket: "S3 / R2 Bucket",
+    jwtExpiry: "JWT expiry",
+    otpTtl: "OTP TTL",
+    rateLimit: "Rate limit",
+    rateLimitSub: "per IP / min",
+    cors: "CORS origins",
+    teamTitle: "Team & roles",
+    teamSub: "Admins & permission levels",
+    invite: "Invite admin",
+    teamGap:
+      "The team list & permission levels need an admin-list API that is not in the v2 contract yet.",
+    cancel: "Cancel",
+    save: "Save changes",
+    awaitingApi: "Awaiting API",
+  },
+} as const;
