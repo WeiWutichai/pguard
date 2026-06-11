@@ -67,13 +67,13 @@ class _ServiceCard extends StatelessWidget {
 
   /// Per-service icon treatment from the design (each card is color-coded):
   /// หมู่บ้าน green-900/white · คอนโด green-100/green-700 · โรงงาน amber-100/amber-700 ·
-  /// อื่นๆ sunken/muted. green-700 has no token; colorGreen800 is the nearest.
+  /// อื่นๆ sunken/muted. (green-700 exact since the full-ramp regen.)
   ({Color bg, Color fg}) get _iconColors {
     switch (service) {
       case SecurityService.village:
         return (bg: PgTokens.colorBrand, fg: Colors.white);
       case SecurityService.condo:
-        return (bg: PgTokens.colorGreen100, fg: PgTokens.colorGreen800);
+        return (bg: PgTokens.colorGreen100, fg: PgTokens.colorGreen700);
       case SecurityService.factory:
         return (bg: PgTokens.colorAmber100, fg: PgTokens.colorAmber700);
       case SecurityService.other:

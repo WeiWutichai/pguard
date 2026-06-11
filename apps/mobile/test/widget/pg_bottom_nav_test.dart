@@ -104,8 +104,9 @@ void main() {
         _fabCircle(tester, Icons.verified_user_outlined).decoration!
             as BoxDecoration;
     expect(onDuty.gradient, isA<LinearGradient>());
+    // Design 150deg amber-400 → amber-600 (exact tokens since the full-ramp regen).
     expect((onDuty.gradient! as LinearGradient).colors,
-        [PgTokens.colorAccent, PgTokens.colorAmber700]);
+        [PgTokens.colorAmber400, PgTokens.colorAmber600]);
     expect(find.text('พร้อมรับงาน / On duty'), findsOneWidget);
 
     await tester.pumpWidget(_host(PgBottomNav(

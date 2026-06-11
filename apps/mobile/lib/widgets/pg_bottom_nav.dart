@@ -53,12 +53,12 @@ class PgNavFab {
         );
 
   /// Guard duty toggle, on-duty (design `.fab.toggle-on`): shield+check on the amber
-  /// gradient. Design label color is `--amber-600` #D97D06 — no token; colorAmber700 nearest.
+  /// gradient. Label color is the design's `--amber-600` (exact since the full-ramp regen).
   PgNavFab.onDuty({required String label, required VoidCallback onTap})
       : this._(
           icon: Icons.verified_user_outlined, // shield with checkmark
           label: label,
-          labelColor: PgTokens.colorAmber700,
+          labelColor: PgTokens.colorAmber600,
           iconColor: PgTokens.colorOnAmber,
           gradient: _dutyGradient,
           onTap: onTap,
@@ -88,13 +88,12 @@ class PgNavFab {
   final BoxBorder? border;
   final VoidCallback onTap;
 
-  /// Design `linear-gradient(150deg, --amber-400, --amber-600)` — neither stop has a
-  /// PgTokens entry; colorAccent (amber-500) → colorAmber700 are the nearest tokens.
-  /// Alignment pair ≈ the CSS 150deg axis (unit vector (sin 150°, -cos 150°)).
+  /// Design `linear-gradient(150deg, --amber-400, --amber-600)` — exact tokens since the
+  /// full-ramp regen. Alignment pair = the CSS 150deg axis (unit vector (sin 150°, -cos 150°)).
   static const Gradient _dutyGradient = LinearGradient(
     begin: Alignment(-0.5, -0.866),
     end: Alignment(0.5, 0.866),
-    colors: [PgTokens.colorAccent, PgTokens.colorAmber700],
+    colors: [PgTokens.colorAmber400, PgTokens.colorAmber600],
   );
 
   static const BoxBorder _offlineBorder =

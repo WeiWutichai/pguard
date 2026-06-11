@@ -15,8 +15,8 @@ TextStyle callStatusStyle() => TextStyle(
       letterSpacing: 0.5,
     );
 
-/// The dark call backdrop: a green gradient (green-800 → green-900, the darkest green token —
-/// the design's green-950 has no token) with an optional 40px hairline grid mesh overlay.
+/// The dark call backdrop: the design's green-800 → green-950 gradient (exact tokens since
+/// the full-ramp regen) with an optional 40px hairline grid mesh overlay.
 class CallBackground extends StatelessWidget {
   const CallBackground({super.key, this.showGrid = true});
 
@@ -29,7 +29,7 @@ class CallBackground extends StatelessWidget {
         gradient: LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
-          colors: [PgTokens.colorGreen800, PgTokens.colorBrand],
+          colors: [PgTokens.colorGreen800, PgTokens.colorGreen950],
         ),
       ),
       child: showGrid
