@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import 'widgets/guard_card.dart';
@@ -63,19 +64,41 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 
   Widget _body(BookingFlowState state, BookingFlowController ctrl) {
     if (state.busy && state.guards.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return const _SearchingState();
     }
     if (state.error != null && state.guards.isEmpty) {
-      return _ErrorRetry(message: state.error!, onRetry: ctrl.loadGuards);
+      return PgErrorState(
+        title: 'หาเจ้าหน้าที่ไม่สำเร็จ / Could not load guards',
+        message: state.error,
+        onRetry: ctrl.loadGuards,
+      );
     }
     if (state.guards.isEmpty) {
+      // Cross-state hero pattern: icon + 15px w600 title + 13px muted subtitle.
       return const Center(
         child: Padding(
           padding: EdgeInsets.all(PgTokens.space6),
-          child: Text(
-            'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้\nNo guards available right now',
-            textAlign: TextAlign.center,
-            style: TextStyle(color: PgTokens.colorTextMuted),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.search_off_outlined,
+                  size: 48, color: PgTokens.colorTextFaint),
+              SizedBox(height: PgTokens.space3),
+              Text(
+                'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้',
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorText),
+              ),
+              SizedBox(height: PgTokens.space2),
+              Text(
+                'No guards available right now',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+              ),
+            ],
           ),
         ),
       );
@@ -83,7 +106,12 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     return ListView(
       padding: const EdgeInsets.all(PgTokens.space4),
       children: [
-        const _FirstComeBanner(),
+        // First-come note demoted to a plain caption (the design's guard list has no banner
+        // between the header and the cards).
+        const Text(
+          'เจ้าหน้าที่ที่ว่างจะตอบรับงานของคุณ (first-come) — เลือกคนที่สนใจไว้เพื่อดูเรตติ้งได้',
+          style: TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
+        ),
         const SizedBox(height: PgTokens.space3),
         for (final guard in state.guards) ...[
           GuardCard(
@@ -98,28 +126,77 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
   }
 }
 
-class _FirstComeBanner extends StatelessWidget {
-  const _FirstComeBanner();
+/// The design's "searching" state: centered title + three staggered pulsing dots
+/// (10px, brand interactive, 8px gap). One repeating display animation — no polling.
+class _SearchingState extends StatefulWidget {
+  const _SearchingState();
+
+  @override
+  State<_SearchingState> createState() => _SearchingStateState();
+}
+
+class _SearchingStateState extends State<_SearchingState>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1200),
+  )..repeat();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  /// One 10px dot whose pulse starts [delay] (fraction of the cycle ≈ .2s steps) late.
+  Widget _dot(double delay) {
+    final opacity = _controller.drive(
+      Tween<double>(begin: 0.25, end: 1).chain(
+        CurveTween(
+          curve: Interval(delay, (delay + 0.6).clamp(0.0, 1.0),
+              curve: Curves.easeInOut),
+        ),
+      ),
+    );
+    return FadeTransition(
+      opacity: opacity,
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: const BoxDecoration(
+          color: PgTokens.colorPrimary,
+          shape: BoxShape.circle,
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(PgTokens.space3),
-      decoration: BoxDecoration(
-        color: PgTokens.colorSuccessBg,
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      ),
-      child: const Row(
-        children: [
-          Icon(Icons.info_outline, size: 16, color: PgTokens.colorGreen800),
-          SizedBox(width: PgTokens.space2),
-          Expanded(
-            child: Text(
-              'เจ้าหน้าที่ที่ว่างจะตอบรับงานของคุณ (first-come) — เลือกคนที่สนใจไว้เพื่อดูเรตติ้งได้',
-              style: TextStyle(fontSize: 12, color: PgTokens.colorGreen800),
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(PgTokens.space6),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'กำลังค้นหาเจ้าหน้าที่ใกล้คุณ\nFinding nearby guards',
+              textAlign: TextAlign.center,
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
             ),
-          ),
-        ],
+            const SizedBox(height: PgTokens.space6),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _dot(0),
+                const SizedBox(width: PgTokens.space2),
+                _dot(0.2),
+                const SizedBox(width: PgTokens.space2),
+                _dot(0.4),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -142,37 +219,8 @@ class _ContinueBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: PgPrimaryButton(
-          label: 'ดำเนินการชำระเงิน / Continue to payment',
+          label: 'ยืนยันการจอง / Confirm booking',
           onPressed: enabled ? onContinue : null,
-        ),
-      ),
-    );
-  }
-}
-
-class _ErrorRetry extends StatelessWidget {
-  const _ErrorRetry({required this.message, required this.onRetry});
-
-  final String message;
-  final VoidCallback onRetry;
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.all(PgTokens.space6),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.cloud_off_outlined,
-                size: 40, color: PgTokens.colorTextMuted),
-            const SizedBox(height: PgTokens.space3),
-            Text(message,
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted)),
-            const SizedBox(height: PgTokens.space3),
-            PgGhostButton(label: 'ลองใหม่ / Retry', onPressed: onRetry),
-          ],
         ),
       ),
     );

@@ -91,6 +91,14 @@ class BookingFlowState {
     return subtotal == null ? null : subtotal + tipSatang;
   }
 
+  /// The booked end instant (start + booked hours; server values when present) — drives the
+  /// success screen's "14:00 – 22:00" time-range row. Display only; `null` until scheduled.
+  DateTime? get scheduledEndAt {
+    final start = booking?.scheduledAt ?? scheduledAt;
+    if (start == null) return null;
+    return start.add(Duration(hours: booking?.hours ?? hours));
+  }
+
   BookingFlowState copyWith({
     SecurityService? service,
     GeoPlace? place,

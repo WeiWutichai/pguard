@@ -66,7 +66,8 @@ class RoleSelectionScreen extends ConsumerWidget {
                 icon: Icons.shield_outlined,
                 titleTh: 'เจ้าหน้าที่ รปภ.',
                 titleEn: 'Security guard',
-                descic: 'รับงาน · ต้องผ่านการอนุมัติ · Accept jobs (approval required)',
+                descic:
+                    'รับงาน · ต้องผ่านการอนุมัติ · Accept jobs (approval required)',
                 enabled: !state.busy,
                 onTap: () => choose(RegistrationRole.guard),
               ),

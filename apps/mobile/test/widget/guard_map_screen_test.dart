@@ -63,6 +63,8 @@ void main() {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
       if (path == '/guards/g1/location') return locationJson();
+      // The info panel's chat entry overlays an unread badge (one conversations fetch).
+      if (path == '/conversations') return <Map<String, dynamic>>[];
       fail('unexpected GET $path');
     });
 
@@ -71,7 +73,9 @@ void main() {
 
     expect(find.byIcon(Icons.shield), findsOneWidget, reason: 'guard marker');
     expect(find.text('คุณ'), findsOneWidget, reason: 'reference marker label');
-    expect(find.text('กำลังเดินทาง'), findsOneWidget, reason: 'status chip');
+    // En-route uses the design's customer-directed tracking copy, not the lifecycle label.
+    expect(find.text('กำลังเดินทางมาหาคุณ'), findsOneWidget,
+        reason: 'status chip');
     expect(find.text('ตำแหน่งสด'), findsOneWidget, reason: 'is_live freshness');
     expect(find.textContaining('ความแม่นยำ'), findsOneWidget);
     expect(find.textContaining('ห่างจากคุณ'), findsOneWidget,
@@ -91,7 +95,7 @@ void main() {
 
     await tester.pumpWidget(host(api: api, feed: feed));
     await settle(tester);
-    expect(find.text('กำลังเดินทาง'), findsOneWidget);
+    expect(find.text('กำลังเดินทางมาหาคุณ'), findsOneWidget);
 
     feed.emit(BookingStatusEvent(
         bookingId: 'b1',
@@ -116,6 +120,8 @@ void main() {
       if (path == '/bookings/b1') {
         return bookingJson(guardId: null, status: 'requested');
       }
+      // The info panel's chat entry overlays an unread badge (one conversations fetch).
+      if (path == '/conversations') return <Map<String, dynamic>>[];
       fail('unexpected GET $path');
     });
 
@@ -171,7 +177,7 @@ void main() {
         .pumpWidget(host(api: api, prefs: const {'pg_locale': 'en'}));
     await settle(tester);
 
-    expect(find.text('On the way'), findsOneWidget);
+    expect(find.text('On the way to you'), findsOneWidget);
     expect(find.text('Live position'), findsOneWidget);
     expect(find.text('You'), findsOneWidget);
     expect(find.textContaining('from you'), findsOneWidget);

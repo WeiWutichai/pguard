@@ -9,7 +9,9 @@ import '../../../widgets/primary_button.dart';
 
 /// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. The v2
 /// contract is just `full_name` + `address` (no company/email — those don't exist in
-/// `UpsertCustomerProfileRequest`). Address is required (min length); name is optional.
+/// `UpsertCustomerProfileRequest`). Address is required (min length, with a live ✓ helper once
+/// valid); name is optional and follows the design's "(ไม่บังคับ)" pattern. The CTA is the
+/// customer-flow amber (`.cta-amber`) — the guard flow keeps green.
 class CustomerRegistrationScreen extends ConsumerStatefulWidget {
   const CustomerRegistrationScreen({super.key});
 
@@ -32,6 +34,8 @@ class _CustomerRegistrationScreenState
     _address.dispose();
     super.dispose();
   }
+
+  bool get _addressValid => _address.text.trim().length >= _minAddress;
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -63,27 +67,48 @@ class _CustomerRegistrationScreenState
               children: [
                 const SizedBox(height: PgTokens.space2),
                 const Text(
-                  'กรอกข้อมูลเพื่อใช้ในการจอง',
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  'ตั้งค่าบัญชีลูกค้า / Set up your account',
+                  style: TextStyle(
+                    fontSize: 21,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorText,
+                  ),
+                ),
+                const SizedBox(height: PgTokens.space1),
+                const Text(
+                  'เพื่อจองและรับใบเสร็จ / To book guards & get receipts',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: PgTokens.colorTextMuted,
+                  ),
                 ),
                 const SizedBox(height: PgTokens.space6),
                 TextFormField(
-                  controller: _name,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                    labelText: 'ชื่อ-นามสกุล / Full name (optional)',
-                  ),
-                ),
-                const SizedBox(height: PgTokens.space4),
-                TextFormField(
+                  key: const Key('reg_address'),
                   controller: _address,
-                  minLines: 2,
+                  minLines: 3,
                   maxLines: 4,
-                  textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
-                    labelText: 'ที่อยู่ / Address',
+                  textInputAction: TextInputAction.next,
+                  // Rebuild on change so the ✓ helper appears live once the minimum is met.
+                  onChanged: (_) => setState(() {}),
+                  decoration: InputDecoration(
+                    label: const Text.rich(
+                      TextSpan(
+                        text: 'ที่อยู่ / Address ',
+                        children: [
+                          TextSpan(
+                              text: '*',
+                              style: TextStyle(color: PgTokens.colorDanger)),
+                        ],
+                      ),
+                    ),
                     hintText: 'บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ จังหวัด',
                     alignLabelWithHint: true,
+                    helperText: _addressValid
+                        ? '✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร) / ✓ Valid (min 10 characters)'
+                        : null,
+                    helperStyle: const TextStyle(
+                        fontSize: 11.5, color: PgTokens.colorSuccess),
                   ),
                   validator: (v) {
                     final t = (v ?? '').trim();
@@ -96,6 +121,27 @@ class _CustomerRegistrationScreenState
                     return null;
                   },
                 ),
+                const SizedBox(height: PgTokens.space4),
+                TextFormField(
+                  controller: _name,
+                  textInputAction: TextInputAction.done,
+                  decoration: const InputDecoration(
+                    label: Text.rich(
+                      TextSpan(
+                        text: 'ชื่อ-นามสกุล / Full name ',
+                        children: [
+                          TextSpan(
+                            text: '(ไม่บังคับ)',
+                            style: TextStyle(
+                              color: PgTokens.colorTextFaint,
+                              fontWeight: FontWeight.w400,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: PgTokens.space6),
                 if (state.error != null)
                   Padding(
@@ -103,8 +149,11 @@ class _CustomerRegistrationScreenState
                     child: Text(state.error!,
                         style: const TextStyle(color: PgTokens.colorDanger)),
                   ),
+                // `.cta-amber` — the amber CTA distinguishes the customer flow from the guard flow.
                 PgPrimaryButton(
-                  label: 'บันทึกและส่ง / Submit',
+                  label: 'สร้างบัญชี / Create account',
+                  color: PgTokens.colorAccent,
+                  foreground: PgTokens.colorOnAmber,
                   busy: state.busy,
                   onPressed: state.busy ? null : _submit,
                 ),

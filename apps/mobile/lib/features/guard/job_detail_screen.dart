@@ -6,10 +6,11 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
-import 'widgets/job_card.dart';
 
 /// Incoming-job detail: full info + accept/decline. accept (POST) → opens the active-job
 /// screen; decline (PUT) → returns to the dashboard. Per `Mobile - Guard App.html` (detail).
@@ -52,17 +53,11 @@ class JobDetailScreen extends ConsumerWidget {
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(
-            child: Padding(
-              padding: const EdgeInsets.all(PgTokens.space6),
-              child: Text(
-                e is ApiException
-                    ? e.message
-                    : 'โหลดงานไม่สำเร็จ / Could not load this job',
-                textAlign: TextAlign.center,
-                style: const TextStyle(color: PgTokens.colorTextMuted),
-              ),
-            ),
+          error: (e, _) => PgErrorState(
+            title: 'โหลดงานไม่สำเร็จ / Could not load this job',
+            message: e is ApiException ? e.message : null,
+            onRetry: () =>
+                ref.invalidate(activeJobControllerProvider(bookingId)),
           ),
           data: (state) => _Body(
             booking: state.booking,
@@ -86,21 +81,58 @@ class _Body extends StatelessWidget {
   final VoidCallback onAccept;
   final VoidCallback onDismiss;
 
+  /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
+  int get _feeSatang => Money.total(
+        baseFeeSatang: Money.satangFromString(booking.baseFee),
+        hours: booking.hours ?? 0,
+        guardCount: booking.guardCount ?? 1,
+      );
+
   @override
   Widget build(BuildContext context) {
     final canAccept = booking.status == BookingStatus.requested;
+    final hours = booking.hours;
     return Column(
       children: [
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
             children: [
-              GuardJobCard(booking: booking),
+              // Screen 3 hierarchy: place-name title + service-type/hours subtitle.
+              Text(
+                booking.address ?? 'งานรักษาความปลอดภัย',
+                style:
+                    const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                hours != null
+                    ? 'รปภ. ประจำจุด · $hours ชั่วโมง'
+                    : 'รปภ. ประจำจุด',
+                style: const TextStyle(
+                    fontSize: 13, color: PgTokens.colorTextMuted),
+              ),
               const SizedBox(height: PgTokens.space4),
               _InfoRow(
                 icon: Icons.location_on_outlined,
                 label: 'สถานที่ / Location',
                 value: booking.address ?? '—',
+              ),
+              const SizedBox(height: PgTokens.space3),
+              _InfoRow(
+                icon: Icons.calendar_today_outlined,
+                label: 'เวลา / Time',
+                value: JobDetailTime.window(
+                    booking.scheduledAt, hours, DateTime.now()),
+                trailing: Text(
+                  Money.format(_feeSatang),
+                  // Design --font-mono for money figures (now bundled).
+                  style: const TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      fontFamily: 'IBMPlexMono',
+                      fontFeatures: [FontFeature.tabularFigures()]),
+                ),
               ),
               const SizedBox(height: PgTokens.space3),
               _InfoRow(
@@ -130,7 +162,7 @@ class _Body extends StatelessWidget {
               child: Row(
                 children: [
                   SizedBox(
-                    width: 110,
+                    width: 90,
                     child: PgGhostButton(label: 'ข้าม', onPressed: onDismiss),
                   ),
                   const SizedBox(width: PgTokens.space2),
@@ -147,13 +179,42 @@ class _Body extends StatelessWidget {
   }
 }
 
+/// Pure formatter for the เวลา row value ("วันนี้ 14:00 – 22:00"). Static + widget-free so it
+/// is unit-testable. (The design's fix sketch shares GuardJobCard._timeWindow, but
+/// `widgets/job_card.dart` is outside this slice's ownership — re-implemented here.)
+class JobDetailTime {
+  const JobDetailTime._();
+
+  static String _two(int n) => n.toString().padLeft(2, '0');
+
+  /// "วันนี้ HH:MM – HH:MM" when [scheduledAt] falls on [now]'s local date, else
+  /// "D/M HH:MM – HH:MM"; falls back to the bare hours ("8 ชม.") or "—" when unscheduled.
+  static String window(DateTime? scheduledAt, int? hours, DateTime now) {
+    final start = scheduledAt?.toLocal();
+    if (start == null) return hours != null ? '$hours ชม.' : '—';
+    final end = start.add(Duration(hours: hours ?? 0));
+    final sameDay = start.year == now.year &&
+        start.month == now.month &&
+        start.day == now.day;
+    final day = sameDay ? 'วันนี้' : '${start.day}/${start.month}';
+    return '$day ${_two(start.hour)}:${_two(start.minute)} – '
+        '${_two(end.hour)}:${_two(end.minute)}';
+  }
+}
+
 class _InfoRow extends StatelessWidget {
   const _InfoRow(
-      {required this.icon, required this.label, required this.value});
+      {required this.icon,
+      required this.label,
+      required this.value,
+      this.trailing});
 
   final IconData icon;
   final String label;
   final String value;
+
+  /// Optional right-aligned widget (Screen 3 puts the mono w600 fee on the เวลา row).
+  final Widget? trailing;
 
   @override
   Widget build(BuildContext context) {
@@ -175,6 +236,10 @@ class _InfoRow extends StatelessWidget {
             ],
           ),
         ),
+        if (trailing != null) ...[
+          const SizedBox(width: PgTokens.space2),
+          trailing!,
+        ],
       ],
     );
   }

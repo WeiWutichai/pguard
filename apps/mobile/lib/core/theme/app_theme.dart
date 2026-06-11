@@ -23,6 +23,9 @@ class AppTheme {
       colorScheme: scheme,
       scaffoldBackgroundColor: PgTokens.colorBg,
       splashFactory: InkRipple.splashFactory,
+      // Brand typeface (design --font-thai): bundled IBM Plex Sans Thai — covers Thai +
+      // Latin; mono accents opt in per-widget with fontFamily 'IBMPlexMono'.
+      fontFamily: 'IBMPlexSansThai',
     );
 
     return base.copyWith(

@@ -22,8 +22,10 @@ class PgPrimaryButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final enabled = onPressed != null && !busy;
+    // Design `.cta`: 16px padding ≈ 52px tall, radius 16 (→ radiusXl, the app's mapping
+    // for the design's 16px corners), 16.5px w600 label.
     return SizedBox(
-      height: 48,
+      height: 52,
       width: double.infinity,
       child: ElevatedButton(
         onPressed: enabled ? onPressed : null,
@@ -33,9 +35,10 @@ class PgPrimaryButton extends StatelessWidget {
           disabledBackgroundColor: PgTokens.colorBorder,
           elevation: 0,
           shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(PgTokens.radiusMd),
+            borderRadius: BorderRadius.circular(PgTokens.radiusXl),
           ),
-          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
+          textStyle:
+              const TextStyle(fontSize: 16.5, fontWeight: FontWeight.w600),
         ),
         child: busy
             ? const SizedBox(

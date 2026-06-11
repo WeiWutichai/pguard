@@ -21,6 +21,7 @@ class AuthFlowState {
     this.phone = '',
     this.challenge,
     this.otpSentAt,
+    this.otpRequestCount = 0,
     this.phoneVerifiedToken,
     this.busy = false,
     this.error,
@@ -30,6 +31,10 @@ class AuthFlowState {
   final String phone;
   final OtpChallenge? challenge;
   final DateTime? otpSentAt;
+
+  /// How many OTP SMS have been requested this flow (display state for the design's
+  /// "พยายาม 1/5 / attempt 1/5" resend counter — the server enforces the real limit).
+  final int otpRequestCount;
 
   /// Single-use phone-verified JWT from `POST /otp/verify`, carried to `POST /auth/register`
   /// (also persisted to secure storage so a backgrounded flow survives). Null until verified.
@@ -42,6 +47,7 @@ class AuthFlowState {
     String? phone,
     OtpChallenge? challenge,
     DateTime? otpSentAt,
+    int? otpRequestCount,
     String? phoneVerifiedToken,
     bool? busy,
     Object? error = _unset,
@@ -51,6 +57,7 @@ class AuthFlowState {
       phone: phone ?? this.phone,
       challenge: challenge ?? this.challenge,
       otpSentAt: otpSentAt ?? this.otpSentAt,
+      otpRequestCount: otpRequestCount ?? this.otpRequestCount,
       phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
@@ -74,6 +81,24 @@ class AuthController extends _$AuthController {
   static final RegExp _thaiPhone = RegExp(r'^0\d{9}$');
 
   bool isValidPhone(String phone) => _thaiPhone.hasMatch(phone);
+
+  /// PURE display heuristic for the set-PIN strength line ("ความปลอดภัยดี · หลีกเลี่ยงเลขซ้ำ"):
+  /// a typed PIN prefix is "weak" when its digits are all identical or form a strictly
+  /// ascending/descending run (111111, 123456, 654321). UI feedback only — no storage,
+  /// no network; the PIN itself is never rejected for this.
+  static bool isWeakPin(String digits) {
+    if (digits.length < 2) return false;
+    bool run(int step) {
+      for (var i = 1; i < digits.length; i++) {
+        if (digits.codeUnitAt(i) - digits.codeUnitAt(i - 1) != step) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    return run(0) || run(1) || run(-1);
+  }
 
   void setPhone(String phone) =>
       state = state.copyWith(phone: phone, error: null);
@@ -108,8 +133,11 @@ class AuthController extends _$AuthController {
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
       });
-      state =
-          state.copyWith(step: AuthStep.otp, otpSentAt: DateTime.now().toUtc());
+      state = state.copyWith(
+        step: AuthStep.otp,
+        otpSentAt: DateTime.now().toUtc(),
+        otpRequestCount: state.otpRequestCount + 1,
+      );
       return true;
     });
   }

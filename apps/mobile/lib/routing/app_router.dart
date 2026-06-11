@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
 import '../core/models/chat.dart';
+import '../features/auth/captcha_screen.dart';
 import '../features/auth/otp_screen.dart';
 import '../features/chat/chat_list_screen.dart';
 import '../features/chat/chat_screen.dart';
@@ -16,6 +17,7 @@ import '../features/auth/registration/guard_registration_screen.dart';
 import '../features/auth/registration/registration_pending_screen.dart';
 import '../features/auth/registration/role_selection_screen.dart';
 import '../features/booking/booking_form_screen.dart';
+import '../features/booking/cancellation_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
@@ -25,6 +27,7 @@ import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
 import '../features/guard/job_detail_screen.dart';
+import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
 import '../features/notifications/notification_screen.dart';
@@ -71,6 +74,9 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
       GoRoute(
           path: '/auth/phone', builder: (_, __) => const PhoneEntryScreen()),
+      // Bot-check step between phone and OTP (the design keeps the phone screen clean).
+      GoRoute(
+          path: '/auth/captcha', builder: (_, __) => const CaptchaScreen()),
       GoRoute(path: '/auth/otp', builder: (_, __) => const OtpScreen()),
       GoRoute(path: '/auth/pin', builder: (_, __) => const PinEntryScreen()),
       // Registration sub-flow (role-at-register): role → profile form → pending.
@@ -138,6 +144,12 @@ GoRouter appRouter(AppRouterRef ref) {
         builder: (context, state) =>
             ActiveJobScreen(bookingId: state.pathParameters['id']!),
       ),
+      // Guard back-out flow (escalation warning + reason + admin notes).
+      GoRoute(
+        path: '/guard/active/:id/withdraw',
+        builder: (context, state) =>
+            WithdrawScreen(bookingId: state.pathParameters['id']!),
+      ),
       // Customer book-a-guard flow (shared keepAlive BookingFlowController carries state).
       GoRoute(path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
       GoRoute(
@@ -154,6 +166,17 @@ GoRouter appRouter(AppRouterRef ref) {
         path: '/booking/:id/live',
         builder: (context, state) =>
             LiveStatusScreen(bookingId: state.pathParameters['id']!),
+      ),
+      // Customer cancellation flow (reason → confirm sheet → PUT /bookings/{id}/cancel).
+      // `extra` carries what live status already knows (address + display total).
+      GoRoute(
+        path: '/booking/:id/cancel',
+        builder: (context, state) => CancellationScreen(
+          bookingId: state.pathParameters['id']!,
+          args: state.extra is CancellationArgs
+              ? state.extra as CancellationArgs
+              : null,
+        ),
       ),
       // Customer live-map: where is my assigned guard (entered from the live-status screen).
       GoRoute(
