@@ -427,7 +427,13 @@ services:
       NATS_USER: notification
       NATS_PASSWORD: ${NATS_NOTIFICATION_PASSWORD:?NATS_NOTIFICATION_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
-      FCM_DISABLED: ${FCM_DISABLED:-false}
+      # FCM_DISABLED is now VALUE-AWARE (notification fcm::fcm_disabled): only a TRUTHY value
+      # (true/1/yes/on) disables push; false/0/empty keep it ENABLED — and an enabled pusher
+      # FAIL-FASTS at boot without real FCM creds (FCM_SERVICE_ACCOUNT_PATH). Default = "true"
+      # because no FCM creds are provisioned yet (none exist in any env), so the stack boots with
+      # an explicit NoopPusher (logged) instead of crash-looping. To enable REAL push: set
+      # FCM_DISABLED=false AND mount a valid service-account at FCM_SERVICE_ACCOUNT_PATH.
+      FCM_DISABLED: ${FCM_DISABLED:-true}
       FCM_SERVICE_ACCOUNT_PATH: ${FCM_SERVICE_ACCOUNT_PATH:-/run/secrets/fcm-service-account.json}
     expose:
       - "3004"

@@ -56,12 +56,18 @@ async fn main() -> anyhow::Result<()> {
         .context("build HTTP client")?;
 
     // --- push backend (fail-fast unless explicitly disabled for dev) ---
-    let pusher: Arc<dyn Pusher> = if std::env::var("FCM_DISABLED").is_ok() {
-        tracing::warn!("FCM_DISABLED set — using NoopPusher (no real pushes will be sent)");
-        Arc::new(NoopPusher)
-    } else {
-        Arc::new(FcmPusher::new(FcmConfig::from_env()?, http_client.clone()))
-    };
+    // Value-aware gate (mirrors otp's SMS_DISABLED): only a TRUTHY FCM_DISABLED disables push;
+    // `false`/`0`/empty/unset keep it ENABLED → FcmConfig::from_env fail-fasts without creds, so a
+    // misconfig is loud at boot (never the old silent NoopPusher on `FCM_DISABLED=false`).
+    let pusher: Arc<dyn Pusher> =
+        if crate::fcm::fcm_disabled(std::env::var("FCM_DISABLED").ok().as_deref()) {
+            tracing::warn!(
+                "FCM_DISABLED is truthy — using NoopPusher (no real pushes will be sent)"
+            );
+            Arc::new(NoopPusher)
+        } else {
+            Arc::new(FcmPusher::new(FcmConfig::from_env()?, http_client.clone()))
+        };
 
     let state = AppState {
         db,

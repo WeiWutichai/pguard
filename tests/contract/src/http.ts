@@ -2,10 +2,10 @@
 //
 // Routing in the e2e stack (see infra/docker/docker-compose.e2e.yml + tooling/scripts/e2e-stack-up.sh):
 //  - identity / booking / chat  → via the api-gateway on :3000 under the /v1 prefix.
-//  - rating                     → ALSO published on a DIRECT host port :3007 (the documented
-//    gateway-gap accommodation). We hit rating DIRECTLY so we exercise the rating service's OWN
-//    auth/response enforcement — which is exactly what its OpenAPI `security:` block promises, and
-//    the surface where the getGuardRatings "was it public?" drift would actually regress.
+//  - rating                     → ALSO published on a DIRECT host port :3007. The gateway routes
+//    rating (PR #25), but we hit rating DIRECTLY for the admin/assignment endpoints so we exercise
+//    the rating service's OWN auth/response enforcement (its OpenAPI `security:` block). The
+//    getGuardRatings drift guard still goes through the GATEWAY (its edge-enforced surface).
 //
 // The gateway auth tier rate-limits ~5 req/s/IP, so we cache one token per account and back off on
 // 429. The whole suite runs sequentially (vitest singleFork) for the same reason.

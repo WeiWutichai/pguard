@@ -94,11 +94,17 @@ pub async fn submit_review<S: RatingDeps>(
     Ok(Json(ApiResponse::success(SubmitReviewResponse { id })))
 }
 
-/// GET /guards/{id}/ratings — PUBLIC guard discovery: visible reviews + aggregate summary.
+/// GET /guards/{id}/ratings — guard discovery: visible reviews + aggregate summary.
 /// Only `is_visible = true` reviews are returned/aggregated (admin-hidden never surface).
-#[tracing::instrument(skip(state), fields(guard_id = %guard_id))]
+///
+/// Requires a valid access token (any role) — "public" here means visible-to-customers, NOT
+/// unauthenticated. The contract declares `bearerAuth` (PR #25 wired the edge to enforce it);
+/// the `AuthUser` extractor adds the service's OWN validation so the route is no longer
+/// edge-only (defense-in-depth) — a tokenless request straight to :3007 now 401s too.
+#[tracing::instrument(skip(state, _user), fields(guard_id = %guard_id))]
 pub async fn guard_ratings<S: RatingDeps>(
     State(state): State<S>,
+    _user: AuthUser,
     Path(guard_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<GuardRatingsResponse>>, AppError> {
     // Public list read → replica (C5.3).
@@ -283,6 +289,7 @@ mod tests {
             Router::new()
                 .route("/assignments/{id}/review", post(submit_review::<TestDeps>))
                 .route("/admin/reviews", get(list_admin_reviews::<TestDeps>))
+                .route("/guards/{id}/ratings", get(guard_ratings::<TestDeps>))
                 .with_state(deps),
         )
     }
@@ -326,6 +333,23 @@ mod tests {
             submit(app, None, review_body(5)).await,
             StatusCode::UNAUTHORIZED
         );
+    }
+
+    #[tokio::test]
+    async fn guard_ratings_rejects_missing_token() {
+        // Defense-in-depth (PR pre-smoke-cleanup #3): the service itself now requires a token, so
+        // a request straight to :3007 with NO bearer is 401 — not just the gateway edge.
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let req = Request::builder()
+            .method("GET")
+            .uri("/guards/99999999-0000-0000-0000-000000000001/ratings")
+            .body(Body::empty())
+            .unwrap();
+        let status = app.oneshot(req).await.unwrap().status();
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -1,7 +1,10 @@
 # notification — lean event consumer + REST ingress (service-JWT). DB-backed.
-# Base = prod (FCM ENABLED, service-account JSON mounted at FCM_SERVICE_ACCOUNT_PATH);
-# dev + staging overlays patch FCM_DISABLED=true (no push). To enable push in prod, mount the
-# FCM service-account secret as a file at the path below (see infra/k8s/README.md).
+# Base = prod intent (FCM ENABLED). FCM_DISABLED is VALUE-AWARE (notification fcm::fcm_disabled):
+# only a truthy value disables push; "false" below = ENABLED, which FAIL-FASTS at boot unless a
+# real service-account JSON is mounted at FCM_SERVICE_ACCOUNT_PATH (loud, never a silent no-op).
+# The dev + staging overlays patch FCM_DISABLED="true" (no push, no creds needed). To run prod
+# push: keep "false" AND mount the FCM service-account secret as a file at the path below
+# (no prod overlay exists yet — see infra/k8s/README.md).
 apiVersion: v1
 kind: Service
 metadata:

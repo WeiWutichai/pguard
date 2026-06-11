@@ -2,23 +2,18 @@
 #   docker compose --env-file infra/.env.e2e \
 #     -f infra/docker/docker-compose.prod.yml -f infra/docker/docker-compose.e2e.yml <cmd>
 #
-# Two e2e accommodations of documented v2 limitations (NOT changes to prod behaviour):
+# e2e accommodations of documented limitations (NOT changes to prod behaviour):
 #   1. otp SMS disabled (NoopSender) so the flow is deterministic without real SMS.
-#   2. The v2 gateway does NOT route rating/presence (perf-baseline README + memory) — so the
-#      host-run web-admin (reviews → rating /admin/reviews, map → presence /locations) can't reach
-#      them via the same-origin /v1 → gateway proxy. Publish those two services' host ports here so
-#      the e2e web-admin can route them directly (PGUARD_RATING_URL / PGUARD_PRESENCE_URL).
+#   2. rating published on a DIRECT host port :3007 — NOT a web-admin bypass (the gateway routes
+#      rating since PR #25; the web-admin + e2e now go through it). It's published for the CONTRACT
+#      suite, which hits rating directly on :3007 (RATING_DIRECT in tests/contract/src/http.ts) to
+#      verify the SERVICE's own auth/role enforcement + response shapes for the admin/assignment
+#      endpoints. (presence no longer needs a host port — the old web-admin map bypass via
+#      PGUARD_PRESENCE_URL was removed once the gateway routed /v1/locations.)
 services:
   otp:
     environment:
       SMS_DISABLED: "1"
-  # TODO(gateway-gap): when services/api-gateway/src/domain/routing.rs adds Rating/Presence to its
-  # Upstream enum (closing the documented v2 gap), delete these two port mappings TOGETHER with the
-  # PGUARD_RATING_URL/PGUARD_PRESENCE_URL env vars (playwright.config.ts + the e2e-web CI job) and the
-  # env-gated rewrite branch in apps/web-admin/next.config.ts — they become dead accommodation.
   rating:
     ports:
       - "3007:3007"
-  presence:
-    ports:
-      - "3009:3009"
