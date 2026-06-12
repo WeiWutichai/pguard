@@ -58,8 +58,9 @@ paths:
 
         **Returns `202 Accepted` with NO access/refresh tokens and NO session** — a pending
         account cannot authenticate. `POST /auth/login` succeeds only once the account is
-        `approved` (admin vetting for guards / customer approval — a future event-driven step
-        that flips identity's account state; identity never lets profile write its schema).
+        `approved`: guards via admin vetting (`/admin/guard-profiles/{id}/approve`), customers
+        **automatically on profile completion** (`POST /profile/customer` emits `user.approved`).
+        Either way the flip is event-driven — identity never lets profile write its schema.
         The response carries a single-use, purpose-scoped `profile_token` the client
         immediately exchanges at `POST /profile/{guard,customer}` to submit its profile.
       operationId: register

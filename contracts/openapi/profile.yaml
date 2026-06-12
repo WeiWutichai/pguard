@@ -106,8 +106,13 @@ paths:
             here (purpose isolation).
           - a logged-in customer's `bearerAuth` access token (a later self-edit), role-gated.
 
-        Writes ONLY the customer profile schema; account approval state is identity-owned (the
-        account is already `pending` from register) and is never written here.
+        Writes ONLY the customer profile schema; identity's approval state is never written
+        directly. The FIRST creation additionally emits `user.approved` (transactional
+        outbox): **customers are auto-approved on profile completion** — there is no human
+        review step for hirers (guards keep the admin approve/reject flow). identity
+        consumes the event and flips its own `approval_status`, so the account becomes
+        loginable moments after this call returns. A later self-edit re-upsert emits
+        nothing.
       operationId: upsertCustomerProfile
       security: [{ bearerAuth: [] }, { profileToken: [] }]
       requestBody:
