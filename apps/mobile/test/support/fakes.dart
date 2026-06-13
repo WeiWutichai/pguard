@@ -246,7 +246,8 @@ class FakeChatAttachmentService implements ChatAttachmentService {
 
   @override
   Future<Attachment?> pickAndUpload(
-      String conversationId, ChatAttachmentSource source) async {
+      String conversationId, ChatAttachmentSource source,
+      {required bool isThai}) async {
     picks.add(source);
     if (error != null) throw error!;
     return attachment;
@@ -329,6 +330,7 @@ class FakeCheckInService implements CheckInService {
     required String bookingId,
     required int hourNumber,
     required CapturedPhoto photo,
+    required bool isThai,
     GpsSample? gps,
     String? note,
   }) async {

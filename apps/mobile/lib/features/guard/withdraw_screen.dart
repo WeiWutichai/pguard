@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../booking/widgets/reason_tile.dart';
@@ -23,12 +24,20 @@ class WithdrawScreen extends ConsumerStatefulWidget {
 }
 
 class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
-  /// Design STATE 3 reason options — "เหตุฉุกเฉินส่วนตัว" pre-selected.
-  static const List<String> _reasons = [
-    'เหตุฉุกเฉินส่วนตัว / Personal emergency',
-    'ป่วย / Sick',
-    "เดินทางไปไม่ได้ / Can't reach site",
-  ];
+  /// Design STATE 3 reason options — "เหตุฉุกเฉินส่วนตัว" pre-selected. Rendered in the
+  /// active locale; the reason is DISPLAY-ONLY (decline takes no body), so single-language
+  /// text is fine.
+  static List<String> _reasonsFor(bool isThai) => isThai
+      ? const [
+          'เหตุฉุกเฉินส่วนตัว',
+          'ป่วย',
+          'เดินทางไปไม่ได้',
+        ]
+      : const [
+          'Personal emergency',
+          'Sick',
+          "Can't reach site",
+        ];
 
   int _selected = 0;
   final TextEditingController _notes = TextEditingController();
@@ -48,14 +57,16 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
   }
 
   Future<void> _submit() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final messenger = ScaffoldMessenger.of(context);
     final ok = await ref
         .read(activeJobControllerProvider(widget.bookingId).notifier)
         .withdraw();
     if (!mounted) return;
     if (ok) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('ส่งคำขอถอนงานแล้ว / Withdrawal submitted')));
+      messenger.showSnackBar(SnackBar(
+          content:
+              Text(isThai ? 'ส่งคำขอถอนงานแล้ว' : 'Withdrawal submitted')));
       context.go('/home/guard');
     } else {
       final error = ref
@@ -63,13 +74,14 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
           .valueOrNull
           ?.error;
       messenger.showSnackBar(SnackBar(
-          content:
-              Text(error ?? 'เกิดข้อผิดพลาด / Something went wrong')));
+          content: Text(
+              error ?? (isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong'))));
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // Shared with the active-job screen below in the stack (busy flag + address).
     final jobState =
         ref.watch(activeJobControllerProvider(widget.bookingId)).valueOrNull;
@@ -77,11 +89,12 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
     final busy = jobState?.busy ?? false;
     // Design interaction note: the notes textarea is required before submit enables.
     final canSubmit = !busy && _notes.text.trim().isNotEmpty;
+    final reasons = _reasonsFor(isThai);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'ขอถอนจากงาน',
+        title: isThai ? 'ขอถอนจากงาน' : 'Withdraw from job',
         subtitle: address != null ? '$_shortId · $address' : _shortId,
         showBack: true,
       ),
@@ -91,23 +104,23 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
             Expanded(
               child: ListView(
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(24, 6, 24, 0),
-                    child: _EscalationBanner(),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 6, 24, 0),
+                    child: _EscalationBanner(isThai: isThai),
                   ),
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(24, 14, 24, 8),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 14, 24, 8),
                     child: Text(
-                      'เหตุผล',
-                      style: TextStyle(
+                      isThai ? 'เหตุผล' : 'Reason',
+                      style: const TextStyle(
                           fontSize: 14, color: PgTokens.colorTextMuted),
                     ),
                   ),
-                  for (var i = 0; i < _reasons.length; i++)
+                  for (var i = 0; i < reasons.length; i++)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
                       child: PgReasonTile(
-                        label: _reasons[i],
+                        label: reasons[i],
                         selected: _selected == i,
                         onTap: () => setState(() => _selected = i),
                       ),
@@ -122,7 +135,9 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
                       style: const TextStyle(
                           fontSize: 14, color: PgTokens.colorText),
                       decoration: InputDecoration(
-                        hintText: 'อธิบายเพิ่มเติมสำหรับแอดมิน…',
+                        hintText: isThai
+                            ? 'อธิบายเพิ่มเติมสำหรับแอดมิน…'
+                            : 'Add details for admin…',
                         hintStyle: const TextStyle(
                             fontSize: 14, color: PgTokens.colorTextFaint),
                         filled: true,
@@ -151,7 +166,7 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: PgPrimaryButton(
-                label: 'ส่งคำขอถอนงาน / Submit request',
+                label: isThai ? 'ส่งคำขอถอนงาน' : 'Submit request',
                 color: PgTokens.colorDanger,
                 busy: busy,
                 onPressed: canSubmit ? _submit : null,
@@ -166,7 +181,9 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
 
 /// Design `.refund-note.warn`: warning triangle + 13px amber-700 copy on the warning wash.
 class _EscalationBanner extends StatelessWidget {
-  const _EscalationBanner();
+  const _EscalationBanner({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -176,20 +193,23 @@ class _EscalationBanner extends StatelessWidget {
         color: PgTokens.colorWarningBg,
         borderRadius: BorderRadius.circular(PgTokens.radiusXl),
       ),
-      child: const Row(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Padding(
+          const Padding(
             padding: EdgeInsets.only(top: 1),
             child: Icon(Icons.warning_amber_rounded,
                 size: 18, color: PgTokens.colorAmber700),
           ),
-          SizedBox(width: 11),
+          const SizedBox(width: 11),
           Expanded(
             child: Text(
-              'การถอนงานเป็นกรณีพิเศษ จะถูกส่งให้แอดมินตรวจสอบ และอาจมีผลต่อคะแนนของคุณ / '
-              "Backing out is rare — it's escalated to admin and may affect your rating.",
-              style: TextStyle(
+              isThai
+                  ? 'การถอนงานเป็นกรณีพิเศษ จะถูกส่งให้แอดมินตรวจสอบ '
+                      'และอาจมีผลต่อคะแนนของคุณ'
+                  : "Backing out is rare — it's escalated to admin and "
+                      'may affect your rating.',
+              style: const TextStyle(
                 fontSize: 13,
                 height: 1.5,
                 color: PgTokens.colorAmber700,

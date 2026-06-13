@@ -8,6 +8,7 @@ import '../models/payment.dart';
 import '../models/service_catalog.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 
 part 'booking_flow_controller.g.dart';
 
@@ -140,6 +141,10 @@ class BookingFlowController extends _$BookingFlowController {
   @override
   BookingFlowState build() => const BookingFlowState();
 
+  /// Whether the app is rendering in Thai — used to localize the error messages
+  /// this controller stores in [BookingFlowState.error] for the screens to show.
+  bool get _isThai => ref.read(localeControllerProvider) == AppLocale.th;
+
   /// Start a fresh booking (called when the flow is entered).
   void reset() => state = const BookingFlowState();
 
@@ -148,8 +153,8 @@ class BookingFlowController extends _$BookingFlowController {
 
   /// Set the location from the map picker — stores the coordinate AND fills the sent [address]
   /// with the resolved place name.
-  void setLocation(GeoPlace place) =>
-      state = state.copyWith(place: place, address: place.placeName, error: null);
+  void setLocation(GeoPlace place) => state =
+      state.copyWith(place: place, address: place.placeName, error: null);
 
   void setAddress(String address) =>
       state = state.copyWith(address: address, error: null);
@@ -175,7 +180,7 @@ class BookingFlowController extends _$BookingFlowController {
         final address = state.address.trim();
         if (address.isEmpty) {
           state = state.copyWith(
-              error: 'กรุณาระบุสถานที่ / Enter a location');
+              error: _isThai ? 'กรุณาระบุสถานที่' : 'Enter a location');
           return false;
         }
         final when = state.scheduledAt ??
@@ -197,8 +202,7 @@ class BookingFlowController extends _$BookingFlowController {
   /// approved guards enriched with their rating summary. v2 is first-come-accept, so this is a
   /// preview of who is available; a nearby guard accepts the request later (seen on live-status).
   Future<bool> loadGuards() => _guard(() async {
-        final data =
-            await ref.read(pguardApiProvider).get('/available-guards');
+        final data = await ref.read(pguardApiProvider).get('/available-guards');
         final list = (data as List)
             .whereType<Map<String, dynamic>>()
             .map(AvailableGuard.fromJson)
@@ -215,7 +219,7 @@ class BookingFlowController extends _$BookingFlowController {
         final total = state.payTotalSatang;
         if (booking == null || total == null) {
           state = state.copyWith(
-              error: 'ยังไม่พบการจอง / Booking not ready');
+              error: _isThai ? 'ยังไม่พบการจอง' : 'Booking not ready');
           return false;
         }
         final data = await ref.read(pguardApiProvider).post('/payments', data: {
@@ -239,7 +243,8 @@ class BookingFlowController extends _$BookingFlowController {
       return false;
     } catch (_) {
       state = state.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong');
+          busy: false,
+          error: _isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
       return false;
     }
   }

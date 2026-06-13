@@ -5,8 +5,10 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/primary_button.dart';
+import '../../features/profile/widgets/lang_segmented.dart';
 
 /// Step 1: phone number only. UI per `Mobile - Auth.html` screen ① (กรอกเบอร์โทร) — centered
 /// welcome hero (pguard mark + title/subtitle) + a 🇹🇭 +66 field with a prefix divider and a
@@ -23,7 +25,7 @@ class PhoneEntryScreen extends ConsumerStatefulWidget {
 class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
   final TextEditingController _phone = TextEditingController();
   final FocusNode _focusNode = FocusNode();
-  String? _localError;
+  bool _invalidPhone = false;
 
   @override
   void initState() {
@@ -55,16 +57,17 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
     final normalized = AuthController.normalizeThaiPhone(_phone.text);
     if (normalized == null) {
       ctrl.setPhone(_phone.text.trim());
-      setState(() => _localError = 'เบอร์โทรไม่ถูกต้อง / Invalid phone number');
+      setState(() => _invalidPhone = true);
       return;
     }
     ctrl.setPhone(normalized);
-    setState(() => _localError = null);
+    setState(() => _invalidPhone = false);
     context.push('/auth/captcha');
   }
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // No green top bar — the hi-fi `Mobile - Auth.html` screen ① has none; the brand shows
     // via the centered shield + welcome below. AnnotatedRegion gives the light page the dark
     // status-bar icons the (removed) green header used to set.
@@ -77,12 +80,25 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                const SizedBox(height: PgTokens.space4),
-                const AuthHead(
+                // Language toggle, top-right — pre-login users choose TH/EN here (the only
+                // other place it lives is the post-login profile). Default is Thai.
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: LangSegmented(
+                    value: ref.watch(localeControllerProvider),
+                    onChanged: (l) => ref
+                        .read(localeControllerProvider.notifier)
+                        .setLocale(l),
+                  ),
+                ),
+                const SizedBox(height: PgTokens.space2),
+                AuthHead(
                   showLogo: true,
-                  title: 'ยินดีต้อนรับสู่ pguard / Welcome to pguard',
-                  subtitle:
-                      'กรอกเบอร์โทรเพื่อรับรหัส OTP / Enter your phone to get an OTP',
+                  title:
+                      isThai ? 'ยินดีต้อนรับสู่ pguard' : 'Welcome to pguard',
+                  subtitle: isThai
+                      ? 'กรอกเบอร์โทรเพื่อรับรหัส OTP'
+                      : 'Enter your phone to get an OTP',
                 ),
                 const SizedBox(height: PgTokens.space6),
                 // Design `.phone-field` focus: brand border (theme) + a 4px focus-ring glow.
@@ -116,8 +132,8 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
                     ],
                     onChanged: (v) {
                       ref.read(authControllerProvider.notifier).setPhone(v);
-                      if (_localError != null) {
-                        setState(() => _localError = null);
+                      if (_invalidPhone) {
+                        setState(() => _invalidPhone = false);
                       }
                     },
                     onSubmitted: (_) => _continue(),
@@ -134,23 +150,25 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
                   ),
                 ),
                 const SizedBox(height: PgTokens.space2),
-                const Text(
-                  'เราจะส่ง SMS รหัส 6 หลักไปยังเบอร์นี้ / We\'ll text a 6-digit code to this number',
+                Text(
+                  isThai
+                      ? 'เราจะส่ง SMS รหัส 6 หลักไปยังเบอร์นี้'
+                      : "We'll text a 6-digit code to this number",
                   textAlign: TextAlign.center,
-                  style:
-                      TextStyle(color: PgTokens.colorTextMuted, fontSize: 12.5),
+                  style: const TextStyle(
+                      color: PgTokens.colorTextMuted, fontSize: 12.5),
                 ),
                 const SizedBox(height: PgTokens.space6),
-                if (_localError != null)
+                if (_invalidPhone)
                   Padding(
                     padding: const EdgeInsets.only(bottom: PgTokens.space3),
                     child: Text(
-                      _localError!,
+                      isThai ? 'เบอร์โทรไม่ถูกต้อง' : 'Invalid phone number',
                       style: const TextStyle(color: PgTokens.colorDanger),
                     ),
                   ),
                 PgPrimaryButton(
-                  label: 'ขอรหัส OTP / Send OTP',
+                  label: isThai ? 'ขอรหัส OTP' : 'Send OTP',
                   onPressed: _continue,
                 ),
               ],

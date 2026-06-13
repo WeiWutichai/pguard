@@ -6,6 +6,7 @@ import '../models/tracking.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'guard_clock.dart';
+import 'locale_controller.dart';
 
 part 'active_job_controller.g.dart';
 
@@ -64,7 +65,8 @@ class ActiveJobController extends _$ActiveJobController {
   @override
   Future<ActiveJobState> build(String bookingId) async {
     final data = await ref.read(pguardApiProvider).get('/bookings/$bookingId');
-    return ActiveJobState(booking: Booking.fromJson(data as Map<String, dynamic>));
+    return ActiveJobState(
+        booking: Booking.fromJson(data as Map<String, dynamic>));
   }
 
   /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws after accepting
@@ -103,11 +105,16 @@ class ActiveJobController extends _$ActiveJobController {
       state = AsyncData(current.copyWith(busy: false, error: e.message));
       return false;
     } catch (_) {
-      state = AsyncData(current.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong'));
+      state = AsyncData(current.copyWith(busy: false, error: _genericError()));
       return false;
     }
   }
+
+  /// Localized fallback message for an unexpected (non-[ApiException]) failure, in the
+  /// user's current display language.
+  String _genericError() => ref.read(localeControllerProvider) == AppLocale.th
+      ? 'เกิดข้อผิดพลาด'
+      : 'Something went wrong';
 
   /// Submit the check-in for schedule slot [slot] (photo + optional GPS/note) via
   /// [CheckInService]. On success the slot is marked done.
@@ -128,13 +135,17 @@ class ActiveJobController extends _$ActiveJobController {
     final current = state.valueOrNull;
     if (current == null) return false;
     final maxHour = current.hours < 1 ? 1 : current.hours;
-    final serverHour = slot + 1 > maxHour ? maxHour : slot + 1; // defensive clamp (never trips)
+    final serverHour = slot + 1 > maxHour
+        ? maxHour
+        : slot + 1; // defensive clamp (never trips)
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     state = AsyncData(current.copyWith(busy: true, error: null));
     try {
       await ref.read(checkInServiceProvider).submit(
             bookingId: current.booking.id,
             hourNumber: serverHour,
             photo: photo,
+            isThai: isThai,
             gps: gps,
             note: note,
           );
@@ -147,8 +158,7 @@ class ActiveJobController extends _$ActiveJobController {
       state = AsyncData(current.copyWith(busy: false, error: e.message));
       return false;
     } catch (_) {
-      state = AsyncData(current.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong'));
+      state = AsyncData(current.copyWith(busy: false, error: _genericError()));
       return false;
     }
   }

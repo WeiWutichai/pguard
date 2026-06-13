@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
@@ -74,15 +75,16 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(bookingFlowControllerProvider);
     final service = state.service;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'จองเจ้าหน้าที่',
+        title: isThai ? 'จองเจ้าหน้าที่' : 'Book a guard',
         subtitle: service != null
-            ? '${service.labelTh} · ${service.labelEn}'
+            ? (isThai ? service.labelTh : service.labelEn)
             : 'Booking',
         showBack: true,
       ),
@@ -96,9 +98,10 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                   _ServiceChips(
                     selected: service,
                     onSelect: _ctrl.selectService,
+                    isThai: isThai,
                   ),
                   const SizedBox(height: PgTokens.space4),
-                  const _Label('สถานที่ / Location'),
+                  _Label(isThai ? 'สถานที่' : 'Location'),
                   const SizedBox(height: PgTokens.space2),
                   MapPicker(
                     initial: state.place,
@@ -110,18 +113,20 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                     onChanged: _ctrl.setAddress,
                     minLines: 1,
                     maxLines: 2,
-                    decoration: const InputDecoration(
-                      labelText: 'ที่อยู่ / Address',
-                      hintText: 'บ้านเลขที่ ถนน แขวง เขต',
-                      prefixIcon: Icon(Icons.location_on_outlined),
+                    decoration: InputDecoration(
+                      labelText: isThai ? 'ที่อยู่' : 'Address',
+                      hintText: isThai
+                          ? 'บ้านเลขที่ ถนน แขวง เขต'
+                          : 'House no., street, sub-district, district',
+                      prefixIcon: const Icon(Icons.location_on_outlined),
                     ),
                   ),
                   const SizedBox(height: PgTokens.space4),
-                  const _Label('วันและเวลา / Date & time'),
+                  _Label(isThai ? 'วันและเวลา' : 'Date & time'),
                   const SizedBox(height: PgTokens.space2),
                   _ScheduleRow(when: state.scheduledAt, onTap: _pickSchedule),
                   const SizedBox(height: PgTokens.space4),
-                  const _Label('ระยะเวลา / Duration'),
+                  _Label(isThai ? 'ระยะเวลา' : 'Duration'),
                   const SizedBox(height: PgTokens.space2),
                   _HourChips(
                     presets: _hourPresets,
@@ -129,13 +134,13 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                     onSelect: _ctrl.setHours,
                   ),
                   const SizedBox(height: PgTokens.space4),
-                  const _Label('จำนวนเจ้าหน้าที่ / Guards'),
+                  _Label(isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards'),
                   const SizedBox(height: PgTokens.space2),
                   _Stepper(
                     value: state.guardCount,
                     min: 1,
                     max: 20,
-                    unit: 'คน',
+                    unit: isThai ? 'คน' : 'guards',
                     onChanged: _ctrl.setGuardCount,
                   ),
                   if (state.error != null) ...[
@@ -146,7 +151,11 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                 ],
               ),
             ),
-            _PriceBar(state: state, onSubmit: state.busy ? null : _submit),
+            _PriceBar(
+              state: state,
+              isThai: isThai,
+              onSubmit: state.busy ? null : _submit,
+            ),
           ],
         ),
       ),
@@ -169,10 +178,15 @@ class _Label extends StatelessWidget {
 }
 
 class _ServiceChips extends StatelessWidget {
-  const _ServiceChips({required this.selected, required this.onSelect});
+  const _ServiceChips({
+    required this.selected,
+    required this.onSelect,
+    required this.isThai,
+  });
 
   final SecurityService? selected;
   final ValueChanged<SecurityService> onSelect;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -182,7 +196,7 @@ class _ServiceChips extends StatelessWidget {
       children: [
         for (final service in SecurityService.values)
           _Chip(
-            label: service.labelTh,
+            label: isThai ? service.labelTh : service.labelEn,
             icon: serviceIcon(service),
             selected: service == selected,
             onTap: () => onSelect(service),
@@ -220,9 +234,7 @@ class _Chip extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radiusFull),
             border: Border.all(
-                color: selected
-                    ? PgTokens.colorPrimary
-                    : PgTokens.colorBorder),
+                color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
           ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
@@ -387,9 +399,14 @@ class _RoundButton extends StatelessWidget {
 }
 
 class _PriceBar extends StatelessWidget {
-  const _PriceBar({required this.state, required this.onSubmit});
+  const _PriceBar({
+    required this.state,
+    required this.isThai,
+    required this.onSubmit,
+  });
 
   final BookingFlowState state;
+  final bool isThai;
   final VoidCallback? onSubmit;
 
   @override
@@ -412,13 +429,13 @@ class _PriceBar extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text('ราคาประเมิน / Est. price',
-                          style: TextStyle(
+                      Text(isThai ? 'ราคาประเมิน' : 'Est. price',
+                          style: const TextStyle(
                               fontSize: 12, color: PgTokens.colorTextMuted)),
                       Text(
                         state.hasEstimate
                             ? '${Money.format(state.estimateHourlySatang)}/ชม. × ${state.hours} ชม. × ${state.guardCount}'
-                            : 'คิดราคาตามจริง',
+                            : (isThai ? 'คิดราคาตามจริง' : 'Priced on actuals'),
                         style: const TextStyle(
                             fontSize: 11, color: PgTokens.colorTextFaint),
                       ),
@@ -436,7 +453,7 @@ class _PriceBar extends StatelessWidget {
             ),
             const SizedBox(height: PgTokens.space3),
             PgPrimaryButton(
-              label: 'ค้นหาเจ้าหน้าที่ / Find guards',
+              label: isThai ? 'ค้นหาเจ้าหน้าที่' : 'Find guards',
               busy: state.busy,
               onPressed: onSubmit,
             ),

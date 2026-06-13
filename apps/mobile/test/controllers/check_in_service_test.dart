@@ -38,13 +38,13 @@ void main() {
 
   tearDown(() => tmp.delete(recursive: true));
 
-  CapturedPhoto capturedJpg() =>
-      CapturedPhoto(path: photo.path, sizeBytes: 64);
+  CapturedPhoto capturedJpg() => CapturedPhoto(path: photo.path, sizeBytes: 64);
 
   // ---------- request shape (golden) ----------
 
   group('FormData (golden — matches the merged contract)', () {
-    test('sends hour_number + photo (single, declared MIME) + GPS + note', () async {
+    test('sends hour_number + photo (single, declared MIME) + GPS + note',
+        () async {
       FormData? sent;
       final api = FakeApi(onPost: (path, data) async {
         expect(path, '/bookings/b1/progress-reports');
@@ -57,6 +57,7 @@ void main() {
         bookingId: 'b1',
         hourNumber: 3,
         photo: capturedJpg(),
+        isThai: true,
         gps: GpsSample(
             lat: 13.75, lng: 100.5, accuracy: 8.0, recordedAt: DateTime(2026)),
         note: '  ตรวจรอบนอกเรียบร้อย  ',
@@ -69,7 +70,8 @@ void main() {
       expect(fields['lng'], '100.5');
       expect(fields['accuracy'], '8.0');
       expect(fields['note'], 'ตรวจรอบนอกเรียบร้อย', reason: 'trimmed');
-      expect(fields.containsKey('message'), isFalse, reason: 'no stale `message`');
+      expect(fields.containsKey('message'), isFalse,
+          reason: 'no stale `message`');
 
       final file = sent!.files.single;
       expect(file.key, 'photo', reason: 'single `photo` part, not `files`');
@@ -90,6 +92,7 @@ void main() {
         bookingId: 'b1',
         hourNumber: 1,
         photo: capturedJpg(),
+        isThai: true,
         note: '   ',
       );
       final keys = sent!.fields.map((f) => f.key).toSet();
@@ -98,7 +101,8 @@ void main() {
       expect(keys.contains('note'), isFalse);
     });
 
-    test('omits accuracy when GPS has none but keeps the lat/lng pair', () async {
+    test('omits accuracy when GPS has none but keeps the lat/lng pair',
+        () async {
       FormData? sent;
       final api = FakeApi(onPost: (_, data) async {
         sent = data as FormData;
@@ -108,6 +112,7 @@ void main() {
         bookingId: 'b1',
         hourNumber: 1,
         photo: capturedJpg(),
+        isThai: true,
         gps: GpsSample(lat: 1.0, lng: 2.0, recordedAt: DateTime(2026)),
       );
       final keys = sent!.fields.map((f) => f.key).toSet();
@@ -120,7 +125,8 @@ void main() {
       final service = ApiCheckInService(api: api);
       final mov = CapturedPhoto(path: '${tmp.path}/clip.mov', sizeBytes: 10);
       await expectLater(
-        () => service.submit(bookingId: 'b1', hourNumber: 1, photo: mov),
+        () => service.submit(
+            bookingId: 'b1', hourNumber: 1, photo: mov, isThai: true),
         throwsA(isA<ApiException>()),
       );
       expect(api.calls, isEmpty);
@@ -133,7 +139,8 @@ void main() {
     ApiCheckInService serviceThatThrows(ApiException e) =>
         ApiCheckInService(api: FakeApi(onPost: (_, __) async => throw e));
 
-    test('409 DUPLICATE_CHECK_IN sub-code is ABSORBED as success (primary signal)',
+    test(
+        '409 DUPLICATE_CHECK_IN sub-code is ABSORBED as success (primary signal)',
         () async {
       // Server sends the machine-readable sub-code; the message is irrelevant to the match.
       final service = serviceThatThrows(const ApiException(
@@ -142,7 +149,7 @@ void main() {
           statusCode: 409));
       // Completes without throwing → the controller marks the slot done.
       await service.submit(
-          bookingId: 'b1', hourNumber: 1, photo: capturedJpg());
+          bookingId: 'b1', hourNumber: 1, photo: capturedJpg(), isThai: true);
     });
 
     test('409 legacy duplicate (no sub-code) is ABSORBED via message fallback',
@@ -154,7 +161,7 @@ void main() {
           code: 'CONFLICT',
           statusCode: 409));
       await service.submit(
-          bookingId: 'b1', hourNumber: 1, photo: capturedJpg());
+          bookingId: 'b1', hourNumber: 1, photo: capturedJpg(), isThai: true);
     });
 
     test(
@@ -168,27 +175,24 @@ void main() {
           statusCode: 409));
       await expectLater(
         () => service.submit(
-            bookingId: 'b1', hourNumber: 3, photo: capturedJpg()),
+            bookingId: 'b1', hourNumber: 3, photo: capturedJpg(), isThai: true),
         throwsA(
           isA<ApiException>()
               .having((e) => e.statusCode, 'statusCode', 409)
-              .having((e) => e.message, 'message', contains('ยังไม่ถึงเวลา'))
-              .having((e) => e.message, 'message',
-                  contains('not time for this check-in')),
+              .having((e) => e.message, 'message', contains('ยังไม่ถึงเวลา')),
         ),
       );
     });
 
     test('413 surfaces a bilingual "photo too large" message', () async {
-      final service = serviceThatThrows(
-          const ApiException(message: 'Request body too large', statusCode: 413));
+      final service = serviceThatThrows(const ApiException(
+          message: 'Request body too large', statusCode: 413));
       await expectLater(
         () => service.submit(
-            bookingId: 'b1', hourNumber: 1, photo: capturedJpg()),
+            bookingId: 'b1', hourNumber: 1, photo: capturedJpg(), isThai: true),
         throwsA(isA<ApiException>()
             .having((e) => e.statusCode, 'statusCode', 413)
-            .having((e) => e.message, 'message', contains('รูปภาพใหญ่เกินไป'))
-            .having((e) => e.message, 'message', contains('too large'))),
+            .having((e) => e.message, 'message', contains('รูปภาพใหญ่เกินไป'))),
       );
     });
 
@@ -199,10 +203,14 @@ void main() {
             ApiException(message: 'Forbidden', statusCode: code));
         await expectLater(
           () => service.submit(
-              bookingId: 'b1', hourNumber: 1, photo: capturedJpg()),
+              bookingId: 'b1',
+              hourNumber: 1,
+              photo: capturedJpg(),
+              isThai: true),
           throwsA(isA<ApiException>()
               .having((e) => e.statusCode, 'statusCode', code)
-              .having((e) => e.message, 'message', contains('เช็คอินงานนี้ไม่ได้'))),
+              .having((e) => e.message, 'message',
+                  contains('เช็คอินงานนี้ไม่ได้'))),
         );
       }
     });
@@ -212,7 +220,7 @@ void main() {
           message: 'Network error — please check your connection'));
       await expectLater(
         () => service.submit(
-            bookingId: 'b1', hourNumber: 1, photo: capturedJpg()),
+            bookingId: 'b1', hourNumber: 1, photo: capturedJpg(), isThai: true),
         throwsA(isA<ApiException>()
             .having((e) => e.isNetwork, 'isNetwork', isTrue)
             .having((e) => e.message, 'message', contains('ส่งใหม่ได้เลย'))),
@@ -230,9 +238,11 @@ void main() {
   // `DioException`, so `_onError` never fires. That's a pre-existing api_client property, noted
   // for follow-up — out of scope here.) This test exercises the path that actually runs.
 
-  test('multipart check-in is sent with a proactively-refreshed token', () async {
+  test('multipart check-in is sent with a proactively-refreshed token',
+      () async {
     final store = InMemoryStore()
-      ..access = fakeJwt({'exp': 1000000000}) // expired (2001) → proactive refresh fires
+      ..access = fakeJwt(
+          {'exp': 1000000000}) // expired (2001) → proactive refresh fires
       ..refresh = 'r1';
 
     var refreshHits = 0;
@@ -260,11 +270,13 @@ void main() {
     );
 
     // Must NOT throw: the expired token is refreshed before the multipart POST is sent.
-    await ApiCheckInService(api: api)
-        .submit(bookingId: 'b1', hourNumber: 1, photo: capturedJpg());
+    await ApiCheckInService(api: api).submit(
+        bookingId: 'b1', hourNumber: 1, photo: capturedJpg(), isThai: true);
 
-    expect(refreshHits, 1, reason: 'the expired token was refreshed before sending');
-    expect(sentAuth, 'Bearer $freshAccess', reason: 'upload carried the fresh token');
+    expect(refreshHits, 1,
+        reason: 'the expired token was refreshed before sending');
+    expect(sentAuth, 'Bearer $freshAccess',
+        reason: 'upload carried the fresh token');
     expect(store.access, freshAccess);
   });
 }

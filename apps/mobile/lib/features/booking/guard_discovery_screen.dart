@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -36,25 +37,29 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(bookingFlowControllerProvider);
     final ctrl = ref.read(bookingFlowControllerProvider.notifier);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'เลือกเจ้าหน้าที่',
+        title: isThai ? 'เลือกเจ้าหน้าที่' : 'Choose a guard',
         subtitle: state.guards.isNotEmpty
-            ? '${state.guards.length} คนพร้อมรับงาน'
+            ? (isThai
+                ? '${state.guards.length} คนพร้อมรับงาน'
+                : '${state.guards.length} guards available')
             : 'Nearby guards',
         showBack: true,
       ),
       body: SafeArea(
         child: Column(
           children: [
-            Expanded(child: _body(state, ctrl)),
+            Expanded(child: _body(state, ctrl, isThai)),
             _ContinueBar(
               enabled: !state.busy && state.guards.isNotEmpty,
               onContinue: () => context.push('/book/payment'),
+              isThai: isThai,
             ),
           ],
         ),
@@ -62,41 +67,38 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     );
   }
 
-  Widget _body(BookingFlowState state, BookingFlowController ctrl) {
+  Widget _body(
+      BookingFlowState state, BookingFlowController ctrl, bool isThai) {
     if (state.busy && state.guards.isEmpty) {
-      return const _SearchingState();
+      return _SearchingState(isThai: isThai);
     }
     if (state.error != null && state.guards.isEmpty) {
       return PgErrorState(
-        title: 'หาเจ้าหน้าที่ไม่สำเร็จ / Could not load guards',
+        title: isThai ? 'หาเจ้าหน้าที่ไม่สำเร็จ' : 'Could not load guards',
         message: state.error,
         onRetry: ctrl.loadGuards,
       );
     }
     if (state.guards.isEmpty) {
       // Cross-state hero pattern: icon + 15px w600 title + 13px muted subtitle.
-      return const Center(
+      return Center(
         child: Padding(
-          padding: EdgeInsets.all(PgTokens.space6),
+          padding: const EdgeInsets.all(PgTokens.space6),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.search_off_outlined,
+              const Icon(Icons.search_off_outlined,
                   size: 48, color: PgTokens.colorTextFaint),
-              SizedBox(height: PgTokens.space3),
+              const SizedBox(height: PgTokens.space3),
               Text(
-                'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้',
+                isThai
+                    ? 'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้'
+                    : 'No guards available right now',
                 textAlign: TextAlign.center,
-                style: TextStyle(
+                style: const TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w600,
                     color: PgTokens.colorText),
-              ),
-              SizedBox(height: PgTokens.space2),
-              Text(
-                'No guards available right now',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
               ),
             ],
           ),
@@ -108,9 +110,12 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
       children: [
         // First-come note demoted to a plain caption (the design's guard list has no banner
         // between the header and the cards).
-        const Text(
-          'เจ้าหน้าที่ที่ว่างจะตอบรับงานของคุณ (first-come) — เลือกคนที่สนใจไว้เพื่อดูเรตติ้งได้',
-          style: TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
+        Text(
+          isThai
+              ? 'เจ้าหน้าที่ที่ว่างจะตอบรับงานของคุณ (first-come) — เลือกคนที่สนใจไว้เพื่อดูเรตติ้งได้'
+              : 'An available guard will accept your job (first-come) — pick one '
+                  'you like to see their rating',
+          style: const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
         ),
         const SizedBox(height: PgTokens.space3),
         for (final guard in state.guards) ...[
@@ -129,7 +134,9 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 /// The design's "searching" state: centered title + three staggered pulsing dots
 /// (10px, brand interactive, 8px gap). One repeating display animation — no polling.
 class _SearchingState extends StatefulWidget {
-  const _SearchingState();
+  const _SearchingState({required this.isThai});
+
+  final bool isThai;
 
   @override
   State<_SearchingState> createState() => _SearchingStateState();
@@ -179,10 +186,12 @@ class _SearchingStateState extends State<_SearchingState>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text(
-              'กำลังค้นหาเจ้าหน้าที่ใกล้คุณ\nFinding nearby guards',
+            Text(
+              widget.isThai
+                  ? 'กำลังค้นหาเจ้าหน้าที่ใกล้คุณ'
+                  : 'Finding nearby guards',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: PgTokens.space6),
             Row(
@@ -203,10 +212,15 @@ class _SearchingStateState extends State<_SearchingState>
 }
 
 class _ContinueBar extends StatelessWidget {
-  const _ContinueBar({required this.enabled, required this.onContinue});
+  const _ContinueBar({
+    required this.enabled,
+    required this.onContinue,
+    required this.isThai,
+  });
 
   final bool enabled;
   final VoidCallback onContinue;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -219,7 +233,7 @@ class _ContinueBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: PgPrimaryButton(
-          label: 'ยืนยันการจอง / Confirm booking',
+          label: isThai ? 'ยืนยันการจอง' : 'Confirm booking',
           onPressed: enabled ? onContinue : null,
         ),
       ),

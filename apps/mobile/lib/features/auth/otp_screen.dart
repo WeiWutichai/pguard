@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/resend_policy.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/otp_input.dart';
@@ -31,6 +32,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(authControllerProvider);
     final sentAt = state.otpSentAt;
 
@@ -44,9 +46,10 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
             children: [
               const SizedBox(height: PgTokens.space4),
               AuthHead(
-                title: 'กรอกรหัส 6 หลัก / Enter 6-digit code',
-                subtitle:
-                    'ส่งไปที่ +66 ${state.phone} / Sent to +66 ${state.phone}',
+                title: isThai ? 'กรอกรหัส 6 หลัก' : 'Enter 6-digit code',
+                subtitle: isThai
+                    ? 'ส่งไปที่ +66 ${state.phone}'
+                    : 'Sent to +66 ${state.phone}',
               ),
               const SizedBox(height: PgTokens.space6),
               OtpInput(
@@ -63,6 +66,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                   sentAt: sentAt,
                   policy: _resend,
                   attempt: state.otpRequestCount.clamp(1, 5),
+                  isThai: isThai,
                 ),
               const SizedBox(height: PgTokens.space4),
               if (state.error != null)
@@ -85,11 +89,15 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 /// number). Rebuilds once per second via a display stream (no network poll).
 class _ResendCountdown extends StatelessWidget {
   const _ResendCountdown(
-      {required this.sentAt, required this.policy, required this.attempt});
+      {required this.sentAt,
+      required this.policy,
+      required this.attempt,
+      required this.isThai});
 
   final DateTime sentAt;
   final ResendPolicy policy;
   final int attempt;
+  final bool isThai;
 
   static const TextStyle _strong =
       TextStyle(fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
@@ -105,16 +113,19 @@ class _ResendCountdown extends StatelessWidget {
           final timer = policy.format(remaining);
           return Text.rich(
             TextSpan(
-              children: [
-                const TextSpan(text: 'ส่งรหัสอีกครั้งใน '),
-                TextSpan(text: timer, style: _strong),
-                const TextSpan(text: ' · พยายาม '),
-                TextSpan(text: '$attempt/5', style: _strong),
-                const TextSpan(text: ' / Resend in '),
-                TextSpan(text: timer, style: _strong),
-                const TextSpan(text: ' · attempt '),
-                TextSpan(text: '$attempt/5', style: _strong),
-              ],
+              children: isThai
+                  ? [
+                      const TextSpan(text: 'ส่งรหัสอีกครั้งใน '),
+                      TextSpan(text: timer, style: _strong),
+                      const TextSpan(text: ' · พยายาม '),
+                      TextSpan(text: '$attempt/5', style: _strong),
+                    ]
+                  : [
+                      const TextSpan(text: 'Resend in '),
+                      TextSpan(text: timer, style: _strong),
+                      const TextSpan(text: ' · attempt '),
+                      TextSpan(text: '$attempt/5', style: _strong),
+                    ],
             ),
             textAlign: TextAlign.center,
             style:
@@ -124,7 +135,7 @@ class _ResendCountdown extends StatelessWidget {
         return Center(
           child: TextButton(
             onPressed: () => context.go('/auth/captcha'),
-            child: const Text('ไม่ได้รับรหัส? ขอใหม่ / Resend code'),
+            child: Text(isThai ? 'ไม่ได้รับรหัส? ขอใหม่' : 'Resend code'),
           ),
         );
       },

@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
@@ -41,25 +42,27 @@ class JobDetailScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(activeJobControllerProvider(bookingId));
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'รายละเอียดงาน',
-        subtitle: 'Job detail',
+      appBar: PGuardHeader(
+        title: isThai ? 'รายละเอียดงาน' : 'Job detail',
+        subtitle: isThai ? 'ดูข้อมูลก่อนรับงาน' : 'Job detail',
         showBack: true,
       ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดงานไม่สำเร็จ / Could not load this job',
+            title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load this job',
             message: e is ApiException ? e.message : null,
             onRetry: () =>
                 ref.invalidate(activeJobControllerProvider(bookingId)),
           ),
           data: (state) => _Body(
+            isThai: isThai,
             booking: state.booking,
             onAccept: () => _accept(context, ref),
             onDismiss: () => _dismiss(context, ref),
@@ -72,11 +75,13 @@ class JobDetailScreen extends ConsumerWidget {
 
 class _Body extends StatelessWidget {
   const _Body({
+    required this.isThai,
     required this.booking,
     required this.onAccept,
     required this.onDismiss,
   });
 
+  final bool isThai;
   final Booking booking;
   final VoidCallback onAccept;
   final VoidCallback onDismiss;
@@ -115,13 +120,13 @@ class _Body extends StatelessWidget {
               const SizedBox(height: PgTokens.space4),
               _InfoRow(
                 icon: Icons.location_on_outlined,
-                label: 'สถานที่ / Location',
+                label: isThai ? 'สถานที่' : 'Location',
                 value: booking.address ?? '—',
               ),
               const SizedBox(height: PgTokens.space3),
               _InfoRow(
                 icon: Icons.calendar_today_outlined,
-                label: 'เวลา / Time',
+                label: isThai ? 'เวลา' : 'Time',
                 value: JobDetailTime.window(
                     booking.scheduledAt, hours, DateTime.now()),
                 trailing: Text(
@@ -137,7 +142,7 @@ class _Body extends StatelessWidget {
               const SizedBox(height: PgTokens.space3),
               _InfoRow(
                 icon: Icons.people_outline,
-                label: 'จำนวนเจ้าหน้าที่ / Guards',
+                label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
                 value: '${booking.guardCount ?? 1} คน',
               ),
               if (!canAccept) ...[
@@ -168,7 +173,8 @@ class _Body extends StatelessWidget {
                   const SizedBox(width: PgTokens.space2),
                   Expanded(
                     child: PgPrimaryButton(
-                        label: 'รับงานนี้ / Accept job', onPressed: onAccept),
+                        label: isThai ? 'รับงานนี้' : 'Accept job',
+                        onPressed: onAccept),
                   ),
                 ],
               ),

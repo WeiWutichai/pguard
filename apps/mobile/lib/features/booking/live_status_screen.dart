@@ -34,12 +34,12 @@ class LiveStatusScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(bookingStatusControllerProvider(bookingId));
 
     return Scaffold(
-      appBar: const PGuardHeader(
-        title: 'งานดำเนินอยู่',
-        subtitle: 'Live job status',
+      appBar: PGuardHeader(
+        title: isThai ? 'งานดำเนินอยู่' : 'Live job status',
         showBack: true,
         live: true,
         background: PgTokens.colorGreen800,
@@ -51,10 +51,14 @@ class LiveStatusScreen extends ConsumerWidget {
           // toString() (e.g. a parse TypeError) to the user. Shared hi-fi error state —
           // retry re-runs the snapshot + WS subscribe; no raw booking id on screen.
           error: (e, _) => PgErrorState(
-            title: 'ยังเชื่อมต่อสถานะงานไม่ได้ / Could not load live status',
+            title: isThai
+                ? 'ยังเชื่อมต่อสถานะงานไม่ได้'
+                : 'Could not load live status',
             message: e is ApiException
                 ? e.message
-                : 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้',
+                : (isThai
+                    ? 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้'
+                    : 'Live status is unavailable right now'),
             onRetry: () =>
                 ref.invalidate(bookingStatusControllerProvider(bookingId)),
           ),
@@ -152,8 +156,8 @@ class _HourlyReportsCard extends ConsumerWidget {
         children: [
           if (showClock) ...[
             _RemainingTimeBlock(
-              clock: WorkClock(
-                  startedAt: startedAt, hours: progress.bookedHours),
+              clock:
+                  WorkClock(startedAt: startedAt, hours: progress.bookedHours),
             ),
             const Padding(
               padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
@@ -418,12 +422,11 @@ class _TimelineItem extends StatelessWidget {
                 ),
                 if (_done)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 11, vertical: 5),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 11, vertical: 5),
                     decoration: BoxDecoration(
                       color: PgTokens.colorSuccessBg,
-                      borderRadius:
-                          BorderRadius.circular(PgTokens.radiusFull),
+                      borderRadius: BorderRadius.circular(PgTokens.radiusFull),
                     ),
                     child: const Text(
                       'รายงานแล้ว',
@@ -518,6 +521,7 @@ class _Actions extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final canCancel = _cancellable.contains(booking.status);
     final myUserId = ref.watch(sessionProvider).user?.userId;
     return Row(
@@ -556,23 +560,22 @@ class _Actions extends ConsumerWidget {
                     style: TextButton.styleFrom(
                       foregroundColor: PgTokens.colorDanger,
                       shape: RoundedRectangleBorder(
-                        borderRadius:
-                            BorderRadius.circular(PgTokens.radiusXl),
+                        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                         side: const BorderSide(color: PgTokens.colorBorder),
                       ),
                     ),
-                    child: const FittedBox(
+                    child: FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        'ยกเลิกและค้นหาใหม่ / Cancel & search again',
-                        style: TextStyle(
+                        isThai ? 'ยกเลิกและค้นหาใหม่' : 'Cancel & search again',
+                        style: const TextStyle(
                             fontSize: 14, fontWeight: FontWeight.w600),
                       ),
                     ),
                   ),
                 )
               : PgPrimaryButton(
-                  label: 'ดูรายละเอียด / Details',
+                  label: isThai ? 'ดูรายละเอียด' : 'Details',
                   onPressed: () {},
                 ),
         ),
@@ -616,7 +619,8 @@ class _TrackGuardTile extends ConsumerWidget {
                 ),
               ),
               Icon(Icons.chevron_right,
-                  size: 18, color: PgTokens.colorGreen800.withValues(alpha: 0.7)),
+                  size: 18,
+                  color: PgTokens.colorGreen800.withValues(alpha: 0.7)),
             ],
           ),
         ),

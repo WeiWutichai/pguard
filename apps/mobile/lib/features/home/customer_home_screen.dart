@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/customer_home_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -56,13 +57,15 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final bookings = ref.watch(customerHomeControllerProvider).valueOrNull;
     final ongoing =
         bookings == null ? null : CustomerHomeController.ongoing(bookings);
     final latest =
         bookings == null ? null : CustomerHomeController.latest(bookings);
-    final address =
-        bookings == null ? null : CustomerHomeController.recentAddress(bookings);
+    final address = bookings == null
+        ? null
+        : CustomerHomeController.recentAddress(bookings);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -71,8 +74,8 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
         // Design home header is location-first ("ตำแหน่งปัจจุบัน" over the address); the most
         // recent booking address is the best available stand-in (no saved-places endpoint).
         subtitle: address != null
-            ? 'ตำแหน่งปัจจุบัน · $address'
-            : 'ลูกค้า · Customer',
+            ? '${isThai ? 'ตำแหน่งปัจจุบัน' : 'Current location'} · $address'
+            : (isThai ? 'ลูกค้า' : 'Customer'),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -82,7 +85,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
               child: IconButton(
                 icon: const Icon(Icons.forum_outlined,
                     color: Colors.white, size: 22),
-                tooltip: 'แชท / Chat',
+                tooltip: isThai ? 'แชท' : 'Chat',
                 onPressed: () =>
                     context.push(ChatRoutes.list(ChatRole.customer)),
               ),
@@ -94,29 +97,29 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
       // Design state 5 (hirer nav + book FAB) — additive chrome; body content unchanged.
       bottomNavigationBar: PgBottomNav(
         tabs: [
-          const PgNavTab(
+          PgNavTab(
             icon: Icons.home_outlined,
-            label: 'หน้าหลัก / Home',
+            label: isThai ? 'หน้าหลัก' : 'Home',
             active: true,
           ),
           PgNavTab(
             icon: Icons.calendar_today_outlined,
-            label: 'การจอง / Bookings',
+            label: isThai ? 'การจอง' : 'Bookings',
             onTap: () => context.push('/bookings-history'),
           ),
           PgNavTab(
             icon: Icons.account_balance_wallet_outlined,
-            label: 'กระเป๋า / Wallet',
+            label: isThai ? 'กระเป๋า' : 'Wallet',
             onTap: () => context.push('/wallet'),
           ),
           PgNavTab(
             icon: Icons.person_outline,
-            label: 'โปรไฟล์ / Profile',
+            label: isThai ? 'โปรไฟล์' : 'Profile',
             onTap: () => context.push('/profile'),
           ),
         ],
         fab: PgNavFab.book(
-          label: 'เรียก รปภ. / Book',
+          label: isThai ? 'เรียก รปภ.' : 'Book',
           onTap: () => context.push('/book'),
         ),
       ),
@@ -127,13 +130,10 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
           child: ListView(
             physics: const AlwaysScrollableScrollPhysics(),
             // Extra bottom inset keeps the last row clear of the FAB overhang.
-            padding: const EdgeInsets.fromLTRB(
-                PgTokens.space4,
-                PgTokens.space4,
-                PgTokens.space4,
-                PgTokens.space4 + PgBottomNav.fabOverhang),
+            padding: const EdgeInsets.fromLTRB(PgTokens.space4, PgTokens.space4,
+                PgTokens.space4, PgTokens.space4 + PgBottomNav.fabOverhang),
             children: [
-              const _SectionHeading('บริการ / Services'),
+              _SectionHeading(isThai ? 'บริการ' : 'Services'),
               const SizedBox(height: PgTokens.space3),
               Row(
                 children: [
@@ -151,15 +151,15 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
               ),
               if (ongoing != null) ...[
                 const SizedBox(height: PgTokens.space6),
-                const _SectionHeading('งานที่กำลังดำเนิน / Ongoing job'),
+                _SectionHeading(isThai ? 'งานที่กำลังดำเนิน' : 'Ongoing job'),
                 const SizedBox(height: PgTokens.space3),
                 _OngoingJobCard(booking: ongoing),
               ],
               if (latest != null) ...[
                 const SizedBox(height: PgTokens.space6),
-                const _SectionHeading('การจองล่าสุด / Latest booking'),
+                _SectionHeading(isThai ? 'การจองล่าสุด' : 'Latest booking'),
                 const SizedBox(height: PgTokens.space2),
-                _RecentBookingRow(booking: latest),
+                _RecentBookingRow(booking: latest, isThai: isThai),
               ],
               // Dev harness only — no booking-ID input exists anywhere in the design.
               if (kDebugMode) ...[
@@ -172,7 +172,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
                 ),
                 const SizedBox(height: PgTokens.space3),
                 PgPrimaryButton(
-                  label: 'ติดตามงาน / Track active booking',
+                  label: isThai ? 'ติดตามงาน' : 'Track active booking',
                   onPressed: () {
                     final id = _bookingId.text.trim();
                     if (id.isNotEmpty) context.push('/booking/$id/live');
@@ -197,7 +197,9 @@ class _SectionHeading extends StatelessWidget {
   Widget build(BuildContext context) => Text(
         text,
         style: const TextStyle(
-            fontSize: 14, fontWeight: FontWeight.w600, color: PgTokens.colorText),
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: PgTokens.colorText),
       );
 }
 
@@ -208,11 +210,12 @@ class _ProfileAvatarButton extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final initials = ref.watch(profileControllerProvider).valueOrNull?.initials;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: PgTokens.space1),
       child: Tooltip(
-        message: 'โปรไฟล์ / Profile',
+        message: isThai ? 'โปรไฟล์' : 'Profile',
         child: InkWell(
           onTap: () => context.push('/profile'),
           customBorder: const CircleBorder(),
@@ -356,16 +359,19 @@ class _OngoingJobCard extends StatelessWidget {
 
 /// The "การจองล่าสุด" row: sunken shield icon, place + date·status, right-aligned total.
 class _RecentBookingRow extends StatelessWidget {
-  const _RecentBookingRow({required this.booking});
+  const _RecentBookingRow({required this.booking, required this.isThai});
 
   final Booking booking;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final when = booking.scheduledAt;
     final dateStatus = [
-      if (when != null) thaiShortDate(when),
-      BookingLifecycle.labelTh(booking.status),
+      if (when != null) thaiShortDate(when, isThai: isThai),
+      isThai
+          ? BookingLifecycle.labelTh(booking.status)
+          : BookingLifecycle.labelEn(booking.status),
     ].join(' · ');
     final total = bookingTotalSatang(booking);
     return InkWell(

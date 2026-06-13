@@ -25,14 +25,14 @@ void main() {
       (tester) async {
     await pump(tester);
 
-    await tester.tap(find.text('สร้างบัญชี / Create account'));
+    await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
-    expect(find.textContaining('Address is required'), findsOneWidget);
+    expect(find.textContaining('กรุณากรอกที่อยู่'), findsOneWidget);
 
     await tester.enterText(find.byKey(const Key('reg_address')), 'short');
-    await tester.tap(find.text('สร้างบัญชี / Create account'));
+    await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
-    expect(find.textContaining('too short'), findsOneWidget);
+    expect(find.textContaining('ที่อยู่สั้นเกินไป'), findsOneWidget);
     // The live ✓ helper does not appear for an invalid address.
     expect(find.textContaining('✓ ที่อยู่ครบถ้วน'), findsNothing);
   });
@@ -45,13 +45,11 @@ void main() {
     await tester.pump();
     // The design's live success helper appears once min length is met.
     expect(
-        find.text(
-            '✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร) / ✓ Valid (min 10 characters)'),
-        findsOneWidget);
+        find.text('✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร)'), findsOneWidget);
 
-    await tester.tap(find.text('สร้างบัญชี / Create account'));
+    await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
-    expect(find.textContaining('Address is required'), findsNothing);
-    expect(find.textContaining('too short'), findsNothing);
+    expect(find.textContaining('กรุณากรอกที่อยู่'), findsNothing);
+    expect(find.textContaining('ที่อยู่สั้นเกินไป'), findsNothing);
   });
 }

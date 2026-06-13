@@ -28,28 +28,28 @@ class ChatListScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'ข้อความ',
-        subtitle: 'Messages',
+      appBar: PGuardHeader(
+        title: isThai ? 'ข้อความ' : 'Messages',
+        subtitle: isThai ? 'พูดคุยกับคู่สนทนา' : 'Conversations',
         showBack: true,
       ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดแชทไม่สำเร็จ / Could not load chats',
+            title: isThai ? 'โหลดแชทไม่สำเร็จ' : 'Could not load chats',
             message: e is ApiException ? e.message : null,
             onRetry: ctrl.refresh,
           ),
           data: (list) => RefreshIndicator(
             onRefresh: ctrl.refresh,
             child: list.isEmpty
-                ? const _EmptyBody()
+                ? _EmptyBody(isThai: isThai)
                 : ListView.separated(
                     itemCount: list.length,
                     // Design: full-bleed 1px border under each row (no avatar indent).
-                    separatorBuilder: (_, __) => const Divider(
-                        height: 1, color: PgTokens.colorBorder),
+                    separatorBuilder: (_, __) =>
+                        const Divider(height: 1, color: PgTokens.colorBorder),
                     itemBuilder: (_, i) {
                       final c = list[i];
                       return ConversationTile(
@@ -74,32 +74,38 @@ class ChatListScreen extends ConsumerWidget {
 }
 
 class _EmptyBody extends StatelessWidget {
-  const _EmptyBody();
+  const _EmptyBody({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     return ListView(
       // ListView so pull-to-refresh still works on the empty state.
-      children: const [
-        SizedBox(height: 120),
-        Icon(Icons.forum_outlined, size: 48, color: PgTokens.colorTextFaint),
-        SizedBox(height: PgTokens.space3),
+      children: [
+        const SizedBox(height: 120),
+        const Icon(Icons.forum_outlined,
+            size: 48, color: PgTokens.colorTextFaint),
+        const SizedBox(height: PgTokens.space3),
         Center(
           child: Text(
-            'ยังไม่มีการสนทนา\nNo conversations yet',
+            isThai ? 'ยังไม่มีการสนทนา' : 'No conversations yet',
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: PgTokens.colorText),
           ),
         ),
-        SizedBox(height: PgTokens.space2),
+        const SizedBox(height: PgTokens.space2),
         Center(
           child: Text(
-            'แชทกับคู่สนทนาเมื่อมีงานที่กำลังดำเนินอยู่\nChat opens when you have an active job',
+            isThai
+                ? 'แชทกับคู่สนทนาเมื่อมีงานที่กำลังดำเนินอยู่'
+                : 'Chat opens when you have an active job',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+            style:
+                const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
           ),
         ),
       ],

@@ -34,8 +34,8 @@ void main() {
     const summary = RegistrationSummary(
       role: RegistrationRole.guard,
       lines: [
-        (label: 'เพศ / Gender', value: 'male'),
-        (label: 'เลขบัญชี / Account', value: '••••7890'),
+        (label: 'เพศ', value: 'male'),
+        (label: 'เลขบัญชี', value: '••••7890'),
       ],
     );
     prefs.values[kRegSummaryKey] = jsonEncode(summary.toJson());
@@ -45,11 +45,11 @@ void main() {
     // No green PGuardHeader anymore (hi-fi has no top bar) — the role-specific hero head is
     // the screen's title, so the old 'Pending approval' header subtitle is gone by design.
     expect(find.textContaining('Pending approval'), findsNothing);
-    // Per-role design copy + the role badge pill.
-    expect(find.text('กำลังตรวจสอบใบสมัคร / Application under review'),
-        findsOneWidget);
-    expect(find.text('เจ้าหน้าที่ รปภ. / Security Guard'), findsOneWidget);
-    expect(find.text('ตรวจสอบสถานะ / Check status'), findsOneWidget);
+    // Per-role design copy + the role badge pill. Default locale is Thai (no override), so the
+    // single-language render shows the Thai halves.
+    expect(find.text('กำลังตรวจสอบใบสมัคร'), findsOneWidget);
+    expect(find.text('เจ้าหน้าที่ รปภ.'), findsOneWidget);
+    expect(find.text('ตรวจสอบสถานะ'), findsOneWidget);
     // The summary rows are no longer rendered — the masked value must not appear anywhere.
     expect(find.text('••••7890'), findsNothing);
     expect(find.text('male'), findsNothing);
@@ -59,14 +59,14 @@ void main() {
     final prefs = FakePrefsStore();
     const summary = RegistrationSummary(
       role: RegistrationRole.customer,
-      lines: [(label: 'ที่อยู่ / Address', value: '99/1 Sukhumvit Rd')],
+      lines: [(label: 'ที่อยู่', value: '99/1 Sukhumvit Rd')],
     );
     prefs.values[kRegSummaryKey] = jsonEncode(summary.toJson());
 
     await pump(tester, prefs);
 
-    expect(find.text('เกือบเสร็จแล้ว! / Almost there!'), findsOneWidget);
-    expect(find.text('ลูกค้าจ้างงาน / Hirer'), findsOneWidget);
-    expect(find.text('ตรวจสอบสถานะ / Check status'), findsOneWidget);
+    expect(find.text('เกือบเสร็จแล้ว!'), findsOneWidget);
+    expect(find.text('ลูกค้าจ้างงาน'), findsOneWidget);
+    expect(find.text('ตรวจสอบสถานะ'), findsOneWidget);
   });
 }

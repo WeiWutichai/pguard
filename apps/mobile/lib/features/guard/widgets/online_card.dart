@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/tracking_controller.dart';
 import '../../../core/network/sockets/presence_socket.dart';
 
@@ -12,6 +13,7 @@ class OnlineCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(trackingControllerProvider);
     final ctrl = ref.read(trackingControllerProvider.notifier);
 
@@ -26,7 +28,7 @@ class OnlineCard extends ConsumerWidget {
         children: [
           Row(
             children: [
-              Expanded(child: _StatusText(state: state)),
+              Expanded(child: _StatusText(state: state, isThai: isThai)),
               Switch(
                 value: state.online,
                 onChanged: (_) => ctrl.toggle(),
@@ -39,7 +41,7 @@ class OnlineCard extends ConsumerWidget {
             padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
             child: Divider(height: 1, color: Colors.white24),
           ),
-          _GpsLine(state: state),
+          _GpsLine(state: state, isThai: isThai),
         ],
       ),
     );
@@ -47,30 +49,34 @@ class OnlineCard extends ConsumerWidget {
 }
 
 class _StatusText extends StatelessWidget {
-  const _StatusText({required this.state});
+  const _StatusText({required this.state, required this.isThai});
 
   final TrackingState state;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final String title;
     final String sub;
     if (!state.online) {
-      title = 'พร้อมรับงาน / Go online';
-      sub = 'คุณกำลังออฟไลน์ · You\'re offline';
+      title = isThai ? 'พร้อมรับงาน' : 'Go online';
+      sub = isThai ? 'คุณกำลังออฟไลน์' : "You're offline";
     } else if (state.link == PresenceLink.connecting) {
-      title = 'กำลังเชื่อมต่อ…';
-      sub = 'Connecting to dispatch';
+      title = isThai ? 'กำลังเชื่อมต่อ…' : 'Connecting…';
+      sub = isThai ? 'กำลังเชื่อมต่อระบบจ่ายงาน' : 'Connecting to dispatch';
     } else {
-      title = 'พร้อมรับงาน / You\'re online';
-      sub = 'มองเห็นโดยลูกค้าใกล้เคียง · Visible to nearby customers';
+      title = isThai ? 'พร้อมรับงาน' : "You're online";
+      sub =
+          isThai ? 'มองเห็นโดยลูกค้าใกล้เคียง' : 'Visible to nearby customers';
     }
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(title,
             style: const TextStyle(
-                color: Colors.white, fontSize: 18, fontWeight: FontWeight.w600)),
+                color: Colors.white,
+                fontSize: 18,
+                fontWeight: FontWeight.w600)),
         const SizedBox(height: 2),
         Text(sub,
             style: TextStyle(
@@ -81,9 +87,10 @@ class _StatusText extends StatelessWidget {
 }
 
 class _GpsLine extends StatelessWidget {
-  const _GpsLine({required this.state});
+  const _GpsLine({required this.state, required this.isThai});
 
   final TrackingState state;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -93,23 +100,24 @@ class _GpsLine extends StatelessWidget {
           const Icon(Icons.location_off_outlined,
               size: 16, color: Colors.white60),
           const SizedBox(width: PgTokens.space2),
-          Text('GPS ปิดอยู่ / tracking off',
-              style:
-                  TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13)),
+          Text(isThai ? 'GPS ปิดอยู่' : 'Tracking off',
+              style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7), fontSize: 13)),
         ],
       );
     }
     if (state.link == PresenceLink.connecting || state.lastSample == null) {
-      return const Row(
+      return Row(
         children: [
-          SizedBox(
+          const SizedBox(
             width: 14,
             height: 14,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70),
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: Colors.white70),
           ),
-          SizedBox(width: PgTokens.space2),
-          Text('กำลังหาสัญญาณ GPS… / acquiring GPS',
-              style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(width: PgTokens.space2),
+          Text(isThai ? 'กำลังหาสัญญาณ GPS…' : 'Acquiring GPS…',
+              style: const TextStyle(color: Colors.white70, fontSize: 13)),
         ],
       );
     }
@@ -121,13 +129,18 @@ class _GpsLine extends StatelessWidget {
         const SizedBox(width: PgTokens.space2),
         Expanded(
           child: Text(
-            'GPS เชื่อมต่อแล้ว · ${band.labelTh}',
+            isThai
+                ? 'GPS เชื่อมต่อแล้ว · ${band.labelTh}'
+                : 'GPS connected · ${band.labelEn}',
             style: const TextStyle(color: Colors.white, fontSize: 13),
           ),
         ),
         if (metres != null)
           // Design accuracy readout: mono w600 numerals.
-          Text('${metres.toStringAsFixed(0)} ม.',
+          Text(
+              isThai
+                  ? '${metres.toStringAsFixed(0)} ม.'
+                  : '${metres.toStringAsFixed(0)} m',
               style: const TextStyle(
                   color: Colors.white,
                   fontSize: 13,

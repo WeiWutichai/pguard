@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/call_controller.dart';
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/call.dart';
 import '../call_routes.dart';
 
@@ -34,18 +35,19 @@ class CallEntryButton extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return PopupMenuButton<CallType>(
-      tooltip: 'โทร / Call',
+      tooltip: isThai ? 'โทร' : 'Call',
       enabled: enabled,
       onSelected: (type) => _start(context, ref, type),
-      itemBuilder: (_) => const [
+      itemBuilder: (_) => [
         PopupMenuItem(
           value: CallType.audio,
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.call, color: PgTokens.colorPrimary),
-            title: Text('โทรด้วยเสียง / Voice'),
+            leading: const Icon(Icons.call, color: PgTokens.colorPrimary),
+            title: Text(isThai ? 'โทรด้วยเสียง' : 'Voice'),
           ),
         ),
         PopupMenuItem(
@@ -53,8 +55,8 @@ class CallEntryButton extends ConsumerWidget {
           child: ListTile(
             dense: true,
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.videocam, color: PgTokens.colorPrimary),
-            title: Text('วิดีโอคอล / Video'),
+            leading: const Icon(Icons.videocam, color: PgTokens.colorPrimary),
+            title: Text(isThai ? 'วิดีโอคอล' : 'Video'),
           ),
         ),
       ],

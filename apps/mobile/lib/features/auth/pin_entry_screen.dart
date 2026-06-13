@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/registration_controller.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/pg_auth_back_bar.dart';
@@ -92,6 +93,7 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return PopScope(
       canPop: !_confirming,
       onPopInvokedWithResult: (didPop, _) {
@@ -113,11 +115,15 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
                 child: AuthHead(
                   icon: const AuthHeadIconTile(icon: Icons.lock_outline),
                   title: _confirming
-                      ? 'ยืนยันรหัส PIN อีกครั้ง / Re-enter your PIN'
+                      ? (isThai
+                          ? 'ยืนยันรหัส PIN อีกครั้ง'
+                          : 'Re-enter your PIN')
                       : 'ตั้งรหัส PIN 6 หลัก',
                   subtitle: _confirming
-                      ? 'เพื่อความถูกต้อง / To confirm it matches'
-                      : 'ใช้เข้าแอปครั้งต่อไป / You\'ll use this to sign in',
+                      ? (isThai ? 'เพื่อความถูกต้อง' : 'To confirm it matches')
+                      : (isThai
+                          ? 'ใช้เข้าแอปครั้งต่อไป'
+                          : 'You\'ll use this to sign in'),
                 ),
               ),
               const SizedBox(height: PgTokens.space6),
@@ -127,7 +133,7 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
                 error: _mismatch,
               ),
               const SizedBox(height: PgTokens.space3),
-              _strengthFeedback(),
+              _strengthFeedback(isThai),
               const Spacer(),
               Padding(
                 padding:
@@ -148,13 +154,15 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
 
   /// Design screen ③ security feedback under the dots: green "good" line while the PIN avoids
   /// repeated/sequential digits, warning nudge otherwise (pure check — [AuthController.isWeakPin]).
-  Widget _strengthFeedback() {
+  Widget _strengthFeedback(bool isThai) {
     if (_confirming || _pin.isEmpty) return const SizedBox(height: 18);
     final weak = AuthController.isWeakPin(_pin);
     return Text(
       weak
-          ? 'หลีกเลี่ยงเลขซ้ำ / Avoid repeated digits'
-          : 'ความปลอดภัยดี · หลีกเลี่ยงเลขซ้ำ / Good · avoid repeated digits',
+          ? (isThai ? 'หลีกเลี่ยงเลขซ้ำ' : 'Avoid repeated digits')
+          : (isThai
+              ? 'ความปลอดภัยดี · หลีกเลี่ยงเลขซ้ำ'
+              : 'Good · avoid repeated digits'),
       textAlign: TextAlign.center,
       style: TextStyle(
         fontSize: 12.5,

@@ -67,15 +67,15 @@ void main() {
     // One fetch — no polling.
     expect(api.getCount, 1);
 
-    // "สำเร็จ / Done" narrows to the completed row only.
-    await tester.tap(find.text('สำเร็จ / Done'));
+    // "สำเร็จ" narrows to the completed row only.
+    await tester.tap(find.text('สำเร็จ'));
     await tester.pump();
     expect(find.text('หมู่บ้านลัดดารมย์'), findsOneWidget);
     expect(find.text('โรงงาน ปทุม'), findsNothing);
     expect(find.text('คอนโด ไอดีโอ'), findsNothing);
 
-    // "ยกเลิก / Cancelled" shows the cancelled row only.
-    await tester.tap(find.text('ยกเลิก / Cancelled'));
+    // "ยกเลิก" shows the cancelled row only.
+    await tester.tap(find.text('ยกเลิก'));
     await tester.pump();
     expect(find.text('โรงงาน ปทุม'), findsOneWidget);
     expect(find.text('หมู่บ้านลัดดารมย์'), findsNothing);
@@ -89,8 +89,7 @@ void main() {
     expect(find.textContaining('ยังไม่มีการจอง'), findsOneWidget);
   });
 
-  testWidgets('shows PgErrorState with retry on load failure',
-      (tester) async {
+  testWidgets('shows PgErrorState with retry on load failure', (tester) async {
     var failures = 0;
     final api = FakeApi(onGet: (_, __) async {
       failures++;

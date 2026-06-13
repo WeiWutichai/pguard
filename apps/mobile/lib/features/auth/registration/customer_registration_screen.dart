@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../widgets/pg_auth_back_bar.dart';
 import '../../../widgets/primary_button.dart';
@@ -49,11 +50,12 @@ class _CustomerRegistrationScreenState
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(registrationControllerProvider);
 
     return Scaffold(
       // No green bar (hi-fi uses a bare back chevron); the body already shows the
-      // "ตั้งค่าบัญชีลูกค้า / Set up your account" heading the design specifies.
+      // "ตั้งค่าบัญชีลูกค้า" / "Set up your account" heading the design specifies.
       appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
@@ -64,18 +66,20 @@ class _CustomerRegistrationScreenState
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: PgTokens.space2),
-                const Text(
-                  'ตั้งค่าบัญชีลูกค้า / Set up your account',
-                  style: TextStyle(
+                Text(
+                  isThai ? 'ตั้งค่าบัญชีลูกค้า' : 'Set up your account',
+                  style: const TextStyle(
                     fontSize: 21,
                     fontWeight: FontWeight.w600,
                     color: PgTokens.colorText,
                   ),
                 ),
                 const SizedBox(height: PgTokens.space1),
-                const Text(
-                  'เพื่อจองและรับใบเสร็จ / To book guards & get receipts',
-                  style: TextStyle(
+                Text(
+                  isThai
+                      ? 'เพื่อจองและรับใบเสร็จ'
+                      : 'To book guards & get receipts',
+                  style: const TextStyle(
                     fontSize: 13,
                     color: PgTokens.colorTextMuted,
                   ),
@@ -90,10 +94,10 @@ class _CustomerRegistrationScreenState
                   // Rebuild on change so the ✓ helper appears live once the minimum is met.
                   onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
-                    label: const Text.rich(
+                    label: Text.rich(
                       TextSpan(
-                        text: 'ที่อยู่ / Address ',
-                        children: [
+                        text: isThai ? 'ที่อยู่ ' : 'Address ',
+                        children: const [
                           TextSpan(
                               text: '*',
                               style: TextStyle(color: PgTokens.colorDanger)),
@@ -103,7 +107,9 @@ class _CustomerRegistrationScreenState
                     hintText: 'บ้านเลขที่ ถนน แขวง/ตำบล เขต/อำเภอ จังหวัด',
                     alignLabelWithHint: true,
                     helperText: _addressValid
-                        ? '✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร) / ✓ Valid (min 10 characters)'
+                        ? (isThai
+                            ? '✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร)'
+                            : '✓ Valid (min 10 characters)')
                         : null,
                     helperStyle: const TextStyle(
                         fontSize: 11.5, color: PgTokens.colorSuccess),
@@ -111,10 +117,14 @@ class _CustomerRegistrationScreenState
                   validator: (v) {
                     final t = (v ?? '').trim();
                     if (t.isEmpty) {
-                      return 'กรุณากรอกที่อยู่ / Address is required';
+                      return isThai
+                          ? 'กรุณากรอกที่อยู่'
+                          : 'Address is required';
                     }
                     if (t.length < _minAddress) {
-                      return 'ที่อยู่สั้นเกินไป / Address is too short';
+                      return isThai
+                          ? 'ที่อยู่สั้นเกินไป'
+                          : 'Address is too short';
                     }
                     return null;
                   },
@@ -123,14 +133,14 @@ class _CustomerRegistrationScreenState
                 TextFormField(
                   controller: _name,
                   textInputAction: TextInputAction.done,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     label: Text.rich(
                       TextSpan(
-                        text: 'ชื่อ-นามสกุล / Full name ',
+                        text: isThai ? 'ชื่อ-นามสกุล ' : 'Full name ',
                         children: [
                           TextSpan(
-                            text: '(ไม่บังคับ)',
-                            style: TextStyle(
+                            text: isThai ? '(ไม่บังคับ)' : '(optional)',
+                            style: const TextStyle(
                               color: PgTokens.colorTextFaint,
                               fontWeight: FontWeight.w400,
                             ),
@@ -149,7 +159,7 @@ class _CustomerRegistrationScreenState
                   ),
                 // `.cta-amber` — the amber CTA distinguishes the customer flow from the guard flow.
                 PgPrimaryButton(
-                  label: 'สร้างบัญชี / Create account',
+                  label: isThai ? 'สร้างบัญชี' : 'Create account',
                   color: PgTokens.colorAccent,
                   foreground: PgTokens.colorOnAmber,
                   busy: state.busy,

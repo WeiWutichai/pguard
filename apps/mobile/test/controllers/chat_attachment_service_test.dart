@@ -42,8 +42,8 @@ void main() {
     });
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
-    final attachment =
-        await service.pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto);
+    final attachment = await service
+        .pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto, isThai: true);
 
     expect(picker.picks.single, ChatAttachmentSource.galleryPhoto);
     expect(attachment, isNotNull);
@@ -65,23 +65,24 @@ void main() {
     final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
-    final attachment =
-        await service.pickAndUpload('cv1', ChatAttachmentSource.cameraPhoto);
+    final attachment = await service
+        .pickAndUpload('cv1', ChatAttachmentSource.cameraPhoto, isThai: true);
 
     expect(attachment, isNull);
     expect(api.calls, isEmpty);
   });
 
-  test('unsupported MIME fails fast client-side (no upload attempt)',
-      () async {
+  test('unsupported MIME fails fast client-side (no upload attempt)', () async {
     final picker = FakeChatMediaPicker(
         media: PickedMedia(path: '${tmp.path}/a.gif', mimeType: 'image/gif'));
     final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
     await expectLater(
-      service.pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto),
-      throwsA(isA<ApiException>()),
+      service.pickAndUpload('cv1', ChatAttachmentSource.galleryPhoto,
+          isThai: true),
+      throwsA(isA<ApiException>()
+          .having((e) => e.message, 'message', 'ชนิดไฟล์ไม่รองรับ')),
     );
     expect(api.calls, isEmpty);
   });
@@ -97,9 +98,10 @@ void main() {
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
     await expectLater(
-      service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo),
-      throwsA(isA<ApiException>()
-          .having((e) => e.statusCode, 'statusCode', 400)),
+      service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo,
+          isThai: true),
+      throwsA(
+          isA<ApiException>().having((e) => e.statusCode, 'statusCode', 400)),
     );
   });
 
@@ -115,8 +117,8 @@ void main() {
     });
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
-    final attachment =
-        await service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo);
+    final attachment = await service
+        .pickAndUpload('cv1', ChatAttachmentSource.galleryVideo, isThai: true);
     expect(attachment!.mimeType, 'video/mp4');
     expect(attachment.messageType.wire, 'video');
   });

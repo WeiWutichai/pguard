@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/pin_service.dart';
 import '../../core/controllers/resend_policy.dart';
 import '../../core/controllers/session_controller.dart';
@@ -85,6 +86,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
 
   /// Design screen ⑩: non-dismissable "data wiped" dialog, then back to sign-in.
   Future<void> _showWipedDialog() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     await showDialog<void>(
       context: context,
       barrierDismissible: false,
@@ -110,12 +112,17 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                       size: 32, color: PgTokens.colorDanger),
                 ),
                 const SizedBox(height: PgTokens.space4),
-                const Text(
-                  'ข้อมูลในเครื่องจะถูกล้าง / On-device data will be wiped',
+                Text(
+                  isThai
+                      ? 'ข้อมูลในเครื่องจะถูกล้าง'
+                      : 'On-device data will be wiped',
                   textAlign: TextAlign.center,
-                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                      fontSize: 18, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: PgTokens.space2),
+                // Thai-only body (no ' / ' language separator in the source) — left as-is per
+                // the split rule; not translated.
                 const Text(
                   'ใส่ PIN ผิดครบ 10 ครั้ง เพื่อความปลอดภัย ข้อมูลและเซสชันในเครื่องนี้จะถูกลบ คุณต้องเข้าสู่ระบบใหม่',
                   textAlign: TextAlign.center,
@@ -124,7 +131,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                 ),
                 const SizedBox(height: PgTokens.space6),
                 PgPrimaryButton(
-                  label: 'เข้าสู่ระบบใหม่ / Sign in again',
+                  label: isThai ? 'เข้าสู่ระบบใหม่' : 'Sign in again',
                   onPressed: () => Navigator.of(dialogContext).pop(),
                 ),
               ],
@@ -139,27 +146,31 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
 
   /// "ลืม PIN?" — confirm, then sign out to re-authenticate by phone/OTP (existing plumbing).
   Future<void> _forgotPin() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
         backgroundColor: PgTokens.colorSurface,
         shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl)),
-        title: const Text('ลืม PIN? / Forgot PIN?',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-        content: const Text(
-          'ต้องออกจากระบบและยืนยันเบอร์โทรอีกครั้งเพื่อตั้ง PIN ใหม่ / Sign out and verify your phone again to set a new PIN',
-          style: TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
+        title: Text(isThai ? 'ลืม PIN?' : 'Forgot PIN?',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+        content: Text(
+          isThai
+              ? 'ต้องออกจากระบบและยืนยันเบอร์โทรอีกครั้งเพื่อตั้ง PIN ใหม่'
+              : 'Sign out and verify your phone again to set a new PIN',
+          style:
+              const TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(false),
-            child: const Text('ยกเลิก / Cancel'),
+            child: Text(isThai ? 'ยกเลิก' : 'Cancel'),
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
             style: TextButton.styleFrom(foregroundColor: PgTokens.colorDanger),
-            child: const Text('ออกจากระบบ / Sign out'),
+            child: Text(isThai ? 'ออกจากระบบ' : 'Sign out'),
           ),
         ],
       ),
@@ -170,6 +181,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final locked = _isLocked;
     // No green bar — the returning-user screen's hero ("ยินดีต้อนรับกลับ") is the body head.
     return AnnotatedRegion<SystemUiOverlayStyle>(
@@ -185,7 +197,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                   child: Column(
                     children: [
                       const SizedBox(height: PgTokens.space7),
-                      _hero(locked),
+                      _hero(locked, isThai),
                       const SizedBox(height: PgTokens.space6),
                       // Design lockout state dims the dots (interaction already disabled).
                       Opacity(
@@ -211,7 +223,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                 ),
               ),
               PgGhostButton(
-                label: 'ลืม PIN? / Forgot PIN?',
+                label: isThai ? 'ลืม PIN?' : 'Forgot PIN?',
                 onPressed: _busy ? null : _forgotPin,
               ),
               const SizedBox(height: PgTokens.space4),
@@ -225,39 +237,41 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   /// Welcome hero (design screen ⑧) — flips to the danger variant during a lockout (screen ⑨).
   /// No cached display name exists yet, so the avatar falls back to the person glyph rather
   /// than rendering meaningless JWT-UUID initials.
-  Widget _hero(bool locked) {
+  Widget _hero(bool locked, bool isThai) {
     if (locked) {
-      return const Column(
+      return Column(
         children: [
-          CircleAvatar(
+          const CircleAvatar(
             radius: 36,
             backgroundColor: PgTokens.colorDangerBg,
             child:
                 Icon(Icons.lock_outline, size: 32, color: PgTokens.colorDanger),
           ),
-          SizedBox(height: PgTokens.space3),
-          Text('ใส่ PIN ผิดหลายครั้ง / Too many attempts',
+          const SizedBox(height: PgTokens.space3),
+          Text(isThai ? 'ใส่ PIN ผิดหลายครั้ง' : 'Too many attempts',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+              style:
+                  const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
         ],
       );
     }
-    return const Column(
+    return Column(
       children: [
-        CircleAvatar(
+        const CircleAvatar(
           radius: 36,
           backgroundColor: PgTokens.colorGreen100,
           child: Icon(Icons.person_outline,
               size: 32, color: PgTokens.colorGreen800),
         ),
-        SizedBox(height: PgTokens.space3),
-        Text('ยินดีต้อนรับกลับ / Welcome back',
+        const SizedBox(height: PgTokens.space3),
+        Text(isThai ? 'ยินดีต้อนรับกลับ' : 'Welcome back',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-        SizedBox(height: PgTokens.space2),
-        Text('กรอก PIN เพื่อเข้าสู่ระบบ / Enter your PIN to sign in',
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
+        const SizedBox(height: PgTokens.space2),
+        Text(isThai ? 'กรอก PIN เพื่อเข้าสู่ระบบ' : 'Enter your PIN to sign in',
             textAlign: TextAlign.center,
-            style: TextStyle(color: PgTokens.colorTextMuted, fontSize: 13)),
+            style:
+                const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13)),
       ],
     );
   }

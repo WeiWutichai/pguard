@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_jobs_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -51,13 +52,17 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
 
   void _scrollToJobs() {
     final jobsContext = _jobsKey.currentContext;
-    if (jobsContext == null) return; // jobs not loaded yet — nothing to scroll to
+    // Jobs not loaded yet — nothing to scroll to.
+    if (jobsContext == null) {
+      return;
+    }
     Scrollable.ensureVisible(jobsContext,
         duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
   }
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final jobs = ref.watch(guardJobsControllerProvider);
     // Duty FAB mirrors the same controller the OnlineCard switch drives.
     final online =
@@ -70,7 +75,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
         title: 'pguard',
-        subtitle: 'เจ้าหน้าที่ · Guard',
+        subtitle: isThai ? 'เจ้าหน้าที่' : 'Guard',
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -80,14 +85,14 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
               child: IconButton(
                 icon: const Icon(Icons.forum_outlined,
                     color: Colors.white, size: 22),
-                tooltip: 'แชท / Chat',
+                tooltip: isThai ? 'แชท' : 'Chat',
                 onPressed: () => context.push(ChatRoutes.list(ChatRole.guard)),
               ),
             ),
             IconButton(
               icon: const Icon(Icons.person_outline,
                   color: Colors.white, size: 22),
-              tooltip: 'โปรไฟล์ / Profile',
+              tooltip: isThai ? 'โปรไฟล์' : 'Profile',
               onPressed: () => context.push('/profile'),
             ),
           ],
@@ -96,36 +101,36 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
       // Design state 4 (guard nav + duty FAB) — additive chrome; body content unchanged.
       bottomNavigationBar: PgBottomNav(
         tabs: [
-          const PgNavTab(
+          PgNavTab(
             icon: Icons.home_outlined,
-            label: 'หน้าหลัก / Home',
+            label: isThai ? 'หน้าหลัก' : 'Home',
             active: true,
           ),
           PgNavTab(
             icon: Icons.inbox_outlined,
-            label: 'งาน / Jobs',
+            label: isThai ? 'งาน' : 'Jobs',
             badgeCount: incomingCount,
             onTap: _scrollToJobs,
           ),
           PgNavTab(
             icon: Icons.payments_outlined,
-            label: 'รายได้ / Earnings',
+            label: isThai ? 'รายได้' : 'Earnings',
             onTap: () => context.push('/earnings'),
           ),
           PgNavTab(
             icon: Icons.person_outline,
-            label: 'โปรไฟล์ / Profile',
+            label: isThai ? 'โปรไฟล์' : 'Profile',
             onTap: () => context.push('/profile'),
           ),
         ],
         fab: online
             ? PgNavFab.onDuty(
-                label: 'พร้อมรับงาน / On duty',
+                label: isThai ? 'พร้อมรับงาน' : 'On duty',
                 onTap: () =>
                     ref.read(trackingControllerProvider.notifier).toggle(),
               )
             : PgNavFab.offline(
-                label: 'ออฟไลน์ / Offline',
+                label: isThai ? 'ออฟไลน์' : 'Offline',
                 onTap: () =>
                     ref.read(trackingControllerProvider.notifier).toggle(),
               ),
@@ -136,11 +141,8 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
               ref.read(guardJobsControllerProvider.notifier).refresh(),
           child: ListView(
             // Extra bottom inset keeps the last card clear of the FAB overhang.
-            padding: const EdgeInsets.fromLTRB(
-                PgTokens.space4,
-                PgTokens.space4,
-                PgTokens.space4,
-                PgTokens.space4 + PgBottomNav.fabOverhang),
+            padding: const EdgeInsets.fromLTRB(PgTokens.space4, PgTokens.space4,
+                PgTokens.space4, PgTokens.space4 + PgBottomNav.fabOverhang),
             children: [
               const OnlineCard(),
               const SizedBox(height: PgTokens.space4),
@@ -152,15 +154,18 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
                 error: (e, _) => _JobsError(
                   message: e is ApiException
                       ? e.message
-                      : 'โหลดงานไม่สำเร็จ / Could not load jobs',
+                      : isThai
+                          ? 'โหลดงานไม่สำเร็จ'
+                          : 'Could not load jobs',
                 ),
                 data: (all) => Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _StatsRow(bookings: all),
+                    _StatsRow(bookings: all, isThai: isThai),
                     const SizedBox(height: PgTokens.space4),
                     _JobsBody(
                       key: _jobsKey,
+                      isThai: isThai,
                       incoming: GuardJobsController.incoming(all),
                       active: GuardJobsController.active(all),
                       onAccept: _accept,
@@ -217,9 +222,10 @@ class GuardHomeStats {
 
 /// Screen 1 stats row — 3 equal cards: today's earnings / jobs today / rating.
 class _StatsRow extends StatelessWidget {
-  const _StatsRow({required this.bookings});
+  const _StatsRow({required this.bookings, required this.isThai});
 
   final List<Booking> bookings;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -229,22 +235,22 @@ class _StatsRow extends StatelessWidget {
       children: [
         Expanded(
           child: _StatCard(
-            value: Money.format(
-                GuardHomeStats.earningsTodaySatang(bookings, now)),
-            label: 'รายได้วันนี้ / Today',
+            value:
+                Money.format(GuardHomeStats.earningsTodaySatang(bookings, now)),
+            label: isThai ? 'รายได้วันนี้' : 'Today',
           ),
         ),
         const SizedBox(width: PgTokens.space3),
         Expanded(
           child: _StatCard(
             value: '${GuardHomeStats.jobsToday(bookings, now)}',
-            label: 'งานวันนี้ / Jobs',
+            label: isThai ? 'งานวันนี้' : 'Jobs',
           ),
         ),
         const SizedBox(width: PgTokens.space3),
         // Rating stays a placeholder until GET /v1/guards/{id}/ratings stats is wired.
-        const Expanded(
-          child: _StatCard(value: '—', label: 'คะแนน / Rating'),
+        Expanded(
+          child: _StatCard(value: '—', label: isThai ? 'คะแนน' : 'Rating'),
         ),
       ],
     );
@@ -288,6 +294,7 @@ class _StatCard extends StatelessWidget {
 class _JobsBody extends StatelessWidget {
   const _JobsBody({
     super.key,
+    required this.isThai,
     required this.incoming,
     required this.active,
     required this.onAccept,
@@ -296,6 +303,7 @@ class _JobsBody extends StatelessWidget {
     required this.onOpenDetail,
   });
 
+  final bool isThai;
   final List<Booking> incoming;
   final List<Booking> active;
   final void Function(String id) onAccept;
@@ -309,17 +317,19 @@ class _JobsBody extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (active.isNotEmpty) ...[
-          const _SectionHeader('งานที่กำลังทำ / Active'),
+          _SectionHeader(isThai ? 'งานที่กำลังทำ' : 'Active'),
           for (final b in active) ...[
             GuardJobCard(booking: b, onTap: () => onOpenActive(b.id)),
             const SizedBox(height: PgTokens.space3),
           ],
         ],
-        _SectionHeader(incoming.isEmpty
-            ? 'งานรอตอบรับ / Incoming'
-            : 'งานรอตอบรับ ${incoming.length} / Incoming'),
+        _SectionHeader(isThai
+            ? (incoming.isEmpty
+                ? 'งานรอตอบรับ'
+                : 'งานรอตอบรับ ${incoming.length}')
+            : (incoming.isEmpty ? 'Incoming' : 'Incoming ${incoming.length}')),
         if (incoming.isEmpty)
-          const _EmptyIncoming()
+          _EmptyIncoming(isThai: isThai)
         else
           for (final b in incoming) ...[
             GuardJobCard(
@@ -331,14 +341,14 @@ class _JobsBody extends StatelessWidget {
                   SizedBox(
                     width: 80,
                     child: PgGhostButton(
-                      label: 'ข้าม',
+                      label: isThai ? 'ข้าม' : 'Skip',
                       onPressed: () => onDismiss(b.id),
                     ),
                   ),
                   const SizedBox(width: PgTokens.space2),
                   Expanded(
                     child: PgPrimaryButton(
-                      label: 'รับงาน / Accept',
+                      label: isThai ? 'รับงาน' : 'Accept',
                       onPressed: () => onAccept(b.id),
                     ),
                   ),
@@ -360,13 +370,14 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: PgTokens.space2),
         child: Text(text,
-            style: const TextStyle(
-                fontSize: 14, fontWeight: FontWeight.w600)),
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
       );
 }
 
 class _EmptyIncoming extends StatelessWidget {
-  const _EmptyIncoming();
+  const _EmptyIncoming({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -377,9 +388,11 @@ class _EmptyIncoming extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusLg),
         border: Border.all(color: PgTokens.colorBorder),
       ),
-      child: const Text(
-        'ยังไม่มีงานใหม่ — เปิดสถานะออนไลน์เพื่อรับงาน\nNo new jobs — go online to receive offers',
-        style: TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
+      child: Text(
+        isThai
+            ? 'ยังไม่มีงานใหม่ — เปิดสถานะออนไลน์เพื่อรับงาน'
+            : 'No new jobs — go online to receive offers',
+        style: const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
       ),
     );
   }

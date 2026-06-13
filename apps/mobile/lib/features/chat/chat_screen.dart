@@ -56,8 +56,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     });
   }
 
-  ChatController get _ctrl => ref
-      .read(chatControllerProvider(widget.conversationId, widget.acting).notifier);
+  ChatController get _ctrl => ref.read(
+      chatControllerProvider(widget.conversationId, widget.acting).notifier);
 
   void _send() {
     final text = _input.text;
@@ -82,8 +82,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final service = ref.read(chatAttachmentServiceProvider);
     setState(() => _attachBusy = true);
     try {
-      final attachment =
-          await service.pickAndUpload(widget.conversationId, source);
+      final attachment = await service
+          .pickAndUpload(widget.conversationId, source, isThai: isThai);
       // A long upload (videos up to 200MB) can outlive this screen — touching `ref`/`_ctrl`
       // after dispose throws, so bail out first (the upload itself completed server-side).
       if (!mounted || attachment == null) return;
@@ -116,7 +116,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         // Design state 3: read-only thread swaps the status line to "job completed".
         subtitle: widget.readOnly
             ? (isThai ? 'งานเสร็จสิ้นแล้ว' : 'Job completed')
-            : 'Chat',
+            : (isThai ? 'แชท' : 'Chat'),
         showBack: true,
         // Design: 38px counterpart initials avatar in the thread header. PGuardHeader has no
         // leading slot (shared widget — off-limits to extend), so it rides the trailing slot.
@@ -140,15 +140,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             Expanded(
               child: async.when(
-                loading: () =>
-                    const Center(child: CircularProgressIndicator()),
+                loading: () => const Center(child: CircularProgressIndicator()),
                 error: (e, _) => PgErrorState(
-                  title: 'โหลดข้อความไม่สำเร็จ / Could not load messages',
+                  title: isThai
+                      ? 'โหลดข้อความไม่สำเร็จ'
+                      : 'Could not load messages',
                   message: e is ApiException ? e.message : null,
                   onRetry: () => ref.invalidate(provider),
                 ),
                 data: (messages) => messages.isEmpty
-                    ? const _EmptyBody()
+                    ? _EmptyBody(isThai: isThai)
                     : ListView.builder(
                         controller: _scroll,
                         padding: const EdgeInsets.symmetric(
@@ -294,29 +295,33 @@ class _SheetOption extends StatelessWidget {
 /// Empty conversation — same icon + title + subtitle hierarchy as the sibling
 /// chat-list/notification empty states (cross-state hero pattern).
 class _EmptyBody extends StatelessWidget {
-  const _EmptyBody();
+  const _EmptyBody({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
+    return Center(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.forum_outlined, size: 48, color: PgTokens.colorTextFaint),
-          SizedBox(height: PgTokens.space3),
+          const Icon(Icons.forum_outlined,
+              size: 48, color: PgTokens.colorTextFaint),
+          const SizedBox(height: PgTokens.space3),
           Text(
-            'ยังไม่มีข้อความ\nNo messages yet',
+            isThai ? 'ยังไม่มีข้อความ' : 'No messages yet',
             textAlign: TextAlign.center,
-            style: TextStyle(
+            style: const TextStyle(
                 fontSize: 15,
                 fontWeight: FontWeight.w600,
                 color: PgTokens.colorText),
           ),
-          SizedBox(height: PgTokens.space2),
+          const SizedBox(height: PgTokens.space2),
           Text(
-            'เริ่มพิมพ์ได้เลย / Say hello',
+            isThai ? 'เริ่มพิมพ์ได้เลย' : 'Say hello',
             textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+            style:
+                const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
           ),
         ],
       ),

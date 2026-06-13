@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
 import '../../../widgets/pg_auth_back_bar.dart';
@@ -15,6 +16,7 @@ class RoleSelectionScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(registrationControllerProvider);
     final ctrl = ref.read(registrationControllerProvider.notifier);
 
@@ -46,26 +48,28 @@ class RoleSelectionScreen extends ConsumerWidget {
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: PgTokens.space2),
-              const Text(
-                'เลือกได้ครั้งเดียวตอนสมัคร · Chosen once at registration',
-                style: TextStyle(color: PgTokens.colorTextMuted),
+              Text(
+                isThai
+                    ? 'เลือกได้ครั้งเดียวตอนสมัคร'
+                    : 'Chosen once at registration',
+                style: const TextStyle(color: PgTokens.colorTextMuted),
               ),
               const SizedBox(height: PgTokens.space6),
               _RoleCard(
                 icon: Icons.person_outline,
-                titleTh: 'ลูกค้า',
-                titleEn: 'Customer',
-                descic: 'จองเจ้าหน้าที่รักษาความปลอดภัย · Book guards',
+                title: isThai ? 'ลูกค้า' : 'Customer',
+                descic:
+                    isThai ? 'จองเจ้าหน้าที่รักษาความปลอดภัย' : 'Book guards',
                 enabled: !state.busy,
                 onTap: () => choose(RegistrationRole.customer),
               ),
               const SizedBox(height: PgTokens.space4),
               _RoleCard(
                 icon: Icons.shield_outlined,
-                titleTh: 'เจ้าหน้าที่ รปภ.',
-                titleEn: 'Security guard',
-                descic:
-                    'รับงาน · ต้องผ่านการอนุมัติ · Accept jobs (approval required)',
+                title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security guard',
+                descic: isThai
+                    ? 'รับงาน · ต้องผ่านการอนุมัติ'
+                    : 'Accept jobs (approval required)',
                 enabled: !state.busy,
                 onTap: () => choose(RegistrationRole.guard),
               ),
@@ -95,16 +99,14 @@ class RoleSelectionScreen extends ConsumerWidget {
 class _RoleCard extends StatelessWidget {
   const _RoleCard({
     required this.icon,
-    required this.titleTh,
-    required this.titleEn,
+    required this.title,
     required this.descic,
     required this.enabled,
     required this.onTap,
   });
 
   final IconData icon;
-  final String titleTh;
-  final String titleEn;
+  final String title;
   final String descic;
   final bool enabled;
   final VoidCallback onTap;
@@ -131,7 +133,7 @@ class _RoleCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('$titleTh · $titleEn',
+                    Text(title,
                         style: const TextStyle(
                             fontSize: 17, fontWeight: FontWeight.w600)),
                     const SizedBox(height: PgTokens.space1),

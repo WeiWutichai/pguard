@@ -1,13 +1,18 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/models/available_guard.dart';
 import 'package:pguard_mobile/features/booking/widgets/guard_card.dart';
 
 void main() {
+  // No locale override → the LocaleController default (Thai) drives rendering,
+  // so the card's rating line renders its Thai-only strings.
   Future<void> pumpCard(WidgetTester tester, AvailableGuard guard) {
-    return tester.pumpWidget(MaterialApp(
-      home: Scaffold(
-        body: GuardCard(guard: guard, selected: false, onTap: () {}),
+    return tester.pumpWidget(ProviderScope(
+      child: MaterialApp(
+        home: Scaffold(
+          body: GuardCard(guard: guard, selected: false, onTap: () {}),
+        ),
       ),
     ));
   }

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
 import '../../widgets/pguard_header.dart';
@@ -22,11 +23,11 @@ class ServiceSelectionScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'เลือกประเภทสถานที่',
-        subtitle: 'Select place type',
+      appBar: PGuardHeader(
+        title: isThai ? 'เลือกประเภทสถานที่' : 'Select place type',
         showBack: true,
       ),
       body: SafeArea(
@@ -35,7 +36,10 @@ class ServiceSelectionScreen extends ConsumerWidget {
           children: [
             for (final service in SecurityService.values) ...[
               _ServiceCard(
-                  service: service, onTap: () => _pick(ref, context, service)),
+                service: service,
+                isThai: isThai,
+                onTap: () => _pick(ref, context, service),
+              ),
               const SizedBox(height: PgTokens.space3),
             ],
           ],
@@ -60,9 +64,14 @@ IconData serviceIcon(SecurityService service) {
 }
 
 class _ServiceCard extends StatelessWidget {
-  const _ServiceCard({required this.service, required this.onTap});
+  const _ServiceCard({
+    required this.service,
+    required this.isThai,
+    required this.onTap,
+  });
 
   final SecurityService service;
+  final bool isThai;
   final VoidCallback onTap;
 
   /// Per-service icon treatment from the design (each card is color-coded):
@@ -83,9 +92,12 @@ class _ServiceCard extends StatelessWidget {
 
   /// Display title — the design's "Other" card carries a parenthetical the catalog id keeps
   /// out of the enum: "อื่นๆ (ระบุเอง)".
-  String get _title => service == SecurityService.other
-      ? 'อื่นๆ (ระบุเอง) · ${service.labelEn}'
-      : '${service.labelTh} · ${service.labelEn}';
+  String get _title {
+    if (service == SecurityService.other) {
+      return isThai ? 'อื่นๆ (ระบุเอง)' : 'Other (custom)';
+    }
+    return isThai ? service.labelTh : service.labelEn;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -98,8 +110,7 @@ class _ServiceCard extends StatelessWidget {
         onTap: onTap,
         borderRadius: BorderRadius.circular(PgTokens.radius2xl),
         child: Container(
-          padding:
-              const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
             border: Border.all(color: PgTokens.colorBorder, width: 1.5),
@@ -129,7 +140,7 @@ class _ServiceCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      '${service.descTh} / ${service.descEn}',
+                      isThai ? service.descTh : service.descEn,
                       style: const TextStyle(
                           fontSize: 12.5, color: PgTokens.colorTextMuted),
                     ),
@@ -140,7 +151,9 @@ class _ServiceCard extends StatelessWidget {
               if (estimate != null) ...[
                 const SizedBox(width: PgTokens.space2),
                 Text(
-                  '${Money.format(estimate)}/ชม.',
+                  isThai
+                      ? '${Money.format(estimate)}/ชม.'
+                      : '${Money.format(estimate)}/hr',
                   textAlign: TextAlign.right,
                   style: const TextStyle(
                     fontSize: 13,

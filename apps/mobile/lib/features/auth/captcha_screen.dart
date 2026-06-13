@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/pg_auth_back_bar.dart';
 import '../../widgets/primary_button.dart';
@@ -46,6 +47,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(authControllerProvider);
     final ctrl = ref.read(authControllerProvider.notifier);
     final question = state.challenge?.question;
@@ -60,9 +62,10 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
             children: [
               const SizedBox(height: PgTokens.space4),
               AuthHead(
-                title: 'ยืนยันว่าไม่ใช่บอท / Quick check',
-                subtitle:
-                    'ตอบคำถามเพื่อส่งรหัส OTP ไปที่ +66 ${state.phone} / Solve to send the OTP to +66 ${state.phone}',
+                title: isThai ? 'ยืนยันว่าไม่ใช่บอท' : 'Quick check',
+                subtitle: isThai
+                    ? 'ตอบคำถามเพื่อส่งรหัส OTP ไปที่ +66 ${state.phone}'
+                    : 'Solve to send the OTP to +66 ${state.phone}',
               ),
               const SizedBox(height: PgTokens.space6),
               // Design question card: white surface, 1.5px strong border, radius 16 (→ radiusXl).
@@ -78,15 +81,15 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text(
-                      'คำถาม / Question',
-                      style: TextStyle(
+                    Text(
+                      isThai ? 'คำถาม' : 'Question',
+                      style: const TextStyle(
                           fontSize: 12.5, color: PgTokens.colorTextMuted),
                     ),
                     const SizedBox(height: PgTokens.space1),
                     // Big bold math problem (design: 26/700 mono).
                     Text(
-                      question ?? 'กำลังโหลดคำถาม… / Loading…',
+                      question ?? (isThai ? 'กำลังโหลดคำถาม…' : 'Loading…'),
                       style: question == null
                           ? const TextStyle(
                               fontSize: 12.5, color: PgTokens.colorTextMuted)
@@ -106,18 +109,20 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                       onSubmitted: (_) {
                         if (state.challenge != null) _verify();
                       },
-                      decoration:
-                          const InputDecoration(hintText: 'คำตอบ / Answer'),
+                      decoration: InputDecoration(
+                          hintText: isThai ? 'คำตอบ' : 'Answer'),
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: PgTokens.space3),
-              const Text(
-                'ช่วยกันบอทและกันการส่ง SMS เกินจำเป็น / Helps stop bots and unwanted SMS',
+              Text(
+                isThai
+                    ? 'ช่วยกันบอทและกันการส่ง SMS เกินจำเป็น'
+                    : 'Helps stop bots and unwanted SMS',
                 textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+                style: const TextStyle(
+                    fontSize: 12.5, color: PgTokens.colorTextMuted),
               ),
               const SizedBox(height: PgTokens.space4),
               if (state.error != null)
@@ -129,13 +134,13 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                   ),
                 ),
               PgPrimaryButton(
-                label: 'ยืนยันและส่ง OTP / Verify & send OTP',
+                label: isThai ? 'ยืนยันและส่ง OTP' : 'Verify & send OTP',
                 busy: state.busy,
                 onPressed: state.challenge == null ? null : _verify,
               ),
               TextButton(
                 onPressed: state.busy ? null : ctrl.loadChallenge,
-                child: const Text('โหลดคำถามใหม่ / Reload question'),
+                child: Text(isThai ? 'โหลดคำถามใหม่' : 'Reload question'),
               ),
             ],
           ),

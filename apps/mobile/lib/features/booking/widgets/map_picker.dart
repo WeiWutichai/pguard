@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/models/geo.dart';
 import '../../../core/providers.dart';
@@ -76,6 +77,7 @@ class _MapPickerState extends ConsumerState<MapPicker> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -121,7 +123,9 @@ class _MapPickerState extends ConsumerState<MapPicker> {
                 children: [
                   Text(
                     _placeName.isEmpty
-                        ? 'แตะหรือลากหมุดเพื่อเลือกตำแหน่ง'
+                        ? (isThai
+                            ? 'แตะหรือลากหมุดเพื่อเลือกตำแหน่ง'
+                            : 'Tap or drag the pin to set a location')
                         : _placeName,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -141,7 +145,7 @@ class _MapPickerState extends ConsumerState<MapPicker> {
             TextButton.icon(
               onPressed: _resolving ? null : _useCurrentLocation,
               icon: const Icon(Icons.my_location, size: 16),
-              label: const Text('ตำแหน่งปัจจุบัน'),
+              label: Text(isThai ? 'ตำแหน่งปัจจุบัน' : 'Current location'),
               style:
                   TextButton.styleFrom(foregroundColor: PgTokens.colorPrimary),
             ),

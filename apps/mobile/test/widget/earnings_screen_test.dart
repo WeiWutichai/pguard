@@ -57,11 +57,11 @@ void main() {
     );
     await pumpScreen(tester, api);
 
-    expect(find.text('รวมรายได้ / Total earnings'), findsOneWidget);
+    expect(find.text('รวมรายได้'), findsOneWidget);
     // ฿1,840 + ฿1,150 — per-guard share only: guard_count (2) and tip (฿500) excluded.
     expect(find.text('฿2,990'), findsOneWidget);
     expect(find.textContaining('ประมาณการ'), findsOneWidget);
-    expect(find.text('รายการล่าสุด / Recent'), findsOneWidget);
+    expect(find.text('รายการล่าสุด'), findsOneWidget);
 
     // Per-job rows: place, "date · hours", mono amount; non-completed job absent.
     expect(find.text('หมู่บ้านลัดดารมย์'), findsOneWidget);
@@ -75,8 +75,7 @@ void main() {
 
   testWidgets('shows the empty state when nothing is completed yet',
       (tester) async {
-    final api =
-        FakeApi(onGet: (_, __) async => [jobJson('b1', 'accepted')]);
+    final api = FakeApi(onGet: (_, __) async => [jobJson('b1', 'accepted')]);
     await pumpScreen(tester, api);
 
     expect(find.textContaining('ยังไม่มีรายได้'), findsOneWidget);
