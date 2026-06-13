@@ -234,8 +234,8 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     validate::validate_text(req.address.as_deref(), "address", validate::MAX_TEXT_LEN)
         .map_err(AppError::BadRequest)?;
     // Writes ONLY the customer profile schema — never identity's. The FIRST creation also
-    // emits `user.approved` (outbox, same tx in repo): customers are auto-approved on
-    // profile completion and identity flips its own approval_status on consume. Guards
+    // emits `user.approved` (outbox, same tx in repo): customers are auto-approved on their
+    // first profile submission and identity flips its own approval_status on consume. Guards
     // keep the admin-review path (`/admin/guard-profiles/{id}/approve`).
     let profile = repo::upsert_customer_profile(state.db(), writer.user_id, &req).await?;
     Ok(Json(ApiResponse::success(profile)))

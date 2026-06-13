@@ -368,7 +368,7 @@ pub async fn mark_published(db: &PgPool, id: Uuid) -> Result<(), AppError> {
 /// Upsert the caller's customer profile (minimal in this slice).
 ///
 /// The FIRST creation also enqueues `user.approved` (same tx, transactional outbox):
-/// customers are **auto-approved on profile completion**. Guards are vetted by an admin
+/// customers are **auto-approved on first profile submission**. Guards are vetted by an admin
 /// (`set_approval_status`), but v2 has no admin customer-review surface at all — without
 /// this event a registered customer stays `pending` in identity forever and can never log
 /// in. identity's `user.approved` consumer is role-agnostic (flips by `user_id`), so the
