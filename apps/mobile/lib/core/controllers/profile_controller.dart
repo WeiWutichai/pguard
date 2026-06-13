@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/profile.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 import 'session_controller.dart';
 
 part 'profile_controller.g.dart';
@@ -43,16 +44,19 @@ class ProfileController extends _$ProfileController {
     String? accountNumber,
     String? accountName,
   }) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final current = state.valueOrNull;
-    if (current == null) return 'ยังไม่พร้อม / Not ready';
+    if (current == null) return isThai ? 'ยังไม่พร้อม' : 'Not ready';
     try {
       final api = ref.read(pguardApiProvider);
       if (current.isGuard) {
         await api.post('/profile/guard', data: {
           if (gender != null) 'gender': gender,
           if (dateOfBirth != null) 'date_of_birth': dateOfBirth,
-          if (yearsOfExperience != null) 'years_of_experience': yearsOfExperience,
-          if (previousWorkplace != null) 'previous_workplace': previousWorkplace,
+          if (yearsOfExperience != null)
+            'years_of_experience': yearsOfExperience,
+          if (previousWorkplace != null)
+            'previous_workplace': previousWorkplace,
           if (bankName != null) 'bank_name': bankName,
           if (accountNumber != null) 'account_number': accountNumber,
           if (accountName != null) 'account_name': accountName,
@@ -69,7 +73,7 @@ class ProfileController extends _$ProfileController {
     } on ApiException catch (e) {
       return e.message;
     } catch (_) {
-      return 'เกิดข้อผิดพลาด / Something went wrong';
+      return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
     }
   }
 

@@ -6,6 +6,7 @@ import '../models/registration.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'auth_controller.dart';
+import 'locale_controller.dart';
 import 'pin_hasher.dart';
 import 'session_controller.dart';
 
@@ -93,7 +94,8 @@ class RegistrationController extends _$RegistrationController {
     _phone = phone;
     _phoneVerifiedToken = phoneVerifiedToken;
     _pin = pin;
-    state = const RegistrationState(); // fresh flow (clears any stale role/error/summary)
+    state =
+        const RegistrationState(); // fresh flow (clears any stale role/error/summary)
   }
 
   void selectRole(RegistrationRole role) =>
@@ -103,7 +105,11 @@ class RegistrationController extends _$RegistrationController {
   /// `profile_token`, persist the pending flag, flip the session to **pendingApproval** (NO
   /// tokens). On **409** → `loginWithPin` (the phone already exists in a non-pending state).
   Future<RegisterOutcome> register() async {
-    if (state.busy) return RegisterOutcome.error; // guard the brief pre-state-update window
+    // Guard the brief pre-state-update window against a double-tap.
+    if (state.busy) {
+      return RegisterOutcome.error;
+    }
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final role = state.role;
     final store = ref.read(appStoreProvider);
     final pvt = _phoneVerifiedToken ?? await store.readPhoneVerifiedToken();
@@ -112,19 +118,23 @@ class RegistrationController extends _$RegistrationController {
     if (role == null || pvt == null || pin == null || phone == null) {
       state = state.copyWith(
           busy: false,
-          error: 'หมดเวลายืนยัน กรุณาเริ่มใหม่ / Verification expired — start again');
+          error: isThai
+              ? 'หมดเวลายืนยัน กรุณาเริ่มใหม่'
+              : 'Verification expired — start again');
       return RegisterOutcome.error;
     }
 
     state = state.copyWith(busy: true, error: null);
     try {
-      final data = await ref.read(pguardApiProvider).post('/auth/register', data: {
+      final data =
+          await ref.read(pguardApiProvider).post('/auth/register', data: {
         'phone_verified_token': pvt,
         'role': role.wire,
         'pin_hash': _hasher.pinHash(pin),
       });
-      final profileToken =
-          (data is Map<String, dynamic>) ? data['profile_token'] as String? : null;
+      final profileToken = (data is Map<String, dynamic>)
+          ? data['profile_token'] as String?
+          : null;
       if (profileToken != null) {
         _profileToken = profileToken;
         await store.saveProfileToken(profileToken);
@@ -143,7 +153,8 @@ class RegistrationController extends _$RegistrationController {
     } on ApiException catch (e) {
       if (e.statusCode == 409) {
         // Already registered (approved/active) — log in with the SAME PIN instead.
-        _phoneVerifiedToken = null; // not consumed by the rejected register; drop for hygiene
+        _phoneVerifiedToken =
+            null; // not consumed by the rejected register; drop for hygiene
         final ok = await ref
             .read(authControllerProvider.notifier)
             .loginWithPin(phone: phone, pin: pin);
@@ -153,14 +164,16 @@ class RegistrationController extends _$RegistrationController {
           return RegisterOutcome.loggedIn;
         }
         state = state.copyWith(
-            busy: false, error: 'เข้าสู่ระบบไม่สำเร็จ / Could not sign in');
+            busy: false,
+            error: isThai ? 'เข้าสู่ระบบไม่สำเร็จ' : 'Could not sign in');
         return RegisterOutcome.error;
       }
       state = state.copyWith(busy: false, error: e.message);
       return RegisterOutcome.error;
     } catch (_) {
       state = state.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong');
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
       return RegisterOutcome.error;
     }
   }
@@ -171,6 +184,7 @@ class RegistrationController extends _$RegistrationController {
     String? fullName,
     required String address,
   }) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final name = fullName?.trim();
     final addr = address.trim();
     return _submitProfile(
@@ -183,8 +197,8 @@ class RegistrationController extends _$RegistrationController {
         role: RegistrationRole.customer,
         lines: [
           if (name != null && name.isNotEmpty)
-            (label: 'ชื่อ / Name', value: name),
-          (label: 'ที่อยู่ / Address', value: addr),
+            (label: isThai ? 'ชื่อ' : 'Name', value: name),
+          (label: isThai ? 'ที่อยู่' : 'Address', value: addr),
         ],
       ),
     );
@@ -204,6 +218,7 @@ class RegistrationController extends _$RegistrationController {
     String? accountName,
     Map<GuardDocKind, String> docPaths = const {},
   }) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final digits = accountNumber.replaceAll(RegExp(r'\D'), '');
     final bank = bankName?.trim();
     final acctName = accountName?.trim();
@@ -218,24 +233,34 @@ class RegistrationController extends _$RegistrationController {
         if (workplace != null && workplace.isNotEmpty)
           'previous_workplace': workplace,
         if (bank != null && bank.isNotEmpty) 'bank_name': bank,
-        'account_number': digits, // FULL digits to the backend (server re-masks on reads)
+        'account_number':
+            digits, // FULL digits to the backend (server re-masks on reads)
         if (acctName != null && acctName.isNotEmpty) 'account_name': acctName,
       },
       summary: RegistrationSummary(
         role: RegistrationRole.guard,
         lines: [
           if (gender != null && gender.isNotEmpty)
-            (label: 'เพศ / Gender', value: gender),
+            (label: isThai ? 'เพศ' : 'Gender', value: gender),
           if (dateOfBirth != null && dateOfBirth.isNotEmpty)
-            (label: 'วันเกิด / DOB', value: dateOfBirth),
+            (label: isThai ? 'วันเกิด' : 'DOB', value: dateOfBirth),
           if (yearsOfExperience != null)
-            (label: 'ประสบการณ์ / Experience', value: '$yearsOfExperience ปี'),
+            (
+              label: isThai ? 'ประสบการณ์' : 'Experience',
+              value: '$yearsOfExperience ปี'
+            ),
           if (bank != null && bank.isNotEmpty)
-            (label: 'ธนาคาร / Bank', value: bank),
+            (label: isThai ? 'ธนาคาร' : 'Bank', value: bank),
           // MASKED before any local persistence (PDPA).
-          (label: 'เลขบัญชี / Account', value: maskAccountNumber(digits)),
+          (
+            label: isThai ? 'เลขบัญชี' : 'Account',
+            value: maskAccountNumber(digits)
+          ),
           if (docPaths.isNotEmpty)
-            (label: 'เอกสาร / Documents', value: '${docPaths.length}/5'),
+            (
+              label: isThai ? 'เอกสาร' : 'Documents',
+              value: '${docPaths.length}/5'
+            ),
         ],
       ),
     );
@@ -248,15 +273,22 @@ class RegistrationController extends _$RegistrationController {
     Map<String, dynamic> data, {
     required RegistrationSummary summary,
   }) async {
-    if (state.busy) return false; // guard against a double-tap before the busy flag propagates
+    // Guard against a double-tap before the busy flag propagates.
+    if (state.busy) {
+      return false;
+    }
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     // Busy BEFORE the async token read so the screen can't launch a second concurrent submit
     // with the same single-use profile_token.
     state = state.copyWith(busy: true, error: null);
-    final token = _profileToken ?? await ref.read(appStoreProvider).readProfileToken();
+    final token =
+        _profileToken ?? await ref.read(appStoreProvider).readProfileToken();
     if (token == null) {
       state = state.copyWith(
           busy: false,
-          error: 'หมดเวลา กรุณาลงทะเบียนใหม่ / Session expired — register again');
+          error: isThai
+              ? 'หมดเวลา กรุณาลงทะเบียนใหม่'
+              : 'Session expired — register again');
       return false;
     }
     try {
@@ -275,7 +307,8 @@ class RegistrationController extends _$RegistrationController {
       return false;
     } catch (_) {
       state = state.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong');
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
       return false;
     }
   }
@@ -298,10 +331,13 @@ class RegistrationController extends _$RegistrationController {
   /// Cold-start "check status": the PIN is re-entered on the pending screen; the phone comes from
   /// secure storage (persisted at register).
   Future<bool> checkStatusWithPin(String pin) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final phone = _phone ?? await ref.read(appStoreProvider).readPhone();
     if (phone == null) {
       state = state.copyWith(
-          error: 'ไม่พบเบอร์ กรุณาเริ่มใหม่ / Phone missing — start again');
+          error: isThai
+              ? 'ไม่พบเบอร์ กรุณาเริ่มใหม่'
+              : 'Phone missing — start again');
       return false;
     }
     return _attemptApprovedLogin(phone: phone, pin: pin);

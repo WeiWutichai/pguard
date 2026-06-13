@@ -7,10 +7,8 @@ Booking booking(String id, BookingStatus status) =>
 
 void main() {
   group('BookingsHistory.badge', () {
-    test('completed → done, negative terminals → cancelled, rest → active',
-        () {
-      expect(BookingsHistory.badge(BookingStatus.completed),
-          HistoryBadge.done);
+    test('completed → done, negative terminals → cancelled, rest → active', () {
+      expect(BookingsHistory.badge(BookingStatus.completed), HistoryBadge.done);
       expect(BookingsHistory.badge(BookingStatus.cancelled),
           HistoryBadge.cancelled);
       expect(BookingsHistory.badge(BookingStatus.declined),
@@ -57,10 +55,17 @@ void main() {
     });
   });
 
-  test('filter chip labels are the exact design strings', () {
+  test('filter chip labels are the exact design strings (Thai default)', () {
     expect(
-      BookingsHistoryFilter.values.map((f) => f.label),
-      ['ทั้งหมด / All', 'สำเร็จ / Done', 'ยกเลิก / Cancelled', 'กำลังทำ'],
+      BookingsHistoryFilter.values.map((f) => f.label(true)),
+      ['ทั้งหมด', 'สำเร็จ', 'ยกเลิก', 'กำลังทำ'],
+    );
+  });
+
+  test('filter chip labels render the English half under EN', () {
+    expect(
+      BookingsHistoryFilter.values.map((f) => f.label(false)),
+      ['All', 'Done', 'Cancelled', 'In progress'],
     );
   });
 

@@ -5,16 +5,19 @@ import '../models/booking.dart';
 
 /// The history filter tabs (design: ทั้งหมด / สำเร็จ / ยกเลิก / กำลังทำ).
 enum BookingsHistoryFilter {
-  all('ทั้งหมด / All'),
-  done('สำเร็จ / Done'),
-  cancelled('ยกเลิก / Cancelled'),
-  // The design shows this tab Thai-only (EN hidden) — kept verbatim.
-  active('กำลังทำ');
+  all('ทั้งหมด', 'All'),
+  done('สำเร็จ', 'Done'),
+  cancelled('ยกเลิก', 'Cancelled'),
+  // The design shows this tab Thai-only (EN hidden) — same word in both locales.
+  active('กำลังทำ', 'In progress');
 
-  const BookingsHistoryFilter(this.label);
+  const BookingsHistoryFilter(this._th, this._en);
 
-  /// Inline-bilingual chip label, exact design strings.
-  final String label;
+  final String _th;
+  final String _en;
+
+  /// Single-language chip label driven by the active locale, exact design strings.
+  String label(bool isThai) => isThai ? _th : _en;
 }
 
 /// The row badge kind (the design badges are the literal lowercase words).
@@ -57,6 +60,7 @@ class BookingsHistory {
   }
 
   /// [all] (server-ordered newest first) narrowed to [filter], order preserved.
-  static List<Booking> filter(List<Booking> all, BookingsHistoryFilter filter) =>
+  static List<Booking> filter(
+          List<Booking> all, BookingsHistoryFilter filter) =>
       all.where((b) => matches(b.status, filter)).toList();
 }

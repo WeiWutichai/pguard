@@ -18,10 +18,7 @@ class WalletController extends _$WalletController {
   Future<List<Payment>> build() async {
     final data = await ref.read(pguardApiProvider).get('/payments');
     final raw = data is List ? data : const [];
-    return raw
-        .whereType<Map<String, dynamic>>()
-        .map(Payment.fromJson)
-        .toList();
+    return raw.whereType<Map<String, dynamic>>().map(Payment.fromJson).toList();
   }
 
   /// Gesture-driven re-pull — never rethrows; the provider state carries any error.
@@ -75,16 +72,16 @@ class WalletController extends _$WalletController {
     return 'PG-${hex.length > 8 ? hex.substring(0, 8) : hex}';
   }
 
-  /// Bilingual status label for the row badge. "คืนเงินแล้ว" is the design's refunded wording
-  /// (More_Screens.md Screen 5, cancelled row).
-  static String statusLabel(PaymentStatus status) {
+  /// Single-language status label for the row badge (locale-driven). "คืนเงินแล้ว" is the
+  /// design's refunded wording (More_Screens.md Screen 5, cancelled row).
+  static String statusLabel(PaymentStatus status, {required bool isThai}) {
     switch (status) {
       case PaymentStatus.pending:
-        return 'รอดำเนินการ / Pending';
+        return isThai ? 'รอดำเนินการ' : 'Pending';
       case PaymentStatus.completed:
-        return 'ชำระแล้ว / Paid';
+        return isThai ? 'ชำระแล้ว' : 'Paid';
       case PaymentStatus.refunded:
-        return 'คืนเงินแล้ว / Refunded';
+        return isThai ? 'คืนเงินแล้ว' : 'Refunded';
     }
   }
 }

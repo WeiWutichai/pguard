@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/wallet_controller.dart';
 import '../../core/models/money.dart';
 import '../../core/models/payment.dart';
@@ -25,6 +26,7 @@ class WalletScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(walletControllerProvider);
 
     return Scaffold(
@@ -38,9 +40,10 @@ class WalletScreen extends ConsumerWidget {
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดใบเสร็จไม่สำเร็จ / Could not load receipts',
+            title: isThai ? 'โหลดใบเสร็จไม่สำเร็จ' : 'Could not load receipts',
             message: e is ApiException ? e.message : null,
-            onRetry: () => ref.read(walletControllerProvider.notifier).refresh(),
+            onRetry: () =>
+                ref.read(walletControllerProvider.notifier).refresh(),
           ),
           data: (payments) => RefreshIndicator(
             onRefresh: () =>
@@ -49,12 +52,13 @@ class WalletScreen extends ConsumerWidget {
               physics: const AlwaysScrollableScrollPhysics(),
               children: [
                 _TotalSpentHero(
-                    totalSatang:
-                        WalletController.totalSpentSatang(payments)),
+                    totalSatang: WalletController.totalSpentSatang(payments),
+                    isThai: isThai),
                 if (payments.isEmpty)
-                  const _EmptyWallet()
+                  _EmptyWallet(isThai: isThai)
                 else
-                  for (final p in payments) _ReceiptRow(payment: p),
+                  for (final p in payments)
+                    _ReceiptRow(payment: p, isThai: isThai),
                 const SizedBox(height: PgTokens.space4),
               ],
             ),
@@ -68,9 +72,10 @@ class WalletScreen extends ConsumerWidget {
 /// "รวมจ่ายแล้ว / Total spent" hero — same shape as the earnings hero (muted label + 34px
 /// mono figure). Refunded charges count 0; prorated charges count their final amount.
 class _TotalSpentHero extends StatelessWidget {
-  const _TotalSpentHero({required this.totalSatang});
+  const _TotalSpentHero({required this.totalSatang, required this.isThai});
 
   final int totalSatang;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -79,9 +84,10 @@ class _TotalSpentHero extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'รวมจ่ายแล้ว / Total spent',
-            style: TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+          Text(
+            isThai ? 'รวมจ่ายแล้ว' : 'Total spent',
+            style:
+                const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
           const SizedBox(height: PgTokens.space1),
           Text(
@@ -103,9 +109,10 @@ class _TotalSpentHero extends StatelessWidget {
 /// One receipt card per the design `.rcpt-row`: sunken receipt icon, mono reference, muted
 /// date line, status badge + right-aligned mono amount.
 class _ReceiptRow extends StatelessWidget {
-  const _ReceiptRow({required this.payment});
+  const _ReceiptRow({required this.payment, required this.isThai});
 
   final Payment payment;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -171,7 +178,7 @@ class _ReceiptRow extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 3),
-              _PaymentBadge(status: payment.status),
+              _PaymentBadge(status: payment.status, isThai: isThai),
             ],
           ),
         ],
@@ -182,9 +189,10 @@ class _ReceiptRow extends StatelessWidget {
 
 /// 10px w600 status pill: pending → amber, completed → green, refunded → info blue.
 class _PaymentBadge extends StatelessWidget {
-  const _PaymentBadge({required this.status});
+  const _PaymentBadge({required this.status, required this.isThai});
 
   final PaymentStatus status;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -206,7 +214,7 @@ class _PaymentBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusFull),
       ),
       child: Text(
-        WalletController.statusLabel(status),
+        WalletController.statusLabel(status, isThai: isThai),
         style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: fg),
       ),
     );
@@ -215,29 +223,33 @@ class _PaymentBadge extends StatelessWidget {
 
 /// No payments yet (the spec has no designed empty state — house empty pattern).
 class _EmptyWallet extends StatelessWidget {
-  const _EmptyWallet();
+  const _EmptyWallet({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       children: [
-        SizedBox(height: 80),
-        Icon(Icons.receipt_long_outlined,
+        const SizedBox(height: 80),
+        const Icon(Icons.receipt_long_outlined,
             size: 48, color: PgTokens.colorTextFaint),
-        SizedBox(height: PgTokens.space3),
+        const SizedBox(height: PgTokens.space3),
         Text(
-          'ยังไม่มีใบเสร็จ\nNo receipts yet',
+          isThai ? 'ยังไม่มีใบเสร็จ' : 'No receipts yet',
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w600,
               color: PgTokens.colorText),
         ),
-        SizedBox(height: PgTokens.space2),
+        const SizedBox(height: PgTokens.space2),
         Text(
-          'ใบเสร็จจะแสดงหลังชำระเงิน\nReceipts appear after you pay',
+          isThai
+              ? 'ใบเสร็จจะแสดงหลังชำระเงิน'
+              : 'Receipts appear after you pay',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+          style: const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
         ),
       ],
     );

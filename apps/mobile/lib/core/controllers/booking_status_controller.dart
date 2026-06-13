@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/booking.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 
 part 'booking_status_controller.g.dart';
 
@@ -62,7 +63,8 @@ class BookingStatusController extends _$BookingStatusController {
     } on ApiException catch (e) {
       return e.message;
     } catch (_) {
-      return 'เกิดข้อผิดพลาด / Something went wrong';
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
     }
   }
 }

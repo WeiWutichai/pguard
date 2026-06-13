@@ -6,6 +6,7 @@ import '../../core/controllers/customer_home_controller.dart'
     show thaiShortDate;
 import '../../core/controllers/earnings.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
@@ -30,20 +31,21 @@ class EarningsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(guardJobsControllerProvider);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'รายได้',
-        subtitle: 'Earnings',
+      appBar: PGuardHeader(
+        title: isThai ? 'รายได้' : 'Earnings',
+        subtitle: isThai ? 'รายได้โดยประมาณ' : 'Earnings',
         showBack: true,
       ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดรายได้ไม่สำเร็จ / Could not load earnings',
+            title: isThai ? 'โหลดรายได้ไม่สำเร็จ' : 'Could not load earnings',
             message: e is ApiException ? e.message : null,
             onRetry: () =>
                 ref.read(guardJobsControllerProvider.notifier).refresh(),
@@ -57,16 +59,18 @@ class EarningsScreen extends ConsumerWidget {
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
                   _EarningsHero(
-                      totalSatang: GuardEarnings.totalEarningsSatang(all)),
+                    isThai: isThai,
+                    totalSatang: GuardEarnings.totalEarningsSatang(all),
+                  ),
                   if (completed.isEmpty)
-                    const _EmptyEarnings()
+                    _EmptyEarnings(isThai: isThai)
                   else ...[
-                    const Padding(
-                      padding: EdgeInsets.fromLTRB(PgTokens.space5,
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(PgTokens.space5,
                           PgTokens.space4, PgTokens.space5, PgTokens.space2),
                       child: Text(
-                        'รายการล่าสุด / Recent',
-                        style: TextStyle(
+                        isThai ? 'รายการล่าสุด' : 'Recent',
+                        style: const TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: PgTokens.colorTextStrong),
@@ -87,8 +91,9 @@ class EarningsScreen extends ConsumerWidget {
 /// Design `earn-hero`: padding 18×20, muted subtitle, 34px w600 mono big number — plus the
 /// honesty line where the mock's growth indicator sits.
 class _EarningsHero extends StatelessWidget {
-  const _EarningsHero({required this.totalSatang});
+  const _EarningsHero({required this.isThai, required this.totalSatang});
 
+  final bool isThai;
   final int totalSatang;
 
   @override
@@ -98,9 +103,10 @@ class _EarningsHero extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'รวมรายได้ / Total earnings',
-            style: TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+          Text(
+            isThai ? 'รวมรายได้' : 'Total earnings',
+            style:
+                const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
           const SizedBox(height: PgTokens.space1),
           Text(
@@ -114,10 +120,12 @@ class _EarningsHero extends StatelessWidget {
             ),
           ),
           const SizedBox(height: PgTokens.space1),
-          const Text(
-            'ประมาณการ · ฿ พื้นฐาน × ชม. ต่องานที่เสร็จสิ้น\n'
-            'Estimated · base ฿ × hours per completed job',
-            style: TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+          Text(
+            isThai
+                ? 'ประมาณการ · ฿ พื้นฐาน × ชม. ต่องานที่เสร็จสิ้น'
+                : 'Estimated · base ฿ × hours per completed job',
+            style:
+                const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
         ],
       ),
@@ -200,28 +208,33 @@ class _EarningsRow extends StatelessWidget {
 
 /// No completed jobs yet (the spec has no designed empty state — house empty pattern).
 class _EmptyEarnings extends StatelessWidget {
-  const _EmptyEarnings();
+  const _EmptyEarnings({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       children: [
-        SizedBox(height: 80),
-        Icon(Icons.payments_outlined, size: 48, color: PgTokens.colorTextFaint),
-        SizedBox(height: PgTokens.space3),
+        const SizedBox(height: 80),
+        const Icon(Icons.payments_outlined,
+            size: 48, color: PgTokens.colorTextFaint),
+        const SizedBox(height: PgTokens.space3),
         Text(
-          'ยังไม่มีรายได้\nNo earnings yet',
+          isThai ? 'ยังไม่มีรายได้' : 'No earnings yet',
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w600,
               color: PgTokens.colorText),
         ),
-        SizedBox(height: PgTokens.space2),
+        const SizedBox(height: PgTokens.space2),
         Text(
-          'รายได้จะแสดงเมื่องานเสร็จสิ้น\nEarnings appear when a job completes',
+          isThai
+              ? 'รายได้จะแสดงเมื่องานเสร็จสิ้น'
+              : 'Earnings appear when a job completes',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+          style: const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
         ),
       ],
     );

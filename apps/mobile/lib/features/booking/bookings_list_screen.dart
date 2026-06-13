@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/bookings_history.dart';
 import '../../core/controllers/customer_home_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
@@ -28,8 +29,7 @@ class BookingsListScreen extends ConsumerStatefulWidget {
   const BookingsListScreen({super.key});
 
   @override
-  ConsumerState<BookingsListScreen> createState() =>
-      _BookingsListScreenState();
+  ConsumerState<BookingsListScreen> createState() => _BookingsListScreenState();
 }
 
 class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
@@ -38,19 +38,22 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
   @override
   Widget build(BuildContext context) {
     final async = ref.watch(customerHomeControllerProvider);
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'ประวัติการจ้าง',
-        subtitle: 'Hirer history',
+      appBar: PGuardHeader(
+        title: isThai ? 'ประวัติการจ้าง' : 'Hirer history',
+        subtitle: isThai ? 'รายการจองทั้งหมดของคุณ' : 'All your bookings',
         showBack: true,
       ),
       body: SafeArea(
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดประวัติการจ้างไม่สำเร็จ / Could not load history',
+            title: isThai
+                ? 'โหลดประวัติการจ้างไม่สำเร็จ'
+                : 'Could not load history',
             message: e is ApiException ? e.message : null,
             onRetry: () =>
                 ref.read(customerHomeControllerProvider.notifier).refresh(),
@@ -65,23 +68,27 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
                 children: [
                   _FilterChips(
                     selected: _filter,
+                    isThai: isThai,
                     onSelect: (f) => setState(() => _filter = f),
                   ),
                   if (all.isEmpty)
-                    const _EmptyHistory()
+                    _EmptyHistory(isThai: isThai)
                   else if (filtered.isEmpty)
-                    const Padding(
-                      padding: EdgeInsets.all(PgTokens.space6),
+                    Padding(
+                      padding: const EdgeInsets.all(PgTokens.space6),
                       child: Center(
                         child: Text(
-                          'ไม่มีรายการในหมวดนี้ / Nothing in this filter',
-                          style: TextStyle(
+                          isThai
+                              ? 'ไม่มีรายการในหมวดนี้'
+                              : 'Nothing in this filter',
+                          style: const TextStyle(
                               fontSize: 13, color: PgTokens.colorTextMuted),
                         ),
                       ),
                     )
                   else
-                    for (final b in filtered) _HistoryRow(booking: b),
+                    for (final b in filtered)
+                      _HistoryRow(booking: b, isThai: isThai),
                 ],
               ),
             );
@@ -95,9 +102,14 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
 /// The design's `.hist-tabs` segmented chips: 12.5px w600, sunken bg; active = green-900
 /// (colorBrand) with white text.
 class _FilterChips extends StatelessWidget {
-  const _FilterChips({required this.selected, required this.onSelect});
+  const _FilterChips({
+    required this.selected,
+    required this.isThai,
+    required this.onSelect,
+  });
 
   final BookingsHistoryFilter selected;
+  final bool isThai;
   final ValueChanged<BookingsHistoryFilter> onSelect;
 
   @override
@@ -110,7 +122,7 @@ class _FilterChips extends StatelessWidget {
         children: [
           for (final f in BookingsHistoryFilter.values) ...[
             _Chip(
-              label: f.label,
+              label: f.label(isThai),
               active: f == selected,
               onTap: () => onSelect(f),
             ),
@@ -157,9 +169,10 @@ class _Chip extends StatelessWidget {
 
 /// One `.hist-row`: 40px icon badge + address/status + badge & mono amount, hairline divider.
 class _HistoryRow extends StatelessWidget {
-  const _HistoryRow({required this.booking});
+  const _HistoryRow({required this.booking, required this.isThai});
 
   final Booking booking;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -167,7 +180,9 @@ class _HistoryRow extends StatelessWidget {
     final when = booking.scheduledAt;
     final statusLine = [
       if (when != null) thaiShortDate(when),
-      BookingLifecycle.labelTh(booking.status),
+      isThai
+          ? BookingLifecycle.labelTh(booking.status)
+          : BookingLifecycle.labelEn(booking.status),
     ].join(' · ');
     final total = bookingTotalSatang(booking);
     final cancelled = badge == HistoryBadge.cancelled;
@@ -304,29 +319,33 @@ class _StatusBadge extends StatelessWidget {
 
 /// No bookings at all (the spec has no designed empty state — house empty pattern).
 class _EmptyHistory extends StatelessWidget {
-  const _EmptyHistory();
+  const _EmptyHistory({required this.isThai});
+
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
-    return const Column(
+    return Column(
       children: [
-        SizedBox(height: 100),
-        Icon(Icons.event_note_outlined,
+        const SizedBox(height: 100),
+        const Icon(Icons.event_note_outlined,
             size: 48, color: PgTokens.colorTextFaint),
-        SizedBox(height: PgTokens.space3),
+        const SizedBox(height: PgTokens.space3),
         Text(
-          'ยังไม่มีการจอง\nNo bookings yet',
+          isThai ? 'ยังไม่มีการจอง' : 'No bookings yet',
           textAlign: TextAlign.center,
-          style: TextStyle(
+          style: const TextStyle(
               fontSize: 15,
               fontWeight: FontWeight.w600,
               color: PgTokens.colorText),
         ),
-        SizedBox(height: PgTokens.space2),
+        const SizedBox(height: PgTokens.space2),
         Text(
-          'เรียก รปภ. ครั้งแรกได้จากหน้าหลัก\nBook your first guard from Home',
+          isThai
+              ? 'เรียก รปภ. ครั้งแรกได้จากหน้าหลัก'
+              : 'Book your first guard from Home',
           textAlign: TextAlign.center,
-          style: TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+          style: const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
         ),
       ],
     );

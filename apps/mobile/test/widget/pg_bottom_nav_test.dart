@@ -14,49 +14,45 @@ List<PgNavTab> _tabs({
 }) =>
     [
       const PgNavTab(
-          icon: Icons.home_outlined, label: 'หน้าหลัก / Home', active: true),
+          icon: Icons.home_outlined, label: 'หน้าหลัก', active: true),
       PgNavTab(
           icon: Icons.inbox_outlined,
-          label: 'งาน / Jobs',
+          label: 'งาน',
           badgeCount: secondBadge,
           onTap: onSecond),
-      const PgNavTab(
-          icon: Icons.payments_outlined, label: 'รายได้ / Earnings'),
-      PgNavTab(
-          icon: Icons.person_outline,
-          label: 'โปรไฟล์ / Profile',
-          onTap: onFourth),
+      const PgNavTab(icon: Icons.payments_outlined, label: 'รายได้'),
+      PgNavTab(icon: Icons.person_outline, label: 'โปรไฟล์', onTap: onFourth),
     ];
 
-Container _fabCircle(WidgetTester tester, IconData icon) => tester
-    .widget<Container>(
-        find.ancestor(of: find.byIcon(icon), matching: find.byType(Container))
-            .first);
+Container _fabCircle(WidgetTester tester, IconData icon) =>
+    tester.widget<Container>(find
+        .ancestor(of: find.byIcon(icon), matching: find.byType(Container))
+        .first);
 
 void main() {
   testWidgets('renders 4 tab labels + FAB label with active/inactive colors',
       (tester) async {
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(),
-      fab: PgNavFab.book(label: 'เรียก รปภ. / Book', onTap: () {}),
+      fab: PgNavFab.book(label: 'เรียก รปภ.', onTap: () {}),
     )));
 
     for (final label in [
-      'หน้าหลัก / Home',
-      'งาน / Jobs',
-      'รายได้ / Earnings',
-      'โปรไฟล์ / Profile',
-      'เรียก รปภ. / Book',
+      'หน้าหลัก',
+      'งาน',
+      'รายได้',
+      'โปรไฟล์',
+      'เรียก รปภ.',
     ]) {
       expect(find.text(label), findsOneWidget);
     }
 
-    final active = tester.widget<Text>(find.text('หน้าหลัก / Home'));
+    final active = tester.widget<Text>(find.text('หน้าหลัก'));
     expect(active.style?.color, PgTokens.colorPrimary);
-    final inactive = tester.widget<Text>(find.text('งาน / Jobs'));
+    final inactive = tester.widget<Text>(find.text('งาน'));
     expect(inactive.style?.color, PgTokens.colorTextFaint);
     // FAB label: 9px w600 amber-700.
-    final fabLabel = tester.widget<Text>(find.text('เรียก รปภ. / Book'));
+    final fabLabel = tester.widget<Text>(find.text('เรียก รปภ.'));
     expect(fabLabel.style?.color, PgTokens.colorAmber700);
     expect(fabLabel.style?.fontSize, 9);
   });
@@ -65,13 +61,13 @@ void main() {
       (tester) async {
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(secondBadge: 2),
-      fab: PgNavFab.book(label: 'เรียก รปภ. / Book', onTap: () {}),
+      fab: PgNavFab.book(label: 'เรียก รปภ.', onTap: () {}),
     )));
     expect(find.text('2'), findsOneWidget);
 
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(),
-      fab: PgNavFab.book(label: 'เรียก รปภ. / Book', onTap: () {}),
+      fab: PgNavFab.book(label: 'เรียก รปภ.', onTap: () {}),
     )));
     expect(find.text('2'), findsNothing);
   });
@@ -82,11 +78,11 @@ void main() {
     var booked = 0;
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(onSecond: () => jobs++, onFourth: () => profile++),
-      fab: PgNavFab.book(label: 'เรียก รปภ. / Book', onTap: () => booked++),
+      fab: PgNavFab.book(label: 'เรียก รปภ.', onTap: () => booked++),
     )));
 
-    await tester.tap(find.text('งาน / Jobs'));
-    await tester.tap(find.text('โปรไฟล์ / Profile'));
+    await tester.tap(find.text('งาน'));
+    await tester.tap(find.text('โปรไฟล์'));
     // The FAB centre sits just inside the bar's bounds (62px circle, -30 overhang).
     await tester.tap(find.byIcon(Icons.shield_outlined));
     expect(jobs, 1);
@@ -98,39 +94,38 @@ void main() {
       (tester) async {
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(),
-      fab: PgNavFab.onDuty(label: 'พร้อมรับงาน / On duty', onTap: () {}),
+      fab: PgNavFab.onDuty(label: 'พร้อมรับงาน', onTap: () {}),
     )));
-    final onDuty =
-        _fabCircle(tester, Icons.verified_user_outlined).decoration!
-            as BoxDecoration;
+    final onDuty = _fabCircle(tester, Icons.verified_user_outlined).decoration!
+        as BoxDecoration;
     expect(onDuty.gradient, isA<LinearGradient>());
     // Design 150deg amber-400 → amber-600 (exact tokens since the full-ramp regen).
     expect((onDuty.gradient! as LinearGradient).colors,
         [PgTokens.colorAmber400, PgTokens.colorAmber600]);
-    expect(find.text('พร้อมรับงาน / On duty'), findsOneWidget);
+    expect(find.text('พร้อมรับงาน'), findsOneWidget);
 
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(),
-      fab: PgNavFab.offline(label: 'ออฟไลน์ / Offline', onTap: () {}),
+      fab: PgNavFab.offline(label: 'ออฟไลน์', onTap: () {}),
     )));
     final offline =
         _fabCircle(tester, Icons.shield_outlined).decoration! as BoxDecoration;
     expect(offline.color, PgTokens.colorSunken);
-    expect(offline.border,
+    expect(
+        offline.border,
         const Border.fromBorderSide(
             BorderSide(color: PgTokens.colorBorder, width: 2)));
-    expect(find.text('ออฟไลน์ / Offline'), findsOneWidget);
+    expect(find.text('ออฟไลน์'), findsOneWidget);
   });
 
-  testWidgets('coming-soon helper shows the bilingual SnackBar',
-      (tester) async {
+  testWidgets('coming-soon helper shows the SnackBar', (tester) async {
     await tester.pumpWidget(_host(PgBottomNav(
       tabs: _tabs(),
-      fab: PgNavFab.book(label: 'เรียก รปภ. / Book', onTap: () {}),
+      fab: PgNavFab.book(label: 'เรียก รปภ.', onTap: () {}),
     )));
-    final context = tester.element(find.text('งาน / Jobs'));
-    PgBottomNav.comingSoon(context);
+    final context = tester.element(find.text('งาน'));
+    PgBottomNav.comingSoon(context, isThai: true);
     await tester.pump();
-    expect(find.text('เร็วๆ นี้ / Coming soon'), findsOneWidget);
+    expect(find.text('เร็วๆ นี้'), findsOneWidget);
   });
 }

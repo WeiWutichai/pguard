@@ -8,6 +8,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/chat_launcher.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -32,11 +33,12 @@ class ActiveJobScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(activeJobControllerProvider(bookingId));
     final state = async.valueOrNull;
     final booking = state?.booking;
     final stage = state == null ? null : stageOf(state);
-    final header = _headerFor(stage);
+    final header = _headerFor(stage, isThai);
     final myUserId = ref.watch(sessionProvider).user?.userId;
 
     return Scaffold(
@@ -74,7 +76,7 @@ class ActiveJobScreen extends ConsumerWidget {
           loading: () => const Center(child: CircularProgressIndicator()),
           // Shared hi-fi error state (Mobile - System.html) — retry re-fetches the job.
           error: (e, _) => PgErrorState(
-            title: 'โหลดงานไม่สำเร็จ / Could not load this job',
+            title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load this job',
             message: e is ApiException ? e.message : null,
             onRetry: () =>
                 ref.invalidate(activeJobControllerProvider(bookingId)),
@@ -109,38 +111,40 @@ JobStage stageOf(ActiveJobState s) {
 /// G5 Awaiting customer (sand → amber-700, nearest token). The journey phase (accepted +
 /// travelling) maps to G2; the at-location-not-started stage maps to G3. Falls back to the
 /// generic active-job header while loading / after completion.
-({String title, String subtitle, Color background}) _headerFor(JobStage? stage) {
+({String title, String subtitle, Color background}) _headerFor(
+    JobStage? stage, bool isThai) {
   switch (stage) {
     case JobStage.enRoute:
     case JobStage.arrived:
       return (
-        title: 'กำลังเดินทาง',
-        subtitle: 'En route',
+        title: isThai ? 'กำลังเดินทาง' : 'En route',
+        subtitle: isThai ? 'กำลังไปหาลูกค้า' : 'On the way',
         background: PgTokens.colorInfo, // nearest token to design #1F5FC2
       );
     case JobStage.start:
       return (
-        title: 'ถึงที่หมายแล้ว',
-        subtitle: 'Arrived',
+        title: isThai ? 'ถึงที่หมายแล้ว' : 'Arrived',
+        subtitle: isThai ? 'ถึงจุดหมายแล้ว' : 'At the location',
         background: PgTokens.colorGreen800,
       );
     case JobStage.working:
       return (
-        title: 'งานกำลังดำเนินอยู่',
-        subtitle: 'Working',
+        title: isThai ? 'งานกำลังดำเนินอยู่' : 'Working',
+        subtitle: isThai ? 'กำลังปฏิบัติงาน' : 'Job in progress',
         background: PgTokens.colorGreen800,
       );
     case JobStage.awaiting:
       return (
-        title: 'รอลูกค้าตรวจสอบ',
-        subtitle: 'Awaiting customer',
-        background: PgTokens.colorAmber700, // nearest token to design sand #C26A1E
+        title: isThai ? 'รอลูกค้าตรวจสอบ' : 'Awaiting customer',
+        subtitle: isThai ? 'รอการตรวจสอบ' : 'Awaiting review',
+        background:
+            PgTokens.colorAmber700, // nearest token to design sand #C26A1E
       );
     case JobStage.done:
     case null:
       return (
-        title: 'งานที่กำลังทำ',
-        subtitle: 'Active job',
+        title: isThai ? 'งานที่กำลังทำ' : 'Active job',
+        subtitle: isThai ? 'งานปัจจุบัน' : 'Current job',
         background: PgTokens.colorGreen800,
       );
   }
@@ -190,13 +194,14 @@ class _Body extends StatelessWidget {
   }
 }
 
-class _AddressCard extends StatelessWidget {
+class _AddressCard extends ConsumerWidget {
   const _AddressCard({required this.address});
 
   final String? address;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // The booking carries only a free-text address (no lat/lng in the v2 contract), so we show
     // the address over a stylised area band rather than a real customer pin.
     return Container(
@@ -218,8 +223,8 @@ class _AddressCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Text('สถานที่ลูกค้า / Customer location',
-                        style: TextStyle(
+                    Text(isThai ? 'สถานที่ลูกค้า' : 'Customer location',
+                        style: const TextStyle(
                             fontSize: 11, color: PgTokens.colorTextMuted)),
                     Text(address ?? '—',
                         style: const TextStyle(
@@ -311,6 +316,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   }
 
   Future<void> _checkIn(int hour) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final ok = await showCheckInSheet(
       context: context,
       ref: ref,
@@ -319,13 +325,18 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     );
     if (ok == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('ส่งรายงานเช็คอินแล้ว / Check-in sent')),
+        SnackBar(
+          content: Text(
+            isThai ? 'ส่งรายงานเช็คอินแล้ว' : 'Check-in sent',
+          ),
+        ),
       );
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = widget.state;
     final clock = state.clock;
     final schedule = state.schedule;
@@ -366,7 +377,9 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
               const SizedBox(width: PgTokens.space3),
               Expanded(
                 child: Text(
-                  'เหลือ · จาก ${clock.hours} ชม. / left · of ${clock.hours} h',
+                  isThai
+                      ? 'เหลือ · จาก ${clock.hours} ชม.'
+                      : 'left · of ${clock.hours} h',
                   style: const TextStyle(
                       fontSize: 11.5, color: PgTokens.colorTextMuted),
                 ),
@@ -381,8 +394,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
               value: progress,
               minHeight: 7,
               backgroundColor: PgTokens.colorSunken,
-              valueColor:
-                  const AlwaysStoppedAnimation(PgTokens.colorPrimary),
+              valueColor: const AlwaysStoppedAnimation(PgTokens.colorPrimary),
             ),
           ),
           const SizedBox(height: PgTokens.space3),
@@ -399,9 +411,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
               const SizedBox(width: PgTokens.space1),
               Expanded(
                 child: Text(
-                  'เช็คอินแล้ว ${state.completedCheckIns.length}/${schedule.totalSlots}'
-                  '${missed.isNotEmpty ? ' · พลาด ${missed.length}' : ''}'
-                  '${nextAt != null ? ' · ถัดไป ${_hm(nextAt)}' : ''}',
+                  '${isThai ? 'เช็คอินแล้ว' : 'Checked in'} '
+                  '${state.completedCheckIns.length}/${schedule.totalSlots}'
+                  '${missed.isNotEmpty ? (isThai ? ' · พลาด ${missed.length}' : ' · missed ${missed.length}') : ''}'
+                  '${nextAt != null ? (isThai ? ' · ถัดไป ${_hm(nextAt, isThai)}' : ' · next ${_hm(nextAt, isThai)}') : ''}',
                   style: const TextStyle(
                       fontSize: 12.5, color: PgTokens.colorTextMuted),
                 ),
@@ -412,8 +425,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
           if (dueNow)
             PgPrimaryButton(
               label: dueIndex == 0
-                  ? 'เช็คอินเริ่มงาน / Start check-in'
-                  : 'เช็คอินชั่วโมงที่ $dueIndex / Hour $dueIndex check-in',
+                  ? (isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in')
+                  : (isThai
+                      ? 'เช็คอินชั่วโมงที่ $dueIndex'
+                      : 'Hour $dueIndex check-in'),
               color: PgTokens.colorAccent,
               foreground: PgTokens.colorOnAmber,
               onPressed: () => _checkIn(dueIndex),
@@ -425,9 +440,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     );
   }
 
-  static String _hm(DateTime d) {
+  static String _hm(DateTime d, bool isThai) {
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(d.hour)}:${two(d.minute)} น.';
+    final hm = '${two(d.hour)}:${two(d.minute)}';
+    return isThai ? '$hm น.' : hm;
   }
 }
 
@@ -470,26 +486,28 @@ class _SlotTracker extends StatelessWidget {
   }
 }
 
-class _CheckInIdle extends StatelessWidget {
+class _CheckInIdle extends ConsumerWidget {
   const _CheckInIdle();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Container(
       padding: const EdgeInsets.all(PgTokens.space3),
       decoration: BoxDecoration(
         color: PgTokens.colorSuccessBg,
         borderRadius: BorderRadius.circular(PgTokens.radiusLg),
       ),
-      child: const Row(
+      child: Row(
         children: [
-          Icon(Icons.check_circle_outline,
+          const Icon(Icons.check_circle_outline,
               size: 16, color: PgTokens.colorSuccess),
-          SizedBox(width: PgTokens.space2),
+          const SizedBox(width: PgTokens.space2),
           Expanded(
-            child: Text('เช็คอินรอบนี้เรียบร้อย / Up to date on check-ins',
-                style:
-                    TextStyle(fontSize: 12.5, color: PgTokens.colorSuccess)),
+            child: Text(
+                isThai ? 'เช็คอินรอบนี้เรียบร้อย' : 'Up to date on check-ins',
+                style: const TextStyle(
+                    fontSize: 12.5, color: PgTokens.colorSuccess)),
           ),
         ],
       ),
@@ -504,7 +522,7 @@ class _TransitionBar extends ConsumerWidget {
   final ActiveJobState state;
 
   Future<bool?> _confirm(
-      BuildContext context, String title, String body) {
+      BuildContext context, bool isThai, String title, String body) {
     return showDialog<bool>(
       context: context,
       builder: (c) => AlertDialog(
@@ -513,25 +531,33 @@ class _TransitionBar extends ConsumerWidget {
         actions: [
           TextButton(
               onPressed: () => Navigator.pop(c, false),
-              child: const Text('ยกเลิก')),
+              child: Text(isThai ? 'ยกเลิก' : 'Cancel')),
           TextButton(
               onPressed: () => Navigator.pop(c, true),
-              child: const Text('ยืนยัน')),
+              child: Text(isThai ? 'ยืนยัน' : 'Confirm')),
         ],
       ),
     );
   }
 
-  Future<void> _complete(BuildContext context, WidgetRef ref) async {
+  Future<void> _complete(
+      BuildContext context, WidgetRef ref, bool isThai) async {
     // Capture the notifier BEFORE the dialog await so we never touch `ref` post-await.
     final notifier = ref.read(activeJobControllerProvider(bookingId).notifier);
-    final yes = await _confirm(context, 'จบงาน / Complete job?',
-        'ส่งคำขอจบงานให้ลูกค้าตรวจสอบ — ย้อนกลับไม่ได้\nThis requests completion and cannot be undone.');
+    final yes = await _confirm(
+      context,
+      isThai,
+      isThai ? 'จบงาน?' : 'Complete job?',
+      isThai
+          ? 'ส่งคำขอจบงานให้ลูกค้าตรวจสอบ — ย้อนกลับไม่ได้'
+          : 'This requests completion and cannot be undone.',
+    );
     if (yes == true) await notifier.complete();
   }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
     final stage = stageOf(state);
     final busy = state.busy;
@@ -551,7 +577,7 @@ class _TransitionBar extends ConsumerWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             PgPrimaryButton(
-              label: 'เริ่มเดินทาง / Go en route',
+              label: isThai ? 'เริ่มเดินทาง' : 'Go en route',
               busy: busy,
               onPressed: busy ? null : () => ctrl.enRoute(),
             ),
@@ -559,7 +585,7 @@ class _TransitionBar extends ConsumerWidget {
             // Opens the full withdraw flow (warning banner + reason + admin notes) —
             // replaces the old bare AlertDialog confirm.
             PgGhostButton(
-              label: 'ปฏิเสธงาน / Withdraw',
+              label: isThai ? 'ปฏิเสธงาน' : 'Withdraw',
               onPressed: busy
                   ? null
                   : () => context.push('/guard/active/$bookingId/withdraw'),
@@ -568,7 +594,7 @@ class _TransitionBar extends ConsumerWidget {
         ));
       case JobStage.arrived:
         return bar(PgPrimaryButton(
-          label: 'ถึงแล้ว / Arrived',
+          label: isThai ? 'ถึงแล้ว' : 'Arrived',
           busy: busy,
           onPressed: busy ? null : () => ctrl.arrived(),
         ));
@@ -576,7 +602,7 @@ class _TransitionBar extends ConsumerWidget {
         // Design G3: the start CTA pulses (`.sb-btn.amber.pulse`).
         return bar(_PulsingGlow(
           child: PgPrimaryButton(
-            label: 'เริ่มงาน / Start job',
+            label: isThai ? 'เริ่มงาน' : 'Start job',
             color: PgTokens.colorAccent,
             foreground: PgTokens.colorOnAmber,
             busy: busy,
@@ -585,29 +611,30 @@ class _TransitionBar extends ConsumerWidget {
         ));
       case JobStage.working:
         return bar(PgPrimaryButton(
-          label: 'จบงาน / End',
+          label: isThai ? 'จบงาน' : 'End',
           busy: busy,
-          onPressed: busy ? null : () => _complete(context, ref),
+          onPressed: busy ? null : () => _complete(context, ref, isThai),
         ));
       case JobStage.awaiting:
         return bar(Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('รอลูกค้าตรวจสอบการจบงาน\nAwaiting customer review',
+            Text(
+                isThai ? 'รอลูกค้าตรวจสอบการจบงาน' : 'Awaiting customer review',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: PgTokens.colorTextMuted)),
+                style: const TextStyle(color: PgTokens.colorTextMuted)),
             const SizedBox(height: PgTokens.space2),
             // Design G5: the primary CTA for this state is chatting the customer.
             _ChatCustomerButton(booking: state.booking),
             PgGhostButton(
-              label: 'ดูสถานะสด / View live status',
+              label: isThai ? 'ดูสถานะสด' : 'View live status',
               onPressed: () => context.push('/booking/$bookingId/live'),
             ),
           ],
         ));
       case JobStage.done:
         return bar(PgGhostButton(
-          label: 'ดูสถานะสด / View live status',
+          label: isThai ? 'ดูสถานะสด' : 'View live status',
           onPressed: () => context.push('/booking/$bookingId/live'),
         ));
     }
@@ -678,6 +705,7 @@ class _ChatCustomerButtonState extends ConsumerState<_ChatCustomerButton> {
   bool _busy = false;
 
   Future<void> _open() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final booking = widget.booking;
     final myUserId = ref.read(sessionProvider).user?.userId;
     if (myUserId == null || _busy) return;
@@ -694,8 +722,7 @@ class _ChatCustomerButtonState extends ConsumerState<_ChatCustomerButton> {
         requestStatus: booking.status.wire,
         participants: [
           ParticipantInput(userId: myUserId, role: ChatRole.guard),
-          ParticipantInput(
-              userId: booking.customerId, role: ChatRole.customer),
+          ParticipantInput(userId: booking.customerId, role: ChatRole.customer),
         ],
       );
       if (!mounted) return;
@@ -707,8 +734,8 @@ class _ChatCustomerButtonState extends ConsumerState<_ChatCustomerButton> {
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
     } catch (_) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('เปิดแชทไม่สำเร็จ / Could not open chat')));
+      messenger.showSnackBar(SnackBar(
+          content: Text(isThai ? 'เปิดแชทไม่สำเร็จ' : 'Could not open chat')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -716,8 +743,9 @@ class _ChatCustomerButtonState extends ConsumerState<_ChatCustomerButton> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return PgGhostButton(
-      label: 'แชตหาลูกค้า / Chat customer',
+      label: isThai ? 'แชตหาลูกค้า' : 'Chat customer',
       onPressed: _busy ? null : _open,
     );
   }

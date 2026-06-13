@@ -31,13 +31,11 @@ GoRouter buildRouter() => GoRouter(
         ),
         GoRoute(
           path: '/guard/active/:id/withdraw',
-          builder: (_, s) =>
-              WithdrawScreen(bookingId: s.pathParameters['id']!),
+          builder: (_, s) => WithdrawScreen(bookingId: s.pathParameters['id']!),
         ),
         GoRoute(
           path: '/home/guard',
-          builder: (_, __) =>
-              const Scaffold(body: Text('GUARD HOME STUB')),
+          builder: (_, __) => const Scaffold(body: Text('GUARD HOME STUB')),
         ),
       ],
     );
@@ -47,6 +45,9 @@ Future<void> pumpFlow(WidgetTester tester, FakeApi api) async {
     overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      // Locale defaults to Thai; the fake prefs store keeps locale load hermetic
+      // (no platform channel) — the screen renders single-language Thai copy.
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ],
     child: MaterialApp.router(routerConfig: buildRouter()),
   ));
@@ -61,7 +62,7 @@ void main() {
     final api = FakeApi(onGet: (_, __) async => bookingJson('accepted'));
     await pumpFlow(tester, api);
 
-    await tester.tap(find.text('ปฏิเสธงาน / Withdraw'));
+    await tester.tap(find.text('ปฏิเสธงาน'));
     await tester.pumpAndSettle();
 
     expect(find.byType(WithdrawScreen), findsOneWidget);
@@ -78,16 +79,15 @@ void main() {
     expect(find.byType(PgReasonTile), findsNWidgets(3));
     expect(
         tester
-            .widget<PgReasonTile>(find.widgetWithText(
-                PgReasonTile, 'เหตุฉุกเฉินส่วนตัว / Personal emergency'))
+            .widget<PgReasonTile>(
+                find.widgetWithText(PgReasonTile, 'เหตุฉุกเฉินส่วนตัว'))
             .selected,
         isTrue);
-    expect(find.text('ป่วย / Sick'), findsOneWidget);
-    expect(find.text("เดินทางไปไม่ได้ / Can't reach site"), findsOneWidget);
+    expect(find.text('ป่วย'), findsOneWidget);
+    expect(find.text('เดินทางไปไม่ได้'), findsOneWidget);
 
     // Submit is disabled until the admin notes are filled (design interaction note).
-    final submit = find.widgetWithText(
-        ElevatedButton, 'ส่งคำขอถอนงาน / Submit request');
+    final submit = find.widgetWithText(ElevatedButton, 'ส่งคำขอถอนงาน');
     expect(tester.widget<ElevatedButton>(submit).onPressed, isNull);
 
     await tester.enterText(find.byType(TextField), 'รถเสียกลางทาง');
@@ -108,17 +108,16 @@ void main() {
     );
     await pumpFlow(tester, api);
 
-    await tester.tap(find.text('ปฏิเสธงาน / Withdraw'));
+    await tester.tap(find.text('ปฏิเสธงาน'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ป่วย / Sick'));
+    await tester.tap(find.text('ป่วย'));
     await tester.enterText(find.byType(TextField), 'มีไข้สูง');
     await tester.pump();
-    await tester.tap(find.text('ส่งคำขอถอนงาน / Submit request'));
+    await tester.tap(find.text('ส่งคำขอถอนงาน'));
     await tester.pumpAndSettle();
 
     expect(api.calls, contains('PUT /bookings/b1/decline'));
     expect(find.text('GUARD HOME STUB'), findsOneWidget);
-    expect(find.text('ส่งคำขอถอนงานแล้ว / Withdrawal submitted'),
-        findsOneWidget);
+    expect(find.text('ส่งคำขอถอนงานแล้ว'), findsOneWidget);
   });
 }

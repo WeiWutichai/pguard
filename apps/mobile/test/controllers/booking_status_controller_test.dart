@@ -120,7 +120,7 @@ void main() {
 
     final error = await c
         .read(bookingStatusControllerProvider('b1').notifier)
-        .cancel(reason: 'เปลี่ยนแผน / Changed plans');
+        .cancel(reason: 'เปลี่ยนแผน');
     expect(error, isNull);
     expect(api.calls, contains('PUT /bookings/b1/cancel'));
     expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
@@ -156,6 +156,7 @@ void main() {
         await c.read(bookingStatusControllerProvider('b1').notifier).cancel();
     expect(error, 'ยกเลิกไม่ได้หลังเจ้าหน้าที่ถึงแล้ว');
     expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
-        BookingStatus.arrived, reason: 'state unchanged on failure');
+        BookingStatus.arrived,
+        reason: 'state unchanged on failure');
   });
 }

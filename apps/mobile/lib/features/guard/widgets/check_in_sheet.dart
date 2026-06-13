@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/active_job_controller.dart';
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/tracking_controller.dart';
 import '../../../core/media/photo_capture.dart';
 import '../../../core/models/tracking.dart';
@@ -21,10 +22,10 @@ Future<bool?> showCheckInSheet({
     isScrollControlled: true,
     backgroundColor: PgTokens.colorSurface,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(PgTokens.radius2xl)),
+      borderRadius:
+          BorderRadius.vertical(top: Radius.circular(PgTokens.radius2xl)),
     ),
-    builder: (_) =>
-        _CheckInSheet(bookingId: bookingId, hourNumber: hourNumber),
+    builder: (_) => _CheckInSheet(bookingId: bookingId, hourNumber: hourNumber),
   );
 }
 
@@ -52,11 +53,13 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
   }
 
   Future<void> _capture() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final photo = await ref.read(photoCaptureServiceProvider).capture();
     if (!mounted) return;
     if (photo == null) {
-      setState(() => _error =
-          'กล้องไม่พร้อมใช้งานในรุ่นนี้ / Camera unavailable in this build');
+      setState(() => _error = isThai
+          ? 'กล้องไม่พร้อมใช้งานในรุ่นนี้'
+          : 'Camera unavailable in this build');
       return;
     }
     setState(() {
@@ -68,6 +71,7 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
   }
 
   Future<void> _submit() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final photo = _photo;
     if (photo == null) return;
     setState(() {
@@ -77,7 +81,8 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
     final ok = await ref
         .read(activeJobControllerProvider(widget.bookingId).notifier)
         .submitCheckIn(
-          slot: widget.hourNumber, // widget.hourNumber is the 0-based schedule slot (dueIndex)
+          slot: widget
+              .hourNumber, // widget.hourNumber is the 0-based schedule slot (dueIndex)
           photo: photo,
           gps: _gps,
           note: _note.text.trim().isEmpty ? null : _note.text.trim(),
@@ -88,17 +93,19 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
     } else {
       setState(() {
         _busy = false;
-        _error = ref.read(activeJobControllerProvider(widget.bookingId)).maybeWhen(
-              data: (s) => s.error,
-              orElse: () => null,
-            ) ??
-            'ส่งไม่สำเร็จ / Submission failed';
+        _error =
+            ref.read(activeJobControllerProvider(widget.bookingId)).maybeWhen(
+                      data: (s) => s.error,
+                      orElse: () => null,
+                    ) ??
+                (isThai ? 'ส่งไม่สำเร็จ' : 'Submission failed');
       });
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final accuracy = ref.watch(trackingControllerProvider).lastSample?.accuracy;
     return Padding(
       padding: EdgeInsets.only(
@@ -126,28 +133,37 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
               // widget.hourNumber is the 0-based schedule slot — mirror the screen button label
               // (slot 0 = the start check-in) so the two surfaces describe the same action.
               widget.hourNumber == 0
-                  ? 'เช็คอินเริ่มงาน / Start check-in'
-                  : 'เช็คอินชั่วโมงที่ ${widget.hourNumber} / Hour ${widget.hourNumber} check-in',
+                  ? (isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in')
+                  : (isThai
+                      ? 'เช็คอินชั่วโมงที่ ${widget.hourNumber}'
+                      : 'Hour ${widget.hourNumber} check-in'),
               style:
                   const TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
           const SizedBox(height: 2),
           Text(
             accuracy != null
-                ? 'GPS แม่นยำ ${accuracy.toStringAsFixed(0)} ม.'
-                : 'แนบพิกัด GPS เมื่อออนไลน์',
+                ? (isThai
+                    ? 'GPS แม่นยำ ${accuracy.toStringAsFixed(0)} ม.'
+                    : 'GPS accurate to ${accuracy.toStringAsFixed(0)} m')
+                : (isThai
+                    ? 'แนบพิกัด GPS เมื่อออนไลน์'
+                    : 'GPS attached when online'),
             style:
                 const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
           const SizedBox(height: PgTokens.space4),
-          _PhotoSlot(photo: _photo, onTap: _busy ? null : _capture),
+          _PhotoSlot(
+              photo: _photo, onTap: _busy ? null : _capture, isThai: isThai),
           const SizedBox(height: PgTokens.space3),
           TextField(
             controller: _note,
             minLines: 1,
             maxLines: 3,
-            decoration: const InputDecoration(
-              hintText: 'บันทึกเหตุการณ์ (ไม่บังคับ)…',
-              border: OutlineInputBorder(),
+            decoration: InputDecoration(
+              hintText: isThai
+                  ? 'บันทึกเหตุการณ์ (ไม่บังคับ)…'
+                  : 'Log an incident (optional)…',
+              border: const OutlineInputBorder(),
             ),
           ),
           if (_error != null) ...[
@@ -156,7 +172,7 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
           ],
           const SizedBox(height: PgTokens.space4),
           PgPrimaryButton(
-            label: 'ส่งรายงานรอบนี้ / Submit check-in',
+            label: isThai ? 'ส่งรายงานรอบนี้' : 'Submit check-in',
             busy: _busy,
             onPressed: (_photo == null || _busy) ? null : _submit,
           ),
@@ -167,10 +183,12 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
 }
 
 class _PhotoSlot extends StatelessWidget {
-  const _PhotoSlot({required this.photo, required this.onTap});
+  const _PhotoSlot(
+      {required this.photo, required this.onTap, required this.isThai});
 
   final CapturedPhoto? photo;
   final VoidCallback? onTap;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -196,9 +214,13 @@ class _PhotoSlot extends StatelessWidget {
                 color: has ? PgTokens.colorPrimary : PgTokens.colorTextMuted),
             const SizedBox(height: PgTokens.space1),
             Text(
-              has ? 'แนบรูปแล้ว / Photo attached' : 'ถ่ายรูปจุดตรวจ + แนบพิกัด',
-              style:
-                  const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+              has
+                  ? (isThai ? 'แนบรูปแล้ว' : 'Photo attached')
+                  : (isThai
+                      ? 'ถ่ายรูปจุดตรวจ + แนบพิกัด'
+                      : 'Photograph the checkpoint + attach GPS'),
+              style: const TextStyle(
+                  fontSize: 12.5, color: PgTokens.colorTextMuted),
             ),
           ],
         ),

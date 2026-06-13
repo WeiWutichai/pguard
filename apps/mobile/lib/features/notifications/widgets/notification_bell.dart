@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/notification_controller.dart';
 
 /// The dashboard bell + unread-count badge. Watches [unreadCountProvider]; tapping opens the
@@ -14,9 +15,10 @@ class NotificationBell extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final count = ref.watch(unreadCountProvider).valueOrNull ?? 0;
     return IconButton(
-      tooltip: 'การแจ้งเตือน / Notifications',
+      tooltip: isThai ? 'การแจ้งเตือน' : 'Notifications',
       onPressed: () async {
         await context.push('/notifications');
         ref.invalidate(unreadCountProvider);

@@ -13,7 +13,7 @@ class PgNavTab {
 
   final IconData icon;
 
-  /// Inline-bilingual 'ไทย / English' label, 10px.
+  /// Single-language label (locale-resolved by the caller), 10px.
   final String label;
 
   /// Active renders colorPrimary; inactive colorTextFaint.
@@ -109,7 +109,8 @@ class PgNavFab {
 /// body/controllers untouched.
 class PgBottomNav extends StatelessWidget {
   const PgBottomNav({super.key, required this.tabs, required this.fab})
-      : assert(tabs.length == 4, 'PgBottomNav takes exactly 4 tabs + the centre FAB');
+      : assert(tabs.length == 4,
+            'PgBottomNav takes exactly 4 tabs + the centre FAB');
 
   /// How far the centre FAB overhangs the bar's top edge (design `top: -30px`). Screens
   /// add this to their scroll-view bottom padding so the last row stays reachable.
@@ -121,9 +122,9 @@ class PgBottomNav extends StatelessWidget {
   /// SnackBar for tabs whose destination doesn't exist yet —
   /// no dead navigation, no fake routes. (No current tab uses it: การจอง / กระเป๋า /
   /// รายได้ now route to /bookings-history, /wallet and /earnings.)
-  static void comingSoon(BuildContext context) =>
+  static void comingSoon(BuildContext context, {required bool isThai}) =>
       ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('เร็วๆ นี้ / Coming soon')));
+          SnackBar(content: Text(isThai ? 'เร็วๆ นี้' : 'Coming soon')));
 
   @override
   Widget build(BuildContext context) {

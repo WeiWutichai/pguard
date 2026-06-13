@@ -38,33 +38,33 @@ void main() {
 
     // Step 1 (personal) is shown first with the design head.
     expect(find.text('ขั้นที่ 1 จาก 4'), findsOneWidget);
-    expect(find.text('เพศ / Gender'), findsOneWidget);
+    expect(find.text('เพศ'), findsOneWidget);
 
     // Next → documents (footer CTA carries the captured-doc count).
-    await tester.tap(find.text('ถัดไป / Next'));
+    await tester.tap(find.text('ถัดไป'));
     await tester.pumpAndSettle();
-    expect(find.textContaining('ID card'), findsOneWidget);
-    expect(find.text('ถัดไป (0/5) / Next (0/5)'), findsOneWidget);
+    expect(find.textContaining('บัตรประชาชน'), findsOneWidget);
+    expect(find.text('ถัดไป (0/5)'), findsOneWidget);
 
     // Next → bank (payout account).
-    await tester.tap(find.text('ถัดไป (0/5) / Next (0/5)'));
+    await tester.tap(find.text('ถัดไป (0/5)'));
     await tester.pumpAndSettle();
-    expect(find.text('บัญชีรับเงิน / Payout account'), findsOneWidget);
+    expect(find.text('บัญชีรับเงิน'), findsOneWidget);
 
     // A too-short account number blocks advancing to the review step.
     await tester.enterText(find.byKey(const Key('reg_account_number')), '123');
-    await tester.tap(find.text('ถัดไป / Next'));
+    await tester.tap(find.text('ถัดไป'));
     await tester.pump();
-    expect(find.textContaining('Account must be'), findsOneWidget);
-    expect(find.text('ตรวจทานข้อมูล / Review your details'), findsNothing);
+    expect(find.textContaining('เลขบัญชี'), findsOneWidget);
+    expect(find.text('ตรวจทานข้อมูล'), findsNothing);
 
     // A valid account advances to the review step with the design submit CTA.
     await tester.enterText(
         find.byKey(const Key('reg_account_number')), '1234567890');
-    await tester.tap(find.text('ถัดไป / Next'));
+    await tester.tap(find.text('ถัดไป'));
     await tester.pumpAndSettle();
-    expect(find.text('ตรวจทานข้อมูล / Review your details'), findsOneWidget);
-    expect(find.text('ส่งใบสมัคร / Submit application'), findsOneWidget);
+    expect(find.text('ตรวจทานข้อมูล'), findsOneWidget);
+    expect(find.text('ส่งใบสมัคร'), findsOneWidget);
     // The review row shows only the MASKED account number, never the full digits.
     expect(find.textContaining('7890'), findsOneWidget);
     expect(find.textContaining('1234567890'), findsNothing);
@@ -74,19 +74,19 @@ void main() {
       (tester) async {
     await pump(tester);
     // Advance to the documents step.
-    await tester.tap(find.text('ถัดไป / Next'));
+    await tester.tap(find.text('ถัดไป'));
     await tester.pumpAndSettle();
 
     // Tap the first doc row's "Upload" → choose gallery from the sheet.
-    await tester.tap(find.text('อัปโหลด / Upload').first);
+    await tester.tap(find.text('อัปโหลด').first);
     await tester.pumpAndSettle();
-    await tester.tap(find.text('เลือกจากคลัง / Choose from gallery'));
+    await tester.tap(find.text('เลือกจากคลัง'));
     await tester.pumpAndSettle();
 
     // The picker seam was invoked (production wires the real image_picker), the row flips to the
     // captured state, and the footer CTA count updates.
     expect(picker.picks, contains(DocSource.gallery));
-    expect(find.text('เลือกแล้ว / Selected'), findsOneWidget);
-    expect(find.text('ถัดไป (1/5) / Next (1/5)'), findsOneWidget);
+    expect(find.text('เลือกแล้ว'), findsOneWidget);
+    expect(find.text('ถัดไป (1/5)'), findsOneWidget);
   });
 }

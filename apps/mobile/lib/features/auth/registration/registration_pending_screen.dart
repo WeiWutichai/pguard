@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
 import '../../../core/providers.dart';
@@ -62,19 +63,23 @@ class _RegistrationPendingScreenState
     if (!mounted || approved == null) return;
     // approved == true → session is now authenticated; the router redirects automatically.
     if (!approved) {
-      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-        content: Text('ยังรอการอนุมัติอยู่ / Still pending approval'),
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(
+          isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
+        ),
       ));
     }
   }
 
   /// Cold start: the in-memory PIN is gone, so re-enter it to attempt the approved-login.
   Future<bool?> _checkWithReenteredPin(RegistrationController ctrl) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final controller = TextEditingController();
     final pin = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('ใส่ PIN เพื่อตรวจสอบ / Enter PIN'),
+        title: Text(isThai ? 'ใส่ PIN เพื่อตรวจสอบ' : 'Enter PIN'),
         content: TextField(
           controller: controller,
           keyboardType: TextInputType.number,
@@ -86,11 +91,11 @@ class _RegistrationPendingScreenState
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('ยกเลิก / Cancel'),
+            child: Text(isThai ? 'ยกเลิก' : 'Cancel'),
           ),
           TextButton(
             onPressed: () => Navigator.pop(ctx, controller.text),
-            child: const Text('ตรวจสอบ / Check'),
+            child: Text(isThai ? 'ตรวจสอบ' : 'Check'),
           ),
         ],
       ),
@@ -102,6 +107,7 @@ class _RegistrationPendingScreenState
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(registrationControllerProvider);
     final isGuard = _summary?.role.isGuard ?? false;
 
@@ -121,20 +127,24 @@ class _RegistrationPendingScreenState
                     AuthHead(
                       icon: _HeroCircle(isGuard: isGuard),
                       title: isGuard
-                          ? 'กำลังตรวจสอบใบสมัคร / Application under review'
-                          : 'เกือบเสร็จแล้ว! / Almost there!',
+                          ? (isThai
+                              ? 'กำลังตรวจสอบใบสมัคร'
+                              : 'Application under review')
+                          : (isThai ? 'เกือบเสร็จแล้ว!' : 'Almost there!'),
                       subtitle: isGuard
-                          ? 'ทีมงานกำลังตรวจสอบเอกสารของคุณ\n'
-                              'โดยปกติใช้เวลา 1–2 วันทำการ / '
-                              'Our team is verifying your documents.\n'
-                              'This usually takes 1–2 business days.'
-                          : 'บัญชีของคุณกำลังรอการยืนยัน\n'
-                              'เราจะแจ้งเตือนทันทีที่พร้อมใช้งาน / '
-                              "Your account is awaiting verification.\n"
-                              "We'll notify you the moment it's ready.",
+                          ? (isThai
+                              ? 'ทีมงานกำลังตรวจสอบเอกสารของคุณ\n'
+                                  'โดยปกติใช้เวลา 1–2 วันทำการ'
+                              : 'Our team is verifying your documents.\n'
+                                  'This usually takes 1–2 business days.')
+                          : (isThai
+                              ? 'บัญชีของคุณกำลังรอการยืนยัน\n'
+                                  'เราจะแจ้งเตือนทันทีที่พร้อมใช้งาน'
+                              : "Your account is awaiting verification.\n"
+                                  "We'll notify you the moment it's ready."),
                     ),
                     const SizedBox(height: PgTokens.space4),
-                    _RoleBadge(isGuard: isGuard),
+                    _RoleBadge(isGuard: isGuard, isThai: isThai),
                   ],
                 ),
               ),
@@ -144,7 +154,7 @@ class _RegistrationPendingScreenState
                 padding: const EdgeInsets.fromLTRB(
                     20, PgTokens.space4, 20, PgTokens.space4),
                 child: PgPrimaryButton(
-                  label: 'ตรวจสอบสถานะ / Check status',
+                  label: isThai ? 'ตรวจสอบสถานะ' : 'Check status',
                   busy: state.busy,
                   onPressed: state.busy ? null : _checkStatus,
                 ),
@@ -185,9 +195,10 @@ class _HeroCircle extends StatelessWidget {
 /// Design role badge pill: guard = green-900 (brand) on white text + shield; customer =
 /// amber-100 with amber-700 text + user icon.
 class _RoleBadge extends StatelessWidget {
-  const _RoleBadge({required this.isGuard});
+  const _RoleBadge({required this.isGuard, required this.isThai});
 
   final bool isGuard;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -209,8 +220,8 @@ class _RoleBadge extends StatelessWidget {
           const SizedBox(width: 7),
           Text(
             isGuard
-                ? 'เจ้าหน้าที่ รปภ. / Security Guard'
-                : 'ลูกค้าจ้างงาน / Hirer',
+                ? (isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard')
+                : (isThai ? 'ลูกค้าจ้างงาน' : 'Hirer'),
             style: TextStyle(
               fontSize: 13,
               fontWeight: FontWeight.w600,

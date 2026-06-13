@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../widgets/pguard_header.dart';
@@ -35,18 +36,26 @@ class CancellationScreen extends ConsumerStatefulWidget {
   final CancellationArgs? args;
 
   @override
-  ConsumerState<CancellationScreen> createState() =>
-      _CancellationScreenState();
+  ConsumerState<CancellationScreen> createState() => _CancellationScreenState();
 }
 
 class _CancellationScreenState extends ConsumerState<CancellationScreen> {
-  /// Design STATE 1 reason options — "เปลี่ยนแผน" pre-selected.
-  static const List<String> _reasons = [
-    'เปลี่ยนแผน / Changed plans',
-    'แจ้งผิดพลาด / Booked by mistake',
-    'ไม่ต้องการแล้ว / No longer needed',
-    'อื่นๆ / Other',
-  ];
+  /// Design STATE 1 reason options — "เปลี่ยนแผน" pre-selected. Rendered in the
+  /// active locale (the chosen reason is DISPLAY-ONLY — never sent — so the
+  /// single-language text is fine for the cancel call too).
+  static List<String> _reasonsFor(bool isThai) => isThai
+      ? const [
+          'เปลี่ยนแผน',
+          'แจ้งผิดพลาด',
+          'ไม่ต้องการแล้ว',
+          'อื่นๆ',
+        ]
+      : const [
+          'Changed plans',
+          'Booked by mistake',
+          'No longer needed',
+          'Other',
+        ];
 
   int _selected = 0;
   bool _busy = false;
@@ -79,14 +88,15 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
   }
 
   Future<void> _confirmAndCancel(int? totalSatang) async {
-    final yes = await _showConfirmSheet(totalSatang);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final yes = await _showConfirmSheet(totalSatang, isThai);
     if (yes != true || !mounted) return;
 
     setState(() => _busy = true);
     // The contract endpoint takes NO body — the reason rides along display-only.
     final error = await ref
         .read(bookingStatusControllerProvider(widget.bookingId).notifier)
-        .cancel(reason: _reasons[_selected]);
+        .cancel(reason: _reasonsFor(isThai)[_selected]);
     if (!mounted) return;
     setState(() => _busy = false);
 
@@ -95,8 +105,8 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
       messenger.showSnackBar(SnackBar(content: Text(error)));
       return;
     }
-    messenger.showSnackBar(const SnackBar(
-        content: Text('ยกเลิกการจองแล้ว / Booking cancelled')));
+    messenger.showSnackBar(SnackBar(
+        content: Text(isThai ? 'ยกเลิกการจองแล้ว' : 'Booking cancelled')));
     // Back to live status — its state is already the cancelled booking (+ WS follows).
     if (context.canPop()) {
       context.pop();
@@ -107,12 +117,17 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
   /// STATE 2 confirm sheet: grab handle, 60px danger-tinted warning circle, 19/600
   /// title, 13.5 muted body, stacked danger + sunken CTAs.
-  Future<bool?> _showConfirmSheet(int? totalSatang) {
-    final body = totalSatang != null
-        ? 'ระบบจะคืนเงิน ${Money.format(totalSatang)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้ / '
-            "We'll refund ${Money.format(totalSatang)} and notify the guard. This can't be undone."
-        : 'ระบบจะคืนเงินและแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้ / '
-            "We'll refund you and notify the guard. This can't be undone.";
+  Future<bool?> _showConfirmSheet(int? totalSatang, bool isThai) {
+    final String body;
+    if (totalSatang != null) {
+      body = isThai
+          ? 'ระบบจะคืนเงิน ${Money.format(totalSatang)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
+          : "We'll refund ${Money.format(totalSatang)} and notify the guard. This can't be undone.";
+    } else {
+      body = isThai
+          ? 'ระบบจะคืนเงินและแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
+          : "We'll refund you and notify the guard. This can't be undone.";
+    }
     return showModalBottomSheet<bool>(
       context: context,
       backgroundColor: PgTokens.colorSurface,
@@ -157,10 +172,10 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
                       child: const Icon(Icons.warning_amber_rounded,
                           size: 26, color: PgTokens.colorDanger),
                     ),
-                    const Text(
-                      'ยกเลิกงานนี้? / Cancel this job?',
+                    Text(
+                      isThai ? 'ยกเลิกงานนี้?' : 'Cancel this job?',
                       textAlign: TextAlign.center,
-                      style: TextStyle(
+                      style: const TextStyle(
                         fontSize: 19,
                         fontWeight: FontWeight.w600,
                         color: PgTokens.colorText,
@@ -184,14 +199,14 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
                 child: Column(
                   children: [
                     PgPrimaryButton(
-                      label: 'ใช่ ยกเลิกงาน / Yes, cancel',
+                      label: isThai ? 'ใช่ ยกเลิกงาน' : 'Yes, cancel',
                       color: PgTokens.colorDanger,
                       onPressed: () => Navigator.pop(sheetContext, true),
                     ),
                     const SizedBox(height: 10),
                     // Sunken dismiss CTA (design `.cta-ghost`: bg-sunken + text-strong).
                     PgPrimaryButton(
-                      label: 'เก็บงานไว้ / Keep booking',
+                      label: isThai ? 'เก็บงานไว้' : 'Keep booking',
                       color: PgTokens.colorSunken,
                       foreground: PgTokens.colorText,
                       onPressed: () => Navigator.pop(sheetContext, false),
@@ -208,6 +223,7 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // Shared with the live-status screen below in the stack; on a cold deep link this
     // spins up the snapshot + WS feed itself.
     final booking = ref
@@ -215,11 +231,12 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
         .valueOrNull;
     final address = widget.args?.address ?? booking?.address;
     final totalSatang = _totalSatang(booking);
+    final reasons = _reasonsFor(isThai);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'ยกเลิกการจอง / Cancellation',
+        title: isThai ? 'ยกเลิกการจอง' : 'Cancellation',
         subtitle: address != null ? '$_shortId · $address' : _shortId,
         showBack: true,
       ),
@@ -229,26 +246,29 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
             Expanded(
               child: ListView(
                 children: [
-                  const Padding(
-                    padding: EdgeInsets.fromLTRB(24, 6, 24, 14),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 6, 24, 14),
                     child: Text(
-                      'เลือกเหตุผลในการยกเลิก / Why are you cancelling?',
-                      style: TextStyle(
+                      isThai
+                          ? 'เลือกเหตุผลในการยกเลิก'
+                          : 'Why are you cancelling?',
+                      style: const TextStyle(
                           fontSize: 14, color: PgTokens.colorTextMuted),
                     ),
                   ),
-                  for (var i = 0; i < _reasons.length; i++)
+                  for (var i = 0; i < reasons.length; i++)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
                       child: PgReasonTile(
-                        label: _reasons[i],
+                        label: reasons[i],
                         selected: _selected == i,
                         onTap: () => setState(() => _selected = i),
                       ),
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
-                    child: _RefundNote(totalSatang: totalSatang),
+                    child:
+                        _RefundNote(totalSatang: totalSatang, isThai: isThai),
                   ),
                 ],
               ),
@@ -257,7 +277,7 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
               // Design footer: 16px 20px (+ the SafeArea handles the inset).
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
               child: PgPrimaryButton(
-                label: 'ยืนยันยกเลิกงาน / Confirm cancellation',
+                label: isThai ? 'ยืนยันยกเลิกงาน' : 'Confirm cancellation',
                 color: PgTokens.colorDanger,
                 busy: _busy,
                 onPressed: _busy ? null : () => _confirmAndCancel(totalSatang),
@@ -272,16 +292,17 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
 /// Design `.refund-note`: clock icon + 13px info-blue copy on the `--info-bg` wash.
 class _RefundNote extends StatelessWidget {
-  const _RefundNote({this.totalSatang});
+  const _RefundNote({this.totalSatang, required this.isThai});
 
   final int? totalSatang;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final amount = totalSatang != null ? ' ${Money.format(totalSatang!)}' : '';
-    final copy =
-        'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ / '
-        'Cancelled before start — full$amount refund in 3–5 business days';
+    final copy = isThai
+        ? 'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ'
+        : 'Cancelled before start — full$amount refund in 3–5 business days';
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
       decoration: BoxDecoration(
@@ -293,8 +314,7 @@ class _RefundNote extends StatelessWidget {
         children: [
           const Padding(
             padding: EdgeInsets.only(top: 1),
-            child:
-                Icon(Icons.schedule, size: 18, color: PgTokens.colorInfo),
+            child: Icon(Icons.schedule, size: 18, color: PgTokens.colorInfo),
           ),
           const SizedBox(width: 11),
           Expanded(

@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/money.dart';
 import '../../core/models/payment.dart';
 import '../../widgets/pguard_header.dart';
@@ -22,39 +23,45 @@ class PaymentScreen extends ConsumerStatefulWidget {
 class _PaymentScreenState extends ConsumerState<PaymentScreen> {
   PaymentMethod _method = PaymentMethod.promptpay;
 
-  static const List<int> _tipPresets = [0, 5000, 10000]; // satang: ฿0 / ฿50 / ฿100
+  static const List<int> _tipPresets = [
+    0,
+    5000,
+    10000
+  ]; // satang: ฿0 / ฿50 / ฿100
 
   Future<void> _pay() async {
-    final ok = await ref.read(bookingFlowControllerProvider.notifier).pay(_method);
+    final ok =
+        await ref.read(bookingFlowControllerProvider.notifier).pay(_method);
     if (ok && mounted) context.go('/book/success');
   }
 
   /// The "ระบุ" (custom) tip option: a numeric-amount dialog feeding the existing
   /// [BookingFlowController.setTipSatang] (parsing via the pure [Money] helper).
   Future<void> _promptCustomTip() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final input = TextEditingController();
     final satang = await showDialog<int>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('ระบุทิป / Custom tip'),
+        title: Text(isThai ? 'ระบุทิป' : 'Custom tip'),
         content: TextField(
           controller: input,
           autofocus: true,
           keyboardType: TextInputType.number,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             prefixText: '฿ ',
-            labelText: 'จำนวนเงิน (บาท) / Amount (THB)',
+            labelText: isThai ? 'จำนวนเงิน (บาท)' : 'Amount (THB)',
           ),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('ยกเลิก / Cancel'),
+            child: Text(isThai ? 'ยกเลิก' : 'Cancel'),
           ),
           TextButton(
             onPressed: () =>
                 Navigator.pop(ctx, Money.satangFromString(input.text)),
-            child: const Text('ตกลง / OK'),
+            child: Text(isThai ? 'ตกลง' : 'OK'),
           ),
         ],
       ),
@@ -69,25 +76,26 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
   Widget build(BuildContext context) {
     final state = ref.watch(bookingFlowControllerProvider);
     final ctrl = ref.read(bookingFlowControllerProvider.notifier);
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final subtotal = state.bookingSubtotalSatang;
     final total = state.payTotalSatang;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'ชำระเงิน',
-        subtitle: 'Payment · ตัดจริงตามเวลางาน',
+      appBar: PGuardHeader(
+        title: isThai ? 'ชำระเงิน' : 'Payment',
+        subtitle: isThai ? 'ตัดจริงตามเวลางาน' : 'Charged by actual hours',
         showBack: true,
       ),
       body: SafeArea(
         child: subtotal == null || total == null
-            ? const Center(
+            ? Center(
                 child: Padding(
-                  padding: EdgeInsets.all(PgTokens.space6),
+                  padding: const EdgeInsets.all(PgTokens.space6),
                   child: Text(
-                    'ยังไม่พบการจอง\nBooking not ready',
+                    isThai ? 'ยังไม่พบการจอง' : 'Booking not ready',
                     textAlign: TextAlign.center,
-                    style: TextStyle(color: PgTokens.colorTextMuted),
+                    style: const TextStyle(color: PgTokens.colorTextMuted),
                   ),
                 ),
               )
@@ -97,30 +105,39 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
                     child: ListView(
                       padding: const EdgeInsets.all(PgTokens.space4),
                       children: [
-                        _SummaryCard(state: state, subtotal: subtotal, total: total),
+                        _SummaryCard(
+                          state: state,
+                          subtotal: subtotal,
+                          total: total,
+                          isThai: isThai,
+                        ),
                         const SizedBox(height: PgTokens.space4),
-                        const _Label('ทิปเจ้าหน้าที่ (ไม่บังคับ) / Tip (optional)'),
+                        _Label(isThai
+                            ? 'ทิปเจ้าหน้าที่ (ไม่บังคับ)'
+                            : 'Tip (optional)'),
                         const SizedBox(height: PgTokens.space2),
                         _TipChips(
                           presets: _tipPresets,
                           selected: state.tipSatang,
                           onSelect: ctrl.setTipSatang,
                           onCustom: _promptCustomTip,
+                          isThai: isThai,
                         ),
                         const SizedBox(height: PgTokens.space4),
-                        const _Label('วิธีชำระเงิน / Payment method'),
+                        _Label(isThai ? 'วิธีชำระเงิน' : 'Payment method'),
                         const SizedBox(height: PgTokens.space2),
                         for (final method in PaymentMethod.values)
                           _MethodRow(
                             method: method,
                             selected: method == _method,
+                            isThai: isThai,
                             onTap: () => setState(() => _method = method),
                           ),
                         if (state.error != null) ...[
                           const SizedBox(height: PgTokens.space3),
                           Text(state.error!,
-                              style: const TextStyle(
-                                  color: PgTokens.colorDanger)),
+                              style:
+                                  const TextStyle(color: PgTokens.colorDanger)),
                         ],
                       ],
                     ),
@@ -135,8 +152,9 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
                     child: SafeArea(
                       top: false,
                       child: PgPrimaryButton(
-                        label:
-                            'ชำระเงิน · ${Money.format(total)} / Pay',
+                        label: isThai
+                            ? 'ชำระเงิน · ${Money.format(total)}'
+                            : 'Pay ${Money.format(total)}',
                         busy: state.busy,
                         onPressed: state.busy ? null : _pay,
                       ),
@@ -168,11 +186,13 @@ class _SummaryCard extends StatelessWidget {
     required this.state,
     required this.subtotal,
     required this.total,
+    required this.isThai,
   });
 
   final BookingFlowState state;
   final int subtotal;
   final int total;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -198,7 +218,7 @@ class _SummaryCard extends StatelessWidget {
           if (state.tipSatang > 0) ...[
             const SizedBox(height: PgTokens.space2),
             _Line(
-              label: 'ทิปเจ้าหน้าที่ / Tip',
+              label: isThai ? 'ทิปเจ้าหน้าที่' : 'Tip',
               value: Money.format(state.tipSatang, decimals: true),
             ),
           ],
@@ -207,7 +227,7 @@ class _SummaryCard extends StatelessWidget {
             child: Divider(height: 1, color: PgTokens.colorBorder),
           ),
           _Line(
-            label: 'ยอดชำระ / Total',
+            label: isThai ? 'ยอดชำระ' : 'Total',
             value: Money.format(total, decimals: true),
             emphasize: true,
           ),
@@ -255,12 +275,14 @@ class _TipChips extends StatelessWidget {
     required this.selected,
     required this.onSelect,
     required this.onCustom,
+    required this.isThai,
   });
 
   final List<int> presets;
   final int selected;
   final ValueChanged<int> onSelect;
   final VoidCallback onCustom;
+  final bool isThai;
 
   ChoiceChip _chip({
     required String label,
@@ -301,7 +323,11 @@ class _TipChips extends StatelessWidget {
             selected: tip == selected,
             onTap: () => onSelect(tip),
           ),
-        _chip(label: 'ระบุ', selected: customActive, onTap: onCustom),
+        _chip(
+          label: isThai ? 'ระบุ' : 'Custom',
+          selected: customActive,
+          onTap: onCustom,
+        ),
       ],
     );
   }
@@ -311,11 +337,13 @@ class _MethodRow extends StatelessWidget {
   const _MethodRow({
     required this.method,
     required this.selected,
+    required this.isThai,
     required this.onTap,
   });
 
   final PaymentMethod method;
   final bool selected;
+  final bool isThai;
   final VoidCallback onTap;
 
   IconData get _icon {
@@ -346,9 +374,8 @@ class _MethodRow extends StatelessWidget {
             decoration: BoxDecoration(
               borderRadius: BorderRadius.circular(PgTokens.radiusLg),
               border: Border.all(
-                  color: selected
-                      ? PgTokens.colorPrimary
-                      : PgTokens.colorBorder),
+                  color:
+                      selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
             ),
             child: Row(
               children: [
@@ -356,7 +383,7 @@ class _MethodRow extends StatelessWidget {
                 const SizedBox(width: PgTokens.space3),
                 Expanded(
                   child: Text(
-                    '${method.labelTh} · ${method.labelEn}',
+                    isThai ? method.labelTh : method.labelEn,
                     style: const TextStyle(
                         fontSize: 14, fontWeight: FontWeight.w500),
                   ),

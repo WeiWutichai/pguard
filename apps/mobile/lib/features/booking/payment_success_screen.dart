@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/locale_controller.dart';
 import '../../core/models/money.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -17,14 +18,15 @@ class PaymentSuccessScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(bookingFlowControllerProvider);
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final payment = state.payment;
     final booking = state.booking;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'ชำระเงินสำเร็จ',
-        subtitle: 'Payment success',
+      appBar: PGuardHeader(
+        title: isThai ? 'ชำระเงินสำเร็จ' : 'Payment success',
+        subtitle: isThai ? 'การจองได้รับการยืนยันแล้ว' : 'Booking confirmed',
         background: PgTokens.colorGreen800,
       ),
       body: SafeArea(
@@ -41,32 +43,35 @@ class PaymentSuccessScreen extends ConsumerWidget {
                     size: 48, color: PgTokens.colorSuccess),
               ),
               const SizedBox(height: PgTokens.space4),
-              const Text(
-                'ยืนยันการจองแล้ว!\nBooking confirmed!',
+              Text(
+                isThai ? 'ยืนยันการจองแล้ว!' : 'Booking confirmed!',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
+                style:
+                    const TextStyle(fontSize: 20, fontWeight: FontWeight.w700),
               ),
               if (payment != null) ...[
                 const SizedBox(height: PgTokens.space2),
                 Text(
-                  'ชำระแล้ว ${Money.format(Money.satangFromString(payment.amount), decimals: true)} · ตัดจริงตามเวลางาน',
+                  isThai
+                      ? 'ชำระแล้ว ${Money.format(Money.satangFromString(payment.amount), decimals: true)} · ตัดจริงตามเวลางาน'
+                      : 'Paid ${Money.format(Money.satangFromString(payment.amount), decimals: true)} · charged by actual hours',
                   textAlign: TextAlign.center,
                   style: const TextStyle(
                       fontSize: 13, color: PgTokens.colorTextMuted),
                 ),
               ],
               const SizedBox(height: PgTokens.space6),
-              _SummaryCard(state: state),
+              _SummaryCard(state: state, isThai: isThai),
               const Spacer(),
               PgPrimaryButton(
-                label: 'ติดตามเจ้าหน้าที่ / Track guard',
+                label: isThai ? 'ติดตามเจ้าหน้าที่' : 'Track guard',
                 onPressed: booking != null
                     ? () => context.go('/booking/${booking.id}/live')
                     : null,
               ),
               const SizedBox(height: PgTokens.space2),
               PgGhostButton(
-                label: 'กลับหน้าหลัก / Back home',
+                label: isThai ? 'กลับหน้าหลัก' : 'Back home',
                 onPressed: () => context.go('/home/customer'),
               ),
             ],
@@ -78,9 +83,10 @@ class PaymentSuccessScreen extends ConsumerWidget {
 }
 
 class _SummaryCard extends StatelessWidget {
-  const _SummaryCard({required this.state});
+  const _SummaryCard({required this.state, required this.isThai});
 
   final BookingFlowState state;
+  final bool isThai;
 
   /// The booked time RANGE per the design ("วันนี้ 14:00 – 22:00"): date + start – end.
   /// The end instant is the pure [BookingFlowState.scheduledEndAt] (start + booked hours).
@@ -109,20 +115,20 @@ class _SummaryCard extends StatelessWidget {
         children: [
           _Row(
             icon: Icons.event_outlined,
-            label: 'เวลา / Time',
+            label: isThai ? 'เวลา' : 'Time',
             value: _formatRange(state.scheduledAt, state.scheduledEndAt),
           ),
           const SizedBox(height: PgTokens.space3),
           _Row(
             icon: Icons.location_on_outlined,
-            label: 'สถานที่ / Location',
+            label: isThai ? 'สถานที่' : 'Location',
             value: state.address.isEmpty ? '—' : state.address,
           ),
           if (method != null) ...[
             const SizedBox(height: PgTokens.space3),
             _Row(
               icon: Icons.payments_outlined,
-              label: 'ชำระโดย / Paid via',
+              label: isThai ? 'ชำระโดย' : 'Paid via',
               value: method,
             ),
           ],

@@ -29,11 +29,13 @@ class GuardDocRow extends StatelessWidget {
     super.key,
     required this.kind,
     required this.captured,
+    required this.isThai,
     required this.onTap,
   });
 
   final GuardDocKind kind;
   final bool captured;
+  final bool isThai;
   final VoidCallback onTap;
 
   @override
@@ -54,7 +56,7 @@ class GuardDocRow extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '${kind.displayTh} / ${kind.displayEn}',
+                    isThai ? kind.displayTh : kind.displayEn,
                     style: const TextStyle(
                       fontSize: 13.5,
                       fontWeight: FontWeight.w600,
@@ -66,8 +68,8 @@ class GuardDocRow extends StatelessWidget {
                     // v2 has no upload endpoint yet → the captured state honestly reads
                     // "selected", not "uploaded" (the design's expiry metadata is out of scope).
                     captured
-                        ? 'เลือกแล้ว / Selected'
-                        : 'ยังไม่อัปโหลด / Not uploaded',
+                        ? (isThai ? 'เลือกแล้ว' : 'Selected')
+                        : (isThai ? 'ยังไม่อัปโหลด' : 'Not uploaded'),
                     style: const TextStyle(
                       fontSize: 11.5,
                       color: PgTokens.colorTextMuted,
@@ -79,9 +81,9 @@ class GuardDocRow extends StatelessWidget {
             if (captured)
               const Icon(Icons.check, size: 18, color: PgTokens.colorSuccess)
             else
-              const Text(
-                'อัปโหลด / Upload',
-                style: TextStyle(
+              Text(
+                isThai ? 'อัปโหลด' : 'Upload',
+                style: const TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,
                   color: PgTokens.colorPrimary,

@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/media/document_picker.dart';
 import '../../../core/models/registration.dart';
@@ -50,40 +51,54 @@ class _GuardRegistrationScreenState
   static const int _maxAccountDigits = 15;
   static const int _totalSteps = 4;
 
-  /// Design `.reg-step` + per-step title/subtitle (Registration.md screens 1–4).
-  static const List<({String title, String subtitle})> _stepHeads = [
-    (
-      title: 'ข้อมูลส่วนตัว / Personal info',
-      subtitle: 'กรอกตามบัตรประชาชน / As shown on your ID card',
-    ),
-    (
-      title: 'อัปโหลดเอกสาร / Upload documents',
-      subtitle: 'ถ่ายรูปหรือเลือกจากแกลเลอรี · ลายน้ำเพื่อความปลอดภัย / '
-          'Camera or gallery · watermarked for safety',
-    ),
-    (
-      title: 'บัญชีรับเงิน / Payout account',
-      subtitle:
-          'เงินรายได้จะโอนเข้าบัญชีนี้ / Earnings are paid to this account',
-    ),
-    (
-      title: 'ตรวจทานข้อมูล / Review your details',
-      subtitle:
-          'ตรวจสอบก่อนส่งให้แอดมินอนุมัติ / Check before submitting for approval',
-    ),
-  ];
+  /// Design `.reg-step` + per-step title/subtitle (Registration.md screens 1–4). Built per
+  /// the active locale (single-language render driven by [LocaleController]).
+  static List<({String title, String subtitle})> _stepHeadsFor(bool isThai) => [
+        (
+          title: isThai ? 'ข้อมูลส่วนตัว' : 'Personal info',
+          subtitle: isThai ? 'กรอกตามบัตรประชาชน' : 'As shown on your ID card',
+        ),
+        (
+          title: isThai ? 'อัปโหลดเอกสาร' : 'Upload documents',
+          subtitle: isThai
+              ? 'ถ่ายรูปหรือเลือกจากแกลเลอรี · ลายน้ำเพื่อความปลอดภัย'
+              : 'Camera or gallery · watermarked for safety',
+        ),
+        (
+          title: isThai ? 'บัญชีรับเงิน' : 'Payout account',
+          subtitle: isThai
+              ? 'เงินรายได้จะโอนเข้าบัญชีนี้'
+              : 'Earnings are paid to this account',
+        ),
+        (
+          title: isThai ? 'ตรวจทานข้อมูล' : 'Review your details',
+          subtitle: isThai
+              ? 'ตรวจสอบก่อนส่งให้แอดมินอนุมัติ'
+              : 'Check before submitting for approval',
+        ),
+      ];
 
   /// The 4 Thai banks offered by the design's payout select (sent as the `bank_name` string the
-  /// contract already accepts).
-  static const List<({String value, String label})> _banks = [
-    (value: 'ธนาคารกสิกรไทย', label: 'ธนาคารกสิกรไทย / Kasikornbank'),
-    (
-      value: 'ธนาคารไทยพาณิชย์',
-      label: 'ธนาคารไทยพาณิชย์ / Siam Commercial Bank'
-    ),
-    (value: 'ธนาคารกรุงเทพ', label: 'ธนาคารกรุงเทพ / Bangkok Bank'),
-    (value: 'ธนาคารกรุงไทย', label: 'ธนาคารกรุงไทย / Krung Thai Bank'),
-  ];
+  /// contract already accepts). The label is rendered in the active locale; the `value` (sent to
+  /// the backend) stays the Thai bank name regardless of UI language.
+  static List<({String value, String label})> _banksFor(bool isThai) => [
+        (
+          value: 'ธนาคารกสิกรไทย',
+          label: isThai ? 'ธนาคารกสิกรไทย' : 'Kasikornbank'
+        ),
+        (
+          value: 'ธนาคารไทยพาณิชย์',
+          label: isThai ? 'ธนาคารไทยพาณิชย์' : 'Siam Commercial Bank'
+        ),
+        (
+          value: 'ธนาคารกรุงเทพ',
+          label: isThai ? 'ธนาคารกรุงเทพ' : 'Bangkok Bank'
+        ),
+        (
+          value: 'ธนาคารกรุงไทย',
+          label: isThai ? 'ธนาคารกรุงไทย' : 'Krung Thai Bank'
+        ),
+      ];
 
   int _step = 0;
 
@@ -114,22 +129,25 @@ class _GuardRegistrationScreenState
     super.dispose();
   }
 
-  String? _validExperience() {
+  String? _validExperience(bool isThai) {
     final t = _experience.text.trim();
     if (t.isEmpty) return null; // optional
     final n = int.tryParse(t);
     if (n == null || n < 0 || n > 80) {
-      return 'ปีประสบการณ์ไม่ถูกต้อง (0–80) / Invalid experience (0–80)';
+      return isThai
+          ? 'ปีประสบการณ์ไม่ถูกต้อง (0–80)'
+          : 'Invalid experience (0–80)';
     }
     return null;
   }
 
-  bool _bankIsValid() {
+  bool _bankIsValid(bool isThai) {
     final digits = _accountNumber.text.replaceAll(RegExp(r'\D'), '');
     if (digits.length < _minAccountDigits ||
         digits.length > _maxAccountDigits) {
-      setState(() => _accountError =
-          'เลขบัญชี $_minAccountDigits–$_maxAccountDigits หลัก / Account must be $_minAccountDigits–$_maxAccountDigits digits');
+      setState(() => _accountError = isThai
+          ? 'เลขบัญชี $_minAccountDigits–$_maxAccountDigits หลัก'
+          : 'Account must be $_minAccountDigits–$_maxAccountDigits digits');
       return false;
     }
     setState(() => _accountError = null);
@@ -138,6 +156,7 @@ class _GuardRegistrationScreenState
 
   /// Camera-or-gallery sheet → real picker. Shared by the 5 doc rows and the passbook box.
   Future<String?> _pickImage() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final source = await showModalBottomSheet<DocSource>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -146,12 +165,12 @@ class _GuardRegistrationScreenState
           children: [
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined),
-              title: const Text('ถ่ายรูป / Take photo'),
+              title: Text(isThai ? 'ถ่ายรูป' : 'Take photo'),
               onTap: () => Navigator.pop(ctx, DocSource.camera),
             ),
             ListTile(
               leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('เลือกจากคลัง / Choose from gallery'),
+              title: Text(isThai ? 'เลือกจากคลัง' : 'Choose from gallery'),
               onTap: () => Navigator.pop(ctx, DocSource.gallery),
             ),
           ],
@@ -177,8 +196,9 @@ class _GuardRegistrationScreenState
   }
 
   Future<void> _onContinue() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     if (_step == 0) {
-      final err = _validExperience();
+      final err = _validExperience(isThai);
       if (err != null) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(err)));
@@ -188,7 +208,7 @@ class _GuardRegistrationScreenState
     } else if (_step == 1) {
       setState(() => _step = 2);
     } else if (_step == 2) {
-      if (!_bankIsValid()) return;
+      if (!_bankIsValid(isThai)) return;
       setState(() => _step = 3);
     } else {
       await _submit();
@@ -207,16 +227,17 @@ class _GuardRegistrationScreenState
   }
 
   Future<void> _submit() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     // Re-validate both gated steps here too — defence in depth against any path that reaches the
     // review step with stale values (catch it client-side, not via a 400).
-    final expErr = _validExperience();
+    final expErr = _validExperience(isThai);
     if (expErr != null) {
       setState(() => _step = 0);
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(expErr)));
       return;
     }
-    if (!_bankIsValid()) {
+    if (!_bankIsValid(isThai)) {
       setState(() => _step = 2);
       return;
     }
@@ -235,13 +256,14 @@ class _GuardRegistrationScreenState
   }
 
   Future<void> _pickDob() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
       initialDate: DateTime(now.year - 25),
       firstDate: DateTime(now.year - 80),
       lastDate: DateTime(now.year - 18, now.month, now.day),
-      helpText: 'วันเกิด / Date of birth',
+      helpText: isThai ? 'วันเกิด' : 'Date of birth',
     );
     if (picked != null) {
       final m = picked.month.toString().padLeft(2, '0');
@@ -250,16 +272,17 @@ class _GuardRegistrationScreenState
     }
   }
 
-  String get _ctaLabel => switch (_step) {
-        1 => 'ถัดไป (${_docs.length}/5) / Next (${_docs.length}/5)',
-        3 => 'ส่งใบสมัคร / Submit application',
-        _ => 'ถัดไป / Next',
+  String _ctaLabel(bool isThai) => switch (_step) {
+        1 => isThai ? 'ถัดไป (${_docs.length}/5)' : 'Next (${_docs.length}/5)',
+        3 => isThai ? 'ส่งใบสมัคร' : 'Submit application',
+        _ => isThai ? 'ถัดไป' : 'Next',
       };
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(registrationControllerProvider);
-    final head = _stepHeads[_step];
+    final head = _stepHeadsFor(isThai)[_step];
 
     return Scaffold(
       // No green bar (hi-fi uses a bare back chevron); the per-step head (`head.title`) is
@@ -303,9 +326,9 @@ class _GuardRegistrationScreenState
                     ),
                     const SizedBox(height: PgTokens.space6),
                     switch (_step) {
-                      0 => _personalStep(),
-                      1 => _documentsStep(),
-                      2 => _bankStep(),
+                      0 => _personalStep(isThai),
+                      1 => _documentsStep(isThai),
+                      2 => _bankStep(isThai),
                       _ => _reviewStep(),
                     },
                   ],
@@ -319,7 +342,7 @@ class _GuardRegistrationScreenState
                 child: Text(state.error!,
                     style: const TextStyle(color: PgTokens.colorDanger)),
               ),
-            _footer(state),
+            _footer(state, isThai),
           ],
         ),
       ),
@@ -353,7 +376,7 @@ class _GuardRegistrationScreenState
   }
 
   /// Fixed CTA shell: border-top `--border`, bg `--bg-surface`, padding 16 20 (+ SafeArea).
-  Widget _footer(RegistrationState state) {
+  Widget _footer(RegistrationState state, bool isThai) {
     return Container(
       decoration: const BoxDecoration(
         color: PgTokens.colorSurface,
@@ -362,7 +385,7 @@ class _GuardRegistrationScreenState
       padding:
           const EdgeInsets.fromLTRB(20, PgTokens.space4, 20, PgTokens.space4),
       child: PgPrimaryButton(
-        label: _ctaLabel,
+        label: _ctaLabel(isThai),
         busy: state.busy && _step == _totalSteps - 1,
         onPressed: state.busy ? null : _onContinue,
       ),
@@ -380,15 +403,15 @@ class _GuardRegistrationScreenState
 
   // ── Step 1: personal ──────────────────────────────────────────────────────
 
-  Widget _personalStep() {
+  Widget _personalStep(bool isThai) {
     // NOTE: v2 UpsertGuardProfileRequest (profile.yaml) has NO name field — name is intentionally
     // omitted here (the backend would reject it). Customer profiles carry full_name; guards don't.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _fieldLabel('เพศ / Gender'),
+        _fieldLabel(isThai ? 'เพศ' : 'Gender'),
         const SizedBox(height: PgTokens.space2),
-        _genderSegment(),
+        _genderSegment(isThai),
         const SizedBox(height: PgTokens.space4),
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -397,9 +420,10 @@ class _GuardRegistrationScreenState
               child: InkWell(
                 onTap: _pickDob,
                 child: InputDecorator(
-                  decoration: const InputDecoration(
-                      labelText: 'วันเกิด / Date of birth'),
-                  child: Text(_dob ?? 'แตะเพื่อเลือก / Tap to choose',
+                  decoration: InputDecoration(
+                      labelText: isThai ? 'วันเกิด' : 'Date of birth'),
+                  child: Text(
+                      _dob ?? (isThai ? 'แตะเพื่อเลือก' : 'Tap to choose'),
                       style: TextStyle(
                           color: _dob == null
                               ? PgTokens.colorTextMuted
@@ -416,8 +440,8 @@ class _GuardRegistrationScreenState
                   FilteringTextInputFormatter.digitsOnly,
                   LengthLimitingTextInputFormatter(2),
                 ],
-                decoration: const InputDecoration(
-                    labelText: 'ประสบการณ์ (ปี) / Experience (yrs)'),
+                decoration: InputDecoration(
+                    labelText: isThai ? 'ประสบการณ์ (ปี)' : 'Experience (yrs)'),
               ),
             ),
           ],
@@ -425,19 +449,20 @@ class _GuardRegistrationScreenState
         const SizedBox(height: PgTokens.space4),
         TextField(
           controller: _workplace,
-          decoration: const InputDecoration(
-              labelText: 'ที่ทำงานเดิม / Previous workplace (optional)'),
+          decoration: InputDecoration(
+              labelText:
+                  isThai ? 'ที่ทำงานเดิม' : 'Previous workplace (optional)'),
         ),
       ],
     );
   }
 
   /// Design `.seg2`: 3 inline options, active = brand border on green-50 with green-800 text.
-  Widget _genderSegment() {
-    const options = [
-      (value: 'male', label: 'ชาย / Male'),
-      (value: 'female', label: 'หญิง / Female'),
-      (value: 'other', label: 'อื่นๆ / Other'),
+  Widget _genderSegment(bool isThai) {
+    final options = [
+      (value: 'male', label: isThai ? 'ชาย' : 'Male'),
+      (value: 'female', label: isThai ? 'หญิง' : 'Female'),
+      (value: 'other', label: isThai ? 'อื่นๆ' : 'Other'),
     ];
     return Row(
       children: [
@@ -482,7 +507,7 @@ class _GuardRegistrationScreenState
 
   // ── Step 2: documents ─────────────────────────────────────────────────────
 
-  Widget _documentsStep() {
+  Widget _documentsStep(bool isThai) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -490,6 +515,7 @@ class _GuardRegistrationScreenState
           GuardDocRow(
             kind: kind,
             captured: _docs.containsKey(kind),
+            isThai: isThai,
             onTap: () => _pickDoc(kind),
           ),
       ],
@@ -498,18 +524,18 @@ class _GuardRegistrationScreenState
 
   // ── Step 3: payout account ────────────────────────────────────────────────
 
-  Widget _bankStep() {
+  Widget _bankStep(bool isThai) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         DropdownButtonFormField<String>(
           initialValue: _bank,
           isExpanded: true,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             label: Text.rich(
               TextSpan(
-                text: 'ธนาคาร ',
-                children: [
+                text: isThai ? 'ธนาคาร ' : 'Bank ',
+                children: const [
                   TextSpan(
                       text: '*', style: TextStyle(color: PgTokens.colorDanger)),
                 ],
@@ -517,7 +543,7 @@ class _GuardRegistrationScreenState
             ),
           ),
           items: [
-            for (final b in _banks)
+            for (final b in _banksFor(isThai))
               DropdownMenuItem(
                 value: b.value,
                 child: Text(b.label, overflow: TextOverflow.ellipsis),
@@ -536,26 +562,26 @@ class _GuardRegistrationScreenState
             LengthLimitingTextInputFormatter(_maxAccountDigits),
           ],
           decoration: InputDecoration(
-            labelText: 'เลขที่บัญชี / Account number',
+            labelText: isThai ? 'เลขที่บัญชี' : 'Account number',
             errorText: _accountError,
           ),
         ),
         const SizedBox(height: PgTokens.space4),
         TextField(
           controller: _accountName,
-          decoration: const InputDecoration(
-              labelText: 'ชื่อบัญชี / Account holder name'),
+          decoration: InputDecoration(
+              labelText: isThai ? 'ชื่อบัญชี' : 'Account holder name'),
         ),
         const SizedBox(height: PgTokens.space4),
-        _fieldLabel('รูปหน้าสมุดบัญชี / Passbook photo'),
+        _fieldLabel(isThai ? 'รูปหน้าสมุดบัญชี' : 'Passbook photo'),
         const SizedBox(height: PgTokens.space2),
-        _passbookBox(),
+        _passbookBox(isThai),
       ],
     );
   }
 
   /// Design passbook capture: 90px tall, dashed-style strong border, sunken bg, camera + hint.
-  Widget _passbookBox() {
+  Widget _passbookBox(bool isThai) {
     final captured = _passbookPath != null;
     return InkWell(
       onTap: _pickPassbook,
@@ -580,8 +606,8 @@ class _GuardRegistrationScreenState
             const SizedBox(height: 6),
             Text(
               captured
-                  ? 'เลือกแล้ว / Selected'
-                  : 'แตะเพื่อถ่ายรูป / Tap to capture',
+                  ? (isThai ? 'เลือกแล้ว' : 'Selected')
+                  : (isThai ? 'แตะเพื่อถ่ายรูป' : 'Tap to capture'),
               style: const TextStyle(
                 fontSize: 12.5,
                 color: PgTokens.colorTextMuted,

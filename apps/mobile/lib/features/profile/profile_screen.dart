@@ -33,6 +33,7 @@ class ProfileScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(profileControllerProvider);
 
     return Scaffold(
@@ -46,16 +47,16 @@ class ProfileScreen extends ConsumerWidget {
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title: 'โหลดโปรไฟล์ไม่สำเร็จ / Could not load profile',
+            title: isThai ? 'โหลดโปรไฟล์ไม่สำเร็จ' : 'Could not load profile',
             message: e is ApiException ? e.message : null,
             onRetry: () => ref.invalidate(profileControllerProvider),
           ),
           data: (profile) => ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
             children: [
-              _Header(profile: profile),
+              _Header(profile: profile, isThai: isThai),
               const SizedBox(height: PgTokens.space4),
-              const _SectionLabel('ตั้งค่า / Settings'),
+              _SectionLabel(isThai ? 'ตั้งค่า' : 'Settings'),
               const SizedBox(height: PgTokens.space2),
               // One continuous settings list (design .prow): rows separated by
               // 1px dividers inside a single bordered surface card.
@@ -63,7 +64,7 @@ class ProfileScreen extends ConsumerWidget {
                 children: [
                   _Tile(
                     icon: Icons.person_outline,
-                    title: 'ข้อมูลส่วนตัว / Personal info',
+                    title: isThai ? 'ข้อมูลส่วนตัว' : 'Personal info',
                     subtitle: profile.isGuard
                         ? 'เพศ วันเกิด ประสบการณ์'
                         : 'ชื่อ ที่อยู่',
@@ -72,14 +73,14 @@ class ProfileScreen extends ConsumerWidget {
                   if (profile.isGuard)
                     _Tile(
                       icon: Icons.account_balance_outlined,
-                      title: 'บัญชีธนาคาร / Bank account',
+                      title: isThai ? 'บัญชีธนาคาร' : 'Bank account',
                       subtitle:
                           '${profile.bankName ?? '—'} · ${profile.accountNumberMasked ?? '—'}',
                       onTap: () => context.push('/profile/edit'),
                     ),
                   _ReadonlyRow(
                     icon: Icons.phone_outlined,
-                    label: 'เบอร์โทร (ใช้เข้าสู่ระบบ) / Phone',
+                    label: isThai ? 'เบอร์โทร (ใช้เข้าสู่ระบบ)' : 'Phone',
                     value: profile.phone ?? '—',
                   ),
                   const _LanguageRow(),
@@ -89,7 +90,7 @@ class ProfileScreen extends ConsumerWidget {
               OutlinedButton.icon(
                 onPressed: () => _logout(context, ref),
                 icon: const Icon(Icons.logout, size: 18),
-                label: const Text('ออกจากระบบ / Log out'),
+                label: Text(isThai ? 'ออกจากระบบ' : 'Log out'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: PgTokens.colorDanger,
                   side: const BorderSide(color: PgTokens.colorDanger),
@@ -110,11 +111,12 @@ class ProfileScreen extends ConsumerWidget {
 /// The designed logout confirmation (Mobile - System.html dialog): danger icon circle,
 /// centered title/description, then stacked full-width danger CTA + sunken cancel.
 /// Pops `true` to confirm — the logout call itself stays in [ProfileScreen._logout].
-class _LogoutDialog extends StatelessWidget {
+class _LogoutDialog extends ConsumerWidget {
   const _LogoutDialog();
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Dialog(
       backgroundColor: PgTokens.colorSurface,
       shape: RoundedRectangleBorder(
@@ -139,28 +141,30 @@ class _LogoutDialog extends StatelessWidget {
             ),
             // Design: 18px below the icon circle (non-token design metric).
             const SizedBox(height: 18),
-            const Text(
-              'ออกจากระบบ? / Log out?',
+            Text(
+              isThai ? 'ออกจากระบบ?' : 'Log out?',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: PgTokens.space2),
-            const Text(
-              'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง\n'
-              'Session revoked and local tokens cleared. Sign in with your PIN again.',
+            Text(
+              isThai
+                  ? 'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง'
+                  : 'Session revoked and local tokens cleared. Sign in with your PIN again.',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
+              style: const TextStyle(
+                  fontSize: 13.5, color: PgTokens.colorTextMuted),
             ),
             const SizedBox(height: PgTokens.space6),
             PgPrimaryButton(
-              label: 'ออกจากระบบ / Log out',
+              label: isThai ? 'ออกจากระบบ' : 'Log out',
               color: PgTokens.colorDanger,
               onPressed: () => Navigator.pop(context, true),
             ),
             // Design: 10px between the stacked buttons (non-token design metric).
             const SizedBox(height: 10),
             PgPrimaryButton(
-              label: 'ยกเลิก / Cancel',
+              label: isThai ? 'ยกเลิก' : 'Cancel',
               color: PgTokens.colorSunken,
               foreground: PgTokens.colorText,
               onPressed: () => Navigator.pop(context, false),
@@ -173,9 +177,10 @@ class _LogoutDialog extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.profile});
+  const _Header({required this.profile, required this.isThai});
 
   final UserProfile profile;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -200,7 +205,9 @@ class _Header extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Text(
-              profile.isGuard ? 'เจ้าหน้าที่ · Guard' : 'ลูกค้า · Customer',
+              profile.isGuard
+                  ? (isThai ? 'เจ้าหน้าที่' : 'Guard')
+                  : (isThai ? 'ลูกค้า' : 'Customer'),
               style: const TextStyle(
                   fontSize: 12.5, color: PgTokens.colorTextMuted),
             ),
@@ -247,8 +254,8 @@ class _ApprovalBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusFull),
       ),
       child: Text(label,
-          style: TextStyle(
-              fontSize: 11, fontWeight: FontWeight.w600, color: fg)),
+          style:
+              TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: fg)),
     );
   }
 }
@@ -408,16 +415,17 @@ class _LanguageRow extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final locale = ref.watch(localeControllerProvider);
+    final isThai = locale == AppLocale.th;
     return Padding(
       padding: _rowPadding,
       child: Row(
         children: [
           const _IconTile(icon: Icons.translate),
           const SizedBox(width: PgTokens.space3),
-          const Expanded(
-            child: Text('ภาษา / Language',
-                style:
-                    TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600)),
+          Expanded(
+            child: Text(isThai ? 'ภาษา' : 'Language',
+                style: const TextStyle(
+                    fontSize: 14.5, fontWeight: FontWeight.w600)),
           ),
           LangSegmented(
             value: locale,

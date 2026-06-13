@@ -40,9 +40,16 @@ class LocaleController extends _$LocaleController {
   }
 
   Future<void> _load() async {
-    final saved = AppLocale.tryParse(
-        await ref.read(prefsStoreProvider).getString(_key));
-    if (saved != null && !_userSet) state = saved;
+    // Now that screens AND controllers read this provider for single-language rendering, the
+    // startup prefs read must never throw — a unit test (or an unprovisioned SharedPreferences)
+    // would otherwise surface an unhandled microtask error. Fall back to the Thai default.
+    try {
+      final saved = AppLocale.tryParse(
+          await ref.read(prefsStoreProvider).getString(_key));
+      if (saved != null && !_userSet) state = saved;
+    } catch (_) {
+      // Keep the default (Thai); the preference simply isn't available here.
+    }
   }
 
   bool get isThai => state == AppLocale.th;
@@ -53,6 +60,5 @@ class LocaleController extends _$LocaleController {
     await ref.read(prefsStoreProvider).setString(_key, locale.code);
   }
 
-  Future<void> toggle() =>
-      setLocale(isThai ? AppLocale.en : AppLocale.th);
+  Future<void> toggle() => setLocale(isThai ? AppLocale.en : AppLocale.th);
 }

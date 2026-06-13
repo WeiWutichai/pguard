@@ -1,30 +1,36 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../core/controllers/locale_controller.dart';
 import 'primary_button.dart';
 
 /// The hi-fi error state (Mobile - System.html): 96px danger-tinted hero icon tile,
 /// 22px heading, muted 14px message, and the green "try again" CTA. Replaces the
 /// per-screen ad-hoc `_ErrorBody` patterns so every load failure looks the same and
 /// always offers a retry.
-class PgErrorState extends StatelessWidget {
+class PgErrorState extends ConsumerWidget {
   const PgErrorState({
     super.key,
     required this.title,
     this.message,
     this.onRetry,
     this.icon = Icons.cloud_off_outlined,
-    this.retryLabel = 'ลองอีกครั้ง / Try again',
+    this.retryLabel,
   });
 
   final String title;
   final String? message;
   final VoidCallback? onRetry;
   final IconData icon;
-  final String retryLabel;
+
+  /// When null, falls back to the locale-aware default retry label.
+  final String? retryLabel;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final label = retryLabel ?? (isThai ? 'ลองอีกครั้ง' : 'Try again');
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(PgTokens.space6),
@@ -65,7 +71,7 @@ class PgErrorState extends StatelessWidget {
             ],
             if (onRetry != null) ...[
               const SizedBox(height: PgTokens.space6),
-              PgPrimaryButton(label: retryLabel, onPressed: onRetry),
+              PgPrimaryButton(label: label, onPressed: onRetry),
             ],
           ],
         ),

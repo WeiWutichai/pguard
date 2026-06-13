@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/available_guard.dart';
 
 /// One guard in the discovery list. Renders the merged-discovery summary the contract provides
@@ -31,9 +33,7 @@ class GuardCard extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
             border: Border.all(
-                color: selected
-                    ? PgTokens.colorPrimary
-                    : PgTokens.colorBorder),
+                color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
           ),
           child: Row(
             children: [
@@ -92,13 +92,14 @@ class GuardCard extends StatelessWidget {
   }
 }
 
-class _RatingLine extends StatelessWidget {
+class _RatingLine extends ConsumerWidget {
   const _RatingLine({required this.guard});
 
   final AvailableGuard guard;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final parts = <InlineSpan>[];
     if (guard.hasRating) {
       parts.add(const WidgetSpan(
@@ -106,10 +107,11 @@ class _RatingLine extends StatelessWidget {
         child: Icon(Icons.star, size: 13, color: PgTokens.colorAccent),
       ));
       parts.add(TextSpan(
-        text: ' ${guard.rating!.toStringAsFixed(1)} (${guard.reviewCount} รีวิว)',
+        text:
+            ' ${guard.rating!.toStringAsFixed(1)} (${guard.reviewCount} รีวิว)',
       ));
     } else {
-      parts.add(const TextSpan(text: 'ยังไม่มีรีวิว / No reviews yet'));
+      parts.add(TextSpan(text: isThai ? 'ยังไม่มีรีวิว' : 'No reviews yet'));
     }
     if (guard.yearsOfExperience != null) {
       parts.add(TextSpan(text: ' · ${guard.yearsOfExperience} ปี'));

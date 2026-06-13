@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/chat_launcher.dart';
 import '../../../core/controllers/chat_list_controller.dart';
+import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/chat.dart';
 import '../../../core/network/api_exception.dart';
 import '../chat_routes.dart';
@@ -55,6 +56,7 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
 
     final router = GoRouter.of(context);
     final messenger = ScaffoldMessenger.of(context);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final launcher = ref.read(chatLauncherProvider);
     final counterRole =
         widget.acting == ChatRole.guard ? ChatRole.customer : ChatRole.guard;
@@ -88,8 +90,8 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
     } on ApiException catch (e) {
       messenger.showSnackBar(SnackBar(content: Text(e.message)));
     } catch (_) {
-      messenger.showSnackBar(const SnackBar(
-          content: Text('เปิดแชทไม่สำเร็จ / Could not open chat')));
+      messenger.showSnackBar(SnackBar(
+          content: Text(isThai ? 'เปิดแชทไม่สำเร็จ' : 'Could not open chat')));
     } finally {
       if (mounted) setState(() => _busy = false);
     }

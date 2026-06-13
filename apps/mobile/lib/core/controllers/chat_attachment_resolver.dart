@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/chat.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 
 part 'chat_attachment_resolver.g.dart';
 
@@ -17,17 +18,17 @@ part 'chat_attachment_resolver.g.dart';
 @riverpod
 Future<Attachment> chatAttachment(
     ChatAttachmentRef ref, String attachmentId) async {
+  final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+  final failed = isThai ? 'โหลดไฟล์แนบไม่สำเร็จ' : 'Could not load attachment';
   // The id arrives in a WS frame `content` the COUNTERPART controls — never interpolate an
   // attacker-shaped string into a request path. The contract says attachment ids are UUIDs.
   if (!_uuid.hasMatch(attachmentId)) {
-    throw const ApiException(
-        message: 'โหลดไฟล์แนบไม่สำเร็จ / Could not load attachment');
+    throw ApiException(message: failed);
   }
   final data =
       await ref.read(pguardApiProvider).get('/attachments/$attachmentId');
   if (data is! Map<String, dynamic>) {
-    throw const ApiException(
-        message: 'โหลดไฟล์แนบไม่สำเร็จ / Could not load attachment');
+    throw ApiException(message: failed);
   }
   return Attachment.fromJson(data);
 }

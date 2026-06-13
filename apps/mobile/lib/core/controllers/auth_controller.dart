@@ -4,6 +4,7 @@ import '../models/auth_models.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 import 'pin_hasher.dart';
 import 'session_controller.dart';
 
@@ -137,15 +138,16 @@ class AuthController extends _$AuthController {
 
   /// `POST /otp/request` — solve captcha + send the OTP SMS, then advance to the OTP step.
   Future<bool> sendOtp(String captchaAnswer) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     if (!isValidPhone(state.phone)) {
-      state =
-          state.copyWith(error: 'เบอร์โทรไม่ถูกต้อง / Invalid phone number');
+      state = state.copyWith(
+          error: isThai ? 'เบอร์โทรไม่ถูกต้อง' : 'Invalid phone number');
       return false;
     }
     final challenge = state.challenge;
     if (challenge == null) {
-      state =
-          state.copyWith(error: 'กรุณาโหลดแคปต์ชาใหม่ / Reload the captcha');
+      state = state.copyWith(
+          error: isThai ? 'กรุณาโหลดแคปต์ชาใหม่' : 'Reload the captcha');
       return false;
     }
     return _guard(() async {
@@ -168,7 +170,8 @@ class AuthController extends _$AuthController {
   /// single-use `phone_verified_token` (state + secure storage) — it is exchanged at
   /// `POST /auth/register` after the PIN + role are chosen.
   Future<bool> verifyOtp(String code) => _guard(() async {
-        final data = await ref.read(pguardApiProvider).post('/otp/verify', data: {
+        final data =
+            await ref.read(pguardApiProvider).post('/otp/verify', data: {
           // Same canonical national form the OTP was requested with.
           'phone': normalizeThaiPhone(state.phone) ?? state.phone,
           'code': code,
@@ -224,8 +227,10 @@ class AuthController extends _$AuthController {
       state = state.copyWith(busy: false, error: e.message);
       return false;
     } catch (_) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       state = state.copyWith(
-          busy: false, error: 'เกิดข้อผิดพลาด / Something went wrong');
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
       return false;
     }
   }

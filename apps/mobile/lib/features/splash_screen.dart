@@ -1,16 +1,19 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../core/controllers/locale_controller.dart';
 import '../widgets/pg_logo_mark.dart';
 
 /// Shown while the session state loads from secure storage (router redirects away once known).
 /// Hi-fi System state 1: brand gradient + faint 40px grid, logo mark above the two-tone
 /// wordmark and tagline, 34px spinner anchored near the bottom.
-class SplashScreen extends StatelessWidget {
+class SplashScreen extends ConsumerWidget {
   const SplashScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Scaffold(
       body: Container(
         // Design: linear-gradient(165deg, --green-700, --green-950) — exact tokens since
@@ -57,7 +60,9 @@ class SplashScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: PgTokens.space2),
                     Text(
-                      'ความปลอดภัย ณ ตำแหน่งจริง / Safety, at a real location',
+                      isThai
+                          ? 'ความปลอดภัย ณ ตำแหน่งจริง'
+                          : 'Safety, at a real location',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         fontSize: 13,

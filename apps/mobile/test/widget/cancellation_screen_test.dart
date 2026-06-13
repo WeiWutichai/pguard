@@ -66,34 +66,34 @@ FakeApi apiWith({Future<dynamic> Function(String, Object?)? onPut}) => FakeApi(
 void main() {
   testWidgets(
       'live-status cancel button opens the cancellation screen with the four '
-      'reasons (first pre-selected) and the dynamic refund amount', (tester) async {
+      'reasons (first pre-selected) and the dynamic refund amount',
+      (tester) async {
     final api = apiWith();
     await pumpFlow(tester, api);
 
     // Pre-arrival (accepted) → the ghost cancel affordance is present.
-    await tester.tap(find.text('ยกเลิกและค้นหาใหม่ / Cancel & search again'));
+    // Default locale is Thai, so the UI renders the Thai-only strings.
+    await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
     await tester.pumpAndSettle();
 
     expect(find.byType(CancellationScreen), findsOneWidget);
-    expect(find.text('ยกเลิกการจอง / Cancellation'), findsOneWidget);
+    expect(find.text('ยกเลิกการจอง'), findsOneWidget);
     // Subtitle: short id + the address passed via extra.
     expect(find.textContaining('BK-'), findsOneWidget);
     expect(find.textContaining('หมู่บ้านลัดดารมย์'), findsOneWidget);
-    expect(find.text('เลือกเหตุผลในการยกเลิก / Why are you cancelling?'),
-        findsOneWidget);
+    expect(find.text('เลือกเหตุผลในการยกเลิก'), findsOneWidget);
 
     // 4 reason tiles, "เปลี่ยนแผน" pre-selected.
     expect(find.byType(PgReasonTile), findsNWidgets(4));
     expect(
         tester
-            .widget<PgReasonTile>(find.widgetWithText(
-                PgReasonTile, 'เปลี่ยนแผน / Changed plans'))
+            .widget<PgReasonTile>(
+                find.widgetWithText(PgReasonTile, 'เปลี่ยนแผน'))
             .selected,
         isTrue);
     expect(
         tester
-            .widget<PgReasonTile>(
-                find.widgetWithText(PgReasonTile, 'อื่นๆ / Other'))
+            .widget<PgReasonTile>(find.widgetWithText(PgReasonTile, 'อื่นๆ'))
             .selected,
         isFalse);
 
@@ -101,12 +101,12 @@ void main() {
     expect(find.textContaining('คืนเงินเต็มจำนวน ฿1,795'), findsOneWidget);
 
     // Selecting another reason moves the radio.
-    await tester.tap(find.text('ไม่ต้องการแล้ว / No longer needed'));
+    await tester.tap(find.text('ไม่ต้องการแล้ว'));
     await tester.pump();
     expect(
         tester
-            .widget<PgReasonTile>(find.widgetWithText(
-                PgReasonTile, 'ไม่ต้องการแล้ว / No longer needed'))
+            .widget<PgReasonTile>(
+                find.widgetWithText(PgReasonTile, 'ไม่ต้องการแล้ว'))
             .selected,
         isTrue);
   });
@@ -121,35 +121,34 @@ void main() {
     });
     await pumpFlow(tester, api);
 
-    await tester.tap(find.text('ยกเลิกและค้นหาใหม่ / Cancel & search again'));
+    await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ยืนยันยกเลิกงาน / Confirm cancellation'));
+    await tester.tap(find.text('ยืนยันยกเลิกงาน'));
     await tester.pumpAndSettle();
 
     // STATE 2 sheet content.
-    expect(find.text('ยกเลิกงานนี้? / Cancel this job?'), findsOneWidget);
+    expect(find.text('ยกเลิกงานนี้?'), findsOneWidget);
     expect(find.textContaining('ระบบจะคืนเงิน ฿1,795'), findsOneWidget);
 
-    await tester.tap(find.text('ใช่ ยกเลิกงาน / Yes, cancel'));
+    await tester.tap(find.text('ใช่ ยกเลิกงาน'));
     await tester.pumpAndSettle();
 
     expect(api.calls, contains('PUT /bookings/b1/cancel'));
     expect(find.byType(CancellationScreen), findsNothing,
         reason: 'popped back to live status');
     expect(find.byType(LiveStatusScreen), findsOneWidget);
-    expect(find.text('ยกเลิกการจองแล้ว / Booking cancelled'), findsOneWidget);
+    expect(find.text('ยกเลิกการจองแล้ว'), findsOneWidget);
   });
 
-  testWidgets('"เก็บงานไว้ / Keep booking" dismisses the sheet without a PUT',
-      (tester) async {
+  testWidgets('"เก็บงานไว้" dismisses the sheet without a PUT', (tester) async {
     final api = apiWith();
     await pumpFlow(tester, api);
 
-    await tester.tap(find.text('ยกเลิกและค้นหาใหม่ / Cancel & search again'));
+    await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('ยืนยันยกเลิกงาน / Confirm cancellation'));
+    await tester.tap(find.text('ยืนยันยกเลิกงาน'));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('เก็บงานไว้ / Keep booking'));
+    await tester.tap(find.text('เก็บงานไว้'));
     await tester.pumpAndSettle();
 
     expect(api.calls.where((c) => c.startsWith('PUT')), isEmpty);
@@ -165,8 +164,7 @@ void main() {
     );
     await pumpFlow(tester, api);
 
-    expect(find.text('ยกเลิกและค้นหาใหม่ / Cancel & search again'),
-        findsNothing,
+    expect(find.text('ยกเลิกและค้นหาใหม่'), findsNothing,
         reason: 'contract allows cancel only requested/accepted/en_route');
   });
 }

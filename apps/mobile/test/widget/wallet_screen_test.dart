@@ -55,14 +55,14 @@ void main() {
     await pumpScreen(tester, api);
 
     // Hero: refunded charge contributes 0 → total = ฿2,000.
-    expect(find.text('รวมจ่ายแล้ว / Total spent'), findsOneWidget);
+    expect(find.text('รวมจ่ายแล้ว'), findsOneWidget);
     expect(find.text('฿2,000'), findsNWidgets(2)); // hero + the p1 row amount
     // Rows: mono booking refs, design date format, status badges.
     expect(find.text('PG-3F2A9B1C'), findsOneWidget);
     expect(find.text('PG-AABBCCDD'), findsOneWidget);
     expect(find.text('3 มิ.ย. 2026'), findsNWidgets(2));
-    expect(find.text('ชำระแล้ว / Paid'), findsOneWidget);
-    expect(find.text('คืนเงินแล้ว / Refunded'), findsOneWidget);
+    expect(find.text('ชำระแล้ว'), findsOneWidget);
+    expect(find.text('คืนเงินแล้ว'), findsOneWidget);
     // One fetch — no polling.
     expect(api.getCount, 1);
   });
@@ -82,7 +82,7 @@ void main() {
     // Hero AND the row both show the effective figure — no silent disagreement.
     expect(find.text('฿1,725'), findsNWidgets(2));
     expect(find.text('฿2,000'), findsNothing);
-    expect(find.text('ชำระแล้ว / Paid'), findsOneWidget);
+    expect(find.text('ชำระแล้ว'), findsOneWidget);
   });
 
   testWidgets('shows the empty state when there are no payments',
@@ -94,8 +94,7 @@ void main() {
     expect(find.text('฿0'), findsOneWidget); // honest empty total
   });
 
-  testWidgets('shows PgErrorState with retry on load failure',
-      (tester) async {
+  testWidgets('shows PgErrorState with retry on load failure', (tester) async {
     var failures = 0;
     final api = FakeApi(onGet: (_, __) async {
       failures++;

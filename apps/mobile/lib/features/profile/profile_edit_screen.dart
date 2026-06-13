@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/models/profile.dart';
 import '../../widgets/pguard_header.dart';
@@ -95,8 +96,9 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     }
     if (!mounted) return;
     if (err == null) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('บันทึกแล้ว / Saved')),
+        SnackBar(content: Text(isThai ? 'บันทึกแล้ว' : 'Saved')),
       );
       context.pop();
     } else {
@@ -109,6 +111,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final p = ref.watch(profileControllerProvider).valueOrNull;
     if (p != null) _seed(p);
     return Scaffold(
@@ -128,10 +131,13 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                       padding: const EdgeInsets.all(PgTokens.space4),
                       children: [
                         _ReadonlyField(
-                            label: 'เบอร์โทร (เข้าสู่ระบบ) / Phone',
+                            label: isThai ? 'เบอร์โทร (เข้าสู่ระบบ)' : 'Phone',
                             value: p.phone ?? '—'),
                         const SizedBox(height: PgTokens.space4),
-                        if (p.isGuard) ..._guardFields(p) else ..._customerFields(),
+                        if (p.isGuard)
+                          ..._guardFields(p, isThai)
+                        else
+                          ..._customerFields(isThai),
                         if (_error != null) ...[
                           const SizedBox(height: PgTokens.space3),
                           Text(_error!,
@@ -151,7 +157,7 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                     child: SafeArea(
                       top: false,
                       child: PgPrimaryButton(
-                        label: 'บันทึก / Save',
+                        label: isThai ? 'บันทึก' : 'Save',
                         busy: _saving,
                         onPressed: _saving ? null : () => _save(p),
                       ),
@@ -163,40 +169,49 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     );
   }
 
-  List<Widget> _customerFields() => [
-        _Field(label: 'ชื่อ-นามสกุล / Full name', controller: _fullName),
-        const SizedBox(height: PgTokens.space3),
-        _Field(label: 'ที่อยู่ / Address', controller: _address, maxLines: 2),
-      ];
-
-  List<Widget> _guardFields(UserProfile p) => [
-        _Field(label: 'เพศ / Gender', controller: _gender),
+  List<Widget> _customerFields(bool isThai) => [
+        _Field(
+            label: isThai ? 'ชื่อ-นามสกุล' : 'Full name',
+            controller: _fullName),
         const SizedBox(height: PgTokens.space3),
         _Field(
-            label: 'วันเกิด (ปปปป-ดด-วว) / Date of birth',
+            label: isThai ? 'ที่อยู่' : 'Address',
+            controller: _address,
+            maxLines: 2),
+      ];
+
+  List<Widget> _guardFields(UserProfile p, bool isThai) => [
+        _Field(label: isThai ? 'เพศ' : 'Gender', controller: _gender),
+        const SizedBox(height: PgTokens.space3),
+        _Field(
+            label: isThai ? 'วันเกิด (ปปปป-ดด-วว)' : 'Date of birth',
             controller: _dob,
             hint: '1995-05-20'),
         const SizedBox(height: PgTokens.space3),
         _Field(
-          label: 'ประสบการณ์ (ปี) / Experience (years)',
+          label: isThai ? 'ประสบการณ์ (ปี)' : 'Experience (years)',
           controller: _experience,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         ),
         const SizedBox(height: PgTokens.space3),
-        _Field(label: 'ที่ทำงานก่อนหน้า / Previous workplace', controller: _workplace),
+        _Field(
+            label: isThai ? 'ที่ทำงานก่อนหน้า' : 'Previous workplace',
+            controller: _workplace),
         const SizedBox(height: PgTokens.space3),
-        _Field(label: 'ธนาคาร / Bank', controller: _bankName),
+        _Field(label: isThai ? 'ธนาคาร' : 'Bank', controller: _bankName),
         const SizedBox(height: PgTokens.space3),
-        _Field(label: 'ชื่อบัญชี / Account name', controller: _accountName),
+        _Field(
+            label: isThai ? 'ชื่อบัญชี' : 'Account name',
+            controller: _accountName),
         const SizedBox(height: PgTokens.space3),
         if ((p.accountNumberMasked ?? '').isNotEmpty)
           _ReadonlyField(
-              label: 'เลขบัญชีปัจจุบัน / Current account',
+              label: isThai ? 'เลขบัญชีปัจจุบัน' : 'Current account',
               value: p.accountNumberMasked!),
         const SizedBox(height: PgTokens.space3),
         _Field(
-          label: 'เปลี่ยนเลขบัญชี (ถ้าต้องการ) / New account number',
+          label: isThai ? 'เปลี่ยนเลขบัญชี (ถ้าต้องการ)' : 'New account number',
           controller: _newAccountNumber,
           keyboardType: TextInputType.number,
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
@@ -227,8 +242,8 @@ class _Field extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label,
-            style: const TextStyle(
-                fontSize: 12.5, fontWeight: FontWeight.w600)),
+            style:
+                const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
         const SizedBox(height: PgTokens.space1),
         TextField(
           controller: controller,
@@ -254,8 +269,8 @@ class _ReadonlyField extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(label,
-            style: const TextStyle(
-                fontSize: 12.5, fontWeight: FontWeight.w600)),
+            style:
+                const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
         const SizedBox(height: PgTokens.space1),
         Container(
           width: double.infinity,

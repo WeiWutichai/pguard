@@ -30,8 +30,7 @@ void main() {
 
     test('a refunded payment costs 0', () {
       expect(
-        WalletController.spentSatang(
-            payment(status: PaymentStatus.refunded)),
+        WalletController.spentSatang(payment(status: PaymentStatus.refunded)),
         0,
       );
     });
@@ -57,14 +56,19 @@ void main() {
   });
 
   group('WalletController.rowAmountSatang (receipt-row display figure)', () {
-    test('a prorated completed payment shows final_amount — coherent with the hero', () {
+    test(
+        'a prorated completed payment shows final_amount — coherent with the hero',
+        () {
       final p = payment(finalAmount: '1725.00', refundAmount: '275.00');
       expect(WalletController.rowAmountSatang(p), 172500);
       // Row figure == hero contribution → rows sum to the header for non-refunded items.
-      expect(WalletController.rowAmountSatang(p), WalletController.spentSatang(p));
+      expect(
+          WalletController.rowAmountSatang(p), WalletController.spentSatang(p));
     });
 
-    test('a refunded payment keeps the ORIGINAL charge on the row (badge explains ฿0)', () {
+    test(
+        'a refunded payment keeps the ORIGINAL charge on the row (badge explains ฿0)',
+        () {
       final p = payment(status: PaymentStatus.refunded);
       expect(WalletController.rowAmountSatang(p), 200000);
       expect(WalletController.spentSatang(p), 0);
@@ -87,17 +91,25 @@ void main() {
   test('paymentRef derives the mono PG- reference from the booking id', () {
     expect(WalletController.paymentRef(payment()), 'PG-3F2A9B1C');
     // Short/odd ids degrade gracefully instead of throwing.
-    expect(WalletController.paymentRef(payment(bookingId: 'ab-12')),
-        'PG-AB12');
+    expect(WalletController.paymentRef(payment(bookingId: 'ab-12')), 'PG-AB12');
   });
 
-  test('statusLabel is bilingual per status', () {
-    expect(WalletController.statusLabel(PaymentStatus.pending),
-        'รอดำเนินการ / Pending');
-    expect(WalletController.statusLabel(PaymentStatus.completed),
-        'ชำระแล้ว / Paid');
-    expect(WalletController.statusLabel(PaymentStatus.refunded),
-        'คืนเงินแล้ว / Refunded');
+  test('statusLabel renders the Thai label per status (default locale)', () {
+    expect(WalletController.statusLabel(PaymentStatus.pending, isThai: true),
+        'รอดำเนินการ');
+    expect(WalletController.statusLabel(PaymentStatus.completed, isThai: true),
+        'ชำระแล้ว');
+    expect(WalletController.statusLabel(PaymentStatus.refunded, isThai: true),
+        'คืนเงินแล้ว');
+  });
+
+  test('statusLabel renders the English label when isThai is false', () {
+    expect(WalletController.statusLabel(PaymentStatus.pending, isThai: false),
+        'Pending');
+    expect(WalletController.statusLabel(PaymentStatus.completed, isThai: false),
+        'Paid');
+    expect(WalletController.statusLabel(PaymentStatus.refunded, isThai: false),
+        'Refunded');
   });
 
   test('thaiShortDateYear renders the design receipt date (3 มิ.ย. 2026)', () {
