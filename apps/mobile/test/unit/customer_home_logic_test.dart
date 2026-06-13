@@ -58,8 +58,9 @@ void main() {
       expect(bookingTotalSatang(all.first), 23000 * 5);
     });
 
-    test('thaiShortDate renders the Thai month abbreviation', () {
-      expect(thaiShortDate(DateTime(2026, 6, 2)), '2 มิ.ย.');
+    test('thaiShortDate renders the month per locale', () {
+      expect(thaiShortDate(DateTime(2026, 6, 2), isThai: true), '2 มิ.ย.');
+      expect(thaiShortDate(DateTime(2026, 6, 2), isThai: false), '2 Jun');
     });
   });
 

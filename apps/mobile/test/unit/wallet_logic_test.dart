@@ -113,7 +113,13 @@ void main() {
   });
 
   test('thaiShortDateYear renders the design receipt date (3 มิ.ย. 2026)', () {
-    expect(thaiShortDateYear(DateTime.utc(2026, 6, 3, 12)), '3 มิ.ย. 2026');
+    expect(thaiShortDateYear(DateTime.utc(2026, 6, 3, 12), isThai: true),
+        '3 มิ.ย. 2026');
+  });
+
+  test('thaiShortDateYear renders an English month when isThai is false', () {
+    expect(thaiShortDateYear(DateTime.utc(2026, 6, 3, 12), isThai: false),
+        '3 Jun 2026');
   });
 
   test('Payment.fromJson parses the list fields (created_at, proration)', () {

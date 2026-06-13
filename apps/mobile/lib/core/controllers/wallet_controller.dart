@@ -86,7 +86,7 @@ class WalletController extends _$WalletController {
   }
 }
 
-/// Thai short date WITH year for receipt rows, e.g. `3 มิ.ย. 2026` (design Screen 13 shows
-/// the Gregorian year). Pure.
-String thaiShortDateYear(DateTime when) =>
-    '${thaiShortDate(when)} ${when.toLocal().year}';
+/// Short date WITH year for receipt rows, locale-driven: `3 มิ.ย. 2026` / `3 Jun 2026`
+/// (design Screen 13 shows the Gregorian year). Pure.
+String thaiShortDateYear(DateTime when, {required bool isThai}) =>
+    '${thaiShortDate(when, isThai: isThai)} ${when.toLocal().year}';

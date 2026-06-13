@@ -76,7 +76,8 @@ class EarningsScreen extends ConsumerWidget {
                             color: PgTokens.colorTextStrong),
                       ),
                     ),
-                    for (final b in completed) _EarningsRow(booking: b),
+                    for (final b in completed)
+                      _EarningsRow(booking: b, isThai: isThai),
                   ],
                 ],
               ),
@@ -135,16 +136,17 @@ class _EarningsHero extends StatelessWidget {
 
 /// One earnings row per the design: green-100 shield icon, place, "date · N ชม.", mono ฿.
 class _EarningsRow extends StatelessWidget {
-  const _EarningsRow({required this.booking});
+  const _EarningsRow({required this.booking, required this.isThai});
 
   final Booking booking;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final when = booking.scheduledAt;
     final meta = [
-      if (when != null) thaiShortDate(when),
-      '${booking.hours ?? 0} ชม.',
+      if (when != null) thaiShortDate(when, isThai: isThai),
+      '${booking.hours ?? 0} ${isThai ? 'ชม.' : 'hrs'}',
     ].join(' · ');
 
     return Container(

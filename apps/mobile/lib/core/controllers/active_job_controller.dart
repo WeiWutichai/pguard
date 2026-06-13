@@ -138,12 +138,14 @@ class ActiveJobController extends _$ActiveJobController {
     final serverHour = slot + 1 > maxHour
         ? maxHour
         : slot + 1; // defensive clamp (never trips)
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     state = AsyncData(current.copyWith(busy: true, error: null));
     try {
       await ref.read(checkInServiceProvider).submit(
             bookingId: current.booking.id,
             hourNumber: serverHour,
             photo: photo,
+            isThai: isThai,
             gps: gps,
             note: note,
           );

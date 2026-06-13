@@ -75,7 +75,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
         title: 'pguard',
-        subtitle: 'เจ้าหน้าที่ · Guard',
+        subtitle: isThai ? 'เจ้าหน้าที่' : 'Guard',
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [

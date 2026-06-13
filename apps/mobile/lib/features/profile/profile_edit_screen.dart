@@ -116,9 +116,9 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     if (p != null) _seed(p);
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'แก้ไขโปรไฟล์',
-        subtitle: 'Edit profile',
+      appBar: PGuardHeader(
+        title: isThai ? 'แก้ไขโปรไฟล์' : 'Edit profile',
+        subtitle: isThai ? 'แก้ไขข้อมูลโปรไฟล์ของคุณ' : 'Edit profile',
         showBack: true,
       ),
       body: SafeArea(

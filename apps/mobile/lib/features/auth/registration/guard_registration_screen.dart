@@ -300,7 +300,9 @@ class _GuardRegistrationScreenState
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Text(
-                      'ขั้นที่ ${_step + 1} จาก $_totalSteps',
+                      isThai
+                          ? 'ขั้นที่ ${_step + 1} จาก $_totalSteps'
+                          : 'Step ${_step + 1} of $_totalSteps',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w600,
@@ -329,7 +331,7 @@ class _GuardRegistrationScreenState
                       0 => _personalStep(isThai),
                       1 => _documentsStep(isThai),
                       2 => _bankStep(isThai),
-                      _ => _reviewStep(),
+                      _ => _reviewStep(isThai),
                     },
                   ],
                 ),
@@ -621,7 +623,7 @@ class _GuardRegistrationScreenState
 
   // ── Step 4: review & submit ───────────────────────────────────────────────
 
-  Widget _reviewStep() {
+  Widget _reviewStep(bool isThai) {
     const valueStyle = TextStyle(
       fontSize: 14,
       fontWeight: FontWeight.w600,
@@ -649,15 +651,15 @@ class _GuardRegistrationScreenState
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _revRow(
-            'เพศ / อายุ',
+            isThai ? 'เพศ / อายุ' : 'Gender / Age',
             Text(joinOrDash([genderTh, if (age != null) '$age ปี' else '']),
                 style: valueStyle)),
         _revRow(
-            'ประสบการณ์',
+            isThai ? 'ประสบการณ์' : 'Experience',
             Text(joinOrDash([if (exp != null) '$exp ปี' else '', workplace]),
                 style: valueStyle)),
         _revRow(
-          'เอกสาร',
+          isThai ? 'เอกสาร' : 'Documents',
           Text.rich(
             TextSpan(
               text: '${_docs.length}/${GuardDocKind.values.length}',
@@ -673,7 +675,7 @@ class _GuardRegistrationScreenState
           ),
         ),
         _revRow(
-            'ธนาคาร',
+            isThai ? 'ธนาคาร' : 'Bank',
             Text(
                 joinOrDash([
                   _bank ?? '',

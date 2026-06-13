@@ -179,7 +179,7 @@ class _HistoryRow extends StatelessWidget {
     final badge = BookingsHistory.badge(booking.status);
     final when = booking.scheduledAt;
     final statusLine = [
-      if (when != null) thaiShortDate(when),
+      if (when != null) thaiShortDate(when, isThai: isThai),
       isThai
           ? BookingLifecycle.labelTh(booking.status)
           : BookingLifecycle.labelEn(booking.status),

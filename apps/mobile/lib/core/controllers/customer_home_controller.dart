@@ -68,9 +68,9 @@ int bookingTotalSatang(Booking b) => Money.total(
       tipSatang: Money.satangFromString(b.tip),
     );
 
-/// Thai short date for the recent-booking row, e.g. `2 มิ.ย.`. Pure.
-String thaiShortDate(DateTime when) {
-  const months = [
+/// Short date for the recent-booking row, locale-driven: `2 มิ.ย.` / `2 Jun`. Pure.
+String thaiShortDate(DateTime when, {required bool isThai}) {
+  const thMonths = [
     'ม.ค.',
     'ก.พ.',
     'มี.ค.',
@@ -84,6 +84,20 @@ String thaiShortDate(DateTime when) {
     'พ.ย.',
     'ธ.ค.',
   ];
+  const enMonths = [
+    'Jan',
+    'Feb',
+    'Mar',
+    'Apr',
+    'May',
+    'Jun',
+    'Jul',
+    'Aug',
+    'Sep',
+    'Oct',
+    'Nov',
+    'Dec',
+  ];
   final l = when.toLocal();
-  return '${l.day} ${months[l.month - 1]}';
+  return '${l.day} ${(isThai ? thMonths : enMonths)[l.month - 1]}';
 }

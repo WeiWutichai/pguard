@@ -74,8 +74,8 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
         // Design home header is location-first ("ตำแหน่งปัจจุบัน" over the address); the most
         // recent booking address is the best available stand-in (no saved-places endpoint).
         subtitle: address != null
-            ? 'ตำแหน่งปัจจุบัน · $address'
-            : 'ลูกค้า · Customer',
+            ? '${isThai ? 'ตำแหน่งปัจจุบัน' : 'Current location'} · $address'
+            : (isThai ? 'ลูกค้า' : 'Customer'),
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -159,7 +159,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
                 const SizedBox(height: PgTokens.space6),
                 _SectionHeading(isThai ? 'การจองล่าสุด' : 'Latest booking'),
                 const SizedBox(height: PgTokens.space2),
-                _RecentBookingRow(booking: latest),
+                _RecentBookingRow(booking: latest, isThai: isThai),
               ],
               // Dev harness only — no booking-ID input exists anywhere in the design.
               if (kDebugMode) ...[
@@ -359,16 +359,19 @@ class _OngoingJobCard extends StatelessWidget {
 
 /// The "การจองล่าสุด" row: sunken shield icon, place + date·status, right-aligned total.
 class _RecentBookingRow extends StatelessWidget {
-  const _RecentBookingRow({required this.booking});
+  const _RecentBookingRow({required this.booking, required this.isThai});
 
   final Booking booking;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final when = booking.scheduledAt;
     final dateStatus = [
-      if (when != null) thaiShortDate(when),
-      BookingLifecycle.labelTh(booking.status),
+      if (when != null) thaiShortDate(when, isThai: isThai),
+      isThai
+          ? BookingLifecycle.labelTh(booking.status)
+          : BookingLifecycle.labelEn(booking.status),
     ].join(' · ');
     final total = bookingTotalSatang(booking);
     return InkWell(

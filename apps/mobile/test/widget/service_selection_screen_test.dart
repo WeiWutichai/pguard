@@ -11,11 +11,11 @@ void main() {
     ));
     await tester.pump();
 
-    // Each catalog category is shown (bilingual title; the design's "Other" card carries
-    // its parenthetical).
-    expect(find.textContaining('หมู่บ้าน · Village'), findsOneWidget);
-    expect(find.textContaining('คอนโด · Condo'), findsOneWidget);
-    expect(find.textContaining('โรงงาน · Factory'), findsOneWidget);
+    // Each catalog category is shown (single-language Thai by default; the design's "Other"
+    // card carries its parenthetical).
+    expect(find.textContaining('หมู่บ้าน'), findsOneWidget);
+    expect(find.textContaining('คอนโด'), findsOneWidget);
+    expect(find.textContaining('โรงงาน'), findsOneWidget);
     expect(find.textContaining('อื่นๆ (ระบุเอง)'), findsOneWidget);
 
     // Indicative ฿/hr estimates exactly as designed ("฿230/ชม." — no "เริ่ม" prefix)…

@@ -31,9 +31,9 @@ class WalletScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: const PGuardHeader(
-        title: 'ใบเสร็จ',
-        subtitle: 'Receipts',
+      appBar: PGuardHeader(
+        title: isThai ? 'ใบเสร็จ' : 'Receipts',
+        subtitle: isThai ? 'รายการชำระเงิน' : 'Your payments',
         showBack: true,
       ),
       body: SafeArea(
@@ -154,7 +154,7 @@ class _ReceiptRow extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  when != null ? thaiShortDateYear(when) : '—',
+                  when != null ? thaiShortDateYear(when, isThai: isThai) : '—',
                   style: const TextStyle(
                       fontSize: 11.5, color: PgTokens.colorTextMuted),
                 ),

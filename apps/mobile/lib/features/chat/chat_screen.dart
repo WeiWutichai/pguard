@@ -82,8 +82,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final service = ref.read(chatAttachmentServiceProvider);
     setState(() => _attachBusy = true);
     try {
-      final attachment =
-          await service.pickAndUpload(widget.conversationId, source);
+      final attachment = await service
+          .pickAndUpload(widget.conversationId, source, isThai: isThai);
       // A long upload (videos up to 200MB) can outlive this screen — touching `ref`/`_ctrl`
       // after dispose throws, so bail out first (the upload itself completed server-side).
       if (!mounted || attachment == null) return;
@@ -116,7 +116,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         // Design state 3: read-only thread swaps the status line to "job completed".
         subtitle: widget.readOnly
             ? (isThai ? 'งานเสร็จสิ้นแล้ว' : 'Job completed')
-            : 'Chat',
+            : (isThai ? 'แชท' : 'Chat'),
         showBack: true,
         // Design: 38px counterpart initials avatar in the thread header. PGuardHeader has no
         // leading slot (shared widget — off-limits to extend), so it rides the trailing slot.

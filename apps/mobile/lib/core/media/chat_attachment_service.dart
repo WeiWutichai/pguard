@@ -19,7 +19,8 @@ import 'chat_media_picker.dart';
 /// re-resolve via `GET /attachments/{id}`).
 abstract class ChatAttachmentService {
   Future<Attachment?> pickAndUpload(
-      String conversationId, ChatAttachmentSource source);
+      String conversationId, ChatAttachmentSource source,
+      {required bool isThai});
 }
 
 /// Production service: real picker (`image_picker` via [ChatMediaPicker]) + multipart upload
@@ -36,15 +37,16 @@ class ApiChatAttachmentService implements ChatAttachmentService {
 
   @override
   Future<Attachment?> pickAndUpload(
-      String conversationId, ChatAttachmentSource source) async {
+      String conversationId, ChatAttachmentSource source,
+      {required bool isThai}) async {
     final media = await _picker.pick(source);
     if (media == null) return null; // user cancelled — not an error
 
     final mime = media.mimeType;
     if (!ChatMime.isSupported(mime)) {
       // Fail fast client-side with the same outcome the server's MIME gate would produce.
-      throw const ApiException(
-          message: 'ชนิดไฟล์ไม่รองรับ / Unsupported file type');
+      throw ApiException(
+          message: isThai ? 'ชนิดไฟล์ไม่รองรับ' : 'Unsupported file type');
     }
 
     final form = FormData.fromMap({
@@ -58,8 +60,8 @@ class ApiChatAttachmentService implements ChatAttachmentService {
     final data = await _api.post('/attachments', data: form);
     final attachment = data is Map<String, dynamic> ? data : null;
     if (attachment == null) {
-      throw const ApiException(
-          message: 'อัปโหลดไฟล์ไม่สำเร็จ / Upload failed');
+      throw ApiException(
+          message: isThai ? 'อัปโหลดไฟล์ไม่สำเร็จ' : 'Upload failed');
     }
     return Attachment.fromJson(attachment);
   }
@@ -72,6 +74,7 @@ class UnavailableChatAttachmentService implements ChatAttachmentService {
 
   @override
   Future<Attachment?> pickAndUpload(
-          String conversationId, ChatAttachmentSource source) async =>
+          String conversationId, ChatAttachmentSource source,
+          {required bool isThai}) async =>
       null;
 }
