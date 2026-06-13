@@ -6,7 +6,6 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
 import '../../widgets/auth_head.dart';
-import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 
 /// Step 1: phone number only. UI per `Mobile - Auth.html` screen ① (กรอกเบอร์โทร) — centered
@@ -33,8 +32,7 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
     // canonical national `0XXXXXXXXX`; the field sits behind a `+66` prefix, so drop the
     // trunk `0` for display (`812345678`) — matching how it was typed, no redundant `+66 0…`.
     final saved = ref.read(authControllerProvider).phone;
-    _phone.text =
-        saved.startsWith('0') ? saved.substring(1) : saved;
+    _phone.text = saved.startsWith('0') ? saved.substring(1) : saved;
     // Repaint the focus-ring glow as focus moves (design: 0 0 0 4px --focus-ring).
     _focusNode.addListener(() => setState(() {}));
   }
@@ -67,86 +65,96 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: const PGuardHeader(title: 'pguard', subtitle: 'เข้าสู่ระบบ · Sign in'),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(PgTokens.space6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const SizedBox(height: PgTokens.space4),
-              const AuthHead(
-                showLogo: true,
-                title: 'ยินดีต้อนรับสู่ pguard / Welcome to pguard',
-                subtitle:
-                    'กรอกเบอร์โทรเพื่อรับรหัส OTP / Enter your phone to get an OTP',
-              ),
-              const SizedBox(height: PgTokens.space6),
-              // Design `.phone-field` focus: brand border (theme) + a 4px focus-ring glow.
-              AnimatedContainer(
-                duration: const Duration(milliseconds: 120),
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-                  boxShadow: _focusNode.hasFocus
-                      ? const [
-                          BoxShadow(
-                              color: PgTokens.colorFocusRing,
-                              blurRadius: 0,
-                              spreadRadius: 4)
-                        ]
-                      : null,
+    // No green top bar — the hi-fi `Mobile - Auth.html` screen ① has none; the brand shows
+    // via the centered shield + welcome below. AnnotatedRegion gives the light page the dark
+    // status-bar icons the (removed) green header used to set.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(PgTokens.space6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: PgTokens.space4),
+                const AuthHead(
+                  showLogo: true,
+                  title: 'ยินดีต้อนรับสู่ pguard / Welcome to pguard',
+                  subtitle:
+                      'กรอกเบอร์โทรเพื่อรับรหัส OTP / Enter your phone to get an OTP',
                 ),
-                child: TextField(
-                  controller: _phone,
-                  focusNode: _focusNode,
-                  autofocus: true,
-                  keyboardType: TextInputType.phone,
-                  // Spaced mono digits to echo the design's `81 234 5678` field.
-                  style: const TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w600,
-                      fontFamily: 'IBMPlexMono',
-                      letterSpacing: 1.2),
-                  inputFormatters: [
-                    FilteringTextInputFormatter.digitsOnly,
-                    LengthLimitingTextInputFormatter(10),
-                  ],
-                  onChanged: (v) {
-                    ref.read(authControllerProvider.notifier).setPhone(v);
-                    if (_localError != null) setState(() => _localError = null);
-                  },
-                  onSubmitted: (_) => _continue(),
-                  decoration: const InputDecoration(
-                    labelText: 'เบอร์โทรศัพท์ / Phone',
-                    hintText: '81 234 5678',
-                    // Design prefix: '🇹🇭 +66' 17/600 muted with a 1px divider before the digits.
-                    prefixIcon: _PhonePrefix(),
-                    prefixIconConstraints:
-                        BoxConstraints(minWidth: 0, minHeight: 0),
+                const SizedBox(height: PgTokens.space6),
+                // Design `.phone-field` focus: brand border (theme) + a 4px focus-ring glow.
+                AnimatedContainer(
+                  duration: const Duration(milliseconds: 120),
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+                    boxShadow: _focusNode.hasFocus
+                        ? const [
+                            BoxShadow(
+                                color: PgTokens.colorFocusRing,
+                                blurRadius: 0,
+                                spreadRadius: 4)
+                          ]
+                        : null,
+                  ),
+                  child: TextField(
+                    controller: _phone,
+                    focusNode: _focusNode,
+                    autofocus: true,
+                    keyboardType: TextInputType.phone,
+                    // Spaced mono digits to echo the design's `81 234 5678` field.
+                    style: const TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w600,
+                        fontFamily: 'IBMPlexMono',
+                        letterSpacing: 1.2),
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(10),
+                    ],
+                    onChanged: (v) {
+                      ref.read(authControllerProvider.notifier).setPhone(v);
+                      if (_localError != null) {
+                        setState(() => _localError = null);
+                      }
+                    },
+                    onSubmitted: (_) => _continue(),
+                    // No floating label — the hi-fi field is just the +66 prefix + the number
+                    // (a Material `labelText` would float up and overlap the rounded border).
+                    // The "phone" context comes from the title above + the +66 prefix.
+                    decoration: const InputDecoration(
+                      hintText: '81 234 5678',
+                      // Design prefix: '🇹🇭 +66' 17/600 muted with a 1px divider before the digits.
+                      prefixIcon: _PhonePrefix(),
+                      prefixIconConstraints:
+                          BoxConstraints(minWidth: 0, minHeight: 0),
+                    ),
                   ),
                 ),
-              ),
-              const SizedBox(height: PgTokens.space2),
-              const Text(
-                'เราจะส่ง SMS รหัส 6 หลักไปยังเบอร์นี้ / We\'ll text a 6-digit code to this number',
-                textAlign: TextAlign.center,
-                style: TextStyle(color: PgTokens.colorTextMuted, fontSize: 12.5),
-              ),
-              const SizedBox(height: PgTokens.space6),
-              if (_localError != null)
-                Padding(
-                  padding: const EdgeInsets.only(bottom: PgTokens.space3),
-                  child: Text(
-                    _localError!,
-                    style: const TextStyle(color: PgTokens.colorDanger),
-                  ),
+                const SizedBox(height: PgTokens.space2),
+                const Text(
+                  'เราจะส่ง SMS รหัส 6 หลักไปยังเบอร์นี้ / We\'ll text a 6-digit code to this number',
+                  textAlign: TextAlign.center,
+                  style:
+                      TextStyle(color: PgTokens.colorTextMuted, fontSize: 12.5),
                 ),
-              PgPrimaryButton(
-                label: 'ขอรหัส OTP / Send OTP',
-                onPressed: _continue,
-              ),
-            ],
+                const SizedBox(height: PgTokens.space6),
+                if (_localError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: PgTokens.space3),
+                    child: Text(
+                      _localError!,
+                      style: const TextStyle(color: PgTokens.colorDanger),
+                    ),
+                  ),
+                PgPrimaryButton(
+                  label: 'ขอรหัส OTP / Send OTP',
+                  onPressed: _continue,
+                ),
+              ],
+            ),
           ),
         ),
       ),

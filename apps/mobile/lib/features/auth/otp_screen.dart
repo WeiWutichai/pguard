@@ -7,7 +7,7 @@ import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/resend_policy.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/otp_input.dart';
-import '../../widgets/pguard_header.dart';
+import '../../widgets/pg_auth_back_bar.dart';
 
 /// Step 2: enter the 6-digit OTP. UI per `Mobile - Auth.html` screen ② — centered head,
 /// 6 OTP boxes that auto-submit on the 6th digit (no footer CTA in the design), and a
@@ -35,8 +35,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
     final sentAt = state.otpSentAt;
 
     return Scaffold(
-      appBar: const PGuardHeader(
-          title: 'ยืนยันรหัส OTP', subtitle: 'Verify code', showBack: true),
+      appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),
@@ -92,8 +91,8 @@ class _ResendCountdown extends StatelessWidget {
   final ResendPolicy policy;
   final int attempt;
 
-  static const TextStyle _strong = TextStyle(
-      fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
+  static const TextStyle _strong =
+      TextStyle(fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
 
   @override
   Widget build(BuildContext context) {

@@ -6,7 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
 import '../../widgets/auth_head.dart';
-import '../../widgets/pguard_header.dart';
+import '../../widgets/pg_auth_back_bar.dart';
 import '../../widgets/primary_button.dart';
 
 /// Step 1b: bot-check (math captcha), shown AFTER the phone is entered and BEFORE the OTP SMS is
@@ -51,8 +51,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
     final question = state.challenge?.question;
 
     return Scaffold(
-      appBar: const PGuardHeader(
-          title: 'ยืนยันว่าไม่ใช่บอท', subtitle: 'Quick check', showBack: true),
+      appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),
@@ -72,8 +71,8 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                     PgTokens.space4, PgTokens.space4, PgTokens.space4, 18),
                 decoration: BoxDecoration(
                   color: PgTokens.colorSurface,
-                  border: Border.all(
-                      color: PgTokens.colorBorderStrong, width: 1.5),
+                  border:
+                      Border.all(color: PgTokens.colorBorderStrong, width: 1.5),
                   borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                 ),
                 child: Column(

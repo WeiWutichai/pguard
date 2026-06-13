@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
@@ -6,7 +7,6 @@ import '../../core/controllers/pin_service.dart';
 import '../../core/controllers/resend_policy.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/providers.dart';
-import '../../widgets/pguard_header.dart';
 import '../../widgets/pin_dots.dart';
 import '../../widgets/pin_keypad.dart';
 import '../../widgets/primary_button.dart';
@@ -93,8 +93,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
         canPop: false,
         child: Dialog(
           backgroundColor: PgTokens.colorSurface,
-          insetPadding:
-              const EdgeInsets.symmetric(horizontal: PgTokens.space6),
+          insetPadding: const EdgeInsets.symmetric(horizontal: PgTokens.space6),
           shape: RoundedRectangleBorder(
               borderRadius: BorderRadius.circular(PgTokens.radius2xl)),
           child: Padding(
@@ -120,8 +119,8 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                 const Text(
                   'ใส่ PIN ผิดครบ 10 ครั้ง เพื่อความปลอดภัย ข้อมูลและเซสชันในเครื่องนี้จะถูกลบ คุณต้องเข้าสู่ระบบใหม่',
                   textAlign: TextAlign.center,
-                  style: TextStyle(
-                      fontSize: 13.5, color: PgTokens.colorTextMuted),
+                  style:
+                      TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
                 ),
                 const SizedBox(height: PgTokens.space6),
                 PgPrimaryButton(
@@ -172,48 +171,52 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   @override
   Widget build(BuildContext context) {
     final locked = _isLocked;
-    return Scaffold(
-      appBar: const PGuardHeader(title: 'ปลดล็อก', subtitle: 'Enter your PIN'),
-      body: SafeArea(
-        child: Column(
-          children: [
-            Expanded(
-              child: SingleChildScrollView(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: PgTokens.space6),
-                child: Column(
-                  children: [
-                    const SizedBox(height: PgTokens.space7),
-                    _hero(locked),
-                    const SizedBox(height: PgTokens.space6),
-                    // Design lockout state dims the dots (interaction already disabled).
-                    Opacity(
-                      opacity: locked ? 0.4 : 1,
-                      child: PinDots(
-                          length: _len,
-                          filled: _pin.length,
-                          error: _error != null),
-                    ),
-                    const SizedBox(height: PgTokens.space3),
-                    _statusArea(),
-                  ],
+    // No green bar — the returning-user screen's hero ("ยินดีต้อนรับกลับ") is the body head.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              Expanded(
+                child: SingleChildScrollView(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: PgTokens.space6),
+                  child: Column(
+                    children: [
+                      const SizedBox(height: PgTokens.space7),
+                      _hero(locked),
+                      const SizedBox(height: PgTokens.space6),
+                      // Design lockout state dims the dots (interaction already disabled).
+                      Opacity(
+                        opacity: locked ? 0.4 : 1,
+                        child: PinDots(
+                            length: _len,
+                            filled: _pin.length,
+                            error: _error != null),
+                      ),
+                      const SizedBox(height: PgTokens.space3),
+                      _statusArea(),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: PgTokens.space6),
-              child: PinKeypad(
-                enabled: !_busy && !locked,
-                onDigit: _onDigit,
-                onBackspace: _onBackspace,
+              Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: PgTokens.space6),
+                child: PinKeypad(
+                  enabled: !_busy && !locked,
+                  onDigit: _onDigit,
+                  onBackspace: _onBackspace,
+                ),
               ),
-            ),
-            PgGhostButton(
-              label: 'ลืม PIN? / Forgot PIN?',
-              onPressed: _busy ? null : _forgotPin,
-            ),
-            const SizedBox(height: PgTokens.space4),
-          ],
+              PgGhostButton(
+                label: 'ลืม PIN? / Forgot PIN?',
+                onPressed: _busy ? null : _forgotPin,
+              ),
+              const SizedBox(height: PgTokens.space4),
+            ],
+          ),
         ),
       ),
     );
@@ -244,8 +247,8 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
         CircleAvatar(
           radius: 36,
           backgroundColor: PgTokens.colorGreen100,
-          child:
-              Icon(Icons.person_outline, size: 32, color: PgTokens.colorGreen800),
+          child: Icon(Icons.person_outline,
+              size: 32, color: PgTokens.colorGreen800),
         ),
         SizedBox(height: PgTokens.space3),
         Text('ยินดีต้อนรับกลับ / Welcome back',
