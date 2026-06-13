@@ -71,8 +71,8 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                     PgTokens.space4, PgTokens.space4, PgTokens.space4, 18),
                 decoration: BoxDecoration(
                   color: PgTokens.colorSurface,
-                  border: Border.all(
-                      color: PgTokens.colorBorderStrong, width: 1.5),
+                  border:
+                      Border.all(color: PgTokens.colorBorderStrong, width: 1.5),
                   borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                 ),
                 child: Column(

@@ -91,8 +91,8 @@ class _ResendCountdown extends StatelessWidget {
   final ResendPolicy policy;
   final int attempt;
 
-  static const TextStyle _strong = TextStyle(
-      fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
+  static const TextStyle _strong =
+      TextStyle(fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
 
   @override
   Widget build(BuildContext context) {
