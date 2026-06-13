@@ -92,7 +92,10 @@ class AuthController extends _$AuthController {
     final digits = input.replaceAll(RegExp(r'\D'), '');
     final national = switch (digits.length) {
       11 when digits.startsWith('66') => '0${digits.substring(2)}',
-      9 => '0$digits',
+      // A 9-digit significant number behind the +66 prefix never starts with 0 (the trunk 0
+      // is exactly what +66 replaces). A leading-0 9-digit input is malformed — let it fall
+      // through to the regex check and be rejected, not "fixed" into a double-zero number.
+      9 when !digits.startsWith('0') => '0$digits',
       _ => digits,
     };
     return _thaiPhone.hasMatch(national) ? national : null;

@@ -102,6 +102,9 @@ void main() {
       expect(AuthController.normalizeThaiPhone('123'), isNull);
       expect(AuthController.normalizeThaiPhone('81234567'), isNull); // 8 digits
       expect(AuthController.normalizeThaiPhone('1812345678'), isNull); // 10, no leading 0
+      // A 9-digit input that already starts with 0 is malformed behind +66 — reject it
+      // instead of producing a double-zero '0012345678'.
+      expect(AuthController.normalizeThaiPhone('012345678'), isNull);
     });
     test('isValidPhone accepts both the 9- and 10-digit forms', () {
       final ctrl = container(api: FakeApi(), store: InMemoryStore())
