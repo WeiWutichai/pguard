@@ -4,7 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/registration_controller.dart';
-import '../../../widgets/pguard_header.dart';
+import '../../../widgets/pg_auth_back_bar.dart';
 import '../../../widgets/primary_button.dart';
 
 /// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. The v2
@@ -52,11 +52,9 @@ class _CustomerRegistrationScreenState
     final state = ref.watch(registrationControllerProvider);
 
     return Scaffold(
-      appBar: const PGuardHeader(
-        title: 'ข้อมูลลูกค้า',
-        subtitle: 'Customer details',
-        showBack: true,
-      ),
+      // No green bar (hi-fi uses a bare back chevron); the body already shows the
+      // "ตั้งค่าบัญชีลูกค้า / Set up your account" heading the design specifies.
+      appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),

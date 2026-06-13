@@ -42,7 +42,9 @@ void main() {
 
     await pump(tester, prefs);
 
-    expect(find.textContaining('Pending approval'), findsOneWidget);
+    // No green PGuardHeader anymore (hi-fi has no top bar) — the role-specific hero head is
+    // the screen's title, so the old 'Pending approval' header subtitle is gone by design.
+    expect(find.textContaining('Pending approval'), findsNothing);
     // Per-role design copy + the role badge pill.
     expect(find.text('กำลังตรวจสอบใบสมัคร / Application under review'),
         findsOneWidget);

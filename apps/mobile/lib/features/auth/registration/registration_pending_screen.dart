@@ -9,7 +9,6 @@ import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
 import '../../../core/providers.dart';
 import '../../../widgets/auth_head.dart';
-import '../../../widgets/pguard_header.dart';
 import '../../../widgets/primary_button.dart';
 
 /// Shown after the profile is submitted: the account is registered but PENDING approval (no
@@ -106,51 +105,52 @@ class _RegistrationPendingScreenState
     final state = ref.watch(registrationControllerProvider);
     final isGuard = _summary?.role.isGuard ?? false;
 
-    return Scaffold(
-      appBar: const PGuardHeader(
-        title: 'รอการอนุมัติ',
-        subtitle: 'Pending approval',
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Hero (design: text-align center, padding 50 30 20).
-            Padding(
-              padding: const EdgeInsets.fromLTRB(30, 50, 30, 20),
-              child: Column(
-                children: [
-                  AuthHead(
-                    icon: _HeroCircle(isGuard: isGuard),
-                    title: isGuard
-                        ? 'กำลังตรวจสอบใบสมัคร / Application under review'
-                        : 'เกือบเสร็จแล้ว! / Almost there!',
-                    subtitle: isGuard
-                        ? 'ทีมงานกำลังตรวจสอบเอกสารของคุณ\n'
-                            'โดยปกติใช้เวลา 1–2 วันทำการ / '
-                            'Our team is verifying your documents.\n'
-                            'This usually takes 1–2 business days.'
-                        : 'บัญชีของคุณกำลังรอการยืนยัน\n'
-                            'เราจะแจ้งเตือนทันทีที่พร้อมใช้งาน / '
-                            "Your account is awaiting verification.\n"
-                            "We'll notify you the moment it's ready.",
-                  ),
-                  const SizedBox(height: PgTokens.space4),
-                  _RoleBadge(isGuard: isGuard),
-                ],
+    // No green bar — the pending screen is terminal (no back in the hi-fi) and its hero head
+    // is the body AuthHead; dark status-bar icons for the light page.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
+        body: SafeArea(
+          child: Column(
+            children: [
+              // Hero (design: text-align center, padding 50 30 20).
+              Padding(
+                padding: const EdgeInsets.fromLTRB(30, 50, 30, 20),
+                child: Column(
+                  children: [
+                    AuthHead(
+                      icon: _HeroCircle(isGuard: isGuard),
+                      title: isGuard
+                          ? 'กำลังตรวจสอบใบสมัคร / Application under review'
+                          : 'เกือบเสร็จแล้ว! / Almost there!',
+                      subtitle: isGuard
+                          ? 'ทีมงานกำลังตรวจสอบเอกสารของคุณ\n'
+                              'โดยปกติใช้เวลา 1–2 วันทำการ / '
+                              'Our team is verifying your documents.\n'
+                              'This usually takes 1–2 business days.'
+                          : 'บัญชีของคุณกำลังรอการยืนยัน\n'
+                              'เราจะแจ้งเตือนทันทีที่พร้อมใช้งาน / '
+                              "Your account is awaiting verification.\n"
+                              "We'll notify you the moment it's ready.",
+                    ),
+                    const SizedBox(height: PgTokens.space4),
+                    _RoleBadge(isGuard: isGuard),
+                  ],
+                ),
               ),
-            ),
-            const Spacer(),
-            // Footer: CTA pinned above the home indicator.
-            Padding(
-              padding: const EdgeInsets.fromLTRB(
-                  20, PgTokens.space4, 20, PgTokens.space4),
-              child: PgPrimaryButton(
-                label: 'ตรวจสอบสถานะ / Check status',
-                busy: state.busy,
-                onPressed: state.busy ? null : _checkStatus,
+              const Spacer(),
+              // Footer: CTA pinned above the home indicator.
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    20, PgTokens.space4, 20, PgTokens.space4),
+                child: PgPrimaryButton(
+                  label: 'ตรวจสอบสถานะ / Check status',
+                  busy: state.busy,
+                  onPressed: state.busy ? null : _checkStatus,
+                ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

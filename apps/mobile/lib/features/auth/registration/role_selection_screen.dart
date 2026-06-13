@@ -5,7 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
-import '../../../widgets/pguard_header.dart';
+import '../../../widgets/pg_auth_back_bar.dart';
 
 /// Step 4 (after PIN): choose `customer` or `guard`. The tap registers the account
 /// (`POST /auth/register`, role-at-register) — on 202 we go to the matching profile form; a 409
@@ -31,11 +31,9 @@ class RoleSelectionScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      appBar: const PGuardHeader(
-        title: 'เลือกประเภทบัญชี',
-        subtitle: 'Choose your account type',
-        showBack: true,
-      ),
+      // Registration screens have no green bar in the hi-fi (Mobile - Registration.html uses a
+      // bare back chevron); the body already carries the "คุณต้องการใช้งานแบบไหน?" heading.
+      appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),

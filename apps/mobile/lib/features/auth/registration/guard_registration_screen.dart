@@ -8,7 +8,7 @@ import '../../../core/controllers/registration_controller.dart';
 import '../../../core/media/document_picker.dart';
 import '../../../core/models/registration.dart';
 import '../../../core/providers.dart';
-import '../../../widgets/pguard_header.dart';
+import '../../../widgets/pg_auth_back_bar.dart';
 import '../../../widgets/primary_button.dart';
 import 'guard_doc_row.dart';
 
@@ -262,12 +262,9 @@ class _GuardRegistrationScreenState
     final head = _stepHeads[_step];
 
     return Scaffold(
-      appBar: PGuardHeader(
-        title: 'ข้อมูลเจ้าหน้าที่',
-        subtitle: 'Guard profile',
-        showBack: true,
-        onBack: _onBack,
-      ),
+      // No green bar (hi-fi uses a bare back chevron); the per-step head (`head.title`) is
+      // already rendered in the body. The chevron steps back through the wizard via _onBack.
+      appBar: PgAuthBackBar(onBack: _onBack),
       body: SafeArea(
         child: Column(
           children: [
