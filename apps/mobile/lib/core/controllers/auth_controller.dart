@@ -80,7 +80,25 @@ class AuthController extends _$AuthController {
 
   static final RegExp _thaiPhone = RegExp(r'^0\d{9}$');
 
-  bool isValidPhone(String phone) => _thaiPhone.hasMatch(phone);
+  /// Canonicalize what the user typed into the backend's national format `0XXXXXXXXX`
+  /// (exactly what `otp.validate_thai_phone` requires — 10 digits, leading 0). The phone
+  /// field renders a fixed `🇹🇭 +66` prefix, so the natural input is the 9-digit national
+  /// significant number (e.g. `812345678`) and we restore the trunk `0`. A number typed WITH
+  /// the leading `0` (habit) or pasted with the `66` country code is also accepted; spaces
+  /// and other separators are already stripped by the field formatter but we strip again
+  /// here so non-UI callers (login by stored phone) are safe. Returns null when the result
+  /// isn't a valid Thai mobile number — the controller never sends a malformed identifier.
+  static String? normalizeThaiPhone(String input) {
+    final digits = input.replaceAll(RegExp(r'\D'), '');
+    final national = switch (digits.length) {
+      11 when digits.startsWith('66') => '0${digits.substring(2)}',
+      9 => '0$digits',
+      _ => digits,
+    };
+    return _thaiPhone.hasMatch(national) ? national : null;
+  }
+
+  bool isValidPhone(String phone) => normalizeThaiPhone(phone) != null;
 
   /// PURE display heuristic for the set-PIN strength line ("ความปลอดภัยดี · หลีกเลี่ยงเลขซ้ำ"):
   /// a typed PIN prefix is "weak" when its digits are all identical or form a strictly
@@ -129,7 +147,8 @@ class AuthController extends _$AuthController {
     }
     return _guard(() async {
       await ref.read(pguardApiProvider).post('/otp/request', data: {
-        'phone': state.phone,
+        // Canonical national `0XXXXXXXXX` — isValidPhone passed, so this is non-null.
+        'phone': normalizeThaiPhone(state.phone) ?? state.phone,
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
       });
@@ -147,7 +166,8 @@ class AuthController extends _$AuthController {
   /// `POST /auth/register` after the PIN + role are chosen.
   Future<bool> verifyOtp(String code) => _guard(() async {
         final data = await ref.read(pguardApiProvider).post('/otp/verify', data: {
-          'phone': state.phone,
+          // Same canonical national form the OTP was requested with.
+          'phone': normalizeThaiPhone(state.phone) ?? state.phone,
           'code': code,
         });
         final token = (data is Map<String, dynamic>)

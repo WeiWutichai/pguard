@@ -85,6 +85,68 @@ void main() {
     expect(await ctrl.sendOtp('2'), isFalse);
   });
 
+  group('normalizeThaiPhone — UI shows +66, backend wants national 0XXXXXXXXX', () {
+    test('9-digit significant (what the +66 prefix implies) gets the trunk 0', () {
+      expect(AuthController.normalizeThaiPhone('812345678'), '0812345678');
+      // Spaced as the field renders it — separators are stripped.
+      expect(AuthController.normalizeThaiPhone('81 234 5678'), '0812345678');
+    });
+    test('full national 0XXXXXXXXX (typed by habit) is kept as-is', () {
+      expect(AuthController.normalizeThaiPhone('0812345678'), '0812345678');
+    });
+    test('pasted 66-country-code form is folded to national', () {
+      expect(AuthController.normalizeThaiPhone('66812345678'), '0812345678');
+    });
+    test('non-numbers / wrong lengths are rejected (null)', () {
+      expect(AuthController.normalizeThaiPhone(''), isNull);
+      expect(AuthController.normalizeThaiPhone('123'), isNull);
+      expect(AuthController.normalizeThaiPhone('81234567'), isNull); // 8 digits
+      expect(AuthController.normalizeThaiPhone('1812345678'), isNull); // 10, no leading 0
+    });
+    test('isValidPhone accepts both the 9- and 10-digit forms', () {
+      final ctrl = container(api: FakeApi(), store: InMemoryStore())
+          .read(authControllerProvider.notifier);
+      expect(ctrl.isValidPhone('812345678'), isTrue);
+      expect(ctrl.isValidPhone('0812345678'), isTrue);
+      expect(ctrl.isValidPhone('123'), isFalse);
+    });
+  });
+
+  test('a 9-digit +66 entry is sent to the backend as national 0XXXXXXXXX',
+      () async {
+    final store = InMemoryStore();
+    String? sentRequestPhone;
+    String? sentVerifyPhone;
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          {'challenge_id': 'ch1', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, data) async {
+        switch (path) {
+          case '/otp/request':
+            sentRequestPhone = (data as Map?)?['phone'] as String?;
+            return {'message': 'sent', 'expires_in': 300};
+          case '/otp/verify':
+            sentVerifyPhone = (data as Map?)?['phone'] as String?;
+            return {'phone_verified_token': 'pvt', 'expires_in': 300};
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    // The phone screen stores the canonical form; emulate that handoff.
+    ctrl.setPhone(AuthController.normalizeThaiPhone('812345678')!);
+    await ctrl.loadChallenge();
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(await ctrl.verifyOtp('123456'), isTrue);
+
+    expect(sentRequestPhone, '0812345678',
+        reason: 'backend otp.validate_thai_phone needs the leading 0');
+    expect(sentVerifyPhone, '0812345678');
+  });
+
   test('login failure surfaces the server message and stores no tokens',
       () async {
     final store = InMemoryStore();
