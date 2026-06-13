@@ -116,8 +116,9 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
                     ],
                     onChanged: (v) {
                       ref.read(authControllerProvider.notifier).setPhone(v);
-                      if (_localError != null)
+                      if (_localError != null) {
                         setState(() => _localError = null);
+                      }
                     },
                     onSubmitted: (_) => _continue(),
                     // No floating label — the hi-fi field is just the +66 prefix + the number
