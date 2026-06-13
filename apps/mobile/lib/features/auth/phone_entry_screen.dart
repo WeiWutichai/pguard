@@ -6,7 +6,6 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
 import '../../widgets/auth_head.dart';
-import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 
 /// Step 1: phone number only. UI per `Mobile - Auth.html` screen ① (กรอกเบอร์โทร) — centered
@@ -67,8 +66,12 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: const PGuardHeader(title: 'pguard', subtitle: 'เข้าสู่ระบบ · Sign in'),
+    // No green top bar — the hi-fi `Mobile - Auth.html` screen ① has none; the brand shows
+    // via the centered shield + welcome below. AnnotatedRegion gives the light page the dark
+    // status-bar icons the (removed) green header used to set.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),
@@ -117,8 +120,10 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
                     if (_localError != null) setState(() => _localError = null);
                   },
                   onSubmitted: (_) => _continue(),
+                  // No floating label — the hi-fi field is just the +66 prefix + the number
+                  // (a Material `labelText` would float up and overlap the rounded border).
+                  // The "phone" context comes from the title above + the +66 prefix.
                   decoration: const InputDecoration(
-                    labelText: 'เบอร์โทรศัพท์ / Phone',
                     hintText: '81 234 5678',
                     // Design prefix: '🇹🇭 +66' 17/600 muted with a 1px divider before the digits.
                     prefixIcon: _PhonePrefix(),
@@ -149,6 +154,7 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
             ],
           ),
         ),
+      ),
       ),
     );
   }

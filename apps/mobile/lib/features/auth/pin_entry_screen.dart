@@ -6,7 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/registration_controller.dart';
 import '../../widgets/auth_head.dart';
-import '../../widgets/pguard_header.dart';
+import '../../widgets/pg_auth_back_bar.dart';
 import '../../widgets/pin_dots.dart';
 import '../../widgets/pin_keypad.dart';
 
@@ -98,10 +98,9 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
         if (!didPop) _backToFirstEntry();
       },
       child: Scaffold(
-        appBar: PGuardHeader(
-          title: 'ตั้งรหัส PIN',
-          subtitle: 'Create your 6-digit PIN',
-          showBack: true,
+        // No green bar (hi-fi has none; the "ตั้งรหัส PIN" title is the body AuthHead).
+        // Keep the confirm→first-entry back behavior on the transparent back chevron.
+        appBar: PgAuthBackBar(
           onBack: _confirming ? _backToFirstEntry : null,
         ),
         body: SafeArea(

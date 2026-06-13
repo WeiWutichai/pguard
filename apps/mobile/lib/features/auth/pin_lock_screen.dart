@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
@@ -6,7 +7,6 @@ import '../../core/controllers/pin_service.dart';
 import '../../core/controllers/resend_policy.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/providers.dart';
-import '../../widgets/pguard_header.dart';
 import '../../widgets/pin_dots.dart';
 import '../../widgets/pin_keypad.dart';
 import '../../widgets/primary_button.dart';
@@ -172,8 +172,10 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   @override
   Widget build(BuildContext context) {
     final locked = _isLocked;
-    return Scaffold(
-      appBar: const PGuardHeader(title: 'ปลดล็อก', subtitle: 'Enter your PIN'),
+    // No green bar — the returning-user screen's hero ("ยินดีต้อนรับกลับ") is the body head.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle.dark,
+      child: Scaffold(
       body: SafeArea(
         child: Column(
           children: [
@@ -215,6 +217,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
             const SizedBox(height: PgTokens.space4),
           ],
         ),
+      ),
       ),
     );
   }
