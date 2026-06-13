@@ -29,8 +29,12 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
   @override
   void initState() {
     super.initState();
-    // Restore the number if the user came back from the captcha/OTP step.
-    _phone.text = ref.read(authControllerProvider).phone;
+    // Restore the number if the user came back from the captcha/OTP step. State holds the
+    // canonical national `0XXXXXXXXX`; the field sits behind a `+66` prefix, so drop the
+    // trunk `0` for display (`812345678`) — matching how it was typed, no redundant `+66 0…`.
+    final saved = ref.read(authControllerProvider).phone;
+    _phone.text =
+        saved.startsWith('0') ? saved.substring(1) : saved;
     // Repaint the focus-ring glow as focus moves (design: 0 0 0 4px --focus-ring).
     _focusNode.addListener(() => setState(() {}));
   }
@@ -46,12 +50,17 @@ class _PhoneEntryScreenState extends ConsumerState<PhoneEntryScreen> {
   /// requests the OTP SMS). No network call here — the phone screen stays clean per the design.
   void _continue() {
     final ctrl = ref.read(authControllerProvider.notifier);
-    final phone = _phone.text.trim();
-    ctrl.setPhone(phone);
-    if (!ctrl.isValidPhone(phone)) {
+    // The field shows a fixed `+66` prefix, so the user types the 9-digit significant number
+    // (or, by habit, the full `0…` national). Canonicalize to `0XXXXXXXXX` once here so the
+    // whole downstream flow (OTP request/verify, register, login identifier) carries the same
+    // backend-shaped phone — never the raw `+66`-relative digits the backend would reject.
+    final normalized = AuthController.normalizeThaiPhone(_phone.text);
+    if (normalized == null) {
+      ctrl.setPhone(_phone.text.trim());
       setState(() => _localError = 'เบอร์โทรไม่ถูกต้อง / Invalid phone number');
       return;
     }
+    ctrl.setPhone(normalized);
     setState(() => _localError = null);
     context.push('/auth/captcha');
   }
