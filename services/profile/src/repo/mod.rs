@@ -366,12 +366,21 @@ pub async fn mark_published(db: &PgPool, id: Uuid) -> Result<(), AppError> {
 // ----- Customer profile -----
 
 /// Upsert the caller's customer profile (minimal in this slice).
+///
+/// The FIRST creation also enqueues `user.approved` (same tx, transactional outbox):
+/// customers are **auto-approved on first profile submission**. Guards are vetted by an admin
+/// (`set_approval_status`), but v2 has no admin customer-review surface at all — without
+/// this event a registered customer stays `pending` in identity forever and can never log
+/// in. identity's `user.approved` consumer is role-agnostic (flips by `user_id`), so the
+/// existing approval→login loop closes unchanged. A re-upsert (self-edit) is detected via
+/// `xmax = 0` and emits nothing — "approved" happens at most once per account here.
 pub async fn upsert_customer_profile(
     db: &PgPool,
     user_id: Uuid,
     req: &UpsertCustomerProfileRequest,
 ) -> Result<CustomerProfileResponse, AppError> {
-    let row: (Uuid, Option<String>, Option<String>) = sqlx::query_as(
+    let mut tx = db.begin().await?;
+    let row: (Uuid, Option<String>, Option<String>, bool) = sqlx::query_as(
         r#"
         INSERT INTO profile.customer_profiles (user_id, full_name, address)
         VALUES ($1, $2, $3)
@@ -379,14 +388,29 @@ pub async fn upsert_customer_profile(
             full_name  = EXCLUDED.full_name,
             address    = EXCLUDED.address,
             updated_at = now()
-        RETURNING user_id, full_name, address
+        RETURNING user_id, full_name, address, (xmax = 0) AS inserted
         "#,
     )
     .bind(user_id)
     .bind(&req.full_name)
     .bind(&req.address)
-    .fetch_one(db)
+    .fetch_one(&mut *tx)
     .await?;
+    if row.3 {
+        let envelope = EventEnvelope::new(
+            topics::USER_APPROVED,
+            Uuid::new_v4(),
+            serde_json::json!({
+                "user_id": user_id,
+                "role": "customer",
+                "approved_at": Utc::now(),
+            }),
+        );
+        let payload = serde_json::to_value(&envelope)
+            .map_err(|e| AppError::Internal(format!("serialize outbox envelope: {e}")))?;
+        enqueue_outbox(&mut tx, topics::USER_APPROVED, &payload).await?;
+    }
+    tx.commit().await?;
     Ok(CustomerProfileResponse {
         user_id: row.0,
         full_name: row.1,
@@ -718,6 +742,85 @@ mod db_tests {
         );
 
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Customer auto-approval: the FIRST profile insert enqueues exactly one `user.approved`
+    /// outbox row (atomic with the insert); a re-upsert (self-edit) emits nothing. Without
+    /// this event a customer account stays `pending` forever (v2 has no admin
+    /// customer-approval surface) and could never log in. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn customer_first_insert_emits_user_approved_once() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let outbox_count = |pool: PgPool, user_id: Uuid| async move {
+            let (n,): (i64,) = sqlx::query_as(
+                "SELECT count(*)::bigint FROM profile.outbox \
+                 WHERE topic = $1 AND payload->'payload'->>'user_id' = $2",
+            )
+            .bind(topics::USER_APPROVED)
+            .bind(user_id.to_string())
+            .fetch_one(&pool)
+            .await
+            .expect("count outbox");
+            n
+        };
+
+        // 1) FIRST insert → exactly one user.approved row, carrying role=customer.
+        let req = UpsertCustomerProfileRequest {
+            full_name: Some("สมหญิง ใจดี".to_string()),
+            address: Some("กรุงเทพฯ".to_string()),
+        };
+        upsert_customer_profile(&pool, user_id, &req)
+            .await
+            .expect("first upsert");
+        assert_eq!(
+            outbox_count(pool.clone(), user_id).await,
+            1,
+            "first customer-profile insert emits exactly one user.approved"
+        );
+        let (role,): (String,) = sqlx::query_as(
+            "SELECT payload->'payload'->>'role' FROM profile.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'user_id' = $2",
+        )
+        .bind(topics::USER_APPROVED)
+        .bind(user_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("read role");
+        assert_eq!(role, "customer");
+
+        // 2) Re-upsert (self-edit) → no second event; the edit itself still applies.
+        let edited = UpsertCustomerProfileRequest {
+            full_name: Some("สมหญิง ใจดีมาก".to_string()),
+            address: None,
+        };
+        let profile = upsert_customer_profile(&pool, user_id, &edited)
+            .await
+            .expect("re-upsert");
+        assert_eq!(profile.full_name.as_deref(), Some("สมหญิง ใจดีมาก"));
+        assert_eq!(
+            outbox_count(pool.clone(), user_id).await,
+            1,
+            "a re-upsert must NOT re-emit user.approved"
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
+            .bind(user_id.to_string())
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
             .bind(user_id)
             .execute(&pool)
             .await;
