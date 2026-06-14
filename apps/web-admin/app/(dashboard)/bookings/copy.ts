@@ -1,0 +1,173 @@
+// Screen-local bilingual copy for the bookings (จัดการงาน) screen. NEW design strings only,
+// taken from the hi-fi mockup (Admin - Bookings); shared strings (common.*) keep using
+// src/lib/i18n.tsx (single-writer). Status LABELS map the REAL v2 BookingStatus enum
+// (requested/accepted/en_route/arrived/pending_completion/completed/cancelled/declined) —
+// the design's chips ("pending"/"assigned"/"started") predate the final state machine, so
+// we render the contract's statuses, not the mockup's.
+import type { Lang } from "@/lib/lang";
+
+/** The real v2 lifecycle statuses (contract: booking.yaml BookingStatus). */
+export const STATUSES = [
+  "requested",
+  "accepted",
+  "en_route",
+  "arrived",
+  "pending_completion",
+  "completed",
+  "cancelled",
+  "declined",
+] as const;
+export type BookingStatusKey = (typeof STATUSES)[number];
+
+/** Badge tone per status (admin.css palette intent: in-flight=amber, on-site/accepted=blue,
+ * done=green, terminal-bad=red). */
+export const STATUS_TONE: Record<BookingStatusKey, "green" | "amber" | "red" | "blue" | "gray"> = {
+  requested: "amber",
+  accepted: "blue",
+  en_route: "amber",
+  arrived: "blue",
+  pending_completion: "amber",
+  completed: "green",
+  cancelled: "red",
+  declined: "red",
+};
+
+export interface BookingsCopy {
+  title: string;
+  /** Subtitle carries the live count: "งานทั้งหมด 27 รายการ". */
+  subtitle: (n: string) => string;
+  searchPlaceholder: string;
+  colBooking: string;
+  colCustomer: string;
+  colGuard: string;
+  colTime: string;
+  colAmount: string;
+  colStatus: string;
+  /** Inline gap chip for design data with no v2 endpoint/field yet. */
+  awaitingApi: string;
+  assign: string;
+  assignTitle: string;
+  assignGuardLabel: string;
+  assignPick: string;
+  assignConfirm: string;
+  assignDone: string;
+  /** assign failed (409 already-assigned / illegal state, or network). */
+  assignError: string;
+  noGuardYet: string;
+  unassigned: string;
+  detailTitle: string;
+  total: string;
+  duration: string;
+  guardsCount: string;
+  customer: string;
+  assignedGuard: string;
+  hoursUnit: string;
+  peopleUnit: string;
+  /** Pagination connector: "1–9 จาก 27". */
+  of: string;
+  statusLabel: Record<BookingStatusKey, string>;
+}
+
+export const COPY: Record<Lang, BookingsCopy> = {
+  th: {
+    title: "จัดการงาน",
+    subtitle: (n) => `งานทั้งหมด ${n} รายการ`,
+    searchPlaceholder: "ค้นหา booking / ลูกค้า / ที่อยู่…",
+    colBooking: "Booking",
+    colCustomer: "ลูกค้า",
+    colGuard: "เจ้าหน้าที่",
+    colTime: "เวลา",
+    colAmount: "ยอด",
+    colStatus: "สถานะ",
+    awaitingApi: "รอ API",
+    assign: "มอบหมาย",
+    assignTitle: "มอบหมายเจ้าหน้าที่",
+    assignGuardLabel: "เลือกเจ้าหน้าที่ (อนุมัติแล้ว)",
+    assignPick: "— เลือกเจ้าหน้าที่ —",
+    assignConfirm: "มอบหมายเจ้าหน้าที่",
+    assignDone: "มอบหมายเจ้าหน้าที่แล้ว",
+    assignError: "มอบหมายไม่สำเร็จ — งานนี้อาจมีเจ้าหน้าที่แล้วหรือสถานะไม่อนุญาต",
+    noGuardYet: "ยังไม่มีเจ้าหน้าที่ — เลือกด้านล่างเพื่อมอบหมาย",
+    unassigned: "ยังไม่มอบหมาย",
+    detailTitle: "รายละเอียดงาน",
+    total: "ยอดรวม",
+    duration: "ระยะเวลา",
+    guardsCount: "จำนวน",
+    customer: "ลูกค้า",
+    assignedGuard: "เจ้าหน้าที่ที่มอบหมาย",
+    hoursUnit: "ชม.",
+    peopleUnit: "คน",
+    of: "จาก",
+    statusLabel: {
+      requested: "รอรับงาน",
+      accepted: "รับงานแล้ว",
+      en_route: "กำลังเดินทาง",
+      arrived: "ถึงจุดแล้ว",
+      pending_completion: "รอยืนยันจบงาน",
+      completed: "เสร็จสิ้น",
+      cancelled: "ยกเลิก",
+      declined: "ปฏิเสธงาน",
+    },
+  },
+  en: {
+    title: "Bookings",
+    subtitle: (n) => `${n} bookings`,
+    searchPlaceholder: "Search booking / customer / address…",
+    colBooking: "Booking",
+    colCustomer: "Customer",
+    colGuard: "Guard",
+    colTime: "Time",
+    colAmount: "Amount",
+    colStatus: "Status",
+    awaitingApi: "awaiting API",
+    assign: "Assign",
+    assignTitle: "Assign guard",
+    assignGuardLabel: "Pick an approved guard",
+    assignPick: "— select a guard —",
+    assignConfirm: "Assign guard",
+    assignDone: "Guard assigned",
+    assignError: "Assign failed — the booking may already have a guard, or its status disallows it",
+    noGuardYet: "No guard yet — pick one below to assign",
+    unassigned: "Unassigned",
+    detailTitle: "Booking detail",
+    total: "Total",
+    duration: "Duration",
+    guardsCount: "Guards",
+    customer: "Customer",
+    assignedGuard: "Assigned guard",
+    hoursUnit: "h",
+    peopleUnit: "",
+    of: "of",
+    statusLabel: {
+      requested: "Requested",
+      accepted: "Accepted",
+      en_route: "En route",
+      arrived: "Arrived",
+      pending_completion: "Pending completion",
+      completed: "Completed",
+      cancelled: "Cancelled",
+      declined: "Declined",
+    },
+  },
+};
+
+/** Booking total = base_fee × hours × guard_count + tip. base_fee/tip arrive as Decimal
+ * strings (serde-str on the wire), hours/guard_count as ints. Formatted as ฿ with thousands
+ * separators, no decimals (design: "฿1,840"). */
+export function bookingTotal(b: {
+  base_fee?: string | number | null;
+  hours?: number | null;
+  guard_count?: number | null;
+  tip?: string | number | null;
+}): number {
+  const base = Number(b.base_fee ?? 0);
+  const tip = Number(b.tip ?? 0);
+  const hours = b.hours ?? 0;
+  const guards = b.guard_count ?? 1;
+  const total = base * hours * guards + tip;
+  return Number.isFinite(total) ? total : 0;
+}
+
+export function fmtBaht(n: number): string {
+  return `฿${Math.round(n).toLocaleString("en-US")}`;
+}
