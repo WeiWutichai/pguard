@@ -36,7 +36,7 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
 
   bool get _confirming => _firstPin != null;
 
-  void _onDigit(String d) {
+  Future<void> _onDigit(String d) async {
     if (_pin.length >= _len) return;
     setState(() {
       _mismatch = false;
@@ -60,11 +60,15 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
       return;
     }
     final auth = ref.read(authControllerProvider);
-    ref.read(registrationControllerProvider.notifier).beginFromAuth(
+    // Persist the resume state (phone + raw PIN + marker) BEFORE navigating, so a kill at the
+    // role screen resumes here instead of bouncing to phone entry. Awaited (a few keychain
+    // writes) so the marker is durable before the user can act.
+    await ref.read(registrationControllerProvider.notifier).beginFromAuth(
           phone: auth.phone,
           phoneVerifiedToken: auth.phoneVerifiedToken,
           pin: _pin,
         );
+    if (!mounted) return;
     context.push('/auth/role');
     // Clear so returning to this screen starts fresh.
     setState(() {

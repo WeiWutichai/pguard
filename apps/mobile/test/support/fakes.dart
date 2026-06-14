@@ -29,6 +29,7 @@ class InMemoryStore implements AppStore {
   String? phone;
   String? phoneVerifiedToken;
   String? profileToken;
+  String? onboardingPin;
   String? pinHash;
   String? pinSalt;
   int attempts = 0;
@@ -67,10 +68,18 @@ class InMemoryStore implements AppStore {
   }
 
   @override
+  Future<String?> readOnboardingPin() async => onboardingPin;
+  @override
+  Future<void> saveOnboardingPin(String pin) async => onboardingPin = pin;
+  @override
+  Future<void> clearOnboardingPin() async => onboardingPin = null;
+
+  @override
   Future<void> clearSession() async {
     access = null;
     refresh = null;
     phone = null;
+    onboardingPin = null;
     phoneVerifiedToken = null;
     profileToken = null;
   }

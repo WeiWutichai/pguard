@@ -60,6 +60,11 @@ GoRouter appRouter(AppRouterRef ref) {
           return loc == '/splash' ? null : '/splash';
         case SessionStatus.unauthenticated:
           return loc.startsWith('/auth') ? null : '/auth/phone';
+        case SessionStatus.onboardingRole:
+          // First segment done (phone→OTP→PIN) but role not chosen: resume at role-select.
+          // Allow any /auth/* so the live flow can still go role→profile; bounce elsewhere
+          // (e.g. /splash on cold start) to /auth/role.
+          return loc.startsWith('/auth') ? null : '/auth/role';
         case SessionStatus.pendingApproval:
           // Registered, not yet approved: stay anywhere in the registration sub-flow
           // (role/profile/pending live under /auth); anything else → the pending screen.
@@ -78,8 +83,7 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
           path: '/auth/phone', builder: (_, __) => const PhoneEntryScreen()),
       // Bot-check step between phone and OTP (the design keeps the phone screen clean).
-      GoRoute(
-          path: '/auth/captcha', builder: (_, __) => const CaptchaScreen()),
+      GoRoute(path: '/auth/captcha', builder: (_, __) => const CaptchaScreen()),
       GoRoute(path: '/auth/otp', builder: (_, __) => const OtpScreen()),
       GoRoute(path: '/auth/pin', builder: (_, __) => const PinEntryScreen()),
       // Registration sub-flow (role-at-register): role → profile form → pending.
@@ -105,8 +109,7 @@ GoRouter appRouter(AppRouterRef ref) {
           builder: (_, __) => const NotificationScreen()),
       GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
       GoRoute(
-          path: '/profile/edit',
-          builder: (_, __) => const ProfileEditScreen()),
+          path: '/profile/edit', builder: (_, __) => const ProfileEditScreen()),
       // Bottom-nav tab destinations: customer booking history + wallet, guard earnings.
       GoRoute(
           path: '/bookings-history',
@@ -119,9 +122,8 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
         path: '/chat',
         builder: (context, state) => ChatListScreen(
-          actingRole:
-              ChatRole.tryParse(state.uri.queryParameters['role']) ??
-                  ChatRole.customer,
+          actingRole: ChatRole.tryParse(state.uri.queryParameters['role']) ??
+              ChatRole.customer,
         ),
       ),
       GoRoute(
@@ -160,14 +162,14 @@ GoRouter appRouter(AppRouterRef ref) {
             WithdrawScreen(bookingId: state.pathParameters['id']!),
       ),
       // Customer book-a-guard flow (shared keepAlive BookingFlowController carries state).
-      GoRoute(path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
+      GoRoute(
+          path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
       GoRoute(
           path: '/book/form', builder: (_, __) => const BookingFormScreen()),
       GoRoute(
           path: '/book/guards',
           builder: (_, __) => const GuardDiscoveryScreen()),
-      GoRoute(
-          path: '/book/payment', builder: (_, __) => const PaymentScreen()),
+      GoRoute(path: '/book/payment', builder: (_, __) => const PaymentScreen()),
       GoRoute(
           path: '/book/success',
           builder: (_, __) => const PaymentSuccessScreen()),

@@ -24,6 +24,21 @@ abstract class SessionStore {
   Future<String?> readProfileToken();
   Future<void> saveProfileToken(String token);
   Future<void> clearRegistrationTokens();
+
+  /// The RAW PIN, persisted ONLY during the onboarding resume window (PIN-confirm → register).
+  /// A cold-start `register()` needs it to compute the backend `pin_hash` AND to seed the local
+  /// PIN at the subsequent login, so it must survive a process kill before role-select. It sits
+  /// in the OS keychain/keystore (same protection class as the access token) and is CLEARED on
+  /// every onboarding exit path (register success, login, logout, wipe, forgot-PIN, re-OTP) —
+  /// see [clearOnboardingCredentials]. Acceptable because the same PIN ends up persisted as a
+  /// salted hash via the PIN service after login anyway.
+  Future<String?> readOnboardingPin();
+  Future<void> saveOnboardingPin(String pin);
+
+  /// Delete ONLY the onboarding raw PIN (leaves the registration tokens + phone, which are still
+  /// needed right after a 202 register for the profile/check-status step). Full teardown of the
+  /// session/onboarding goes through [clearSession] (which also drops the onboarding PIN).
+  Future<void> clearOnboardingPin();
 }
 
 /// The PIN-persistence surface the PIN service depends on (hash/salt + lockout counters).
@@ -66,6 +81,7 @@ class SecureStore implements AppStore {
   static const _kPhone = 'pg_phone';
   static const _kPhoneVerifiedToken = 'pg_phone_verified_token';
   static const _kProfileToken = 'pg_profile_token';
+  static const _kOnboardingPin = 'pg_onboarding_pin';
   static const _kPinHash = 'pg_pin_hash';
   static const _kPinSalt = 'pg_pin_salt';
   static const _kPinAttempts = 'pg_pin_attempts';
@@ -91,6 +107,7 @@ class SecureStore implements AppStore {
     await _s.delete(key: _kAccess);
     await _s.delete(key: _kRefresh);
     await _s.delete(key: _kPhone);
+    await _s.delete(key: _kOnboardingPin);
     await clearRegistrationTokens();
   }
 
@@ -102,7 +119,8 @@ class SecureStore implements AppStore {
 
   // ---- registration tokens (single-use; phone-verify → register → profile) ----
   @override
-  Future<String?> readPhoneVerifiedToken() => _s.read(key: _kPhoneVerifiedToken);
+  Future<String?> readPhoneVerifiedToken() =>
+      _s.read(key: _kPhoneVerifiedToken);
   @override
   Future<void> savePhoneVerifiedToken(String token) =>
       _s.write(key: _kPhoneVerifiedToken, value: token);
@@ -116,6 +134,15 @@ class SecureStore implements AppStore {
     await _s.delete(key: _kPhoneVerifiedToken);
     await _s.delete(key: _kProfileToken);
   }
+
+  // ---- onboarding resume credential (raw PIN; transient, see interface doc) ----
+  @override
+  Future<String?> readOnboardingPin() => _s.read(key: _kOnboardingPin);
+  @override
+  Future<void> saveOnboardingPin(String pin) =>
+      _s.write(key: _kOnboardingPin, value: pin);
+  @override
+  Future<void> clearOnboardingPin() => _s.delete(key: _kOnboardingPin);
 
   // ---- PIN (local gate; never sent to the server) ----
   @override

@@ -84,16 +84,28 @@ class RegistrationController extends _$RegistrationController {
 
   static const PinHasher _hasher = PinHasher();
 
-  /// Snapshot the auth-flow credentials once the PIN is set (called from the PIN screen). The
-  /// `phone_verified_token` also lives in secure storage as a fallback for a backgrounded flow.
-  void beginFromAuth({
+  /// Snapshot the auth-flow credentials once the PIN is set (called from the PIN screen) AND
+  /// persist them so a cold start before role-select can resume here (Option A) and still
+  /// register: phone + raw PIN go to secure storage (the phone-verified token is already there
+  /// from `verifyOtp`), and a non-sensitive stage marker goes to prefs. The marker is written
+  /// LAST so its presence implies the credentials are already saved (a kill mid-sequence then
+  /// resumes to phone, harmless, rather than to role with missing creds).
+  Future<void> beginFromAuth({
     required String phone,
     String? phoneVerifiedToken,
     required String pin,
-  }) {
+  }) async {
     _phone = phone;
     _phoneVerifiedToken = phoneVerifiedToken;
     _pin = pin;
+    final store = ref.read(appStoreProvider);
+    final prefs = ref.read(prefsStoreProvider);
+    await store.savePhone(phone);
+    await store.saveOnboardingPin(pin);
+    if (phoneVerifiedToken != null) {
+      await store.savePhoneVerifiedToken(phoneVerifiedToken);
+    }
+    await prefs.setString(kRegOnboardingStageKey, kRegOnboardingStageRole);
     state =
         const RegistrationState(); // fresh flow (clears any stale role/error/summary)
   }
@@ -112,9 +124,10 @@ class RegistrationController extends _$RegistrationController {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final role = state.role;
     final store = ref.read(appStoreProvider);
+    // Rehydrate from storage when in-memory is empty (cold-start resume at role-select).
     final pvt = _phoneVerifiedToken ?? await store.readPhoneVerifiedToken();
-    final pin = _pin;
-    final phone = _phone;
+    final pin = _pin ?? await store.readOnboardingPin();
+    final phone = _phone ?? await store.readPhone();
     if (role == null || pvt == null || pin == null || phone == null) {
       state = state.copyWith(
           busy: false,
@@ -143,6 +156,10 @@ class RegistrationController extends _$RegistrationController {
       await store.savePhone(phone);
       // The phone-verified token is now consumed; the next OTP cycle would mint a fresh one.
       _phoneVerifiedToken = null;
+      // The first onboarding segment is over → drop its resume marker + raw PIN so a later cold
+      // start routes to the pending screen (set below), not back to role-select. (Keep the
+      // profile token + phone, still needed for the profile/check-status step.)
+      await _clearOnboardingResume();
       // CRITICAL: pending only — never store access tokens, never flip to authenticated. The
       // prefs pending flag is set only AFTER a successful profile submit (so a kill BETWEEN
       // register and submit doesn't strand the user on the pending screen — they can re-register
@@ -166,6 +183,20 @@ class RegistrationController extends _$RegistrationController {
         state = state.copyWith(
             busy: false,
             error: isThai ? 'เข้าสู่ระบบไม่สำเร็จ' : 'Could not sign in');
+        return RegisterOutcome.error;
+      }
+      if (e.statusCode == 401 || e.statusCode == 400) {
+        // Stale phone-verified token: 401 = JWT past exp (>10 min), 400 = jti already consumed
+        // (identity api/mod.rs GETDEL miss → BadRequest; shared-rust auth.rs decode → Unauthorized).
+        // Either way the first segment must be redone → wipe onboarding state and bounce to phone.
+        await _abortOnboarding();
+        ref.read(authControllerProvider.notifier).reset();
+        ref.read(sessionProvider.notifier).onOnboardingExpired();
+        state = state.copyWith(
+            busy: false,
+            error: isThai
+                ? 'หมดเวลายืนยัน กรุณาขอรหัสใหม่'
+                : 'Verification expired — request a new code');
         return RegisterOutcome.error;
       }
       state = state.copyWith(busy: false, error: e.message);
@@ -365,8 +396,36 @@ class RegistrationController extends _$RegistrationController {
     await prefs.remove(kRegPendingRoleKey);
     await prefs.remove(kRegSummaryKey);
     await ref.read(appStoreProvider).clearRegistrationTokens();
+    // Also drop the onboarding-resume marker + raw PIN (the flow is complete now).
+    await prefs.remove(kRegOnboardingStageKey);
+    await ref.read(appStoreProvider).clearOnboardingPin();
     // Drop the raw PIN + phone + tokens from the keepAlive notifier — the flow is complete and the
     // session is now authenticated; don't hold the raw PIN in memory longer than needed.
+    _pin = null;
+    _phone = null;
+    _phoneVerifiedToken = null;
+    _profileToken = null;
+  }
+
+  /// Drop the onboarding RESUME state only (prefs stage marker + raw PIN in secure storage),
+  /// keeping the profile token + phone — used right after a successful 202 register, where the
+  /// flow moves on to the profile/pending step.
+  Future<void> _clearOnboardingResume() async {
+    await ref.read(prefsStoreProvider).remove(kRegOnboardingStageKey);
+    await ref.read(appStoreProvider).clearOnboardingPin();
+  }
+
+  /// Fully abort an onboarding whose phone-verified token is no longer usable: wipe the resume
+  /// marker, the onboarding credentials (raw PIN + tokens), the persisted phone, and all
+  /// in-memory fields, so the user restarts cleanly from phone entry.
+  Future<void> _abortOnboarding() async {
+    final prefs = ref.read(prefsStoreProvider);
+    final store = ref.read(appStoreProvider);
+    await prefs.remove(kRegOnboardingStageKey);
+    await prefs.remove(kRegPendingRoleKey);
+    await prefs.remove(kRegSummaryKey);
+    await store
+        .clearSession(); // drops onboarding PIN + reg tokens + phone (no tokens to lose here)
     _pin = null;
     _phone = null;
     _phoneVerifiedToken = null;

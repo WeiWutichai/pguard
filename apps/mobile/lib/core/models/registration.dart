@@ -37,7 +37,8 @@ enum GuardDocKind {
   idCard('id_card', 'บัตรประชาชน', 'ID card'),
   securityLicense('security_license', 'ใบอนุญาต รปภ.', 'Security license'),
   trainingCert('training_cert', 'ใบรับรองการอบรม', 'Training certificate'),
-  criminalCheck('criminal_check', 'ผลตรวจประวัติอาชญากรรม', 'Criminal record check'),
+  criminalCheck(
+      'criminal_check', 'ผลตรวจประวัติอาชญากรรม', 'Criminal record check'),
   driverLicense('driver_license', 'ใบขับขี่', 'Driver license');
 
   const GuardDocKind(this.key, this.labelTh, this.labelEn);
@@ -52,6 +53,15 @@ enum GuardDocKind {
 /// reads [kRegPendingRoleKey] on cold start to resume the pending screen.
 const String kRegPendingRoleKey = 'pg_reg_pending_role';
 const String kRegSummaryKey = 'pg_reg_summary';
+
+/// Durable marker (SharedPreferences — non-sensitive, just a stage label, no PII) set when the
+/// user finishes the first onboarding segment (phone→OTP→PIN) and reaches role-select but has
+/// NOT registered yet. The session controller reads it on cold start to resume at `/auth/role`
+/// instead of bouncing to phone entry. Value is the literal stage (`'role'`); cleared on every
+/// onboarding exit path. The raw PIN + phone + phone-verified token that make the resume
+/// actionable live in secure storage (see [SessionStore.saveOnboardingPin]).
+const String kRegOnboardingStageKey = 'pg_reg_onboarding_stage';
+const String kRegOnboardingStageRole = 'role';
 
 /// Mask a bank account number to its last 4 digits for LOCAL persistence/display (PDPA). The full
 /// number is sent only to the backend (`account_number`, which the server stores and re-masks on

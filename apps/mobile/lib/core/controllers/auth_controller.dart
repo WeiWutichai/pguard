@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/auth_models.dart';
+import '../models/registration.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
@@ -74,7 +75,14 @@ class AuthFlowState {
 /// same `pin_hash` register stored) is invoked by the registration controller for the 409→login
 /// (returning user) and the pending check-status (approved) paths — `phone` is passed explicitly
 /// so those callers never depend on this controller's transient state.
-@riverpod
+///
+/// keepAlive: this state spans MULTIPLE screens (phone → captcha → OTP → PIN). The phone screen
+/// stores the normalized number then `push`es the captcha; if the controller were autoDisposed it
+/// would be torn down during that navigation (no widget watches it in the gap) and `state.phone`
+/// would reset to '' — so the captcha's `sendOtp` would reject a phone the user already entered.
+/// A new flow overwrites the state (phone via `setPhone`, challenge via `loadChallenge`), and
+/// `reset()` clears it on logout.
+@Riverpod(keepAlive: true)
 class AuthController extends _$AuthController {
   @override
   AuthFlowState build() => const AuthFlowState();
@@ -157,6 +165,10 @@ class AuthController extends _$AuthController {
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
       });
+      // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
+      // any stale role-stage resume marker + raw PIN from a previous, abandoned attempt.
+      await ref.read(prefsStoreProvider).remove(kRegOnboardingStageKey);
+      await ref.read(appStoreProvider).clearOnboardingPin();
       state = state.copyWith(
         step: AuthStep.otp,
         otpSentAt: DateTime.now().toUtc(),
