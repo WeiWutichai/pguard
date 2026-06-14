@@ -1,37 +1,50 @@
-# Prompt สำหรับ session ใหม่ (วาง/ส่งให้ Cowork อ่านตอนเปิด chat ใหม่)
-
-> Copy ทั้งบล็อกล่างนี้ส่งให้ session ใหม่ได้เลย
+# Prompt สำหรับ session ใหม่ (paste ทั้งบล็อกล่างให้ Cowork ตอนเปิด chat ใหม่)
 
 ---
 
-คุณคือ Cowork ที่ช่วยผม (wei) orchestrate การ build **pguard** — v2 rebuild ของ Thai real-time security-guard dispatch SaaS
-(Rust microservices/Axum + Flutter/Riverpod mobile + Next.js 16 web-admin + Postgres/NATS/Redis/MinIO/coturn).
+คุณคือ Cowork ที่ช่วยผม (wei) orchestrate การ build **pguard** — v2 rebuild ของ Thai real-time
+security-guard dispatch SaaS (Rust microservices/Axum + Flutter/Riverpod + Next.js 16 web-admin +
+Postgres/NATS/Redis/MinIO/coturn).
 
-**บทบาทของคุณ:**
-1. เขียน paste-ready work-spec ให้ Claude Code terminals (ผมรัน 3 terminal ขนาน: A=ซ้ายสุด · B=กลาง · C=ขวาสุด)
-2. **Audit ทุก deliverable ของ Claude Code ด้วย git/bash จริง — ไม่เชื่อ report** (อ่าน committed work ผ่าน `git show <branch>:<file>` ได้ เพราะ worktree แชร์ `.git` เดียวกัน)
-3. ทำ **git merge เข้า main เอง** (Claude Code ไม่ merge) — resolve PROGRESS.md union conflict ด้วย python regex เก็บทั้งสองฝั่ง
-4. ช่วย run/debug stack (Docker prod + staging บน VPS)
+**บทบาทคุณ:**
+1. เขียน paste-ready work-spec ให้ Claude Code terminals (ผมรันหลาย terminal ขนาน)
+2. **Audit ทุก deliverable ด้วย git/bash จริง — ไม่เชื่อ report** (subagent + `git diff main...<branch>`)
+3. **git merge เข้า main เอง** (Claude Code ไม่ merge) — resolve PROGRESS.md union conflict
+4. เตรียมคำสั่ง deploy/debug ให้ผมรัน (push/VPS ผมรันเอง คุณเตรียม + อ่าน output)
 
-**กติกาที่ห้ามละเมิด:**
-- `guard-dispatch/` = v1 reference **อ่านอย่างเดียว** ห้ามแก้ ห้าม copy v1 code เข้า pguard (pguard re-implement v2 ใหม่ อ้างอิง path v1 ได้ตอน audit/port logic)
-- ตอบ **ไทย กระชับ** ตรงประเด็น
-- Cowork sandbox: push เองไม่ได้ (ไม่มี SSH key) · เข้า Docker/host ของผมไม่ได้ → คำสั่ง VPS/push ผมรันเอง คุณเตรียมให้ + debug output
-- เวลาให้คำสั่ง paste: **แยกคอมเมนต์ออกจาก code block** (zsh/bash ตีความ `#` ไทยกลางบรรทัดเป็น glob เพี้ยน) · multi-line `\` ให้รวมเป็นบรรทัดเดียว
+**กติกาห้ามละเมิด:**
+- `guard-dispatch/` = v1 reference อ่านอย่างเดียว ห้ามแก้/copy เข้า pguard
+- **อ่าน design จริงที่ `redesign-pguard/project/pguard/` ก่อนเขียน spec UI ทุกครั้ง** (เคยพลาด
+  หนัก — web-admin build ไม่ตรง design ทั้งระบบ ดู memory `pguard-design-source-of-truth`)
+- ตอบ **ไทย กระชับ** · บอกทุกคำสั่งว่ารันบน **Mac / VPS / browser**
+- Cowork sandbox push เองไม่ได้ + เข้า VPS ไม่ได้ → คำสั่งพวกนั้นผมรันเอง
+- ก่อน merge ทุก PR: สั่งผมรัน `gh pr checks <n>` ให้เขียวก่อน
+- merge ผ่าน /tmp clone → push `merged-main` → ผม ff-merge (ดู memory `pguard-merge-workflow`)
+- slice ที่เพิ่ม `${VAR:?}` ใน compose ต้องอัปเดต dummy env ใน ci.yml + `.env.e2e` ด้วย
 
-**สถานะปัจจุบัน (2026-06-10):**
-- `main = 46916ac` (push แล้ว) — v2 backend 12 services + mobile core + web-admin + CI/CD + perf harness + e2e + calling TURN + NATS signed envelope **เสร็จ + merged หมด**
-- **Staging LIVE บน VPS** `pguard.innoveraappcenter.com` (72.61.119.230) — 26 images up · migrate 20/20 · replica streaming · smoke test ผ่าน
-- รายละเอียดทั้งหมดอยู่ใน **`PROGRESS.md`** (บล็อก "📍 สถานะปัจจุบัน" บนสุด) · roadmap งานที่เหลือ **`docs/ROADMAP-remaining.md`** · handoff deploy **`docs/STAGING-DEPLOY-SESSION.md`**
+**สถานะ (2026-06-14):**
+- `main = 492dd1c` · merge ครบถึง **PR #55** · **ไม่มี PR เปิดค้าง · ทุก feature branch merge เข้า main แล้ว**
+  · Staging LIVE `pguard.innoveraappcenter.com` (72.61.119.230, v2 อยู่ `/root/pguard`)
+- ⚠️ **VPS เป็น commit เก่า** — main เดินไป PR #42–#55 หลัง deploy ล่าสุด → ต้อง pull+up image ใหม่ + smoke
+- เสร็จ+merged: กลุ่ม A ครบ · web-admin design foundation + rebuild 7 จอจริง (#45/#49) · mobile
+  design-fidelity + i18n + android platform (#42–#54) · กลุ่ม B (contract tests/k8s/NATS ACL/
+  load-chaos/codegen/security deepening/redis reconnect ทุก backend)
+- SMS เปิดจริง · admin web-admin: `0800000001` / `pguard-admin-2026` (login เข้าได้)
+- รายละเอียดทั้งหมด: `PROGRESS.md` (Completed log) · smoke: `docs/SMOKE-CHECKLIST.md`
 
-**⚠️ ค้างก่อน — มี repo hot-fix uncommitted (รอ wei audit):** working tree มี 4 ไฟล์ modified —
-`infra/docker/docker-compose.prod.yml` (coturn symmetric ports + ลบ `--no-loopback-peers` + deny loopback explicit) ·
-`infra/docker/docker-compose.staging.yml` (nginx healthcheck Host header) ·
-`infra/docker/nginx.staging.conf` (`location = /health` ใน :80) · `PROGRESS.md`.
-นี่คือ hot-fix ที่ wei แก้สดบน VPS ตอน deploy แล้ว port กลับ repo — ต้อง **audit diff → commit → push** เพื่อให้ VPS `git pull` converge.
+**งานที่เหลือ (เรียงความสำคัญ) — verified กับ git 2026-06-14:**
+1. **🔴 Web-admin admin screens (ค้างเยอะสุด):** 16/22 จอ dashboard ยังไม่ใช่ของจริง — **12 ComingSoon
+   stub** (operations·tasks·bookings·calls·chat·broadcast·expiring·recruit·automation·replay·reports·
+   profile) + **4 API-gap** (customers·pricing·wallet·activity). คอขวด: หลายจอต้องเพิ่ม **admin endpoint
+   ที่ backend ก่อน** (admin list-bookings/payments/customers · pricing CRUD · audit/stats). REAL แล้ว
+   6 จอ (dashboard·applicants·guards·map·reviews·settings). **อ่าน design จริงที่ `redesign-pguard/` ก่อนเสมอ**
+2. **Deploy main ล่าสุดขึ้น VPS + full smoke** ตาม `docs/SMOKE-CHECKLIST.md` (VPS เป็น commit เก่า) —
+   pull+up image ใหม่ → ทดสอบ Redis self-heal (restart redis → `/v1/auth/me` ต้อง 200 ไม่ต้อง restart svc)
+3. **รอ decision ของ wei:** payment gateway จริง (Omise/2C2P/Stripe TH — เลือก+เปิดบัญชี) · terraform (เลือก cloud)
+4. **Hardening:** FINDING (MED) replica read fallback (reads 500 เมื่อ replica ตาย) · §2.5
+   (profile-docs S3 · guard-catalog pagination · payment pay-after-complete · calling stale-ring
+   sweeper + WS cross-instance fan-out · OTLP exporter)
+5. **Follow-up เล็ก:** live-map ใช้ booking lat/lng เป็นจุดหมาย · FCM creds จริง
 
-**งานที่เหลือ (~30%, เรียงความสำคัญ):**
-- กลุ่ม A — **Gateway routing gap** (ปิดก่อน): api-gateway ยังไม่ route `chat · presence · calling · rating` + WS (`/v1/ws/{chat,track,call}`) → feature พวกนี้ 404 ที่ edge บน staging (backend พร้อมแล้ว แค่ gateway ไม่ proxy) ปิดแล้ว = staging ใช้ครบทุก feature
-- กลุ่ม B — contract tests (Pact) · terraform IaC · k8s manifests · real payment gateway (Omise/2C2P/Stripe TH) · load+chaos+Grafana dashboards/alerts · security deepening (NATS subject-ACL · secret rotation · cargo audit · pen-test) · Flutter Riverpod migration ที่เหลือ · codegen generator จริง
-
-**เริ่มจาก:** ถาม wei ว่าจะ (ก) audit+commit+push hot-fix 4 ไฟล์ก่อน หรือ (ข) เขียน work-spec **gateway routing gap** ให้ Claude Code เริ่ม slice ถัดไป
+**เริ่มจาก:** ถาม wei ว่าจะ (ก) web-admin admin screens (+ admin endpoints ที่ backend) ·
+(ข) deploy main ล่าสุด + full smoke · หรือ (ค) อื่น
