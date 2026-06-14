@@ -3,8 +3,9 @@
 // (not translated), so they double as language-independent, stable assertions.
 import { test, expect } from "@playwright/test";
 
+// /customers is no longer a gap — it became a real admin list once GET /admin/customer-profiles
+// landed (see customers.spec.ts). The remaining gap pages still have no v2 endpoint.
 const GAP_PAGES = [
-  { path: "/customers", endpoint: "/v1/admin/customer-profiles" },
   { path: "/pricing", endpoint: "/v1/pricing/services" },
   { path: "/wallet", endpoint: "/v1/admin/payments" },
 ] as const;
