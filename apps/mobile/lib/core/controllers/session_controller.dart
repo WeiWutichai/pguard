@@ -4,6 +4,7 @@ import '../models/auth_models.dart';
 import '../models/registration.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'auth_controller.dart';
 
 part 'session_controller.g.dart';
 
@@ -106,6 +107,10 @@ class Session extends _$Session {
     final prefs = ref.read(prefsStoreProvider);
     await prefs.remove(kRegPendingRoleKey);
     await prefs.remove(kRegSummaryKey);
+    // The auth-flow controller is keepAlive, so clear its cross-screen state (phone, OTP,
+    // phone-verified token) here — otherwise a next registration would start with the previous
+    // user's phone/token lingering.
+    ref.read(authControllerProvider.notifier).reset();
     state = const SessionState(SessionStatus.unauthenticated);
   }
 }

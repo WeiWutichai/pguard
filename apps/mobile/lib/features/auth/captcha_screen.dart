@@ -45,11 +45,17 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
     if (ok && mounted) context.push('/auth/otp');
   }
 
+  /// Reload a fresh challenge AND clear the old answer — a new question makes the previous
+  /// answer meaningless, so leaving it in the field is confusing.
+  void _reloadQuestion() {
+    _answer.clear();
+    ref.read(authControllerProvider.notifier).loadChallenge();
+  }
+
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(authControllerProvider);
-    final ctrl = ref.read(authControllerProvider.notifier);
     final question = state.challenge?.question;
 
     return Scaffold(
@@ -139,7 +145,7 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                 onPressed: state.challenge == null ? null : _verify,
               ),
               TextButton(
-                onPressed: state.busy ? null : ctrl.loadChallenge,
+                onPressed: state.busy ? null : _reloadQuestion,
                 child: Text(isThai ? 'โหลดคำถามใหม่' : 'Reload question'),
               ),
             ],

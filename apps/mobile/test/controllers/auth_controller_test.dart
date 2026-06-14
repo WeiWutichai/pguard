@@ -66,8 +66,7 @@ void main() {
         reason: 'phone-verified token captured for the register step');
     expect(store.phoneVerifiedToken, 'pvt', reason: 'and persisted (secure)');
 
-    expect(
-        await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isTrue);
+    expect(await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isTrue);
     expect(store.refresh, 'r1');
     expect(store.access, isNotNull);
     expect(store.phone, '0812345678', reason: 'verified phone persisted');
@@ -85,8 +84,25 @@ void main() {
     expect(await ctrl.sendOtp('2'), isFalse);
   });
 
-  group('normalizeThaiPhone — UI shows +66, backend wants national 0XXXXXXXXX', () {
-    test('9-digit significant (what the +66 prefix implies) gets the trunk 0', () {
+  test(
+      'flow state survives the watching screen unmounting (keepAlive) — phone is '
+      'NOT lost navigating phone → captcha', () async {
+    final c = container(api: FakeApi(), store: InMemoryStore());
+    // Phone screen mounts (watches), stores the canonical number, then unmounts as the
+    // captcha is pushed. With an autoDispose controller the state would reset here and the
+    // captcha's sendOtp would wrongly reject the already-entered phone (the smoke-test bug).
+    final sub = c.listen(authControllerProvider, (_, __) {});
+    c.read(authControllerProvider.notifier).setPhone('0812345678');
+    sub.close();
+    await Future<void>.delayed(
+        Duration.zero); // let any autoDispose scheduler run
+    expect(c.read(authControllerProvider).phone, '0812345678');
+  });
+
+  group('normalizeThaiPhone — UI shows +66, backend wants national 0XXXXXXXXX',
+      () {
+    test('9-digit significant (what the +66 prefix implies) gets the trunk 0',
+        () {
       expect(AuthController.normalizeThaiPhone('812345678'), '0812345678');
       // Spaced as the field renders it — separators are stripped.
       expect(AuthController.normalizeThaiPhone('81 234 5678'), '0812345678');
@@ -101,7 +117,8 @@ void main() {
       expect(AuthController.normalizeThaiPhone(''), isNull);
       expect(AuthController.normalizeThaiPhone('123'), isNull);
       expect(AuthController.normalizeThaiPhone('81234567'), isNull); // 8 digits
-      expect(AuthController.normalizeThaiPhone('1812345678'), isNull); // 10, no leading 0
+      expect(AuthController.normalizeThaiPhone('1812345678'),
+          isNull); // 10, no leading 0
       // A 9-digit input that already starts with 0 is malformed behind +66 — reject it
       // instead of producing a double-zero '0012345678'.
       expect(AuthController.normalizeThaiPhone('012345678'), isNull);
