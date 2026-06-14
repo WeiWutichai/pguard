@@ -43,7 +43,8 @@ void main() {
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
 
-    ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt-123', pin: pin);
+    await ctrl.beginFromAuth(
+        phone: phone, phoneVerifiedToken: 'pvt-123', pin: pin);
     ctrl.selectRole(RegistrationRole.guard);
     final outcome = await ctrl.register();
 
@@ -63,7 +64,8 @@ void main() {
     expect(prefs.values[kRegPendingRoleKey], isNull);
   });
 
-  test('register 409 → loginWithPin (returning approved user); password is SHA-256(pin)',
+  test(
+      'register 409 → loginWithPin (returning approved user); password is SHA-256(pin)',
       () async {
     final store = InMemoryStore();
     final prefs = FakePrefsStore();
@@ -88,7 +90,7 @@ void main() {
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
 
-    ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
     ctrl.selectRole(RegistrationRole.customer);
     final outcome = await ctrl.register();
 
@@ -123,7 +125,7 @@ void main() {
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
 
-    ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
     ctrl.selectRole(RegistrationRole.guard);
     await ctrl.register();
 
@@ -147,7 +149,8 @@ void main() {
     expect(prefs.values[kRegPendingRoleKey], 'guard');
   });
 
-  test('submitCustomerProfile: POSTs /profile/customer with the profile_token Bearer',
+  test(
+      'submitCustomerProfile: POSTs /profile/customer with the profile_token Bearer',
       () async {
     final store = InMemoryStore();
     final prefs = FakePrefsStore();
@@ -166,7 +169,7 @@ void main() {
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
 
-    ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
     ctrl.selectRole(RegistrationRole.customer);
     await ctrl.register();
 
@@ -180,7 +183,8 @@ void main() {
     expect(body!['address'], '99/1 Sukhumvit Rd, Bangkok');
   });
 
-  test('checkStatus: stays pending while 401, then approved-login flips to authenticated',
+  test(
+      'checkStatus: stays pending while 401, then approved-login flips to authenticated',
       () async {
     final store = InMemoryStore();
     final prefs = FakePrefsStore();
@@ -208,7 +212,7 @@ void main() {
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
 
-    ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
     ctrl.selectRole(RegistrationRole.guard);
     await ctrl.register();
     expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
@@ -225,7 +229,8 @@ void main() {
     expect(RegistrationRole.tryParse(prefs.values[kRegPendingRoleKey]), isNull);
   });
 
-  test('register without role/credentials → error outcome, no network', () async {
+  test('register without role/credentials → error outcome, no network',
+      () async {
     final store = InMemoryStore();
     final prefs = FakePrefsStore();
     final api = FakeApi(
@@ -236,9 +241,76 @@ void main() {
     expect(await ctrl.register(), RegisterOutcome.error);
   });
 
+  test(
+      'beginFromAuth persists the resume state (phone + raw PIN + marker), then a COLD-START '
+      'register rehydrates it and succeeds (202)', () async {
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    // 1) First segment finishes on container A: persist phone + raw PIN + stage marker.
+    await container(api: FakeApi(), store: store, prefs: prefs)
+        .read(registrationControllerProvider.notifier)
+        .beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    expect(store.phone, phone);
+    expect(store.onboardingPin, pin);
+    expect(store.phoneVerifiedToken, 'pvt');
+    expect(
+        await prefs.getString(kRegOnboardingStageKey), kRegOnboardingStageRole);
+
+    // 2) Cold start: a FRESH controller (in-memory _phone/_pin null) sharing the same storage.
+    Map<String, dynamic>? body;
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/auth/register');
+      body = data as Map<String, dynamic>;
+      return {'profile_token': 'pt'};
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    ctrl.selectRole(RegistrationRole.customer);
+    final outcome = await ctrl.register();
+
+    expect(outcome, RegisterOutcome.needsProfile);
+    expect(
+        body!['phone_verified_token'], 'pvt'); // rehydrated from secure storage
+    expect(body!['pin_hash'],
+        pinHash); // = SHA-256 of the rehydrated onboarding PIN
+    expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
+    // The resume state is consumed: marker + raw PIN gone (profile token kept for the next step).
+    expect(await prefs.getString(kRegOnboardingStageKey), isNull);
+    expect(store.onboardingPin, isNull);
+    expect(store.profileToken, 'pt');
+  });
+
+  for (final code in [401, 400]) {
+    test(
+        'an expired/consumed phone-verified token at register (HTTP $code) wipes onboarding '
+        'state and bounces to unauthenticated', () async {
+      final store = InMemoryStore();
+      final prefs = FakePrefsStore();
+      await container(api: FakeApi(), store: store, prefs: prefs)
+          .read(registrationControllerProvider.notifier)
+          .beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+
+      final api = FakeApi(onPost: (_, __) async {
+        throw ApiException(message: 'expired', code: 'X', statusCode: code);
+      });
+      final c = container(api: api, store: store, prefs: prefs);
+      final ctrl = c.read(registrationControllerProvider.notifier);
+      ctrl.selectRole(RegistrationRole.guard);
+
+      expect(await ctrl.register(), RegisterOutcome.error);
+      expect(c.read(sessionProvider).status, SessionStatus.unauthenticated);
+      // Everything cleared so the user restarts cleanly from phone entry.
+      expect(await prefs.getString(kRegOnboardingStageKey), isNull);
+      expect(store.onboardingPin, isNull);
+      expect(store.phoneVerifiedToken, isNull);
+      expect(store.phone, isNull);
+    });
+  }
+
   test('maskAccountNumber masks all but the last 4 digits', () {
     expect(maskAccountNumber('1234567890'), '••••••7890');
-    expect(maskAccountNumber('123-45-6789'), '•••••6789'); // strips separators first
+    expect(maskAccountNumber('123-45-6789'),
+        '•••••6789'); // strips separators first
     expect(maskAccountNumber('123'), '•••');
     expect(maskAccountNumber(''), '');
     expect(maskAccountNumber('1234'), '••••');

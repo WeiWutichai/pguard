@@ -12,6 +12,7 @@ void main() {
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(store),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ]);
     addTearDown(c.dispose);
     return c;

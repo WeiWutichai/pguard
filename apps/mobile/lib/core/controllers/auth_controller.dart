@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/auth_models.dart';
+import '../models/registration.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
@@ -164,6 +165,10 @@ class AuthController extends _$AuthController {
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
       });
+      // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
+      // any stale role-stage resume marker + raw PIN from a previous, abandoned attempt.
+      await ref.read(prefsStoreProvider).remove(kRegOnboardingStageKey);
+      await ref.read(appStoreProvider).clearOnboardingPin();
       state = state.copyWith(
         step: AuthStep.otp,
         otpSentAt: DateTime.now().toUtc(),
