@@ -15,6 +15,7 @@ import 'package:pguard_booking_api/src/date_serializer.dart';
 import 'package:pguard_booking_api/src/model/date.dart';
 
 import 'package:pguard_booking_api/src/model/api_response_envelope.dart';
+import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 import 'package:pguard_booking_api/src/model/available_guard.dart';
 import 'package:pguard_booking_api/src/model/booking.dart';
 import 'package:pguard_booking_api/src/model/booking_status.dart';
@@ -35,6 +36,7 @@ part 'serializers.g.dart';
 
 @SerializersFor([
   ApiResponseEnvelope,$ApiResponseEnvelope,
+  AssignGuardRequest,
   AvailableGuard,
   Booking,
   BookingStatus,

@@ -13,10 +13,12 @@ export 'package:pguard_profile_api/src/model/date.dart';
 export 'package:pguard_profile_api/src/api/admin_api.dart';
 export 'package:pguard_profile_api/src/api/profile_api.dart';
 
+export 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
 export 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 export 'package:pguard_profile_api/src/model/approval_status.dart';
 export 'package:pguard_profile_api/src/model/customer_profile.dart';
+export 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 export 'package:pguard_profile_api/src/model/error_body.dart';
 export 'package:pguard_profile_api/src/model/error_detail.dart';
 export 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';

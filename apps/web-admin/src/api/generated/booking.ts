@@ -29,6 +29,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/bookings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List ALL bookings cross-user (role=admin)
+         * @description The admin operations list — every booking (NOT owner-scoped, unlike `GET /bookings`),
+         *     newest first, with optional `status` and `search` (address substring) filters and
+         *     limit/offset pagination. Admin only (else 403). The gateway routes `/admin/bookings`
+         *     (and its subpaths) to the booking service via a dedicated prefix rule.
+         */
+        get: operations["adminListBookings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/bookings/{id}/assign": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin assigns a guard to an unassigned booking (role=admin)
+         * @description An admin assigns a guard to a `requested` booking with no guard yet → it lands in
+         *     `accepted` with `guard_id` set (the same end-state as a guard self-accept), enqueuing
+         *     `pguard.events.booking.job_accepted` `{ booking_id, customer_id, guard_id }` in the
+         *     same transaction (transactional outbox). Admin only (else 403). Returns 409 if the
+         *     booking already has an assigned guard (reassignment is out of scope) or the booking is
+         *     not in a state from which assignment is legal. The target `guard_id` is not validated
+         *     to be an approved guard here — send ids from the admin guard list.
+         */
+        post: operations["adminAssignBooking"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/available-guards": {
         parameters: {
             query?: never;
@@ -360,6 +409,13 @@ export interface components {
          * @enum {string}
          */
         BookingStatus: "requested" | "accepted" | "declined" | "en_route" | "arrived" | "pending_completion" | "completed" | "cancelled";
+        AssignGuardRequest: {
+            /**
+             * Format: uuid
+             * @description The guard the admin assigns to this booking.
+             */
+            guard_id: string;
+        };
         ReviewCompletionRequest: {
             /**
              * @description `approve` → completed (emits booking.completed); `reject` → back to arrived.
@@ -665,6 +721,63 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListBookings: {
+        parameters: {
+            query?: {
+                /** @description Filter by lifecycle status. An unrecognized value returns 400. */
+                status?: components["schemas"]["BookingStatus"];
+                /** @description Case-insensitive substring match on the booking address. */
+                search?: string;
+                /** @description Page size (max 200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Rows to skip. */
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All matching bookings, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Booking"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminAssignBooking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["BookingId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AssignGuardRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["BookingOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listAvailableGuards: {

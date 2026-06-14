@@ -118,6 +118,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/customer-profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List customer profiles (role=admin)
+         * @description Lists every customer profile, newest first (capped at 200, not paginated). Admin
+         *     only (else 403). No filter param: customer approval is not stored here (it lives in
+         *     identity; customers auto-approve on first profile insert), so every customer with a
+         *     profile row is approved by construction. Records a PDPA §30 read-audit row.
+         */
+        get: operations["adminListCustomerProfiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles/{user_id}/approve": {
         parameters: {
             query?: never;
@@ -252,6 +275,19 @@ export interface components {
             user_id: string;
             full_name?: string | null;
             address?: string | null;
+        };
+        /**
+         * @description A customer profile row in the admin directory. Adds `created_at` (signup time / the
+         *     list's order key) to the owner-facing shape. No `approval_status` — customer approval
+         *     is owned by identity, not profile.
+         */
+        CustomerProfileAdmin: {
+            /** Format: uuid */
+            user_id: string;
+            full_name?: string | null;
+            address?: string | null;
+            /** Format: date-time */
+            created_at: string;
         };
         /**
          * @description The caller's own profile, tagged by `kind`. A guard sees `MyGuardProfile` (masked
@@ -485,6 +521,30 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListCustomerProfiles: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All customer profiles, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerProfileAdmin"][];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

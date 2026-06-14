@@ -180,6 +180,23 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin customer directory (list). Admin authz is the profile service's own job —
+        // same pattern as `/admin/guard-profiles` → profile.
+        prefix: "/admin/customer-profiles",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin booking operations (cross-user list + guard-assign). The single prefix rule
+        // also routes the `/{id}/assign` subpath (suffix: None matches every subpath). Admin
+        // authz is the booking service's own job.
+        prefix: "/admin/bookings",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -580,6 +597,33 @@ mod tests {
         let (up, fwd, _, _) = proxy(resolve("/v1/admin/guard-profiles/abc/approve"));
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/guard-profiles/abc/approve");
+    }
+
+    #[test]
+    fn admin_customer_profiles_routes_to_profile() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/customer-profiles"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/admin/customer-profiles");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_bookings_routes_to_booking() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/bookings"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/admin/bookings");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_bookings_assign_subpath_routes_to_booking() {
+        // The single `/admin/bookings` prefix rule must also route the assign subpath, and it
+        // must NOT collide with the `/bookings` rule (different prefix).
+        let (up, fwd, _, _) = proxy(resolve("/v1/admin/bookings/abc/assign"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/admin/bookings/abc/assign");
     }
 
     #[test]

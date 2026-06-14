@@ -88,6 +88,53 @@ pub async fn list_bookings(
     Ok(rows)
 }
 
+/// Admin cross-user list — every booking (NO owner filter; the admin-role gate is the API
+/// layer's job), newest first, with optional `status` (validated enum) and `search` (address
+/// substring) filters and house limit/offset pagination. Diverges from [`list_bookings`]
+/// precisely by dropping the `customer_id = $1 OR guard_id = $1` scope. `$n` placeholders are
+/// built from a controlled counter; every value (incl. the ILIKE pattern) is a BOUND param —
+/// no user input is interpolated into the SQL.
+pub async fn admin_list_bookings(
+    db: &sqlx::PgPool,
+    status: Option<BookingStatus>,
+    search: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<BookingResponse>, AppError> {
+    let mut sql = format!("SELECT {BOOKING_COLUMNS} FROM booking.bookings");
+    let mut conds: Vec<String> = Vec::new();
+    let mut idx = 1;
+    if status.is_some() {
+        conds.push(format!("status = ${idx}::booking.booking_status"));
+        idx += 1;
+    }
+    if search.is_some() {
+        // Case-insensitive substring on the address; the value is bound ($idx), only the
+        // wildcards are literal.
+        conds.push(format!("address ILIKE '%' || ${idx} || '%'"));
+        idx += 1;
+    }
+    if !conds.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conds.join(" AND "));
+    }
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+        idx,
+        idx + 1
+    ));
+
+    let mut query = sqlx::query_as::<_, BookingResponse>(&sql);
+    if let Some(s) = status {
+        query = query.bind(s.as_db_str());
+    }
+    if let Some(s) = search {
+        query = query.bind(s.to_string());
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
+    Ok(rows)
+}
+
 // ----- Writes -----
 
 /// Insert a new booking in `requested` status. No event is emitted for a bare request.
@@ -867,6 +914,111 @@ mod db_tests {
         )
         .await
         .expect_err("accepted → arrived is illegal");
+        assert!(matches!(err, AppError::Conflict(_)));
+
+        // cleanup
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Admin-assign path (`POST /admin/bookings/{id}/assign`): the admin is the ACTOR but the
+    /// assigned guard is a DIFFERENT user (the request target). Asserts the booking lands in
+    /// `accepted` with `guard_id` = the TARGET (not the admin), fires `job_accepted` carrying
+    /// the target guard, and a second assign on the now-assigned booking → 409 (no reassign).
+    /// DATABASE_URL-gated (hermetic SKIP otherwise). This mirrors the exact repo call
+    /// `admin_assign_guard` makes: `transition(.., admin, is_admin=true, Accepted, Some(target))`.
+    #[tokio::test]
+    async fn admin_assign_sets_target_guard_and_enqueues_event() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4(); // the ACTOR (admin) — must NOT become the guard
+        let target_guard = Uuid::new_v4(); // the assigned guard (request body)
+        let other_guard = Uuid::new_v4(); // a second guard for the reassign attempt
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "9 Admin Assign Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 3,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+        )
+        .await
+        .expect("create");
+        assert_eq!(created.status, "requested");
+
+        let assigned = transition(
+            &pool,
+            created.id,
+            admin_id,
+            true, // is_admin
+            BookingStatus::Accepted,
+            Some(target_guard),
+            correlation,
+        )
+        .await
+        .expect("admin assign");
+        assert_eq!(assigned.status, "accepted");
+        assert_eq!(
+            assigned.guard_id,
+            Some(target_guard),
+            "the ASSIGNED guard is the request target, not the admin actor"
+        );
+
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+        )
+        .bind(created.id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(rows.len(), 1, "exactly one job_accepted enqueued on assign");
+        assert_eq!(rows[0].topic, topics::BOOKING_JOB_ACCEPTED);
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(
+            envelope.payload["guard_id"],
+            serde_json::json!(target_guard),
+            "the event carries the assigned (target) guard"
+        );
+
+        // Reassigning an already-assigned booking → 409 (ClaimUnassigned conflict). Even as
+        // admin: there is no reassign path (the in-lock check has no is_admin bypass).
+        let err = transition(
+            &pool,
+            created.id,
+            admin_id,
+            true,
+            BookingStatus::Accepted,
+            Some(other_guard),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect_err("re-assigning an assigned booking is a conflict");
         assert!(matches!(err, AppError::Conflict(_)));
 
         // cleanup

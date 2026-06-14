@@ -148,6 +148,23 @@ pub struct OpenJobsQuery {
     pub offset: Option<i64>,
 }
 
+/// Query params for `GET /admin/bookings` (admin cross-user list). `status` is validated
+/// against `BookingStatus` (unknown → 400); `search` is a case-insensitive substring match on
+/// the address. House limit/offset pagination.
+#[derive(Debug, Deserialize)]
+pub struct AdminListBookingsQuery {
+    pub status: Option<String>,
+    pub search: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// Body for `POST /admin/bookings/{id}/assign` — the admin's chosen guard for the booking.
+#[derive(Debug, Deserialize)]
+pub struct AssignGuardRequest {
+    pub guard_id: Uuid,
+}
+
 /// One entry in the `/available-guards` discovery list: an approved guard (from profile's
 /// catalog) enriched with their live rating summary (from rating). `average_rating` is `None`
 /// when the guard has no visible reviews (or rating was unreachable — best-effort).

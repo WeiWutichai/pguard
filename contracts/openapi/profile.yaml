@@ -185,6 +185,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/customer-profiles:
+    get:
+      tags: [Admin]
+      summary: List customer profiles (role=admin)
+      description: |
+        Lists every customer profile, newest first (capped at 200, not paginated). Admin
+        only (else 403). No filter param: customer approval is not stored here (it lives in
+        identity; customers auto-approve on first profile insert), so every customer with a
+        profile row is approved by construction. Records a PDPA §30 read-audit row.
+      operationId: adminListCustomerProfiles
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: All customer profiles, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/CustomerProfileAdmin' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/guard-profiles/{user_id}/approve:
     post:
       tags: [Admin]
@@ -407,6 +434,19 @@ components:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
         address: { type: string, nullable: true }
+
+    CustomerProfileAdmin:
+      type: object
+      description: |
+        A customer profile row in the admin directory. Adds `created_at` (signup time / the
+        list's order key) to the owner-facing shape. No `approval_status` — customer approval
+        is owned by identity, not profile.
+      required: [user_id, created_at]
+      properties:
+        user_id: { type: string, format: uuid }
+        full_name: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
 
     MyProfile:
       oneOf:
