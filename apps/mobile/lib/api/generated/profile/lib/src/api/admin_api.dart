@@ -9,6 +9,7 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
+import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
@@ -94,6 +95,85 @@ class AdminApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// List customer profiles (role&#x3D;admin)
+  /// Lists every customer profile, newest first (capped at 200, not paginated). Admin only (else 403). No filter param: customer approval is not stored here (it lives in identity; customers auto-approve on first profile insert), so every customer with a profile row is approved by construction. Records a PDPA §30 read-audit row. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminListCustomerProfiles200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminListCustomerProfiles200Response>> adminListCustomerProfiles({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/customer-profiles';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminListCustomerProfiles200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminListCustomerProfiles200Response),
+      ) as AdminListCustomerProfiles200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminListCustomerProfiles200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

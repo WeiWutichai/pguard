@@ -20,9 +20,9 @@ use crate::discovery_client::{GuardCatalog, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
-    AvailableGuard, BookingResponse, CreateBookingRequest, InternalBooking,
-    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, ProgressReportResponse,
-    ReviewCompletionRequest,
+    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse,
+    CreateBookingRequest, InternalBooking, ListProgressReportsQuery, NewProgressReport,
+    OpenJobsQuery, ProgressReportResponse, ReviewCompletionRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -324,6 +324,69 @@ pub async fn list_open_bookings<S: BookingDeps>(
     // Discovery is a pure list read → replica (C5.3), like list_bookings.
     let items = repo::list_open_bookings(state.db_read(), geo, limit, offset).await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+/// GET /admin/bookings — admin cross-user booking list (optional `status`/`search` filters,
+/// paginated). Admin-only. Unlike `GET /bookings` (the caller's participant list) this drops
+/// the owner scope entirely. List read → replica (C5.3). NOTE: booking has no PDPA read-audit
+/// table yet — the addresses exposed here are lower-sensitivity than profile's bank numbers;
+/// an equivalent §30 audit is a tracked follow-up (needs a booking access_audit migration).
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id))]
+pub async fn admin_list_bookings<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(query): Query<AdminListBookingsQuery>,
+) -> Result<Json<ApiResponse<Vec<BookingResponse>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    // Validate the status filter against the enum (unknown → 400, never a raw enum cast 500).
+    let status = match query.status.as_deref() {
+        None => None,
+        Some(s) => Some(
+            s.parse::<BookingStatus>()
+                .map_err(|_| AppError::BadRequest("invalid status filter".to_string()))?,
+        ),
+    };
+    let (limit, offset) = page(query.limit, query.offset);
+    let items = repo::admin_list_bookings(
+        state.db_read(),
+        status,
+        query.search.as_deref(),
+        limit,
+        offset,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(items)))
+}
+
+/// POST /admin/bookings/{id}/assign — an admin assigns a guard to an UNASSIGNED `requested`
+/// booking. It lands in `accepted` with `guard_id` set (the same end-state as a guard
+/// self-accept), firing `pguard.events.booking.job_accepted` atomically via the outbox (the
+/// notification consumer routes it to the guard). Admin-only. A booking that already has a
+/// guard returns 409 (the repo's ClaimUnassigned conflict) — reassignment is out of scope (a
+/// separate transition class + a displaced-guard event). NOTE: the target `guard_id` is NOT
+/// validated to be a real approved guard here — the web-admin sends ids from the admin guard
+/// list; a point-lookup validation is a follow-up (it needs a profile `/internal/guards/{id}`
+/// endpoint — the existing catalog list is capped at 100, so membership checks are unsafe).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %id))]
+pub async fn admin_assign_guard<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<AssignGuardRequest>,
+) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    // Admin is the ACTOR, but the assigned guard is the request's target (not the actor): the
+    // Requested→Accepted (ClaimUnassigned) transition binds `assign_guard` independently and
+    // rejects an already-assigned booking with 409.
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        true,
+        BookingStatus::Accepted,
+        Some(req.guard_id),
+    )
+    .await
 }
 
 /// POST /bookings/{id}/progress-reports — the ASSIGNED guard's hourly check-in
@@ -759,6 +822,11 @@ mod tests {
                 "/bookings/{id}/progress-reports",
                 post(create_progress_report::<TestDeps>).get(list_progress_reports::<TestDeps>),
             )
+            .route("/admin/bookings", get(admin_list_bookings::<TestDeps>))
+            .route(
+                "/admin/bookings/{id}/assign",
+                post(admin_assign_guard::<TestDeps>),
+            )
             .with_state(deps)
     }
 
@@ -954,6 +1022,55 @@ mod tests {
         let body = Body::from(serde_json::json!({ "action": "approve" }).to_string());
         let status = lifecycle_req(app, "PUT", "review-completion", "guard", body).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_list_bookings_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read the cross-user booking list (other customers' addresses).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/bookings")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_assign_guard_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not self-assign via the admin path (valid body so execution reaches the
+        // handler's admin gate; the 403 proves it never touched the DB).
+        let id = Uuid::new_v4();
+        let body = Body::from(serde_json::json!({ "guard_id": Uuid::new_v4() }).to_string());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/admin/bookings/{id}/assign"))
+                    .header("authorization", format!("Bearer {}", user_token("guard")))
+                    .header("content-type", "application/json")
+                    .body(body)
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

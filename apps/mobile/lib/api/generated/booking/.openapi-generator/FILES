@@ -4,6 +4,7 @@ README.md
 analysis_options.yaml
 lib/pguard_booking_api.dart
 lib/src/api.dart
+lib/src/api/admin_api.dart
 lib/src/api/bookings_api.dart
 lib/src/api/internal_api.dart
 lib/src/api_util.dart
@@ -14,6 +15,7 @@ lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
 lib/src/model/api_response_envelope.dart
+lib/src/model/assign_guard_request.dart
 lib/src/model/available_guard.dart
 lib/src/model/booking.dart
 lib/src/model/booking_status.dart

@@ -21,8 +21,8 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
-    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RejectRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse, InternalGuard,
+    MyProfile, RejectRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -305,6 +305,33 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(profiles)))
 }
 
+// ----- GET /admin/customer-profiles — admin list (cross-user) -----
+
+/// List every customer profile for the admin surface. Admin-only (the edge proves identity,
+/// not role — authz is this service's job). No filter param: customer approval is not stored
+/// in profile (it lives in identity; customers auto-approve on first profile insert), so a
+/// `?approval_status` filter would be meaningless against this table — see the guard list for
+/// the filtered variant. Mirrors [`admin_list_guard_profiles`]: list read on the replica
+/// (C5.3), PDPA §30 read-audit WRITE on the primary. No masking — customer profiles hold no
+/// bank field (`full_name`/`address` are the only PII, returned as-is like the owner read).
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_list_customer_profiles<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<CustomerProfileAdminResponse>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let profiles = repo::list_customer_profiles(state.db_read()).await?;
+    // PDPA §30: record this admin read of personal data (who accessed what). No filter to log.
+    repo::record_access(
+        state.db(),
+        user.user_id,
+        "admin_list_customer_profiles",
+        None,
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(profiles)))
+}
+
 // ----- GET /internal/guards (service-to-service catalog) -----
 
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
@@ -459,6 +486,10 @@ mod tests {
                     get(admin_list_guard_profiles::<TestDeps>),
                 )
                 .route(
+                    "/admin/customer-profiles",
+                    get(admin_list_customer_profiles::<TestDeps>),
+                )
+                .route(
                     "/admin/guard-profiles/{user_id}/approve",
                     post(admin_approve_guard::<TestDeps>),
                 )
@@ -590,6 +621,31 @@ mod tests {
             res.status(),
             StatusCode::FORBIDDEN,
             "a guard must not list the admin onboarding queue"
+        );
+    }
+
+    #[tokio::test]
+    async fn admin_list_customers_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer (not admin) must not list every customer's PII (name/address).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/customer-profiles")
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer must not list the admin customer directory"
         );
     }
 

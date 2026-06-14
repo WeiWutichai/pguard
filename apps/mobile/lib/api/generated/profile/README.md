@@ -91,6 +91,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminApproveGuard**](doc/AdminApi.md#adminapproveguard) | **POST** /admin/guard-profiles/{user_id}/approve | Approve a pending guard profile (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminListCustomerProfiles**](doc/AdminApi.md#adminlistcustomerprofiles) | **GET** /admin/customer-profiles | List customer profiles (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListGuardProfiles**](doc/AdminApi.md#adminlistguardprofiles) | **GET** /admin/guard-profiles | List guard profiles for onboarding review (role&#x3D;admin; FULL bank details)
 [*AdminApi*](doc/AdminApi.md) | [**adminRejectGuard**](doc/AdminApi.md#adminrejectguard) | **POST** /admin/guard-profiles/{user_id}/reject | Reject a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
@@ -102,10 +103,12 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminListCustomerProfiles200Response](doc/AdminListCustomerProfiles200Response.md)
  - [AdminListGuardProfiles200Response](doc/AdminListGuardProfiles200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [ApprovalStatus](doc/ApprovalStatus.md)
  - [CustomerProfile](doc/CustomerProfile.md)
+ - [CustomerProfileAdmin](doc/CustomerProfileAdmin.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetMyProfile200Response](doc/GetMyProfile200Response.md)

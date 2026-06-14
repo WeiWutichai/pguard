@@ -87,6 +87,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::admin_list_guard_profiles::<AppState>),
         )
         .route(
+            "/admin/customer-profiles",
+            get(api::admin_list_customer_profiles::<AppState>),
+        )
+        .route(
             "/admin/guard-profiles/{user_id}/approve",
             post(api::admin_approve_guard::<AppState>),
         )

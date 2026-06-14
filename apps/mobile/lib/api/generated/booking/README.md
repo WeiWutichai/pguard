@@ -60,14 +60,15 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_booking_api/pguard_booking_api.dart';
 
 
-final api = PguardBookingApi().getBookingsApi();
+final api = PguardBookingApi().getAdminApi();
 final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
+final AssignGuardRequest assignGuardRequest = ; // AssignGuardRequest | 
 
 try {
-    final response = await api.acceptBooking(id);
+    final response = await api.adminAssignBooking(id, assignGuardRequest);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling BookingsApi->acceptBooking: $e\n");
+    print("Exception when calling AdminApi->adminAssignBooking: $e\n");
 }
 
 ```
@@ -78,6 +79,8 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminAssignBooking**](doc/AdminApi.md#adminassignbooking) | **POST** /admin/bookings/{id}/assign | Admin assigns a guard to an unassigned booking (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminListBookings**](doc/AdminApi.md#adminlistbookings) | **GET** /admin/bookings | List ALL bookings cross-user (role&#x3D;admin)
 [*BookingsApi*](doc/BookingsApi.md) | [**acceptBooking**](doc/BookingsApi.md#acceptbooking) | **POST** /bookings/{id}/accept | Guard accepts a request
 [*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived
 [*BookingsApi*](doc/BookingsApi.md) | [**cancelBooking**](doc/BookingsApi.md#cancelbooking) | **PUT** /bookings/{id}/cancel | Customer/admin cancels a pre-arrival booking
@@ -99,6 +102,7 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [AssignGuardRequest](doc/AssignGuardRequest.md)
  - [AvailableGuard](doc/AvailableGuard.md)
  - [Booking](doc/Booking.md)
  - [BookingStatus](doc/BookingStatus.md)

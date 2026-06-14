@@ -1,0 +1,158 @@
+//
+// AUTO-GENERATED FILE, DO NOT MODIFY!
+//
+
+// ignore_for_file: unused_element
+import 'package:built_value/built_value.dart';
+import 'package:built_value/serializer.dart';
+
+part 'customer_profile_admin.g.dart';
+
+/// A customer profile row in the admin directory. Adds `created_at` (signup time / the list's order key) to the owner-facing shape. No `approval_status` — customer approval is owned by identity, not profile. 
+///
+/// Properties:
+/// * [userId] 
+/// * [fullName] 
+/// * [address] 
+/// * [createdAt] 
+@BuiltValue()
+abstract class CustomerProfileAdmin implements Built<CustomerProfileAdmin, CustomerProfileAdminBuilder> {
+  @BuiltValueField(wireName: r'user_id')
+  String get userId;
+
+  @BuiltValueField(wireName: r'full_name')
+  String? get fullName;
+
+  @BuiltValueField(wireName: r'address')
+  String? get address;
+
+  @BuiltValueField(wireName: r'created_at')
+  DateTime get createdAt;
+
+  CustomerProfileAdmin._();
+
+  factory CustomerProfileAdmin([void updates(CustomerProfileAdminBuilder b)]) = _$CustomerProfileAdmin;
+
+  @BuiltValueHook(initializeBuilder: true)
+  static void _defaults(CustomerProfileAdminBuilder b) => b;
+
+  @BuiltValueSerializer(custom: true)
+  static Serializer<CustomerProfileAdmin> get serializer => _$CustomerProfileAdminSerializer();
+}
+
+class _$CustomerProfileAdminSerializer implements PrimitiveSerializer<CustomerProfileAdmin> {
+  @override
+  final Iterable<Type> types = const [CustomerProfileAdmin, _$CustomerProfileAdmin];
+
+  @override
+  final String wireName = r'CustomerProfileAdmin';
+
+  Iterable<Object?> _serializeProperties(
+    Serializers serializers,
+    CustomerProfileAdmin object, {
+    FullType specifiedType = FullType.unspecified,
+  }) sync* {
+    yield r'user_id';
+    yield serializers.serialize(
+      object.userId,
+      specifiedType: const FullType(String),
+    );
+    if (object.fullName != null) {
+      yield r'full_name';
+      yield serializers.serialize(
+        object.fullName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.address != null) {
+      yield r'address';
+      yield serializers.serialize(
+        object.address,
+        specifiedType: const FullType(String),
+      );
+    }
+    yield r'created_at';
+    yield serializers.serialize(
+      object.createdAt,
+      specifiedType: const FullType(DateTime),
+    );
+  }
+
+  @override
+  Object serialize(
+    Serializers serializers,
+    CustomerProfileAdmin object, {
+    FullType specifiedType = FullType.unspecified,
+  }) {
+    return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
+  }
+
+  void _deserializeProperties(
+    Serializers serializers,
+    Object serialized, {
+    FullType specifiedType = FullType.unspecified,
+    required List<Object?> serializedList,
+    required CustomerProfileAdminBuilder result,
+    required List<Object?> unhandled,
+  }) {
+    for (var i = 0; i < serializedList.length; i += 2) {
+      final key = serializedList[i] as String;
+      final value = serializedList[i + 1];
+      switch (key) {
+        case r'user_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.userId = valueDes;
+          break;
+        case r'full_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.fullName = valueDes;
+          break;
+        case r'address':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.address = valueDes;
+          break;
+        case r'created_at':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(DateTime),
+          ) as DateTime;
+          result.createdAt = valueDes;
+          break;
+        default:
+          unhandled.add(key);
+          unhandled.add(value);
+          break;
+      }
+    }
+  }
+
+  @override
+  CustomerProfileAdmin deserialize(
+    Serializers serializers,
+    Object serialized, {
+    FullType specifiedType = FullType.unspecified,
+  }) {
+    final result = CustomerProfileAdminBuilder();
+    final serializedList = (serialized as Iterable<Object?>).toList();
+    final unhandled = <Object?>[];
+    _deserializeProperties(
+      serializers,
+      serialized,
+      specifiedType: specifiedType,
+      serializedList: serializedList,
+      unhandled: unhandled,
+      result: result,
+    );
+    return result.build();
+  }
+}
+

@@ -74,6 +74,76 @@ paths:
                         items: { $ref: '#/components/schemas/Booking' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /admin/bookings:
+    get:
+      tags: [Admin]
+      summary: List ALL bookings cross-user (role=admin)
+      description: |
+        The admin operations list — every booking (NOT owner-scoped, unlike `GET /bookings`),
+        newest first, with optional `status` and `search` (address substring) filters and
+        limit/offset pagination. Admin only (else 403). The gateway routes `/admin/bookings`
+        (and its subpaths) to the booking service via a dedicated prefix rule.
+      operationId: adminListBookings
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by lifecycle status. An unrecognized value returns 400.
+          schema: { $ref: '#/components/schemas/BookingStatus' }
+        - name: search
+          in: query
+          required: false
+          description: Case-insensitive substring match on the booking address.
+          schema: { type: string }
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Offset'
+      responses:
+        '200':
+          description: All matching bookings, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Booking' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/bookings/{id}/assign:
+    post:
+      tags: [Admin]
+      summary: Admin assigns a guard to an unassigned booking (role=admin)
+      description: |
+        An admin assigns a guard to a `requested` booking with no guard yet → it lands in
+        `accepted` with `guard_id` set (the same end-state as a guard self-accept), enqueuing
+        `pguard.events.booking.job_accepted` `{ booking_id, customer_id, guard_id }` in the
+        same transaction (transactional outbox). Admin only (else 403). Returns 409 if the
+        booking already has an assigned guard (reassignment is out of scope) or the booking is
+        not in a state from which assignment is legal. The target `guard_id` is not validated
+        to be an approved guard here — send ids from the admin guard list.
+      operationId: adminAssignBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AssignGuardRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /available-guards:
     get:
       tags: [Bookings]
@@ -539,6 +609,15 @@ components:
         - pending_completion
         - completed
         - cancelled
+
+    AssignGuardRequest:
+      type: object
+      required: [guard_id]
+      properties:
+        guard_id:
+          type: string
+          format: uuid
+          description: The guard the admin assigns to this booking.
 
     ReviewCompletionRequest:
       type: object

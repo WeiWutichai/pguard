@@ -10,10 +10,12 @@ export 'package:pguard_booking_api/src/auth/oauth.dart';
 export 'package:pguard_booking_api/src/serializers.dart';
 export 'package:pguard_booking_api/src/model/date.dart';
 
+export 'package:pguard_booking_api/src/api/admin_api.dart';
 export 'package:pguard_booking_api/src/api/bookings_api.dart';
 export 'package:pguard_booking_api/src/api/internal_api.dart';
 
 export 'package:pguard_booking_api/src/model/api_response_envelope.dart';
+export 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 export 'package:pguard_booking_api/src/model/available_guard.dart';
 export 'package:pguard_booking_api/src/model/booking.dart';
 export 'package:pguard_booking_api/src/model/booking_status.dart';

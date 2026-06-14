@@ -148,6 +148,14 @@ async fn main() -> anyhow::Result<()> {
                 .get(api::list_progress_reports::<AppState>)
                 .layer(DefaultBodyLimit::max(api::MAX_CHECK_IN_BODY_BYTES)),
         )
+        // Admin cross-user surfaces (admin-role gated in the handler). The gateway needs a
+        // NEW `/admin/bookings` prefix rule → Booking (no generic /admin/* catch-all); the
+        // single prefix rule also routes the `/{id}/assign` subpath.
+        .route("/admin/bookings", get(api::admin_list_bookings::<AppState>))
+        .route(
+            "/admin/bookings/{id}/assign",
+            post(api::admin_assign_guard::<AppState>),
+        )
         // Discovery: approved guard catalog (profile) + rating summaries (rating).
         .route("/available-guards", get(api::available_guards::<AppState>))
         .route(

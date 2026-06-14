@@ -4,7 +4,7 @@
 //! admin logic in the handler — the type itself carries no "is this masked?" flag, so the
 //! masking decision lives in exactly one place (the handler), never duplicated.
 
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use shared::models::ApprovalStatus;
 use uuid::Uuid;
@@ -76,6 +76,20 @@ pub struct CustomerProfileResponse {
     pub user_id: Uuid,
     pub full_name: Option<String>,
     pub address: Option<String>,
+}
+
+/// A customer profile row as returned to an ADMIN list (`GET /admin/customer-profiles`).
+/// A SEPARATE shape from [`CustomerProfileResponse`] so the owner-facing read stays
+/// additive-only — this one adds `created_at` (the signup time the admin UI shows + the
+/// list's order-by key). No `approval_status`: customer approval lives in identity, not
+/// profile (customers auto-approve on first profile insert), and profile must not read
+/// across the service boundary — every customer with a profile row is approved by construction.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CustomerProfileAdminResponse {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub address: Option<String>,
+    pub created_at: DateTime<Utc>,
 }
 
 /// Either profile shape, tagged so `GET /profile/me` can return whichever the caller has

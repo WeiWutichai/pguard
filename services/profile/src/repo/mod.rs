@@ -22,8 +22,8 @@ use shared::models::ApprovalStatus;
 use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
-    CustomerProfileResponse, GuardProfileResponse, InternalGuard, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest,
+    CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse, InternalGuard,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Raw guard-profile row (approval_status read as text, parsed below). `account_number` is
@@ -436,6 +436,25 @@ pub async fn get_customer_profile(
             address,
         }),
     )
+}
+
+/// List ALL customer profiles for the admin surface (`GET /admin/customer-profiles`).
+/// Cross-user (no owner filter) — the admin-role gate is the API layer's job. Newest first,
+/// capped at 200 (NOT paginated — same documented limitation as the guard admin list). No
+/// `approval_status` filter: that column does not exist on `profile.customer_profiles`
+/// (customer approval lives in identity), and profile must not read across the boundary.
+pub async fn list_customer_profiles(
+    db: &PgPool,
+) -> Result<Vec<CustomerProfileAdminResponse>, AppError> {
+    // Columns match `CustomerProfileAdminResponse` field-for-field → decode via `FromRow`
+    // (no intermediate tuple). No transformation (unlike the guard list's mask step).
+    let rows = sqlx::query_as::<_, CustomerProfileAdminResponse>(
+        "SELECT user_id, full_name, address, created_at FROM profile.customer_profiles \
+         ORDER BY created_at DESC LIMIT 200",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// Record an admin read of personal data (PDPA §30 — who accessed what). This is a WRITE, so

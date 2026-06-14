@@ -14,10 +14,12 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_profile_api/src/date_serializer.dart';
 import 'package:pguard_profile_api/src/model/date.dart';
 
+import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
+import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -36,10 +38,12 @@ import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminListCustomerProfiles200Response,
   AdminListGuardProfiles200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
   CustomerProfile,$CustomerProfile,
+  CustomerProfileAdmin,
   ErrorBody,
   ErrorDetail,
   GetMyProfile200Response,
