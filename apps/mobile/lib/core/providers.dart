@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import 'calling/call_engine.dart';
 import 'calling/webrtc_call_engine.dart';
+import 'controllers/biometric_service.dart';
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/location_service.dart';
@@ -41,6 +42,14 @@ PguardApi pguardApi(PguardApiRef ref) => ApiClient(
 @Riverpod(keepAlive: true)
 PinService pinService(PinServiceRef ref) =>
     PinService(store: ref.watch(appStoreProvider));
+
+/// Local biometric gate (fingerprint/Face ID opt-in over the PIN). Production wraps the real
+/// `local_auth` plugin; tests override this provider with a fake authenticator (no channels).
+@Riverpod(keepAlive: true)
+BiometricService biometricService(BiometricServiceRef ref) => BiometricService(
+      store: ref.watch(appStoreProvider),
+      authenticator: LocalAuthAuthenticator(),
+    );
 
 /// Location/geocoding for the booking map picker. Offline-safe by default; tests (and a future
 /// real geocoder) override this provider.

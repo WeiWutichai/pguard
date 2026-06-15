@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
 import '../core/models/chat.dart';
+import '../features/auth/biometric_enroll_screen.dart';
 import '../features/auth/captcha_screen.dart';
 import '../features/auth/otp_screen.dart';
 import '../features/chat/chat_list_screen.dart';
@@ -86,6 +87,10 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(path: '/auth/captcha', builder: (_, __) => const CaptchaScreen()),
       GoRoute(path: '/auth/otp', builder: (_, __) => const OtpScreen()),
       GoRoute(path: '/auth/pin', builder: (_, __) => const PinEntryScreen()),
+      // Optional biometric enrolment, inserted between PIN-confirm and role-select (design ⑤).
+      GoRoute(
+          path: '/auth/biometric',
+          builder: (_, __) => const BiometricEnrollScreen()),
       // Registration sub-flow (role-at-register): role → profile form → pending.
       GoRoute(
           path: '/auth/role', builder: (_, __) => const RoleSelectionScreen()),

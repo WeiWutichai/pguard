@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/registration_controller.dart';
+import '../../core/providers.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/pg_auth_back_bar.dart';
 import '../../widgets/pin_dots.dart';
@@ -68,8 +69,11 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
           phoneVerifiedToken: auth.phoneVerifiedToken,
           pin: _pin,
         );
+    // Offer biometric enrolment (design ⑤) only when the device can actually do it; otherwise
+    // skip the dead screen and go straight to role-select.
+    final canBio = await ref.read(biometricServiceProvider).isAvailable();
     if (!mounted) return;
-    context.push('/auth/role');
+    context.push(canBio ? '/auth/biometric' : '/auth/role');
     // Clear so returning to this screen starts fresh.
     setState(() {
       _pin = '';

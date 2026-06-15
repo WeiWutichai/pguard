@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:pguard_mobile/core/calling/call_engine.dart';
+import 'package:pguard_mobile/core/controllers/biometric_service.dart';
 import 'package:pguard_mobile/core/location/location_service.dart';
 import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
 import 'package:pguard_mobile/core/media/chat_media_picker.dart';
@@ -34,6 +35,7 @@ class InMemoryStore implements AppStore {
   String? pinSalt;
   int attempts = 0;
   int? lockUntil;
+  bool biometricEnabled = false;
   bool wiped = false;
 
   @override
@@ -114,6 +116,11 @@ class InMemoryStore implements AppStore {
   Future<void> writePinLockUntilMs(int? epochMs) async => lockUntil = epochMs;
 
   @override
+  Future<bool> isBiometricEnabled() async => biometricEnabled;
+  @override
+  Future<void> setBiometricEnabled(bool value) async => biometricEnabled = value;
+
+  @override
   Future<void> wipe() async {
     access = null;
     refresh = null;
@@ -122,6 +129,7 @@ class InMemoryStore implements AppStore {
     pinSalt = null;
     attempts = 0;
     lockUntil = null;
+    biometricEnabled = false;
     wiped = true;
   }
 }
@@ -496,6 +504,33 @@ class FakeCallSignalFeed implements CallSignalFeed {
   /// Convenience: emit a relay frame for [callId] carrying [signal].
   void emitSignal(String callId, CallSignal signal, {String? from}) =>
       emit(CallSignalFrame(callId: callId, signal: signal, from: from));
+}
+
+/// Fake [BiometricAuthenticator] — drives capability + the prompt result with no platform
+/// channels, and records how many times the OS prompt was invoked (to assert auto-prompt).
+class FakeBiometricAuthenticator implements BiometricAuthenticator {
+  FakeBiometricAuthenticator({
+    this.deviceSupported = true,
+    this.canCheck = true,
+    this.authResult = true,
+  });
+
+  bool deviceSupported;
+  bool canCheck;
+  bool authResult;
+  int authCalls = 0;
+  String? lastReason;
+
+  @override
+  Future<bool> isDeviceSupported() async => deviceSupported;
+  @override
+  Future<bool> canCheckBiometrics() async => canCheck;
+  @override
+  Future<bool> authenticate({required String localizedReason}) async {
+    authCalls++;
+    lastReason = localizedReason;
+    return authResult;
+  }
 }
 
 /// Build an UNSIGNED-but-well-formed JWT with the given claims (for client `exp`/`role`
