@@ -80,7 +80,11 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminAssignBooking**](doc/AdminApi.md#adminassignbooking) | **POST** /admin/bookings/{id}/assign | Admin assigns a guard to an unassigned booking (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminCreateService**](doc/AdminApi.md#admincreateservice) | **POST** /admin/pricing/services | Create a catalog service (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminDeleteService**](doc/AdminApi.md#admindeleteservice) | **DELETE** /admin/pricing/services/{id} | Deactivate (soft-delete) a catalog service (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListBookings**](doc/AdminApi.md#adminlistbookings) | **GET** /admin/bookings | List ALL bookings cross-user (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminListServices**](doc/AdminApi.md#adminlistservices) | **GET** /admin/pricing/services | List the service catalog (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminUpdateService**](doc/AdminApi.md#adminupdateservice) | **PUT** /admin/pricing/services/{id} | Update a catalog service (role&#x3D;admin)
 [*BookingsApi*](doc/BookingsApi.md) | [**acceptBooking**](doc/BookingsApi.md#acceptbooking) | **POST** /bookings/{id}/accept | Guard accepts a request
 [*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived
 [*BookingsApi*](doc/BookingsApi.md) | [**cancelBooking**](doc/BookingsApi.md#cancelbooking) | **PUT** /bookings/{id}/cancel | Customer/admin cancels a pre-arrival booking
@@ -101,6 +105,7 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminListServices200Response](doc/AdminListServices200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [AssignGuardRequest](doc/AssignGuardRequest.md)
  - [AvailableGuard](doc/AvailableGuard.md)
@@ -108,16 +113,20 @@ Class | Method | HTTP request | Description
  - [BookingStatus](doc/BookingStatus.md)
  - [CreateBookingRequest](doc/CreateBookingRequest.md)
  - [CreateProgressReport200Response](doc/CreateProgressReport200Response.md)
+ - [CreateServiceRequest](doc/CreateServiceRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetInternalBooking200Response](doc/GetInternalBooking200Response.md)
  - [InlineObject](doc/InlineObject.md)
+ - [InlineObject1](doc/InlineObject1.md)
  - [InternalBooking](doc/InternalBooking.md)
  - [ListAvailableGuards200Response](doc/ListAvailableGuards200Response.md)
  - [ListBookings200Response](doc/ListBookings200Response.md)
  - [ListProgressReports200Response](doc/ListProgressReports200Response.md)
  - [ProgressReport](doc/ProgressReport.md)
  - [ReviewCompletionRequest](doc/ReviewCompletionRequest.md)
+ - [ServiceCatalogItem](doc/ServiceCatalogItem.md)
+ - [UpdateServiceRequest](doc/UpdateServiceRequest.md)
 
 
 ## Documentation For Authorization

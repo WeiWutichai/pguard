@@ -204,6 +204,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin service-catalog (pricing) CRUD — hosted by booking. The single prefix also
+        // routes the `/services/{id}` subpath. Admin authz is the booking service's job.
+        prefix: "/admin/pricing",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -622,6 +630,19 @@ mod tests {
         assert_eq!(fwd, "/admin/bookings");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_pricing_routes_to_booking() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/pricing/services"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/admin/pricing/services");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+        // subpath (/{id}) routes via the same prefix.
+        let (up2, fwd2, _, _) = proxy(resolve("/v1/admin/pricing/services/abc"));
+        assert_eq!(up2, Upstream::Booking);
+        assert_eq!(fwd2, "/admin/pricing/services/abc");
     }
 
     #[test]
