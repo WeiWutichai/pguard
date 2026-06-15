@@ -210,19 +210,28 @@ class RegistrationController extends _$RegistrationController {
   }
 
   /// `POST /profile/customer` with the `profile_token`. Address is required (the screen validates
-  /// length); company/email don't exist in the v2 contract and are omitted.
+  /// length); full_name/company_name/email/contact_phone are optional v1-parity fields.
   Future<bool> submitCustomerProfile({
     String? fullName,
     required String address,
+    String? companyName,
+    String? email,
+    String? contactPhone,
   }) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final name = fullName?.trim();
     final addr = address.trim();
+    final company = companyName?.trim();
+    final mail = email?.trim();
+    final phone = contactPhone?.trim();
     return _submitProfile(
       '/profile/customer',
       {
         if (name != null && name.isNotEmpty) 'full_name': name,
         'address': addr,
+        if (company != null && company.isNotEmpty) 'company_name': company,
+        if (mail != null && mail.isNotEmpty) 'email': mail,
+        if (phone != null && phone.isNotEmpty) 'contact_phone': phone,
       },
       summary: RegistrationSummary(
         role: RegistrationRole.customer,
@@ -230,6 +239,12 @@ class RegistrationController extends _$RegistrationController {
           if (name != null && name.isNotEmpty)
             (label: isThai ? 'ชื่อ' : 'Name', value: name),
           (label: isThai ? 'ที่อยู่' : 'Address', value: addr),
+          if (company != null && company.isNotEmpty)
+            (label: isThai ? 'บริษัท' : 'Company', value: company),
+          if (mail != null && mail.isNotEmpty)
+            (label: isThai ? 'อีเมล' : 'Email', value: mail),
+          if (phone != null && phone.isNotEmpty)
+            (label: isThai ? 'เบอร์ติดต่อ' : 'Phone', value: phone),
         ],
       ),
     );
@@ -240,6 +255,7 @@ class RegistrationController extends _$RegistrationController {
   /// document images — captured + validated client-side and held for the future upload endpoint
   /// (v2 `profile.yaml` has no document-upload route yet; see [GuardDocKind]).
   Future<bool> submitGuardProfile({
+    String? fullName,
     String? gender,
     String? dateOfBirth,
     int? yearsOfExperience,
@@ -247,16 +263,26 @@ class RegistrationController extends _$RegistrationController {
     String? bankName,
     required String accountNumber,
     String? accountName,
+    String? address,
+    String? emergencyContactName,
+    String? emergencyContactPhone,
+    String? emergencyContactRelationship,
     Map<GuardDocKind, String> docPaths = const {},
   }) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final digits = accountNumber.replaceAll(RegExp(r'\D'), '');
+    final name = fullName?.trim();
     final bank = bankName?.trim();
     final acctName = accountName?.trim();
     final workplace = previousWorkplace?.trim();
+    final addr = address?.trim();
+    final ecName = emergencyContactName?.trim();
+    final ecPhone = emergencyContactPhone?.trim();
+    final ecRel = emergencyContactRelationship?.trim();
     return _submitProfile(
       '/profile/guard',
       {
+        if (name != null && name.isNotEmpty) 'full_name': name,
         if (gender != null && gender.isNotEmpty) 'gender': gender,
         if (dateOfBirth != null && dateOfBirth.isNotEmpty)
           'date_of_birth': dateOfBirth,
@@ -267,10 +293,19 @@ class RegistrationController extends _$RegistrationController {
         'account_number':
             digits, // FULL digits to the backend (server re-masks on reads)
         if (acctName != null && acctName.isNotEmpty) 'account_name': acctName,
+        if (addr != null && addr.isNotEmpty) 'address': addr,
+        if (ecName != null && ecName.isNotEmpty)
+          'emergency_contact_name': ecName,
+        if (ecPhone != null && ecPhone.isNotEmpty)
+          'emergency_contact_phone': ecPhone,
+        if (ecRel != null && ecRel.isNotEmpty)
+          'emergency_contact_relationship': ecRel,
       },
       summary: RegistrationSummary(
         role: RegistrationRole.guard,
         lines: [
+          if (name != null && name.isNotEmpty)
+            (label: isThai ? 'ชื่อ' : 'Name', value: name),
           if (gender != null && gender.isNotEmpty)
             (label: isThai ? 'เพศ' : 'Gender', value: gender),
           if (dateOfBirth != null && dateOfBirth.isNotEmpty)
@@ -287,6 +322,10 @@ class RegistrationController extends _$RegistrationController {
             label: isThai ? 'เลขบัญชี' : 'Account',
             value: maskAccountNumber(digits)
           ),
+          if (addr != null && addr.isNotEmpty)
+            (label: isThai ? 'ที่อยู่' : 'Address', value: addr),
+          if (ecName != null && ecName.isNotEmpty)
+            (label: isThai ? 'ติดต่อฉุกเฉิน' : 'Emergency', value: ecName),
           if (docPaths.isNotEmpty)
             (
               label: isThai ? 'เอกสาร' : 'Documents',

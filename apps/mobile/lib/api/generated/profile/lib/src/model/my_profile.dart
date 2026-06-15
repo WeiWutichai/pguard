@@ -19,6 +19,7 @@ part 'my_profile.g.dart';
 /// Properties:
 /// * [kind] 
 /// * [userId] 
+/// * [fullName] 
 /// * [gender] 
 /// * [dateOfBirth] 
 /// * [yearsOfExperience] 
@@ -26,9 +27,14 @@ part 'my_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
-/// * [approvalStatus] 
-/// * [fullName] 
 /// * [address] 
+/// * [emergencyContactName] 
+/// * [emergencyContactPhone] 
+/// * [emergencyContactRelationship] 
+/// * [approvalStatus] 
+/// * [companyName] 
+/// * [email] 
+/// * [contactPhone] 
 @BuiltValue()
 abstract class MyProfile implements Built<MyProfile, MyProfileBuilder> {
   /// One Of [MyCustomerProfile], [MyGuardProfile]

@@ -146,6 +146,7 @@ pub async fn recipient_ids(db: &PgPool, audience: &str, limit: i64) -> Result<Ve
 /// the UNMASKED stored value — masking is the handler's job, never the repo's.
 struct GuardRow {
     user_id: Uuid,
+    full_name: Option<String>,
     gender: Option<String>,
     date_of_birth: Option<NaiveDate>,
     years_of_experience: Option<i32>,
@@ -153,6 +154,10 @@ struct GuardRow {
     bank_name: Option<String>,
     account_number: Option<String>,
     account_name: Option<String>,
+    address: Option<String>,
+    emergency_contact_name: Option<String>,
+    emergency_contact_phone: Option<String>,
+    emergency_contact_relationship: Option<String>,
     approval_status: String,
 }
 
@@ -164,6 +169,7 @@ impl GuardRow {
             .map_err(|e| AppError::Internal(format!("unknown approval_status in db: {e}")))?;
         Ok(GuardProfileResponse {
             user_id: self.user_id,
+            full_name: self.full_name,
             gender: self.gender,
             date_of_birth: self.date_of_birth,
             years_of_experience: self.years_of_experience,
@@ -171,38 +177,55 @@ impl GuardRow {
             bank_name: self.bank_name,
             account_number: self.account_number,
             account_name: self.account_name,
+            address: self.address,
+            emergency_contact_name: self.emergency_contact_name,
+            emergency_contact_phone: self.emergency_contact_phone,
+            emergency_contact_relationship: self.emergency_contact_relationship,
             approval_status,
         })
     }
 }
 
-/// Columns selected for a guard profile (approval_status cast to text for decoding).
-const GUARD_COLUMNS: &str = "user_id, gender, date_of_birth, years_of_experience, \
-     previous_workplace, bank_name, account_number, account_name, approval_status::text";
+/// Columns selected for a guard profile (approval_status cast to text for decoding). Order is
+/// positional — it MUST match `GuardTuple` + `guard_row_from_tuple`.
+const GUARD_COLUMNS: &str = "user_id, full_name, gender, date_of_birth, years_of_experience, \
+     previous_workplace, bank_name, account_number, account_name, address, \
+     emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, \
+     approval_status::text";
 
 type GuardTuple = (
     Uuid,
-    Option<String>,
+    Option<String>, // full_name
+    Option<String>, // gender
     Option<NaiveDate>,
     Option<i32>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    String,
+    Option<String>, // previous_workplace
+    Option<String>, // bank_name
+    Option<String>, // account_number
+    Option<String>, // account_name
+    Option<String>, // address
+    Option<String>, // emergency_contact_name
+    Option<String>, // emergency_contact_phone
+    Option<String>, // emergency_contact_relationship
+    String,         // approval_status
 );
 
 fn guard_row_from_tuple(t: GuardTuple) -> GuardRow {
     GuardRow {
         user_id: t.0,
-        gender: t.1,
-        date_of_birth: t.2,
-        years_of_experience: t.3,
-        previous_workplace: t.4,
-        bank_name: t.5,
-        account_number: t.6,
-        account_name: t.7,
-        approval_status: t.8,
+        full_name: t.1,
+        gender: t.2,
+        date_of_birth: t.3,
+        years_of_experience: t.4,
+        previous_workplace: t.5,
+        bank_name: t.6,
+        account_number: t.7,
+        account_name: t.8,
+        address: t.9,
+        emergency_contact_name: t.10,
+        emergency_contact_phone: t.11,
+        emergency_contact_relationship: t.12,
+        approval_status: t.13,
     }
 }
 
@@ -220,23 +243,30 @@ pub async fn upsert_guard_profile(
     let sql = format!(
         r#"
         INSERT INTO profile.guard_profiles
-            (user_id, gender, date_of_birth, years_of_experience, previous_workplace,
-             bank_name, account_number, account_name)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            (user_id, full_name, gender, date_of_birth, years_of_experience, previous_workplace,
+             bank_name, account_number, account_name, address,
+             emergency_contact_name, emergency_contact_phone, emergency_contact_relationship)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
         ON CONFLICT (user_id) DO UPDATE SET
-            gender              = EXCLUDED.gender,
-            date_of_birth       = EXCLUDED.date_of_birth,
-            years_of_experience = EXCLUDED.years_of_experience,
-            previous_workplace  = EXCLUDED.previous_workplace,
-            bank_name           = EXCLUDED.bank_name,
-            account_number      = EXCLUDED.account_number,
-            account_name        = EXCLUDED.account_name,
-            updated_at          = now()
+            full_name                      = EXCLUDED.full_name,
+            gender                         = EXCLUDED.gender,
+            date_of_birth                  = EXCLUDED.date_of_birth,
+            years_of_experience            = EXCLUDED.years_of_experience,
+            previous_workplace             = EXCLUDED.previous_workplace,
+            bank_name                      = EXCLUDED.bank_name,
+            account_number                 = EXCLUDED.account_number,
+            account_name                   = EXCLUDED.account_name,
+            address                        = EXCLUDED.address,
+            emergency_contact_name         = EXCLUDED.emergency_contact_name,
+            emergency_contact_phone        = EXCLUDED.emergency_contact_phone,
+            emergency_contact_relationship = EXCLUDED.emergency_contact_relationship,
+            updated_at                     = now()
         RETURNING {GUARD_COLUMNS}
         "#
     );
     let row: GuardTuple = sqlx::query_as(&sql)
         .bind(user_id)
+        .bind(&req.full_name)
         .bind(&req.gender)
         .bind(req.date_of_birth)
         .bind(req.years_of_experience)
@@ -244,6 +274,10 @@ pub async fn upsert_guard_profile(
         .bind(&req.bank_name)
         .bind(&req.account_number)
         .bind(&req.account_name)
+        .bind(&req.address)
+        .bind(&req.emergency_contact_name)
+        .bind(&req.emergency_contact_phone)
+        .bind(&req.emergency_contact_relationship)
         .fetch_one(db)
         .await?;
     guard_row_from_tuple(row).into_response()
@@ -259,20 +293,26 @@ pub async fn update_guard_profile(
     let sql = format!(
         r#"
         UPDATE profile.guard_profiles SET
-            gender              = $2,
-            date_of_birth       = $3,
-            years_of_experience = $4,
-            previous_workplace  = $5,
-            bank_name           = $6,
-            account_number      = $7,
-            account_name        = $8,
-            updated_at          = now()
+            full_name                      = $2,
+            gender                         = $3,
+            date_of_birth                  = $4,
+            years_of_experience            = $5,
+            previous_workplace             = $6,
+            bank_name                      = $7,
+            account_number                 = $8,
+            account_name                   = $9,
+            address                        = $10,
+            emergency_contact_name         = $11,
+            emergency_contact_phone        = $12,
+            emergency_contact_relationship = $13,
+            updated_at                     = now()
         WHERE user_id = $1
         RETURNING {GUARD_COLUMNS}
         "#
     );
     let row: Option<GuardTuple> = sqlx::query_as(&sql)
         .bind(user_id)
+        .bind(&req.full_name)
         .bind(&req.gender)
         .bind(req.date_of_birth)
         .bind(req.years_of_experience)
@@ -280,6 +320,10 @@ pub async fn update_guard_profile(
         .bind(&req.bank_name)
         .bind(&req.account_number)
         .bind(&req.account_name)
+        .bind(&req.address)
+        .bind(&req.emergency_contact_name)
+        .bind(&req.emergency_contact_phone)
+        .bind(&req.emergency_contact_relationship)
         .fetch_optional(db)
         .await?;
     row.map(guard_row_from_tuple)
@@ -490,29 +534,37 @@ pub async fn mark_published(db: &PgPool, id: Uuid) -> Result<(), AppError> {
 /// in. identity's `user.approved` consumer is role-agnostic (flips by `user_id`), so the
 /// existing approval→login loop closes unchanged. A re-upsert (self-edit) is detected via
 /// `xmax = 0` and emits nothing — "approved" happens at most once per account here.
+#[allow(clippy::type_complexity)]
 pub async fn upsert_customer_profile(
     db: &PgPool,
     user_id: Uuid,
     req: &UpsertCustomerProfileRequest,
 ) -> Result<CustomerProfileResponse, AppError> {
     let mut tx = db.begin().await?;
-    let row: (Uuid, Option<String>, Option<String>, bool) = sqlx::query_as(
+    let row: (Uuid, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
         r#"
-        INSERT INTO profile.customer_profiles (user_id, full_name, address)
-        VALUES ($1, $2, $3)
+        INSERT INTO profile.customer_profiles
+            (user_id, full_name, address, company_name, email, contact_phone)
+        VALUES ($1, $2, $3, $4, $5, $6)
         ON CONFLICT (user_id) DO UPDATE SET
-            full_name  = EXCLUDED.full_name,
-            address    = EXCLUDED.address,
-            updated_at = now()
-        RETURNING user_id, full_name, address, (xmax = 0) AS inserted
+            full_name     = EXCLUDED.full_name,
+            address       = EXCLUDED.address,
+            company_name  = EXCLUDED.company_name,
+            email         = EXCLUDED.email,
+            contact_phone = EXCLUDED.contact_phone,
+            updated_at    = now()
+        RETURNING user_id, full_name, address, company_name, email, contact_phone, (xmax = 0) AS inserted
         "#,
     )
     .bind(user_id)
     .bind(&req.full_name)
     .bind(&req.address)
+    .bind(&req.company_name)
+    .bind(&req.email)
+    .bind(&req.contact_phone)
     .fetch_one(&mut *tx)
     .await?;
-    if row.3 {
+    if row.6 {
         let envelope = EventEnvelope::new(
             topics::USER_APPROVED,
             Uuid::new_v4(),
@@ -531,27 +583,44 @@ pub async fn upsert_customer_profile(
         user_id: row.0,
         full_name: row.1,
         address: row.2,
+        company_name: row.3,
+        email: row.4,
+        contact_phone: row.5,
     })
 }
 
 /// Fetch the caller's customer profile.
+#[allow(clippy::type_complexity)]
 pub async fn get_customer_profile(
     db: &PgPool,
     user_id: Uuid,
 ) -> Result<Option<CustomerProfileResponse>, AppError> {
-    let row: Option<(Uuid, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT user_id, full_name, address FROM profile.customer_profiles WHERE user_id = $1",
+    let row: Option<(
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    )> = sqlx::query_as(
+        "SELECT user_id, full_name, address, company_name, email, contact_phone \
+             FROM profile.customer_profiles WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-    Ok(
-        row.map(|(user_id, full_name, address)| CustomerProfileResponse {
-            user_id,
-            full_name,
-            address,
-        }),
-    )
+    Ok(row.map(
+        |(user_id, full_name, address, company_name, email, contact_phone)| {
+            CustomerProfileResponse {
+                user_id,
+                full_name,
+                address,
+                company_name,
+                email,
+                contact_phone,
+            }
+        },
+    ))
 }
 
 /// List ALL customer profiles for the admin surface (`GET /admin/customer-profiles`).
@@ -565,8 +634,8 @@ pub async fn list_customer_profiles(
     // Columns match `CustomerProfileAdminResponse` field-for-field → decode via `FromRow`
     // (no intermediate tuple). No transformation (unlike the guard list's mask step).
     let rows = sqlx::query_as::<_, CustomerProfileAdminResponse>(
-        "SELECT user_id, full_name, address, created_at FROM profile.customer_profiles \
-         ORDER BY created_at DESC LIMIT 200",
+        "SELECT user_id, full_name, address, company_name, email, contact_phone, created_at \
+         FROM profile.customer_profiles ORDER BY created_at DESC LIMIT 200",
     )
     .fetch_all(db)
     .await?;
@@ -789,6 +858,7 @@ mod db_tests {
             bank_name: Some("SCB".to_string()),
             account_number: Some("1234567890".to_string()),
             account_name: Some("Somchai".to_string()),
+            ..Default::default()
         };
         let created = upsert_guard_profile(&pool, user_id, &req)
             .await
@@ -885,13 +955,8 @@ mod db_tests {
 
         let user_id = Uuid::new_v4();
         let req = UpsertGuardProfileRequest {
-            gender: None,
-            date_of_birth: None,
             years_of_experience: Some(2),
-            previous_workplace: None,
-            bank_name: None,
-            account_number: None,
-            account_name: None,
+            ..Default::default()
         };
         // Created → defaults to pending (never approved).
         upsert_guard_profile(&pool, user_id, &req)
@@ -944,6 +1009,7 @@ mod db_tests {
         let req = UpsertCustomerProfileRequest {
             full_name: Some("สมหญิง ใจดี".to_string()),
             address: Some("กรุงเทพฯ".to_string()),
+            ..Default::default()
         };
         upsert_customer_profile(&pool, user_id, &req)
             .await
@@ -968,6 +1034,7 @@ mod db_tests {
         let edited = UpsertCustomerProfileRequest {
             full_name: Some("สมหญิง ใจดีมาก".to_string()),
             address: None,
+            ..Default::default()
         };
         let profile = upsert_customer_profile(&pool, user_id, &edited)
             .await

@@ -16,6 +16,9 @@ part 'my_customer_profile.g.dart';
 /// * [userId] 
 /// * [fullName] 
 /// * [address] 
+/// * [companyName] 
+/// * [email] 
+/// * [contactPhone] 
 /// * [kind] 
 @BuiltValue()
 abstract class MyCustomerProfile implements CustomerProfile, Built<MyCustomerProfile, MyCustomerProfileBuilder> {
@@ -46,6 +49,25 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
     MyCustomerProfile object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
+    if (object.address != null) {
+      yield r'address';
+      yield serializers.serialize(
+        object.address,
+        specifiedType: const FullType(String),
+      );
+    }
+    yield r'kind';
+    yield serializers.serialize(
+      object.kind,
+      specifiedType: const FullType(MyCustomerProfileKindEnum),
+    );
+    if (object.companyName != null) {
+      yield r'company_name';
+      yield serializers.serialize(
+        object.companyName,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.fullName != null) {
       yield r'full_name';
       yield serializers.serialize(
@@ -53,10 +75,10 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
         specifiedType: const FullType(String),
       );
     }
-    if (object.address != null) {
-      yield r'address';
+    if (object.contactPhone != null) {
+      yield r'contact_phone';
       yield serializers.serialize(
-        object.address,
+        object.contactPhone,
         specifiedType: const FullType(String),
       );
     }
@@ -65,11 +87,13 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
       object.userId,
       specifiedType: const FullType(String),
     );
-    yield r'kind';
-    yield serializers.serialize(
-      object.kind,
-      specifiedType: const FullType(MyCustomerProfileKindEnum),
-    );
+    if (object.email != null) {
+      yield r'email';
+      yield serializers.serialize(
+        object.email,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
@@ -93,6 +117,27 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
+        case r'address':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.address = valueDes;
+          break;
+        case r'kind':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(MyCustomerProfileKindEnum),
+          ) as MyCustomerProfileKindEnum;
+          result.kind = valueDes;
+          break;
+        case r'company_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.companyName = valueDes;
+          break;
         case r'full_name':
           final valueDes = serializers.deserialize(
             value,
@@ -100,12 +145,12 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
           ) as String;
           result.fullName = valueDes;
           break;
-        case r'address':
+        case r'contact_phone':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(String),
           ) as String;
-          result.address = valueDes;
+          result.contactPhone = valueDes;
           break;
         case r'user_id':
           final valueDes = serializers.deserialize(
@@ -114,12 +159,12 @@ class _$MyCustomerProfileSerializer implements PrimitiveSerializer<MyCustomerPro
           ) as String;
           result.userId = valueDes;
           break;
-        case r'kind':
+        case r'email':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(MyCustomerProfileKindEnum),
-          ) as MyCustomerProfileKindEnum;
-          result.kind = valueDes;
+            specifiedType: const FullType(String),
+          ) as String;
+          result.email = valueDes;
           break;
         default:
           unhandled.add(key);

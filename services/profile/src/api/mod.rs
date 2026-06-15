@@ -184,6 +184,27 @@ fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
         validate::MAX_ACCOUNT_NUMBER_LEN,
     )
     .map_err(AppError::BadRequest)?;
+    // v1-parity registration fields.
+    for (val, field) in [
+        (req.full_name.as_deref(), "full_name"),
+        (req.address.as_deref(), "address"),
+        (
+            req.emergency_contact_name.as_deref(),
+            "emergency_contact_name",
+        ),
+        (
+            req.emergency_contact_relationship.as_deref(),
+            "emergency_contact_relationship",
+        ),
+    ] {
+        validate::validate_text(val, field, validate::MAX_TEXT_LEN)
+            .map_err(AppError::BadRequest)?;
+    }
+    validate::validate_thai_phone(
+        req.emergency_contact_phone.as_deref(),
+        "emergency_contact_phone",
+    )
+    .map_err(AppError::BadRequest)?;
     Ok(())
 }
 
@@ -238,6 +259,16 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     )
     .map_err(AppError::BadRequest)?;
     validate::validate_text(req.address.as_deref(), "address", validate::MAX_TEXT_LEN)
+        .map_err(AppError::BadRequest)?;
+    // v1-parity registration fields.
+    validate::validate_text(
+        req.company_name.as_deref(),
+        "company_name",
+        validate::MAX_TEXT_LEN,
+    )
+    .map_err(AppError::BadRequest)?;
+    validate::validate_email(req.email.as_deref()).map_err(AppError::BadRequest)?;
+    validate::validate_thai_phone(req.contact_phone.as_deref(), "contact_phone")
         .map_err(AppError::BadRequest)?;
     // Writes ONLY the customer profile schema — never identity's. The FIRST creation also
     // emits `user.approved` (outbox, same tx in repo): customers are auto-approved on their

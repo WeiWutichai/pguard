@@ -13,6 +13,9 @@ part 'upsert_customer_profile_request.g.dart';
 /// Properties:
 /// * [fullName] 
 /// * [address] 
+/// * [companyName] 
+/// * [email] - Validated: contains @ and ., length ≥ 5.
+/// * [contactPhone] - Thai national format (≥10 digits, leading 0).
 @BuiltValue()
 abstract class UpsertCustomerProfileRequest implements Built<UpsertCustomerProfileRequest, UpsertCustomerProfileRequestBuilder> {
   @BuiltValueField(wireName: r'full_name')
@@ -20,6 +23,17 @@ abstract class UpsertCustomerProfileRequest implements Built<UpsertCustomerProfi
 
   @BuiltValueField(wireName: r'address')
   String? get address;
+
+  @BuiltValueField(wireName: r'company_name')
+  String? get companyName;
+
+  /// Validated: contains @ and ., length ≥ 5.
+  @BuiltValueField(wireName: r'email')
+  String? get email;
+
+  /// Thai national format (≥10 digits, leading 0).
+  @BuiltValueField(wireName: r'contact_phone')
+  String? get contactPhone;
 
   UpsertCustomerProfileRequest._();
 
@@ -55,6 +69,27 @@ class _$UpsertCustomerProfileRequestSerializer implements PrimitiveSerializer<Up
       yield r'address';
       yield serializers.serialize(
         object.address,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.companyName != null) {
+      yield r'company_name';
+      yield serializers.serialize(
+        object.companyName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.email != null) {
+      yield r'email';
+      yield serializers.serialize(
+        object.email,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.contactPhone != null) {
+      yield r'contact_phone';
+      yield serializers.serialize(
+        object.contactPhone,
         specifiedType: const FullType(String),
       );
     }
@@ -94,6 +129,27 @@ class _$UpsertCustomerProfileRequestSerializer implements PrimitiveSerializer<Up
             specifiedType: const FullType(String),
           ) as String;
           result.address = valueDes;
+          break;
+        case r'company_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.companyName = valueDes;
+          break;
+        case r'email':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.email = valueDes;
+          break;
+        case r'contact_phone':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.contactPhone = valueDes;
           break;
         default:
           unhandled.add(key);

@@ -103,10 +103,16 @@ class _GuardRegistrationScreenState
   int _step = 0;
 
   // Personal
+  final _fullName = TextEditingController();
   String? _gender;
   String? _dob; // ISO yyyy-MM-dd
   final _experience = TextEditingController();
   final _workplace = TextEditingController();
+  final _address = TextEditingController();
+  // Emergency contact (v1 parity — all optional).
+  final _ecName = TextEditingController();
+  final _ecPhone = TextEditingController();
+  final _ecRel = TextEditingController();
 
   // Documents (real picker) — kind → file path.
   final Map<GuardDocKind, String> _docs = {};
@@ -122,8 +128,13 @@ class _GuardRegistrationScreenState
 
   @override
   void dispose() {
+    _fullName.dispose();
     _experience.dispose();
     _workplace.dispose();
+    _address.dispose();
+    _ecName.dispose();
+    _ecPhone.dispose();
+    _ecRel.dispose();
     _accountNumber.dispose();
     _accountName.dispose();
     super.dispose();
@@ -243,6 +254,7 @@ class _GuardRegistrationScreenState
     }
     final ctrl = ref.read(registrationControllerProvider.notifier);
     final ok = await ctrl.submitGuardProfile(
+      fullName: _fullName.text,
       gender: _gender,
       dateOfBirth: _dob,
       yearsOfExperience: int.tryParse(_experience.text.trim()),
@@ -250,6 +262,10 @@ class _GuardRegistrationScreenState
       bankName: _bank,
       accountNumber: _accountNumber.text,
       accountName: _accountName.text,
+      address: _address.text,
+      emergencyContactName: _ecName.text,
+      emergencyContactPhone: _ecPhone.text,
+      emergencyContactRelationship: _ecRel.text,
       docPaths: Map.of(_docs),
     );
     if (ok && mounted) context.push('/auth/pending');
@@ -406,11 +422,18 @@ class _GuardRegistrationScreenState
   // ── Step 1: personal ──────────────────────────────────────────────────────
 
   Widget _personalStep(bool isThai) {
-    // NOTE: v2 UpsertGuardProfileRequest (profile.yaml) has NO name field — name is intentionally
-    // omitted here (the backend would reject it). Customer profiles carry full_name; guards don't.
+    // v1 parity: the guard's full name is stored on the profile in v2 (identity.users has no name
+    // column), so it's collected here and sent as `full_name` in UpsertGuardProfileRequest.
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        TextField(
+          controller: _fullName,
+          textCapitalization: TextCapitalization.words,
+          decoration: InputDecoration(
+              labelText: isThai ? 'ชื่อ-นามสกุล' : 'Full name'),
+        ),
+        const SizedBox(height: PgTokens.space4),
         _fieldLabel(isThai ? 'เพศ' : 'Gender'),
         const SizedBox(height: PgTokens.space2),
         _genderSegment(isThai),
@@ -454,6 +477,48 @@ class _GuardRegistrationScreenState
           decoration: InputDecoration(
               labelText:
                   isThai ? 'ที่ทำงานเดิม' : 'Previous workplace (optional)'),
+        ),
+        const SizedBox(height: PgTokens.space4),
+        TextField(
+          controller: _address,
+          maxLines: 2,
+          decoration: InputDecoration(
+              labelText: isThai ? 'ที่อยู่' : 'Address'),
+        ),
+        const SizedBox(height: PgTokens.space4),
+        _fieldLabel(isThai ? 'ผู้ติดต่อฉุกเฉิน' : 'Emergency contact'),
+        const SizedBox(height: PgTokens.space2),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _ecName,
+                textCapitalization: TextCapitalization.words,
+                decoration: InputDecoration(
+                    labelText: isThai ? 'ชื่อผู้ติดต่อ' : 'Contact name'),
+              ),
+            ),
+            const SizedBox(width: PgTokens.space3),
+            Expanded(
+              child: TextField(
+                controller: _ecRel,
+                decoration: InputDecoration(
+                    labelText: isThai ? 'ความสัมพันธ์' : 'Relationship'),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: PgTokens.space4),
+        TextField(
+          controller: _ecPhone,
+          keyboardType: TextInputType.phone,
+          inputFormatters: [
+            FilteringTextInputFormatter.allow(RegExp(r'[0-9+\- ]')),
+            LengthLimitingTextInputFormatter(20),
+          ],
+          decoration: InputDecoration(
+              labelText: isThai ? 'เบอร์ผู้ติดต่อฉุกเฉิน' : 'Emergency phone'),
         ),
       ],
     );
@@ -646,10 +711,16 @@ class _GuardRegistrationScreenState
     }
 
     final docsComplete = _docs.length == GuardDocKind.values.length;
+    final fullName = _fullName.text.trim();
+    final address = _address.text.trim();
+    final ecName = _ecName.text.trim();
+    final ecRel = _ecRel.text.trim();
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (fullName.isNotEmpty)
+          _revRow(isThai ? 'ชื่อ' : 'Name', Text(fullName, style: valueStyle)),
         _revRow(
             isThai ? 'เพศ / อายุ' : 'Gender / Age',
             Text(joinOrDash([genderTh, if (age != null) '$age ปี' else '']),
@@ -658,6 +729,13 @@ class _GuardRegistrationScreenState
             isThai ? 'ประสบการณ์' : 'Experience',
             Text(joinOrDash([if (exp != null) '$exp ปี' else '', workplace]),
                 style: valueStyle)),
+        if (address.isNotEmpty)
+          _revRow(isThai ? 'ที่อยู่' : 'Address',
+              Text(address, style: valueStyle)),
+        if (ecName.isNotEmpty)
+          _revRow(
+              isThai ? 'ติดต่อฉุกเฉิน' : 'Emergency',
+              Text(joinOrDash([ecName, ecRel]), style: valueStyle)),
         _revRow(
           isThai ? 'เอกสาร' : 'Documents',
           Text.rich(

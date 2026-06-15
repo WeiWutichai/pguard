@@ -25,11 +25,13 @@ void main() {
       (tester) async {
     await pump(tester);
 
+    await tester.ensureVisible(find.text('สร้างบัญชี'));
     await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
     expect(find.textContaining('กรุณากรอกที่อยู่'), findsOneWidget);
 
     await tester.enterText(find.byKey(const Key('reg_address')), 'short');
+    await tester.ensureVisible(find.text('สร้างบัญชี'));
     await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
     expect(find.textContaining('ที่อยู่สั้นเกินไป'), findsOneWidget);
@@ -47,6 +49,7 @@ void main() {
     expect(
         find.text('✓ ที่อยู่ครบถ้วน (อย่างน้อย 10 ตัวอักษร)'), findsOneWidget);
 
+    await tester.ensureVisible(find.text('สร้างบัญชี'));
     await tester.tap(find.text('สร้างบัญชี'));
     await tester.pump();
     expect(find.textContaining('กรุณากรอกที่อยู่'), findsNothing);

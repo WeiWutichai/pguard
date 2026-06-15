@@ -8,11 +8,10 @@ import '../../../core/controllers/registration_controller.dart';
 import '../../../widgets/pg_auth_back_bar.dart';
 import '../../../widgets/primary_button.dart';
 
-/// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. The v2
-/// contract is just `full_name` + `address` (no company/email — those don't exist in
-/// `UpsertCustomerProfileRequest`). Address is required (min length, with a live ✓ helper once
-/// valid); name is optional and follows the design's "(ไม่บังคับ)" pattern. The CTA is the
-/// customer-flow amber (`.cta-amber`) — the guard flow keeps green.
+/// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. v1-parity
+/// fields: `full_name` + `address` (required) + optional `company_name` / `email` / `contact_phone`.
+/// Address is required (min length, with a live ✓ helper once valid); the rest follow the design's
+/// "(ไม่บังคับ)" pattern. The CTA is the customer-flow amber (`.cta-amber`) — guard flow keeps green.
 class CustomerRegistrationScreen extends ConsumerStatefulWidget {
   const CustomerRegistrationScreen({super.key});
 
@@ -28,15 +27,41 @@ class _CustomerRegistrationScreenState
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
   final _address = TextEditingController();
+  final _company = TextEditingController();
+  final _email = TextEditingController();
+  final _phone = TextEditingController();
 
   @override
   void dispose() {
     _name.dispose();
     _address.dispose();
+    _company.dispose();
+    _email.dispose();
+    _phone.dispose();
     super.dispose();
   }
 
   bool get _addressValid => _address.text.trim().length >= _minAddress;
+
+  /// Label with the design's faint "(ไม่บังคับ)/(optional)" suffix — for the non-required fields.
+  InputDecoration _optionalDecoration(String label, bool isThai) {
+    return InputDecoration(
+      label: Text.rich(
+        TextSpan(
+          text: label,
+          children: [
+            TextSpan(
+              text: isThai ? '(ไม่บังคับ)' : '(optional)',
+              style: const TextStyle(
+                color: PgTokens.colorTextFaint,
+                fontWeight: FontWeight.w400,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
@@ -44,6 +69,9 @@ class _CustomerRegistrationScreenState
     final ok = await ctrl.submitCustomerProfile(
       fullName: _name.text,
       address: _address.text,
+      companyName: _company.text,
+      email: _email.text,
+      contactPhone: _phone.text,
     );
     if (ok && mounted) context.push('/auth/pending');
   }
@@ -149,6 +177,48 @@ class _CustomerRegistrationScreenState
                       ),
                     ),
                   ),
+                ),
+                const SizedBox(height: PgTokens.space4),
+                TextFormField(
+                  controller: _company,
+                  textInputAction: TextInputAction.next,
+                  decoration: _optionalDecoration(
+                      isThai ? 'ชื่อบริษัท ' : 'Company name ', isThai),
+                ),
+                const SizedBox(height: PgTokens.space4),
+                TextFormField(
+                  controller: _email,
+                  keyboardType: TextInputType.emailAddress,
+                  textInputAction: TextInputAction.next,
+                  decoration:
+                      _optionalDecoration(isThai ? 'อีเมล ' : 'Email ', isThai),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) return null; // optional
+                    if (t.length < 5 || !t.contains('@') || !t.contains('.')) {
+                      return isThai ? 'อีเมลไม่ถูกต้อง' : 'Invalid email';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: PgTokens.space4),
+                TextFormField(
+                  controller: _phone,
+                  keyboardType: TextInputType.phone,
+                  textInputAction: TextInputAction.done,
+                  decoration: _optionalDecoration(
+                      isThai ? 'เบอร์ติดต่อ ' : 'Contact phone ', isThai),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) return null; // optional
+                    final digits = t.replaceAll(RegExp(r'\D'), '');
+                    if (digits.length < 10 || !digits.startsWith('0')) {
+                      return isThai
+                          ? 'เบอร์ไม่ถูกต้อง (10 หลักขึ้นต้น 0)'
+                          : 'Invalid phone (10 digits, leading 0)';
+                    }
+                    return null;
+                  },
                 ),
                 const SizedBox(height: PgTokens.space6),
                 if (state.error != null)
