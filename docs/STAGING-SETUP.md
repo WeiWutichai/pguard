@@ -216,8 +216,18 @@ If `8a` returns a JSON body and `8f` shows a `streaming` row, the core stack is 
 
 ## 9. Redeploy loop (new build) + rollback
 
-CI pushes `:latest` **and** `:<git-sha>` on every push to main. **Pin a SHA in staging** so a
-redeploy is deterministic and rollback is trivial.
+CI pushes `:latest` **and** `:<git-sha>` on every push to main (the `:<git-sha>` is the **FULL
+40-char** sha, not the short form). **Pin a SHA in staging** so a redeploy is deterministic and
+rollback is trivial.
+
+> **One command** (sources `infra/.env.staging`, pulls, ups, migrates, recreates nginx,
+> prints status — defaults `IMAGE_TAG` to the full HEAD sha):
+> ```bash
+> cd /root/pguard && git pull && bash tooling/scripts/deploy-staging.sh
+> # rollback to a known-good full sha:
+> bash tooling/scripts/deploy-staging.sh <full-git-sha>
+> ```
+> The manual steps below are the same thing expanded, if you need to run a stage by hand.
 
 ```bash
 cd /root/pguard && git pull                  # get any compose/nginx/migration changes
