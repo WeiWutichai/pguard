@@ -25,6 +25,7 @@ export 'package:pguard_profile_api/src/model/approval_status.dart';
 export 'package:pguard_profile_api/src/model/customer_profile.dart';
 export 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 export 'package:pguard_profile_api/src/model/document_expiry.dart';
+export 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 export 'package:pguard_profile_api/src/model/error_body.dart';
 export 'package:pguard_profile_api/src/model/error_detail.dart';
 export 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';

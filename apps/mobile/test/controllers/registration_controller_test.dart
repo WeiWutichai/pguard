@@ -141,12 +141,55 @@ void main() {
     expect(api.postBearer['/profile/guard'], 'ptok-123');
     // FULL digits sent to the backend (server re-masks on reads).
     expect(guardBody!['account_number'], '1234567890');
+    // No expiry dates passed → the key is omitted (never an empty array).
+    expect(guardBody!.containsKey('document_expiries'), isFalse);
     // The LOCALLY persisted summary masks the account (last-4) — the full number never lands locally.
     final summary = prefs.values[kRegSummaryKey]!;
     expect(summary.contains('••••7890'), isTrue);
     expect(summary.contains('1234567890'), isFalse);
     // The pending flag is set now (after a successful submit), enabling cold-start resume.
     expect(prefs.values[kRegPendingRoleKey], 'guard');
+  });
+
+  test(
+      'submitGuardProfile folds per-document expiry dates into document_expiries (ISO date)',
+      () async {
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    Map<String, dynamic>? guardBody;
+    final api = FakeApi(onPost: (path, data) async {
+      switch (path) {
+        case '/auth/register':
+          return {'user_id': 'u1', 'profile_token': 'ptok'};
+        case '/profile/guard':
+          guardBody = data as Map<String, dynamic>;
+          return <String, dynamic>{};
+        default:
+          throw StateError('unexpected POST $path');
+      }
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    ctrl.selectRole(RegistrationRole.guard);
+    await ctrl.register();
+
+    final ok = await ctrl.submitGuardProfile(
+      accountNumber: '1234567890',
+      docExpiry: {
+        GuardDocKind.idCard: DateTime(2030, 3, 9),
+        GuardDocKind.driverLicense: DateTime(2031, 12, 1),
+      },
+    );
+    expect(ok, isTrue);
+    final expiries = guardBody!['document_expiries'] as List;
+    expect(expiries.length, 2);
+    // Wire keys + zero-padded ISO YYYY-MM-DD (the contract's expiry_date format).
+    final byType = {
+      for (final e in expiries) (e as Map)['document_type']: e['expiry_date'],
+    };
+    expect(byType['id_card'], '2030-03-09');
+    expect(byType['driver_license'], '2031-12-01');
   });
 
   test(

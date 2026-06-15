@@ -1,9 +1,9 @@
 // Screen-local bilingual copy for the document-expiry (เอกสารใกล้หมดอายุ) screen.
 // Backed by profile `GET /admin/documents/expiring` (docs expiring within ~90d, incl. expired).
 // "Remind" is REAL — it sends the guard a notification via notification `POST /notifications/send`
-// (admin-only). Data is empty until the doc-upload + expiry-CAPTURE follow-up populates it (the
-// schema/endpoint/screen are real and ready) — honest, never faked. Guard names aren't in v2
-// (guard_profiles has no name field) → the guard shows as a short id.
+// (admin-only). Expiry dates are now captured during guard registration (folded into the profile
+// submit), so rows appear as guards submit them; the document IMAGE upload is still a follow-up.
+// Guard names aren't in v2 (guard_profiles has no name field) → the guard shows as a short id.
 import type { Lang } from "@/lib/lang";
 
 /** Document-type enum (matches profile.document_expiry.document_type). */
@@ -78,7 +78,7 @@ export const COPY: Record<Lang, ExpiringCopy> = {
       driver_license: "ใบขับขี่",
     },
     captureGap:
-      "วันหมดอายุจะถูกบันทึกตอนอัปโหลดเอกสาร (flow อัปโหลด+วันหมดอายุยังเป็น follow-up) — จะว่างจนกว่าจะมีข้อมูล",
+      "วันหมดอายุบันทึกตอนสมัครเจ้าหน้าที่ — แถวจะปรากฏเมื่อมีการกรอก (ยังไม่รวมอัปโหลดรูปเอกสาร เป็น follow-up)",
     never: "—",
   },
   en: {
@@ -111,7 +111,7 @@ export const COPY: Record<Lang, ExpiringCopy> = {
       driver_license: "Driver License",
     },
     captureGap:
-      "Expiry dates are captured at document upload (the upload+expiry flow is a follow-up) — empty until data exists",
+      "Expiry dates are captured during guard registration — rows appear as guards submit them (document image upload is still a follow-up)",
     never: "—",
   },
 };

@@ -107,6 +107,30 @@ pub async fn list_expiring_documents(
     Ok(rows)
 }
 
+/// Upsert one guard document's expiry date — one row per (guard, document_type), keyed on the
+/// table's UNIQUE constraint so a later re-capture overwrites the date. Writes the PRIMARY (not
+/// the replica). Returns the resulting row for the response.
+pub async fn upsert_document_expiry(
+    db: &PgPool,
+    guard_id: Uuid,
+    document_type: &str,
+    expiry_date: NaiveDate,
+) -> Result<DocumentExpiryRow, AppError> {
+    let row = sqlx::query_as::<_, DocumentExpiryRow>(
+        "INSERT INTO profile.document_expiry (guard_id, document_type, expiry_date) \
+         VALUES ($1, $2, $3) \
+         ON CONFLICT (guard_id, document_type) \
+         DO UPDATE SET expiry_date = EXCLUDED.expiry_date, updated_at = now() \
+         RETURNING id, guard_id, document_type, expiry_date, last_reminded_at",
+    )
+    .bind(guard_id)
+    .bind(document_type)
+    .bind(expiry_date)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
 /// Resolve the recipient `user_id`s for a broadcast audience. notification's bulk-send calls
 /// this over the service-JWT'd internal endpoint because notification owns no user/role
 /// registry; profile reads its OWN tables (NOT a cross-schema read for notification):

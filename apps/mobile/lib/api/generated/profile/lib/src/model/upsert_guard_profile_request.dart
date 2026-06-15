@@ -4,6 +4,8 @@
 
 // ignore_for_file: unused_element
 import 'package:pguard_profile_api/src/model/date.dart';
+import 'package:built_collection/built_collection.dart';
+import 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -24,6 +26,7 @@ part 'upsert_guard_profile_request.g.dart';
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] - Thai national format (≥10 digits, leading 0).
 /// * [emergencyContactRelationship] 
+/// * [documentExpiries] - OPTIONAL per-document expiry dates from the registration doc step. Captured best-effort into the document_expiry table (feeds the admin \"expiring\" surface); the guard_profiles columns are unaffected. 
 @BuiltValue()
 abstract class UpsertGuardProfileRequest implements Built<UpsertGuardProfileRequest, UpsertGuardProfileRequestBuilder> {
   /// Guard full name (v1 parity).
@@ -66,6 +69,10 @@ abstract class UpsertGuardProfileRequest implements Built<UpsertGuardProfileRequ
 
   @BuiltValueField(wireName: r'emergency_contact_relationship')
   String? get emergencyContactRelationship;
+
+  /// OPTIONAL per-document expiry dates from the registration doc step. Captured best-effort into the document_expiry table (feeds the admin \"expiring\" surface); the guard_profiles columns are unaffected. 
+  @BuiltValueField(wireName: r'document_expiries')
+  BuiltList<DocumentExpiryInput>? get documentExpiries;
 
   UpsertGuardProfileRequest._();
 
@@ -174,6 +181,13 @@ class _$UpsertGuardProfileRequestSerializer implements PrimitiveSerializer<Upser
         specifiedType: const FullType(String),
       );
     }
+    if (object.documentExpiries != null) {
+      yield r'document_expiries';
+      yield serializers.serialize(
+        object.documentExpiries,
+        specifiedType: const FullType(BuiltList, [FullType(DocumentExpiryInput)]),
+      );
+    }
   }
 
   @override
@@ -280,6 +294,13 @@ class _$UpsertGuardProfileRequestSerializer implements PrimitiveSerializer<Upser
             specifiedType: const FullType(String),
           ) as String;
           result.emergencyContactRelationship = valueDes;
+          break;
+        case r'document_expiries':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(DocumentExpiryInput)]),
+          ) as BuiltList<DocumentExpiryInput>;
+          result.documentExpiries.replace(valueDes);
           break;
         default:
           unhandled.add(key);

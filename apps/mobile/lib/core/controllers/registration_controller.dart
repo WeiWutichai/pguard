@@ -285,6 +285,7 @@ class RegistrationController extends _$RegistrationController {
     String? emergencyContactPhone,
     String? emergencyContactRelationship,
     Map<GuardDocKind, String> docPaths = const {},
+    Map<GuardDocKind, DateTime> docExpiry = const {},
   }) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final digits = accountNumber.replaceAll(RegExp(r'\D'), '');
@@ -317,6 +318,14 @@ class RegistrationController extends _$RegistrationController {
           'emergency_contact_phone': ecPhone,
         if (ecRel != null && ecRel.isNotEmpty)
           'emergency_contact_relationship': ecRel,
+        // Per-document expiry dates from the doc step — folded into the profile submit because the
+        // single-use profile_token authorizes exactly one write. Server captures them best-effort
+        // into document_expiry (feeds the admin "expiring" surface); the image isn't uploaded yet.
+        if (docExpiry.isNotEmpty)
+          'document_expiries': [
+            for (final e in docExpiry.entries)
+              {'document_type': e.key.key, 'expiry_date': _isoDate(e.value)},
+          ],
       },
       summary: RegistrationSummary(
         role: RegistrationRole.guard,
@@ -506,4 +515,11 @@ class RegistrationController extends _$RegistrationController {
     _phoneVerifiedToken = null;
     _profileToken = null;
   }
+}
+
+/// Format a date as the wire `YYYY-MM-DD` (the contract's `expiry_date` format). Date-only — no
+/// timezone shift (the picker yields a local calendar date and the field is a plain DATE).
+String _isoDate(DateTime d) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  return '${d.year}-${two(d.month)}-${two(d.day)}';
 }

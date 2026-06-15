@@ -26,6 +26,7 @@ import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/document_expiry.dart';
+import 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -58,6 +59,7 @@ part 'serializers.g.dart';
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
   DocumentExpiry,
+  DocumentExpiryInput,
   ErrorBody,
   ErrorDetail,
   GetMyProfile200Response,

@@ -26,8 +26,10 @@ info:
     errors use `ErrorBody`.
 
     **Documents:** the schema carries nullable document-key columns (id card, security
-    license, training cert, criminal check, driver license, passbook photo), but document
-    UPLOAD is a deferred follow-up — there are no upload endpoints in this slice.
+    license, training cert, criminal check, driver license, passbook photo). Document image
+    UPLOAD (S3) is still a deferred follow-up, but document **expiry dates** can now be
+    captured (metadata only) via `document_expiries` on the guard profile submit
+    (`POST /profile/guard`) — these feed the admin "expiring documents" surface.
   license:
     name: UNLICENSED
 
@@ -260,9 +262,8 @@ paths:
       description: |
         Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
         the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
-        403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a deferred
-        follow-up, so this returns nothing until that lands (the schema/endpoint/screen are
-        real and ready; rows are never fabricated).
+        403); replica read. Rows are populated by the guard profile submit (`POST /profile/guard`,
+        which folds in the registration doc step's expiry dates).
       operationId: adminListExpiringDocuments
       security: [{ bearerAuth: [] }]
       responses:
@@ -523,6 +524,14 @@ components:
         emergency_contact_name: { type: string, nullable: true }
         emergency_contact_phone: { type: string, nullable: true, description: 'Thai national format (≥10 digits, leading 0).' }
         emergency_contact_relationship: { type: string, nullable: true }
+        document_expiries:
+          type: array
+          nullable: true
+          description: |
+            OPTIONAL per-document expiry dates from the registration doc step. Captured
+            best-effort into the document_expiry table (feeds the admin "expiring" surface); the
+            guard_profiles columns are unaffected.
+          items: { $ref: '#/components/schemas/DocumentExpiryInput' }
 
     UpsertCustomerProfileRequest:
       type: object
@@ -622,6 +631,22 @@ components:
           enum: [id_card, security_license, training_cert, criminal_check, driver_license]
         expiry_date: { type: string, format: date }
         last_reminded_at: { type: string, format: date-time, nullable: true }
+
+    DocumentExpiryInput:
+      type: object
+      description: |
+        One document's expiry date, folded into the guard-profile submit (the registration doc
+        step). Metadata only — no image. The passbook is NOT an expiring credential and is
+        excluded. An unknown type or a non-future date is skipped server-side (best-effort).
+      required: [document_type, expiry_date]
+      properties:
+        document_type:
+          type: string
+          enum: [id_card, security_license, training_cert, criminal_check, driver_license]
+        expiry_date:
+          type: string
+          format: date
+          description: Must be in the future (a renewal date).
 
     RecruitCandidate:
       type: object

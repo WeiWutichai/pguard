@@ -31,12 +31,20 @@ class GuardDocRow extends StatelessWidget {
     required this.captured,
     required this.isThai,
     required this.onTap,
+    this.expiry,
+    this.onSetExpiry,
   });
 
   final GuardDocKind kind;
   final bool captured;
   final bool isThai;
   final VoidCallback onTap;
+
+  /// The chosen expiry date (all 5 doc kinds carry one — design), or null if not set yet.
+  final DateTime? expiry;
+
+  /// Open the expiry date picker for this document. Only surfaced once the doc is captured.
+  final VoidCallback? onSetExpiry;
 
   @override
   Widget build(BuildContext context) {
@@ -65,8 +73,8 @@ class GuardDocRow extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    // v2 has no upload endpoint yet → the captured state honestly reads
-                    // "selected", not "uploaded" (the design's expiry metadata is out of scope).
+                    // v2 has no image-upload endpoint yet → the captured state honestly reads
+                    // "selected", not "uploaded" (only the expiry DATE is sent to the backend).
                     captured
                         ? (isThai ? 'เลือกแล้ว' : 'Selected')
                         : (isThai ? 'ยังไม่อัปโหลด' : 'Not uploaded'),
@@ -75,6 +83,9 @@ class GuardDocRow extends StatelessWidget {
                       color: PgTokens.colorTextMuted,
                     ),
                   ),
+                  // Expiry capture — only once the doc is selected (metadata only). Its own tap
+                  // target, so it doesn't trigger the row's re-capture.
+                  if (captured) _expiryButton(),
                 ],
               ),
             ),
@@ -93,6 +104,46 @@ class GuardDocRow extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// Inline expiry control under the status line. Its own [InkWell] tap target so picking a date
+  /// doesn't trigger the row's re-capture. Prompts to set one (brand ink) or shows the chosen date.
+  Widget _expiryButton() {
+    final e = expiry;
+    final label = e == null
+        ? (isThai ? 'ระบุวันหมดอายุ' : 'Set expiry')
+        : (isThai ? 'หมดอายุ ${_fmtDate(e)}' : 'Expires ${_fmtDate(e)}');
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: InkWell(
+        onTap: onSetExpiry,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.event_outlined,
+                size: 13,
+                color: e == null
+                    ? PgTokens.colorPrimary
+                    : PgTokens.colorTextMuted),
+            const SizedBox(width: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w600,
+                color: e == null ? PgTokens.colorPrimary : PgTokens.colorText,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static String _fmtDate(DateTime d) {
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${two(d.day)}/${two(d.month)}/${d.year}';
   }
 }
 

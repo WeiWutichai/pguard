@@ -142,7 +142,8 @@ export default function ExpiringPage() {
         <KpiCard icon={<CalendarClock />} label={c.kpi90} value={loading ? "…" : String(counts.w90)} />
       </KpiGrid>
 
-      {/* Expiry data is captured at doc-upload (a deferred follow-up) — honest gap note. */}
+      {/* Expiry dates are captured at guard registration; the document image upload remains a
+          follow-up — honest note (rows appear as guards submit, not faked). */}
       <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-sunken px-4 py-2.5 text-[12.5px] text-muted">
         <Badge tone="gray">{t("gap.endpoints")}</Badge>
         <span>{c.captureGap}</span>
