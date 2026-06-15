@@ -73,14 +73,17 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_calling_api/pguard_calling_api.dart';
 
 
-final api = PguardCallingApi().getCallsApi();
-final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
+final api = PguardCallingApi().getAdminApi();
+final CallStatus status = ; // CallStatus | 
+final CallType callType = ; // CallType | 
+final int limit = 789; // int | 
+final int offset = 789; // int | 
 
 try {
-    final response = await api.acceptCall(id);
+    final response = await api.adminListCalls(status, callType, limit, offset);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling CallsApi->acceptCall: $e\n");
+    print("Exception when calling AdminApi->adminListCalls: $e\n");
 }
 
 ```
@@ -91,6 +94,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminListCalls**](doc/AdminApi.md#adminlistcalls) | **GET** /admin/calls | List ALL calls cross-user (role&#x3D;admin, read-only call log)
 [*CallsApi*](doc/CallsApi.md) | [**acceptCall**](doc/CallsApi.md#acceptcall) | **PUT** /calls/{id}/accept | Callee accepts a ringing call (initiated → accepted)
 [*CallsApi*](doc/CallsApi.md) | [**connectedCall**](doc/CallsApi.md#connectedcall) | **PUT** /calls/{id}/connected | Report media connected (accepted → connected)
 [*CallsApi*](doc/CallsApi.md) | [**endCall**](doc/CallsApi.md#endcall) | **PUT** /calls/{id}/end | End a call (→ ended, or → missed if never answered)
@@ -102,6 +106,7 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminListCalls200Response](doc/AdminListCalls200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [Call](doc/Call.md)
  - [CallStatus](doc/CallStatus.md)

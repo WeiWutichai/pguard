@@ -69,6 +69,51 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/calls:
+    get:
+      tags: [Admin]
+      summary: List ALL calls cross-user (role=admin, read-only call log)
+      description: |
+        The admin call log — every call (NOT participant-scoped, unlike `GET /calls/{id}`),
+        newest first, optional `status`/`call_type` filters + limit/offset. Admin only (else
+        403). The per-call timeline / ICE / signal-quality detail in the design is not
+        persisted (this service is a relay) — that needs a future call-events read model.
+      operationId: adminListCalls
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/CallStatus' }
+        - name: call_type
+          in: query
+          required: false
+          schema: { $ref: '#/components/schemas/CallType' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: All matching calls, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Call' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /calls/{id}:
     get:
       tags: [Calls]
