@@ -14,6 +14,9 @@ part 'customer_profile_admin.g.dart';
 /// * [userId] 
 /// * [fullName] 
 /// * [address] 
+/// * [companyName] 
+/// * [email] 
+/// * [contactPhone] 
 /// * [createdAt] 
 @BuiltValue()
 abstract class CustomerProfileAdmin implements Built<CustomerProfileAdmin, CustomerProfileAdminBuilder> {
@@ -25,6 +28,15 @@ abstract class CustomerProfileAdmin implements Built<CustomerProfileAdmin, Custo
 
   @BuiltValueField(wireName: r'address')
   String? get address;
+
+  @BuiltValueField(wireName: r'company_name')
+  String? get companyName;
+
+  @BuiltValueField(wireName: r'email')
+  String? get email;
+
+  @BuiltValueField(wireName: r'contact_phone')
+  String? get contactPhone;
 
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
@@ -68,6 +80,27 @@ class _$CustomerProfileAdminSerializer implements PrimitiveSerializer<CustomerPr
       yield r'address';
       yield serializers.serialize(
         object.address,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.companyName != null) {
+      yield r'company_name';
+      yield serializers.serialize(
+        object.companyName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.email != null) {
+      yield r'email';
+      yield serializers.serialize(
+        object.email,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.contactPhone != null) {
+      yield r'contact_phone';
+      yield serializers.serialize(
+        object.contactPhone,
         specifiedType: const FullType(String),
       );
     }
@@ -119,6 +152,27 @@ class _$CustomerProfileAdminSerializer implements PrimitiveSerializer<CustomerPr
             specifiedType: const FullType(String),
           ) as String;
           result.address = valueDes;
+          break;
+        case r'company_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.companyName = valueDes;
+          break;
+        case r'email':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.email = valueDes;
+          break;
+        case r'contact_phone':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.contactPhone = valueDes;
           break;
         case r'created_at':
           final valueDes = serializers.deserialize(

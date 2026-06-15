@@ -16,6 +16,7 @@ part 'my_guard_profile.g.dart';
 ///
 /// Properties:
 /// * [userId] 
+/// * [fullName] - Guard full name (v1 parity).
 /// * [gender] 
 /// * [dateOfBirth] 
 /// * [yearsOfExperience] 
@@ -23,6 +24,10 @@ part 'my_guard_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
+/// * [address] 
+/// * [emergencyContactName] 
+/// * [emergencyContactPhone] 
+/// * [emergencyContactRelationship] 
 /// * [approvalStatus] 
 /// * [kind] 
 @BuiltValue()
@@ -59,6 +64,13 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
       object.approvalStatus,
       specifiedType: const FullType(ApprovalStatus),
     );
+    if (object.address != null) {
+      yield r'address';
+      yield serializers.serialize(
+        object.address,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.gender != null) {
       yield r'gender';
       yield serializers.serialize(
@@ -66,17 +78,17 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
         specifiedType: const FullType(String),
       );
     }
-    if (object.yearsOfExperience != null) {
-      yield r'years_of_experience';
-      yield serializers.serialize(
-        object.yearsOfExperience,
-        specifiedType: const FullType(int),
-      );
-    }
     if (object.accountName != null) {
       yield r'account_name';
       yield serializers.serialize(
         object.accountName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.emergencyContactName != null) {
+      yield r'emergency_contact_name';
+      yield serializers.serialize(
+        object.emergencyContactName,
         specifiedType: const FullType(String),
       );
     }
@@ -89,6 +101,20 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
       yield r'previous_workplace';
       yield serializers.serialize(
         object.previousWorkplace,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.emergencyContactRelationship != null) {
+      yield r'emergency_contact_relationship';
+      yield serializers.serialize(
+        object.emergencyContactRelationship,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.fullName != null) {
+      yield r'full_name';
+      yield serializers.serialize(
+        object.fullName,
         specifiedType: const FullType(String),
       );
     }
@@ -118,6 +144,20 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
       object.userId,
       specifiedType: const FullType(String),
     );
+    if (object.emergencyContactPhone != null) {
+      yield r'emergency_contact_phone';
+      yield serializers.serialize(
+        object.emergencyContactPhone,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.yearsOfExperience != null) {
+      yield r'years_of_experience';
+      yield serializers.serialize(
+        object.yearsOfExperience,
+        specifiedType: const FullType(int),
+      );
+    }
   }
 
   @override
@@ -148,6 +188,13 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
           ) as ApprovalStatus;
           result.approvalStatus = valueDes;
           break;
+        case r'address':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.address = valueDes;
+          break;
         case r'gender':
           final valueDes = serializers.deserialize(
             value,
@@ -155,19 +202,19 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
           ) as String;
           result.gender = valueDes;
           break;
-        case r'years_of_experience':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.yearsOfExperience = valueDes;
-          break;
         case r'account_name':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(String),
           ) as String;
           result.accountName = valueDes;
+          break;
+        case r'emergency_contact_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactName = valueDes;
           break;
         case r'kind':
           final valueDes = serializers.deserialize(
@@ -182,6 +229,20 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
             specifiedType: const FullType(String),
           ) as String;
           result.previousWorkplace = valueDes;
+          break;
+        case r'emergency_contact_relationship':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactRelationship = valueDes;
+          break;
+        case r'full_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.fullName = valueDes;
           break;
         case r'date_of_birth':
           final valueDes = serializers.deserialize(
@@ -210,6 +271,20 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
             specifiedType: const FullType(String),
           ) as String;
           result.userId = valueDes;
+          break;
+        case r'emergency_contact_phone':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactPhone = valueDes;
+          break;
+        case r'years_of_experience':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.yearsOfExperience = valueDes;
           break;
         default:
           unhandled.add(key);

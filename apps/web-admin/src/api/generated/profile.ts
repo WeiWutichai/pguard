@@ -311,6 +311,8 @@ export interface components {
         ApprovalStatus: "pending" | "approved" | "rejected";
         /** @description All fields optional — a guard fills the profile across an onboarding flow. */
         UpsertGuardProfileRequest: {
+            /** @description Guard full name (v1 parity). */
+            full_name?: string | null;
             gender?: string | null;
             /**
              * Format: date
@@ -324,10 +326,21 @@ export interface components {
             /** @description Stored in full; masked on owner reads (PDPA). */
             account_number?: string | null;
             account_name?: string | null;
+            /** @description Home address (v1 parity). */
+            address?: string | null;
+            emergency_contact_name?: string | null;
+            /** @description Thai national format (≥10 digits, leading 0). */
+            emergency_contact_phone?: string | null;
+            emergency_contact_relationship?: string | null;
         };
         UpsertCustomerProfileRequest: {
             full_name?: string | null;
             address?: string | null;
+            company_name?: string | null;
+            /** @description Validated: contains @ and ., length ≥ 5. */
+            email?: string | null;
+            /** @description Thai national format (≥10 digits, leading 0). */
+            contact_phone?: string | null;
         };
         RejectRequest: {
             /** @description Optional context for the rejection. */
@@ -346,6 +359,8 @@ export interface components {
         GuardProfile: {
             /** Format: uuid */
             user_id: string;
+            /** @description Guard full name (v1 parity). */
+            full_name?: string | null;
             gender?: string | null;
             /** Format: date */
             date_of_birth?: string | null;
@@ -359,6 +374,10 @@ export interface components {
              */
             account_number?: string | null;
             account_name?: string | null;
+            address?: string | null;
+            emergency_contact_name?: string | null;
+            emergency_contact_phone?: string | null;
+            emergency_contact_relationship?: string | null;
             approval_status: components["schemas"]["ApprovalStatus"];
         };
         CustomerProfile: {
@@ -366,6 +385,9 @@ export interface components {
             user_id: string;
             full_name?: string | null;
             address?: string | null;
+            company_name?: string | null;
+            email?: string | null;
+            contact_phone?: string | null;
         };
         /**
          * @description A customer profile row in the admin directory. Adds `created_at` (signup time / the
@@ -377,6 +399,9 @@ export interface components {
             user_id: string;
             full_name?: string | null;
             address?: string | null;
+            company_name?: string | null;
+            email?: string | null;
+            contact_phone?: string | null;
             /** Format: date-time */
             created_at: string;
         };

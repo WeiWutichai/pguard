@@ -45,6 +45,8 @@ pub struct RecipientsResponse {
 /// is provided.
 #[derive(Debug, Default, Deserialize)]
 pub struct UpsertGuardProfileRequest {
+    /// Guard's full name (v2 stores it on the profile, not on identity.users — v1 parity).
+    pub full_name: Option<String>,
     pub gender: Option<String>,
     /// ISO `YYYY-MM-DD`. Parsed by serde into a `NaiveDate` (a malformed date → 422).
     pub date_of_birth: Option<NaiveDate>,
@@ -53,13 +55,25 @@ pub struct UpsertGuardProfileRequest {
     pub bank_name: Option<String>,
     pub account_number: Option<String>,
     pub account_name: Option<String>,
+    /// Home address (v1 parity).
+    pub address: Option<String>,
+    /// Emergency contact (v1 parity — PII; not masked, v1 doesn't mask it either).
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
+    pub emergency_contact_relationship: Option<String>,
 }
 
-/// Upsert the caller's customer profile (minimal in this slice).
+/// Upsert the caller's customer profile (v1-parity fields).
 #[derive(Debug, Default, Deserialize)]
 pub struct UpsertCustomerProfileRequest {
     pub full_name: Option<String>,
     pub address: Option<String>,
+    /// Optional company (v1 parity).
+    pub company_name: Option<String>,
+    /// Optional email (validated `@`+`.`+len≥5; v1 parity).
+    pub email: Option<String>,
+    /// Optional contact phone (Thai national format; v1 parity).
+    pub contact_phone: Option<String>,
 }
 
 /// Optional reason carried on an admin rejection (stored is a follow-up; for now it is
@@ -111,6 +125,8 @@ pub struct DocumentExpiryRow {
 #[derive(Debug, Serialize)]
 pub struct GuardProfileResponse {
     pub user_id: Uuid,
+    /// Guard's full name (v1 parity — stored on the profile in v2).
+    pub full_name: Option<String>,
     pub gender: Option<String>,
     pub date_of_birth: Option<NaiveDate>,
     pub years_of_experience: Option<i32>,
@@ -119,6 +135,10 @@ pub struct GuardProfileResponse {
     /// Masked (last-4) on owner reads; full on admin reads. See the constructors.
     pub account_number: Option<String>,
     pub account_name: Option<String>,
+    pub address: Option<String>,
+    pub emergency_contact_name: Option<String>,
+    pub emergency_contact_phone: Option<String>,
+    pub emergency_contact_relationship: Option<String>,
     pub approval_status: ApprovalStatus,
 }
 
@@ -128,6 +148,9 @@ pub struct CustomerProfileResponse {
     pub user_id: Uuid,
     pub full_name: Option<String>,
     pub address: Option<String>,
+    pub company_name: Option<String>,
+    pub email: Option<String>,
+    pub contact_phone: Option<String>,
 }
 
 /// A customer profile row as returned to an ADMIN list (`GET /admin/customer-profiles`).
@@ -141,6 +164,9 @@ pub struct CustomerProfileAdminResponse {
     pub user_id: Uuid,
     pub full_name: Option<String>,
     pub address: Option<String>,
+    pub company_name: Option<String>,
+    pub email: Option<String>,
+    pub contact_phone: Option<String>,
     pub created_at: DateTime<Utc>,
 }
 

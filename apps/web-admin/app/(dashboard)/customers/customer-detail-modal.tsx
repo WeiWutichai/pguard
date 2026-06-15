@@ -83,6 +83,25 @@ export function CustomerDetailModal({
               {customer.address ?? t("common.none")}
             </dd>
           </div>
+          {/* v1-parity fields — real data (optional; "—" when not provided). */}
+          <div className="flex items-start justify-between gap-4 border-b border-border py-2">
+            <dt className="text-muted">{lang === "th" ? "บริษัท" : "Company"}</dt>
+            <dd className="max-w-[230px] text-right text-text-strong">
+              {customer.company_name ?? t("common.none")}
+            </dd>
+          </div>
+          <div className="flex items-start justify-between gap-4 border-b border-border py-2">
+            <dt className="text-muted">{lang === "th" ? "อีเมล" : "Email"}</dt>
+            <dd className="max-w-[230px] break-all text-right text-text-strong">
+              {customer.email ?? t("common.none")}
+            </dd>
+          </div>
+          <div className="flex items-start justify-between gap-4 border-b border-border py-2">
+            <dt className="text-muted">{lang === "th" ? "เบอร์ติดต่อ" : "Contact phone"}</dt>
+            <dd className="text-right font-mono text-text-strong">
+              {customer.contact_phone ?? t("common.none")}
+            </dd>
+          </div>
           <div className="flex items-center justify-between gap-4 py-2">
             <dt className="text-muted">{c.quality}</dt>
             <dd>{gap}</dd>

@@ -38,10 +38,24 @@ export function GuardDetailModal({
   const c = COPY[lang];
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
 
+  const emergency = [guard.emergency_contact_name, guard.emergency_contact_relationship]
+    .filter(Boolean)
+    .join(" · ");
   const rows: { key: string; label: string; value: string | null | undefined }[] = [
     { key: "gender", label: t("guards.detail.gender"), value: guard.gender },
     { key: "dob", label: t("guards.detail.dob"), value: guard.date_of_birth },
     { key: "workplace", label: t("guards.col.workplace"), value: guard.previous_workplace },
+    { key: "address", label: lang === "th" ? "ที่อยู่" : "Address", value: guard.address },
+    {
+      key: "emergency",
+      label: lang === "th" ? "ผู้ติดต่อฉุกเฉิน" : "Emergency contact",
+      value: emergency || null,
+    },
+    {
+      key: "emergency_phone",
+      label: lang === "th" ? "เบอร์ฉุกเฉิน" : "Emergency phone",
+      value: guard.emergency_contact_phone,
+    },
   ];
 
   return (
@@ -65,10 +79,12 @@ export function GuardDetailModal({
     >
       {/* Drawer head: avatar + name + full id (the list shows the short form only). */}
       <div className="flex items-center gap-3">
-        <Avatar size="lg">{initialsOf(guard.account_name, guard.user_id)}</Avatar>
+        <Avatar size="lg">
+          {initialsOf(guard.full_name ?? guard.account_name, guard.user_id)}
+        </Avatar>
         <div className="min-w-0">
           <div className="truncate text-lg font-semibold text-text-strong">
-            {guard.account_name ?? t("common.none")}
+            {guard.full_name ?? guard.account_name ?? t("common.none")}
           </div>
           <div className="truncate font-mono text-xs text-muted">{guard.user_id}</div>
         </div>

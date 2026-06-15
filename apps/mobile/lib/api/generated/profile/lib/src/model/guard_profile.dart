@@ -14,6 +14,7 @@ part 'guard_profile.g.dart';
 ///
 /// Properties:
 /// * [userId] 
+/// * [fullName] - Guard full name (v1 parity).
 /// * [gender] 
 /// * [dateOfBirth] 
 /// * [yearsOfExperience] 
@@ -21,11 +22,19 @@ part 'guard_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
+/// * [address] 
+/// * [emergencyContactName] 
+/// * [emergencyContactPhone] 
+/// * [emergencyContactRelationship] 
 /// * [approvalStatus] 
 @BuiltValue(instantiable: false)
 abstract class GuardProfile  {
   @BuiltValueField(wireName: r'user_id')
   String get userId;
+
+  /// Guard full name (v1 parity).
+  @BuiltValueField(wireName: r'full_name')
+  String? get fullName;
 
   @BuiltValueField(wireName: r'gender')
   String? get gender;
@@ -48,6 +57,18 @@ abstract class GuardProfile  {
 
   @BuiltValueField(wireName: r'account_name')
   String? get accountName;
+
+  @BuiltValueField(wireName: r'address')
+  String? get address;
+
+  @BuiltValueField(wireName: r'emergency_contact_name')
+  String? get emergencyContactName;
+
+  @BuiltValueField(wireName: r'emergency_contact_phone')
+  String? get emergencyContactPhone;
+
+  @BuiltValueField(wireName: r'emergency_contact_relationship')
+  String? get emergencyContactRelationship;
 
   @BuiltValueField(wireName: r'approval_status')
   ApprovalStatus get approvalStatus;
@@ -74,6 +95,13 @@ class _$GuardProfileSerializer implements PrimitiveSerializer<GuardProfile> {
       object.userId,
       specifiedType: const FullType(String),
     );
+    if (object.fullName != null) {
+      yield r'full_name';
+      yield serializers.serialize(
+        object.fullName,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.gender != null) {
       yield r'gender';
       yield serializers.serialize(
@@ -120,6 +148,34 @@ class _$GuardProfileSerializer implements PrimitiveSerializer<GuardProfile> {
       yield r'account_name';
       yield serializers.serialize(
         object.accountName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.address != null) {
+      yield r'address';
+      yield serializers.serialize(
+        object.address,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.emergencyContactName != null) {
+      yield r'emergency_contact_name';
+      yield serializers.serialize(
+        object.emergencyContactName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.emergencyContactPhone != null) {
+      yield r'emergency_contact_phone';
+      yield serializers.serialize(
+        object.emergencyContactPhone,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.emergencyContactRelationship != null) {
+      yield r'emergency_contact_relationship';
+      yield serializers.serialize(
+        object.emergencyContactRelationship,
         specifiedType: const FullType(String),
       );
     }
@@ -198,6 +254,13 @@ class _$$GuardProfileSerializer implements PrimitiveSerializer<$GuardProfile> {
           ) as String;
           result.userId = valueDes;
           break;
+        case r'full_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.fullName = valueDes;
+          break;
         case r'gender':
           final valueDes = serializers.deserialize(
             value,
@@ -246,6 +309,34 @@ class _$$GuardProfileSerializer implements PrimitiveSerializer<$GuardProfile> {
             specifiedType: const FullType(String),
           ) as String;
           result.accountName = valueDes;
+          break;
+        case r'address':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.address = valueDes;
+          break;
+        case r'emergency_contact_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactName = valueDes;
+          break;
+        case r'emergency_contact_phone':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactPhone = valueDes;
+          break;
+        case r'emergency_contact_relationship':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.emergencyContactRelationship = valueDes;
           break;
         case r'approval_status':
           final valueDes = serializers.deserialize(
