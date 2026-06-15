@@ -20,9 +20,9 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain;
 use crate::events;
 use crate::models::{
-    AttachmentResponse, AttachmentRow, ConversationResponse, CreateConversationRequest,
-    EnrichedConversation, IncomingChatMessage, ListMessagesQuery, OutgoingChatMessage, RoleQuery,
-    SetRequestStatusRequest,
+    AdminConversationRow, AdminListConversationsQuery, AttachmentResponse, AttachmentRow,
+    ConversationResponse, CreateConversationRequest, EnrichedConversation, IncomingChatMessage,
+    ListMessagesQuery, OutgoingChatMessage, RoleQuery, SetRequestStatusRequest,
 };
 use crate::repo;
 use crate::state::{ChatDeps, ChatInternalDeps};
@@ -85,6 +85,27 @@ pub async fn list_conversations<S: ChatDeps>(
 ) -> Result<Json<ApiResponse<Vec<EnrichedConversation>>>, AppError> {
     let role = acting_role(&query, &user);
     let convos = repo::list_conversations(state.db_read(), user.user_id, role).await?;
+    Ok(Json(ApiResponse::success(convos)))
+}
+
+/// GET /admin/conversations — admin cross-user conversation list (read-only). Admin only (the
+/// edge proves identity, not role). The per-conversation message pane reuses the existing
+/// `GET /conversations/{id}/messages` (admin already bypasses the participant gate). Moderation
+/// actions (flag/delete/block/archive) in the design have no v2 endpoint and are out of scope.
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id))]
+pub async fn admin_list_conversations<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(query): Query<AdminListConversationsQuery>,
+) -> Result<Json<ApiResponse<Vec<AdminConversationRow>>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let offset = query.offset.unwrap_or(0).max(0);
+    let convos = repo::admin_list_conversations(state.db_read(), limit, offset).await?;
     Ok(Json(ApiResponse::success(convos)))
 }
 
@@ -399,6 +420,10 @@ mod tests {
             .route("/conversations", post(create_conversation::<TestDeps>))
             .route("/conversations", get(list_conversations::<TestDeps>))
             .route(
+                "/admin/conversations",
+                get(admin_list_conversations::<TestDeps>),
+            )
+            .route(
                 "/conversations/{id}/messages",
                 get(list_messages::<TestDeps>),
             )
@@ -462,6 +487,25 @@ mod tests {
                 StatusCode::UNAUTHORIZED
             );
         }
+    }
+
+    #[tokio::test]
+    async fn admin_list_conversations_rejects_non_admin() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not list every conversation cross-user (the 403 fires before any DB).
+        let req = Request::builder()
+            .method("GET")
+            .uri("/admin/conversations")
+            .header(
+                "authorization",
+                format!("Bearer {}", token(Uuid::new_v4(), "customer")),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

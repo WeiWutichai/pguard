@@ -219,6 +219,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin conversation list (cross-user, read-only). The message pane reuses the existing
+        // /conversations/{id}/messages rule. Admin authz is the chat service's job.
+        prefix: "/admin/conversations",
+        suffix: None,
+        upstream: Upstream::Chat,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -635,6 +643,15 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/bookings"));
         assert_eq!(up, Upstream::Booking);
         assert_eq!(fwd, "/admin/bookings");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_conversations_routes_to_chat() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/conversations"));
+        assert_eq!(up, Upstream::Chat);
+        assert_eq!(fwd, "/admin/conversations");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

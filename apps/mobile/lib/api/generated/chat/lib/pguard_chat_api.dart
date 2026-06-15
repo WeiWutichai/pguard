@@ -10,11 +10,14 @@ export 'package:pguard_chat_api/src/auth/oauth.dart';
 export 'package:pguard_chat_api/src/serializers.dart';
 export 'package:pguard_chat_api/src/model/date.dart';
 
+export 'package:pguard_chat_api/src/api/admin_api.dart';
 export 'package:pguard_chat_api/src/api/attachments_api.dart';
 export 'package:pguard_chat_api/src/api/conversations_api.dart';
 export 'package:pguard_chat_api/src/api/internal_api.dart';
 export 'package:pguard_chat_api/src/api/messages_api.dart';
 
+export 'package:pguard_chat_api/src/model/admin_conversation.dart';
+export 'package:pguard_chat_api/src/model/admin_list_conversations200_response.dart';
 export 'package:pguard_chat_api/src/model/attachment.dart';
 export 'package:pguard_chat_api/src/model/conversation_response.dart';
 export 'package:pguard_chat_api/src/model/create_conversation_request.dart';

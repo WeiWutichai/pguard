@@ -105,6 +105,30 @@ pub struct EnrichedConversation {
     pub request_status: Option<String>,
 }
 
+/// An admin conversation-list row (`GET /admin/conversations`). Unlike [`EnrichedConversation`]
+/// (which is scoped to a participant + their counterpart), the admin view is NOT a participant,
+/// so it carries BOTH participants' names joined + the last message + a total count — no
+/// "me"/"counterpart"/"unread" notion.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AdminConversationRow {
+    pub id: Uuid,
+    pub request_id: Uuid,
+    pub request_status: Option<String>,
+    pub created_at: DateTime<Utc>,
+    /// Participant display names joined with " · " (NULLs ignored).
+    pub participants: Option<String>,
+    pub last_message: Option<String>,
+    pub last_message_at: Option<DateTime<Utc>>,
+    pub message_count: i64,
+}
+
+/// Query params for `GET /admin/conversations` (house limit/offset pagination).
+#[derive(Debug, Deserialize)]
+pub struct AdminListConversationsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// A message row (read path). `message_type` is the enum cast to text. `sender_role` drives
 /// client-side alignment.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]

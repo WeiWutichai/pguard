@@ -20,8 +20,8 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::domain::{self, MessageType};
 use crate::models::{
-    AttachmentRow, ConversationResponse, CreateConversationRequest, EnrichedConversation,
-    IncomingChatMessage, OutgoingChatMessage, ParticipantInput,
+    AdminConversationRow, AttachmentRow, ConversationResponse, CreateConversationRequest,
+    EnrichedConversation, IncomingChatMessage, OutgoingChatMessage, ParticipantInput,
 };
 
 /// Columns of a message row as returned to clients (`message_type` cast to text → no enum decode).
@@ -156,6 +156,39 @@ pub async fn list_conversations(
     let rows = sqlx::query_as::<_, EnrichedConversation>(LIST_CONVERSATIONS_SQL)
         .bind(user_id)
         .bind(acting_role)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+/// Admin conversation list — ALL conversations (NOT participant-scoped; the admin-role gate is
+/// the API layer's job), newest first, with both participants' names joined + the last message +
+/// total count. No cross-schema reach (all from chat.{conversations,participants,messages}).
+pub async fn admin_list_conversations(
+    db: &sqlx::PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AdminConversationRow>, AppError> {
+    let sql = r#"
+        SELECT
+            c.id, c.request_id, c.request_status, c.created_at,
+            (SELECT string_agg(p.display_name, ' · ' ORDER BY p.user_role)
+               FROM chat.participants p WHERE p.conversation_id = c.id) AS participants,
+            lm.content    AS last_message,
+            lm.created_at AS last_message_at,
+            COALESCE((SELECT COUNT(*) FROM chat.messages m WHERE m.conversation_id = c.id), 0)
+              AS message_count
+        FROM chat.conversations c
+        LEFT JOIN LATERAL (
+            SELECT m.content, m.created_at FROM chat.messages m
+             WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1
+        ) lm ON true
+        ORDER BY c.created_at DESC
+        LIMIT $1 OFFSET $2
+    "#;
+    let rows = sqlx::query_as::<_, AdminConversationRow>(sql)
+        .bind(limit)
+        .bind(offset)
         .fetch_all(db)
         .await?;
     Ok(rows)
