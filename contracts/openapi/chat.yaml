@@ -119,6 +119,42 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /admin/conversations:
+    get:
+      tags: [Admin]
+      summary: List ALL conversations cross-user (role=admin, read-only)
+      description: |
+        The admin conversation list — every conversation (NOT participant-scoped, unlike
+        `GET /conversations`), newest first, with both participants' names joined + the last
+        message + total count. Admin only (else 403). The message pane reuses
+        `GET /conversations/{id}/messages` (admin bypasses the participant gate). Moderation
+        actions (flag/delete/block/archive) in the design have no v2 endpoint.
+      operationId: adminListConversations
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: All conversations, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminConversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /conversations/{id}/messages:
     get:
       tags: [Messages]
@@ -287,6 +323,22 @@ components:
       type: string
       enum: [text, image, video, system]
       description: Message kind. `image`/`video` carry the attachment reference/URL in `content`.
+
+    AdminConversation:
+      type: object
+      required: [id, request_id, created_at, message_count]
+      properties:
+        id: { type: string, format: uuid }
+        request_id: { type: string, format: uuid }
+        request_status: { type: string, nullable: true }
+        created_at: { type: string, format: date-time }
+        participants:
+          type: string
+          nullable: true
+          description: Participant display names joined with " · ".
+        last_message: { type: string, nullable: true }
+        last_message_at: { type: string, format: date-time, nullable: true }
+        message_count: { type: integer, format: int64 }
 
     ParticipantInput:
       type: object

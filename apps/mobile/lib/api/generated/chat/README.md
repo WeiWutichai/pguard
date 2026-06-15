@@ -91,14 +91,15 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_chat_api/pguard_chat_api.dart';
 
 
-final api = PguardChatApi().getAttachmentsApi();
-final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | Attachment UUID.
+final api = PguardChatApi().getAdminApi();
+final int limit = 789; // int | 
+final int offset = 789; // int | 
 
 try {
-    final response = await api.getAttachment(id);
+    final response = await api.adminListConversations(limit, offset);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AttachmentsApi->getAttachment: $e\n");
+    print("Exception when calling AdminApi->adminListConversations: $e\n");
 }
 
 ```
@@ -109,6 +110,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminListConversations**](doc/AdminApi.md#adminlistconversations) | **GET** /admin/conversations | List ALL conversations cross-user (role&#x3D;admin, read-only)
 [*AttachmentsApi*](doc/AttachmentsApi.md) | [**getAttachment**](doc/AttachmentsApi.md#getattachment) | **GET** /attachments/{id} | Fetch an attachment with a fresh presigned URL
 [*AttachmentsApi*](doc/AttachmentsApi.md) | [**uploadAttachment**](doc/AttachmentsApi.md#uploadattachment) | **POST** /attachments | Upload an image/video to a conversation
 [*ConversationsApi*](doc/ConversationsApi.md) | [**createConversation**](doc/ConversationsApi.md#createconversation) | **POST** /conversations | Create a booking-scoped conversation
@@ -120,6 +122,8 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminConversation](doc/AdminConversation.md)
+ - [AdminListConversations200Response](doc/AdminListConversations200Response.md)
  - [Attachment](doc/Attachment.md)
  - [ConversationResponse](doc/ConversationResponse.md)
  - [CreateConversationRequest](doc/CreateConversationRequest.md)

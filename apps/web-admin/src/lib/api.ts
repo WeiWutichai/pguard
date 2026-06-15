@@ -16,6 +16,7 @@ import type { paths as PaymentPaths } from "@/api/generated/payment";
 import type { paths as BookingPaths } from "@/api/generated/booking";
 import type { paths as PresencePaths } from "@/api/generated/presence";
 import type { paths as CallingPaths } from "@/api/generated/calling";
+import type { paths as ChatPaths } from "@/api/generated/chat";
 
 /** Same-origin gateway prefix for the browser (proxied to the gateway). Overridable for an
  *  off-origin deployment via NEXT_PUBLIC_API_BASE_URL (then CORS + SameSite must allow it). */
@@ -61,3 +62,6 @@ export const bookingApi = browserClient<BookingPaths>();
 
 /** calling service (admin read-only call log — GET /admin/calls). */
 export const callingApi = browserClient<CallingPaths>();
+
+/** chat service (admin conversation list + per-conversation message read — admin-readable). */
+export const chatApi = browserClient<ChatPaths>();

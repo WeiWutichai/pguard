@@ -4,6 +4,7 @@ README.md
 analysis_options.yaml
 lib/pguard_chat_api.dart
 lib/src/api.dart
+lib/src/api/admin_api.dart
 lib/src/api/attachments_api.dart
 lib/src/api/conversations_api.dart
 lib/src/api/internal_api.dart
@@ -15,6 +16,8 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/admin_conversation.dart
+lib/src/model/admin_list_conversations200_response.dart
 lib/src/model/attachment.dart
 lib/src/model/conversation_response.dart
 lib/src/model/create_conversation_request.dart

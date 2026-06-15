@@ -129,6 +129,13 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .route("/conversations", post(api::create_conversation::<AppState>))
         .route("/conversations", get(api::list_conversations::<AppState>))
+        // Admin cross-user conversation list (admin-role gated). Distinct prefix from
+        // /conversations; the gateway routes it via a new /admin/conversations rule. The admin
+        // message pane reuses /conversations/{id}/messages (admin bypasses the participant gate).
+        .route(
+            "/admin/conversations",
+            get(api::admin_list_conversations::<AppState>),
+        )
         .route(
             "/conversations/{id}/messages",
             get(api::list_messages::<AppState>),
