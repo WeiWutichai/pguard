@@ -617,6 +617,16 @@ mod tests {
     }
 
     #[test]
+    fn auth_revoke_all_is_protected() {
+        // Self-serve "sign out everywhere" — under /auth/ → identity, token-required (NOT public).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/auth/revoke-all"));
+        assert_eq!(up, Upstream::Identity);
+        assert_eq!(fwd, "/auth/revoke-all");
+        assert!(!public, "/auth/revoke-all requires a token");
+        assert_eq!(tier, Tier::Auth);
+    }
+
+    #[test]
     fn auth_me_is_protected() {
         let (up, fwd, public, tier) = proxy(resolve("/v1/auth/me"));
         assert_eq!(up, Upstream::Identity);

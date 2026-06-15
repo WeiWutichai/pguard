@@ -416,6 +416,34 @@ pub async fn data_export(
     ))))
 }
 
+// ----- POST /auth/revoke-all (self-serve "sign out everywhere") -----
+
+/// Force-revoke ALL of the caller's own sessions ("sign out everywhere" on the admin profile
+/// screen). Bumps the user's `token_revocation_version` + revokes every refresh family (so every
+/// other device's tokens are rejected at once via the Redis `trv` marker), then clears THIS
+/// browser's auth cookies so the current session ends too. Mirrors `delete_me`'s revoke path,
+/// without the soft-delete/PII-redaction — the account stays active, just re-auth-required.
+#[tracing::instrument(skip_all, fields(user_id = %user.user_id))]
+pub async fn revoke_all_sessions(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<impl IntoResponse, AppError> {
+    let version = repo::revoke_all(&state.db, user.user_id).await?;
+    let mut redis = state.redis_conn.clone();
+    crate::state::mark_user_revoked(&mut redis, user.user_id, version).await;
+
+    let mut headers = HeaderMap::new();
+    append_cookie(&mut headers, &build_clear_cookie(ACCESS_TOKEN_COOKIE, "/"));
+    append_cookie(
+        &mut headers,
+        &build_clear_cookie(REFRESH_TOKEN_COOKIE, REFRESH_COOKIE_PATH),
+    );
+    Ok((
+        headers,
+        Json(ApiResponse::success(serde_json::json!({ "revoked": true }))),
+    ))
+}
+
 // ----- POST /internal/users/{id}/revoke-all -----
 
 /// Force-revoke-all for a user (service-to-service). **v2:** requires a valid service-JWT

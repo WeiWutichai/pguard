@@ -147,6 +147,21 @@ paths:
         '200': { $ref: '#/components/responses/EmptyOk' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/revoke-all:
+    post:
+      tags: [Auth]
+      summary: Sign out everywhere — revoke ALL of the caller's own sessions
+      description: |
+        Self-serve force-revoke-all: bumps the caller's `token_revocation_version` and revokes
+        every refresh family, so all other devices' tokens are rejected at once, then clears
+        this browser's auth cookies. The account stays active (re-auth required) — unlike
+        `DELETE /auth/me` which also soft-deletes + redacts.
+      operationId: revokeAllSessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200': { $ref: '#/components/responses/EmptyOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /auth/me:
     get:
       tags: [Auth]

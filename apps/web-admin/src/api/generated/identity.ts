@@ -110,6 +110,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/revoke-all": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sign out everywhere — revoke ALL of the caller's own sessions
+         * @description Self-serve force-revoke-all: bumps the caller's `token_revocation_version` and revokes
+         *     every refresh family, so all other devices' tokens are rejected at once, then clears
+         *     this browser's auth cookies. The account stays active (re-auth required) — unlike
+         *     `DELETE /auth/me` which also soft-deletes + redacts.
+         */
+        post: operations["revokeAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/me": {
         parameters: {
             query?: never;
@@ -422,6 +445,19 @@ export interface operations {
                 "application/json": components["schemas"]["RefreshRequest"];
             };
         };
+        responses: {
+            200: components["responses"]["EmptyOk"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    revokeAllSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
         responses: {
             200: components["responses"]["EmptyOk"];
             401: components["responses"]["Unauthorized"];
