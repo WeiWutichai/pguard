@@ -13,6 +13,7 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/admin_revenue_report200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/complete_payment_request.dart
 lib/src/model/create_payment_request.dart
@@ -23,5 +24,7 @@ lib/src/model/inline_object.dart
 lib/src/model/list_payments200_response.dart
 lib/src/model/payment.dart
 lib/src/model/payment_status.dart
+lib/src/model/revenue_point.dart
+lib/src/model/revenue_report.dart
 lib/src/serializers.dart
 pubspec.yaml

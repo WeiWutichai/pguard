@@ -14,6 +14,7 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_payment_api/src/date_serializer.dart';
 import 'package:pguard_payment_api/src/model/date.dart';
 
+import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 import 'package:pguard_payment_api/src/model/api_response_envelope.dart';
 import 'package:pguard_payment_api/src/model/complete_payment_request.dart';
 import 'package:pguard_payment_api/src/model/create_payment_request.dart';
@@ -23,10 +24,13 @@ import 'package:pguard_payment_api/src/model/inline_object.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/payment.dart';
 import 'package:pguard_payment_api/src/model/payment_status.dart';
+import 'package:pguard_payment_api/src/model/revenue_point.dart';
+import 'package:pguard_payment_api/src/model/revenue_report.dart';
 
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminRevenueReport200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   CompletePaymentRequest,
   CreatePaymentRequest,
@@ -36,6 +40,8 @@ part 'serializers.g.dart';
   ListPayments200Response,
   Payment,
   PaymentStatus,
+  RevenuePoint,
+  RevenueReport,
 ])
 Serializers serializers = (_$serializers.toBuilder()
       ..add(ApiResponseEnvelope.serializer)

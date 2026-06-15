@@ -3,7 +3,7 @@
 //! Money fields (`base_fee`, `tip`) are [`rust_decimal::Decimal`] — never `f64` (CLAUDE.md
 //! money rules); they serialize as JSON strings via the workspace `serde-str` feature.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -163,6 +163,50 @@ pub struct AdminListBookingsQuery {
 #[derive(Debug, Deserialize)]
 pub struct AssignGuardRequest {
     pub guard_id: Uuid,
+}
+
+// ----- Reports (admin analytics) -----
+
+/// Inclusive-from / exclusive-to date window (RFC3339); both optional — the handler defaults
+/// to the last 30 days. Shared shape with the payment revenue report.
+#[derive(Debug, Deserialize)]
+pub struct ReportRangeQuery {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
+
+/// One day's booking count (the bookings-volume line on the revenue chart).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DailyCount {
+    pub date: NaiveDate,
+    pub count: i64,
+}
+
+/// One heatmap cell: guard-hours scheduled in a `dow` (0=Sun..6=Sat) × 2-hour `bucket`
+/// (0=00:00–02:00 .. 11=22:00–24:00). `hours` = Σ(hours × guard_count) for that slot.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct UtilizationCell {
+    pub dow: i32,
+    pub bucket: i32,
+    pub hours: i64,
+}
+
+/// One point on the aggregate retention curve: % of customers still active `week` weeks after
+/// their first booking (week 0 = 100%).
+#[derive(Debug, Serialize)]
+pub struct RetentionPoint {
+    pub week: i32,
+    pub pct: f64,
+}
+
+/// Composite booking analytics for the reports screen — three booking-derived panels in one
+/// round-trip (volume trend, utilization heatmap, retention cohort).
+#[derive(Debug, Serialize)]
+pub struct BookingsReport {
+    pub daily: Vec<DailyCount>,
+    pub utilization: Vec<UtilizationCell>,
+    pub retention: Vec<RetentionPoint>,
+    pub total: i64,
 }
 
 // ----- Service catalog (admin-managed pricing; standalone, not wired to the charge path) -----

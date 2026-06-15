@@ -115,6 +115,44 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/reports/bookings:
+    get:
+      tags: [Admin]
+      summary: Booking analytics — volume + utilization + retention (role=admin)
+      description: |
+        Composite booking analytics over `[from, to)` in one round-trip: daily booking-volume
+        series, a guard-hours heatmap (day-of-week × 2-hour bucket of scheduled time), and an
+        aggregate customer-retention curve. Defaults to the last 30 days (capped at 366). Admin
+        only (else 403). NOTE: a bookings-BY-SERVICE-TYPE breakdown is NOT included — the booking
+        model has no service_type dimension in v2 (it would entail the deferred catalog→charge
+        integration decision).
+      operationId: adminBookingsReport
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive window start (RFC3339). Default = `to − 30 days`.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Exclusive window end (RFC3339). Default = now.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Booking analytics
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/BookingsReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/bookings/{id}/assign:
     post:
       tags: [Admin]
@@ -883,6 +921,44 @@ components:
           description: AVG of visible overall ratings (decimal string); null if none / rating unreachable.
           example: "4.50"
         review_count: { type: integer, format: int64 }
+
+    DailyCount:
+      type: object
+      required: [date, count]
+      properties:
+        date: { type: string, format: date }
+        count: { type: integer, format: int64 }
+
+    UtilizationCell:
+      type: object
+      description: Guard-hours in a day-of-week × 2-hour slot (`hours` = Σ hours×guard_count).
+      required: [dow, bucket, hours]
+      properties:
+        dow: { type: integer, format: int32, description: "0=Sunday .. 6=Saturday" }
+        bucket: { type: integer, format: int32, description: "2-hour bucket 0..11 (0 = 00:00–02:00)" }
+        hours: { type: integer, format: int64 }
+
+    RetentionPoint:
+      type: object
+      required: [week, pct]
+      properties:
+        week: { type: integer, format: int32 }
+        pct: { type: number, format: double, description: "% of customers still active at week N (week 0 = 100)." }
+
+    BookingsReport:
+      type: object
+      required: [daily, utilization, retention, total]
+      properties:
+        daily:
+          type: array
+          items: { $ref: '#/components/schemas/DailyCount' }
+        utilization:
+          type: array
+          items: { $ref: '#/components/schemas/UtilizationCell' }
+        retention:
+          type: array
+          items: { $ref: '#/components/schemas/RetentionPoint' }
+        total: { type: integer, format: int64, description: Total bookings in the window. }
 
     ApiResponseEnvelope:
       type: object

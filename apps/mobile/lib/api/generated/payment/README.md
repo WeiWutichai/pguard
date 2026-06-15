@@ -98,6 +98,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
+[*AdminApi*](doc/AdminApi.md) | [**adminRevenueReport**](doc/AdminApi.md#adminrevenuereport) | **GET** /admin/reports/revenue | Revenue-trend analytics (role&#x3D;admin)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**completePayment**](doc/PaymentsApi.md#completepayment) | **POST** /payments/{booking_id}/complete | Apply proration on job completion (admin only)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | Pay for a booking (customer only)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)
@@ -106,6 +107,7 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminRevenueReport200Response](doc/AdminRevenueReport200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [CompletePaymentRequest](doc/CompletePaymentRequest.md)
  - [CreatePaymentRequest](doc/CreatePaymentRequest.md)
@@ -115,6 +117,8 @@ Class | Method | HTTP request | Description
  - [ListPayments200Response](doc/ListPayments200Response.md)
  - [Payment](doc/Payment.md)
  - [PaymentStatus](doc/PaymentStatus.md)
+ - [RevenuePoint](doc/RevenuePoint.md)
+ - [RevenueReport](doc/RevenueReport.md)
 
 
 ## Documentation For Authorization

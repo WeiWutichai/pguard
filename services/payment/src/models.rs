@@ -2,12 +2,20 @@
 //!
 //! ALL money fields are [`rust_decimal::Decimal`] — never `f64` (CLAUDE.md money rules).
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 // ----- Requests -----
+
+/// Inclusive-from / exclusive-to date window for the analytics reports (RFC3339). Both
+/// optional — the handler defaults to the last 30 days ending now.
+#[derive(Debug, Deserialize)]
+pub struct ReportRangeQuery {
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+}
 
 /// A customer pays for a booking. `amount` is validated against the SERVER-computed
 /// `expected_total` (`base_fee × hours × guard_count + tip`, all from the authoritative
@@ -60,6 +68,28 @@ pub struct PaymentResponse {
     pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+// ----- Revenue report (admin analytics) -----
+
+/// One day's net revenue point. `revenue` is net of refunds (Decimal → JSON string, money
+/// rule); `payments` counts completed charges that day.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct RevenuePoint {
+    pub date: NaiveDate,
+    pub revenue: Decimal,
+    pub payments: i64,
+}
+
+/// Revenue-trend report. `mom_pct` compares the window's total to the immediately-preceding
+/// equal-length window (`None` when the prior window had zero revenue — no baseline). It is a
+/// display-only percentage (f64); the money totals stay Decimal-as-string on the wire.
+#[derive(Debug, Serialize)]
+pub struct RevenueReport {
+    pub series: Vec<RevenuePoint>,
+    pub total: Decimal,
+    pub prev_total: Decimal,
+    pub mom_pct: Option<f64>,
 }
 
 // ----- booking internal read (deserialized from booking's /internal/bookings/{id}) -----

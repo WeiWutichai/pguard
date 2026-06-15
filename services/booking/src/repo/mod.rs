@@ -20,8 +20,9 @@ use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
 use crate::models::{
-    BookingResponse, CreateBookingRequest, CreateServiceRequest, InternalBooking,
+    BookingResponse, CreateBookingRequest, CreateServiceRequest, DailyCount, InternalBooking,
     NewProgressReport, ProgressReportRow, ServiceCatalogItem, UpdateServiceRequest,
+    UtilizationCell,
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
@@ -134,6 +135,91 @@ pub async fn admin_list_bookings(
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
+}
+
+// ----- Reports (admin analytics) -----
+
+/// Daily booking count over `[from, to)` by `created_at` (the bookings-volume line). Ascending.
+pub async fn bookings_daily(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<DailyCount>, AppError> {
+    let rows = sqlx::query_as::<_, DailyCount>(
+        r#"
+        SELECT date_trunc('day', created_at)::date AS date, COUNT(*) AS count
+        FROM booking.bookings
+        WHERE created_at >= $1 AND created_at < $2
+        GROUP BY 1
+        ORDER BY 1
+        "#,
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Guard-hours scheduled per (day-of-week × 2-hour bucket) over `[from, to)`, keyed on
+/// `scheduled_at`. Excludes cancelled/declined (they represent no work). `hours` = Σ(hours ×
+/// guard_count). Only non-empty cells are returned — the client fills the rest with zero.
+pub async fn utilization(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<UtilizationCell>, AppError> {
+    let rows = sqlx::query_as::<_, UtilizationCell>(
+        r#"
+        SELECT EXTRACT(dow FROM scheduled_at)::int AS dow,
+               (EXTRACT(hour FROM scheduled_at) / 2)::int AS bucket,
+               COALESCE(SUM(hours * guard_count), 0)::bigint AS hours
+        FROM booking.bookings
+        WHERE scheduled_at >= $1 AND scheduled_at < $2
+          AND status NOT IN ('cancelled', 'declined')
+        GROUP BY 1, 2
+        "#,
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Aggregate retention counts over `[from, to)`. Per customer, the span (weeks between their
+/// first and last booking in the window); then how many customers have a span ≥ N weeks for
+/// N ∈ {1,2,4,8,12}, plus the base (total customers). Retention is monotonic in N, so this is
+/// the % "still active at week N" curve. Returns `(base, w1, w2, w4, w8, w12)`.
+pub async fn retention_counts(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<(i64, i64, i64, i64, i64, i64), AppError> {
+    let row: (i64, i64, i64, i64, i64, i64) = sqlx::query_as(
+        r#"
+        WITH spans AS (
+            SELECT customer_id,
+                   floor(extract(epoch FROM (max(created_at) - min(created_at))) / 604800)::int
+                       AS span_weeks
+            FROM booking.bookings
+            WHERE created_at >= $1 AND created_at < $2
+            GROUP BY customer_id
+        )
+        SELECT count(*)::bigint AS base,
+               count(*) FILTER (WHERE span_weeks >= 1)::bigint  AS w1,
+               count(*) FILTER (WHERE span_weeks >= 2)::bigint  AS w2,
+               count(*) FILTER (WHERE span_weeks >= 4)::bigint  AS w4,
+               count(*) FILTER (WHERE span_weeks >= 8)::bigint  AS w8,
+               count(*) FILTER (WHERE span_weeks >= 12)::bigint AS w12
+        FROM spans
+        "#,
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
 }
 
 // ----- Service catalog (admin pricing; standalone — not read by the charge path) -----

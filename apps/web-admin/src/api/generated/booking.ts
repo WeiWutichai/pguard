@@ -52,6 +52,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reports/bookings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Booking analytics — volume + utilization + retention (role=admin)
+         * @description Composite booking analytics over `[from, to)` in one round-trip: daily booking-volume
+         *     series, a guard-hours heatmap (day-of-week × 2-hour bucket of scheduled time), and an
+         *     aggregate customer-retention curve. Defaults to the last 30 days (capped at 366). Admin
+         *     only (else 403). NOTE: a bookings-BY-SERVICE-TYPE breakdown is NOT included — the booking
+         *     model has no service_type dimension in v2 (it would entail the deferred catalog→charge
+         *     integration decision).
+         */
+        get: operations["adminBookingsReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/bookings/{id}/assign": {
         parameters: {
             query?: never;
@@ -680,6 +705,46 @@ export interface components {
             /** Format: int64 */
             review_count: number;
         };
+        DailyCount: {
+            /** Format: date */
+            date: string;
+            /** Format: int64 */
+            count: number;
+        };
+        /** @description Guard-hours in a day-of-week × 2-hour slot (`hours` = Σ hours×guard_count). */
+        UtilizationCell: {
+            /**
+             * Format: int32
+             * @description 0=Sunday .. 6=Saturday
+             */
+            dow: number;
+            /**
+             * Format: int32
+             * @description 2-hour bucket 0..11 (0 = 00:00–02:00)
+             */
+            bucket: number;
+            /** Format: int64 */
+            hours: number;
+        };
+        RetentionPoint: {
+            /** Format: int32 */
+            week: number;
+            /**
+             * Format: double
+             * @description % of customers still active at week N (week 0 = 100).
+             */
+            pct: number;
+        };
+        BookingsReport: {
+            daily: components["schemas"]["DailyCount"][];
+            utilization: components["schemas"]["UtilizationCell"][];
+            retention: components["schemas"]["RetentionPoint"][];
+            /**
+             * Format: int64
+             * @description Total bookings in the window.
+             */
+            total: number;
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -848,6 +913,35 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminBookingsReport: {
+        parameters: {
+            query?: {
+                /** @description Inclusive window start (RFC3339). Default = `to − 30 days`. */
+                from?: string;
+                /** @description Exclusive window end (RFC3339). Default = now. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Booking analytics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["BookingsReport"];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };
