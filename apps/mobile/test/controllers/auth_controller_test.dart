@@ -192,6 +192,33 @@ void main() {
   });
 
   test(
+      'a fresh OTP request clears stale registration tokens (no cross-flow '
+      'resume from a previous abandoned register)', () async {
+    // A profile_token + phone-verified token left over from a prior, abandoned register on a
+    // DIFFERENT phone. Starting a new OTP flow must wipe them so they can't later trigger a
+    // spurious "resume to profile" against the wrong account.
+    final store = InMemoryStore()
+      ..profileToken = 'stale-A'
+      ..phoneVerifiedToken = 'stale-pvt';
+    final api = FakeApi(
+      onGet: (path, _) async =>
+          {'challenge_id': 'ch1', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, data) async {
+        expect(path, '/otp/request');
+        return {'message': 'sent', 'expires_in': 300};
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(store.profileToken, isNull, reason: 'stale profile_token cleared');
+    expect(store.phoneVerifiedToken, isNull, reason: 'stale pvt cleared');
+  });
+
+  test(
       're-entrancy: a duplicate verify while one is in flight is a no-op '
       '(only ONE /otp/verify POST)', () async {
     final store = InMemoryStore();

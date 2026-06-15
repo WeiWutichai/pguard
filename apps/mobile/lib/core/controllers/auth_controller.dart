@@ -166,9 +166,12 @@ class AuthController extends _$AuthController {
         'answer': captchaAnswer,
       });
       // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
-      // any stale role-stage resume marker + raw PIN from a previous, abandoned attempt.
+      // any stale state from a previous, abandoned attempt: the role-stage resume marker + raw
+      // PIN, AND the single-use registration tokens (a leftover profile_token from an abandoned
+      // register on a DIFFERENT phone must not later trigger a spurious "resume to profile").
       await ref.read(prefsStoreProvider).remove(kRegOnboardingStageKey);
       await ref.read(appStoreProvider).clearOnboardingPin();
+      await ref.read(appStoreProvider).clearRegistrationTokens();
       state = state.copyWith(
         step: AuthStep.otp,
         otpSentAt: DateTime.now().toUtc(),

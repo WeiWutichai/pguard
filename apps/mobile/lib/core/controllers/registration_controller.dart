@@ -117,10 +117,13 @@ class RegistrationController extends _$RegistrationController {
   /// `profile_token`, persist the pending flag, flip the session to **pendingApproval** (NO
   /// tokens). On **409** → `loginWithPin` (the phone already exists in a non-pending state).
   Future<RegisterOutcome> register() async {
-    // Guard the brief pre-state-update window against a double-tap.
+    // Re-entrancy latch: ignore a duplicate tap while a register is already in flight. busy is set
+    // SYNCHRONOUSLY here — BEFORE the storage reads/await below — so the second tap observes it
+    // (setting it only after the awaits would leave a window where both taps pass the check).
     if (state.busy) {
       return RegisterOutcome.error;
     }
+    state = state.copyWith(busy: true, error: null);
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final role = state.role;
     final store = ref.read(appStoreProvider);
@@ -142,7 +145,7 @@ class RegistrationController extends _$RegistrationController {
       return RegisterOutcome.error;
     }
 
-    state = state.copyWith(busy: true, error: null);
+    // (busy already set synchronously above.)
     try {
       final data =
           await ref.read(pguardApiProvider).post('/auth/register', data: {
