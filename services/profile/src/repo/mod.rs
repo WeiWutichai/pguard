@@ -697,15 +697,72 @@ pub async fn list_access_audit(
 /// follow-up). Scoped strictly to `user_id`.
 #[allow(clippy::type_complexity)]
 pub async fn export_user_data(db: &PgPool, user_id: Uuid) -> Result<serde_json::Value, AppError> {
-    let guard: Option<(
-        Option<String>,
-        Option<NaiveDate>,
-        Option<i32>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
+    // A named FromRow struct (not a tuple): the guard export is 20 columns, past sqlx's tuple
+    // FromRow arity cap. Column names match field names (no aliases needed).
+    #[derive(sqlx::FromRow)]
+    struct GuardExportRow {
+        gender: Option<String>,
+        date_of_birth: Option<NaiveDate>,
+        years_of_experience: Option<i32>,
+        previous_workplace: Option<String>,
+        bank_name: Option<String>,
+        account_number: Option<String>,
+        account_name: Option<String>,
+        id_card_key: Option<String>,
+        security_license_key: Option<String>,
+        training_cert_key: Option<String>,
+        criminal_check_key: Option<String>,
+        driver_license_key: Option<String>,
+        passbook_photo_key: Option<String>,
+        full_name: Option<String>,
+        address: Option<String>,
+        emergency_contact_name: Option<String>,
+        emergency_contact_phone: Option<String>,
+        emergency_contact_relationship: Option<String>,
+        created_at: DateTime<Utc>,
+        updated_at: DateTime<Utc>,
+    }
+    let guard: Option<GuardExportRow> = sqlx::query_as(
+        "SELECT gender, date_of_birth, years_of_experience, previous_workplace, \
+                bank_name, account_number, account_name, \
+                id_card_key, security_license_key, training_cert_key, criminal_check_key, \
+                driver_license_key, passbook_photo_key, \
+                full_name, address, emergency_contact_name, emergency_contact_phone, \
+                emergency_contact_relationship, created_at, updated_at \
+         FROM profile.guard_profiles WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+
+    let guard_json = guard.map(|g| {
+        serde_json::json!({
+            "full_name": g.full_name,
+            "gender": g.gender,
+            "date_of_birth": g.date_of_birth,
+            "years_of_experience": g.years_of_experience,
+            "previous_workplace": g.previous_workplace,
+            "bank_name": g.bank_name,
+            "account_number": g.account_number,
+            "account_name": g.account_name,
+            "address": g.address,
+            "emergency_contact_name": g.emergency_contact_name,
+            "emergency_contact_phone": g.emergency_contact_phone,
+            "emergency_contact_relationship": g.emergency_contact_relationship,
+            "documents": {
+                "id_card": g.id_card_key.is_some(),
+                "security_license": g.security_license_key.is_some(),
+                "training_cert": g.training_cert_key.is_some(),
+                "criminal_check": g.criminal_check_key.is_some(),
+                "driver_license": g.driver_license_key.is_some(),
+                "passbook_photo": g.passbook_photo_key.is_some(),
+            },
+            "created_at": g.created_at,
+            "updated_at": g.updated_at,
+        })
+    });
+
+    let customer: Option<(
         Option<String>,
         Option<String>,
         Option<String>,
@@ -714,71 +771,25 @@ pub async fn export_user_data(db: &PgPool, user_id: Uuid) -> Result<serde_json::
         DateTime<Utc>,
         DateTime<Utc>,
     )> = sqlx::query_as(
-        "SELECT gender, date_of_birth, years_of_experience, previous_workplace, \
-                bank_name, account_number, account_name, \
-                id_card_key, security_license_key, training_cert_key, criminal_check_key, \
-                driver_license_key, passbook_photo_key, created_at, updated_at \
-         FROM profile.guard_profiles WHERE user_id = $1",
+        "SELECT full_name, address, company_name, email, contact_phone, created_at, updated_at \
+             FROM profile.customer_profiles WHERE user_id = $1",
     )
     .bind(user_id)
     .fetch_optional(db)
     .await?;
-
-    let guard_json = guard.map(|g| {
-        let (
-            gender,
-            dob,
-            yoe,
-            prev,
-            bank_name,
-            account_number,
-            account_name,
-            id_card,
-            sec_lic,
-            train,
-            crim,
-            driver,
-            passbook,
-            created_at,
-            updated_at,
-        ) = g;
-        serde_json::json!({
-            "gender": gender,
-            "date_of_birth": dob,
-            "years_of_experience": yoe,
-            "previous_workplace": prev,
-            "bank_name": bank_name,
-            "account_number": account_number,
-            "account_name": account_name,
-            "documents": {
-                "id_card": id_card.is_some(),
-                "security_license": sec_lic.is_some(),
-                "training_cert": train.is_some(),
-                "criminal_check": crim.is_some(),
-                "driver_license": driver.is_some(),
-                "passbook_photo": passbook.is_some(),
-            },
-            "created_at": created_at,
-            "updated_at": updated_at,
-        })
-    });
-
-    let customer: Option<(Option<String>, Option<String>, DateTime<Utc>, DateTime<Utc>)> =
-        sqlx::query_as(
-            "SELECT full_name, address, created_at, updated_at \
-             FROM profile.customer_profiles WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(db)
-        .await?;
-    let customer_json = customer.map(|(full_name, address, created_at, updated_at)| {
-        serde_json::json!({
-            "full_name": full_name,
-            "address": address,
-            "created_at": created_at,
-            "updated_at": updated_at,
-        })
-    });
+    let customer_json = customer.map(
+        |(full_name, address, company_name, email, contact_phone, created_at, updated_at)| {
+            serde_json::json!({
+                "full_name": full_name,
+                "address": address,
+                "company_name": company_name,
+                "email": email,
+                "contact_phone": contact_phone,
+                "created_at": created_at,
+                "updated_at": updated_at,
+            })
+        },
+    );
 
     Ok(serde_json::json!({
         "guard_profile": guard_json,
