@@ -117,6 +117,10 @@ class _GuardRegistrationScreenState
   // Documents (real picker) — kind → file path.
   final Map<GuardDocKind, String> _docs = {};
 
+  /// Optional per-document expiry date (all 5 kinds carry one — design). Folded into the profile
+  /// submit and captured best-effort server-side; never gates "5/5" (capture is non-blocking).
+  final Map<GuardDocKind, DateTime> _docExpiry = {};
+
   // Bank
   String? _bank;
   final _accountNumber = TextEditingController();
@@ -199,6 +203,23 @@ class _GuardRegistrationScreenState
     }
   }
 
+  /// Pick a document's expiry date (future-only — matches the server's future-date rule). Optional;
+  /// it never blocks completing the step.
+  Future<void> _pickDocExpiry(GuardDocKind kind) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _docExpiry[kind] ?? DateTime(now.year + 1, now.month, now.day),
+      firstDate: DateTime(now.year, now.month, now.day + 1),
+      lastDate: DateTime(now.year + 20),
+      helpText: isThai ? 'วันหมดอายุเอกสาร' : 'Document expiry date',
+    );
+    if (picked != null && mounted) {
+      setState(() => _docExpiry[kind] = picked);
+    }
+  }
+
   Future<void> _pickPassbook() async {
     final path = await _pickImage();
     if (path != null && mounted) {
@@ -267,6 +288,7 @@ class _GuardRegistrationScreenState
       emergencyContactPhone: _ecPhone.text,
       emergencyContactRelationship: _ecRel.text,
       docPaths: Map.of(_docs),
+      docExpiry: Map.of(_docExpiry),
     );
     if (ok && mounted) context.push('/auth/pending');
   }
@@ -582,8 +604,10 @@ class _GuardRegistrationScreenState
           GuardDocRow(
             kind: kind,
             captured: _docs.containsKey(kind),
+            expiry: _docExpiry[kind],
             isThai: isThai,
             onTap: () => _pickDoc(kind),
+            onSetExpiry: () => _pickDocExpiry(kind),
           ),
       ],
     );

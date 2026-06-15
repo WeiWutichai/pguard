@@ -24,7 +24,7 @@ use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, DocumentExpiryRow, GuardProfileResponse, InternalGuard, MyProfile,
     RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -227,7 +227,56 @@ pub async fn upsert_guard_profile<S: ProfileDeps>(
     // Writes ONLY the profile schema (approval_status defaults to 'pending'); identity owns
     // the account role/state and is never touched here. Owner read-back is masked (PDPA).
     let profile = repo::upsert_guard_profile(state.db(), writer.user_id, &req).await?;
+    // Capture any document expiry dates that rode along (registration's doc step). Best-effort —
+    // see [`apply_document_expiries`] — so it never fails the profile submit.
+    apply_document_expiries(&state, writer.user_id, &req).await;
     Ok(Json(ApiResponse::success(mask_guard_response(profile))))
+}
+
+/// Capture the OPTIONAL document expiry dates that ride a guard-profile write (the registration
+/// doc step folds them into the profile submit because the single-use `profile_token` authorizes
+/// exactly ONE write). Metadata only; the document IMAGE upload is still deferred. Best-effort:
+/// an unknown type or non-future date is skipped + logged, and a failed upsert is logged but
+/// NEVER fails the profile write (the user chose non-blocking capture). Feeds the admin
+/// "expiring documents" surface. Upserted on (guard_id, document_type), so a later edit overwrites.
+async fn apply_document_expiries<S: ProfileDeps>(
+    state: &S,
+    guard_id: Uuid,
+    req: &UpsertGuardProfileRequest,
+) {
+    let Some(expiries) = req.document_expiries.as_ref() else {
+        return;
+    };
+    let today = chrono::Utc::now().date_naive();
+    // Cap the work: only the 5 known types can ever persist (the table is UNIQUE per (guard,type)
+    // → ON CONFLICT collapses dupes), so a pathologically large array behind the single-use token
+    // can't fan out into unbounded primary-DB upserts.
+    if expiries.len() > EXPIRING_DOCUMENT_TYPES.len() {
+        tracing::warn!(n = expiries.len(), "document_expiries over cap; truncating");
+    }
+    for e in expiries.iter().take(EXPIRING_DOCUMENT_TYPES.len()) {
+        if !document_expiry_is_capturable(&e.document_type, e.expiry_date, today) {
+            tracing::warn!(document_type = %e.document_type, expiry_date = %e.expiry_date, "skipping invalid document expiry");
+            continue;
+        }
+        if let Err(err) =
+            repo::upsert_document_expiry(state.db(), guard_id, &e.document_type, e.expiry_date)
+                .await
+        {
+            tracing::warn!(error = %err, document_type = %e.document_type, "document expiry upsert failed (non-fatal)");
+        }
+    }
+}
+
+/// PURE skip rule for a captured document expiry: a known type with a non-past date. Lenient at
+/// the boundary (accepts `today`) so a client "tomorrow" that maps to server-`today` via a
+/// timezone skew is NOT silently dropped; only strictly-past dates + unknown types are rejected.
+fn document_expiry_is_capturable(
+    document_type: &str,
+    expiry_date: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> bool {
+    EXPIRING_DOCUMENT_TYPES.contains(&document_type) && expiry_date >= today
 }
 
 // ----- PUT /profile/guard — update own guard profile -----
@@ -241,6 +290,7 @@ pub async fn update_guard_profile<S: ProfileDeps>(
     require_role(&user, ROLE_GUARD)?;
     validate_guard_req(&req)?;
     let profile = repo::update_guard_profile(state.db(), user.user_id, &req).await?;
+    apply_document_expiries(&state, user.user_id, &req).await;
     Ok(Json(ApiResponse::success(mask_guard_response(profile))))
 }
 
@@ -464,9 +514,8 @@ pub async fn admin_set_candidate_stage<S: ProfileDeps>(
 // ----- GET /admin/documents/expiring — guard documents needing renewal (admin) -----
 
 /// List guard documents expiring within the horizon (incl. already-expired), soonest first.
-/// Admin only (else 403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a
-/// deferred follow-up, so this returns nothing until that lands — the schema, endpoint, and
-/// screen are real and ready, but never fabricate rows.
+/// Admin only (else 403); replica read. Rows are populated by the guard profile submit
+/// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn admin_list_expiring_documents<S: ProfileDeps>(
     State(state): State<S>,
@@ -663,6 +712,32 @@ mod tests {
 
     fn guard_body() -> Body {
         Body::from(serde_json::json!({ "gender": "male" }).to_string())
+    }
+
+    // ----- document-expiry skip rule (pure; no DB/Redis) -----
+
+    #[test]
+    fn document_expiry_capturable_rule() {
+        use chrono::NaiveDate;
+        let today = NaiveDate::from_ymd_opt(2030, 6, 15).unwrap();
+        let tomorrow = NaiveDate::from_ymd_opt(2030, 6, 16).unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2030, 6, 14).unwrap();
+        // known type + future → capture.
+        assert!(document_expiry_is_capturable("id_card", tomorrow, today));
+        // boundary: `today` is accepted (lenient — guards the client/server TZ-skew off-by-one).
+        assert!(document_expiry_is_capturable(
+            "driver_license",
+            today,
+            today
+        ));
+        // strictly past → dropped.
+        assert!(!document_expiry_is_capturable("id_card", yesterday, today));
+        // unknown type (e.g. the excluded passbook) → dropped even if future.
+        assert!(!document_expiry_is_capturable(
+            "passbook_photo",
+            tomorrow,
+            today
+        ));
     }
 
     // ----- 401: missing / invalid token -----

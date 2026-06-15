@@ -61,6 +61,11 @@ pub struct UpsertGuardProfileRequest {
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
     pub emergency_contact_relationship: Option<String>,
+    /// OPTIONAL per-document expiry dates from the registration doc step (the single-use
+    /// profile_token authorizes one write, so they ride the profile submit). Captured
+    /// best-effort into `document_expiry`; the guard_profiles columns are unaffected. Absent on
+    /// a non-guard or pre-doc-step submit.
+    pub document_expiries: Option<Vec<DocumentExpiryInput>>,
 }
 
 /// Upsert the caller's customer profile (v1-parity fields).
@@ -105,9 +110,19 @@ pub struct StageRequest {
 
 // ----- Document expiry (admin "expiring" surface) -----
 
-/// One guard-document expiry row (`GET /admin/documents/expiring`). `days_remaining` is derived
-/// in the handler from `expiry_date` (negative = already expired). The doc-upload + expiry
-/// CAPTURE flow is a deferred follow-up, so this set is empty until that lands.
+/// The guard document types that carry an expiry date — matches the `document_expiry` CHECK
+/// constraint (the bank passbook is excluded: it's a bank doc, not an expiring credential).
+pub const EXPIRING_DOCUMENT_TYPES: [&str; 5] = [
+    "id_card",
+    "security_license",
+    "training_cert",
+    "criminal_check",
+    "driver_license",
+];
+
+/// One guard-document expiry row (`GET /admin/documents/expiring`). The web-admin client buckets
+/// by `expiry_date` (expired / 7 / 30 / 90 days). Populated by the guard profile submit
+/// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct DocumentExpiryRow {
     pub id: Uuid,
@@ -115,6 +130,14 @@ pub struct DocumentExpiryRow {
     pub document_type: String,
     pub expiry_date: NaiveDate,
     pub last_reminded_at: Option<DateTime<Utc>>,
+}
+
+/// One document's expiry date, folded into the guard-profile submit (the registration doc step).
+/// Metadata only — no image. Upserted on (guard_id, document_type).
+#[derive(Debug, Deserialize)]
+pub struct DocumentExpiryInput {
+    pub document_type: String,
+    pub expiry_date: NaiveDate,
 }
 
 // ----- Responses -----

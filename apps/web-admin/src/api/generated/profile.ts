@@ -175,9 +175,8 @@ export interface paths {
          * List guard documents needing renewal (role=admin)
          * @description Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
          *     the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
-         *     403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a deferred
-         *     follow-up, so this returns nothing until that lands (the schema/endpoint/screen are
-         *     real and ready; rows are never fabricated).
+         *     403); replica read. Rows are populated by the guard profile submit (`POST /profile/guard`,
+         *     which folds in the registration doc step's expiry dates).
          */
         get: operations["adminListExpiringDocuments"];
         put?: never;
@@ -332,6 +331,12 @@ export interface components {
             /** @description Thai national format (≥10 digits, leading 0). */
             emergency_contact_phone?: string | null;
             emergency_contact_relationship?: string | null;
+            /**
+             * @description OPTIONAL per-document expiry dates from the registration doc step. Captured
+             *     best-effort into the document_expiry table (feeds the admin "expiring" surface); the
+             *     guard_profiles columns are unaffected.
+             */
+            document_expiries?: components["schemas"]["DocumentExpiryInput"][] | null;
         };
         UpsertCustomerProfileRequest: {
             full_name?: string | null;
@@ -428,6 +433,20 @@ export interface components {
             expiry_date: string;
             /** Format: date-time */
             last_reminded_at?: string | null;
+        };
+        /**
+         * @description One document's expiry date, folded into the guard-profile submit (the registration doc
+         *     step). Metadata only — no image. The passbook is NOT an expiring credential and is
+         *     excluded. An unknown type or a non-future date is skipped server-side (best-effort).
+         */
+        DocumentExpiryInput: {
+            /** @enum {string} */
+            document_type: "id_card" | "security_license" | "training_cert" | "criminal_check" | "driver_license";
+            /**
+             * Format: date
+             * @description Must be in the future (a renewal date).
+             */
+            expiry_date: string;
         };
         /** @description A guard in the recruitment pipeline (lean projection — no PII). */
         RecruitCandidate: {

@@ -362,7 +362,7 @@ class AdminApi {
   }
 
   /// List guard documents needing renewal (role&#x3D;admin)
-  /// Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first — the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else 403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a deferred follow-up, so this returns nothing until that lands (the schema/endpoint/screen are real and ready; rows are never fabricated). 
+  /// Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first — the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else 403); replica read. Rows are populated by the guard profile submit (&#x60;POST /profile/guard&#x60;, which folds in the registration doc step&#39;s expiry dates). 
   ///
   /// Parameters:
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
