@@ -121,7 +121,8 @@ pub const EXPIRING_DOCUMENT_TYPES: [&str; 5] = [
 ];
 
 /// One guard-document expiry row (`GET /admin/documents/expiring`). The web-admin client buckets
-/// by `expiry_date` (expired / 7 / 30 / 90 days). Populated by `POST /profile/guard/documents`.
+/// by `expiry_date` (expired / 7 / 30 / 90 days). Populated by the guard profile submit
+/// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct DocumentExpiryRow {
     pub id: Uuid,

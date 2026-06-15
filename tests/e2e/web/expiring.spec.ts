@@ -1,7 +1,8 @@
 // The document-expiry admin screen (profile `GET /admin/documents/expiring`) renders without
-// crashing — a real screen now, no longer a ComingSoon stub. Data-tolerant: the document_expiry
-// table is empty until the upload+expiry-capture follow-up lands, so we assert the page mounts +
-// resolves (heading, KPI cards, no load-error banner), not specific rows.
+// crashing — a real screen now, no longer a ComingSoon stub. Data-tolerant: expiry dates are
+// captured during guard registration (folded into the profile submit), so rows appear only as
+// guards submit them — we assert the page mounts + resolves (heading, KPI cards, no load-error
+// banner), not specific rows.
 import { test, expect } from "@playwright/test";
 
 test("expiring page renders the document-expiry surface without crashing", async ({ page }) => {

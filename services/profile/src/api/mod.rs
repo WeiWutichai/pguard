@@ -248,9 +248,15 @@ async fn apply_document_expiries<S: ProfileDeps>(
         return;
     };
     let today = chrono::Utc::now().date_naive();
-    for e in expiries {
-        if !EXPIRING_DOCUMENT_TYPES.contains(&e.document_type.as_str()) || e.expiry_date <= today {
-            tracing::warn!(document_type = %e.document_type, "skipping invalid document expiry");
+    // Cap the work: only the 5 known types can ever persist (the table is UNIQUE per (guard,type)
+    // → ON CONFLICT collapses dupes), so a pathologically large array behind the single-use token
+    // can't fan out into unbounded primary-DB upserts.
+    if expiries.len() > EXPIRING_DOCUMENT_TYPES.len() {
+        tracing::warn!(n = expiries.len(), "document_expiries over cap; truncating");
+    }
+    for e in expiries.iter().take(EXPIRING_DOCUMENT_TYPES.len()) {
+        if !document_expiry_is_capturable(&e.document_type, e.expiry_date, today) {
+            tracing::warn!(document_type = %e.document_type, expiry_date = %e.expiry_date, "skipping invalid document expiry");
             continue;
         }
         if let Err(err) =
@@ -260,6 +266,17 @@ async fn apply_document_expiries<S: ProfileDeps>(
             tracing::warn!(error = %err, document_type = %e.document_type, "document expiry upsert failed (non-fatal)");
         }
     }
+}
+
+/// PURE skip rule for a captured document expiry: a known type with a non-past date. Lenient at
+/// the boundary (accepts `today`) so a client "tomorrow" that maps to server-`today` via a
+/// timezone skew is NOT silently dropped; only strictly-past dates + unknown types are rejected.
+fn document_expiry_is_capturable(
+    document_type: &str,
+    expiry_date: chrono::NaiveDate,
+    today: chrono::NaiveDate,
+) -> bool {
+    EXPIRING_DOCUMENT_TYPES.contains(&document_type) && expiry_date >= today
 }
 
 // ----- PUT /profile/guard — update own guard profile -----
@@ -695,6 +712,32 @@ mod tests {
 
     fn guard_body() -> Body {
         Body::from(serde_json::json!({ "gender": "male" }).to_string())
+    }
+
+    // ----- document-expiry skip rule (pure; no DB/Redis) -----
+
+    #[test]
+    fn document_expiry_capturable_rule() {
+        use chrono::NaiveDate;
+        let today = NaiveDate::from_ymd_opt(2030, 6, 15).unwrap();
+        let tomorrow = NaiveDate::from_ymd_opt(2030, 6, 16).unwrap();
+        let yesterday = NaiveDate::from_ymd_opt(2030, 6, 14).unwrap();
+        // known type + future → capture.
+        assert!(document_expiry_is_capturable("id_card", tomorrow, today));
+        // boundary: `today` is accepted (lenient — guards the client/server TZ-skew off-by-one).
+        assert!(document_expiry_is_capturable(
+            "driver_license",
+            today,
+            today
+        ));
+        // strictly past → dropped.
+        assert!(!document_expiry_is_capturable("id_card", yesterday, today));
+        // unknown type (e.g. the excluded passbook) → dropped even if future.
+        assert!(!document_expiry_is_capturable(
+            "passbook_photo",
+            tomorrow,
+            today
+        ));
     }
 
     // ----- 401: missing / invalid token -----
