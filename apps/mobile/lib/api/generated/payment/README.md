@@ -77,15 +77,16 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_payment_api/pguard_payment_api.dart';
 
 
-final api = PguardPaymentApi().getPaymentsApi();
-final String bookingId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
-final CompletePaymentRequest completePaymentRequest = ; // CompletePaymentRequest | 
+final api = PguardPaymentApi().getAdminApi();
+final PaymentStatus status = ; // PaymentStatus | Filter by payment status. An unrecognized value returns 400.
+final int limit = 789; // int | 
+final int offset = 789; // int | 
 
 try {
-    final response = await api.completePayment(bookingId, completePaymentRequest);
+    final response = await api.adminListPayments(status, limit, offset);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling PaymentsApi->completePayment: $e\n");
+    print("Exception when calling AdminApi->adminListPayments: $e\n");
 }
 
 ```
@@ -96,6 +97,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**completePayment**](doc/PaymentsApi.md#completepayment) | **POST** /payments/{booking_id}/complete | Apply proration on job completion (admin only)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | Pay for a booking (customer only)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)

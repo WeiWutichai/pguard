@@ -197,6 +197,13 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin payment ledger (cross-user, read-only). Admin authz is the payment service's job.
+        prefix: "/admin/payments",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -613,6 +620,15 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/bookings"));
         assert_eq!(up, Upstream::Booking);
         assert_eq!(fwd, "/admin/bookings");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_payments_routes_to_payment() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/payments"));
+        assert_eq!(up, Upstream::Payment);
+        assert_eq!(fwd, "/admin/payments");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

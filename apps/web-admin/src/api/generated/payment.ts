@@ -36,6 +36,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/payments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List ALL payments cross-user (role=admin, read-only ledger)
+         * @description The admin payment ledger — every payment (NOT owner-scoped, unlike `GET /payments`),
+         *     newest first, optional `status` filter + limit/offset. Admin only (else 403). READ
+         *     ONLY: there is no manual refund-process action here (v2 refunds are event-driven).
+         */
+        get: operations["adminListPayments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/payments/{id}": {
         parameters: {
             query?: never;
@@ -268,6 +290,36 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    adminListPayments: {
+        parameters: {
+            query?: {
+                /** @description Filter by payment status. An unrecognized value returns 400. */
+                status?: components["schemas"]["PaymentStatus"];
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description All matching payments, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Payment"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     getPayment: {

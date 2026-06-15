@@ -119,6 +119,9 @@ async fn main() -> anyhow::Result<()> {
             "/payments/{booking_id}/complete",
             post(api::complete_payment::<AppState>),
         )
+        // Admin cross-user payment ledger (admin-role gated in the handler). Needs a NEW
+        // gateway `/admin/payments` prefix rule → Payment.
+        .route("/admin/payments", get(api::admin_list_payments::<AppState>))
         .route(
             "/internal/users/{user_id}/export",
             get(api::internal_export_user::<AppState>),

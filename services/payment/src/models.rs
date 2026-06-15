@@ -28,6 +28,15 @@ pub struct CompletePaymentRequest {
     pub actual_seconds: i64,
 }
 
+/// Query params for `GET /admin/payments` (admin cross-user ledger). `status` is validated
+/// against the payment status enum (unknown → 400). House limit/offset pagination.
+#[derive(Debug, Deserialize)]
+pub struct AdminListPaymentsQuery {
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 // ----- Responses -----
 
 /// A payment row as returned to clients. `status` is read as text (the DB enum cast to

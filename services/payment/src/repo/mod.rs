@@ -64,6 +64,35 @@ pub async fn list_payments(
     Ok(rows)
 }
 
+/// Admin cross-user payment ledger — every payment (NO owner filter; the admin-role gate is
+/// the API layer's job), newest first, optional `status` filter + limit/offset. Diverges from
+/// [`list_payments`] by dropping `WHERE customer_id = $1`. `status` is bound as a parameter
+/// (validated against the enum in the handler) — no user input is interpolated. READ-ONLY: a
+/// manual refund-process step is deliberately out of scope (v2 refunds are event-driven).
+pub async fn admin_list_payments(
+    db: &sqlx::PgPool,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<PaymentResponse>, AppError> {
+    let mut sql = format!("SELECT {PAYMENT_COLUMNS} FROM payment.payments");
+    if status.is_some() {
+        sql.push_str(" WHERE status = $1::payment.payment_status");
+    }
+    let lim = if status.is_some() { 2 } else { 1 };
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+        lim,
+        lim + 1
+    ));
+    let mut query = sqlx::query_as::<_, PaymentResponse>(&sql);
+    if let Some(s) = status {
+        query = query.bind(s);
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
+    Ok(rows)
+}
+
 /// PDPA §19/§32 data export: ALL of the user's OWN payments (as the paying customer), no
 /// pagination limit. Reuses `PaymentResponse` so money serializes as exact-decimal strings
 /// (CLAUDE.md money rule). Scoped strictly to `customer_id`.

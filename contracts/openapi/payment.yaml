@@ -98,6 +98,47 @@ paths:
                         items: { $ref: '#/components/schemas/Payment' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /admin/payments:
+    get:
+      tags: [Admin]
+      summary: List ALL payments cross-user (role=admin, read-only ledger)
+      description: |
+        The admin payment ledger — every payment (NOT owner-scoped, unlike `GET /payments`),
+        newest first, optional `status` filter + limit/offset. Admin only (else 403). READ
+        ONLY: there is no manual refund-process action here (v2 refunds are event-driven).
+      operationId: adminListPayments
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by payment status. An unrecognized value returns 400.
+          schema: { $ref: '#/components/schemas/PaymentStatus' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: All matching payments, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /payments/{id}:
     get:
       tags: [Payments]
