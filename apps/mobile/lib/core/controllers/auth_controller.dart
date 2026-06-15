@@ -230,6 +230,14 @@ class AuthController extends _$AuthController {
       });
 
   Future<bool> _guard(Future<bool> Function() op) async {
+    // Re-entrancy latch: if an op is already in flight, ignore this duplicate rather than
+    // launching a second network call. `busy` is set SYNCHRONOUSLY below before the first
+    // `await`, so any later fire — a double-tap, the keyboard Go + button both firing, or the
+    // OTP input auto-submitting twice — sees it and bails. A no-op false (state untouched);
+    // callers only act on `true`. (Screen-level disabling lags an async rebuild and can't close
+    // this synchronous window — this is the real guard. Verified by an RCA of the duplicate-fire
+    // path that was inflating the shared edge OTP rate-limit bucket.)
+    if (state.busy) return false;
     state = state.copyWith(busy: true, error: null);
     try {
       final ok = await op();

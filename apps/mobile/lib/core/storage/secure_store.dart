@@ -25,6 +25,12 @@ abstract class SessionStore {
   Future<void> saveProfileToken(String token);
   Future<void> clearRegistrationTokens();
 
+  /// Clear ONLY the single-use `phone_verified_token` (keeps the `profile_token`, still needed
+  /// after a 202 register). Called the moment a register POST reaches the server — the token is
+  /// then either consumed (202) or unusable (4xx), so it must never be re-presented (e.g. on a
+  /// back-out + re-tap of a role), which would surface as a confusing "verification expired".
+  Future<void> clearPhoneVerifiedToken();
+
   /// The RAW PIN, persisted ONLY during the onboarding resume window (PIN-confirm → register).
   /// A cold-start `register()` needs it to compute the backend `pin_hash` AND to seed the local
   /// PIN at the subsequent login, so it must survive a process kill before role-select. It sits
@@ -142,6 +148,10 @@ class SecureStore implements AppStore {
     await _s.delete(key: _kPhoneVerifiedToken);
     await _s.delete(key: _kProfileToken);
   }
+
+  @override
+  Future<void> clearPhoneVerifiedToken() =>
+      _s.delete(key: _kPhoneVerifiedToken);
 
   // ---- onboarding resume credential (raw PIN; transient, see interface doc) ----
   @override
