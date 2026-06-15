@@ -53,6 +53,13 @@ abstract class PinStore {
   Future<void> resetPinAttempts();
   Future<int?> readPinLockUntilMs();
   Future<void> writePinLockUntilMs(int? epochMs);
+
+  /// Whether the user opted into biometric unlock (fingerprint/Face ID) as a fast path over the
+  /// PIN gate. A local UX flag only — the real protection is the OS biometric + the PIN fallback.
+  /// Lives in secure storage so a wipe (10 wrong PINs) also clears it.
+  Future<bool> isBiometricEnabled();
+  Future<void> setBiometricEnabled(bool value);
+
   Future<void> wipe();
 }
 
@@ -86,6 +93,7 @@ class SecureStore implements AppStore {
   static const _kPinSalt = 'pg_pin_salt';
   static const _kPinAttempts = 'pg_pin_attempts';
   static const _kPinLockUntil = 'pg_pin_lock_until_ms';
+  static const _kBiometricEnabled = 'pg_biometric_enabled';
 
   // ---- tokens ----
   @override
@@ -187,6 +195,14 @@ class SecureStore implements AppStore {
       await _s.write(key: _kPinLockUntil, value: epochMs.toString());
     }
   }
+
+  // ---- biometric opt-in (local UX flag; cleared by wipe via deleteAll) ----
+  @override
+  Future<bool> isBiometricEnabled() async =>
+      (await _s.read(key: _kBiometricEnabled)) == 'true';
+  @override
+  Future<void> setBiometricEnabled(bool value) =>
+      _s.write(key: _kBiometricEnabled, value: value.toString());
 
   /// Nuke everything (PIN-wipe threshold reached, or full sign-out).
   @override

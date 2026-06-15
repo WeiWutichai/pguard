@@ -33,8 +33,48 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   int? _attemptsRemaining;
   DateTime? _lockedUntil; // local deadline for the display countdown
 
+  /// Whether to surface the biometric key (opted-in AND device still capable). Resolved async on
+  /// open; the keypad's own `enabled` flag still gates it off during a lockout.
+  bool _bioAvailable = false;
+
+  /// Auto-prompt fires at most once per screen open; manual taps of the key can always retry.
+  bool _bioPrompted = false;
+
   bool get _isLocked =>
       _lockedUntil != null && _lockedUntil!.isAfter(DateTime.now().toUtc());
+
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(_initBiometric);
+  }
+
+  /// Show the biometric key when the user opted in and the device can still authenticate, then
+  /// auto-prompt once (the standard unlock UX — design ⑦ "กรอก PIN หรือใช้ Face ID").
+  Future<void> _initBiometric() async {
+    final offer = await ref.read(biometricServiceProvider).shouldOffer();
+    if (!mounted || !offer) return;
+    setState(() => _bioAvailable = true);
+    await _authenticateBiometric(auto: true);
+  }
+
+  /// Biometric unlock path: prompt the OS, and on success clear the gate. On cancel/failure the
+  /// user simply falls back to the PIN keypad (no error noise). The OS rate-limits its own prompt.
+  Future<void> _authenticateBiometric({bool auto = false}) async {
+    if (_busy || _isLocked) return;
+    if (auto && _bioPrompted) return;
+    _bioPrompted = true;
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    setState(() => _busy = true);
+    final ok = await ref.read(biometricServiceProvider).authenticate(
+          reason: isThai
+              ? 'ปลดล็อก pguard ด้วยไบโอเมตริก'
+              : 'Unlock pguard with biometrics',
+        );
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (ok) ref.read(sessionProvider.notifier).onUnlocked();
+  }
 
   Future<void> _onDigit(String d) async {
     if (_busy || _isLocked || _pin.length >= _len) return;
@@ -220,6 +260,8 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
                   enabled: !_busy && !locked,
                   onDigit: _onDigit,
                   onBackspace: _onBackspace,
+                  onBiometric:
+                      _bioAvailable ? () => _authenticateBiometric() : null,
                 ),
               ),
               PgGhostButton(
@@ -268,7 +310,14 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
         const SizedBox(height: PgTokens.space2),
-        Text(isThai ? 'กรอก PIN เพื่อเข้าสู่ระบบ' : 'Enter your PIN to sign in',
+        Text(
+            _bioAvailable
+                ? (isThai
+                    ? 'กรอก PIN หรือใช้ Face ID'
+                    : 'Enter PIN or use Face ID')
+                : (isThai
+                    ? 'กรอก PIN เพื่อเข้าสู่ระบบ'
+                    : 'Enter your PIN to sign in'),
             textAlign: TextAlign.center,
             style:
                 const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13)),

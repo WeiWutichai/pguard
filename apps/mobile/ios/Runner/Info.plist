@@ -76,5 +76,7 @@
 	<string>pguard ใช้คลังรูปเพื่อแนบรูปภาพ / Photo library is used to attach images.</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>pguard ใช้ตำแหน่งเพื่อรายงานพิกัดของเจ้าหน้าที่ขณะปฏิบัติงาน / Location is used to share the guard's position while on duty.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>pguard ใช้ Face ID เพื่อปลดล็อกแอปแทนการกรอก PIN / Face ID is used to unlock the app instead of typing your PIN.</string>
 </dict>
 </plist>

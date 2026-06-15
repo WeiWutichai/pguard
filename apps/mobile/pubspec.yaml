@@ -31,6 +31,11 @@ dependencies:
   # PIN hashing (SHA-256 + per-install salt) for the local PIN gate.
   crypto: ^3.0.3
 
+  # Biometric unlock (fingerprint/Face ID) — an OPTIONAL fast path over the PIN gate; the PIN
+  # always stays the fallback credential. Requires FlutterFragmentActivity on Android (see
+  # MainActivity.kt) and NSFaceIDUsageDescription on iOS (see ios/Runner/Info.plist).
+  local_auth: ^2.3.0
+
   # Image capture/selection for guard registration document photos (real picker; camera/gallery).
   image_picker: ^1.1.2
 
