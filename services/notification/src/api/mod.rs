@@ -15,10 +15,11 @@ use shared::service_jwt::ServiceCaller;
 
 use crate::fcm::{PushMessage, Pusher};
 use crate::models::{
-    Audience, AudienceCountsResponse, BroadcastMode, BroadcastResponse, BroadcastStatus,
-    CreateBroadcastRequest, DeleteTokenRequest, ListBroadcastsQuery, ListNotificationsQuery,
-    NotificationLogResponse, NotificationType, RegisterTokenRequest, RoleQuery,
-    SendNotificationRequest, UnreadCountResponse, UpdateBroadcastRequest,
+    Audience, AudienceCountsResponse, AutomationRule, BroadcastMode, BroadcastResponse,
+    BroadcastStatus, CreateBroadcastRequest, CreateRuleRequest, DeleteTokenRequest,
+    ListBroadcastsQuery, ListNotificationsQuery, NotificationLogResponse, NotificationType,
+    RegisterTokenRequest, RoleQuery, SendNotificationRequest, UnreadCountResponse,
+    UpdateBroadcastRequest, UpdateRuleRequest,
 };
 use crate::repo;
 use crate::state::{AppState, InternalPushDeps};
@@ -415,6 +416,114 @@ pub async fn dispatch_due_broadcasts(state: &AppState) -> Result<u64, AppError> 
     Ok(dispatched)
 }
 
+// ============================================================================
+// Automation rules (admin authoring) — create / list / toggle / delete
+// ----------------------------------------------------------------------------
+// AUTHORING + storage only. A stored rule does NOT yet fire — wiring rule execution into the
+// event consumer is a deliberate follow-up (a production-behavior change). The screen says so.
+
+/// Admin-facing trigger keys (the rule builder's "When" options). Validated so stored rules
+/// stay within a known set the future execution engine can dispatch on.
+const TRIGGER_KEYS: &[&str] = &[
+    "missed_checkin",
+    "booking_cancelled",
+    "low_rating",
+    "no_guard_accepted",
+    "document_expiring",
+    "incomplete_work",
+];
+/// Admin-facing action keys (the rule builder's "Then" options).
+const ACTION_KEYS: &[&str] = &[
+    "notify_admins",
+    "charge_fee",
+    "flag_guard",
+    "expand_radius",
+    "notify_guard",
+    "auto_refund",
+];
+
+/// GET /admin/automation/rules — list rules, newest first.
+pub async fn list_rules(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<AutomationRule>>>, AppError> {
+    require_admin(&user)?;
+    let rows = repo::list_rules(&state.db).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
+/// POST /admin/automation/rules — create a rule (trigger/action validated against the set).
+pub async fn create_rule(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<CreateRuleRequest>,
+) -> Result<Json<ApiResponse<AutomationRule>>, AppError> {
+    require_admin(&user)?;
+    if !TRIGGER_KEYS.contains(&req.trigger_key.as_str()) {
+        return Err(AppError::BadRequest("invalid trigger_key".to_string()));
+    }
+    if !ACTION_KEYS.contains(&req.action_key.as_str()) {
+        return Err(AppError::BadRequest("invalid action_key".to_string()));
+    }
+    let rule = repo::create_rule(
+        &state.db,
+        user.user_id,
+        &req.trigger_key,
+        req.condition_text.as_deref(),
+        &req.action_key,
+        req.is_enabled.unwrap_or(true),
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(rule)))
+}
+
+/// PUT /admin/automation/rules/{id} — update a rule (commonly the enable toggle).
+pub async fn update_rule(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateRuleRequest>,
+) -> Result<Json<ApiResponse<AutomationRule>>, AppError> {
+    require_admin(&user)?;
+    if let Some(tk) = &req.trigger_key {
+        if !TRIGGER_KEYS.contains(&tk.as_str()) {
+            return Err(AppError::BadRequest("invalid trigger_key".to_string()));
+        }
+    }
+    if let Some(ak) = &req.action_key {
+        if !ACTION_KEYS.contains(&ak.as_str()) {
+            return Err(AppError::BadRequest("invalid action_key".to_string()));
+        }
+    }
+    let updated = repo::update_rule(
+        &state.db,
+        id,
+        req.trigger_key.as_deref(),
+        req.condition_text.as_deref(),
+        req.action_key.as_deref(),
+        req.is_enabled,
+    )
+    .await?
+    .ok_or_else(|| AppError::NotFound("Rule not found".to_string()))?;
+    Ok(Json(ApiResponse::success(updated)))
+}
+
+/// DELETE /admin/automation/rules/{id} — remove a rule.
+pub async fn delete_rule(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    require_admin(&user)?;
+    let removed = repo::delete_rule(&state.db, id).await?;
+    if !removed {
+        return Err(AppError::NotFound("Rule not found".to_string()));
+    }
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "deleted": true }),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +701,7 @@ mod tests {
         Some(
             Router::new()
                 .route("/admin/broadcasts", post(create_broadcast))
+                .route("/admin/automation/rules", post(create_rule))
                 .with_state(state),
         )
     }
@@ -627,6 +737,33 @@ mod tests {
             res.status(),
             StatusCode::FORBIDDEN,
             "a non-admin must not create a broadcast"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rule_rejects_non_admin() {
+        let Some(app) = broadcast_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let body =
+            serde_json::json!({ "trigger_key": "missed_checkin", "action_key": "notify_admins" });
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/automation/rules")
+                    .header("authorization", format!("Bearer {}", user_token("guard")))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a non-admin must not create an automation rule"
         );
     }
 }

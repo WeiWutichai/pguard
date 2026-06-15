@@ -145,6 +145,15 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/admin/broadcasts/{id}/send", post(api::send_broadcast))
         .route("/admin/audience-counts", get(api::audience_counts))
+        // Admin automation rules (authoring/list/toggle/delete — live execution is a follow-up).
+        .route(
+            "/admin/automation/rules",
+            get(api::list_rules).post(api::create_rule),
+        )
+        .route(
+            "/admin/automation/rules/{id}",
+            put(api::update_rule).delete(api::delete_rule),
+        )
         .route(
             "/internal/notifications/push",
             post(api::internal_push::<AppState>),
