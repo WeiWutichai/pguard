@@ -26,6 +26,41 @@ use crate::models::{
     InternalGuard, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
+/// Resolve the recipient `user_id`s for a broadcast audience. notification's bulk-send calls
+/// this over the service-JWT'd internal endpoint because notification owns no user/role
+/// registry; profile reads its OWN tables (NOT a cross-schema read for notification):
+///   - `guards`    → every `profile.guard_profiles` row
+///   - `customers` → every `profile.customer_profiles` row
+///   - `all`       → the UNION of both (a user is one or the other, so the union just merges)
+///
+/// Bounded by `limit` (no unbounded service-to-service payload); truncation is the caller's to
+/// log. Newest-first for the per-role lists; the UNION is unordered (set semantics). The
+/// `audience` string is matched against a fixed set — never interpolated as raw SQL.
+pub async fn recipient_ids(db: &PgPool, audience: &str, limit: i64) -> Result<Vec<Uuid>, AppError> {
+    let sql = match audience {
+        "guards" => "SELECT user_id FROM profile.guard_profiles ORDER BY created_at DESC LIMIT $1",
+        "customers" => {
+            "SELECT user_id FROM profile.customer_profiles ORDER BY created_at DESC LIMIT $1"
+        }
+        "all" => {
+            "SELECT user_id FROM profile.guard_profiles \
+             UNION \
+             SELECT user_id FROM profile.customer_profiles \
+             LIMIT $1"
+        }
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "unknown audience: {other} (expected all|guards|customers)"
+            )))
+        }
+    };
+    let rows: Vec<(Uuid,)> = sqlx::query_as(sql)
+        .bind(limit.clamp(1, 10_000))
+        .fetch_all(db)
+        .await?;
+    Ok(rows.into_iter().map(|r| r.0).collect())
+}
+
 /// Raw guard-profile row (approval_status read as text, parsed below). `account_number` is
 /// the UNMASKED stored value — masking is the handler's job, never the repo's.
 struct GuardRow {

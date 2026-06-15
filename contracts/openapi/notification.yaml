@@ -35,6 +35,8 @@ tags:
     description: Device token management
   - name: Notifications
     description: Notification listing + read state
+  - name: Broadcast
+    description: Admin bulk-send — composer, drafts, scheduling, history, audience counts
   - name: Internal
     description: Service-to-service endpoints (service-JWT only; not exposed publicly)
 
@@ -202,6 +204,169 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/broadcasts:
+    post:
+      tags: [Broadcast]
+      summary: Compose a broadcast (admin only)
+      description: |
+        Admin-only bulk-send. `mode` selects the action: `now` fans out immediately
+        (status → sent), `draft` persists an editable draft, `scheduled` persists for a
+        future `scheduled_at` (the service scheduler fires it). Role gating is enforced in
+        the handler (403 for non-admin). The audience (`all|guards|customers`) is resolved
+        cross-service from profile (service-JWT) — notification owns no user/role registry.
+      operationId: createBroadcast
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateBroadcastRequest' }
+      responses:
+        '200':
+          description: The created (and, for mode=now, sent) broadcast
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Broadcast' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Broadcast]
+      summary: List broadcast campaigns (admin only), newest first
+      operationId: listBroadcasts
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Broadcast campaign history
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/Broadcast' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/broadcasts/{id}:
+    get:
+      tags: [Broadcast]
+      summary: Get one broadcast campaign (admin only)
+      operationId: getBroadcast
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The broadcast campaign
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Broadcast' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [Broadcast]
+      summary: Edit a DRAFT broadcast (admin only)
+      description: Only a `draft` broadcast can be edited; a sent/scheduled one returns 409.
+      operationId: updateBroadcast
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateBroadcastRequest' }
+      responses:
+        '200':
+          description: The updated draft
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Broadcast' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/broadcasts/{id}/send:
+    post:
+      tags: [Broadcast]
+      summary: Send a draft/scheduled broadcast NOW (admin only)
+      operationId: sendBroadcast
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The sent broadcast
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Broadcast' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /admin/audience-counts:
+    get:
+      tags: [Broadcast]
+      summary: Recipient totals per audience (admin only)
+      operationId: audienceCounts
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Recipient counts for the composer audience picker
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AudienceCounts' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /internal/notifications/push:
     post:
       tags: [Internal]
@@ -261,6 +426,16 @@ components:
           schema: { $ref: '#/components/schemas/ErrorBody' }
     NotFound:
       description: Resource not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    BadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    Conflict:
+      description: Conflicts with the resource's current state (e.g. editing a non-draft)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -326,6 +501,71 @@ components:
       required: [count]
       properties:
         count: { type: integer, format: int64 }
+
+    Audience:
+      type: string
+      description: Broadcast target audience (resolved to recipients via profile).
+      enum: [all, guards, customers]
+
+    BroadcastStatus:
+      type: string
+      enum: [draft, scheduled, sent]
+
+    BroadcastMode:
+      type: string
+      description: How a composed broadcast is dispatched.
+      enum: [now, draft, scheduled]
+
+    CreateBroadcastRequest:
+      type: object
+      required: [audience, title, body, mode]
+      properties:
+        audience: { $ref: '#/components/schemas/Audience' }
+        title: { type: string }
+        body: { type: string }
+        notification_type:
+          allOf: [{ $ref: '#/components/schemas/NotificationType' }]
+          description: Defaults to `system` when omitted.
+        mode: { $ref: '#/components/schemas/BroadcastMode' }
+        scheduled_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: Required (future) when `mode = scheduled`.
+
+    UpdateBroadcastRequest:
+      type: object
+      description: Edit a DRAFT broadcast — all fields optional (only provided fields change).
+      properties:
+        audience: { $ref: '#/components/schemas/Audience' }
+        title: { type: string, nullable: true }
+        body: { type: string, nullable: true }
+        notification_type: { $ref: '#/components/schemas/NotificationType' }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+
+    Broadcast:
+      type: object
+      required: [id, audience, title, body, notification_type, status, recipient_count, created_by, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        audience: { $ref: '#/components/schemas/Audience' }
+        title: { type: string }
+        body: { type: string }
+        notification_type: { $ref: '#/components/schemas/NotificationType' }
+        status: { $ref: '#/components/schemas/BroadcastStatus' }
+        scheduled_at: { type: string, format: date-time, nullable: true }
+        recipient_count: { type: integer, format: int32 }
+        created_by: { type: string, format: uuid }
+        created_at: { type: string, format: date-time }
+        sent_at: { type: string, format: date-time, nullable: true }
+
+    AudienceCounts:
+      type: object
+      required: [all, guards, customers]
+      properties:
+        all: { type: integer, format: int64 }
+        guards: { type: integer, format: int64 }
+        customers: { type: integer, format: int64 }
 
     ApiResponseEnvelope:
       type: object

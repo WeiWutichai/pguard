@@ -234,6 +234,22 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin broadcast (bulk-send) — composer + draft + schedule + history. The single prefix
+        // also routes the `/{id}` + `/{id}/send` subpaths. Admin authz is the notification
+        // service's job (it resolves the audience via profile's service-JWT'd internal read).
+        prefix: "/admin/broadcasts",
+        suffix: None,
+        upstream: Upstream::Notification,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Broadcast audience recipient counts (composer picker). Notification owns it.
+        prefix: "/admin/audience-counts",
+        suffix: None,
+        upstream: Upstream::Notification,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -668,6 +684,30 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/conversations"));
         assert_eq!(up, Upstream::Chat);
         assert_eq!(fwd, "/admin/conversations");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_broadcasts_route_to_notification() {
+        for p in [
+            "/v1/admin/broadcasts",
+            "/v1/admin/broadcasts/abc-123",
+            "/v1/admin/broadcasts/abc/send",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Notification, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn admin_audience_counts_routes_to_notification() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/audience-counts"));
+        assert_eq!(up, Upstream::Notification);
+        assert_eq!(fwd, "/admin/audience-counts");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

@@ -10,6 +10,7 @@ mod domain;
 mod events;
 mod fcm;
 mod models;
+mod profile_client;
 mod repo;
 mod state;
 
@@ -69,12 +70,25 @@ async fn main() -> anyhow::Result<()> {
             Arc::new(FcmPusher::new(FcmConfig::from_env()?, http_client.clone()))
         };
 
+    // Service-JWT'd client for profile's broadcast-recipient roster (admin bulk-send). Mints
+    // a token from the SAME service secret profile verifies with; PROFILE_INTERNAL_URL points
+    // at profile DIRECTLY (service-to-service, never through the public gateway).
+    let profile_internal_url =
+        std::env::var("PROFILE_INTERNAL_URL").unwrap_or_else(|_| "http://profile:3002".to_string());
+    let profile_client = crate::profile_client::ProfileClient::new(
+        http_client.clone(),
+        profile_internal_url,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+    );
+
     let state = AppState {
         db,
         redis_conn,
         jwt_config,
         service_jwt_config,
         pusher,
+        profile_client,
     };
 
     // --- background JetStream consumer (the event → notification path) ---
@@ -87,6 +101,22 @@ async fn main() -> anyhow::Result<()> {
         tokio::spawn(async move {
             if let Err(e) = events::run_consumer(consumer_state, &nats_url).await {
                 tracing::error!("notification consumer stopped: {e}");
+            }
+        });
+    }
+
+    // --- background scheduler: fires due scheduled broadcasts every 30s ---
+    // State-changing work that owns its retry via the broadcast `status` ledger (a row stays
+    // `scheduled` until a fan-out succeeds + flips it to `sent`) — not fire-and-forget.
+    {
+        let sched_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(30));
+            loop {
+                tick.tick().await;
+                if let Err(e) = api::dispatch_due_broadcasts(&sched_state).await {
+                    tracing::error!("broadcast scheduler tick failed: {e}");
+                }
             }
         });
     }
@@ -104,6 +134,17 @@ async fn main() -> anyhow::Result<()> {
         .route("/notifications/read-all", put(api::mark_all_as_read))
         .route("/notifications/{id}/read", put(api::mark_as_read))
         .route("/notifications/send", post(api::send_notification))
+        // Admin broadcast (bulk-send) — composer + draft + schedule + history + counts.
+        .route(
+            "/admin/broadcasts",
+            post(api::create_broadcast).get(api::list_broadcasts),
+        )
+        .route(
+            "/admin/broadcasts/{id}",
+            get(api::get_broadcast).put(api::update_broadcast),
+        )
+        .route("/admin/broadcasts/{id}/send", post(api::send_broadcast))
+        .route("/admin/audience-counts", get(api::audience_counts))
         .route(
             "/internal/notifications/push",
             post(api::internal_push::<AppState>),

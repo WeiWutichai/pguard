@@ -22,8 +22,8 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RejectRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RecipientsQuery,
+    RecipientsResponse, RejectRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -32,6 +32,10 @@ use crate::state::{ProfileDeps, ProfileInternalDeps};
 /// truncated (the handler logs a warn so the truncation is observable). Cursor pagination is
 /// a tracked follow-up once the approved-guard count approaches this.
 const INTERNAL_GUARDS_LIMIT: i64 = 100;
+
+/// Hard cap on the broadcast-recipient response (mirrors [`INTERNAL_GUARDS_LIMIT`]). A larger
+/// audience is truncated — broadcast is best-effort fan-out, not an exactly-once guarantee.
+const RECIPIENTS_LIMIT: i64 = 5000;
 
 const ROLE_GUARD: &str = "guard";
 const ROLE_CUSTOMER: &str = "customer";
@@ -390,6 +394,42 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
 ) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
     let data = repo::export_user_data(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(data)))
+}
+
+// ----- GET /internal/profiles/recipients (broadcast audience for notification) -----
+
+/// Resolve the `user_id`s for a broadcast audience (`all|guards|customers`). `ServiceCaller`-
+/// gated (only notification's bulk-send, holding a valid service-JWT, reaches this — the
+/// gateway blocks `/internal/`). notification owns no user/role registry, so it asks profile
+/// (which owns the guard/customer profile tables). Least-privilege — returns only `user_id`s,
+/// never names/PII. Bounded by [`RECIPIENTS_LIMIT`]; a larger roster is truncated (logged).
+#[tracing::instrument(skip(state), fields(caller = %caller.service))]
+pub async fn internal_list_recipients<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Query(q): Query<RecipientsQuery>,
+) -> Result<Json<ApiResponse<RecipientsResponse>>, AppError> {
+    let audience = match q.audience.as_str() {
+        "all" | "guards" | "customers" => q.audience.clone(),
+        other => {
+            return Err(AppError::BadRequest(format!(
+                "audience must be all|guards|customers (got {other})"
+            )))
+        }
+    };
+    let user_ids = repo::recipient_ids(state.db_read(), &audience, RECIPIENTS_LIMIT).await?;
+    if user_ids.len() as i64 >= RECIPIENTS_LIMIT {
+        tracing::warn!(
+            limit = RECIPIENTS_LIMIT,
+            %audience,
+            "broadcast recipient roster hit the cap; audience truncated (no pagination yet)"
+        );
+    }
+    Ok(Json(ApiResponse::success(RecipientsResponse {
+        count: user_ids.len() as i64,
+        audience,
+        user_ids,
+    })))
 }
 
 // ----- POST /admin/guard-profiles/{user_id}/approve | /reject -----
@@ -987,6 +1027,10 @@ mod tests {
                 "/internal/guards",
                 get(internal_list_guards::<InternalDeps>),
             )
+            .route(
+                "/internal/profiles/recipients",
+                get(internal_list_recipients::<InternalDeps>),
+            )
             .with_state(deps)
     }
 
@@ -1033,6 +1077,48 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/internal/guards")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid service token must pass the guard"
+        );
+    }
+
+    // ----- internal broadcast-recipients: service-JWT guard (no Redis/DB needed) -----
+
+    #[tokio::test]
+    async fn internal_recipients_rejects_missing_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/profiles/recipients?audience=guards")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_recipients_accepts_valid_service_token() {
+        // A valid service-JWT (as minted by notification) must pass the guard; the handler then
+        // queries the (unreachable) DB, so the response is NOT 401 — proving auth passed.
+        use shared::service_jwt::encode_service_jwt;
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("notification", &ek, 60).unwrap();
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/internal/profiles/recipients?audience=all")
                     .header("authorization", format!("Bearer {tok}"))
                     .body(Body::empty())
                     .unwrap(),

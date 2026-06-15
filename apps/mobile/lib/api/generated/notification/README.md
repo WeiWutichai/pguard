@@ -63,14 +63,13 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_notification_api/pguard_notification_api.dart';
 
 
-final api = PguardNotificationApi().getFCMTokensApi();
-final RegisterTokenRequest registerTokenRequest = ; // RegisterTokenRequest | 
+final api = PguardNotificationApi().getBroadcastApi();
 
 try {
-    final response = await api.registerToken(registerTokenRequest);
+    final response = await api.audienceCounts();
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling FCMTokensApi->registerToken: $e\n");
+    print("Exception when calling BroadcastApi->audienceCounts: $e\n");
 }
 
 ```
@@ -81,6 +80,12 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*BroadcastApi*](doc/BroadcastApi.md) | [**audienceCounts**](doc/BroadcastApi.md#audiencecounts) | **GET** /admin/audience-counts | Recipient totals per audience (admin only)
+[*BroadcastApi*](doc/BroadcastApi.md) | [**createBroadcast**](doc/BroadcastApi.md#createbroadcast) | **POST** /admin/broadcasts | Compose a broadcast (admin only)
+[*BroadcastApi*](doc/BroadcastApi.md) | [**getBroadcast**](doc/BroadcastApi.md#getbroadcast) | **GET** /admin/broadcasts/{id} | Get one broadcast campaign (admin only)
+[*BroadcastApi*](doc/BroadcastApi.md) | [**listBroadcasts**](doc/BroadcastApi.md#listbroadcasts) | **GET** /admin/broadcasts | List broadcast campaigns (admin only), newest first
+[*BroadcastApi*](doc/BroadcastApi.md) | [**sendBroadcast**](doc/BroadcastApi.md#sendbroadcast) | **POST** /admin/broadcasts/{id}/send | Send a draft/scheduled broadcast NOW (admin only)
+[*BroadcastApi*](doc/BroadcastApi.md) | [**updateBroadcast**](doc/BroadcastApi.md#updatebroadcast) | **PUT** /admin/broadcasts/{id} | Edit a DRAFT broadcast (admin only)
 [*FCMTokensApi*](doc/FCMTokensApi.md) | [**registerToken**](doc/FCMTokensApi.md#registertoken) | **POST** /tokens | Register an FCM device token for the authenticated user
 [*FCMTokensApi*](doc/FCMTokensApi.md) | [**unregisterToken**](doc/FCMTokensApi.md#unregistertoken) | **DELETE** /tokens | Unregister an FCM device token
 [*InternalApi*](doc/InternalApi.md) | [**internalPush**](doc/InternalApi.md#internalpush) | **POST** /internal/notifications/push | Service-to-service push (service-JWT only)
@@ -94,10 +99,19 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [Audience](doc/Audience.md)
+ - [AudienceCounts](doc/AudienceCounts.md)
+ - [AudienceCounts200Response](doc/AudienceCounts200Response.md)
+ - [Broadcast](doc/Broadcast.md)
+ - [BroadcastMode](doc/BroadcastMode.md)
+ - [BroadcastStatus](doc/BroadcastStatus.md)
+ - [CreateBroadcast200Response](doc/CreateBroadcast200Response.md)
+ - [CreateBroadcastRequest](doc/CreateBroadcastRequest.md)
  - [DeleteTokenRequest](doc/DeleteTokenRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
+ - [ListBroadcasts200Response](doc/ListBroadcasts200Response.md)
  - [ListNotifications200Response](doc/ListNotifications200Response.md)
  - [MarkAsRead200Response](doc/MarkAsRead200Response.md)
  - [NotificationLog](doc/NotificationLog.md)
@@ -106,6 +120,7 @@ Class | Method | HTTP request | Description
  - [SendNotificationRequest](doc/SendNotificationRequest.md)
  - [UnreadCount](doc/UnreadCount.md)
  - [UnreadCount200Response](doc/UnreadCount200Response.md)
+ - [UpdateBroadcastRequest](doc/UpdateBroadcastRequest.md)
 
 
 ## Documentation For Authorization

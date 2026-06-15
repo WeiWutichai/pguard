@@ -94,3 +94,113 @@ pub struct NotificationLogResponse {
 pub struct UnreadCountResponse {
     pub count: i64,
 }
+
+// ----- Broadcast (admin bulk-send) -----
+
+/// Broadcast target audience. Plain serde enum (like [`NotificationType`]); the DB column is
+/// the Postgres enum `notification.broadcast_audience`, written via a `::` cast + read back as
+/// text. `as_db_str` is also the value sent to profile's `/internal/profiles/recipients`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Audience {
+    All,
+    Guards,
+    Customers,
+}
+
+impl Audience {
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            Audience::All => "all",
+            Audience::Guards => "guards",
+            Audience::Customers => "customers",
+        }
+    }
+}
+
+/// Broadcast lifecycle. DB column `notification.broadcast_status`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BroadcastStatus {
+    Draft,
+    Scheduled,
+    Sent,
+}
+
+impl BroadcastStatus {
+    pub fn as_db_str(self) -> &'static str {
+        match self {
+            BroadcastStatus::Draft => "draft",
+            BroadcastStatus::Scheduled => "scheduled",
+            BroadcastStatus::Sent => "sent",
+        }
+    }
+}
+
+/// How a freshly composed broadcast should be dispatched.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BroadcastMode {
+    /// Fan out immediately (status → sent).
+    Now,
+    /// Persist as an editable draft (no send).
+    Draft,
+    /// Persist for a future `scheduled_at` (the scheduler fires it).
+    Scheduled,
+}
+
+/// Compose a broadcast. `mode` selects send-now / save-draft / schedule.
+#[derive(Debug, Deserialize)]
+pub struct CreateBroadcastRequest {
+    pub audience: Audience,
+    pub title: String,
+    pub body: String,
+    /// Defaults to `system` when omitted.
+    #[serde(default)]
+    pub notification_type: Option<NotificationType>,
+    pub mode: BroadcastMode,
+    /// Required when `mode = scheduled` (must be in the future).
+    pub scheduled_at: Option<DateTime<Utc>>,
+}
+
+/// Edit an existing DRAFT broadcast (all fields optional — COALESCE semantics in the repo).
+#[derive(Debug, Deserialize)]
+pub struct UpdateBroadcastRequest {
+    pub audience: Option<Audience>,
+    pub title: Option<String>,
+    pub body: Option<String>,
+    pub notification_type: Option<NotificationType>,
+    pub scheduled_at: Option<DateTime<Utc>>,
+}
+
+/// Query for the broadcast history list.
+#[derive(Debug, Deserialize)]
+pub struct ListBroadcastsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// A broadcast campaign row as returned to the admin UI. Enum columns are read as text (DB
+/// enum cast) so the read path needs no enum decoding.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct BroadcastResponse {
+    pub id: Uuid,
+    pub audience: String,
+    pub title: String,
+    pub body: String,
+    pub notification_type: String,
+    pub status: String,
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub recipient_count: i32,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub sent_at: Option<DateTime<Utc>>,
+}
+
+/// Recipient totals per audience for the composer's audience picker.
+#[derive(Debug, Serialize)]
+pub struct AudienceCountsResponse {
+    pub all: i64,
+    pub guards: i64,
+    pub customers: i64,
+}

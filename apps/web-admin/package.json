@@ -10,7 +10,7 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "gen:api": "openapi-typescript ../../contracts/openapi/identity.yaml -o src/api/generated/identity.ts && openapi-typescript ../../contracts/openapi/profile.yaml -o src/api/generated/profile.ts && openapi-typescript ../../contracts/openapi/rating.yaml -o src/api/generated/rating.ts && openapi-typescript ../../contracts/openapi/payment.yaml -o src/api/generated/payment.ts && openapi-typescript ../../contracts/openapi/booking.yaml -o src/api/generated/booking.ts && openapi-typescript ../../contracts/openapi/presence.yaml -o src/api/generated/presence.ts && openapi-typescript ../../contracts/openapi/calling.yaml -o src/api/generated/calling.ts && openapi-typescript ../../contracts/openapi/chat.yaml -o src/api/generated/chat.ts"
+    "gen:api": "openapi-typescript ../../contracts/openapi/identity.yaml -o src/api/generated/identity.ts && openapi-typescript ../../contracts/openapi/profile.yaml -o src/api/generated/profile.ts && openapi-typescript ../../contracts/openapi/rating.yaml -o src/api/generated/rating.ts && openapi-typescript ../../contracts/openapi/payment.yaml -o src/api/generated/payment.ts && openapi-typescript ../../contracts/openapi/booking.yaml -o src/api/generated/booking.ts && openapi-typescript ../../contracts/openapi/presence.yaml -o src/api/generated/presence.ts && openapi-typescript ../../contracts/openapi/calling.yaml -o src/api/generated/calling.ts && openapi-typescript ../../contracts/openapi/chat.yaml -o src/api/generated/chat.ts && openapi-typescript ../../contracts/openapi/notification.yaml -o src/api/generated/notification.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
