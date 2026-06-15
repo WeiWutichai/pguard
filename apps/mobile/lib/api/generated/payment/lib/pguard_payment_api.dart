@@ -10,6 +10,7 @@ export 'package:pguard_payment_api/src/auth/oauth.dart';
 export 'package:pguard_payment_api/src/serializers.dart';
 export 'package:pguard_payment_api/src/model/date.dart';
 
+export 'package:pguard_payment_api/src/api/admin_api.dart';
 export 'package:pguard_payment_api/src/api/payments_api.dart';
 
 export 'package:pguard_payment_api/src/model/api_response_envelope.dart';
