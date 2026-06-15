@@ -9,6 +9,7 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_booking_api/src/api_util.dart';
+import 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 import 'package:pguard_booking_api/src/model/booking_status.dart';
@@ -119,6 +120,95 @@ class AdminApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Booking analytics — volume + utilization + retention (role&#x3D;admin)
+  /// Composite booking analytics over &#x60;[from, to)&#x60; in one round-trip: daily booking-volume series, a guard-hours heatmap (day-of-week × 2-hour bucket of scheduled time), and an aggregate customer-retention curve. Defaults to the last 30 days (capped at 366). Admin only (else 403). NOTE: a bookings-BY-SERVICE-TYPE breakdown is NOT included — the booking model has no service_type dimension in v2 (it would entail the deferred catalog→charge integration decision). 
+  ///
+  /// Parameters:
+  /// * [from] - Inclusive window start (RFC3339). Default = `to − 30 days`.
+  /// * [to] - Exclusive window end (RFC3339). Default = now.
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminBookingsReport200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminBookingsReport200Response>> adminBookingsReport({ 
+    DateTime? from,
+    DateTime? to,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/reports/bookings';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _queryParameters = <String, dynamic>{
+      if (from != null) r'from': encodeQueryParameter(_serializers, from, const FullType(DateTime)),
+      if (to != null) r'to': encodeQueryParameter(_serializers, to, const FullType(DateTime)),
+    };
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      queryParameters: _queryParameters,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminBookingsReport200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminBookingsReport200Response),
+      ) as AdminBookingsReport200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminBookingsReport200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

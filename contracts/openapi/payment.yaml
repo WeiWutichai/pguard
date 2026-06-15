@@ -139,6 +139,41 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/reports/revenue:
+    get:
+      tags: [Admin]
+      summary: Revenue-trend analytics (role=admin)
+      description: |
+        Daily NET revenue (completed charges' effective amount minus refunds) over `[from, to)`,
+        plus a month-over-month comparison against the immediately-preceding equal-length window.
+        Defaults to the last 30 days; the window is capped at 366 days. Admin only (else 403).
+      operationId: adminRevenueReport
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive window start (RFC3339). Default = `to − 30 days`.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Exclusive window end (RFC3339). Default = now.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Revenue trend + MoM
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RevenueReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /payments/{id}:
     get:
       tags: [Payments]
@@ -292,6 +327,32 @@ components:
         paid_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    RevenuePoint:
+      type: object
+      required: [date, revenue, payments]
+      properties:
+        date: { type: string, format: date }
+        revenue:
+          type: string
+          description: Net revenue that day (exact decimal as a string; money rule). Net of refunds.
+          example: "12400.00"
+        payments: { type: integer, format: int64, description: Completed charges that day. }
+
+    RevenueReport:
+      type: object
+      required: [series, total, prev_total]
+      properties:
+        series:
+          type: array
+          items: { $ref: '#/components/schemas/RevenuePoint' }
+        total: { type: string, description: Net revenue over the window (decimal string). }
+        prev_total: { type: string, description: Net revenue over the prior equal-length window. }
+        mom_pct:
+          type: number
+          format: double
+          nullable: true
+          description: Month-over-month % vs the prior window (null when it had zero revenue).
 
     ApiResponseEnvelope:
       type: object

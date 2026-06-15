@@ -10,6 +10,7 @@
 //!  - [`apply_proration`] — update the payment with the prorated final/refund/hours AND, if
 //!    a refund is owed, enqueue `payment.refund_processed` in the SAME transaction.
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::Value;
 use uuid::Uuid;
@@ -19,7 +20,7 @@ use shared_events::topics;
 use shared_events::EventEnvelope;
 
 use crate::domain::{compute_proration, Proration};
-use crate::models::PaymentResponse;
+use crate::models::{PaymentResponse, RevenuePoint};
 
 const PAYMENT_COLUMNS: &str = "id, booking_id, customer_id, guard_id, amount, expected_total, \
      payment_method, status::text AS status, final_amount, refund_amount, actual_hours, \
@@ -91,6 +92,63 @@ pub async fn admin_list_payments(
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
+}
+
+// ----- Revenue report (admin analytics) -----
+
+/// Net revenue expression shared by the series + total queries: completed charges' effective
+/// amount (prorated `final_amount` when set, else `amount`) minus any refunds. Kept as one
+/// constant so the per-day series and the MoM total compute identically.
+const NET_REVENUE_EXPR: &str =
+    "COALESCE(SUM(CASE WHEN status = 'completed' THEN COALESCE(final_amount, amount) ELSE 0 END), 0) \
+     - COALESCE(SUM(COALESCE(refund_amount, 0)), 0)";
+
+/// Daily net revenue over `[from, to)`, grouped by the day the money landed
+/// (`paid_at`, falling back to `created_at`). `payments` = completed charges that day. Newest
+/// day last (ascending) so the chart plots left→right.
+pub async fn revenue_series(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<RevenuePoint>, AppError> {
+    let sql = format!(
+        r#"
+        SELECT date_trunc('day', COALESCE(paid_at, created_at))::date AS date,
+               {NET_REVENUE_EXPR} AS revenue,
+               COUNT(*) FILTER (WHERE status = 'completed') AS payments
+        FROM payment.payments
+        WHERE COALESCE(paid_at, created_at) >= $1 AND COALESCE(paid_at, created_at) < $2
+        GROUP BY 1
+        ORDER BY 1
+        "#
+    );
+    let rows = sqlx::query_as::<_, RevenuePoint>(&sql)
+        .bind(from)
+        .bind(to)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+/// Net revenue total over `[from, to)` — the MoM comparison uses it on the prior window.
+pub async fn revenue_total(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Decimal, AppError> {
+    let sql = format!(
+        r#"
+        SELECT {NET_REVENUE_EXPR} AS total
+        FROM payment.payments
+        WHERE COALESCE(paid_at, created_at) >= $1 AND COALESCE(paid_at, created_at) < $2
+        "#
+    );
+    let row: (Decimal,) = sqlx::query_as(&sql)
+        .bind(from)
+        .bind(to)
+        .fetch_one(db)
+        .await?;
+    Ok(row.0)
 }
 
 /// PDPA §19/§32 data export: ALL of the user's OWN payments (as the paying customer), no

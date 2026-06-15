@@ -8,6 +8,9 @@
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
+use chrono::{TimeDelta, Utc};
+use rust_decimal::prelude::ToPrimitive;
+use rust_decimal::Decimal;
 use uuid::Uuid;
 
 use shared::auth::AuthUser;
@@ -19,6 +22,7 @@ use crate::booking_client::BookingReader;
 use crate::domain::{amount_covers_expected, expected_total, is_payable_status, validate_payment};
 use crate::models::{
     AdminListPaymentsQuery, CompletePaymentRequest, CreatePaymentRequest, PaymentResponse,
+    ReportRangeQuery, RevenueReport,
 };
 use crate::repo;
 use crate::state::PaymentDeps;
@@ -195,6 +199,53 @@ pub async fn admin_list_payments<S: PaymentDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
+/// Default analytics window when `from`/`to` are omitted, and the hard cap on its length.
+const REPORT_DEFAULT_DAYS: i64 = 30;
+const REPORT_MAX_DAYS: i64 = 366;
+
+/// Resolve the `[from, to)` window: default last 30 days ending now; `from` clamped so the
+/// window never exceeds a year (bounds the aggregation scan). Shared shape with booking's report.
+fn report_range(q: &ReportRangeQuery) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
+    let to = q.to.unwrap_or_else(Utc::now);
+    let from = q
+        .from
+        .unwrap_or_else(|| to - TimeDelta::days(REPORT_DEFAULT_DAYS));
+    let earliest = to - TimeDelta::days(REPORT_MAX_DAYS);
+    (from.max(earliest).min(to), to)
+}
+
+/// GET /admin/reports/revenue?from=&to= — daily net-revenue series + MoM vs the prior window.
+/// Admin only. Read from the replica (pure analytics, no read-after-write).
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_revenue_report<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<ReportRangeQuery>,
+) -> Result<Json<ApiResponse<RevenueReport>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let (from, to) = report_range(&q);
+    let series = repo::revenue_series(state.db_read(), from, to).await?;
+    let total: Decimal = series.iter().map(|p| p.revenue).sum();
+    // MoM: the immediately-preceding equal-length window.
+    let len = to - from;
+    let prev_total = repo::revenue_total(state.db_read(), from - len, from).await?;
+    let mom_pct = if prev_total == Decimal::ZERO {
+        None
+    } else {
+        ((total - prev_total) / prev_total * Decimal::from(100)).to_f64()
+    };
+    Ok(Json(ApiResponse::success(RevenueReport {
+        series,
+        total,
+        prev_total,
+        mom_pct,
+    })))
+}
+
 // ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
 
 /// Export a user's OWN payments for a cross-service data export. `ServiceCaller`-gated (only
@@ -301,6 +352,10 @@ mod tests {
                     "/admin/payments",
                     axum::routing::get(admin_list_payments::<TestDeps>),
                 )
+                .route(
+                    "/admin/reports/revenue",
+                    axum::routing::get(admin_revenue_report::<TestDeps>),
+                )
                 .with_state(deps),
         )
     }
@@ -334,6 +389,30 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/payments")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_revenue_report_rejects_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read cross-user revenue analytics.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/reports/revenue")
                     .header(
                         "authorization",
                         format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),

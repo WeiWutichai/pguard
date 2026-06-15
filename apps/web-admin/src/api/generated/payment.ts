@@ -58,6 +58,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reports/revenue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Revenue-trend analytics (role=admin)
+         * @description Daily NET revenue (completed charges' effective amount minus refunds) over `[from, to)`,
+         *     plus a month-over-month comparison against the immediately-preceding equal-length window.
+         *     Defaults to the last 30 days; the window is capped at 366 days. Admin only (else 403).
+         */
+        get: operations["adminRevenueReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/payments/{id}": {
         parameters: {
             query?: never;
@@ -168,6 +190,32 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
+        };
+        RevenuePoint: {
+            /** Format: date */
+            date: string;
+            /**
+             * @description Net revenue that day (exact decimal as a string; money rule). Net of refunds.
+             * @example 12400.00
+             */
+            revenue: string;
+            /**
+             * Format: int64
+             * @description Completed charges that day.
+             */
+            payments: number;
+        };
+        RevenueReport: {
+            series: components["schemas"]["RevenuePoint"][];
+            /** @description Net revenue over the window (decimal string). */
+            total: string;
+            /** @description Net revenue over the prior equal-length window. */
+            prev_total: string;
+            /**
+             * Format: double
+             * @description Month-over-month % vs the prior window (null when it had zero revenue).
+             */
+            mom_pct?: number | null;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -318,6 +366,35 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminRevenueReport: {
+        parameters: {
+            query?: {
+                /** @description Inclusive window start (RFC3339). Default = `to − 30 days`. */
+                from?: string;
+                /** @description Exclusive window end (RFC3339). Default = now. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Revenue trend + MoM */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RevenueReport"];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

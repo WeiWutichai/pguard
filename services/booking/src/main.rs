@@ -156,6 +156,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/bookings/{id}/assign",
             post(api::admin_assign_guard::<AppState>),
         )
+        // Admin booking analytics (volume + utilization + retention). Gateway needs a NEW
+        // `/admin/reports/bookings` prefix rule → Booking (payment owns `/admin/reports/revenue`).
+        .route(
+            "/admin/reports/bookings",
+            get(api::admin_bookings_report::<AppState>),
+        )
         // Admin service catalog (pricing) CRUD — standalone, not wired to the charge path.
         // Gateway needs a NEW `/admin/pricing` prefix rule → Booking (covers /{id} too).
         .route(

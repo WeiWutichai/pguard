@@ -7,6 +7,7 @@
 
 use axum::extract::{Multipart, Path, Query, State};
 use axum::Json;
+use chrono::{TimeDelta, Utc};
 use uuid::Uuid;
 
 use futures::StreamExt;
@@ -20,10 +21,10 @@ use crate::discovery_client::{GuardCatalog, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
-    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse,
+    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
     CreateBookingRequest, CreateServiceRequest, InternalBooking, ListProgressReportsQuery,
-    NewProgressReport, OpenJobsQuery, ProgressReportResponse, ReviewCompletionRequest,
-    ServiceCatalogItem, UpdateServiceRequest,
+    NewProgressReport, OpenJobsQuery, ProgressReportResponse, ReportRangeQuery, RetentionPoint,
+    ReviewCompletionRequest, ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -357,6 +358,76 @@ pub async fn admin_list_bookings<S: BookingDeps>(
     )
     .await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+/// Default analytics window when `from`/`to` are omitted, and the hard cap on its length.
+const REPORT_DEFAULT_DAYS: i64 = 30;
+const REPORT_MAX_DAYS: i64 = 366;
+
+/// Resolve the `[from, to)` analytics window: default last 30 days ending now; clamp so it
+/// never exceeds a year (bounds the aggregation scan). Mirrors payment's `report_range`.
+fn report_range(q: &ReportRangeQuery) -> (chrono::DateTime<Utc>, chrono::DateTime<Utc>) {
+    let to = q.to.unwrap_or_else(Utc::now);
+    let from = q
+        .from
+        .unwrap_or_else(|| to - TimeDelta::days(REPORT_DEFAULT_DAYS));
+    let earliest = to - TimeDelta::days(REPORT_MAX_DAYS);
+    (from.max(earliest).min(to), to)
+}
+
+/// GET /admin/reports/bookings?from=&to= — composite booking analytics (volume trend +
+/// utilization heatmap + retention cohort). Admin only; replica read (pure analytics).
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_bookings_report<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<ReportRangeQuery>,
+) -> Result<Json<ApiResponse<BookingsReport>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let (from, to) = report_range(&q);
+    let daily = repo::bookings_daily(state.db_read(), from, to).await?;
+    let utilization = repo::utilization(state.db_read(), from, to).await?;
+    let (base, w1, w2, w4, w8, w12) = repo::retention_counts(state.db_read(), from, to).await?;
+    let pct = |n: i64| {
+        if base == 0 {
+            0.0
+        } else {
+            (n as f64) / (base as f64) * 100.0
+        }
+    };
+    let retention = vec![
+        RetentionPoint {
+            week: 0,
+            pct: if base == 0 { 0.0 } else { 100.0 },
+        },
+        RetentionPoint {
+            week: 1,
+            pct: pct(w1),
+        },
+        RetentionPoint {
+            week: 2,
+            pct: pct(w2),
+        },
+        RetentionPoint {
+            week: 4,
+            pct: pct(w4),
+        },
+        RetentionPoint {
+            week: 8,
+            pct: pct(w8),
+        },
+        RetentionPoint {
+            week: 12,
+            pct: pct(w12),
+        },
+    ];
+    let total = daily.iter().map(|d| d.count).sum();
+    Ok(Json(ApiResponse::success(BookingsReport {
+        daily,
+        utilization,
+        retention,
+        total,
+    })))
 }
 
 /// POST /admin/bookings/{id}/assign — an admin assigns a guard to an UNASSIGNED `requested`
@@ -928,6 +999,10 @@ mod tests {
                 post(admin_assign_guard::<TestDeps>),
             )
             .route(
+                "/admin/reports/bookings",
+                get(admin_bookings_report::<TestDeps>),
+            )
+            .route(
                 "/admin/pricing/services",
                 get(admin_list_services::<TestDeps>),
             )
@@ -1140,6 +1215,30 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/bookings")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_bookings_report_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read cross-user booking analytics.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/reports/bookings")
                     .header(
                         "authorization",
                         format!("Bearer {}", user_token("customer")),

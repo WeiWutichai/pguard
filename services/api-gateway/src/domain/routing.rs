@@ -250,6 +250,21 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin revenue-trend report (analytics). Payment owns the money series. A more
+        // specific prefix than a hypothetical `/admin/reports` so it routes to its own service.
+        prefix: "/admin/reports/revenue",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin booking analytics report (volume + utilization + retention). Booking owns it.
+        prefix: "/admin/reports/bookings",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -710,6 +725,22 @@ mod tests {
         assert_eq!(fwd, "/admin/audience-counts");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_reports_split_by_owning_service() {
+        // Revenue analytics → payment; booking analytics → booking. Distinct prefixes, each
+        // edge-protected, Api tier.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/reports/revenue"));
+        assert_eq!(up, Upstream::Payment);
+        assert_eq!(fwd, "/admin/reports/revenue");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+
+        let (up2, fwd2, public2, _) = proxy(resolve("/v1/admin/reports/bookings"));
+        assert_eq!(up2, Upstream::Booking);
+        assert_eq!(fwd2, "/admin/reports/bookings");
+        assert!(!public2);
     }
 
     #[test]

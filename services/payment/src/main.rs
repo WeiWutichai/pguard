@@ -122,6 +122,12 @@ async fn main() -> anyhow::Result<()> {
         // Admin cross-user payment ledger (admin-role gated in the handler). Needs a NEW
         // gateway `/admin/payments` prefix rule → Payment.
         .route("/admin/payments", get(api::admin_list_payments::<AppState>))
+        // Admin revenue-trend report (analytics). Needs a NEW gateway `/admin/reports/revenue`
+        // prefix rule → Payment (booking owns `/admin/reports/bookings`).
+        .route(
+            "/admin/reports/revenue",
+            get(api::admin_revenue_report::<AppState>),
+        )
         .route(
             "/internal/users/{user_id}/export",
             get(api::internal_export_user::<AppState>),
