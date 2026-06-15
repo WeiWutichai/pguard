@@ -195,6 +195,13 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin guard-document expiry surface (read). Profile owns the document_expiry table.
+        prefix: "/admin/documents",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin booking operations (cross-user list + guard-assign). The single prefix rule
         // also routes the `/{id}/assign` subpath (suffix: None matches every subpath). Admin
         // authz is the booking service's own job.
@@ -675,6 +682,15 @@ mod tests {
         let (up, fwd, _, _) = proxy(resolve("/v1/admin/guard-profiles/abc/approve"));
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/guard-profiles/abc/approve");
+    }
+
+    #[test]
+    fn admin_documents_route_to_profile() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/documents/expiring"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/admin/documents/expiring");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
     }
 
     #[test]

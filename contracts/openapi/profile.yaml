@@ -253,6 +253,34 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/documents/expiring:
+    get:
+      tags: [Admin]
+      summary: List guard documents needing renewal (role=admin)
+      description: |
+        Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
+        the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
+        403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a deferred
+        follow-up, so this returns nothing until that lands (the schema/endpoint/screen are
+        real and ready; rows are never fabricated).
+      operationId: adminListExpiringDocuments
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Expiring guard documents, soonest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/DocumentExpiry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/guard-profiles/{user_id}/approve:
     post:
       tags: [Admin]
@@ -499,6 +527,19 @@ components:
         action: { type: string }
         target: { type: string, nullable: true }
         accessed_at: { type: string, format: date-time }
+
+    DocumentExpiry:
+      type: object
+      description: One guard-document expiry row (the admin "expiring documents" surface).
+      required: [id, guard_id, document_type, expiry_date]
+      properties:
+        id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid }
+        document_type:
+          type: string
+          enum: [id_card, security_license, training_cert, criminal_check, driver_license]
+        expiry_date: { type: string, format: date }
+        last_reminded_at: { type: string, format: date-time, nullable: true }
 
     MyProfile:
       oneOf:

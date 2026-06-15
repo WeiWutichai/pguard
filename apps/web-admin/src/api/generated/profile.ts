@@ -164,6 +164,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/documents/expiring": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List guard documents needing renewal (role=admin)
+         * @description Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
+         *     the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
+         *     403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a deferred
+         *     follow-up, so this returns nothing until that lands (the schema/endpoint/screen are
+         *     real and ready; rows are never fabricated).
+         */
+        get: operations["adminListExpiringDocuments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles/{user_id}/approve": {
         parameters: {
             query?: never;
@@ -322,6 +346,19 @@ export interface components {
             target?: string | null;
             /** Format: date-time */
             accessed_at: string;
+        };
+        /** @description One guard-document expiry row (the admin "expiring documents" surface). */
+        DocumentExpiry: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            guard_id: string;
+            /** @enum {string} */
+            document_type: "id_card" | "security_license" | "training_cert" | "criminal_check" | "driver_license";
+            /** Format: date */
+            expiry_date: string;
+            /** Format: date-time */
+            last_reminded_at?: string | null;
         };
         /**
          * @description The caller's own profile, tagged by `kind`. A guard sees `MyGuardProfile` (masked
@@ -605,6 +642,30 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["AccessAuditEntry"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListExpiringDocuments: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Expiring guard documents, soonest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["DocumentExpiry"][];
                     };
                 };
             };
