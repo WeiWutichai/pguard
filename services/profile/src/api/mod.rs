@@ -21,8 +21,9 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
-    CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse, InternalGuard,
-    MyProfile, RejectRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
+    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RejectRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -332,6 +333,26 @@ pub async fn admin_list_customer_profiles<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(profiles)))
 }
 
+// ----- GET /admin/access-audit — PDPA §30 data-access audit log (admin) -----
+
+/// List the data-access audit trail (admin). Admin-only. Optional `action` filter + limit/offset,
+/// newest first; read from the replica. NOTE: this is the §30 access trail (who read what PII),
+/// NOT a full business-action feed — the design's broader "activity" stream (approved/refund/
+/// check-in events with actor/IP/payload) would need a dedicated audit-event sink (out of scope).
+/// Reading the audit log is itself NOT audited (it would recurse).
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_list_access_audit<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<AdminListAccessAuditQuery>,
+) -> Result<Json<ApiResponse<Vec<AccessAuditRow>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let rows = repo::list_access_audit(state.db_read(), q.action.as_deref(), limit, offset).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
 // ----- GET /internal/guards (service-to-service catalog) -----
 
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
@@ -490,6 +511,10 @@ mod tests {
                     get(admin_list_customer_profiles::<TestDeps>),
                 )
                 .route(
+                    "/admin/access-audit",
+                    get(admin_list_access_audit::<TestDeps>),
+                )
+                .route(
                     "/admin/guard-profiles/{user_id}/approve",
                     post(admin_approve_guard::<TestDeps>),
                 )
@@ -622,6 +647,27 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a guard must not list the admin onboarding queue"
         );
+    }
+
+    #[tokio::test]
+    async fn admin_access_audit_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not read the data-access audit trail.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/access-audit")
+                    .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

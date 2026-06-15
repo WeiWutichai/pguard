@@ -212,6 +212,47 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/access-audit:
+    get:
+      tags: [Admin]
+      summary: List the PDPA §30 data-access audit trail (role=admin)
+      description: |
+        Who (an admin) accessed what PII and when — the §30 access trail written by the admin
+        list endpoints. Newest first, optional `action` filter + limit/offset. Admin only.
+        NOTE: this is a DATA-ACCESS trail, not a full business-action feed (approved/refund/
+        check-in with actor/IP/payload) — that needs a dedicated audit-event sink.
+      operationId: adminListAccessAudit
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: action
+          in: query
+          required: false
+          description: Filter by the recorded action (e.g. admin_list_guard_profiles).
+          schema: { type: string }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Access-audit rows, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/AccessAuditEntry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/guard-profiles/{user_id}/approve:
     post:
       tags: [Admin]
@@ -447,6 +488,17 @@ components:
         full_name: { type: string, nullable: true }
         address: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
+
+    AccessAuditEntry:
+      type: object
+      description: One PDPA §30 data-access audit row (who accessed what PII, and when).
+      required: [id, accessed_by, action, accessed_at]
+      properties:
+        id: { type: integer, format: int64 }
+        accessed_by: { type: string, format: uuid }
+        action: { type: string }
+        target: { type: string, nullable: true }
+        accessed_at: { type: string, format: date-time }
 
     MyProfile:
       oneOf:

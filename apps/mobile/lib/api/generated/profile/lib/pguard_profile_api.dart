@@ -13,6 +13,8 @@ export 'package:pguard_profile_api/src/model/date.dart';
 export 'package:pguard_profile_api/src/api/admin_api.dart';
 export 'package:pguard_profile_api/src/api/profile_api.dart';
 
+export 'package:pguard_profile_api/src/model/access_audit_entry.dart';
+export 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
 export 'package:pguard_profile_api/src/model/api_response_envelope.dart';

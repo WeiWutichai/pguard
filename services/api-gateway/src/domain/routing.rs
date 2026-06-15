@@ -188,6 +188,13 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin PDPA data-access audit log (read). Admin authz is the profile service's job.
+        prefix: "/admin/access-audit",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin booking operations (cross-user list + guard-assign). The single prefix rule
         // also routes the `/{id}/assign` subpath (suffix: None matches every subpath). Admin
         // authz is the booking service's own job.
@@ -627,6 +634,15 @@ mod tests {
         let (up, fwd, _, _) = proxy(resolve("/v1/admin/guard-profiles/abc/approve"));
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/guard-profiles/abc/approve");
+    }
+
+    #[test]
+    fn admin_access_audit_routes_to_profile() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/access-audit"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/admin/access-audit");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
     }
 
     #[test]

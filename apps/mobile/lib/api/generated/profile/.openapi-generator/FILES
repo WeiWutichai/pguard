@@ -13,6 +13,8 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/access_audit_entry.dart
+lib/src/model/admin_list_access_audit200_response.dart
 lib/src/model/admin_list_customer_profiles200_response.dart
 lib/src/model/admin_list_guard_profiles200_response.dart
 lib/src/model/api_response_envelope.dart

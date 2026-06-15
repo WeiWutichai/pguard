@@ -22,8 +22,8 @@ use shared::models::ApprovalStatus;
 use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
-    CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse, InternalGuard,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse,
+    InternalGuard, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Raw guard-profile row (approval_status read as text, parsed below). `account_number` is
@@ -476,6 +476,34 @@ pub async fn record_access(
     .execute(db)
     .await?;
     Ok(())
+}
+
+/// List PDPA §30 data-access audit rows (admin), newest first, optional `action` filter +
+/// limit/offset. Read from the replica. The `action` value is a BOUND parameter.
+pub async fn list_access_audit(
+    db: &PgPool,
+    action: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<AccessAuditRow>, AppError> {
+    let mut sql = String::from(
+        "SELECT id, accessed_by, action, target, accessed_at FROM profile.access_audit",
+    );
+    if action.is_some() {
+        sql.push_str(" WHERE action = $1");
+    }
+    let lim = if action.is_some() { 2 } else { 1 };
+    sql.push_str(&format!(
+        " ORDER BY accessed_at DESC LIMIT ${} OFFSET ${}",
+        lim,
+        lim + 1
+    ));
+    let mut query = sqlx::query_as::<_, AccessAuditRow>(&sql);
+    if let Some(a) = action {
+        query = query.bind(a);
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
+    Ok(rows)
 }
 
 /// PDPA §19/§32 data export: the user's OWN profile rows (guard and/or customer). This is
