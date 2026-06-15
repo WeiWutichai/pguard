@@ -95,6 +95,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::admin_list_access_audit::<AppState>),
         )
         .route(
+            "/admin/documents/expiring",
+            get(api::admin_list_expiring_documents::<AppState>),
+        )
+        .route(
             "/admin/guard-profiles/{user_id}/approve",
             post(api::admin_approve_guard::<AppState>),
         )

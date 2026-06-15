@@ -22,9 +22,28 @@ use shared::models::ApprovalStatus;
 use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
-    AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, GuardProfileResponse,
-    InternalGuard, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
+    GuardProfileResponse, InternalGuard, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
+
+/// List guard documents expiring within `horizon_days` (INCLUDING already-expired), soonest
+/// first. Bounded; the admin surface buckets them client-side into expired/7/30/90. Reads the
+/// `document_expiry` table (empty until the doc-upload+expiry-capture follow-up populates it).
+pub async fn list_expiring_documents(
+    db: &PgPool,
+    horizon_days: i64,
+) -> Result<Vec<DocumentExpiryRow>, AppError> {
+    let rows = sqlx::query_as::<_, DocumentExpiryRow>(
+        "SELECT id, guard_id, document_type, expiry_date, last_reminded_at \
+         FROM profile.document_expiry \
+         WHERE expiry_date <= current_date + make_interval(days => $1) \
+         ORDER BY expiry_date ASC LIMIT 500",
+    )
+    .bind(horizon_days as i32)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
 
 /// Resolve the recipient `user_id`s for a broadcast audience. notification's bulk-send calls
 /// this over the service-JWT'd internal endpoint because notification owns no user/role

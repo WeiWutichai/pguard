@@ -22,8 +22,9 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, GuardProfileResponse, InternalGuard, MyProfile, RecipientsQuery,
-    RecipientsResponse, RejectRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    CustomerProfileResponse, DocumentExpiryRow, GuardProfileResponse, InternalGuard, MyProfile,
+    RecipientsQuery, RecipientsResponse, RejectRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -396,6 +397,26 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
     Ok(Json(ApiResponse::success(data)))
 }
 
+/// Horizon for the expiring-documents surface: include docs expiring within ~90 days (plus any
+/// already expired). The client buckets into expired / 7 / 30 / 90.
+const DOC_EXPIRY_HORIZON_DAYS: i64 = 90;
+
+// ----- GET /admin/documents/expiring — guard documents needing renewal (admin) -----
+
+/// List guard documents expiring within the horizon (incl. already-expired), soonest first.
+/// Admin only (else 403); replica read. NOTE: the document-upload + expiry-CAPTURE flow is a
+/// deferred follow-up, so this returns nothing until that lands — the schema, endpoint, and
+/// screen are real and ready, but never fabricate rows.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_list_expiring_documents<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<DocumentExpiryRow>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let rows = repo::list_expiring_documents(state.db_read(), DOC_EXPIRY_HORIZON_DAYS).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
 // ----- GET /internal/profiles/recipients (broadcast audience for notification) -----
 
 /// Resolve the `user_id`s for a broadcast audience (`all|guards|customers`). `ServiceCaller`-
@@ -553,6 +574,10 @@ mod tests {
                 .route(
                     "/admin/access-audit",
                     get(admin_list_access_audit::<TestDeps>),
+                )
+                .route(
+                    "/admin/documents/expiring",
+                    get(admin_list_expiring_documents::<TestDeps>),
                 )
                 .route(
                     "/admin/guard-profiles/{user_id}/approve",
@@ -733,6 +758,27 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a customer must not list the admin customer directory"
         );
+    }
+
+    #[tokio::test]
+    async fn admin_expiring_docs_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not read the cross-user expiring-documents surface.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/documents/expiring")
+                    .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

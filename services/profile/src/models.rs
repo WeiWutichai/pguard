@@ -69,6 +69,20 @@ pub struct RejectRequest {
     pub reason: Option<String>,
 }
 
+// ----- Document expiry (admin "expiring" surface) -----
+
+/// One guard-document expiry row (`GET /admin/documents/expiring`). `days_remaining` is derived
+/// in the handler from `expiry_date` (negative = already expired). The doc-upload + expiry
+/// CAPTURE flow is a deferred follow-up, so this set is empty until that lands.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct DocumentExpiryRow {
+    pub id: Uuid,
+    pub guard_id: Uuid,
+    pub document_type: String,
+    pub expiry_date: NaiveDate,
+    pub last_reminded_at: Option<DateTime<Utc>>,
+}
+
 // ----- Responses -----
 
 /// A guard profile as returned to the OWNER or an admin. `account_number` is masked for

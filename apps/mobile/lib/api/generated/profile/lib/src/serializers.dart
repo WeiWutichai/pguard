@@ -17,11 +17,13 @@ import 'package:pguard_profile_api/src/model/date.dart';
 import 'package:pguard_profile_api/src/model/access_audit_entry.dart';
 import 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
+import 'package:pguard_profile_api/src/model/document_expiry.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -43,11 +45,13 @@ part 'serializers.g.dart';
   AccessAuditEntry,
   AdminListAccessAudit200Response,
   AdminListCustomerProfiles200Response,
+  AdminListExpiringDocuments200Response,
   AdminListGuardProfiles200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
+  DocumentExpiry,
   ErrorBody,
   ErrorDetail,
   GetMyProfile200Response,
