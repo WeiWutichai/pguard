@@ -141,6 +141,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/access-audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the PDPA §30 data-access audit trail (role=admin)
+         * @description Who (an admin) accessed what PII and when — the §30 access trail written by the admin
+         *     list endpoints. Newest first, optional `action` filter + limit/offset. Admin only.
+         *     NOTE: this is a DATA-ACCESS trail, not a full business-action feed (approved/refund/
+         *     check-in with actor/IP/payload) — that needs a dedicated audit-event sink.
+         */
+        get: operations["adminListAccessAudit"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles/{user_id}/approve": {
         parameters: {
             query?: never;
@@ -288,6 +311,17 @@ export interface components {
             address?: string | null;
             /** Format: date-time */
             created_at: string;
+        };
+        /** @description One PDPA §30 data-access audit row (who accessed what PII, and when). */
+        AccessAuditEntry: {
+            /** Format: int64 */
+            id: number;
+            /** Format: uuid */
+            accessed_by: string;
+            action: string;
+            target?: string | null;
+            /** Format: date-time */
+            accessed_at: string;
         };
         /**
          * @description The caller's own profile, tagged by `kind`. A guard sees `MyGuardProfile` (masked
@@ -542,6 +576,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["CustomerProfileAdmin"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListAccessAudit: {
+        parameters: {
+            query?: {
+                /** @description Filter by the recorded action (e.g. admin_list_guard_profiles). */
+                action?: string;
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Access-audit rows, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["AccessAuditEntry"][];
                     };
                 };
             };

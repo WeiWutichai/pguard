@@ -92,6 +92,26 @@ pub struct CustomerProfileAdminResponse {
     pub created_at: DateTime<Utc>,
 }
 
+/// One PDPA §30 data-access audit row (`GET /admin/access-audit`). Records WHO (an admin)
+/// accessed WHAT (the `action`, e.g. `admin_list_guard_profiles`) and WHEN. This is a
+/// data-access trail, NOT a full business-action feed (the design's broader "activity" intent).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AccessAuditRow {
+    pub id: i64,
+    pub accessed_by: Uuid,
+    pub action: String,
+    pub target: Option<String>,
+    pub accessed_at: DateTime<Utc>,
+}
+
+/// Query params for `GET /admin/access-audit` — optional `action` filter + limit/offset.
+#[derive(Debug, Deserialize)]
+pub struct AdminListAccessAuditQuery {
+    pub action: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// Either profile shape, tagged so `GET /profile/me` can return whichever the caller has
 /// without the client guessing. (`#[serde(tag = "kind")]` keeps the wire shape explicit.)
 #[derive(Debug, Serialize)]
