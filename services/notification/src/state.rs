@@ -10,6 +10,7 @@ use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
 use crate::fcm::Pusher;
+use crate::profile_client::ProfileClient;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -19,6 +20,8 @@ pub struct AppState {
     pub jwt_config: JwtConfig,
     pub service_jwt_config: ServiceJwtConfig,
     pub pusher: Arc<dyn Pusher>,
+    /// Service-JWT'd client for profile's broadcast-recipient roster (admin bulk-send).
+    pub profile_client: ProfileClient,
 }
 
 impl HasJwtSecret for AppState {

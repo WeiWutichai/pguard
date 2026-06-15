@@ -17,6 +17,7 @@ import type { paths as BookingPaths } from "@/api/generated/booking";
 import type { paths as PresencePaths } from "@/api/generated/presence";
 import type { paths as CallingPaths } from "@/api/generated/calling";
 import type { paths as ChatPaths } from "@/api/generated/chat";
+import type { paths as NotificationPaths } from "@/api/generated/notification";
 
 /** Same-origin gateway prefix for the browser (proxied to the gateway). Overridable for an
  *  off-origin deployment via NEXT_PUBLIC_API_BASE_URL (then CORS + SameSite must allow it). */
@@ -65,3 +66,6 @@ export const callingApi = browserClient<CallingPaths>();
 
 /** chat service (admin conversation list + per-conversation message read — admin-readable). */
 export const chatApi = browserClient<ChatPaths>();
+
+/** notification service (admin broadcast bulk-send: composer/drafts/schedule/history + audience counts). */
+export const notificationApi = browserClient<NotificationPaths>();

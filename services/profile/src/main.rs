@@ -107,6 +107,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::internal_list_guards::<AppState>),
         )
         .route(
+            "/internal/profiles/recipients",
+            get(api::internal_list_recipients::<AppState>),
+        )
+        .route(
             "/internal/users/{user_id}/export",
             get(api::internal_export_user::<AppState>),
         )

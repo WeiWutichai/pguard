@@ -20,6 +20,24 @@ pub struct InternalGuard {
     pub years_of_experience: Option<i32>,
 }
 
+/// Query for `GET /internal/profiles/recipients` — the broadcast audience selector
+/// (notification's bulk-send asks profile to resolve `user_id`s by role).
+#[derive(Debug, Deserialize)]
+pub struct RecipientsQuery {
+    /// `all` | `guards` | `customers`.
+    pub audience: String,
+}
+
+/// The resolved recipient set for a broadcast audience, returned over the service-JWT'd
+/// `/internal/profiles/recipients`. Least-privilege — only `user_id`s (no names/PII).
+/// `user_ids` is bounded (the repo caps it); a roster beyond the cap is truncated (logged).
+#[derive(Debug, Serialize)]
+pub struct RecipientsResponse {
+    pub audience: String,
+    pub count: i64,
+    pub user_ids: Vec<Uuid>,
+}
+
 // ----- Requests -----
 
 /// Upsert the caller's guard profile. All fields optional except where a guard would

@@ -4,13 +4,14 @@
 //! scaffold has no DATABASE_URL / offline `.sqlx` cache at build time, and v1 used
 //! runtime queries here too.
 
+use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use shared::error::AppError;
 
 use crate::domain::NotificationPlan;
-use crate::models::{ListNotificationsQuery, NotificationLogResponse};
+use crate::models::{BroadcastResponse, ListNotificationsQuery, NotificationLogResponse};
 
 const LOG_COLUMNS: &str = "id, user_id, title, body, notification_type::text AS notification_type, payload, is_read, sent_at, read_at";
 
@@ -175,6 +176,158 @@ pub async fn insert_log(
         .fetch_one(db)
         .await
         .map_err(AppError::from)
+}
+
+// ----- Broadcast campaigns (admin bulk-send) -----
+
+const BROADCAST_COLUMNS: &str = "id, audience::text AS audience, title, body, \
+    notification_type::text AS notification_type, status::text AS status, scheduled_at, \
+    recipient_count, created_by, created_at, sent_at";
+
+/// Insert a broadcast campaign row in the given lifecycle `status`. Enum columns are written
+/// via explicit `::` casts (the values are a fixed in-code set, never raw user SQL).
+#[allow(clippy::too_many_arguments)]
+pub async fn create_broadcast(
+    db: &PgPool,
+    created_by: Uuid,
+    audience: &str,
+    title: &str,
+    body: &str,
+    notification_type: &str,
+    status: &str,
+    scheduled_at: Option<DateTime<Utc>>,
+) -> Result<BroadcastResponse, AppError> {
+    let sql = format!(
+        r#"
+        INSERT INTO notification.broadcasts
+            (audience, title, body, notification_type, status, scheduled_at, created_by)
+        VALUES ($1::notification.broadcast_audience, $2, $3,
+                $4::notification.notification_type, $5::notification.broadcast_status, $6, $7)
+        RETURNING {BROADCAST_COLUMNS}
+        "#
+    );
+    sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(audience)
+        .bind(title)
+        .bind(body)
+        .bind(notification_type)
+        .bind(status)
+        .bind(scheduled_at)
+        .bind(created_by)
+        .fetch_one(db)
+        .await
+        .map_err(AppError::from)
+}
+
+/// List broadcast campaigns, newest first (history: drafts + scheduled + sent).
+pub async fn list_broadcasts(
+    db: &PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<BroadcastResponse>, AppError> {
+    let sql = format!(
+        "SELECT {BROADCAST_COLUMNS} FROM notification.broadcasts \
+         ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+    );
+    let rows = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+/// Fetch one broadcast campaign.
+pub async fn get_broadcast(db: &PgPool, id: Uuid) -> Result<Option<BroadcastResponse>, AppError> {
+    let sql = format!("SELECT {BROADCAST_COLUMNS} FROM notification.broadcasts WHERE id = $1");
+    let row = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+/// Edit a DRAFT broadcast (COALESCE — only provided fields change). Returns the updated row,
+/// or `None` if the id doesn't exist OR the broadcast is no longer a draft (the handler maps
+/// that to a 409 — a sent/scheduled broadcast is immutable here).
+pub async fn update_draft_broadcast(
+    db: &PgPool,
+    id: Uuid,
+    audience: Option<&str>,
+    title: Option<&str>,
+    body: Option<&str>,
+    notification_type: Option<&str>,
+    scheduled_at: Option<DateTime<Utc>>,
+) -> Result<Option<BroadcastResponse>, AppError> {
+    let sql = format!(
+        r#"
+        UPDATE notification.broadcasts SET
+            audience          = COALESCE($2::notification.broadcast_audience, audience),
+            title             = COALESCE($3, title),
+            body              = COALESCE($4, body),
+            notification_type = COALESCE($5::notification.notification_type, notification_type),
+            scheduled_at      = COALESCE($6, scheduled_at),
+            updated_at        = now()
+        WHERE id = $1 AND status = 'draft'::notification.broadcast_status
+        RETURNING {BROADCAST_COLUMNS}
+        "#
+    );
+    let row = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(id)
+        .bind(audience)
+        .bind(title)
+        .bind(body)
+        .bind(notification_type)
+        .bind(scheduled_at)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+/// Mark a broadcast sent (status → sent, set `recipient_count` + `sent_at`). Used by the
+/// immediate-send path AND the scheduler after a successful fan-out.
+pub async fn mark_broadcast_sent(
+    db: &PgPool,
+    id: Uuid,
+    recipient_count: i64,
+) -> Result<Option<BroadcastResponse>, AppError> {
+    let sql = format!(
+        r#"
+        UPDATE notification.broadcasts
+        SET status = 'sent'::notification.broadcast_status,
+            recipient_count = $2,
+            sent_at = now(),
+            updated_at = now()
+        WHERE id = $1
+        RETURNING {BROADCAST_COLUMNS}
+        "#
+    );
+    let row = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(id)
+        .bind(recipient_count as i32)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+/// Claim due scheduled broadcasts (their `scheduled_at` has passed). A single notification
+/// instance runs the scheduler, so a plain bounded SELECT is sufficient; a row stays
+/// `scheduled` until a fan-out succeeds and flips it to `sent` (the retry ledger).
+pub async fn due_broadcasts(db: &PgPool, limit: i64) -> Result<Vec<BroadcastResponse>, AppError> {
+    let sql = format!(
+        r#"
+        SELECT {BROADCAST_COLUMNS} FROM notification.broadcasts
+        WHERE status = 'scheduled'::notification.broadcast_status
+          AND scheduled_at <= now()
+        ORDER BY scheduled_at
+        LIMIT $1
+        "#
+    );
+    let rows = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(limit)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
 }
 
 // ----- Event consumer (atomic claim + log) -----
