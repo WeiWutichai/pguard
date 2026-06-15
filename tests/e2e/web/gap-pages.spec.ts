@@ -3,10 +3,11 @@
 // (not translated), so they double as language-independent, stable assertions.
 import { test, expect } from "@playwright/test";
 
-// /customers + /wallet are no longer gaps — they became real admin screens once their endpoints
-// landed (GET /admin/customer-profiles, GET /admin/payments; see customers.spec.ts /
-// wallet.spec.ts). /pricing remains a documented gap until its catalog endpoint exists.
-const GAP_PAGES = [{ path: "/pricing", endpoint: "/v1/pricing/services" }] as const;
+// /customers, /wallet, /pricing are no longer gaps — they became real admin screens once their
+// endpoints landed (GET /admin/customer-profiles, /admin/payments, /admin/pricing/services; see
+// customers.spec.ts / wallet.spec.ts / pricing.spec.ts). /activity is still a documented gap
+// (no audit/activity-feed endpoint in v2).
+const GAP_PAGES = [{ path: "/activity", endpoint: "/v1/admin/activity" }] as const;
 
 for (const { path, endpoint } of GAP_PAGES) {
   test(`gap page ${path} renders the gap notice without crashing`, async ({ page }) => {

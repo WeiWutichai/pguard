@@ -78,6 +78,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/pricing/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the service catalog (role=admin)
+         * @description Admin-managed catalog of bookable service types with a base rate. STANDALONE — the
+         *     charge path is not wired to this catalog yet (bookings keep their server-owned
+         *     base_fee). Active-first, newest next. Admin only (else 403).
+         */
+        get: operations["adminListServices"];
+        put?: never;
+        /** Create a catalog service (role=admin) */
+        post: operations["adminCreateService"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/pricing/services/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update a catalog service (role=admin) */
+        put: operations["adminUpdateService"];
+        post?: never;
+        /**
+         * Deactivate (soft-delete) a catalog service (role=admin)
+         * @description Sets `is_active = false` (history preserved). Returns the updated row.
+         */
+        delete: operations["adminDeleteService"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/available-guards": {
         parameters: {
             query?: never;
@@ -416,6 +460,46 @@ export interface components {
              */
             guard_id: string;
         };
+        ServiceCatalogItem: {
+            /** Format: uuid */
+            id: string;
+            name_th: string;
+            name_en: string;
+            /**
+             * @description Base fee in THB per hour per guard (exact decimal string).
+             * @example 230.00
+             */
+            base_fee: string;
+            /** Format: int32 */
+            min_hours: number;
+            notes?: string | null;
+            is_active: boolean;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CreateServiceRequest: {
+            name_th: string;
+            name_en: string;
+            /**
+             * @description Exact decimal string in THB (0 to 1000000).
+             * @example 230.00
+             */
+            base_fee: string;
+            /** Format: int32 */
+            min_hours: number;
+            notes?: string | null;
+        };
+        UpdateServiceRequest: {
+            name_th: string;
+            name_en: string;
+            /** @example 230.00 */
+            base_fee: string;
+            /** Format: int32 */
+            min_hours: number;
+            notes?: string | null;
+        };
         ReviewCompletionRequest: {
             /**
              * @description `approve` → completed (emits booking.completed); `reject` → back to arrived.
@@ -622,6 +706,17 @@ export interface components {
                 };
             };
         };
+        /** @description The catalog service */
+        ServiceOk: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                    data?: components["schemas"]["ServiceCatalogItem"];
+                };
+            };
+        };
         /** @description Invalid request body */
         BadRequest: {
             headers: {
@@ -778,6 +873,88 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    adminListServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Service catalog */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["ServiceCatalogItem"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminCreateService: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateServiceRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ServiceOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminUpdateService: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateServiceRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ServiceOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    adminDeleteService: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["ServiceOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listAvailableGuards: {

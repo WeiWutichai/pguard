@@ -156,6 +156,17 @@ async fn main() -> anyhow::Result<()> {
             "/admin/bookings/{id}/assign",
             post(api::admin_assign_guard::<AppState>),
         )
+        // Admin service catalog (pricing) CRUD — standalone, not wired to the charge path.
+        // Gateway needs a NEW `/admin/pricing` prefix rule → Booking (covers /{id} too).
+        .route(
+            "/admin/pricing/services",
+            get(api::admin_list_services::<AppState>).post(api::admin_create_service::<AppState>),
+        )
+        .route(
+            "/admin/pricing/services/{id}",
+            put(api::admin_update_service::<AppState>)
+                .delete(api::admin_delete_service::<AppState>),
+        )
         // Discovery: approved guard catalog (profile) + rating summaries (rating).
         .route("/available-guards", get(api::available_guards::<AppState>))
         .route(

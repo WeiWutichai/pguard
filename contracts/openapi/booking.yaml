@@ -144,6 +144,86 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /admin/pricing/services:
+    get:
+      tags: [Admin]
+      summary: List the service catalog (role=admin)
+      description: |
+        Admin-managed catalog of bookable service types with a base rate. STANDALONE — the
+        charge path is not wired to this catalog yet (bookings keep their server-owned
+        base_fee). Active-first, newest next. Admin only (else 403).
+      operationId: adminListServices
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Service catalog
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ServiceCatalogItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    post:
+      tags: [Admin]
+      summary: Create a catalog service (role=admin)
+      operationId: adminCreateService
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateServiceRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/pricing/services/{id}:
+    put:
+      tags: [Admin]
+      summary: Update a catalog service (role=admin)
+      operationId: adminUpdateService
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateServiceRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [Admin]
+      summary: Deactivate (soft-delete) a catalog service (role=admin)
+      description: Sets `is_active = false` (history preserved). Returns the updated row.
+      operationId: adminDeleteService
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/ServiceOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /available-guards:
     get:
       tags: [Bookings]
@@ -570,6 +650,16 @@ components:
               - type: object
                 properties:
                   data: { $ref: '#/components/schemas/Booking' }
+    ServiceOk:
+      description: The catalog service
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/ServiceCatalogItem' }
     BadRequest:
       description: Invalid request body
       content:
@@ -618,6 +708,46 @@ components:
           type: string
           format: uuid
           description: The guard the admin assigns to this booking.
+
+    ServiceCatalogItem:
+      type: object
+      required: [id, name_th, name_en, base_fee, min_hours, is_active, created_at, updated_at]
+      properties:
+        id: { type: string, format: uuid }
+        name_th: { type: string }
+        name_en: { type: string }
+        base_fee:
+          type: string
+          description: Base fee in THB per hour per guard (exact decimal string).
+          example: "230.00"
+        min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        notes: { type: string, nullable: true }
+        is_active: { type: boolean }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+
+    CreateServiceRequest:
+      type: object
+      required: [name_th, name_en, base_fee, min_hours]
+      properties:
+        name_th: { type: string }
+        name_en: { type: string }
+        base_fee:
+          type: string
+          description: Exact decimal string in THB (0 to 1000000).
+          example: "230.00"
+        min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        notes: { type: string, nullable: true }
+
+    UpdateServiceRequest:
+      type: object
+      required: [name_th, name_en, base_fee, min_hours]
+      properties:
+        name_th: { type: string }
+        name_en: { type: string }
+        base_fee: { type: string, example: "230.00" }
+        min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        notes: { type: string, nullable: true }
 
     ReviewCompletionRequest:
       type: object

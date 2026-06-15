@@ -165,6 +165,45 @@ pub struct AssignGuardRequest {
     pub guard_id: Uuid,
 }
 
+// ----- Service catalog (admin-managed pricing; standalone, not wired to the charge path) -----
+
+/// A service-catalog row as returned to the admin. `base_fee` is a Decimal serialized as a
+/// string on the wire (money rule), like the booking response.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ServiceCatalogItem {
+    pub id: Uuid,
+    pub name_th: String,
+    pub name_en: String,
+    /// ฿ per hour per guard.
+    pub base_fee: Decimal,
+    pub min_hours: i32,
+    pub notes: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Create a catalog service (admin). Validated in the handler (non-empty names, fee ≥ 0,
+/// min_hours 1..=24).
+#[derive(Debug, Deserialize)]
+pub struct CreateServiceRequest {
+    pub name_th: String,
+    pub name_en: String,
+    pub base_fee: Decimal,
+    pub min_hours: i32,
+    pub notes: Option<String>,
+}
+
+/// Update a catalog service (admin) — full replace of the editable fields.
+#[derive(Debug, Deserialize)]
+pub struct UpdateServiceRequest {
+    pub name_th: String,
+    pub name_en: String,
+    pub base_fee: Decimal,
+    pub min_hours: i32,
+    pub notes: Option<String>,
+}
+
 /// One entry in the `/available-guards` discovery list: an approved guard (from profile's
 /// catalog) enriched with their live rating summary (from rating). `average_rating` is `None`
 /// when the guard has no visible reviews (or rating was unreachable — best-effort).

@@ -21,8 +21,9 @@ use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse,
-    CreateBookingRequest, InternalBooking, ListProgressReportsQuery, NewProgressReport,
-    OpenJobsQuery, ProgressReportResponse, ReviewCompletionRequest,
+    CreateBookingRequest, CreateServiceRequest, InternalBooking, ListProgressReportsQuery,
+    NewProgressReport, OpenJobsQuery, ProgressReportResponse, ReviewCompletionRequest,
+    ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -387,6 +388,105 @@ pub async fn admin_assign_guard<S: BookingDeps>(
         Some(req.guard_id),
     )
     .await
+}
+
+// ----- Service catalog (admin pricing CRUD; standalone — not wired to the charge path) -----
+
+/// Max base fee a catalog entry may carry (defensive; mirrors the booking pricing bounds).
+const MAX_SERVICE_BASE_FEE: i64 = 1_000_000;
+const MAX_SERVICE_NOTES_LEN: usize = 2000;
+
+/// Validate the editable fields shared by create + update.
+fn validate_service_fields(
+    name_th: &str,
+    name_en: &str,
+    base_fee: rust_decimal::Decimal,
+    min_hours: i32,
+    notes: Option<&str>,
+) -> Result<(), AppError> {
+    if name_th.trim().is_empty() || name_en.trim().is_empty() {
+        return Err(AppError::BadRequest(
+            "name_th and name_en are required".to_string(),
+        ));
+    }
+    if base_fee < rust_decimal::Decimal::ZERO
+        || base_fee > rust_decimal::Decimal::from(MAX_SERVICE_BASE_FEE)
+    {
+        return Err(AppError::BadRequest(format!(
+            "base_fee must be between 0 and {MAX_SERVICE_BASE_FEE}"
+        )));
+    }
+    if !(1..=24).contains(&min_hours) {
+        return Err(AppError::BadRequest(
+            "min_hours must be between 1 and 24".to_string(),
+        ));
+    }
+    if notes.is_some_and(|n| n.len() > MAX_SERVICE_NOTES_LEN) {
+        return Err(AppError::BadRequest("notes too long".to_string()));
+    }
+    Ok(())
+}
+
+/// GET /admin/pricing/services — list the service catalog (admin). Read → replica.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_list_services<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<ServiceCatalogItem>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let items = repo::list_services(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(items)))
+}
+
+/// POST /admin/pricing/services — create a catalog service (admin).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+pub async fn admin_create_service<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<CreateServiceRequest>,
+) -> Result<Json<ApiResponse<ServiceCatalogItem>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    validate_service_fields(
+        &req.name_th,
+        &req.name_en,
+        req.base_fee,
+        req.min_hours,
+        req.notes.as_deref(),
+    )?;
+    let item = repo::create_service(state.db(), &req).await?;
+    Ok(Json(ApiResponse::success(item)))
+}
+
+/// PUT /admin/pricing/services/{id} — replace a catalog service's editable fields (admin).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, service_id = %id))]
+pub async fn admin_update_service<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<UpdateServiceRequest>,
+) -> Result<Json<ApiResponse<ServiceCatalogItem>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    validate_service_fields(
+        &req.name_th,
+        &req.name_en,
+        req.base_fee,
+        req.min_hours,
+        req.notes.as_deref(),
+    )?;
+    let item = repo::update_service(state.db(), id, &req).await?;
+    Ok(Json(ApiResponse::success(item)))
+}
+
+/// DELETE /admin/pricing/services/{id} — soft-delete (deactivate) a catalog service (admin).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, service_id = %id))]
+pub async fn admin_delete_service<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<ServiceCatalogItem>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let item = repo::deactivate_service(state.db(), id).await?;
+    Ok(Json(ApiResponse::success(item)))
 }
 
 /// POST /bookings/{id}/progress-reports — the ASSIGNED guard's hourly check-in
@@ -827,6 +927,10 @@ mod tests {
                 "/admin/bookings/{id}/assign",
                 post(admin_assign_guard::<TestDeps>),
             )
+            .route(
+                "/admin/pricing/services",
+                get(admin_list_services::<TestDeps>),
+            )
             .with_state(deps)
     }
 
@@ -1040,6 +1144,27 @@ mod tests {
                         "authorization",
                         format!("Bearer {}", user_token("customer")),
                     )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_list_services_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not read/manage the pricing catalog.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/pricing/services")
+                    .header("authorization", format!("Bearer {}", user_token("guard")))
                     .body(Body::empty())
                     .unwrap(),
             )

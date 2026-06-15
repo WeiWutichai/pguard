@@ -20,7 +20,8 @@ use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
 use crate::models::{
-    BookingResponse, CreateBookingRequest, InternalBooking, NewProgressReport, ProgressReportRow,
+    BookingResponse, CreateBookingRequest, CreateServiceRequest, InternalBooking,
+    NewProgressReport, ProgressReportRow, ServiceCatalogItem, UpdateServiceRequest,
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
@@ -133,6 +134,83 @@ pub async fn admin_list_bookings(
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
+}
+
+// ----- Service catalog (admin pricing; standalone — not read by the charge path) -----
+
+const SERVICE_COLUMNS: &str =
+    "id, name_th, name_en, base_fee, min_hours, notes, is_active, created_at, updated_at";
+
+/// List catalog services for the admin (active-first, then newest).
+pub async fn list_services(db: &sqlx::PgPool) -> Result<Vec<ServiceCatalogItem>, AppError> {
+    let sql = format!(
+        "SELECT {SERVICE_COLUMNS} FROM booking.service_catalog \
+         ORDER BY is_active DESC, created_at DESC LIMIT 200"
+    );
+    let rows = sqlx::query_as::<_, ServiceCatalogItem>(&sql)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+/// Insert a new catalog service. Fields are validated by the handler before this call.
+pub async fn create_service(
+    db: &sqlx::PgPool,
+    req: &CreateServiceRequest,
+) -> Result<ServiceCatalogItem, AppError> {
+    let sql = format!(
+        "INSERT INTO booking.service_catalog (name_th, name_en, base_fee, min_hours, notes) \
+         VALUES ($1, $2, $3, $4, $5) RETURNING {SERVICE_COLUMNS}"
+    );
+    let row = sqlx::query_as::<_, ServiceCatalogItem>(&sql)
+        .bind(&req.name_th)
+        .bind(&req.name_en)
+        .bind(req.base_fee)
+        .bind(req.min_hours)
+        .bind(req.notes.as_deref())
+        .fetch_one(db)
+        .await?;
+    Ok(row)
+}
+
+/// Replace the editable fields of a catalog service. 404 if it does not exist.
+pub async fn update_service(
+    db: &sqlx::PgPool,
+    id: Uuid,
+    req: &UpdateServiceRequest,
+) -> Result<ServiceCatalogItem, AppError> {
+    let sql = format!(
+        "UPDATE booking.service_catalog \
+         SET name_th = $2, name_en = $3, base_fee = $4, min_hours = $5, notes = $6, updated_at = now() \
+         WHERE id = $1 RETURNING {SERVICE_COLUMNS}"
+    );
+    sqlx::query_as::<_, ServiceCatalogItem>(&sql)
+        .bind(id)
+        .bind(&req.name_th)
+        .bind(&req.name_en)
+        .bind(req.base_fee)
+        .bind(req.min_hours)
+        .bind(req.notes.as_deref())
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Service not found".to_string()))
+}
+
+/// Soft-delete a catalog service (set `is_active = false`) — preserves history and any future
+/// references. 404 if it does not exist. Returns the updated row.
+pub async fn deactivate_service(
+    db: &sqlx::PgPool,
+    id: Uuid,
+) -> Result<ServiceCatalogItem, AppError> {
+    let sql = format!(
+        "UPDATE booking.service_catalog SET is_active = false, updated_at = now() \
+         WHERE id = $1 RETURNING {SERVICE_COLUMNS}"
+    );
+    sqlx::query_as::<_, ServiceCatalogItem>(&sql)
+        .bind(id)
+        .fetch_optional(db)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Service not found".to_string()))
 }
 
 // ----- Writes -----
