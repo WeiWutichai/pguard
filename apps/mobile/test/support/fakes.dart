@@ -70,6 +70,9 @@ class InMemoryStore implements AppStore {
   }
 
   @override
+  Future<void> clearPhoneVerifiedToken() async => phoneVerifiedToken = null;
+
+  @override
   Future<String?> readOnboardingPin() async => onboardingPin;
   @override
   Future<void> saveOnboardingPin(String pin) async => onboardingPin = pin;

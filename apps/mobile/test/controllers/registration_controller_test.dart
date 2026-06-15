@@ -307,6 +307,77 @@ void main() {
     });
   }
 
+  test('register 202 clears the secure-storage phone-verified token (no reuse)',
+      () async {
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/auth/register');
+      return {'user_id': 'u1', 'profile_token': 'ptok'};
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    await ctrl.beginFromAuth(
+        phone: phone, phoneVerifiedToken: 'pvt-1', pin: pin);
+    ctrl.selectRole(RegistrationRole.guard);
+
+    expect(await ctrl.register(), RegisterOutcome.needsProfile);
+    // The consumed phone-verified token is gone from storage (can't be re-presented)…
+    expect(store.phoneVerifiedToken, isNull);
+    // …while the profile_token (needed for the next step) is kept.
+    expect(store.profileToken, 'ptok');
+  });
+
+  test(
+      're-tapping a role after a successful 202 RESUMES to the profile step '
+      '(no bounce, no second register POST)', () async {
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    final api = FakeApi(
+        onPost: (path, data) async =>
+            {'user_id': 'u1', 'profile_token': 'ptok'});
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    await ctrl.beginFromAuth(
+        phone: phone, phoneVerifiedToken: 'pvt-1', pin: pin);
+    ctrl.selectRole(RegistrationRole.guard);
+    expect(await ctrl.register(), RegisterOutcome.needsProfile); // first 202
+
+    // User backs out of the profile form and taps a role again — the spent phone-verified token
+    // is gone, but the profile_token proves the account already exists (pending).
+    ctrl.selectRole(RegistrationRole.guard);
+    final second = await ctrl.register();
+
+    expect(second, RegisterOutcome.needsProfile); // resumes, NOT an error/bounce
+    expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
+    // The resume short-circuits before the network → no second register call.
+    expect(api.calls.where((p) => p == 'POST /auth/register').length, 1);
+  });
+
+  test(
+      'a 400 (spent jti) WITH a profile_token resumes to the profile step '
+      'instead of bouncing to phone', () async {
+    // profile_token from a prior 202 + a (stale) phone-verified token still presented.
+    final store = InMemoryStore()
+      ..phoneVerifiedToken = 'pvt-stale'
+      ..onboardingPin = pin
+      ..phone = phone
+      ..profileToken = 'ptok';
+    final prefs = FakePrefsStore();
+    final api = FakeApi(onPost: (_, __) async {
+      throw const ApiException(message: 'already used', statusCode: 400);
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    ctrl.selectRole(RegistrationRole.guard);
+
+    expect(await ctrl.register(), RegisterOutcome.needsProfile); // resumed
+    expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
+    // Did POST (token present) but recovered rather than wiping onboarding.
+    expect(api.calls.where((p) => p == 'POST /auth/register').length, 1);
+    expect(store.phoneVerifiedToken, isNull); // stale token dropped on resume
+  });
+
   test('maskAccountNumber masks all but the last 4 digits', () {
     expect(maskAccountNumber('1234567890'), '••••••7890');
     expect(maskAccountNumber('123-45-6789'),

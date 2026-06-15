@@ -166,9 +166,12 @@ class AuthController extends _$AuthController {
         'answer': captchaAnswer,
       });
       // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
-      // any stale role-stage resume marker + raw PIN from a previous, abandoned attempt.
+      // any stale state from a previous, abandoned attempt: the role-stage resume marker + raw
+      // PIN, AND the single-use registration tokens (a leftover profile_token from an abandoned
+      // register on a DIFFERENT phone must not later trigger a spurious "resume to profile").
       await ref.read(prefsStoreProvider).remove(kRegOnboardingStageKey);
       await ref.read(appStoreProvider).clearOnboardingPin();
+      await ref.read(appStoreProvider).clearRegistrationTokens();
       state = state.copyWith(
         step: AuthStep.otp,
         otpSentAt: DateTime.now().toUtc(),
@@ -230,6 +233,14 @@ class AuthController extends _$AuthController {
       });
 
   Future<bool> _guard(Future<bool> Function() op) async {
+    // Re-entrancy latch: if an op is already in flight, ignore this duplicate rather than
+    // launching a second network call. `busy` is set SYNCHRONOUSLY below before the first
+    // `await`, so any later fire — a double-tap, the keyboard Go + button both firing, or the
+    // OTP input auto-submitting twice — sees it and bails. A no-op false (state untouched);
+    // callers only act on `true`. (Screen-level disabling lags an async rebuild and can't close
+    // this synchronous window — this is the real guard. Verified by an RCA of the duplicate-fire
+    // path that was inflating the shared edge OTP rate-limit bucket.)
+    if (state.busy) return false;
     state = state.copyWith(busy: true, error: null);
     try {
       final ok = await op();

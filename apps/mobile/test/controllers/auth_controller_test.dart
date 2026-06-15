@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/auth_controller.dart';
@@ -187,5 +189,58 @@ void main() {
         await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isFalse);
     expect(c.read(authControllerProvider).error, 'Invalid credentials');
     expect(store.access, isNull);
+  });
+
+  test(
+      'a fresh OTP request clears stale registration tokens (no cross-flow '
+      'resume from a previous abandoned register)', () async {
+    // A profile_token + phone-verified token left over from a prior, abandoned register on a
+    // DIFFERENT phone. Starting a new OTP flow must wipe them so they can't later trigger a
+    // spurious "resume to profile" against the wrong account.
+    final store = InMemoryStore()
+      ..profileToken = 'stale-A'
+      ..phoneVerifiedToken = 'stale-pvt';
+    final api = FakeApi(
+      onGet: (path, _) async =>
+          {'challenge_id': 'ch1', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, data) async {
+        expect(path, '/otp/request');
+        return {'message': 'sent', 'expires_in': 300};
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(store.profileToken, isNull, reason: 'stale profile_token cleared');
+    expect(store.phoneVerifiedToken, isNull, reason: 'stale pvt cleared');
+  });
+
+  test(
+      're-entrancy: a duplicate verify while one is in flight is a no-op '
+      '(only ONE /otp/verify POST)', () async {
+    final store = InMemoryStore();
+    final gate = Completer<Map<String, dynamic>>();
+    final api = FakeApi(onPost: (path, data) {
+      expect(path, '/otp/verify');
+      return gate.future; // first call blocks here, holding busy=true
+    });
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+
+    // Fire two verifies back-to-back (mimics OtpInput auto-submit firing twice / a double-tap).
+    final first = ctrl.verifyOtp('123456'); // in flight (busy set synchronously)
+    final second = await ctrl.verifyOtp('123456'); // sees busy → bails immediately
+
+    expect(second, isFalse, reason: 'the duplicate must be ignored');
+    expect(api.calls.where((p) => p == 'POST /otp/verify').length, 1,
+        reason: 'only the first verify should hit the network');
+
+    gate.complete({'phone_verified_token': 'pvt'});
+    expect(await first, isTrue);
+    expect(store.phoneVerifiedToken, 'pvt');
   });
 }

@@ -113,7 +113,9 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
                       keyboardType: TextInputType.number,
                       inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                       onSubmitted: (_) {
-                        if (state.challenge != null) _verify();
+                        // Match the button's gate (challenge loaded + not already sending) so the
+                        // keyboard "Go" can't fire a second /otp/request alongside a tap.
+                        if (state.challenge != null && !state.busy) _verify();
                       },
                       decoration: InputDecoration(
                           hintText: isThai ? 'คำตอบ' : 'Answer'),

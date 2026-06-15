@@ -117,10 +117,13 @@ class RegistrationController extends _$RegistrationController {
   /// `profile_token`, persist the pending flag, flip the session to **pendingApproval** (NO
   /// tokens). On **409** → `loginWithPin` (the phone already exists in a non-pending state).
   Future<RegisterOutcome> register() async {
-    // Guard the brief pre-state-update window against a double-tap.
+    // Re-entrancy latch: ignore a duplicate tap while a register is already in flight. busy is set
+    // SYNCHRONOUSLY here — BEFORE the storage reads/await below — so the second tap observes it
+    // (setting it only after the awaits would leave a window where both taps pass the check).
     if (state.busy) {
       return RegisterOutcome.error;
     }
+    state = state.copyWith(busy: true, error: null);
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final role = state.role;
     final store = ref.read(appStoreProvider);
@@ -129,6 +132,11 @@ class RegistrationController extends _$RegistrationController {
     final pin = _pin ?? await store.readOnboardingPin();
     final phone = _phone ?? await store.readPhone();
     if (role == null || pvt == null || pin == null || phone == null) {
+      // A re-tap after a successful 202 lands here (the phone-verified token was cleared) — if the
+      // profile_token from that register is still around, the account already exists (pending), so
+      // resume to the profile step instead of dead-ending with "start again".
+      final resumed = await _resumeIfAlreadyRegistered();
+      if (resumed != null) return resumed;
       state = state.copyWith(
           busy: false,
           error: isThai
@@ -137,7 +145,7 @@ class RegistrationController extends _$RegistrationController {
       return RegisterOutcome.error;
     }
 
-    state = state.copyWith(busy: true, error: null);
+    // (busy already set synchronously above.)
     try {
       final data =
           await ref.read(pguardApiProvider).post('/auth/register', data: {
@@ -154,8 +162,12 @@ class RegistrationController extends _$RegistrationController {
       }
       // Persist the phone (PII, secure storage) now so a cold-start "check status" can log in.
       await store.savePhone(phone);
-      // The phone-verified token is now consumed; the next OTP cycle would mint a fresh one.
+      // The phone-verified token is now consumed (server burned its jti) — drop it from BOTH
+      // memory AND secure storage so backing out of the profile form and re-tapping a role can't
+      // re-present a spent token (which would 400 → a confusing "verification expired" bounce).
+      // The profile_token is kept (the profile step still needs it).
       _phoneVerifiedToken = null;
+      await store.clearPhoneVerifiedToken();
       // The first onboarding segment is over → drop its resume marker + raw PIN so a later cold
       // start routes to the pending screen (set below), not back to role-select. (Keep the
       // profile token + phone, still needed for the profile/check-status step.)
@@ -188,7 +200,12 @@ class RegistrationController extends _$RegistrationController {
       if (e.statusCode == 401 || e.statusCode == 400) {
         // Stale phone-verified token: 401 = JWT past exp (>10 min), 400 = jti already consumed
         // (identity api/mod.rs GETDEL miss → BadRequest; shared-rust auth.rs decode → Unauthorized).
-        // Either way the first segment must be redone → wipe onboarding state and bounce to phone.
+        // FIRST: if a profile_token already exists, a prior register on this phone SUCCEEDED — the
+        // 400 is just a re-presented spent token (back-out + re-tap). Resume to the profile step
+        // rather than wiping the pending account and bouncing the user back to phone entry.
+        final resumed = await _resumeIfAlreadyRegistered();
+        if (resumed != null) return resumed;
+        // Genuine expiry / first attempt: the first segment must be redone → wipe + bounce.
         await _abortOnboarding();
         ref.read(authControllerProvider.notifier).reset();
         ref.read(sessionProvider.notifier).onOnboardingExpired();
@@ -444,6 +461,25 @@ class RegistrationController extends _$RegistrationController {
     _phone = null;
     _phoneVerifiedToken = null;
     _profileToken = null;
+  }
+
+  /// A prior `POST /auth/register` on this phone already succeeded iff a `profile_token` is still
+  /// around (in memory or secure storage) — the pending account exists and the profile step is
+  /// next. Used when a re-tap of a role presents a missing/spent phone-verified token (the user
+  /// backed out of the profile form): instead of dead-ending or bouncing to phone (losing the
+  /// pending registration), resume the flow. Returns [RegisterOutcome.needsProfile] when it
+  /// resumes (busy cleared, session re-flagged pending, spent phone-token dropped), else null.
+  Future<RegisterOutcome?> _resumeIfAlreadyRegistered() async {
+    final store = ref.read(appStoreProvider);
+    final existing = _profileToken ?? await store.readProfileToken();
+    if (existing == null) return null;
+    _profileToken = existing;
+    // The phone-verified token (if any) is spent — never present it again.
+    _phoneVerifiedToken = null;
+    await store.clearPhoneVerifiedToken();
+    ref.read(sessionProvider.notifier).onPendingApproval();
+    state = state.copyWith(busy: false, error: null);
+    return RegisterOutcome.needsProfile;
   }
 
   /// Drop the onboarding RESUME state only (prefs stage marker + raw PIN in secure storage),
