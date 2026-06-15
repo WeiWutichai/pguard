@@ -23,33 +23,33 @@ Postgres/NATS/Redis/MinIO/coturn).
 - slice ที่เพิ่ม `${VAR:?}` ใน compose ต้องอัปเดต dummy env ใน ci.yml + `.env.e2e` ด้วย
 
 **สถานะ (2026-06-15):**
-- `main = 1c9f4bc` · merge ครบถึง **PR #69** · ไม่มี PR เปิดค้าง · Staging LIVE `pguard.innoveraappcenter.com`
-- **web-admin: REAL 16/22 จอ** — session ล่าสุดทำจอจริงเพิ่ม **10 จอ** (bookings·customers·operations·
-  tasks·wallet·pricing·calls·chat·replay·activity) + **admin endpoints ใหม่ 7 ตัวใน 5 service**
-  (booking `/admin/bookings`+`/{id}/assign`+`/admin/pricing/services` CRUD · profile
-  `/admin/customer-profiles`+`/admin/access-audit` · payment `/admin/payments` · calling
-  `/admin/calls` · chat `/admin/conversations`) + calling/chat เข้า web-admin gen:api · **ไม่มี ApiGapPage เหลือ**
+- `main = 758eb14` · merge ครบถึง **PR #77** · ไม่มี PR เปิดค้าง
+- **web-admin: REAL ครบ 22/22 จอ 🎉** — **ไม่มี ComingSoon / ApiGapPage เหลือเลย**. session นี้ปิด 6 จอสุดท้าย
+  (broadcast #72 · reports #73 · profile #74 · expiring #75 · recruit #76 · automation #77) — แต่ละจอ host
+  backend แบบ contained ใน service เดิม (**ไม่เปิด microservice ใหม่**) + honest gap ตรงที่ต้อง product decision.
+  admin endpoints ใหม่: notification `/admin/broadcasts`+`/admin/audience-counts`+`/admin/automation/rules` ·
+  profile `/admin/documents/expiring`+`/admin/recruitment/candidates`(+stage) · payment `/admin/reports/revenue` ·
+  booking `/admin/reports/bookings` · identity `/auth/revoke-all`. notification เข้า web-admin gen:api แล้ว.
 - ⚠️ **repo ไม่มี branch protection** — `gh pr merge --auto` **ไม่รอ CI**! ต้อง `gh pr checks <n> --watch`
-  เขียวก่อนแล้ว merge เอง (เคยทำ main พังเพราะ auto-merge ก่อน E2E จบ — memory `pguard-merge-no-branch-protection`)
-- ⚠️ **VPS เป็น commit เก่ามาก** — main เดินไป PR #42–#69 → ต้อง pull+up image ใหม่ + full smoke
-- SMS เปิดจริง · admin web-admin: `0800000001` / `pguard-admin-2026` (login เข้าได้)
-- รายละเอียด: `PROGRESS.md` (Completed log) · **build plan: `docs/web-admin-endpoint-map.md`** · smoke: `docs/SMOKE-CHECKLIST.md`
+  เขียวก่อนแล้ว merge เอง (memory `pguard-merge-no-branch-protection`)
+- ⚠️ **VPS ยังรัน build เก่า (`be805df`-era)** — main เดินไป PR #71–#77 (จอใหม่ 6 จอ + migration ใหม่ 5 ตัว)
+  → **ต้อง deploy:** `cd /root/pguard && git pull && bash tooling/scripts/deploy-staging.sh` (memory `pguard-staging-deploy`)
+- SMS เปิดจริง · admin web-admin: `0800000001` / `pguard-admin-2026`
+- รายละเอียด: `PROGRESS.md` (Completed log) · `docs/web-admin-endpoint-map.md` · smoke: `docs/SMOKE-CHECKLIST.md`
 
 **งานที่เหลือ (เรียงความสำคัญ) — verified กับ git 2026-06-15:**
-1. **Web-admin 6 จอที่เหลือ — ต้องสร้าง backend ของใหม่** (ไม่มี data/endpoint รองรับ; ดู `docs/web-admin-endpoint-map.md`):
-   - **broadcast** (M-L): notification bulk-send + audience-count endpoint + เพิ่ม notification เข้า gen:api
-   - **reports** (L): 4 analytics aggregation ข้าม service (revenue/service-mix/utilization/retention) — ต้องเพิ่ม `service_type` dimension ใน booking ก่อน
-   - **expiring** (L): migration เพิ่ม document-expiry fields (profile doc schema ไม่มี expiry/last_reminded) + endpoint
-   - **recruit** (XL): recruitment-pipeline service ใหม่ทั้งตัว (5-stage; ของจริงมีแค่ approve/reject guard ใน applicants)
-   - **automation** (XL): rule-engine service ใหม่ (trigger/condition/action)
-   - **profile** (S, value ต่ำ): admin's own account — ซ้ำกับ settings เกือบหมด อาจข้าม
-   *(จอที่ data มีอยู่แล้ว = ทำเป็นจอจริงครบหมดแล้ว session นี้)*
-2. **Deploy main ล่าสุดขึ้น VPS + full smoke** (VPS เก่ามาก) — pull+up + Redis self-heal test
-3. **รอ decision ของ wei:** payment gateway จริง (Omise/2C2P/Stripe TH) · terraform (เลือก cloud) ·
-   pricing-catalog→charge integration (ตอนนี้ catalog standalone ไม่ผูก charge) · wallet manual-refund vs auto (locked=auto)
+1. **Deploy main `758eb14` ขึ้น VPS + smoke 6 จอใหม่** (images CI build success บน ghcr แล้ว; migrate ลงตารางใหม่
+   notification 0003/0004 · profile 0004/0005 idempotent) — `deploy-staging.sh`
+2. **รอ decision ของ wei (ปิดเองไม่ได้):** payment gateway จริง (Omise/2C2P/Stripe TH) · terraform (เลือก cloud) ·
+   pricing-catalog→charge integration (catalog standalone) · wallet manual-refund vs auto (locked=auto)
+3. **Backend follow-up ที่จอใหม่ฝากไว้ (buildable แต่เป็น slice ใหม่):**
+   - **doc-upload + expiry-capture** → ป้อนข้อมูลจริงให้จอ expiring (ตอนนี้ตาราง document_expiry ว่าง)
+   - **automation live execution** → consumer ที่ evaluate enabled rules ตาม NATS event แล้วยิง action
+     (ตอนนี้ authoring-only; เป็น behavior-change ควรแยก slice + decision)
+   - **booking `service_type` dimension** → ปลดล็อก reports "bookings-by-service" (พันกับ catalog→charge)
 4. **Hardening:** replica read fallback (MED) · §2.5 (profile-docs S3 · guard-catalog pagination ·
    payment pay-after-complete · calling sweeper+WS fan-out · OTLP)
-5. **Follow-up เล็ก:** admin-assign validate guard_id (ต้องมี profile `/internal/guards/{id}`) · booking
+5. **Follow-up เล็ก:** admin-assign validate guard_id (profile `/internal/guards/{id}`) · booking
    admin-list PDPA audit · live-map booking lat/lng · FCM creds
 
 **pattern ที่ใช้ซ้ำได้ (จอจริง web-admin):** generated client เท่านั้น · cookie+CSRF · `ui/` components · screen-local
@@ -57,4 +57,4 @@ Postgres/NATS/Redis/MinIO/coturn).
 contract ไม่ใช่ mockup** (เช็ค generated client ก่อน) · service ใหม่เข้า gen:api ต้องเพิ่มทั้ง package.json + `lib/api.ts`
 · promote gap→real ต้องแก้ e2e (`gap-pages.spec` ลบหมดแล้ว) · ดู memory `web-admin-keystone-screens`
 
-**เริ่มจาก:** ถาม wei — (ก) ลุย web-admin จอ L/XL ที่เหลือ (broadcast/reports ทำได้ก่อน) · (ข) deploy + smoke · (ค) อื่น
+**เริ่มจาก:** web-admin ครบ 22/22 แล้ว — ถาม wei: (ก) deploy + smoke จอใหม่ · (ข) decision payment-gateway/terraform · (ค) buildable follow-up (doc-upload/automation-execution)
