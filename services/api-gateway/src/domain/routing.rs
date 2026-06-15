@@ -265,6 +265,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin automation rules (CRUD). The single prefix also routes the `/rules/{id}`
+        // subpath. Notification hosts the rule store (the canonical action is "notify").
+        prefix: "/admin/automation",
+        suffix: None,
+        upstream: Upstream::Notification,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin revenue-trend report (analytics). Payment owns the money series. A more
         // specific prefix than a hypothetical `/admin/reports` so it routes to its own service.
         prefix: "/admin/reports/revenue",
@@ -773,6 +781,20 @@ mod tests {
         assert_eq!(fwd, "/admin/audience-counts");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_automation_routes_to_notification() {
+        for p in [
+            "/v1/admin/automation/rules",
+            "/v1/admin/automation/rules/abc",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Notification, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
     }
 
     #[test]

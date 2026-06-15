@@ -204,3 +204,39 @@ pub struct AudienceCountsResponse {
     pub guards: i64,
     pub customers: i64,
 }
+
+// ----- Automation rules (admin "automation" surface) -----
+
+/// An admin automation rule (`when trigger [if condition] then action` + enable toggle).
+/// AUTHORING/storage only — a stored rule does not yet fire (live execution is a follow-up).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct AutomationRule {
+    pub id: Uuid,
+    pub trigger_key: String,
+    pub condition_text: Option<String>,
+    pub action_key: String,
+    pub is_enabled: bool,
+    pub created_by: Uuid,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// Create an automation rule. `trigger_key`/`action_key` are validated against a fixed set.
+#[derive(Debug, Deserialize)]
+pub struct CreateRuleRequest {
+    pub trigger_key: String,
+    #[serde(default)]
+    pub condition_text: Option<String>,
+    pub action_key: String,
+    #[serde(default)]
+    pub is_enabled: Option<bool>,
+}
+
+/// Update an automation rule — all fields optional (COALESCE; the common edit is the toggle).
+#[derive(Debug, Deserialize)]
+pub struct UpdateRuleRequest {
+    pub trigger_key: Option<String>,
+    pub condition_text: Option<String>,
+    pub action_key: Option<String>,
+    pub is_enabled: Option<bool>,
+}

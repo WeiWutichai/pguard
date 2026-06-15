@@ -19,11 +19,14 @@ lib/src/model/api_response_envelope.dart
 lib/src/model/audience.dart
 lib/src/model/audience_counts.dart
 lib/src/model/audience_counts200_response.dart
+lib/src/model/automation_rule.dart
 lib/src/model/broadcast.dart
 lib/src/model/broadcast_mode.dart
 lib/src/model/broadcast_status.dart
 lib/src/model/create_broadcast200_response.dart
 lib/src/model/create_broadcast_request.dart
+lib/src/model/create_rule200_response.dart
+lib/src/model/create_rule_request.dart
 lib/src/model/date.dart
 lib/src/model/delete_token_request.dart
 lib/src/model/error_body.dart
@@ -31,6 +34,7 @@ lib/src/model/error_detail.dart
 lib/src/model/inline_object.dart
 lib/src/model/list_broadcasts200_response.dart
 lib/src/model/list_notifications200_response.dart
+lib/src/model/list_rules200_response.dart
 lib/src/model/mark_as_read200_response.dart
 lib/src/model/notification_log.dart
 lib/src/model/notification_type.dart
@@ -39,5 +43,6 @@ lib/src/model/send_notification_request.dart
 lib/src/model/unread_count.dart
 lib/src/model/unread_count200_response.dart
 lib/src/model/update_broadcast_request.dart
+lib/src/model/update_rule_request.dart
 lib/src/serializers.dart
 pubspec.yaml

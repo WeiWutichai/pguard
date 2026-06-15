@@ -192,6 +192,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/automation/rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List automation rules (admin only)
+         * @description Admin automation rules (when trigger → if condition → then action + enable toggle).
+         *     AUTHORING/storage only — a stored rule does NOT yet fire; wiring live execution into the
+         *     event consumer is a deliberate follow-up (a production-behavior change).
+         */
+        get: operations["listRules"];
+        put?: never;
+        /** Create an automation rule (admin only) */
+        post: operations["createRule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/automation/rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update an automation rule (admin only — commonly the enable toggle) */
+        put: operations["updateRule"];
+        post?: never;
+        /** Delete an automation rule (admin only) */
+        delete: operations["deleteRule"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/notifications/push": {
         parameters: {
             query?: never;
@@ -324,6 +365,36 @@ export interface components {
             guards: number;
             /** Format: int64 */
             customers: number;
+        };
+        AutomationRule: {
+            /** Format: uuid */
+            id: string;
+            /** @description When (a fixed admin-facing key set). */
+            trigger_key: string;
+            condition_text?: string | null;
+            /** @description Then (a fixed admin-facing key set). */
+            action_key: string;
+            is_enabled: boolean;
+            /** Format: uuid */
+            created_by: string;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            updated_at: string;
+        };
+        CreateRuleRequest: {
+            trigger_key: string;
+            condition_text?: string | null;
+            action_key: string;
+            /** @default true */
+            is_enabled: boolean;
+        };
+        /** @description All fields optional (COALESCE); the common edit is the enable toggle. */
+        UpdateRuleRequest: {
+            trigger_key?: string;
+            condition_text?: string | null;
+            action_key?: string;
+            is_enabled?: boolean;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -736,6 +807,108 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    listRules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Automation rules, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["AutomationRule"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The created rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["AutomationRule"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    updateRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateRuleRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated rule */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["AutomationRule"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    deleteRule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EmptyOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     internalPush: {

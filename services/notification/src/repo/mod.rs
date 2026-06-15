@@ -11,7 +11,9 @@ use uuid::Uuid;
 use shared::error::AppError;
 
 use crate::domain::NotificationPlan;
-use crate::models::{BroadcastResponse, ListNotificationsQuery, NotificationLogResponse};
+use crate::models::{
+    AutomationRule, BroadcastResponse, ListNotificationsQuery, NotificationLogResponse,
+};
 
 const LOG_COLUMNS: &str = "id, user_id, title, body, notification_type::text AS notification_type, payload, is_read, sent_at, read_at";
 
@@ -328,6 +330,92 @@ pub async fn due_broadcasts(db: &PgPool, limit: i64) -> Result<Vec<BroadcastResp
         .fetch_all(db)
         .await?;
     Ok(rows)
+}
+
+// ----- Automation rules (admin authoring; live execution is a follow-up) -----
+
+const RULE_COLUMNS: &str =
+    "id, trigger_key, condition_text, action_key, is_enabled, created_by, created_at, updated_at";
+
+/// List automation rules, newest first.
+pub async fn list_rules(db: &PgPool) -> Result<Vec<AutomationRule>, AppError> {
+    let sql = format!(
+        "SELECT {RULE_COLUMNS} FROM notification.automation_rules ORDER BY created_at DESC"
+    );
+    let rows = sqlx::query_as::<_, AutomationRule>(&sql)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+/// Insert an automation rule.
+pub async fn create_rule(
+    db: &PgPool,
+    created_by: Uuid,
+    trigger_key: &str,
+    condition_text: Option<&str>,
+    action_key: &str,
+    is_enabled: bool,
+) -> Result<AutomationRule, AppError> {
+    let sql = format!(
+        r#"
+        INSERT INTO notification.automation_rules
+            (trigger_key, condition_text, action_key, is_enabled, created_by)
+        VALUES ($1, $2, $3, $4, $5)
+        RETURNING {RULE_COLUMNS}
+        "#
+    );
+    sqlx::query_as::<_, AutomationRule>(&sql)
+        .bind(trigger_key)
+        .bind(condition_text)
+        .bind(action_key)
+        .bind(is_enabled)
+        .bind(created_by)
+        .fetch_one(db)
+        .await
+        .map_err(AppError::from)
+}
+
+/// Update an automation rule (COALESCE — only provided fields change; the common edit is the
+/// enable toggle). Returns `None` if the rule doesn't exist.
+pub async fn update_rule(
+    db: &PgPool,
+    id: Uuid,
+    trigger_key: Option<&str>,
+    condition_text: Option<&str>,
+    action_key: Option<&str>,
+    is_enabled: Option<bool>,
+) -> Result<Option<AutomationRule>, AppError> {
+    let sql = format!(
+        r#"
+        UPDATE notification.automation_rules SET
+            trigger_key    = COALESCE($2, trigger_key),
+            condition_text = COALESCE($3, condition_text),
+            action_key     = COALESCE($4, action_key),
+            is_enabled     = COALESCE($5, is_enabled),
+            updated_at     = now()
+        WHERE id = $1
+        RETURNING {RULE_COLUMNS}
+        "#
+    );
+    let row = sqlx::query_as::<_, AutomationRule>(&sql)
+        .bind(id)
+        .bind(trigger_key)
+        .bind(condition_text)
+        .bind(action_key)
+        .bind(is_enabled)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+/// Delete an automation rule. Returns `true` if a row was removed.
+pub async fn delete_rule(db: &PgPool, id: Uuid) -> Result<bool, AppError> {
+    let result = sqlx::query("DELETE FROM notification.automation_rules WHERE id = $1")
+        .bind(id)
+        .execute(db)
+        .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 // ----- Event consumer (atomic claim + log) -----
