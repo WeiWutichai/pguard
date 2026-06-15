@@ -22,29 +22,39 @@ Postgres/NATS/Redis/MinIO/coturn).
 - merge ผ่าน /tmp clone → push `merged-main` → ผม ff-merge (ดู memory `pguard-merge-workflow`)
 - slice ที่เพิ่ม `${VAR:?}` ใน compose ต้องอัปเดต dummy env ใน ci.yml + `.env.e2e` ด้วย
 
-**สถานะ (2026-06-14):**
-- `main = 492dd1c` · merge ครบถึง **PR #55** · **ไม่มี PR เปิดค้าง · ทุก feature branch merge เข้า main แล้ว**
-  · Staging LIVE `pguard.innoveraappcenter.com` (72.61.119.230, v2 อยู่ `/root/pguard`)
-- ⚠️ **VPS เป็น commit เก่า** — main เดินไป PR #42–#55 หลัง deploy ล่าสุด → ต้อง pull+up image ใหม่ + smoke
-- เสร็จ+merged: กลุ่ม A ครบ · web-admin design foundation + rebuild 7 จอจริง (#45/#49) · mobile
-  design-fidelity + i18n + android platform (#42–#54) · กลุ่ม B (contract tests/k8s/NATS ACL/
-  load-chaos/codegen/security deepening/redis reconnect ทุก backend)
+**สถานะ (2026-06-15):**
+- `main = 1c9f4bc` · merge ครบถึง **PR #69** · ไม่มี PR เปิดค้าง · Staging LIVE `pguard.innoveraappcenter.com`
+- **web-admin: REAL 16/22 จอ** — session ล่าสุดทำจอจริงเพิ่ม **10 จอ** (bookings·customers·operations·
+  tasks·wallet·pricing·calls·chat·replay·activity) + **admin endpoints ใหม่ 7 ตัวใน 5 service**
+  (booking `/admin/bookings`+`/{id}/assign`+`/admin/pricing/services` CRUD · profile
+  `/admin/customer-profiles`+`/admin/access-audit` · payment `/admin/payments` · calling
+  `/admin/calls` · chat `/admin/conversations`) + calling/chat เข้า web-admin gen:api · **ไม่มี ApiGapPage เหลือ**
+- ⚠️ **repo ไม่มี branch protection** — `gh pr merge --auto` **ไม่รอ CI**! ต้อง `gh pr checks <n> --watch`
+  เขียวก่อนแล้ว merge เอง (เคยทำ main พังเพราะ auto-merge ก่อน E2E จบ — memory `pguard-merge-no-branch-protection`)
+- ⚠️ **VPS เป็น commit เก่ามาก** — main เดินไป PR #42–#69 → ต้อง pull+up image ใหม่ + full smoke
 - SMS เปิดจริง · admin web-admin: `0800000001` / `pguard-admin-2026` (login เข้าได้)
-- รายละเอียดทั้งหมด: `PROGRESS.md` (Completed log) · smoke: `docs/SMOKE-CHECKLIST.md`
+- รายละเอียด: `PROGRESS.md` (Completed log) · **build plan: `docs/web-admin-endpoint-map.md`** · smoke: `docs/SMOKE-CHECKLIST.md`
 
-**งานที่เหลือ (เรียงความสำคัญ) — verified กับ git 2026-06-14:**
-1. **🔴 Web-admin admin screens (ค้างเยอะสุด):** 16/22 จอ dashboard ยังไม่ใช่ของจริง — **12 ComingSoon
-   stub** (operations·tasks·bookings·calls·chat·broadcast·expiring·recruit·automation·replay·reports·
-   profile) + **4 API-gap** (customers·pricing·wallet·activity). คอขวด: หลายจอต้องเพิ่ม **admin endpoint
-   ที่ backend ก่อน** (admin list-bookings/payments/customers · pricing CRUD · audit/stats). REAL แล้ว
-   6 จอ (dashboard·applicants·guards·map·reviews·settings). **อ่าน design จริงที่ `redesign-pguard/` ก่อนเสมอ**
-2. **Deploy main ล่าสุดขึ้น VPS + full smoke** ตาม `docs/SMOKE-CHECKLIST.md` (VPS เป็น commit เก่า) —
-   pull+up image ใหม่ → ทดสอบ Redis self-heal (restart redis → `/v1/auth/me` ต้อง 200 ไม่ต้อง restart svc)
-3. **รอ decision ของ wei:** payment gateway จริง (Omise/2C2P/Stripe TH — เลือก+เปิดบัญชี) · terraform (เลือก cloud)
-4. **Hardening:** FINDING (MED) replica read fallback (reads 500 เมื่อ replica ตาย) · §2.5
-   (profile-docs S3 · guard-catalog pagination · payment pay-after-complete · calling stale-ring
-   sweeper + WS cross-instance fan-out · OTLP exporter)
-5. **Follow-up เล็ก:** live-map ใช้ booking lat/lng เป็นจุดหมาย · FCM creds จริง
+**งานที่เหลือ (เรียงความสำคัญ) — verified กับ git 2026-06-15:**
+1. **Web-admin 6 จอที่เหลือ — ต้องสร้าง backend ของใหม่** (ไม่มี data/endpoint รองรับ; ดู `docs/web-admin-endpoint-map.md`):
+   - **broadcast** (M-L): notification bulk-send + audience-count endpoint + เพิ่ม notification เข้า gen:api
+   - **reports** (L): 4 analytics aggregation ข้าม service (revenue/service-mix/utilization/retention) — ต้องเพิ่ม `service_type` dimension ใน booking ก่อน
+   - **expiring** (L): migration เพิ่ม document-expiry fields (profile doc schema ไม่มี expiry/last_reminded) + endpoint
+   - **recruit** (XL): recruitment-pipeline service ใหม่ทั้งตัว (5-stage; ของจริงมีแค่ approve/reject guard ใน applicants)
+   - **automation** (XL): rule-engine service ใหม่ (trigger/condition/action)
+   - **profile** (S, value ต่ำ): admin's own account — ซ้ำกับ settings เกือบหมด อาจข้าม
+   *(จอที่ data มีอยู่แล้ว = ทำเป็นจอจริงครบหมดแล้ว session นี้)*
+2. **Deploy main ล่าสุดขึ้น VPS + full smoke** (VPS เก่ามาก) — pull+up + Redis self-heal test
+3. **รอ decision ของ wei:** payment gateway จริง (Omise/2C2P/Stripe TH) · terraform (เลือก cloud) ·
+   pricing-catalog→charge integration (ตอนนี้ catalog standalone ไม่ผูก charge) · wallet manual-refund vs auto (locked=auto)
+4. **Hardening:** replica read fallback (MED) · §2.5 (profile-docs S3 · guard-catalog pagination ·
+   payment pay-after-complete · calling sweeper+WS fan-out · OTLP)
+5. **Follow-up เล็ก:** admin-assign validate guard_id (ต้องมี profile `/internal/guards/{id}`) · booking
+   admin-list PDPA audit · live-map booking lat/lng · FCM creds
 
-**เริ่มจาก:** ถาม wei ว่าจะ (ก) web-admin admin screens (+ admin endpoints ที่ backend) ·
-(ข) deploy main ล่าสุด + full smoke · หรือ (ค) อื่น
+**pattern ที่ใช้ซ้ำได้ (จอจริง web-admin):** generated client เท่านั้น · cookie+CSRF · `ui/` components · screen-local
+`copy.ts` + shared keys ใน `i18n.tsx` · honest **gap chips** สำหรับ data ที่ไม่มี endpoint (อย่ากุเลข) · **build to
+contract ไม่ใช่ mockup** (เช็ค generated client ก่อน) · service ใหม่เข้า gen:api ต้องเพิ่มทั้ง package.json + `lib/api.ts`
+· promote gap→real ต้องแก้ e2e (`gap-pages.spec` ลบหมดแล้ว) · ดู memory `web-admin-keystone-screens`
+
+**เริ่มจาก:** ถาม wei — (ก) ลุย web-admin จอ L/XL ที่เหลือ (broadcast/reports ทำได้ก่อน) · (ข) deploy + smoke · (ค) อื่น
