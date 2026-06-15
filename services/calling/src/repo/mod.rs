@@ -42,6 +42,47 @@ pub async fn get_call(db: &sqlx::PgPool, id: Uuid) -> Result<CallResponse, AppEr
         .ok_or_else(|| AppError::NotFound("Call not found".to_string()))
 }
 
+/// Admin cross-user call log — every call (NO participant filter; the admin-role gate is the
+/// API layer's job), newest first, optional `status`/`call_type` filters + limit/offset.
+/// `$n` placeholders come from a controlled counter; every value is a BOUND parameter.
+pub async fn admin_list_calls(
+    db: &sqlx::PgPool,
+    status: Option<&str>,
+    call_type: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<CallResponse>, AppError> {
+    let mut sql = format!("SELECT {CALL_COLUMNS} FROM calling.call_logs");
+    let mut conds: Vec<String> = Vec::new();
+    let mut idx = 1;
+    if status.is_some() {
+        conds.push(format!("status = ${idx}::calling.call_status"));
+        idx += 1;
+    }
+    if call_type.is_some() {
+        conds.push(format!("call_type = ${idx}::calling.call_type"));
+        idx += 1;
+    }
+    if !conds.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conds.join(" AND "));
+    }
+    sql.push_str(&format!(
+        " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
+        idx,
+        idx + 1
+    ));
+    let mut query = sqlx::query_as::<_, CallResponse>(&sql);
+    if let Some(s) = status {
+        query = query.bind(s);
+    }
+    if let Some(ct) = call_type {
+        query = query.bind(ct);
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
+    Ok(rows)
+}
+
 /// The two participants of a call (caller, callee) + its current status — used by the WS
 /// relay to authorize, gate on liveness (refuse relaying on a terminal call), and route a
 /// signal to the OTHER party. `None` if the call does not exist.

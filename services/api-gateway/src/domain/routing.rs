@@ -212,6 +212,13 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin call log (cross-user, read-only). Admin authz is the calling service's job.
+        prefix: "/admin/calls",
+        suffix: None,
+        upstream: Upstream::Calling,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -628,6 +635,15 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/bookings"));
         assert_eq!(up, Upstream::Booking);
         assert_eq!(fwd, "/admin/bookings");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_calls_routes_to_calling() {
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/calls"));
+        assert_eq!(up, Upstream::Calling);
+        assert_eq!(fwd, "/admin/calls");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

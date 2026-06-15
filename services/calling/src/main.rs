@@ -108,6 +108,9 @@ async fn main() -> anyhow::Result<()> {
             axum::routing::post(api::initiate_call::<AppState>),
         )
         .route("/calls/{id}", get(api::get_call::<AppState>))
+        // Admin cross-user call log (admin-role gated in the handler). Distinct prefix from
+        // `/calls/*`; the gateway routes it via a new /admin/calls rule.
+        .route("/admin/calls", get(api::admin_list_calls::<AppState>))
         .route("/calls/{id}/accept", put(api::accept_call::<AppState>))
         .route("/calls/{id}/reject", put(api::reject_call::<AppState>))
         .route(

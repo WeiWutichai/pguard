@@ -10,8 +10,10 @@ export 'package:pguard_calling_api/src/auth/oauth.dart';
 export 'package:pguard_calling_api/src/serializers.dart';
 export 'package:pguard_calling_api/src/model/date.dart';
 
+export 'package:pguard_calling_api/src/api/admin_api.dart';
 export 'package:pguard_calling_api/src/api/calls_api.dart';
 
+export 'package:pguard_calling_api/src/model/admin_list_calls200_response.dart';
 export 'package:pguard_calling_api/src/model/api_response_envelope.dart';
 export 'package:pguard_calling_api/src/model/call.dart';
 export 'package:pguard_calling_api/src/model/call_status.dart';

@@ -23,6 +23,16 @@ pub struct EndCallRequest {
     pub reason: Option<String>,
 }
 
+/// Query params for `GET /admin/calls` (admin cross-user call log). `status`/`call_type` are
+/// validated against the enums (unknown → 400). House limit/offset pagination.
+#[derive(Debug, Deserialize)]
+pub struct AdminListCallsQuery {
+    pub status: Option<String>,
+    pub call_type: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 // ----- Responses -----
 
 /// A call row as returned to clients. `status`/`call_type` are read as text (the DB enums

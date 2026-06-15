@@ -15,6 +15,7 @@ import type { paths as RatingPaths } from "@/api/generated/rating";
 import type { paths as PaymentPaths } from "@/api/generated/payment";
 import type { paths as BookingPaths } from "@/api/generated/booking";
 import type { paths as PresencePaths } from "@/api/generated/presence";
+import type { paths as CallingPaths } from "@/api/generated/calling";
 
 /** Same-origin gateway prefix for the browser (proxied to the gateway). Overridable for an
  *  off-origin deployment via NEXT_PUBLIC_API_BASE_URL (then CORS + SameSite must allow it). */
@@ -55,6 +56,8 @@ export const presenceApi = browserClient<PresencePaths>();
  *  contract yet — see the wallet page). Client wired so it is ready when they land. */
 export const paymentApi = browserClient<PaymentPaths>();
 
-/** booking service (bookings lifecycle; an admin service-rate/pricing catalog is not in the
- *  v2 contract — see the pricing page). Client wired for when those endpoints land. */
+/** booking service (bookings lifecycle + admin bookings/pricing catalog). */
 export const bookingApi = browserClient<BookingPaths>();
+
+/** calling service (admin read-only call log — GET /admin/calls). */
+export const callingApi = browserClient<CallingPaths>();

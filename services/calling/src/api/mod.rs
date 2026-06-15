@@ -7,7 +7,7 @@
 
 pub mod ws;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::Utc;
 use uuid::Uuid;
@@ -18,7 +18,9 @@ use shared::models::ApiResponse;
 
 use crate::booking_client::BookingReader;
 use crate::domain::{is_callable_status, is_valid_call_type, peer_of};
-use crate::models::{CallResponse, EndCallRequest, IceConfig, InitiateCallRequest};
+use crate::models::{
+    AdminListCallsQuery, CallResponse, EndCallRequest, IceConfig, InitiateCallRequest,
+};
 use crate::repo;
 use crate::state::CallDeps;
 
@@ -84,6 +86,47 @@ pub async fn get_call<S: CallDeps>(
         ));
     }
     Ok(Json(ApiResponse::success(call)))
+}
+
+const CALL_STATUSES: &[&str] = &[
+    "initiated",
+    "accepted",
+    "connected",
+    "ended",
+    "rejected",
+    "missed",
+];
+const CALL_TYPES: &[&str] = &["audio", "video"];
+
+/// GET /admin/calls — admin cross-user call log (read-only). Admin only (the edge proves
+/// identity, not role). Optional `status`/`call_type` filters + limit/offset. The per-call
+/// timeline / ICE / signal-quality detail the design shows is NOT persisted (this service is a
+/// relay) — a follow-up needs a call-events read model.
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_list_calls<S: CallDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<AdminListCallsQuery>,
+) -> Result<Json<ApiResponse<Vec<CallResponse>>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let status = match q.status.as_deref() {
+        None => None,
+        Some(s) if CALL_STATUSES.contains(&s) => Some(s),
+        Some(_) => return Err(AppError::BadRequest("invalid status filter".to_string())),
+    };
+    let call_type = match q.call_type.as_deref() {
+        None => None,
+        Some(s) if CALL_TYPES.contains(&s) => Some(s),
+        Some(_) => return Err(AppError::BadRequest("invalid call_type filter".to_string())),
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let items = repo::admin_list_calls(state.db(), status, call_type, limit, offset).await?;
+    Ok(Json(ApiResponse::success(items)))
 }
 
 /// PUT /calls/{id}/accept — the callee accepts (`initiated → accepted`). The SQL guard
@@ -257,8 +300,33 @@ mod tests {
             Router::new()
                 .route("/calls/initiate", post(initiate_call::<TestDeps>))
                 .route("/calls/ice", get(ice_config::<TestDeps>))
+                .route("/admin/calls", get(admin_list_calls::<TestDeps>))
                 .with_state(deps),
         )
+    }
+
+    #[tokio::test]
+    async fn admin_list_calls_rejects_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read the cross-user call log.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/calls")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     fn token(user_id: Uuid, role: &str) -> String {

@@ -14,6 +14,7 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_calling_api/src/date_serializer.dart';
 import 'package:pguard_calling_api/src/model/date.dart';
 
+import 'package:pguard_calling_api/src/model/admin_list_calls200_response.dart';
 import 'package:pguard_calling_api/src/model/api_response_envelope.dart';
 import 'package:pguard_calling_api/src/model/call.dart';
 import 'package:pguard_calling_api/src/model/call_status.dart';
@@ -30,6 +31,7 @@ import 'package:pguard_calling_api/src/model/inline_object1.dart';
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminListCalls200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   Call,
   CallStatus,
