@@ -81,6 +81,9 @@ fn tier_tag(tier: Tier) -> &'static str {
     match tier {
         Tier::Auth => "auth",
         Tier::Otp => "otp",
+        // Distinct tag → distinct Redis key, so verify counts in its own window (never shares
+        // the `otp` send/challenge bucket).
+        Tier::OtpVerify => "otpv",
         Tier::Api => "api",
     }
 }
@@ -127,6 +130,7 @@ mod tests {
     fn tier_tag_is_stable() {
         assert_eq!(tier_tag(Tier::Auth), "auth");
         assert_eq!(tier_tag(Tier::Otp), "otp");
+        assert_eq!(tier_tag(Tier::OtpVerify), "otpv");
         assert_eq!(tier_tag(Tier::Api), "api");
     }
 
@@ -141,6 +145,45 @@ mod tests {
         assert!(
             matches!(d, RateDecision::Allow),
             "rate-limit MUST fail OPEN on a Redis error (availability > enforcement)"
+        );
+    }
+
+    /// The whole point of the split: exhausting the OTP-SEND bucket must NOT deny OTP-VERIFY —
+    /// the two tiers map to distinct Redis keys, so a challenge/request burst on a shared per-IP
+    /// (carrier-NAT) window can't starve a legitimate code verification.
+    #[tokio::test]
+    async fn otp_send_and_verify_buckets_are_independent() {
+        let mut redis = crate::test_support::CountingRedis::new();
+        let limits = Limits {
+            otp_per_min: 2,
+            otp_verify_per_min: 2,
+            auth_per_sec: 5,
+            api_per_sec: 30,
+        };
+        let ip = "203.0.113.7";
+
+        // Burn the send bucket past its max (2): the 3rd send is denied.
+        for _ in 0..2 {
+            assert!(matches!(
+                check(&mut redis, &limits, Tier::Otp, ip).await,
+                RateDecision::Allow
+            ));
+        }
+        assert!(
+            matches!(
+                check(&mut redis, &limits, Tier::Otp, ip).await,
+                RateDecision::Deny { .. }
+            ),
+            "send tier should be exhausted"
+        );
+
+        // Verify is on its OWN counter → still allowed despite the send-bucket exhaustion.
+        assert!(
+            matches!(
+                check(&mut redis, &limits, Tier::OtpVerify, ip).await,
+                RateDecision::Allow
+            ),
+            "verify MUST NOT be starved by send-tier exhaustion"
         );
     }
 

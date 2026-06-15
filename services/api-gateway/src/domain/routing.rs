@@ -15,8 +15,15 @@
 pub enum Tier {
     /// Auth endpoints — brute-force sensitive (v1 `auth_limit`, ~5r/s).
     Auth,
-    /// OTP / SMS endpoints — SMS-cost sensitive (v1 `otp_limit`, ~10r/min).
+    /// OTP send/challenge — SMS-cost sensitive (v1 `otp_limit`, ~10r/min). The real per-phone
+    /// SMS abuse guard lives in the otp service (single live code + per-phone cooldown); this is
+    /// the coarse per-IP backstop.
     Otp,
+    /// OTP VERIFY — split from [`Tier::Otp`] so a burst of challenge/request traffic on a shared
+    /// per-IP (carrier-NAT) bucket can never starve a legitimate code verification. Verify is
+    /// cheap (no SMS) and the otp service already caps verify attempts per code, so this tier is
+    /// generous. See `domain::ratelimit::Limits::otp_verify_per_min`.
+    OtpVerify,
     /// General API (v1 `api_limit`, ~30r/s).
     Api,
 }
@@ -300,6 +307,14 @@ const RULES: &[Rule] = &[
         suffix: None,
         upstream: Upstream::Identity,
         tier: Tier::Api,
+    },
+    Rule {
+        // More specific than `/otp/` (longest-prefix wins) so verify gets its OWN rate-limit
+        // bucket — challenge/request churn on a shared per-IP (NAT) window must not starve it.
+        prefix: "/otp/verify",
+        suffix: None,
+        upstream: Upstream::Otp,
+        tier: Tier::OtpVerify,
     },
     Rule {
         prefix: "/otp/",
@@ -669,11 +684,25 @@ mod tests {
 
     #[test]
     fn otp_routes_to_otp_otp_tier() {
-        let (up, fwd, public, tier) = proxy(resolve("/v1/otp/request"));
+        // challenge + request share the SMS-cost Otp tier...
+        for p in ["/v1/otp/request", "/v1/otp/challenge"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Otp, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap(), "{p}");
+            assert!(public, "{p}");
+            assert_eq!(tier, Tier::Otp, "{p}");
+        }
+    }
+
+    #[test]
+    fn otp_verify_gets_its_own_tier() {
+        // ...but verify is split onto its own tier (longest-prefix wins over `/otp/`) so
+        // request/challenge churn on a shared per-IP bucket can't starve a real verification.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/otp/verify"));
         assert_eq!(up, Upstream::Otp);
-        assert_eq!(fwd, "/otp/request");
+        assert_eq!(fwd, "/otp/verify");
         assert!(public);
-        assert_eq!(tier, Tier::Otp);
+        assert_eq!(tier, Tier::OtpVerify);
     }
 
     #[test]

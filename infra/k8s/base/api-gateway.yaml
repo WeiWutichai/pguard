@@ -60,8 +60,12 @@ spec:
               value: "50"
             - name: RATE_AUTH_PER_SEC
               value: "10"
+            # OTP send/challenge per-IP/min (was 3 — too tight for a clean flow + carrier-NAT).
             - name: RATE_OTP_PER_MIN
-              value: "3"
+              value: "15"
+            # OTP verify gets its own bucket so send/challenge churn can't starve verification.
+            - name: RATE_OTP_VERIFY_PER_MIN
+              value: "30"
             # Upstream service map (cluster DNS).
             - name: IDENTITY_URL
               value: "http://identity:3001"

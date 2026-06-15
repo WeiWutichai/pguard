@@ -550,6 +550,7 @@ mod e2e_tests {
             routes,
             limits: crate::domain::ratelimit::Limits {
                 otp_per_min: 100_000,
+                otp_verify_per_min: 100_000,
                 auth_per_sec: 100_000,
                 api_per_sec: 100_000,
             },

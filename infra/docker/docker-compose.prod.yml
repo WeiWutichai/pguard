@@ -311,7 +311,12 @@ services:
       METRICS_ADDR: 0.0.0.0:9100
       RATE_API_PER_SEC: ${RATE_API_PER_SEC:-50}
       RATE_AUTH_PER_SEC: ${RATE_AUTH_PER_SEC:-10}
-      RATE_OTP_PER_MIN: ${RATE_OTP_PER_MIN:-3}
+      # OTP send/challenge per-IP/min. Was 3 — too tight: a clean flow is challenge+request = 2,
+      # so any extra hit (resend, captcha reload, or several users behind one carrier-NAT IP)
+      # could spill over. The real per-phone SMS guard is in the otp service.
+      RATE_OTP_PER_MIN: ${RATE_OTP_PER_MIN:-15}
+      # OTP verify has its own bucket so request/challenge churn can't starve a real verification.
+      RATE_OTP_VERIFY_PER_MIN: ${RATE_OTP_VERIFY_PER_MIN:-30}
       # Upstream service map (cluster DNS — service name = hostname).
       IDENTITY_URL: http://identity:3001
       PROFILE_URL: http://profile:3002
