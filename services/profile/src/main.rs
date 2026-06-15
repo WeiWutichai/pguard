@@ -99,6 +99,14 @@ async fn main() -> anyhow::Result<()> {
             get(api::admin_list_expiring_documents::<AppState>),
         )
         .route(
+            "/admin/recruitment/candidates",
+            get(api::admin_list_candidates::<AppState>),
+        )
+        .route(
+            "/admin/recruitment/candidates/{user_id}/stage",
+            axum::routing::put(api::admin_set_candidate_stage::<AppState>),
+        )
+        .route(
             "/admin/guard-profiles/{user_id}/approve",
             post(api::admin_approve_guard::<AppState>),
         )

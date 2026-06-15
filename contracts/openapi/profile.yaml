@@ -281,6 +281,69 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/recruitment/candidates:
+    get:
+      tags: [Admin]
+      summary: List guards as recruitment-pipeline candidates (role=admin)
+      description: |
+        Every guard as a lean pipeline candidate (no PII). The kanban groups pending guards by
+        `recruitment_stage` (sourcing/screened/docs_verified) and finalized ones by
+        `approval_status` — approve/reject reuse the existing guard-profile endpoints. Admin only.
+      operationId: adminListCandidates
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Pipeline candidates, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RecruitCandidate' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/recruitment/candidates/{user_id}/stage:
+    put:
+      tags: [Admin]
+      summary: Move a pending candidate to a pipeline stage (role=admin)
+      description: |
+        Sets a PENDING guard's pre-approval `recruitment_stage`. A finalized (approved/rejected)
+        candidate returns 409 — they leave the pipeline via approval_status, not this. An unknown
+        stage returns 400. Admin only. This stage gates nothing (it's admin-workflow metadata).
+      operationId: adminSetCandidateStage
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StageRequest' }
+      responses:
+        '200':
+          description: The updated candidate
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RecruitCandidate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /admin/guard-profiles/{user_id}/approve:
     post:
       tags: [Admin]
@@ -540,6 +603,26 @@ components:
           enum: [id_card, security_license, training_cert, criminal_check, driver_license]
         expiry_date: { type: string, format: date }
         last_reminded_at: { type: string, format: date-time, nullable: true }
+
+    RecruitCandidate:
+      type: object
+      description: A guard in the recruitment pipeline (lean projection — no PII).
+      required: [user_id, approval_status, recruitment_stage]
+      properties:
+        user_id: { type: string, format: uuid }
+        years_of_experience: { type: integer, format: int32, nullable: true }
+        approval_status: { $ref: '#/components/schemas/ApprovalStatus' }
+        recruitment_stage:
+          type: string
+          enum: [sourcing, screened, docs_verified]
+
+    StageRequest:
+      type: object
+      required: [stage]
+      properties:
+        stage:
+          type: string
+          enum: [sourcing, screened, docs_verified]
 
     MyProfile:
       oneOf:

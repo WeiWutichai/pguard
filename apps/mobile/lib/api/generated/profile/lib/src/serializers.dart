@@ -16,9 +16,11 @@ import 'package:pguard_profile_api/src/model/date.dart';
 
 import 'package:pguard_profile_api/src/model/access_audit_entry.dart';
 import 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
@@ -35,7 +37,9 @@ import 'package:pguard_profile_api/src/model/internal_list_guards200_response.da
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/my_profile.dart';
+import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
+import 'package:pguard_profile_api/src/model/stage_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
 
@@ -44,9 +48,11 @@ part 'serializers.g.dart';
 @SerializersFor([
   AccessAuditEntry,
   AdminListAccessAudit200Response,
+  AdminListCandidates200Response,
   AdminListCustomerProfiles200Response,
   AdminListExpiringDocuments200Response,
   AdminListGuardProfiles200Response,
+  AdminSetCandidateStage200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
   CustomerProfile,$CustomerProfile,
@@ -63,7 +69,9 @@ part 'serializers.g.dart';
   MyCustomerProfile,
   MyGuardProfile,
   MyProfile,
+  RecruitCandidate,
   RejectRequest,
+  StageRequest,
   UpsertCustomerProfileRequest,
   UpsertGuardProfileRequest,
 ])

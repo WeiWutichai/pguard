@@ -23,8 +23,8 @@ use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, DocumentExpiryRow, GuardProfileResponse, InternalGuard, MyProfile,
-    RecipientsQuery, RecipientsResponse, RejectRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest,
+    RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 use crate::repo;
 use crate::state::{ProfileDeps, ProfileInternalDeps};
@@ -401,6 +401,35 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
 /// already expired). The client buckets into expired / 7 / 30 / 90.
 const DOC_EXPIRY_HORIZON_DAYS: i64 = 90;
 
+// ----- Recruitment pipeline (admin "recruit" surface) -----
+
+/// GET /admin/recruitment/candidates — every guard as a pipeline candidate (lean, no PII).
+/// Admin only; replica read. The kanban groups pending guards by `recruitment_stage` and
+/// finalized ones by `approval_status` (approve/reject reuse the existing guard endpoints).
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_list_candidates<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<RecruitCandidate>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let rows = repo::list_recruitment_candidates(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
+/// PUT /admin/recruitment/candidates/{user_id}/stage — move a PENDING candidate to a pipeline
+/// stage. Admin only. A finalized (approved/rejected) candidate → 409; unknown stage → 400.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, target = %user_id))]
+pub async fn admin_set_candidate_stage<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<StageRequest>,
+) -> Result<Json<ApiResponse<RecruitCandidate>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let candidate = repo::set_recruitment_stage(state.db(), user_id, &req.stage).await?;
+    Ok(Json(ApiResponse::success(candidate)))
+}
+
 // ----- GET /admin/documents/expiring — guard documents needing renewal (admin) -----
 
 /// List guard documents expiring within the horizon (incl. already-expired), soonest first.
@@ -578,6 +607,10 @@ mod tests {
                 .route(
                     "/admin/documents/expiring",
                     get(admin_list_expiring_documents::<TestDeps>),
+                )
+                .route(
+                    "/admin/recruitment/candidates",
+                    get(admin_list_candidates::<TestDeps>),
                 )
                 .route(
                     "/admin/guard-profiles/{user_id}/approve",
@@ -758,6 +791,27 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a customer must not list the admin customer directory"
         );
+    }
+
+    #[tokio::test]
+    async fn admin_recruitment_candidates_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not read the cross-user recruitment pipeline.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/recruitment/candidates")
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

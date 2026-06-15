@@ -23,8 +23,70 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuard, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    GuardProfileResponse, InternalGuard, RecruitCandidate, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest,
 };
+
+/// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
+const RECRUITMENT_STAGES: &[&str] = &["sourcing", "screened", "docs_verified"];
+
+/// List every guard as a recruitment-pipeline candidate (lean projection — no PII), newest
+/// first. The kanban groups them: pending guards by `recruitment_stage`, finalized ones by
+/// `approval_status`. Bounded (mirrors the admin guard list's cap).
+pub async fn list_recruitment_candidates(db: &PgPool) -> Result<Vec<RecruitCandidate>, AppError> {
+    let rows = sqlx::query_as::<_, RecruitCandidate>(
+        "SELECT user_id, years_of_experience, approval_status::text AS approval_status, \
+                recruitment_stage::text AS recruitment_stage \
+         FROM profile.guard_profiles ORDER BY created_at DESC LIMIT 200",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Move a PENDING guard to a pre-approval pipeline stage. Only `pending` applicants have a
+/// meaningful pipeline position — a finalized (approved/rejected) guard returns 409 (they left
+/// the pipeline via `approval_status`). An unknown stage → 400. Returns the updated candidate.
+pub async fn set_recruitment_stage(
+    db: &PgPool,
+    user_id: Uuid,
+    stage: &str,
+) -> Result<RecruitCandidate, AppError> {
+    if !RECRUITMENT_STAGES.contains(&stage) {
+        return Err(AppError::BadRequest(format!(
+            "invalid stage: {stage} (expected sourcing|screened|docs_verified)"
+        )));
+    }
+    let row: Option<RecruitCandidate> = sqlx::query_as(
+        "UPDATE profile.guard_profiles \
+         SET recruitment_stage = $2::profile.recruitment_stage, updated_at = now() \
+         WHERE user_id = $1 AND approval_status = 'pending'::profile.approval_status \
+         RETURNING user_id, years_of_experience, approval_status::text AS approval_status, \
+                   recruitment_stage::text AS recruitment_stage",
+    )
+    .bind(user_id)
+    .bind(stage)
+    .fetch_optional(db)
+    .await?;
+    match row {
+        Some(c) => Ok(c),
+        None => {
+            // Distinguish missing vs already-finalized for a useful error.
+            let exists: Option<(String,)> = sqlx::query_as(
+                "SELECT approval_status::text FROM profile.guard_profiles WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+            match exists {
+                Some(_) => Err(AppError::Conflict(
+                    "recruitment stage only applies to pending applicants".to_string(),
+                )),
+                None => Err(AppError::NotFound("Guard profile not found".to_string())),
+            }
+        }
+    }
+}
 
 /// List guard documents expiring within `horizon_days` (INCLUDING already-expired), soonest
 /// first. Bounded; the admin surface buckets them client-side into expired/7/30/90. Reads the

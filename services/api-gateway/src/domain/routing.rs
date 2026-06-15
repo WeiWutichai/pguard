@@ -202,6 +202,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin recruitment pipeline (list + stage move). The single prefix also routes the
+        // `/candidates/{id}/stage` subpath. Profile owns guard_profiles.recruitment_stage.
+        prefix: "/admin/recruitment",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin booking operations (cross-user list + guard-assign). The single prefix rule
         // also routes the `/{id}/assign` subpath (suffix: None matches every subpath). Admin
         // authz is the booking service's own job.
@@ -682,6 +690,20 @@ mod tests {
         let (up, fwd, _, _) = proxy(resolve("/v1/admin/guard-profiles/abc/approve"));
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/guard-profiles/abc/approve");
+    }
+
+    #[test]
+    fn admin_recruitment_routes_to_profile() {
+        for p in [
+            "/v1/admin/recruitment/candidates",
+            "/v1/admin/recruitment/candidates/abc/stage",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Profile, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
     }
 
     #[test]
