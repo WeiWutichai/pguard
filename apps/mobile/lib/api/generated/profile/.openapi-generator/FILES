@@ -15,9 +15,11 @@ lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
 lib/src/model/access_audit_entry.dart
 lib/src/model/admin_list_access_audit200_response.dart
+lib/src/model/admin_list_candidates200_response.dart
 lib/src/model/admin_list_customer_profiles200_response.dart
 lib/src/model/admin_list_expiring_documents200_response.dart
 lib/src/model/admin_list_guard_profiles200_response.dart
+lib/src/model/admin_set_candidate_stage200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/approval_status.dart
 lib/src/model/customer_profile.dart
@@ -35,7 +37,9 @@ lib/src/model/internal_list_guards200_response.dart
 lib/src/model/my_customer_profile.dart
 lib/src/model/my_guard_profile.dart
 lib/src/model/my_profile.dart
+lib/src/model/recruit_candidate.dart
 lib/src/model/reject_request.dart
+lib/src/model/stage_request.dart
 lib/src/model/upsert_customer_profile_request.dart
 lib/src/model/upsert_guard_profile_request.dart
 lib/src/serializers.dart

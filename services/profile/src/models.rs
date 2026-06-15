@@ -69,6 +69,26 @@ pub struct RejectRequest {
     pub reason: Option<String>,
 }
 
+// ----- Recruitment pipeline (admin "recruit" surface) -----
+
+/// One candidate in the recruitment pipeline (`GET /admin/recruitment/candidates`). Lean — only
+/// what the kanban needs: who, experience, the authoritative `approval_status` (the final
+/// columns), and the pre-approval `recruitment_stage` (the workflow columns). No name/bank/PII.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct RecruitCandidate {
+    pub user_id: Uuid,
+    pub years_of_experience: Option<i32>,
+    pub approval_status: String,
+    pub recruitment_stage: String,
+}
+
+/// Move a pending candidate to a pipeline stage (`PUT .../candidates/{id}/stage`).
+#[derive(Debug, Deserialize)]
+pub struct StageRequest {
+    /// `sourcing` | `screened` | `docs_verified`.
+    pub stage: String,
+}
+
 // ----- Document expiry (admin "expiring" surface) -----
 
 /// One guard-document expiry row (`GET /admin/documents/expiring`). `days_remaining` is derived

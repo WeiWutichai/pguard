@@ -188,6 +188,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/recruitment/candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List guards as recruitment-pipeline candidates (role=admin)
+         * @description Every guard as a lean pipeline candidate (no PII). The kanban groups pending guards by
+         *     `recruitment_stage` (sourcing/screened/docs_verified) and finalized ones by
+         *     `approval_status` — approve/reject reuse the existing guard-profile endpoints. Admin only.
+         */
+        get: operations["adminListCandidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/recruitment/candidates/{user_id}/stage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Move a pending candidate to a pipeline stage (role=admin)
+         * @description Sets a PENDING guard's pre-approval `recruitment_stage`. A finalized (approved/rejected)
+         *     candidate returns 409 — they leave the pipeline via approval_status, not this. An unknown
+         *     stage returns 400. Admin only. This stage gates nothing (it's admin-workflow metadata).
+         */
+        put: operations["adminSetCandidateStage"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles/{user_id}/approve": {
         parameters: {
             query?: never;
@@ -359,6 +403,20 @@ export interface components {
             expiry_date: string;
             /** Format: date-time */
             last_reminded_at?: string | null;
+        };
+        /** @description A guard in the recruitment pipeline (lean projection — no PII). */
+        RecruitCandidate: {
+            /** Format: uuid */
+            user_id: string;
+            /** Format: int32 */
+            years_of_experience?: number | null;
+            approval_status: components["schemas"]["ApprovalStatus"];
+            /** @enum {string} */
+            recruitment_stage: "sourcing" | "screened" | "docs_verified";
+        };
+        StageRequest: {
+            /** @enum {string} */
+            stage: "sourcing" | "screened" | "docs_verified";
         };
         /**
          * @description The caller's own profile, tagged by `kind`. A guard sees `MyGuardProfile` (masked
@@ -671,6 +729,63 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListCandidates: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Pipeline candidates, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RecruitCandidate"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminSetCandidateStage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StageRequest"];
+            };
+        };
+        responses: {
+            /** @description The updated candidate */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RecruitCandidate"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     adminApproveGuard: {
