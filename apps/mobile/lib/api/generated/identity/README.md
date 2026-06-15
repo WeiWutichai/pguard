@@ -91,6 +91,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**me**](doc/AuthApi.md#me) | **GET** /auth/me | Current authenticated user
 [*AuthApi*](doc/AuthApi.md) | [**refresh**](doc/AuthApi.md#refresh) | **POST** /auth/refresh | Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
 [*AuthApi*](doc/AuthApi.md) | [**register**](doc/AuthApi.md#register) | **POST** /auth/register | Create an account from a verified phone + chosen role (returns 202, NO tokens)
+[*AuthApi*](doc/AuthApi.md) | [**revokeAllSessions**](doc/AuthApi.md#revokeallsessions) | **POST** /auth/revoke-all | Sign out everywhere — revoke ALL of the caller&#39;s own sessions
 [*InternalApi*](doc/InternalApi.md) | [**internalRevokeAll**](doc/InternalApi.md#internalrevokeall) | **POST** /internal/users/{id}/revoke-all | Force-revoke all of a user&#39;s tokens (service-JWT only)
 
 
