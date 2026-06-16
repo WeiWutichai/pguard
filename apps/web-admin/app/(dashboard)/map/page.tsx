@@ -217,7 +217,13 @@ export default function MapPage() {
               </div>
 
               {selected && (
-                <DetailCard guard={selected} onClose={() => setSelectedId(null)} />
+                // Key per guard so the card remounts on selection change — its rating + current-job
+                // fetches restart from a clean loading state (no stale flash from the prior guard).
+                <DetailCard
+                  key={selected.guard_id}
+                  guard={selected}
+                  onClose={() => setSelectedId(null)}
+                />
               )}
             </>
           )}

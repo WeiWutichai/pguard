@@ -1,10 +1,12 @@
 "use client";
 
-import { type ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { CheckCircle2, Clock } from "lucide-react";
 
 import type { components } from "@/api/generated/profile";
 import { Avatar, Badge, Button, Modal } from "@/components/ui";
+import { bookingApi } from "@/lib/api";
+import { ADMIN_LIST_CAP, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY, customerInitials, fmtSignup } from "./copy";
@@ -36,6 +38,27 @@ export function CustomerDetailModal({
   const c = COPY[lang];
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
 
+  // Total bookings this customer has placed (the "การจอง" stat) — admin booking list filtered to
+  // this customer. Null until loaded; cap-honest ("200+") since the admin list is repo-capped. A
+  // failed call leaves it "—". (Total SPEND stays a gap — it needs the payment-side aggregate.)
+  const [bookingCount, setBookingCount] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    bookingApi
+      .GET("/admin/bookings", {
+        params: { query: { customer_id: customer.user_id, limit: ADMIN_LIST_CAP } },
+      })
+      .then(({ data, error }) => {
+        if (alive && !error) setBookingCount(data?.data?.length ?? 0);
+      })
+      .catch(() => {
+        // Transport failure — leave bookings as "—".
+      });
+    return () => {
+      alive = false;
+    };
+  }, [customer.user_id]);
+
   return (
     <Modal
       open
@@ -65,9 +88,13 @@ export function CustomerDetailModal({
         </div>
       </div>
 
-      {/* Stat line — bookings + spend need booking/payment aggregates (gap). */}
+      {/* Stat line — bookings count is real (admin booking list); total spend needs the
+          payment-side aggregate, so it stays an honest gap. */}
       <div className="mt-4 grid grid-cols-2 gap-2">
-        <StatMini label={c.bookings} value={gap} />
+        <StatMini
+          label={c.bookings}
+          value={bookingCount == null ? "—" : fmtCappedCount(bookingCount)}
+        />
         <StatMini label={c.spend} value={gap} />
       </div>
 
