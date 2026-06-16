@@ -126,6 +126,7 @@ class _GuardRegistrationScreenState
   final _accountNumber = TextEditingController();
   final _accountName = TextEditingController();
   String? _accountError;
+  String? _accountNameError;
 
   /// Passbook photo — held alongside [_docs] for the future upload endpoint (no contract yet).
   String? _passbookPath;
@@ -144,29 +145,80 @@ class _GuardRegistrationScreenState
     super.dispose();
   }
 
-  String? _validExperience(bool isThai) {
-    final t = _experience.text.trim();
-    if (t.isEmpty) return null; // optional
-    final n = int.tryParse(t);
+  /// Step 0 gate: name, gender, DOB, experience (0–80), and previous workplace are ALL required.
+  /// Returns the first error message, or null when the page is complete.
+  String? _validPersonal(bool isThai) {
+    if (_fullName.text.trim().isEmpty) {
+      return isThai ? 'กรุณากรอกชื่อ-นามสกุล' : 'Enter your full name';
+    }
+    if (_gender == null) {
+      return isThai ? 'กรุณาเลือกเพศ' : 'Select your gender';
+    }
+    if (_dob == null) {
+      return isThai ? 'กรุณาเลือกวันเกิด' : 'Select your date of birth';
+    }
+    final exp = _experience.text.trim();
+    if (exp.isEmpty) {
+      return isThai ? 'กรุณากรอกประสบการณ์ (ปี)' : 'Enter your experience (years)';
+    }
+    final n = int.tryParse(exp);
     if (n == null || n < 0 || n > 80) {
       return isThai
           ? 'ปีประสบการณ์ไม่ถูกต้อง (0–80)'
           : 'Invalid experience (0–80)';
     }
+    if (_workplace.text.trim().isEmpty) {
+      return isThai ? 'กรุณากรอกที่ทำงานเดิม' : 'Enter your previous workplace';
+    }
     return null;
   }
 
+  /// The attached documents that are still missing an expiry date (step 1 gate — an attached doc
+  /// MUST carry an expiry; an un-attached one is fine).
+  List<GuardDocKind> _docsMissingExpiry() =>
+      _docs.keys.where((k) => _docExpiry[k] == null).toList();
+
+  /// PURE name normalization for the account-holder match: trim, collapse internal whitespace,
+  /// lowercase (Latin). So "Somchai  Jaidee" and "somchai jaidee" compare equal.
+  static String _normalizeName(String s) =>
+      s.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+
+  /// Step 2 gate. Computes the account-number + account-name errors and commits BOTH in a single
+  /// setState (no inconsistent intermediate state), shows a snackbar for the missing bank (a
+  /// dropdown has no inline errorText), and returns whether the step is valid.
   bool _bankIsValid(bool isThai) {
     final digits = _accountNumber.text.replaceAll(RegExp(r'\D'), '');
+    String? acctErr;
+    String? nameErr;
     if (digits.length < _minAccountDigits ||
         digits.length > _maxAccountDigits) {
-      setState(() => _accountError = isThai
+      acctErr = isThai
           ? 'เลขบัญชี $_minAccountDigits–$_maxAccountDigits หลัก'
-          : 'Account must be $_minAccountDigits–$_maxAccountDigits digits');
+          : 'Account must be $_minAccountDigits–$_maxAccountDigits digits';
+    } else {
+      // The bank account must be in the registrant's OWN name (payout KYC): the account-holder
+      // name must match the full name entered on step 0 (normalized). full_name is required at
+      // step 0, so the empty-registrant guard is purely defensive.
+      final acct = _normalizeName(_accountName.text);
+      final reg = _normalizeName(_fullName.text);
+      if (acct.isEmpty) {
+        nameErr = isThai ? 'กรุณากรอกชื่อบัญชี' : 'Enter the account holder name';
+      } else if (reg.isEmpty || acct != reg) {
+        nameErr = isThai
+            ? 'ชื่อบัญชีต้องตรงกับชื่อ-นามสกุลที่สมัคร'
+            : 'Account name must match your registered full name';
+      }
+    }
+    setState(() {
+      _accountError = acctErr;
+      _accountNameError = nameErr;
+    });
+    if (_bank == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isThai ? 'กรุณาเลือกธนาคาร' : 'Select a bank')));
       return false;
     }
-    setState(() => _accountError = null);
-    return true;
+    return acctErr == null && nameErr == null;
   }
 
   /// Camera-or-gallery sheet → real picker. Shared by the 5 doc rows and the passbook box.
@@ -203,8 +255,8 @@ class _GuardRegistrationScreenState
     }
   }
 
-  /// Pick a document's expiry date (future-only — matches the server's future-date rule). Optional;
-  /// it never blocks completing the step.
+  /// Pick a document's expiry date (future-only — matches the server's future-date rule). REQUIRED
+  /// for every attached document: step 1 won't advance until each captured doc has one.
   Future<void> _pickDocExpiry(GuardDocKind kind) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final now = DateTime.now();
@@ -230,7 +282,7 @@ class _GuardRegistrationScreenState
   Future<void> _onContinue() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     if (_step == 0) {
-      final err = _validExperience(isThai);
+      final err = _validPersonal(isThai);
       if (err != null) {
         ScaffoldMessenger.of(context)
             .showSnackBar(SnackBar(content: Text(err)));
@@ -238,6 +290,15 @@ class _GuardRegistrationScreenState
       }
       setState(() => _step = 1);
     } else if (_step == 1) {
+      // An attached document MUST have an expiry date before continuing.
+      if (_docsMissingExpiry().isNotEmpty) {
+        setState(() {}); // refresh the rows' required-state styling
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(isThai
+                ? 'กรุณากรอกวันหมดอายุของเอกสารที่แนบทุกฉบับ'
+                : 'Set an expiry date for every attached document')));
+        return;
+      }
       setState(() => _step = 2);
     } else if (_step == 2) {
       if (!_bankIsValid(isThai)) return;
@@ -260,13 +321,21 @@ class _GuardRegistrationScreenState
 
   Future<void> _submit() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    // Re-validate both gated steps here too — defence in depth against any path that reaches the
+    // Re-validate every gated step here too — defence in depth against any path that reaches the
     // review step with stale values (catch it client-side, not via a 400).
-    final expErr = _validExperience(isThai);
-    if (expErr != null) {
+    final personalErr = _validPersonal(isThai);
+    if (personalErr != null) {
       setState(() => _step = 0);
       ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(expErr)));
+          .showSnackBar(SnackBar(content: Text(personalErr)));
+      return;
+    }
+    if (_docsMissingExpiry().isNotEmpty) {
+      setState(() => _step = 1);
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(isThai
+              ? 'กรุณากรอกวันหมดอายุของเอกสารที่แนบทุกฉบับ'
+              : 'Set an expiry date for every attached document')));
       return;
     }
     if (!_bankIsValid(isThai)) {
@@ -441,6 +510,25 @@ class _GuardRegistrationScreenState
         ),
       );
 
+  /// A field/section label with a red `*` (required), matching the bank field's marker.
+  Widget _reqLabel(String text) => Text.rich(
+        TextSpan(
+          text: '$text ',
+          children: const [
+            TextSpan(text: '*', style: TextStyle(color: PgTokens.colorDanger)),
+          ],
+        ),
+      );
+
+  /// A required section label (bold, with a `*`) — for non-InputDecoration headers (gender).
+  Widget _reqSectionLabel(String text) => Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _fieldLabel(text),
+          const Text(' *', style: TextStyle(color: PgTokens.colorDanger)),
+        ],
+      );
+
   // ── Step 1: personal ──────────────────────────────────────────────────────
 
   Widget _personalStep(bool isThai) {
@@ -450,13 +538,14 @@ class _GuardRegistrationScreenState
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         TextField(
+          key: const Key('reg_full_name'),
           controller: _fullName,
           textCapitalization: TextCapitalization.words,
           decoration: InputDecoration(
-              labelText: isThai ? 'ชื่อ-นามสกุล' : 'Full name'),
+              label: _reqLabel(isThai ? 'ชื่อ-นามสกุล' : 'Full name')),
         ),
         const SizedBox(height: PgTokens.space4),
-        _fieldLabel(isThai ? 'เพศ' : 'Gender'),
+        _reqSectionLabel(isThai ? 'เพศ' : 'Gender'),
         const SizedBox(height: PgTokens.space2),
         _genderSegment(isThai),
         const SizedBox(height: PgTokens.space4),
@@ -465,10 +554,11 @@ class _GuardRegistrationScreenState
           children: [
             Expanded(
               child: InkWell(
+                key: const Key('reg_dob'),
                 onTap: _pickDob,
                 child: InputDecorator(
                   decoration: InputDecoration(
-                      labelText: isThai ? 'วันเกิด' : 'Date of birth'),
+                      label: _reqLabel(isThai ? 'วันเกิด' : 'Date of birth')),
                   child: Text(
                       _dob ?? (isThai ? 'แตะเพื่อเลือก' : 'Tap to choose'),
                       style: TextStyle(
@@ -481,6 +571,7 @@ class _GuardRegistrationScreenState
             const SizedBox(width: PgTokens.space3),
             Expanded(
               child: TextField(
+                key: const Key('reg_experience'),
                 controller: _experience,
                 keyboardType: TextInputType.number,
                 inputFormatters: [
@@ -488,17 +579,18 @@ class _GuardRegistrationScreenState
                   LengthLimitingTextInputFormatter(2),
                 ],
                 decoration: InputDecoration(
-                    labelText: isThai ? 'ประสบการณ์ (ปี)' : 'Experience (yrs)'),
+                    label:
+                        _reqLabel(isThai ? 'ประสบการณ์ (ปี)' : 'Experience (yrs)')),
               ),
             ),
           ],
         ),
         const SizedBox(height: PgTokens.space4),
         TextField(
+          key: const Key('reg_workplace'),
           controller: _workplace,
           decoration: InputDecoration(
-              labelText:
-                  isThai ? 'ที่ทำงานเดิม' : 'Previous workplace (optional)'),
+              label: _reqLabel(isThai ? 'ที่ทำงานเดิม' : 'Previous workplace')),
         ),
         const SizedBox(height: PgTokens.space4),
         TextField(
@@ -659,9 +751,21 @@ class _GuardRegistrationScreenState
         ),
         const SizedBox(height: PgTokens.space4),
         TextField(
+          key: const Key('reg_account_name'),
           controller: _accountName,
+          textCapitalization: TextCapitalization.words,
+          onChanged: (_) {
+            if (_accountNameError != null) {
+              setState(() => _accountNameError = null);
+            }
+          },
           decoration: InputDecoration(
-              labelText: isThai ? 'ชื่อบัญชี' : 'Account holder name'),
+            label: _reqLabel(isThai ? 'ชื่อบัญชี' : 'Account holder name'),
+            errorText: _accountNameError,
+            helperText: isThai
+                ? 'ต้องตรงกับชื่อ-นามสกุลที่สมัคร'
+                : 'Must match your registered full name',
+          ),
         ),
         const SizedBox(height: PgTokens.space4),
         _fieldLabel(isThai ? 'รูปหน้าสมุดบัญชี' : 'Passbook photo'),
