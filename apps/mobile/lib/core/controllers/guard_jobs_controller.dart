@@ -7,23 +7,37 @@ import 'locale_controller.dart';
 
 part 'guard_jobs_controller.g.dart';
 
-/// The guard's jobs, from `GET /v1/bookings` (the caller's bookings — for a guard, the ones
-/// they are assigned to). Exposes accept (POST) + local dismiss of incoming offers.
+/// The guard's jobs: their ASSIGNED bookings (`GET /v1/bookings`, active + completed) merged with
+/// the OPEN-job discovery feed (`GET /v1/bookings/open` — `requested`, unassigned jobs the guard
+/// can claim, guard-only, newest-first). Exposes accept (POST) + local dismiss of incoming offers.
 ///
-/// BACKEND DEPENDENCY (documented): `GET /v1/bookings` returns only ALREADY-ASSIGNED jobs
-/// (`guard_id = caller`); there is NO open-job discovery feed (`requested` jobs with
-/// `guard_id = null` never appear here, and there is no `?status=requested`). So the "incoming"
-/// list is empty until a guard job-discovery endpoint is added. accept/decline are coded
-/// against the real endpoints and proven against a fake here.
+/// The two feeds are disjoint (open jobs have `guard_id = null`; assigned have `guard_id = caller`),
+/// so concatenating + partitioning by status is collision-free: [incoming] = the open feed,
+/// [active]/[completed] = the assigned feed. The discovery fetch is best-effort — a discovery
+/// hiccup must never blank the guard's real assigned jobs. (Geo-filtering the discovery feed by the
+/// guard's location is a later enhancement; today it is newest-first.)
 @riverpod
 class GuardJobsController extends _$GuardJobsController {
   @override
   Future<List<Booking>> build() async {
-    final data = await ref.read(pguardApiProvider).get('/bookings');
-    return (data as List)
+    final api = ref.read(pguardApiProvider);
+    final assignedData = await api.get('/bookings');
+    final assigned = (assignedData as List)
         .whereType<Map<String, dynamic>>()
         .map(Booking.fromJson)
         .toList();
+    // Open-job discovery — best-effort so a failure here leaves the assigned jobs intact.
+    var open = <Booking>[];
+    try {
+      final openData = await api.get('/bookings/open');
+      open = (openData as List)
+          .whereType<Map<String, dynamic>>()
+          .map(Booking.fromJson)
+          .toList();
+    } catch (_) {
+      // Discovery unavailable → show assigned jobs only (incoming list just stays empty).
+    }
+    return [...open, ...assigned];
   }
 
   /// Jobs awaiting the guard's acceptance (open requests).

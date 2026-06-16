@@ -33,15 +33,15 @@ Future<void> _pump(WidgetTester tester, FakeApi api) async {
 
 void main() {
   testWidgets(
-      'opens on Active; tabs filter active/done; Pending is empty (no v2 discovery)',
+      'opens on Active; tabs filter active/done; Pending empty when no open jobs',
       (tester) async {
-    final api = FakeApi(onGet: (path, _) async {
-      expect(path, '/bookings');
-      return [
-        _booking('accepted', 'คอนโด ไอดีโอ', 'b-active'),
-        _booking('completed', 'โรงงาน ปทุม', 'b-done'),
-      ];
-    });
+    // Assigned feed (/bookings) = active + done; open-discovery feed (/bookings/open) empty here.
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
+        ? [
+            _booking('accepted', 'คอนโด ไอดีโอ', 'b-active'),
+            _booking('completed', 'โรงงาน ปทุม', 'b-done'),
+          ]
+        : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
 
     // Default tab = Active → the accepted job shows, the completed one does not.
@@ -54,19 +54,32 @@ void main() {
     expect(find.text('โรงงาน ปทุม'), findsOneWidget);
     expect(find.text('คอนโด ไอดีโอ'), findsNothing);
 
-    // Pending tab — structurally empty in v2 (no open-job discovery feed).
-    await tester.tap(find.text('รอตอบรับ'));
+    // Pending tab — empty when the open-discovery feed returns nothing.
+    await tester.tap(find.textContaining('รอตอบรับ'));
     await tester.pumpAndSettle();
     expect(find.text('ยังไม่มีงานรอตอบรับ'), findsOneWidget);
   });
 
-  testWidgets('GET /bookings is fetched exactly once (no polling)', (tester) async {
-    final api = FakeApi(onGet: (_, __) async => [
-          _booking('accepted', 'คอนโด ไอดีโอ', 'b-active'),
-        ]);
+  testWidgets('open-discovery jobs (/bookings/open) appear in the Pending tab',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings/open'
+        ? [_booking('requested', 'งานเปิดใหม่ ลาดพร้าว', 'b-open')]
+        : const <Map<String, dynamic>>[]);
+    await _pump(tester, api);
+
+    await tester.tap(find.textContaining('รอตอบรับ'));
+    await tester.pumpAndSettle();
+    expect(find.text('งานเปิดใหม่ ลาดพร้าว'), findsOneWidget);
+  });
+
+  testWidgets('the job feeds are fetched once each (no polling)', (tester) async {
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
+        ? [_booking('accepted', 'คอนโด ไอดีโอ', 'b-active')]
+        : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
     await tester.pump(const Duration(seconds: 2));
 
-    expect(api.getCount, 1);
+    // build fetches BOTH feeds (/bookings + /bookings/open) exactly once each — no timer re-fetch.
+    expect(api.getCount, 2);
   });
 }

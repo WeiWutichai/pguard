@@ -45,15 +45,16 @@ void main() {
   testWidgets(
       'hero totals completed jobs (per-guard share, tip excluded) + rows',
       (tester) async {
+    // Earnings come from the ASSIGNED feed's completed jobs; the open-discovery feed
+    // (/bookings/open) carries only `requested` jobs, so it returns nothing here.
     final api = FakeApi(
-      onGet: (path, _) async {
-        expect(path, '/bookings');
-        return [
-          jobJson('b1', 'completed'), // ฿230 × 8h = ฿1,840
-          jobJson('b2', 'completed', address: 'คอนโด ไอดีโอ', hours: 5),
-          jobJson('b3', 'accepted', address: 'โรงงาน ปทุม'), // not yet earned
-        ];
-      },
+      onGet: (path, _) async => path == '/bookings'
+          ? [
+              jobJson('b1', 'completed'), // ฿230 × 8h = ฿1,840
+              jobJson('b2', 'completed', address: 'คอนโด ไอดีโอ', hours: 5),
+              jobJson('b3', 'accepted', address: 'โรงงาน ปทุม'), // not yet earned
+            ]
+          : const <Map<String, dynamic>>[],
     );
     await pumpScreen(tester, api);
 
@@ -69,8 +70,8 @@ void main() {
     expect(find.text('฿1,840'), findsOneWidget);
     expect(find.text('฿1,150'), findsOneWidget);
     expect(find.text('โรงงาน ปทุม'), findsNothing);
-    // One fetch — no polling.
-    expect(api.getCount, 1);
+    // Both feeds (/bookings + /bookings/open) fetched once each — no polling.
+    expect(api.getCount, 2);
   });
 
   testWidgets('shows the empty state when nothing is completed yet',

@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../media/photo_capture.dart';
 import '../models/booking.dart';
+import '../models/progress_report.dart';
 import '../models/tracking.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
@@ -64,9 +65,50 @@ class ActiveJobState {
 class ActiveJobController extends _$ActiveJobController {
   @override
   Future<ActiveJobState> build(String bookingId) async {
-    final data = await ref.read(pguardApiProvider).get('/bookings/$bookingId');
+    final api = ref.read(pguardApiProvider);
+    final data = await api.get('/bookings/$bookingId');
+    final booking = Booking.fromJson(data as Map<String, dynamic>);
+
+    // Hydrate work state from the server's check-in trail so the working panel SURVIVES an app
+    // restart / re-entry mid-shift (both `startedAt` and `completedCheckIns` are otherwise
+    // client-session-only — a cold build would re-show "Start" and an empty slot tracker even for
+    // a job already in progress). Hour N's check-in opens N−1h after start, so:
+    //   • completedCheckIns ← reported hours mapped to slots (slot = hour_number − 1)
+    //   • startedAt ← earliest (createdAt − (hour_number − 1)h) anchor (mirrors
+    //     HourlyProgress.workStartedAt — the same estimate the customer live screen uses)
+    // Best-effort: a failed/empty read just yields the pre-start state (no regression), and the
+    // 409 DUPLICATE_CHECK_IN absorb in CheckInService still guards an accidental re-submit.
+    var completed = const <int>{};
+    DateTime? startedAt;
+    try {
+      // limit=200 (the endpoint's max, > MAX_BOOKING_HOURS=168) so a long shift's later check-ins
+      // aren't dropped by the default page size of 50.
+      final raw = await api.get(
+        '/bookings/$bookingId/progress-reports',
+        query: {'limit': 200},
+      );
+      // The server guarantees hour_number ∈ 1..hours; drop any defaulted 0 from a partial payload
+      // so it taints neither the slot set nor the start-anchor.
+      final reports = (raw as List)
+          .whereType<Map<String, dynamic>>()
+          .map(ProgressReport.fromJson)
+          .where((r) => r.hourNumber >= 1)
+          .toList();
+      completed = reports.map((r) => r.hourNumber - 1).toSet();
+      for (final r in reports) {
+        final anchored = r.createdAt.subtract(Duration(hours: r.hourNumber - 1));
+        if (startedAt == null || anchored.isBefore(startedAt)) startedAt = anchored;
+      }
+    } catch (_) {
+      // No trail yet (or a transient read failure) → pre-start state. A transient miss self-heals:
+      // tapping Start again is idempotent server-side (start_job keeps the original work_started_at).
+    }
+
     return ActiveJobState(
-        booking: Booking.fromJson(data as Map<String, dynamic>));
+      booking: booking,
+      startedAt: startedAt,
+      completedCheckIns: completed,
+    );
   }
 
   /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws after accepting

@@ -22,15 +22,19 @@ Map<String, dynamic> bookingJson(String id, String status) => {
     };
 
 void main() {
-  test('loads bookings and partitions into incoming vs active', () async {
+  test(
+      'merges assigned (/bookings) + open discovery (/bookings/open) and partitions '
+      'incoming from the open feed, active/completed from the assigned feed', () async {
     final api = FakeApi(
       onGet: (path, _) async {
-        expect(path, '/bookings');
-        return [
-          bookingJson('b1', 'requested'),
-          bookingJson('b2', 'accepted'),
-          bookingJson('b3', 'completed'),
-        ];
+        switch (path) {
+          case '/bookings':
+            return [bookingJson('b2', 'accepted'), bookingJson('b3', 'completed')];
+          case '/bookings/open':
+            return [bookingJson('b1', 'requested')];
+          default:
+            throw StateError('unexpected GET $path');
+        }
       },
     );
     final c = ProviderContainer(overrides: [
@@ -41,13 +45,38 @@ void main() {
 
     final list = await c.read(guardJobsControllerProvider.future);
     expect(list, hasLength(3));
-    expect(GuardJobsController.incoming(list).map((b) => b.id), ['b1']);
+    expect(GuardJobsController.incoming(list).map((b) => b.id), ['b1'],
+        reason: 'incoming = the open-discovery feed (requested, unassigned)');
     expect(GuardJobsController.active(list).map((b) => b.id), ['b2']);
+    expect(GuardJobsController.completed(list).map((b) => b.id), ['b3']);
+    // Assigned first, then open — both fetched.
+    expect(api.calls, ['GET /bookings', 'GET /bookings/open']);
   });
 
-  test('accept POSTs the correct path', () async {
+  test('open-feed failure degrades to assigned-only (no throw, incoming empty)', () async {
     final api = FakeApi(
-      onGet: (_, __) async => [bookingJson('b1', 'requested')],
+      onGet: (path, _) async {
+        if (path == '/bookings') return [bookingJson('b2', 'accepted')];
+        throw const ApiException(
+            message: 'discovery down', code: 'UNAVAILABLE', statusCode: 503);
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(list.map((b) => b.id), ['b2'],
+        reason: 'a discovery hiccup must NOT blank the guard\'s assigned jobs');
+    expect(GuardJobsController.incoming(list), isEmpty);
+  });
+
+  test('accept POSTs the correct path (claiming an open job)', () async {
+    final api = FakeApi(
+      onGet: (path, _) async =>
+          path == '/bookings/open' ? [bookingJson('b1', 'requested')] : const [],
       onPost: (path, _) async {
         expect(path, '/bookings/b1/accept');
         return bookingJson('b1', 'accepted');
@@ -65,10 +94,11 @@ void main() {
     expect(api.calls, contains('POST /bookings/b1/accept'));
   });
 
-  test('dismiss hides an offer locally with NO API call', () async {
+  test('dismiss hides an offer locally with NO mutating API call', () async {
     final api = FakeApi(
-      onGet: (_, __) async =>
-          [bookingJson('b1', 'requested'), bookingJson('b2', 'requested')],
+      onGet: (path, _) async => path == '/bookings/open'
+          ? [bookingJson('b1', 'requested'), bookingJson('b2', 'requested')]
+          : const [],
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
@@ -79,13 +109,15 @@ void main() {
 
     c.read(guardJobsControllerProvider.notifier).dismiss('b1');
     expect(c.read(guardJobsControllerProvider).value!.map((b) => b.id), ['b2']);
-    // First-come-accept: dismiss must not call the (illegal pre-accept) decline endpoint.
-    expect(api.calls, ['GET /bookings']);
+    // First-come-accept: dismiss must not call the (illegal pre-accept) decline endpoint —
+    // only the two read calls from build happened.
+    expect(api.calls, ['GET /bookings', 'GET /bookings/open']);
   });
 
   test('accept surfaces the server error message (and does not throw)', () async {
     final api = FakeApi(
-      onGet: (_, __) async => [bookingJson('b1', 'requested')],
+      onGet: (path, _) async =>
+          path == '/bookings/open' ? [bookingJson('b1', 'requested')] : const [],
       onPost: (_, __) async => throw const ApiException(
           message: 'Already taken', code: 'CONFLICT', statusCode: 409),
     );
