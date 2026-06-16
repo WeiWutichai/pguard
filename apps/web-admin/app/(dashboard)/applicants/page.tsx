@@ -174,6 +174,8 @@ export default function ApplicantsPage() {
     setHasError(false);
     setActingId(userId);
     setProfiles((cur) => cur.filter((p) => p.user_id !== userId));
+    // Decrement the CURRENT tab's count: approve/reject are only reachable from `pending`
+    // (both the row actions and the modal footer gate on pending), so `status` is the right bucket.
     setCounts((cur) => ({ ...cur, [status]: Math.max(0, (cur[status] ?? 1) - 1) }));
 
     const { error } =
@@ -395,6 +397,7 @@ export default function ApplicantsPage() {
         <GuardDetailModal
           guard={selected}
           onClose={() => setSelected(null)}
+          acting={actingId === selected.user_id}
           onApprove={
             selected.approval_status === "pending"
               ? () => {
