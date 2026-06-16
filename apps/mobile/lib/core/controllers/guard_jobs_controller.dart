@@ -39,6 +39,10 @@ class GuardJobsController extends _$GuardJobsController {
           b.status == BookingStatus.pendingCompletion)
       .toList();
 
+  /// Jobs the guard has finished (the "เสร็จ / Done" tab).
+  static List<Booking> completed(List<Booking> all) =>
+      all.where((b) => b.status == BookingStatus.completed).toList();
+
   /// `POST /v1/bookings/{id}/accept` — first-come accept (sets guard_id = caller).
   Future<String?> accept(String id) =>
       _act(() => ref.read(pguardApiProvider).post('/bookings/$id/accept'));

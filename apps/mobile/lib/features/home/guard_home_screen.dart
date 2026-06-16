@@ -32,10 +32,6 @@ class GuardHomeScreen extends ConsumerStatefulWidget {
 }
 
 class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
-  /// Anchors the jobs section so the "งาน / Jobs" tab can scroll to it — the jobs list
-  /// *is* this screen's content (v2 has no separate jobs route).
-  final GlobalKey _jobsKey = GlobalKey();
-
   Future<void> _accept(String id) async {
     final err = await ref.read(guardJobsControllerProvider.notifier).accept(id);
     if (!mounted) return;
@@ -52,16 +48,6 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
 
   static void _snack(BuildContext context, String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-
-  void _scrollToJobs() {
-    final jobsContext = _jobsKey.currentContext;
-    // Jobs not loaded yet — nothing to scroll to.
-    if (jobsContext == null) {
-      return;
-    }
-    Scrollable.ensureVisible(jobsContext,
-        duration: const Duration(milliseconds: 300), curve: Curves.easeOut);
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -113,7 +99,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
             icon: Icons.inbox_outlined,
             label: isThai ? 'งาน' : 'Jobs',
             badgeCount: incomingCount,
-            onTap: _scrollToJobs,
+            onTap: () => context.push('/guard/jobs'),
           ),
           PgNavTab(
             icon: Icons.payments_outlined,
@@ -169,7 +155,6 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
                     _StatsRow(bookings: all, isThai: isThai),
                     const SizedBox(height: PgTokens.space4),
                     _JobsBody(
-                      key: _jobsKey,
                       isThai: isThai,
                       incoming: GuardJobsController.incoming(all),
                       active: GuardJobsController.active(all),
@@ -389,7 +374,6 @@ class _StatCard extends StatelessWidget {
 
 class _JobsBody extends StatelessWidget {
   const _JobsBody({
-    super.key,
     required this.isThai,
     required this.incoming,
     required this.active,
