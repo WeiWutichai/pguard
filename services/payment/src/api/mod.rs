@@ -195,7 +195,8 @@ pub async fn admin_list_payments<S: PaymentDeps>(
     };
     let limit = q.limit.unwrap_or(50).clamp(1, 200);
     let offset = q.offset.unwrap_or(0).max(0);
-    let items = repo::admin_list_payments(state.db_read(), status, limit, offset).await?;
+    let items =
+        repo::admin_list_payments(state.db_read(), status, q.customer_id, limit, offset).await?;
     Ok(Json(ApiResponse::success(items)))
 }
 

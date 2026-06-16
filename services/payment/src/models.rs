@@ -37,10 +37,12 @@ pub struct CompletePaymentRequest {
 }
 
 /// Query params for `GET /admin/payments` (admin cross-user ledger). `status` is validated
-/// against the payment status enum (unknown → 400). House limit/offset pagination.
+/// against the payment status enum (unknown → 400); `customer_id` narrows to one customer's
+/// payments (the customer-spend drill-down). House limit/offset pagination.
 #[derive(Debug, Deserialize)]
 pub struct AdminListPaymentsQuery {
     pub status: Option<String>,
+    pub customer_id: Option<Uuid>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }
