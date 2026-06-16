@@ -30,6 +30,13 @@ export const COPY = {
     statJobs: "งานสำเร็จ",
     statKm: "กม. ห่าง",
     currentJob: "งานปัจจุบัน",
+    noCurrentJob: "ไม่มีงานที่กำลังทำ",
+    jobStatus: {
+      accepted: "รับงานแล้ว",
+      en_route: "กำลังเดินทาง",
+      arrived: "ถึงจุดแล้ว",
+      pending_completion: "รอยืนยันจบงาน",
+    },
     chat: "แชต",
     call: "โทรหาเจ้าหน้าที่",
     awaitingApi: "รอ API",
@@ -51,6 +58,13 @@ export const COPY = {
     statJobs: "Jobs done",
     statKm: "km away",
     currentJob: "Current job",
+    noCurrentJob: "No active job",
+    jobStatus: {
+      accepted: "Accepted",
+      en_route: "En route",
+      arrived: "Arrived",
+      pending_completion: "Pending completion",
+    },
     chat: "Chat",
     call: "Call guard",
     awaitingApi: "Awaiting API",
@@ -58,6 +72,26 @@ export const COPY = {
 } as const;
 
 export type MapCopy = (typeof COPY)[keyof typeof COPY];
+
+/** Active (assigned, non-terminal) booking statuses — a guard's "current job" is one of these.
+ * Mirrors the operations board's ACTIVE_STATUSES (BookingStatus minus terminal + requested). */
+export const ACTIVE_BOOKING_STATUSES = [
+  "accepted",
+  "en_route",
+  "arrived",
+  "pending_completion",
+] as const;
+export type ActiveBookingStatus = (typeof ACTIVE_BOOKING_STATUSES)[number];
+
+/** Badge tone per active status — matches the canonical bookings/operations palette
+ * (bookings/copy.ts STATUS_TONE): on-site/accepted = blue, in-transit = amber, so the
+ * detail-card badge reads the same as the bookings table for the same status. */
+export const ACTIVE_STATUS_TONE: Record<ActiveBookingStatus, "blue" | "amber"> = {
+  accepted: "blue",
+  en_route: "amber",
+  arrived: "blue",
+  pending_completion: "amber",
+};
 
 /** Render order everywhere statuses are listed (stat chips, filter chips). */
 export const STATUS_ORDER: readonly GuardStatus[] = ["active", "idle", "offline"];

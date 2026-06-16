@@ -5,7 +5,8 @@ import type { ReactNode } from "react";
 
 import type { components } from "@/api/generated/profile";
 import { Avatar, Badge, Button, Modal } from "@/components/ui";
-import { ratingApi } from "@/lib/api";
+import { bookingApi, ratingApi } from "@/lib/api";
+import { ADMIN_LIST_CAP, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY } from "./copy";
@@ -61,6 +62,27 @@ export function GuardDetailModal({
       })
       .catch(() => {
         // Transport failure — leave the rating as "—" (no unhandled rejection).
+      });
+    return () => {
+      alive = false;
+    };
+  }, [guard.user_id]);
+
+  // Completed-job count for this guard (the "งานสำเร็จ" stat) — admin booking list filtered to
+  // this guard + completed. Null until loaded; rendered cap-honest ("200+") since the admin list
+  // is repo-capped. A failed call leaves it "—", never a fabricated 0.
+  const [jobsDone, setJobsDone] = useState<number | null>(null);
+  useEffect(() => {
+    let alive = true;
+    bookingApi
+      .GET("/admin/bookings", {
+        params: { query: { guard_id: guard.user_id, status: "completed", limit: ADMIN_LIST_CAP } },
+      })
+      .then(({ data, error }) => {
+        if (alive && !error) setJobsDone(data?.data?.length ?? 0);
+      })
+      .catch(() => {
+        // Transport failure — leave jobs as "—".
       });
     return () => {
       alive = false;
@@ -140,10 +162,10 @@ export function GuardDetailModal({
         </div>
       </div>
 
-      {/* Stat line — rating + jobs have no v2 endpoint (gap chips); experience is real. */}
+      {/* Stat line — rating + completed-jobs are real (admin reads); experience is real. */}
       <div className="mt-4 grid grid-cols-3 gap-2">
         <StatMini label={`★ ${c.statRating}`} value={rating ?? "—"} />
-        <StatMini label={c.statJobs} value={gap} />
+        <StatMini label={c.statJobs} value={jobsDone == null ? "—" : fmtCappedCount(jobsDone)} />
         <StatMini
           label={c.statExp}
           value={
