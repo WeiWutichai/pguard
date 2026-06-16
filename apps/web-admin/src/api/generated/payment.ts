@@ -46,8 +46,9 @@ export interface paths {
         /**
          * List ALL payments cross-user (role=admin, read-only ledger)
          * @description The admin payment ledger — every payment (NOT owner-scoped, unlike `GET /payments`),
-         *     newest first, optional `status` filter + limit/offset. Admin only (else 403). READ
-         *     ONLY: there is no manual refund-process action here (v2 refunds are event-driven).
+         *     newest first, with optional `status` and `customer_id` filters + limit/offset. Admin
+         *     only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds
+         *     are event-driven).
          */
         get: operations["adminListPayments"];
         put?: never;
@@ -345,6 +346,8 @@ export interface operations {
             query?: {
                 /** @description Filter by payment status. An unrecognized value returns 400. */
                 status?: components["schemas"]["PaymentStatus"];
+                /** @description Restrict to payments placed by this customer (the customer's spend history). */
+                customer_id?: string;
                 limit?: number;
                 offset?: number;
             };

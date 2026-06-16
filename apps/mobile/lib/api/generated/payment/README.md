@@ -79,11 +79,12 @@ import 'package:pguard_payment_api/pguard_payment_api.dart';
 
 final api = PguardPaymentApi().getAdminApi();
 final PaymentStatus status = ; // PaymentStatus | Filter by payment status. An unrecognized value returns 400.
+final String customerId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | Restrict to payments placed by this customer (the customer's spend history).
 final int limit = 789; // int | 
 final int offset = 789; // int | 
 
 try {
-    final response = await api.adminListPayments(status, limit, offset);
+    final response = await api.adminListPayments(status, customerId, limit, offset);
     print(response);
 } catch on DioException (e) {
     print("Exception when calling AdminApi->adminListPayments: $e\n");
