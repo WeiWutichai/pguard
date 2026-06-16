@@ -87,8 +87,9 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
         ref.watch(activeJobControllerProvider(widget.bookingId)).valueOrNull;
     final address = jobState?.booking.address;
     final busy = jobState?.busy ?? false;
-    // Design interaction note: the notes textarea is required before submit enables.
-    final canSubmit = !busy && _notes.text.trim().isNotEmpty;
+    // Design: notes are optional — a reason is always selected (defaults to index 0), so Submit
+    // is enabled whenever we're not mid-request.
+    final canSubmit = !busy;
     final reasons = _reasonsFor(isThai);
 
     return Scaffold(
@@ -131,7 +132,6 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
                       controller: _notes,
                       minLines: 2,
                       maxLines: 4,
-                      onChanged: (_) => setState(() {}),
                       style: const TextStyle(
                           fontSize: 14, color: PgTokens.colorText),
                       decoration: InputDecoration(
@@ -146,14 +146,13 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
                         contentPadding: const EdgeInsets.symmetric(
                             vertical: 12, horizontal: 14),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius:
-                              BorderRadius.circular(PgTokens.radiusLg),
+                          // Design notes textarea: 12px corners.
+                          borderRadius: BorderRadius.circular(12),
                           borderSide: const BorderSide(
                               color: PgTokens.colorBorderStrong, width: 1.5),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius:
-                              BorderRadius.circular(PgTokens.radiusLg),
+                          borderRadius: BorderRadius.circular(12),
                           borderSide: const BorderSide(
                               color: PgTokens.colorPrimary, width: 1.5),
                         ),

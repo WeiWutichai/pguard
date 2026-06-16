@@ -18,10 +18,11 @@ class OnlineCard extends ConsumerWidget {
     final ctrl = ref.read(trackingControllerProvider.notifier);
 
     return Container(
-      padding: const EdgeInsets.all(PgTokens.space4),
+      // Design hero `.online-card`: 20px padding + 20px corners.
+      padding: const EdgeInsets.all(PgTokens.space5),
       decoration: BoxDecoration(
         color: PgTokens.colorBrand,
-        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+        borderRadius: BorderRadius.circular(20),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -37,9 +38,11 @@ class OnlineCard extends ConsumerWidget {
               ),
             ],
           ),
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
-            child: Divider(height: 1, color: Colors.white24),
+          // Design `.gps-line`: a faint 18%-white hairline with asymmetric 18/16 spacing.
+          Padding(
+            padding: const EdgeInsets.only(top: 18, bottom: 16),
+            child:
+                Container(height: 1, color: Colors.white.withValues(alpha: 0.18)),
           ),
           _GpsLine(state: state, isThai: isThai),
         ],

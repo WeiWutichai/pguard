@@ -24,15 +24,14 @@ class NotificationScreen extends ConsumerWidget {
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
-        title: 'การแจ้งเตือน',
-        subtitle: 'Notifications',
+        title: isThai ? 'การแจ้งเตือน' : 'Notifications',
         showBack: true,
         trailing: hasUnread
             ? TextButton(
                 onPressed: ctrl.markAllRead,
-                child: const Text(
-                  'อ่านทั้งหมด',
-                  style: TextStyle(
+                child: Text(
+                  isThai ? 'อ่านทั้งหมด' : 'Mark all read',
+                  style: const TextStyle(
                       color: Colors.white, fontWeight: FontWeight.w600),
                 ),
               )

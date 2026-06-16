@@ -58,7 +58,7 @@ Future<void> pumpFlow(WidgetTester tester, FakeApi api) async {
 void main() {
   testWidgets(
       'active-job Withdraw navigates to the withdraw screen (no AlertDialog): '
-      'warning banner + 3 reasons + notes-gated submit', (tester) async {
+      'warning banner + 3 reasons + notes-optional submit', (tester) async {
     final api = FakeApi(onGet: (_, __) async => bookingJson('accepted'));
     await pumpFlow(tester, api);
 
@@ -86,10 +86,13 @@ void main() {
     expect(find.text('ป่วย'), findsOneWidget);
     expect(find.text('เดินทางไปไม่ได้'), findsOneWidget);
 
-    // Submit is disabled until the admin notes are filled (design interaction note).
+    // Notes are optional (design): a reason is always pre-selected, so Submit is enabled
+    // from the start — even before any admin note is typed.
     final submit = find.widgetWithText(ElevatedButton, 'ส่งคำขอถอนงาน');
-    expect(tester.widget<ElevatedButton>(submit).onPressed, isNull);
+    expect(tester.widget<ElevatedButton>(submit).onPressed, isNotNull);
 
+    // Typing a note keeps Submit enabled (notes are display-only — the decline endpoint
+    // takes no body — so they never gate or flow to the API).
     await tester.enterText(find.byType(TextField), 'รถเสียกลางทาง');
     await tester.pump();
     expect(tester.widget<ElevatedButton>(submit).onPressed, isNotNull);

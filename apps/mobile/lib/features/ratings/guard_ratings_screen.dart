@@ -107,55 +107,44 @@ class _Content extends StatelessWidget {
       (th: 'การแต่งกาย', en: 'Appear.', pick: (r) => r.appearance),
     ];
 
+    // Design ⑧ is a flat full-width scroll block (no bordered card): title, the centered
+    // average, the per-category bars, then the review rows — all directly on the scroll body.
     return ListView(
       padding: const EdgeInsets.all(PgTokens.space4),
       children: [
-        Container(
-          decoration: BoxDecoration(
-            color: PgTokens.colorSurface,
-            borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-            border: Border.all(color: PgTokens.colorBorder),
-          ),
-          padding: const EdgeInsets.all(PgTokens.space4),
+        Text(isThai ? 'คะแนนของฉัน' : 'My rating',
+            style:
+                const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        const SizedBox(height: PgTokens.space3),
+        Center(
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(isThai ? 'คะแนนของฉัน' : 'My rating',
-                  style: const TextStyle(
-                      fontSize: 14, fontWeight: FontWeight.w600)),
-              const SizedBox(height: PgTokens.space3),
-              Center(
-                child: Column(
-                  children: [
-                    Text(
-                      avg.toStringAsFixed(1),
-                      style: const TextStyle(
-                        fontFamily: 'IBMPlexMono',
-                        fontSize: 46,
-                        fontWeight: FontWeight.w600,
-                        color: PgTokens.colorTextStrong,
-                      ),
-                    ),
-                    StarRatingDisplay(value: avg.round(), size: 16),
-                    const SizedBox(height: 6),
-                    Text(
-                      isThai
-                          ? 'จาก ${ratings.count} รีวิว'
-                          : 'from ${ratings.count} reviews',
-                      style: const TextStyle(
-                          fontSize: 12.5, color: PgTokens.colorTextMuted),
-                    ),
-                  ],
+              Text(
+                avg.toStringAsFixed(1),
+                style: const TextStyle(
+                  fontFamily: 'IBMPlexMono',
+                  fontSize: 46,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorTextStrong,
                 ),
               ),
-              const SizedBox(height: PgTokens.space4),
-              for (final c in categories)
-                if (ratings.categoryAverage(c.pick) case final v?)
-                  _CategoryBar(label: isThai ? c.th : c.en, value: v),
+              StarRatingDisplay(value: avg.round(), size: 16),
+              const SizedBox(height: 6),
+              Text(
+                isThai
+                    ? 'จาก ${ratings.count} รีวิว'
+                    : 'from ${ratings.count} reviews',
+                style: const TextStyle(
+                    fontSize: 12.5, color: PgTokens.colorTextMuted),
+              ),
             ],
           ),
         ),
         const SizedBox(height: PgTokens.space4),
+        for (final c in categories)
+          if (ratings.categoryAverage(c.pick) case final v?)
+            _CategoryBar(label: isThai ? c.th : c.en, value: v),
+        const SizedBox(height: PgTokens.space3),
         for (final review in ratings.reviews)
           _ReviewItem(review: review, isThai: isThai),
       ],
@@ -180,8 +169,9 @@ class _CategoryBar extends StatelessWidget {
             width: 90, // design `.catbar2 .l { width:90px }`
             child: Text(label,
                 style: const TextStyle(
-                    fontSize: 12.5, color: PgTokens.colorTextMuted)),
+                    fontSize: 12.5, color: PgTokens.colorText)),
           ),
+          const SizedBox(width: 10), // design `.catbar2 { gap:10px }`
           Expanded(
             child: ClipRRect(
               borderRadius: BorderRadius.circular(4),
@@ -192,20 +182,21 @@ class _CategoryBar extends StatelessWidget {
                     Container(color: PgTokens.colorSunken),
                     FractionallySizedBox(
                       widthFactor: (value / 5).clamp(0.0, 1.0),
-                      child: Container(color: PgTokens.colorAccent),
+                      child: Container(color: PgTokens.colorAmber400),
                     ),
                   ],
                 ),
               ),
             ),
           ),
-          const SizedBox(width: PgTokens.space2),
+          const SizedBox(width: 10),
           SizedBox(
             width: 28,
             child: Text(
               value.toStringAsFixed(1),
               textAlign: TextAlign.right,
               style: const TextStyle(
+                  fontFamily: 'IBMPlexMono',
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,
                   color: PgTokens.colorText),
@@ -233,13 +224,11 @@ class _ReviewItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Design `.review-item`: a full-width row with a bottom hairline divider (no boxed card).
     return Container(
-      margin: const EdgeInsets.only(bottom: PgTokens.space2),
-      padding: const EdgeInsets.all(PgTokens.space3),
-      decoration: BoxDecoration(
-        color: PgTokens.colorSurface,
-        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-        border: Border.all(color: PgTokens.colorBorder),
+      padding: const EdgeInsets.symmetric(vertical: 13),
+      decoration: const BoxDecoration(
+        border: Border(bottom: BorderSide(color: PgTokens.colorBorder)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

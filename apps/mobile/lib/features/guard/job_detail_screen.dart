@@ -49,7 +49,7 @@ class JobDetailScreen extends ConsumerWidget {
       backgroundColor: PgTokens.colorBg,
       appBar: PGuardHeader(
         title: isThai ? 'รายละเอียดงาน' : 'Job detail',
-        subtitle: isThai ? 'ดูข้อมูลก่อนรับงาน' : 'Job detail',
+        subtitle: isThai ? 'ดูข้อมูลก่อนรับงาน' : 'Review before accepting',
         showBack: true,
       ),
       body: SafeArea(
@@ -105,15 +105,20 @@ class _Body extends StatelessWidget {
             children: [
               // Screen 3 hierarchy: place-name title + service-type/hours subtitle.
               Text(
-                booking.address ?? 'งานรักษาความปลอดภัย',
+                booking.address ??
+                    (isThai ? 'งานรักษาความปลอดภัย' : 'Security job'),
                 style:
                     const TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
               ),
               const SizedBox(height: 2),
               Text(
-                hours != null
-                    ? 'รปภ. ประจำจุด · $hours ชั่วโมง'
-                    : 'รปภ. ประจำจุด',
+                isThai
+                    ? (hours != null
+                        ? 'รปภ. ประจำจุด · $hours ชั่วโมง'
+                        : 'รปภ. ประจำจุด')
+                    : (hours != null
+                        ? 'On-site guard · $hours hrs'
+                        : 'On-site guard'),
                 style: const TextStyle(
                     fontSize: 13, color: PgTokens.colorTextMuted),
               ),
@@ -128,7 +133,8 @@ class _Body extends StatelessWidget {
                 icon: Icons.calendar_today_outlined,
                 label: isThai ? 'เวลา' : 'Time',
                 value: JobDetailTime.window(
-                    booking.scheduledAt, hours, DateTime.now()),
+                    booking.scheduledAt, hours, DateTime.now(),
+                    isThai: isThai),
                 trailing: Text(
                   Money.format(_feeSatang),
                   // Design --font-mono for money figures (now bundled).
@@ -143,12 +149,17 @@ class _Body extends StatelessWidget {
               _InfoRow(
                 icon: Icons.people_outline,
                 label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
-                value: '${booking.guardCount ?? 1} คน',
+                value: isThai
+                    ? '${booking.guardCount ?? 1} คน'
+                    : '${booking.guardCount ?? 1} guard'
+                        '${(booking.guardCount ?? 1) > 1 ? 's' : ''}',
               ),
               if (!canAccept) ...[
                 const SizedBox(height: PgTokens.space4),
                 Text(
-                  'สถานะ: ${BookingLifecycle.labelTh(booking.status)}',
+                  isThai
+                      ? 'สถานะ: ${BookingLifecycle.labelTh(booking.status)}'
+                      : 'Status: ${BookingLifecycle.labelEn(booking.status)}',
                   style: const TextStyle(color: PgTokens.colorTextMuted),
                 ),
               ],
@@ -168,7 +179,8 @@ class _Body extends StatelessWidget {
                 children: [
                   SizedBox(
                     width: 90,
-                    child: PgGhostButton(label: 'ข้าม', onPressed: onDismiss),
+                    child: PgGhostButton(
+                        label: isThai ? 'ข้าม' : 'Skip', onPressed: onDismiss),
                   ),
                   const SizedBox(width: PgTokens.space2),
                   Expanded(
@@ -193,16 +205,20 @@ class JobDetailTime {
 
   static String _two(int n) => n.toString().padLeft(2, '0');
 
-  /// "วันนี้ HH:MM – HH:MM" when [scheduledAt] falls on [now]'s local date, else
-  /// "D/M HH:MM – HH:MM"; falls back to the bare hours ("8 ชม.") or "—" when unscheduled.
-  static String window(DateTime? scheduledAt, int? hours, DateTime now) {
+  /// "วันนี้ HH:MM – HH:MM" / "Today …" when [scheduledAt] falls on [now]'s local date, else
+  /// "D/M HH:MM – HH:MM"; falls back to the bare hours ("8 ชม." / "8 hrs") or "—" when unscheduled.
+  static String window(DateTime? scheduledAt, int? hours, DateTime now,
+      {required bool isThai}) {
     final start = scheduledAt?.toLocal();
-    if (start == null) return hours != null ? '$hours ชม.' : '—';
+    if (start == null) {
+      return hours != null ? '$hours ${isThai ? 'ชม.' : 'hrs'}' : '—';
+    }
     final end = start.add(Duration(hours: hours ?? 0));
     final sameDay = start.year == now.year &&
         start.month == now.month &&
         start.day == now.day;
-    final day = sameDay ? 'วันนี้' : '${start.day}/${start.month}';
+    final today = isThai ? 'วันนี้' : 'Today';
+    final day = sameDay ? today : '${start.day}/${start.month}';
     return '$day ${_two(start.hour)}:${_two(start.minute)} – '
         '${_two(end.hour)}:${_two(end.minute)}';
   }
