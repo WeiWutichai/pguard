@@ -328,9 +328,10 @@ pub async fn list_open_bookings<S: BookingDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
-/// GET /admin/bookings — admin cross-user booking list (optional `status`/`search` filters,
-/// paginated). Admin-only. Unlike `GET /bookings` (the caller's participant list) this drops
-/// the owner scope entirely. List read → replica (C5.3). NOTE: booking has no PDPA read-audit
+/// GET /admin/bookings — admin cross-user booking list (optional `status`/`search`/`guard_id`/
+/// `customer_id` filters, paginated). Admin-only. Unlike `GET /bookings` (the caller's participant
+/// list) this drops the owner scope entirely; `guard_id`/`customer_id` are explicit drill-downs
+/// into one guard's jobs or one customer's bookings. List read → replica (C5.3). NOTE: booking has no PDPA read-audit
 /// table yet — the addresses exposed here are lower-sensitivity than profile's bank numbers;
 /// an equivalent §30 audit is a tracked follow-up (needs a booking access_audit migration).
 #[tracing::instrument(skip(state, query), fields(user = %user.user_id))]
@@ -353,6 +354,8 @@ pub async fn admin_list_bookings<S: BookingDeps>(
         state.db_read(),
         status,
         query.search.as_deref(),
+        query.guard_id,
+        query.customer_id,
         limit,
         offset,
     )
@@ -1712,6 +1715,119 @@ mod tests {
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
             .bind(created.id)
+            .execute(&db)
+            .await;
+    }
+
+    /// `GET /admin/bookings?guard_id=&customer_id=` narrows the cross-user list to one guard's
+    /// jobs / one customer's bookings (the admin drill-down behind the web-admin guard- and
+    /// customer-detail screens). Fresh per-run UUIDs mean each filter matches exactly its seeded
+    /// row, so we can assert an exact id set even against a shared DB. Needs a MIGRATED database
+    /// + Redis; SKIPs hermetically otherwise. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///   TEST_REDIS_URL=redis://localhost:6379 \
+    ///     cargo test -p pguard-booking -- admin_list_bookings_filters --nocapture
+    #[tokio::test]
+    async fn admin_list_bookings_filters_by_guard_and_customer() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+
+        // Two customers; booking A is assigned to guard G, booking B stays unassigned.
+        let customer_a = Uuid::new_v4();
+        let customer_b = Uuid::new_v4();
+        let guard_g = Uuid::new_v4();
+        let mk = |customer: Uuid, addr: &'static str| {
+            let db = db.clone();
+            async move {
+                repo::create_booking(
+                    &db,
+                    customer,
+                    &CreateBookingRequest {
+                        address: addr.to_string(),
+                        scheduled_at: chrono::Utc::now(),
+                        hours: 4,
+                        guard_count: None,
+                        tip: None,
+                        lat: None,
+                        lng: None,
+                    },
+                    1,
+                    rust_decimal::Decimal::ZERO,
+                )
+                .await
+                .expect("create")
+            }
+        };
+        let booking_a = mk(customer_a, "1 Filter A Rd").await;
+        let booking_b = mk(customer_b, "2 Filter B Rd").await;
+        repo::transition(
+            &db,
+            booking_a.id,
+            guard_g,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_g),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("assign guard_g to booking A");
+
+        // Fetch /admin/bookings with a query and return the set of returned booking ids.
+        let ids_for = |query: String| {
+            let app = app.clone();
+            async move {
+                let res = app
+                    .oneshot(
+                        Request::builder()
+                            .method("GET")
+                            .uri(format!("/admin/bookings?{query}"))
+                            .header("authorization", format!("Bearer {}", user_token("admin")))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(res.status(), StatusCode::OK, "query: {query}");
+                let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+                v["data"]
+                    .as_array()
+                    .expect("data array")
+                    .iter()
+                    .map(|b| b["id"].as_str().unwrap().to_string())
+                    .collect::<Vec<_>>()
+            }
+        };
+
+        // guard_id=G → exactly booking A (fresh UUID → no other rows match).
+        let by_guard = ids_for(format!("guard_id={guard_g}")).await;
+        assert_eq!(
+            by_guard,
+            vec![booking_a.id.to_string()],
+            "guard_id filter must return only that guard's booking"
+        );
+
+        // customer_id=B → exactly booking B.
+        let by_customer = ids_for(format!("customer_id={customer_b}")).await;
+        assert_eq!(
+            by_customer,
+            vec![booking_b.id.to_string()],
+            "customer_id filter must return only that customer's booking"
+        );
+
+        // Combined guard_id=G & customer_id=B → empty (A is G's but customer A's).
+        let combined = ids_for(format!("guard_id={guard_g}&customer_id={customer_b}")).await;
+        assert!(
+            combined.is_empty(),
+            "AND of mismatched guard/customer filters returns nothing, got {combined:?}"
+        );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = ANY($1)")
+            .bind(vec![booking_a.id, booking_b.id])
             .execute(&db)
             .await;
     }

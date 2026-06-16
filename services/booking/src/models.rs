@@ -150,11 +150,14 @@ pub struct OpenJobsQuery {
 
 /// Query params for `GET /admin/bookings` (admin cross-user list). `status` is validated
 /// against `BookingStatus` (unknown → 400); `search` is a case-insensitive substring match on
-/// the address. House limit/offset pagination.
+/// the address. `guard_id`/`customer_id` narrow the list to one guard's job history or one
+/// customer's booking history (admin drill-down). House limit/offset pagination.
 #[derive(Debug, Deserialize)]
 pub struct AdminListBookingsQuery {
     pub status: Option<String>,
     pub search: Option<String>,
+    pub guard_id: Option<Uuid>,
+    pub customer_id: Option<Uuid>,
     pub limit: Option<i64>,
     pub offset: Option<i64>,
 }

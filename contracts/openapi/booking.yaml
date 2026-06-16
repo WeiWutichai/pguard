@@ -96,6 +96,16 @@ paths:
           required: false
           description: Case-insensitive substring match on the booking address.
           schema: { type: string }
+        - name: guard_id
+          in: query
+          required: false
+          description: Restrict to bookings assigned to this guard (the guard's job history).
+          schema: { type: string, format: uuid }
+        - name: customer_id
+          in: query
+          required: false
+          description: Restrict to bookings placed by this customer (the customer's booking history).
+          schema: { type: string, format: uuid }
         - $ref: '#/components/parameters/Limit'
         - $ref: '#/components/parameters/Offset'
       responses:
