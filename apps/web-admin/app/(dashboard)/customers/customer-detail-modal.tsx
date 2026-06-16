@@ -5,8 +5,8 @@ import { CheckCircle2, Clock } from "lucide-react";
 
 import type { components } from "@/api/generated/profile";
 import { Avatar, Badge, Button, Modal } from "@/components/ui";
-import { bookingApi } from "@/lib/api";
-import { ADMIN_LIST_CAP, fmtCappedCount } from "@/lib/format";
+import { bookingApi, paymentApi } from "@/lib/api";
+import { ADMIN_LIST_CAP, fmtBaht, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY, customerInitials, fmtSignup } from "./copy";
@@ -24,9 +24,10 @@ function StatMini({ label, value }: { label: ReactNode; value: ReactNode }) {
   );
 }
 
-/** Customer detail. Real data: name, address, signup date (created_at). The design's spend /
- * booking-count / quality / payment-method and the approved-date all need cross-service
- * aggregates or identity data this page doesn't have — honest gap chips, never fabricated. */
+/** Customer detail. Real data: name, address, signup date (created_at), booking count (admin
+ * booking list) and total spend (admin payment ledger). The design's account "quality" /
+ * payment-method and the approved-date still need data this page doesn't have — honest gap
+ * chips, never fabricated. */
 export function CustomerDetailModal({
   customer,
   onClose,
@@ -53,6 +54,43 @@ export function CustomerDetailModal({
       })
       .catch(() => {
         // Transport failure — leave bookings as "—".
+      });
+    return () => {
+      alive = false;
+    };
+  }, [customer.user_id]);
+
+  // Total spend = net of this customer's COMPLETED payments (admin ledger filtered by
+  // customer_id): Σ (final_amount ?? amount) − (refund_amount ?? 0) per row. Money fields are
+  // exact-decimal STRINGS on the wire. We sum only `completed` rows: a PARTIAL refund stays
+  // `completed` (netted here via refund_amount), while a FULL refund flips the row to `refunded`
+  // and nets ~0 — so completed-only is the faithful "amount the customer actually paid for work
+  // done". (This is a customer-spend figure, NOT the platform net-revenue expression, which
+  // treats a refund as a negative.) Each row's contribution is non-negative, so when the ledger
+  // hits the repo cap the shown sum is a true floor → `spendCapped` renders "฿X+". Null until
+  // loaded / on failure → "—" (never a fabricated ฿0).
+  const [spend, setSpend] = useState<number | null>(null);
+  const [spendCapped, setSpendCapped] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    paymentApi
+      .GET("/admin/payments", {
+        params: {
+          query: { customer_id: customer.user_id, status: "completed", limit: ADMIN_LIST_CAP },
+        },
+      })
+      .then(({ data, error }) => {
+        if (!alive || error) return;
+        const rows = data?.data ?? [];
+        const total = rows.reduce((sum, p) => {
+          const eff = Number(p.final_amount ?? p.amount) - Number(p.refund_amount ?? 0);
+          return sum + (Number.isFinite(eff) ? eff : 0);
+        }, 0);
+        setSpend(total);
+        setSpendCapped(rows.length >= ADMIN_LIST_CAP);
+      })
+      .catch(() => {
+        // Transport failure — leave spend as "—".
       });
     return () => {
       alive = false;
@@ -88,14 +126,17 @@ export function CustomerDetailModal({
         </div>
       </div>
 
-      {/* Stat line — bookings count is real (admin booking list); total spend needs the
-          payment-side aggregate, so it stays an honest gap. */}
+      {/* Stat line — both real now: bookings count (admin booking list) + net spend (admin
+          payment ledger), each filtered to this customer. */}
       <div className="mt-4 grid grid-cols-2 gap-2">
         <StatMini
           label={c.bookings}
           value={bookingCount == null ? "—" : fmtCappedCount(bookingCount)}
         />
-        <StatMini label={c.spend} value={gap} />
+        <StatMini
+          label={c.spend}
+          value={spend == null ? "—" : `${fmtBaht(spend)}${spendCapped ? "+" : ""}`}
+        />
       </div>
 
       {/* Account — address is real; quality is a derived label with no field (gap). */}
