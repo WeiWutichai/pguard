@@ -9,7 +9,7 @@ import { bookingApi, paymentApi } from "@/lib/api";
 import { ADMIN_LIST_CAP, fmtBaht, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
-import { COPY, customerInitials, fmtSignup } from "./copy";
+import { COPY, customerInitials, fmtSignup, paymentMethodLabel } from "./copy";
 
 type CustomerProfileAdmin = components["schemas"]["CustomerProfileAdmin"];
 
@@ -25,8 +25,8 @@ function StatMini({ label, value }: { label: ReactNode; value: ReactNode }) {
 }
 
 /** Customer detail. Real data: name, address, signup date (created_at), booking count (admin
- * booking list) and total spend (admin payment ledger). The design's account "quality" /
- * payment-method and the approved-date still need data this page doesn't have — honest gap
+ * booking list), total spend + most-recent payment method (admin payment ledger). The design's
+ * account "quality" and the approved-date still need data this page doesn't have — honest gap
  * chips, never fabricated. */
 export function CustomerDetailModal({
   customer,
@@ -71,6 +71,9 @@ export function CustomerDetailModal({
   // loaded / on failure → "—" (never a fabricated ฿0).
   const [spend, setSpend] = useState<number | null>(null);
   const [spendCapped, setSpendCapped] = useState(false);
+  // The customer's most-recent payment method (rows are newest-first) — derived from the SAME
+  // ledger fetch, no extra call. Null until loaded / on failure / when no method is recorded.
+  const [paymentMethod, setPaymentMethod] = useState<string | null>(null);
   useEffect(() => {
     let alive = true;
     paymentApi
@@ -88,9 +91,10 @@ export function CustomerDetailModal({
         }, 0);
         setSpend(total);
         setSpendCapped(rows.length >= ADMIN_LIST_CAP);
+        setPaymentMethod(rows.find((p) => p.payment_method)?.payment_method ?? null);
       })
       .catch(() => {
-        // Transport failure — leave spend as "—".
+        // Transport failure — leave spend + method as "—"/gap.
       });
     return () => {
       alive = false;
@@ -177,12 +181,15 @@ export function CustomerDetailModal({
         </dl>
       </div>
 
-      {/* Payment method — no payment data is exposed to this page (gap). */}
+      {/* Payment method — the customer's most-recent completed-payment method (admin ledger);
+          gap only when they have no recorded payment yet. */}
       <div className="mt-3 rounded-lg border border-border px-4 py-3">
         <div className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
           {c.payment}
         </div>
-        <div className="mt-2">{gap}</div>
+        <div className="mt-2 text-sm font-semibold text-text-strong">
+          {paymentMethod == null ? gap : paymentMethodLabel(paymentMethod, lang)}
+        </div>
       </div>
 
       {/* Approval timeline — signup (created_at) is real; the approved date lives in identity
