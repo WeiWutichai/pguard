@@ -35,6 +35,35 @@ class GeoPoint {
   String toString() => 'GeoPoint($label)';
 }
 
+/// A straight-line travel estimate (haversine distance + a rough ETA at an assumed urban speed)
+/// for the guard navigation screen. NOT turn-by-turn — there is no directions API — so the UI
+/// must present it as APPROXIMATE. Pure (no Flutter), so it is unit-testable.
+class TravelEstimate {
+  const TravelEstimate({required this.metres, required this.minutes});
+
+  final double metres;
+
+  /// ETA in whole minutes, floored to at least 1.
+  final int minutes;
+
+  /// Default urban travel speed for the ETA (km/h) — a coarse assumption, not a routed speed.
+  static const double defaultSpeedKmh = 22;
+
+  factory TravelEstimate.between(GeoPoint from, GeoPoint to,
+      {double speedKmh = defaultSpeedKmh}) {
+    final metres = distanceMeters(from, to); // reuse the shared haversine helper
+    final mins = (metres / 1000 / speedKmh * 60).ceil();
+    return TravelEstimate(metres: metres, minutes: mins < 1 ? 1 : mins);
+  }
+
+  /// Localised distance ("350 ม." / "1.2 กม."), via the shared [formatDistance].
+  String distanceLabel(bool isThai) => formatDistance(metres, thai: isThai);
+
+  /// "~4 นาที" / "~4 min" — the tilde marks it approximate.
+  String etaLabel(bool isThai) =>
+      isThai ? '~$minutes นาที' : '~$minutes min';
+}
+
 /// A pure equirectangular viewport: maps WGS84 coordinates onto canvas fractions, the same
 /// local projection the booking map picker uses (no map-tile SDK — see `MapPicker`). The
 /// live-map widget only positions markers; ALL the projection math lives here, unit-tested.

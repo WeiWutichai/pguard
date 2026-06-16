@@ -594,11 +594,24 @@ class _TransitionBar extends ConsumerWidget {
           ],
         ));
       case JobStage.arrived:
-        return bar(PgPrimaryButton(
-          label: isThai ? 'ถึงแล้ว' : 'Arrived',
-          busy: busy,
-          onPressed: busy ? null : () => ctrl.arrived(),
-        ));
+        // When the booking has site coordinates, route the guard through the full-screen
+        // navigation map (which confirms arrival + starts work in one CTA). Older bookings
+        // without coords keep the plain "Arrived" action.
+        return bar(
+          (state.booking.lat != null && state.booking.lng != null)
+              ? PgPrimaryButton(
+                  label: isThai ? 'นำทาง' : 'Navigate',
+                  busy: busy,
+                  onPressed: busy
+                      ? null
+                      : () => context.push('/guard/active/$bookingId/navigate'),
+                )
+              : PgPrimaryButton(
+                  label: isThai ? 'ถึงแล้ว' : 'Arrived',
+                  busy: busy,
+                  onPressed: busy ? null : () => ctrl.arrived(),
+                ),
+        );
       case JobStage.start:
         // Design G3: the start CTA pulses (`.sb-btn.amber.pulse`).
         return bar(_PulsingGlow(

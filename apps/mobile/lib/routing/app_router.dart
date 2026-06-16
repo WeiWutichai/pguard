@@ -31,6 +31,7 @@ import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
 import '../features/guard/earnings_screen.dart';
 import '../features/guard/guard_jobs_screen.dart';
+import '../features/guard/guard_navigation_screen.dart';
 import '../features/guard/guard_work_history_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/guard/withdraw_screen.dart';
@@ -170,6 +171,12 @@ GoRouter appRouter(AppRouterRef ref) {
         path: '/guard/active/:id',
         builder: (context, state) =>
             ActiveJobScreen(bookingId: state.pathParameters['id']!),
+      ),
+      // Guard turn-to-site navigation (full-bleed map) — from the en-route stage.
+      GoRoute(
+        path: '/guard/active/:id/navigate',
+        builder: (context, state) =>
+            GuardNavigationScreen(bookingId: state.pathParameters['id']!),
       ),
       // Guard back-out flow (escalation warning + reason + admin notes).
       GoRoute(
