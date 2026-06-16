@@ -8,6 +8,7 @@ import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_segmented_tabs.dart';
 import '../../widgets/pguard_header.dart';
 import 'widgets/job_card.dart';
 
@@ -58,8 +59,10 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
 
             return Column(
               children: [
-                _JobTabs(
-                  isThai: isThai,
+                PgSegmentedTabs(
+                  labels: isThai
+                      ? const ['รอตอบรับ', 'กำลังทำ', 'เสร็จ']
+                      : const ['Pending', 'Active', 'Done'],
                   selected: _tab,
                   counts: [groups[0].length, groups[1].length, groups[2].length],
                   onSelect: (i) => setState(() => _tab = i),
@@ -94,82 +97,6 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
               ],
             );
           },
-        ),
-      ),
-    );
-  }
-}
-
-/// Design `.jtabs` / `.jtab`: a 3-segment control; the active segment is a brand-green fill with
-/// dark text, the rest a sunken pill with muted text.
-class _JobTabs extends StatelessWidget {
-  const _JobTabs({
-    required this.isThai,
-    required this.selected,
-    required this.counts,
-    required this.onSelect,
-  });
-
-  final bool isThai;
-  final int selected;
-  final List<int> counts;
-  final ValueChanged<int> onSelect;
-
-  @override
-  Widget build(BuildContext context) {
-    final labels = isThai
-        ? const ['รอตอบรับ', 'กำลังทำ', 'เสร็จ']
-        : const ['Pending', 'Active', 'Done'];
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-      child: Row(
-        children: [
-          for (var i = 0; i < labels.length; i++) ...[
-            if (i > 0) const SizedBox(width: 4),
-            Expanded(
-              child: _Seg(
-                label: counts[i] > 0 ? '${labels[i]} ${counts[i]}' : labels[i],
-                active: i == selected,
-                onTap: () => onSelect(i),
-              ),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-}
-
-class _Seg extends StatelessWidget {
-  const _Seg(
-      {required this.label, required this.active, required this.onTap});
-
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: active ? PgTokens.colorPrimary : PgTokens.colorSunken,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(10),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 9),
-          child: Text(
-            label,
-            textAlign: TextAlign.center,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              color:
-                  active ? PgTokens.colorTextStrong : PgTokens.colorTextMuted,
-            ),
-          ),
         ),
       ),
     );

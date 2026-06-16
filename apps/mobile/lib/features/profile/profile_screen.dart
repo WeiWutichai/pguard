@@ -78,6 +78,15 @@ class ProfileScreen extends ConsumerWidget {
                           '${profile.bankName ?? '—'} · ${profile.accountNumberMasked ?? '—'}',
                       onTap: () => context.push('/profile/edit'),
                     ),
+                  if (profile.isGuard)
+                    _Tile(
+                      icon: Icons.history,
+                      title: isThai ? 'ประวัติงาน' : 'Work history',
+                      subtitle: isThai
+                          ? 'งานที่เสร็จและยกเลิก'
+                          : 'Completed & cancelled jobs',
+                      onTap: () => context.push('/guard/history'),
+                    ),
                   _ReadonlyRow(
                     icon: Icons.phone_outlined,
                     label: isThai ? 'เบอร์โทร (ใช้เข้าสู่ระบบ)' : 'Phone',

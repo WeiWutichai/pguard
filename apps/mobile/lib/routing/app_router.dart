@@ -31,6 +31,7 @@ import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
 import '../features/guard/earnings_screen.dart';
 import '../features/guard/guard_jobs_screen.dart';
+import '../features/guard/guard_work_history_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
@@ -156,6 +157,10 @@ GoRouter appRouter(AppRouterRef ref) {
       // Guard's full tabbed jobs list (Pending / Active / Done) — the bottom-nav "งาน" tab.
       GoRoute(
           path: '/guard/jobs', builder: (_, __) => const GuardJobsScreen()),
+      // Guard's work history (Completed / Cancelled) — from the profile menu.
+      GoRoute(
+          path: '/guard/history',
+          builder: (_, __) => const GuardWorkHistoryScreen()),
       GoRoute(
         path: '/guard/job/:id',
         builder: (context, state) =>
