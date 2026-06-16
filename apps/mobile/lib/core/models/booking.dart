@@ -80,6 +80,8 @@ class Booking {
     this.guardCount,
     this.baseFee,
     this.tip,
+    this.lat,
+    this.lng,
   });
 
   final String id;
@@ -98,6 +100,11 @@ class Booking {
   /// Up-front tip as an exact decimal STRING ("0").
   final String? tip;
 
+  /// Optional site coordinate (WGS84) the customer pinned on the map at create time; `null`
+  /// when no map pick was made. Lets the guard see the job location (e.g. on a map/navigation).
+  final double? lat;
+  final double? lng;
+
   factory Booking.fromJson(Map<String, dynamic> json) => Booking(
         id: json['id'] as String,
         customerId: json['customer_id'] as String,
@@ -113,6 +120,8 @@ class Booking {
         // Money fields are decimal strings on the wire; parse defensively.
         baseFee: (json['base_fee'] as Object?)?.toString(),
         tip: (json['tip'] as Object?)?.toString(),
+        lat: (json['lat'] as num?)?.toDouble(),
+        lng: (json['lng'] as num?)?.toDouble(),
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -127,6 +136,8 @@ class Booking {
         guardCount: guardCount,
         baseFee: baseFee,
         tip: tip,
+        lat: lat,
+        lng: lng,
       );
 }
 
