@@ -6,26 +6,34 @@ void main() {
 
   test('same-day window renders the design "วันนี้ 14:00 – 22:00" form', () {
     expect(
-      JobDetailTime.window(DateTime(2026, 6, 11, 14, 0), 8, now),
+      JobDetailTime.window(DateTime(2026, 6, 11, 14, 0), 8, now, isThai: true),
       'วันนี้ 14:00 – 22:00',
     );
   });
 
-  test('other-day window prefixes D/M instead of วันนี้', () {
+  test('English same-day window prefixes "Today"', () {
     expect(
-      JobDetailTime.window(DateTime(2026, 6, 15, 14, 0), 8, now),
+      JobDetailTime.window(DateTime(2026, 6, 11, 14, 0), 8, now, isThai: false),
+      'Today 14:00 – 22:00',
+    );
+  });
+
+  test('other-day window prefixes D/M instead of the today label', () {
+    expect(
+      JobDetailTime.window(DateTime(2026, 6, 15, 14, 0), 8, now, isThai: true),
       '15/6 14:00 – 22:00',
     );
   });
 
-  test('unscheduled falls back to bare hours, then to a dash', () {
-    expect(JobDetailTime.window(null, 8, now), '8 ชม.');
-    expect(JobDetailTime.window(null, null, now), '—');
+  test('unscheduled falls back to bare hours (localized), then to a dash', () {
+    expect(JobDetailTime.window(null, 8, now, isThai: true), '8 ชม.');
+    expect(JobDetailTime.window(null, 8, now, isThai: false), '8 hrs');
+    expect(JobDetailTime.window(null, null, now, isThai: true), '—');
   });
 
   test('minutes are zero-padded and the end wraps past midnight cleanly', () {
     expect(
-      JobDetailTime.window(DateTime(2026, 6, 11, 22, 5), 4, now),
+      JobDetailTime.window(DateTime(2026, 6, 11, 22, 5), 4, now, isThai: true),
       'วันนี้ 22:05 – 02:05',
     );
   });

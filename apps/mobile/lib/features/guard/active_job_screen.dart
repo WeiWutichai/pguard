@@ -368,6 +368,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
             children: [
               Text(_fmt(remaining),
                   style: const TextStyle(
+                      fontFamily: 'IBMPlexMono', // design `.sb-count` mono numerals
                       fontSize: 28,
                       fontWeight: FontWeight.w600,
                       color: PgTokens.colorText,

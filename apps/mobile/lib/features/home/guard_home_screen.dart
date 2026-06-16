@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/guard_ratings_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/profile_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
@@ -146,6 +147,8 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
             padding: const EdgeInsets.fromLTRB(PgTokens.space4, PgTokens.space4,
                 PgTokens.space4, PgTokens.space4 + PgBottomNav.fabOverhang),
             children: [
+              const _GreetingHeader(),
+              const SizedBox(height: PgTokens.space4),
               const OnlineCard(),
               const SizedBox(height: PgTokens.space4),
               jobs.when(
@@ -183,6 +186,71 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
         ),
       ),
     );
+  }
+}
+
+/// Design `.greet`: a 44px avatar (guard initials) + a time-of-day greeting and the guard's name,
+/// read once from the cached profile (`profileControllerProvider`, no polling). Degrades to a
+/// generic role label + person glyph when the name isn't available yet (loading / 404 / no name).
+class _GreetingHeader extends ConsumerWidget {
+  const _GreetingHeader();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final name =
+        ref.watch(profileControllerProvider).valueOrNull?.fullName?.trim();
+    final hasName = name != null && name.isNotEmpty;
+    final initials = hasName ? _initialsOf(name) : null;
+    return Row(
+      children: [
+        CircleAvatar(
+          radius: 22,
+          backgroundColor: PgTokens.colorGreen100,
+          child: initials != null
+              ? Text(initials,
+                  style: const TextStyle(
+                      color: PgTokens.colorGreen800,
+                      fontWeight: FontWeight.w600))
+              : const Icon(Icons.person_outline,
+                  color: PgTokens.colorGreen800),
+        ),
+        const SizedBox(width: PgTokens.space3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(_greeting(isThai),
+                  style: const TextStyle(
+                      fontSize: 12.5, color: PgTokens.colorTextMuted)),
+              const SizedBox(height: 2),
+              Text(hasName ? name : (isThai ? 'เจ้าหน้าที่' : 'Guard'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w600)),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  static String _greeting(bool isThai) {
+    final h = DateTime.now().hour;
+    if (h < 11) return isThai ? 'สวัสดีตอนเช้า' : 'Good morning';
+    if (h < 13) return isThai ? 'สวัสดีตอนสาย' : 'Good day';
+    if (h < 17) return isThai ? 'สวัสดีตอนบ่าย' : 'Good afternoon';
+    return isThai ? 'สวัสดีตอนเย็น' : 'Good evening';
+  }
+
+  /// Design `.greet .av`: the first one-or-two characters of the given name (e.g. "สมชาย" → "สม").
+  static String? _initialsOf(String name) {
+    final parts =
+        name.split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+    if (parts.isEmpty) return null;
+    final first = parts.first;
+    return first.length >= 2 ? first.substring(0, 2) : first.substring(0, 1);
   }
 }
 
@@ -291,17 +359,20 @@ class _StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(PgTokens.space3),
+      // Design `.gstat .s`: 13px padding, 16px corners.
+      padding: const EdgeInsets.all(13),
       decoration: BoxDecoration(
         color: PgTokens.colorSurface,
-        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: PgTokens.colorBorder),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // Design `.gstat .v`: the mono numeric face (matches the job-card / online-card numerals).
           Text(value,
               style: const TextStyle(
+                  fontFamily: 'IBMPlexMono',
                   fontSize: 19,
                   fontWeight: FontWeight.w600,
                   color: PgTokens.colorText,
@@ -344,7 +415,8 @@ class _JobsBody extends StatelessWidget {
         if (active.isNotEmpty) ...[
           _SectionHeader(isThai ? 'งานที่กำลังทำ' : 'Active'),
           for (final b in active) ...[
-            GuardJobCard(booking: b, onTap: () => onOpenActive(b.id)),
+            GuardJobCard(
+                booking: b, isThai: isThai, onTap: () => onOpenActive(b.id)),
             const SizedBox(height: PgTokens.space3),
           ],
         ],
@@ -359,6 +431,7 @@ class _JobsBody extends StatelessWidget {
           for (final b in incoming) ...[
             GuardJobCard(
               booking: b,
+              isThai: isThai,
               highlight: true,
               onTap: () => onOpenDetail(b.id),
               actions: Row(

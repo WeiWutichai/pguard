@@ -10,12 +10,14 @@ class GuardJobCard extends StatelessWidget {
   const GuardJobCard({
     super.key,
     required this.booking,
+    required this.isThai,
     this.onTap,
     this.actions,
     this.highlight = false,
   });
 
   final Booking booking;
+  final bool isThai;
   final VoidCallback? onTap;
   final Widget? actions;
   final bool highlight;
@@ -31,9 +33,10 @@ class GuardJobCard extends StatelessWidget {
   String get _timeWindow {
     final start = booking.scheduledAt?.toLocal();
     final hours = booking.hours ?? 0;
-    if (start == null) return '$hours ชม.';
+    final unit = isThai ? 'ชม.' : 'hrs';
+    if (start == null) return '$hours $unit';
     final end = start.add(Duration(hours: hours));
-    return '${_two(start.hour)}:${_two(start.minute)}–${_two(end.hour)}:${_two(end.minute)} · $hours ชม.';
+    return '${_two(start.hour)}:${_two(start.minute)}–${_two(end.hour)}:${_two(end.minute)} · $hours $unit';
   }
 
   @override
@@ -66,7 +69,8 @@ class GuardJobCard extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Text(
-                          booking.address ?? 'งานรักษาความปลอดภัย',
+                          booking.address ??
+                              (isThai ? 'งานรักษาความปลอดภัย' : 'Security job'),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(
@@ -91,7 +95,11 @@ class GuardJobCard extends StatelessWidget {
                               fontWeight: FontWeight.w600,
                               fontFamily: 'IBMPlexMono',
                               fontFeatures: [FontFeature.tabularFigures()])),
-                      Text('${booking.guardCount ?? 1} คน',
+                      Text(
+                          isThai
+                              ? '${booking.guardCount ?? 1} คน'
+                              : '${booking.guardCount ?? 1} guard'
+                                  '${(booking.guardCount ?? 1) > 1 ? 's' : ''}',
                           style: const TextStyle(
                               fontSize: 11, color: PgTokens.colorTextFaint)),
                     ],
