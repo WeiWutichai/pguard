@@ -66,29 +66,46 @@ pub async fn list_payments(
 }
 
 /// Admin cross-user payment ledger — every payment (NO owner filter; the admin-role gate is
-/// the API layer's job), newest first, optional `status` filter + limit/offset. Diverges from
-/// [`list_payments`] by dropping `WHERE customer_id = $1`. `status` is bound as a parameter
-/// (validated against the enum in the handler) — no user input is interpolated. READ-ONLY: a
-/// manual refund-process step is deliberately out of scope (v2 refunds are event-driven).
+/// the API layer's job), newest first, with optional `status` and `customer_id` (drill into one
+/// customer's spend) filters + limit/offset. Diverges from [`list_payments`] by dropping the
+/// implicit `WHERE customer_id = $1` scope — here `customer_id` is an explicit, optional filter
+/// (index-backed by `idx_payments_customer (customer_id, created_at DESC)`). `$n` placeholders
+/// are built from a controlled counter; every value is a BOUND param (`status` validated against
+/// the enum in the handler) — no user input is interpolated. READ-ONLY: a manual refund-process
+/// step is deliberately out of scope (v2 refunds are event-driven).
 pub async fn admin_list_payments(
     db: &sqlx::PgPool,
     status: Option<&str>,
+    customer_id: Option<Uuid>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<PaymentResponse>, AppError> {
     let mut sql = format!("SELECT {PAYMENT_COLUMNS} FROM payment.payments");
+    let mut conds: Vec<String> = Vec::new();
+    let mut idx = 1;
     if status.is_some() {
-        sql.push_str(" WHERE status = $1::payment.payment_status");
+        conds.push(format!("status = ${idx}::payment.payment_status"));
+        idx += 1;
     }
-    let lim = if status.is_some() { 2 } else { 1 };
+    if customer_id.is_some() {
+        conds.push(format!("customer_id = ${idx}"));
+        idx += 1;
+    }
+    if !conds.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&conds.join(" AND "));
+    }
     sql.push_str(&format!(
         " ORDER BY created_at DESC LIMIT ${} OFFSET ${}",
-        lim,
-        lim + 1
+        idx,
+        idx + 1
     ));
     let mut query = sqlx::query_as::<_, PaymentResponse>(&sql);
     if let Some(s) = status {
         query = query.bind(s);
+    }
+    if let Some(c) = customer_id {
+        query = query.bind(c);
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
@@ -637,6 +654,96 @@ mod db_tests {
                 .await;
         let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
             .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// `admin_list_payments(customer_id=…)` narrows the cross-user ledger to one customer's
+    /// payments (the customer-spend drill-down), and ANDs with `status`. Fresh per-run UUIDs →
+    /// exact id-set assertions even against a shared DB. DATABASE_URL-gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- admin_list_payments_filters_by_customer --nocapture
+    #[tokio::test]
+    async fn admin_list_payments_filters_by_customer() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer_a = Uuid::new_v4();
+        let customer_b = Uuid::new_v4();
+        let booking_a = Uuid::new_v4();
+        let booking_b = Uuid::new_v4();
+        let pay_a = charge_idempotent(
+            &pool,
+            booking_a,
+            customer_a,
+            Some(Uuid::new_v4()),
+            dec("400.00"),
+            dec("400.00"),
+            "promptpay",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("charge A");
+        let pay_b = charge_idempotent(
+            &pool,
+            booking_b,
+            customer_b,
+            Some(Uuid::new_v4()),
+            dec("250.00"),
+            dec("250.00"),
+            "promptpay",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("charge B");
+
+        // customer_id=A → exactly A's payment (fresh UUID → no other rows match).
+        let only_a = admin_list_payments(&pool, None, Some(customer_a), 200, 0)
+            .await
+            .expect("list A");
+        assert_eq!(
+            only_a.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![pay_a.id],
+            "customer_id filter must return only that customer's payment"
+        );
+
+        // status-only (no customer filter) — the post-refactor status-only placeholder path:
+        // both fresh completed charges (newest-first) appear in the unscoped completed ledger.
+        let completed = admin_list_payments(&pool, Some("completed"), None, 200, 0)
+            .await
+            .expect("list completed");
+        let completed_ids = completed.iter().map(|p| p.id).collect::<Vec<_>>();
+        assert!(
+            completed_ids.contains(&pay_a.id) && completed_ids.contains(&pay_b.id),
+            "status-only filter must still return completed payments after the refactor"
+        );
+
+        // status=completed AND customer_id=B → exactly B's one completed payment.
+        let b_completed = admin_list_payments(&pool, Some("completed"), Some(customer_b), 200, 0)
+            .await
+            .expect("list B completed");
+        assert_eq!(
+            b_completed.iter().map(|p| p.id).collect::<Vec<_>>(),
+            vec![pay_b.id],
+            "status+customer_id AND-filter narrows to exactly B's completed payment"
+        );
+
+        // A mismatched status excludes it (proves the AND, not an OR).
+        let b_refunded = admin_list_payments(&pool, Some("refunded"), Some(customer_b), 200, 0)
+            .await
+            .expect("list B refunded");
+        assert!(b_refunded.is_empty(), "B has no refunded payment");
+
+        // cleanup
+        let _ = sqlx::query(
+            "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
+        )
+        .bind(vec![booking_a.to_string(), booking_b.to_string()])
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
+            .bind(vec![booking_a, booking_b])
             .execute(&pool)
             .await;
     }

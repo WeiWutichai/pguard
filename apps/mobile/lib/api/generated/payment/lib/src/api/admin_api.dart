@@ -23,10 +23,11 @@ class AdminApi {
   const AdminApi(this._dio, this._serializers);
 
   /// List ALL payments cross-user (role&#x3D;admin, read-only ledger)
-  /// The admin payment ledger — every payment (NOT owner-scoped, unlike &#x60;GET /payments&#x60;), newest first, optional &#x60;status&#x60; filter + limit/offset. Admin only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds are event-driven). 
+  /// The admin payment ledger — every payment (NOT owner-scoped, unlike &#x60;GET /payments&#x60;), newest first, with optional &#x60;status&#x60; and &#x60;customer_id&#x60; filters + limit/offset. Admin only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds are event-driven). 
   ///
   /// Parameters:
   /// * [status] - Filter by payment status. An unrecognized value returns 400.
+  /// * [customerId] - Restrict to payments placed by this customer (the customer's spend history).
   /// * [limit] 
   /// * [offset] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
@@ -40,6 +41,7 @@ class AdminApi {
   /// Throws [DioException] if API call or serialization fails
   Future<Response<ListPayments200Response>> adminListPayments({ 
     PaymentStatus? status,
+    String? customerId,
     int? limit = 50,
     int? offset = 0,
     CancelToken? cancelToken,
@@ -70,6 +72,7 @@ class AdminApi {
 
     final _queryParameters = <String, dynamic>{
       if (status != null) r'status': encodeQueryParameter(_serializers, status, const FullType(PaymentStatus)),
+      if (customerId != null) r'customer_id': encodeQueryParameter(_serializers, customerId, const FullType(String)),
       if (limit != null) r'limit': encodeQueryParameter(_serializers, limit, const FullType(int)),
       if (offset != null) r'offset': encodeQueryParameter(_serializers, offset, const FullType(int)),
     };

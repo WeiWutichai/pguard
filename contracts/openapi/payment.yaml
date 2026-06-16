@@ -104,8 +104,9 @@ paths:
       summary: List ALL payments cross-user (role=admin, read-only ledger)
       description: |
         The admin payment ledger — every payment (NOT owner-scoped, unlike `GET /payments`),
-        newest first, optional `status` filter + limit/offset. Admin only (else 403). READ
-        ONLY: there is no manual refund-process action here (v2 refunds are event-driven).
+        newest first, with optional `status` and `customer_id` filters + limit/offset. Admin
+        only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds
+        are event-driven).
       operationId: adminListPayments
       security: [{ bearerAuth: [] }]
       parameters:
@@ -114,6 +115,11 @@ paths:
           required: false
           description: Filter by payment status. An unrecognized value returns 400.
           schema: { $ref: '#/components/schemas/PaymentStatus' }
+        - name: customer_id
+          in: query
+          required: false
+          description: Restrict to payments placed by this customer (the customer's spend history).
+          schema: { type: string, format: uuid }
         - name: limit
           in: query
           required: false
