@@ -44,8 +44,9 @@ export default function BookingsPage() {
   const c = COPY[lang];
 
   const [bookings, setBookings] = useState<Booking[]>([]);
-  // customer_id → full_name (admin customer directory; best-effort enrichment).
+  // customer_id → full_name / contact_phone (admin customer directory; best-effort enrichment).
   const [customerNames, setCustomerNames] = useState<Record<string, string>>({});
+  const [customerPhones, setCustomerPhones] = useState<Record<string, string>>({});
   const [approvedGuards, setApprovedGuards] = useState<GuardProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
@@ -71,10 +72,13 @@ export default function BookingsPage() {
         setHasError(Boolean(bRes.error));
         setBookings(bRes.error ? [] : (bRes.data?.data ?? []));
         const names: Record<string, string> = {};
+        const phones: Record<string, string> = {};
         for (const cust of cRes.data?.data ?? []) {
           if (cust.full_name) names[cust.user_id] = cust.full_name;
+          if (cust.contact_phone) phones[cust.user_id] = cust.contact_phone;
         }
         setCustomerNames(names);
+        setCustomerPhones(phones);
         setApprovedGuards(gRes.data?.data ?? []);
         setLoading(false);
       })
@@ -268,6 +272,7 @@ export default function BookingsPage() {
         <BookingDetailModal
           booking={selected}
           customerName={customerNames[selected.customer_id] ?? null}
+          customerPhone={customerPhones[selected.customer_id] ?? null}
           approvedGuards={approvedGuards}
           onClose={() => setSelected(null)}
           onAssigned={() => {

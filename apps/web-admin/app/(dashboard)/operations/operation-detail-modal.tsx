@@ -4,8 +4,8 @@ import { type ReactNode, useEffect, useState } from "react";
 import { AlertTriangle, Camera, Check, Loader2 } from "lucide-react";
 
 import type { components } from "@/api/generated/booking";
-import { Badge, Button, Modal } from "@/components/ui";
-import { bookingApi } from "@/lib/api";
+import { Button, Modal } from "@/components/ui";
+import { bookingApi, notificationApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY } from "./copy";
@@ -39,11 +39,34 @@ export function OperationDetailModal({
 }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
-  const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
 
   const [reports, setReports] = useState<ProgressReport[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+  const [nudging, setNudging] = useState(false);
+  const [nudgeNotice, setNudgeNotice] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // Nudge the assigned guard with a push (admin-only POST /notifications/send). The guard's app is
+  // Thai-default, so the notification copy is Thai; the admin-facing result follows the admin's UI.
+  async function nudge() {
+    if (!booking.guard_id) return;
+    setNudging(true);
+    setNudgeNotice(null);
+    const { error } = await notificationApi.POST("/notifications/send", {
+      body: {
+        user_id: booking.guard_id,
+        title: "เตือนเช็คอิน",
+        body: "แอดมินขอให้คุณอัปเดตสถานะงาน",
+        notification_type: "system",
+      },
+    });
+    setNudging(false);
+    setNudgeNotice(
+      error
+        ? { ok: false, text: lang === "th" ? "ส่งไม่สำเร็จ" : "Couldn't send" }
+        : { ok: true, text: lang === "th" ? "ส่งการเตือนแล้ว" : "Reminder sent" },
+    );
+  }
 
   useEffect(() => {
     let alive = true;
@@ -80,9 +103,22 @@ export function OperationDetailModal({
           <Button variant="secondary" size="sm" onClick={onClose}>
             {t("common.close")}
           </Button>
-          {/* Nudge needs the notification surface (not in the web-admin generated client). */}
-          {gap}
-          <Button variant="primary" size="sm" disabled>
+          {nudgeNotice && (
+            <span
+              className={
+                "text-[12.5px] " + (nudgeNotice.ok ? "text-success" : "text-danger")
+              }
+            >
+              {nudgeNotice.text}
+            </span>
+          )}
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!booking.guard_id || nudging}
+            onClick={nudge}
+          >
+            {nudging ? <Loader2 className="size-4 animate-spin" /> : null}
             {c.nudge}
           </Button>
         </>

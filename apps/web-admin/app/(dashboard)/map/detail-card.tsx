@@ -5,16 +5,34 @@
 // Real data here is presence only (id, online/accuracy, last update). The design's rating /
 // jobs-done / km-away stats, current-job feed and chat/call actions have no v2 admin
 // endpoints — those slots carry honest "รอ API / Awaiting API" gap chips + disabled buttons.
+import { useEffect, useState } from "react";
 import { MessageSquare, Navigation, Phone, Shield, X } from "lucide-react";
 
 import type { MapGuard } from "@/components/guard-map";
 import { Badge, Button } from "@/components/ui";
+import { ratingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { COPY, formatAgoShort, initials, shortId } from "./copy";
 
 export function DetailCard({ guard, onClose }: { guard: MapGuard; onClose: () => void }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
+
+  // The selected guard's overall rating (admin-readable). Re-fetched per selection; "—" until
+  // loaded or when the guard has no visible reviews (never a fake 0.0).
+  const [rating, setRating] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    ratingApi
+      .GET("/guards/{id}/ratings", { params: { path: { id: guard.guard_id } } })
+      .then(({ data, error }) => {
+        if (alive) setRating(!error ? (data?.data?.average ?? null) : null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [guard.guard_id]);
 
   return (
     <div className="absolute bottom-4 left-4 z-[1100] w-[330px] overflow-hidden rounded-lg border border-border bg-surface shadow-xl">
@@ -54,9 +72,16 @@ export function DetailCard({ guard, onClose }: { guard: MapGuard; onClose: () =>
         </button>
       </div>
 
-      {/* Stats grid (design `.stats`) — rating / jobs done / km away have no v2 endpoint yet. */}
+      {/* Stats grid (design `.stats`) — rating is real (/guards/{id}/ratings); jobs-done / km-away
+          still have no v2 admin endpoint. */}
       <div className="grid grid-cols-3 border-t border-border">
-        {[c.statRating, c.statJobs, c.statKm].map((label) => (
+        <div className="border-r border-border p-3 text-center">
+          <div className="text-[15px] font-semibold text-text-strong tabular-nums">
+            {rating == null ? "—" : `★ ${rating}`}
+          </div>
+          <div className="mt-1 text-[10.5px] text-muted">{c.statRating}</div>
+        </div>
+        {[c.statJobs, c.statKm].map((label) => (
           <div key={label} className="border-r border-border p-3 text-center last:border-r-0">
             <Badge tone="gray">{c.awaitingApi}</Badge>
             <div className="mt-1 text-[10.5px] text-muted">{label}</div>

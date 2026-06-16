@@ -25,7 +25,6 @@ export interface OperationsCopy {
   kpiArrived: string;
   kpiPending: string;
   searchPlaceholder: string;
-  awaitingApi: string;
   guard: string;
   gpsLive: string;
   gpsStale: string;
@@ -57,7 +56,6 @@ export const COPY: Record<Lang, OperationsCopy> = {
     kpiArrived: "ถึงจุดแล้ว",
     kpiPending: "รอยืนยันจบงาน",
     searchPlaceholder: "ค้นหา booking / ลูกค้า / ที่อยู่…",
-    awaitingApi: "รอ API",
     guard: "เจ้าหน้าที่",
     gpsLive: "GPS สด",
     gpsStale: "GPS ค้าง",
@@ -96,7 +94,6 @@ export const COPY: Record<Lang, OperationsCopy> = {
     kpiArrived: "Arrived",
     kpiPending: "Pending completion",
     searchPlaceholder: "Search booking / customer / address…",
-    awaitingApi: "awaiting API",
     guard: "Guard",
     gpsLive: "GPS live",
     gpsStale: "GPS stale",
