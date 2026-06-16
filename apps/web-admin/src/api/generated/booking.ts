@@ -890,6 +890,10 @@ export interface operations {
                 status?: components["schemas"]["BookingStatus"];
                 /** @description Case-insensitive substring match on the booking address. */
                 search?: string;
+                /** @description Restrict to bookings assigned to this guard (the guard's job history). */
+                guard_id?: string;
+                /** @description Restrict to bookings placed by this customer (the customer's booking history). */
+                customer_id?: string;
                 /** @description Page size (max 200). */
                 limit?: components["parameters"]["Limit"];
                 /** @description Rows to skip. */

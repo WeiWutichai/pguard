@@ -408,6 +408,8 @@ class AdminApi {
   /// Parameters:
   /// * [status] - Filter by lifecycle status. An unrecognized value returns 400.
   /// * [search] - Case-insensitive substring match on the booking address.
+  /// * [guardId] - Restrict to bookings assigned to this guard (the guard's job history).
+  /// * [customerId] - Restrict to bookings placed by this customer (the customer's booking history).
   /// * [limit] - Page size (max 200).
   /// * [offset] - Rows to skip.
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
@@ -422,6 +424,8 @@ class AdminApi {
   Future<Response<ListBookings200Response>> adminListBookings({ 
     BookingStatus? status,
     String? search,
+    String? guardId,
+    String? customerId,
     int? limit = 50,
     int? offset = 0,
     CancelToken? cancelToken,
@@ -453,6 +457,8 @@ class AdminApi {
     final _queryParameters = <String, dynamic>{
       if (status != null) r'status': encodeQueryParameter(_serializers, status, const FullType(BookingStatus)),
       if (search != null) r'search': encodeQueryParameter(_serializers, search, const FullType(String)),
+      if (guardId != null) r'guard_id': encodeQueryParameter(_serializers, guardId, const FullType(String)),
+      if (customerId != null) r'customer_id': encodeQueryParameter(_serializers, customerId, const FullType(String)),
       if (limit != null) r'limit': encodeQueryParameter(_serializers, limit, const FullType(int)),
       if (offset != null) r'offset': encodeQueryParameter(_serializers, offset, const FullType(int)),
     };

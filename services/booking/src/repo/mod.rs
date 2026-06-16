@@ -91,15 +91,18 @@ pub async fn list_bookings(
 }
 
 /// Admin cross-user list — every booking (NO owner filter; the admin-role gate is the API
-/// layer's job), newest first, with optional `status` (validated enum) and `search` (address
-/// substring) filters and house limit/offset pagination. Diverges from [`list_bookings`]
-/// precisely by dropping the `customer_id = $1 OR guard_id = $1` scope. `$n` placeholders are
-/// built from a controlled counter; every value (incl. the ILIKE pattern) is a BOUND param —
-/// no user input is interpolated into the SQL.
+/// layer's job), newest first, with optional `status` (validated enum), `search` (address
+/// substring), and `guard_id`/`customer_id` (drill into one guard's or customer's bookings)
+/// filters plus house limit/offset pagination. Diverges from [`list_bookings`] precisely by
+/// dropping the implicit `customer_id = $1 OR guard_id = $1` scope — here either column is an
+/// explicit, optional filter. `$n` placeholders are built from a controlled counter; every
+/// value (incl. the ILIKE pattern) is a BOUND param — no user input is interpolated into the SQL.
 pub async fn admin_list_bookings(
     db: &sqlx::PgPool,
     status: Option<BookingStatus>,
     search: Option<&str>,
+    guard_id: Option<Uuid>,
+    customer_id: Option<Uuid>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<BookingResponse>, AppError> {
@@ -114,6 +117,14 @@ pub async fn admin_list_bookings(
         // Case-insensitive substring on the address; the value is bound ($idx), only the
         // wildcards are literal.
         conds.push(format!("address ILIKE '%' || ${idx} || '%'"));
+        idx += 1;
+    }
+    if guard_id.is_some() {
+        conds.push(format!("guard_id = ${idx}"));
+        idx += 1;
+    }
+    if customer_id.is_some() {
+        conds.push(format!("customer_id = ${idx}"));
         idx += 1;
     }
     if !conds.is_empty() {
@@ -132,6 +143,12 @@ pub async fn admin_list_bookings(
     }
     if let Some(s) = search {
         query = query.bind(s.to_string());
+    }
+    if let Some(g) = guard_id {
+        query = query.bind(g);
+    }
+    if let Some(c) = customer_id {
+        query = query.bind(c);
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
