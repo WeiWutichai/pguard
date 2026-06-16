@@ -574,10 +574,20 @@ class _Actions extends ConsumerWidget {
                     ),
                   ),
                 )
-              : PgPrimaryButton(
-                  label: isThai ? 'ดูรายละเอียด' : 'Details',
-                  onPressed: () {},
-                ),
+              // Once the job is completed, the design's next step is the customer review
+              // (Customer App ⑫). One review per assignment — a duplicate is handled by the
+              // review screen (409 → "already reviewed").
+              : booking.status == BookingStatus.completed
+                  ? PgPrimaryButton(
+                      label: isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
+                      color: PgTokens.colorAmber500,
+                      onPressed: () =>
+                          context.push('/booking/${booking.id}/review'),
+                    )
+                  : PgPrimaryButton(
+                      label: isThai ? 'ดูรายละเอียด' : 'Details',
+                      onPressed: () {},
+                    ),
         ),
       ],
     );

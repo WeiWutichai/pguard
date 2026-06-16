@@ -37,8 +37,13 @@ class PgPrimaryButton extends StatelessWidget {
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(PgTokens.radiusXl),
           ),
-          textStyle:
-              const TextStyle(fontSize: 16.5, fontWeight: FontWeight.w600),
+          // Explicit family: a button's ButtonStyle text style does NOT inherit the theme's
+          // `fontFamily`, so name the brand Thai face here or the label falls back to the OS
+          // default font (and renders as tofu where there is no Thai fallback).
+          textStyle: const TextStyle(
+              fontFamily: 'IBMPlexSansThai',
+              fontSize: 16.5,
+              fontWeight: FontWeight.w600),
         ),
         child: busy
             ? const SizedBox(
