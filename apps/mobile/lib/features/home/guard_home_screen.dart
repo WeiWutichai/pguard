@@ -4,7 +4,9 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_jobs_controller.dart';
+import '../../core/controllers/guard_ratings_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
@@ -248,11 +250,34 @@ class _StatsRow extends StatelessWidget {
           ),
         ),
         const SizedBox(width: PgTokens.space3),
-        // Rating stays a placeholder until GET /v1/guards/{id}/ratings stats is wired.
-        Expanded(
-          child: _StatCard(value: '—', label: isThai ? 'คะแนน' : 'Rating'),
-        ),
+        Expanded(child: _RatingStatCard(isThai: isThai)),
       ],
+    );
+  }
+}
+
+/// The rating stat card — the guard's real overall average from `GET /v1/guards/{id}/ratings`
+/// (tap → the full "รีวิวที่ได้รับ" screen). Shows "—" while loading / on error / with no reviews
+/// (never a fake 0.0).
+class _RatingStatCard extends ConsumerWidget {
+  const _RatingStatCard({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final guardId = ref.watch(sessionProvider.select((s) => s.user?.userId));
+    final value = guardId == null
+        ? '—'
+        : ref.watch(guardRatingsProvider(guardId)).maybeWhen(
+              data: (r) =>
+                  r.hasRatings ? '${r.averageValue!.toStringAsFixed(1)}★' : '—',
+              orElse: () => '—',
+            );
+    return InkWell(
+      onTap: guardId == null ? null : () => context.push('/guard/ratings'),
+      borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+      child: _StatCard(value: value, label: isThai ? 'คะแนน' : 'Rating'),
     );
   }
 }

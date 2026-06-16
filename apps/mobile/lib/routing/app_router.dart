@@ -25,6 +25,7 @@ import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
 import '../features/booking/payment_screen.dart';
 import '../features/booking/payment_success_screen.dart';
+import '../features/booking/review_screen.dart';
 import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
@@ -34,6 +35,7 @@ import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
 import '../features/notifications/notification_screen.dart';
+import '../features/ratings/guard_ratings_screen.dart';
 import '../features/profile/profile_edit_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/splash_screen.dart';
@@ -200,6 +202,16 @@ GoRouter appRouter(AppRouterRef ref) {
         builder: (context, state) =>
             GuardMapScreen(bookingId: state.pathParameters['id']!),
       ),
+      // Customer review of a completed booking (entered from live-status when completed).
+      GoRoute(
+        path: '/booking/:id/review',
+        builder: (context, state) =>
+            ReviewScreen(bookingId: state.pathParameters['id']!),
+      ),
+      // Guard's own "ratings & reviews" screen (entered from the dashboard rating card).
+      GoRoute(
+          path: '/guard/ratings',
+          builder: (_, __) => const GuardRatingsScreen()),
     ],
   );
 }
