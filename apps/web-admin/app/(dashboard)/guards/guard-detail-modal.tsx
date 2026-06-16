@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
 import type { components } from "@/api/generated/profile";
 import { Avatar, Badge, Button, Modal } from "@/components/ui";
+import { ratingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY } from "./copy";
@@ -46,6 +48,24 @@ export function GuardDetailModal({
   const c = COPY[lang];
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
   const reviewable = Boolean(onApprove || onReject);
+
+  // The guard's overall rating aggregate (admins may read any guard's). Null until loaded or when
+  // there are no visible reviews — rendered as "—", never a fake 0.0.
+  const [rating, setRating] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    ratingApi
+      .GET("/guards/{id}/ratings", { params: { path: { id: guard.user_id } } })
+      .then(({ data, error }) => {
+        if (alive && !error) setRating(data?.data?.average ?? null);
+      })
+      .catch(() => {
+        // Transport failure — leave the rating as "—" (no unhandled rejection).
+      });
+    return () => {
+      alive = false;
+    };
+  }, [guard.user_id]);
 
   const emergency = [guard.emergency_contact_name, guard.emergency_contact_relationship]
     .filter(Boolean)
@@ -122,7 +142,7 @@ export function GuardDetailModal({
 
       {/* Stat line — rating + jobs have no v2 endpoint (gap chips); experience is real. */}
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <StatMini label={`★ ${c.statRating}`} value={gap} />
+        <StatMini label={`★ ${c.statRating}`} value={rating ?? "—"} />
         <StatMini label={c.statJobs} value={gap} />
         <StatMini
           label={c.statExp}
