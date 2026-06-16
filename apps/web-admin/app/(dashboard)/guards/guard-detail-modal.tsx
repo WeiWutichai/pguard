@@ -30,13 +30,22 @@ function StatMini({ label, value }: { label: ReactNode; value: ReactNode }) {
 export function GuardDetailModal({
   guard,
   onClose,
+  onApprove,
+  onReject,
+  acting = false,
 }: {
   guard: GuardProfile;
   onClose: () => void;
+  /** When provided (applicant-review context), the footer shows Approve/Reject instead of the
+   *  disabled job-history/suspend actions — so a reviewer can decide without re-finding the row. */
+  onApprove?: () => void;
+  onReject?: () => void;
+  acting?: boolean;
 }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
+  const reviewable = Boolean(onApprove || onReject);
 
   const emergency = [guard.emergency_contact_name, guard.emergency_contact_relationship]
     .filter(Boolean)
@@ -64,17 +73,38 @@ export function GuardDetailModal({
       onClose={onClose}
       title={t("guards.detail.title")}
       footer={
-        <>
-          {/* Drawer-foot actions from the design — no job-history / suspend endpoints in
-              v2 yet, so they stay disabled behind an honest gap chip (never a fake toast). */}
-          {gap}
-          <Button variant="secondary" size="sm" disabled>
-            {c.jobHistory}
-          </Button>
-          <Button variant="danger-ghost" size="sm" disabled>
-            {c.suspend}
-          </Button>
-        </>
+        reviewable ? (
+          // Applicant-review context: decide right here. Same approve/reject the row triggers.
+          <>
+            {onReject && (
+              <Button
+                variant="danger-ghost"
+                size="sm"
+                disabled={acting}
+                onClick={onReject}
+              >
+                {t("applicants.reject")}
+              </Button>
+            )}
+            {onApprove && (
+              <Button size="sm" disabled={acting} onClick={onApprove}>
+                {t("applicants.approve")}
+              </Button>
+            )}
+          </>
+        ) : (
+          <>
+            {/* Drawer-foot actions from the design — no job-history / suspend endpoints in
+                v2 yet, so they stay disabled behind an honest gap chip (never a fake toast). */}
+            {gap}
+            <Button variant="secondary" size="sm" disabled>
+              {c.jobHistory}
+            </Button>
+            <Button variant="danger-ghost" size="sm" disabled>
+              {c.suspend}
+            </Button>
+          </>
+        )
       }
     >
       {/* Drawer head: avatar + name + full id (the list shows the short form only). */}

@@ -6,6 +6,7 @@ import {
   Check,
   CheckCircle2,
   Clock,
+  Eye,
   Inbox,
   Loader2,
   RefreshCw,
@@ -16,6 +17,8 @@ import {
 
 import type { components } from "@/api/generated/profile";
 import { profileApi } from "@/lib/api";
+import { GuardDetailModal } from "../guards/guard-detail-modal";
+import { initialsOf } from "../guards/guard-identity";
 import { useLanguage, type TKey } from "@/lib/i18n";
 import { fmtCappedCount } from "@/lib/format";
 import {
@@ -76,6 +79,7 @@ const COPY = {
     colApplicant: "ผู้สมัคร",
     colType: "ประเภท",
     colStatus: "สถานะ",
+    view: "ดู",
   },
   en: {
     title: "Applicants",
@@ -91,6 +95,7 @@ const COPY = {
     colApplicant: "Applicant",
     colType: "Type",
     colStatus: "Status",
+    view: "View",
   },
 } as const;
 
@@ -112,6 +117,8 @@ export default function ApplicantsPage() {
   const [actingId, setActingId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [page, setPage] = useState(1);
+  // The applicant whose full profile is open in the review modal (null = closed).
+  const [selected, setSelected] = useState<GuardProfile | null>(null);
 
   function statusLabel(s: ApprovalStatus): string {
     const key = STATUS_TKEY[s];
@@ -291,15 +298,17 @@ export default function ApplicantsPage() {
                 {pageRows.map((p) => (
                   <Tr key={p.user_id} className="cursor-default">
                     <Td>
-                      {/* Design `.cell-user`: avatar + name + ID sub. v2 GuardProfile has
-                          no name field → the uuid leads, gender·dob as the sub line. */}
+                      {/* Design `.cell-user`: avatar + name + ID sub. Registration now captures
+                          full_name → it leads; the short id is the mono sub (a guard registered
+                          before name capture falls back to the short id as the name). */}
                       <div className="flex items-center gap-[11px]">
-                        <Avatar>{p.user_id.slice(0, 2).toUpperCase()}</Avatar>
+                        <Avatar>{initialsOf(p.full_name ?? p.account_name, p.user_id)}</Avatar>
                         <div className="min-w-0">
-                          <div className="font-mono text-xs text-text-strong">{p.user_id}</div>
-                          <div className="text-xs text-muted">
-                            {[p.gender, p.date_of_birth].filter(Boolean).join(" · ") ||
-                              t("common.none")}
+                          <div className="truncate text-sm font-medium text-text-strong">
+                            {p.full_name ?? `#${p.user_id.slice(0, 8)}`}
+                          </div>
+                          <div className="font-mono text-xs text-muted">
+                            #{p.user_id.slice(0, 8)}
                           </div>
                         </div>
                       </div>
@@ -334,31 +343,41 @@ export default function ApplicantsPage() {
                       </Badge>
                     </Td>
                     <Td className="text-right">
-                      {status === "pending" ? (
-                        <div className="inline-flex gap-2">
-                          <Button
-                            size="sm"
-                            data-testid={`applicant-approve-${p.user_id}`}
-                            disabled={actingId === p.user_id}
-                            onClick={() => void act(p.user_id, "approve")}
-                          >
-                            <Check className="size-3.5" />
-                            {t("applicants.approve")}
-                          </Button>
-                          <Button
-                            variant="danger-ghost"
-                            size="sm"
-                            data-testid={`applicant-reject-${p.user_id}`}
-                            disabled={actingId === p.user_id}
-                            onClick={() => void act(p.user_id, "reject")}
-                          >
-                            <X className="size-3.5" />
-                            {t("applicants.reject")}
-                          </Button>
-                        </div>
-                      ) : (
-                        <span className="text-xs text-muted">{t("common.none")}</span>
-                      )}
+                      <div className="inline-flex gap-2">
+                        {/* View the full profile to inspect before deciding (all statuses). */}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          data-testid={`applicant-view-${p.user_id}`}
+                          onClick={() => setSelected(p)}
+                        >
+                          <Eye className="size-3.5" />
+                          {copy.view}
+                        </Button>
+                        {status === "pending" && (
+                          <>
+                            <Button
+                              size="sm"
+                              data-testid={`applicant-approve-${p.user_id}`}
+                              disabled={actingId === p.user_id}
+                              onClick={() => void act(p.user_id, "approve")}
+                            >
+                              <Check className="size-3.5" />
+                              {t("applicants.approve")}
+                            </Button>
+                            <Button
+                              variant="danger-ghost"
+                              size="sm"
+                              data-testid={`applicant-reject-${p.user_id}`}
+                              disabled={actingId === p.user_id}
+                              onClick={() => void act(p.user_id, "reject")}
+                            >
+                              <X className="size-3.5" />
+                              {t("applicants.reject")}
+                            </Button>
+                          </>
+                        )}
+                      </div>
                     </Td>
                   </Tr>
                 ))}
@@ -368,6 +387,32 @@ export default function ApplicantsPage() {
           </>
         )}
       </Panel>
+
+      {/* View the applicant's full profile before deciding — reuses the guards detail modal.
+          For a pending applicant the modal footer also offers Approve/Reject (decide in place);
+          finalized applicants are view-only. */}
+      {selected && (
+        <GuardDetailModal
+          guard={selected}
+          onClose={() => setSelected(null)}
+          onApprove={
+            selected.approval_status === "pending"
+              ? () => {
+                  void act(selected.user_id, "approve");
+                  setSelected(null);
+                }
+              : undefined
+          }
+          onReject={
+            selected.approval_status === "pending"
+              ? () => {
+                  void act(selected.user_id, "reject");
+                  setSelected(null);
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 }
