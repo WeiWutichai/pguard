@@ -26,10 +26,10 @@ void main() {
   test('drives transitions to the correct PUT paths; start records startedAt',
       () async {
     final api = FakeApi(
-      onGet: (path, _) async {
-        expect(path, '/bookings/b1');
-        return bookingJson('b1', 'accepted');
-      },
+      // build() now also reads the check-in trail; no trail yet → empty list (startedAt stays null).
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('b1', 'accepted')
+          : <Map<String, dynamic>>[],
       onPut: (path, _) async {
         switch (path) {
           case '/bookings/b1/en-route':
@@ -85,7 +85,9 @@ void main() {
 
   test('withdraw PUTs decline (assigned-guard withdraw → declined)', () async {
     final api = FakeApi(
-      onGet: (_, __) async => bookingJson('b1', 'accepted'),
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('b1', 'accepted')
+          : <Map<String, dynamic>>[],
       onPut: (path, _) async {
         expect(path, '/bookings/b1/decline');
         return bookingJson('b1', 'declined');
@@ -109,7 +111,10 @@ void main() {
       'submitCheckIn maps the 0-based UI slot to the 1-based server hour_number '
       '(slot N → hour N+1) and marks the slot (not the hour) done', () async {
     final checkIn = FakeCheckInService();
-    final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
+    final api = FakeApi(
+        onGet: (path, _) async => path == '/bookings/b1'
+            ? bookingJson('b1', 'arrived')
+            : const <Map<String, dynamic>>[]);
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -146,7 +151,10 @@ void main() {
   test('submitCheckIn maps the last slot (hours-1) 1:1 to hour=hours — no clamp', () async {
     final checkIn = FakeCheckInService();
     // hours: 8 → the schedule has slots 0..7; the last slot (7) maps to hour 8 directly.
-    final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
+    final api = FakeApi(
+        onGet: (path, _) async => path == '/bookings/b1'
+            ? bookingJson('b1', 'arrived')
+            : const <Map<String, dynamic>>[]);
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -167,7 +175,10 @@ void main() {
   test('submitCheckIn surfaces failure and does not mark the slot done',
       () async {
     final checkIn = FakeCheckInService(fail: true);
-    final api = FakeApi(onGet: (_, __) async => bookingJson('b1', 'arrived'));
+    final api = FakeApi(
+        onGet: (path, _) async => path == '/bookings/b1'
+            ? bookingJson('b1', 'arrived')
+            : const <Map<String, dynamic>>[]);
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -185,5 +196,38 @@ void main() {
     final s = c.read(activeJobControllerProvider('b1')).value!;
     expect(s.completedCheckIns, isEmpty);
     expect(s.error, isNotNull);
+  });
+
+  test(
+      'build hydrates completedCheckIns + startedAt from the check-in trail '
+      '(resumes the working panel after an app restart)', () async {
+    final api = FakeApi(
+      onGet: (path, _) async {
+        switch (path) {
+          case '/bookings/b1':
+            return bookingJson('b1', 'arrived'); // started server-side, in progress
+          case '/bookings/b1/progress-reports':
+            return [
+              {'hour_number': 1, 'created_at': '2026-06-05T14:00:00Z'},
+              {'hour_number': 2, 'created_at': '2026-06-05T15:00:00Z'},
+            ];
+          default:
+            throw StateError('unexpected GET $path');
+        }
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final s = await c.read(activeJobControllerProvider('b1').future);
+    // hours 1,2 reported → slots 0,1 (slot = hour_number − 1).
+    expect(s.completedCheckIns, {0, 1});
+    // startedAt = earliest anchor: r1 (14:00 − 0h) and r2 (15:00 − 1h) both → 14:00Z.
+    expect(s.startedAt, DateTime.utc(2026, 6, 5, 14, 0, 0));
+    // With status=arrived + startedAt set, the working panel resumes (clock available).
+    expect(s.clock, isNotNull);
   });
 }

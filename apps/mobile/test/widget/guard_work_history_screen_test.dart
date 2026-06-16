@@ -36,13 +36,17 @@ void main() {
   testWidgets(
       'Completed tab (default, newest first); Cancelled shows cancelled+declined; active excluded',
       (tester) async {
-    final api = FakeApi(onGet: (_, __) async => [
-          _b('completed', 'งานเก่า', 'c-old', '2026-06-01T07:00:00Z'),
-          _b('completed', 'งานใหม่', 'c-new', '2026-06-10T07:00:00Z'),
-          _b('cancelled', 'ลูกค้ายกเลิกงาน', 'x1', '2026-06-05T07:00:00Z'),
-          _b('declined', 'ถอนตัวเอง', 'x2', '2026-06-06T07:00:00Z'),
-          _b('accepted', 'งานที่กำลังรับ', 'a1', '2026-06-09T07:00:00Z'),
-        ]);
+    // History reads the ASSIGNED feed (/bookings); the open-discovery feed (/bookings/open)
+    // never carries completed/cancelled jobs, so it returns nothing here.
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
+        ? [
+            _b('completed', 'งานเก่า', 'c-old', '2026-06-01T07:00:00Z'),
+            _b('completed', 'งานใหม่', 'c-new', '2026-06-10T07:00:00Z'),
+            _b('cancelled', 'ลูกค้ายกเลิกงาน', 'x1', '2026-06-05T07:00:00Z'),
+            _b('declined', 'ถอนตัวเอง', 'x2', '2026-06-06T07:00:00Z'),
+            _b('accepted', 'งานที่กำลังรับ', 'a1', '2026-06-09T07:00:00Z'),
+          ]
+        : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
 
     // Completed tab is the default: both completed jobs show; cancelled/declined/active do not.
@@ -65,12 +69,14 @@ void main() {
     expect(find.text('งานใหม่'), findsNothing);
   });
 
-  testWidgets('GET /bookings is fetched exactly once (no polling)', (tester) async {
-    final api = FakeApi(onGet: (_, __) async =>
-        [_b('completed', 'งานเสร็จ', 'c1', '2026-06-10T07:00:00Z')]);
+  testWidgets('the job feeds are fetched once each (no polling)', (tester) async {
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
+        ? [_b('completed', 'งานเสร็จ', 'c1', '2026-06-10T07:00:00Z')]
+        : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
     await tester.pump(const Duration(seconds: 2));
 
-    expect(api.getCount, 1);
+    // build fetches BOTH feeds (/bookings + /bookings/open) exactly once each — no timer re-fetch.
+    expect(api.getCount, 2);
   });
 }
