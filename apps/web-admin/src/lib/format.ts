@@ -6,3 +6,11 @@ export function fmtCappedCount(n: number | null | undefined): string {
   if (n == null) return "—";
   return n >= ADMIN_LIST_CAP ? `${ADMIN_LIST_CAP}+` : String(n);
 }
+
+/** Money formatter for the exact-decimal STRING money fields from the API ("12400.00") — whole
+ * baht with thousands separators ("฿12,400"). Returns "฿0" for null/blank/non-finite. */
+export function fmtBaht(decimalStr: string | number | null | undefined): string {
+  const n = typeof decimalStr === "number" ? decimalStr : parseFloat(decimalStr ?? "0");
+  if (!Number.isFinite(n)) return "฿0";
+  return `฿${Math.round(n).toLocaleString("en-US")}`;
+}

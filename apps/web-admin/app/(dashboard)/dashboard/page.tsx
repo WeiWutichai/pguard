@@ -16,9 +16,10 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
+import type { components as paymentComponents } from "@/api/generated/payment";
 import type { components as presenceComponents } from "@/api/generated/presence";
 import type { components } from "@/api/generated/rating";
-import { presenceApi, profileApi, ratingApi } from "@/lib/api";
+import { bookingApi, paymentApi, presenceApi, profileApi, ratingApi } from "@/lib/api";
 import {
   Badge,
   Button,
@@ -30,16 +31,25 @@ import {
   PanelHead,
 } from "@/components/ui";
 import { useLanguage } from "@/lib/i18n";
-import { fmtCappedCount } from "@/lib/format";
+import { fmtBaht, fmtCappedCount } from "@/lib/format";
 
 import { COPY } from "./copy";
 import { MiniMap } from "./mini-map";
 
 type AdminReview = components["schemas"]["AdminReview"];
 type GuardLocation = presenceComponents["schemas"]["GuardLocation"];
+type RevenuePoint = paymentComponents["schemas"]["RevenuePoint"];
 
 // The admin guard-profiles list is capped at 200 by the repo; show "200+" rather than a wrong exact.
 const LIST_CAP = 200;
+
+// "Active jobs" = assigned + working (non-terminal, post-request) — counted from the admin booking list.
+const ACTIVE_BOOKING_STATUSES = new Set([
+  "accepted",
+  "en_route",
+  "arrived",
+  "pending_completion",
+]);
 
 interface Metrics {
   pending: number | null;
@@ -48,6 +58,11 @@ interface Metrics {
   hidden: number | null;
   avg: string | null;
   online: number | null;
+  activeJobs: number | null;
+  /** True when the booking list hit the 200-row cap, so `activeJobs` is a lower bound (→ "N+"). */
+  activeJobsCapped: boolean;
+  revenueToday: string | null;
+  revenue7d: RevenuePoint[];
   reviews: AdminReview[];
   /** The raw presence fixes (same call that produces `online`) — feeds the mini map. */
   locations: GuardLocation[];
@@ -60,6 +75,10 @@ const EMPTY: Metrics = {
   hidden: null,
   avg: null,
   online: null,
+  activeJobs: null,
+  activeJobsCapped: false,
+  revenueToday: null,
+  revenue7d: [],
   reviews: [],
   locations: [],
 };
@@ -77,6 +96,18 @@ export default function DashboardPage() {
   // derived from a real response (no invented aggregates); a failed sub-call leaves that metric null
   // (renders "—") and raises the error banner — the rest still show.
   const fetchAll = useCallback((alive: () => boolean) => {
+    // Local-midnight bounds for the revenue windows (the API takes RFC3339 instants).
+    const now = new Date();
+    const startToday = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate(),
+    ).toISOString();
+    const start7d = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() - 6,
+    ).toISOString();
     return Promise.all([
       profileApi.GET("/admin/guard-profiles", {
         params: { query: { approval_status: "pending" } },
@@ -86,9 +117,19 @@ export default function DashboardPage() {
       }),
       ratingApi.GET("/admin/reviews", { params: { query: { limit: LIST_CAP } } }),
       presenceApi.GET("/locations", { params: { query: { online_only: true } } }),
-    ]).then(([pend, appr, rev, online]) => {
+      bookingApi.GET("/admin/bookings", { params: { query: { limit: LIST_CAP } } }),
+      paymentApi.GET("/admin/reports/revenue", { params: { query: { from: startToday } } }),
+      paymentApi.GET("/admin/reports/revenue", { params: { query: { from: start7d } } }),
+    ]).then(([pend, appr, rev, online, bookings, revToday, rev7d]) => {
       if (!alive()) return;
-      const anyErr = pend.error || appr.error || rev.error || online.error;
+      const anyErr =
+        pend.error ||
+        appr.error ||
+        rev.error ||
+        online.error ||
+        bookings.error ||
+        revToday.error ||
+        rev7d.error;
       const stats = rev.data?.data?.stats;
       setHasError(Boolean(anyErr));
       setM({
@@ -98,6 +139,17 @@ export default function DashboardPage() {
         hidden: rev.error || !stats ? null : Math.max(0, stats.total - stats.visible),
         avg: rev.error ? null : (stats?.average ?? null),
         online: online.error ? null : (online.data?.data?.length ?? 0),
+        activeJobs: bookings.error
+          ? null
+          : (bookings.data?.data ?? []).filter((b) =>
+              ACTIVE_BOOKING_STATUSES.has(b.status),
+            ).length,
+        // The list is capped at 200 (all statuses, newest-first); if it saturated, active jobs
+        // beyond the page are unseen, so the count is a lower bound — surfaced as "N+".
+        activeJobsCapped:
+          !bookings.error && (bookings.data?.data?.length ?? 0) >= LIST_CAP,
+        revenueToday: revToday.error ? null : (revToday.data?.data?.total ?? null),
+        revenue7d: rev7d.error ? [] : (rev7d.data?.data?.series ?? []),
         reviews: rev.error ? [] : (rev.data?.data?.data ?? []),
         locations: online.error ? [] : (online.data?.data ?? []),
       });
@@ -163,8 +215,11 @@ export default function DashboardPage() {
             <KpiCard
               icon={<Shield />}
               label={c.kpiActiveJobs}
-              value={<Badge tone="gray">{c.awaitingApi}</Badge>}
-              caption={c.noAdminEndpoint}
+              value={
+                m.activeJobs == null
+                  ? "—"
+                  : `${m.activeJobs}${m.activeJobsCapped ? "+" : ""}`
+              }
             />
             <KpiCard
               icon={<Target />}
@@ -174,8 +229,7 @@ export default function DashboardPage() {
             <KpiCard
               icon={<Banknote />}
               label={c.kpiRevenueToday}
-              value={<Badge tone="gray">{c.awaitingApi}</Badge>}
-              caption={c.noAdminEndpoint}
+              value={m.revenueToday == null ? "—" : fmtBaht(m.revenueToday)}
             />
             <KpiCard
               icon={<Users />}
@@ -233,11 +287,11 @@ export default function DashboardPage() {
               </PanelBody>
             </Panel>
 
-            {/* Revenue, last 7 days — /payments is caller-scoped; no admin aggregate. */}
+            {/* Revenue, last 7 days — REAL daily net-revenue series from the admin reports endpoint. */}
             <Panel>
               <PanelHead title={c.revenueTitle} />
               <PanelBody>
-                <GapNote chip={c.awaitingApi} note={t("dashboard.gap.bookings")} />
+                <Revenue7dChart series={m.revenue7d} />
               </PanelBody>
             </Panel>
 
@@ -267,6 +321,58 @@ function GapNote({ chip, note }: { chip: string; note: string }) {
     <div className="flex min-h-24 flex-col items-start justify-center gap-2">
       <Badge tone="gray">{chip}</Badge>
       <p className="text-sm text-muted">{note}</p>
+    </div>
+  );
+}
+
+/** Hand-rolled 7-day net-revenue bar chart from the admin reports series — no charting dep (matches
+ *  the lean hand-rolled style of the rating histogram). Builds the last 7 calendar days and fills
+ *  each from the series by date (days with no revenue render as an empty bar). */
+function Revenue7dChart({ series }: { series: RevenuePoint[] }) {
+  const { lang } = useLanguage();
+  const c = COPY[lang];
+  const byDate = new Map(series.map((p) => [p.date, parseFloat(p.revenue)]));
+  const now = new Date();
+  const days = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (6 - i));
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+    return {
+      key,
+      label: d.toLocaleDateString(lang === "th" ? "th-TH" : "en-GB", {
+        weekday: "short",
+      }),
+      value: byDate.get(key) ?? 0,
+    };
+  });
+  const total = days.reduce((s, d) => s + d.value, 0);
+  const max = Math.max(1, ...days.map((d) => d.value));
+
+  if (total === 0) {
+    return (
+      <div className="flex min-h-24 items-center justify-center py-4 text-sm text-muted">
+        {c.revenueEmpty}
+      </div>
+    );
+  }
+  return (
+    <div>
+      <div className="mb-3 text-lg font-semibold text-text-strong tabular-nums">
+        {fmtBaht(total)}
+      </div>
+      <div className="flex h-28 items-end gap-2">
+        {days.map((d) => (
+          <div key={d.key} className="flex flex-1 flex-col items-center gap-1">
+            <div className="flex w-full flex-1 items-end">
+              <div
+                className="w-full rounded-t bg-brand-int"
+                style={{ height: `${Math.max(2, (d.value / max) * 100)}%` }}
+                title={fmtBaht(d.value)}
+              />
+            </div>
+            <span className="text-[10px] text-muted">{d.label}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
