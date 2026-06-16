@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/booking_flow_controller.dart';
+import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/core/models/payment.dart';
 import 'package:pguard_mobile/core/models/service_catalog.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
@@ -29,6 +30,8 @@ void main() {
         'base_fee': '500.00',
         'guard_count': req['guard_count'],
         'tip': '0',
+        'lat': req['lat'],
+        'lng': req['lng'],
         'created_at': '2026-06-05T10:00:00Z',
         'updated_at': '2026-06-05T10:00:00Z',
       };
@@ -135,6 +138,49 @@ void main() {
     expect(await ctrl.createBooking(), isFalse);
     expect(c.read(bookingFlowControllerProvider).error, contains('สถานที่'));
     expect(api.calls, isEmpty);
+  });
+
+  test(
+      'createBooking sends the map-pinned lat/lng and parses them back onto the booking',
+      () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/bookings');
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+
+    // Picking on the map captures the coordinate AND fills the sent address.
+    ctrl.setLocation(const GeoPlace(
+        point: GeoPoint(13.7401, 100.5331), placeName: 'หมู่บ้านลัดดารมย์'));
+    expect(await ctrl.createBooking(), isTrue);
+
+    expect(sent!['lat'], 13.7401);
+    expect(sent!['lng'], 100.5331);
+    expect(sent!['address'], 'หมู่บ้านลัดดารมย์');
+    // Round-trips onto the created booking (so the guard can read the site location).
+    final booking = c.read(bookingFlowControllerProvider).booking;
+    expect(booking?.lat, 13.7401);
+    expect(booking?.lng, 100.5331);
+  });
+
+  test('createBooking omits lat/lng when only a typed address is used (no map pick)',
+      () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (_, data) async {
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.setAddress('123 ลัดดารมย์ ซ.5');
+    expect(await ctrl.createBooking(), isTrue);
+
+    expect(sent!.containsKey('lat'), isFalse);
+    expect(sent!.containsKey('lng'), isFalse);
+    expect(c.read(bookingFlowControllerProvider).booking?.lat, isNull);
   });
 
   test('pay surfaces the server message and keeps no payment', () async {

@@ -3,10 +3,10 @@
 
 import 'dart:math' as math;
 //
-// NOTE on the v2 booking contract: `POST /v1/bookings` (CreateBookingRequest) persists only a
-// free-text `address` — there are NO lat/lng fields and no geocoding endpoint. We still capture
-// coordinates in the draft (the map picker is a real lat/lng picker) for the UX and to keep the
-// flow ready if the contract gains location fields; only the resolved `address` string is sent.
+// NOTE on the v2 booking contract: `POST /v1/bookings` (CreateBookingRequest) carries the
+// free-text `address` PLUS optional `lat`/`lng` (both-or-neither). There is no forward-geocoding
+// endpoint — the map picker IS the coordinate source. The booking flow sends the map-pinned
+// coordinate alongside the resolved `address` when the customer picks on the map (null otherwise).
 
 /// A WGS84 coordinate.
 class GeoPoint {

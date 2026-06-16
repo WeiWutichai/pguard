@@ -185,11 +185,19 @@ class BookingFlowController extends _$BookingFlowController {
         }
         final when = state.scheduledAt ??
             DateTime.now().toUtc().add(const Duration(hours: 1));
+        final place = state.place;
         final data = await ref.read(pguardApiProvider).post('/bookings', data: {
           'address': address,
           'scheduled_at': when.toUtc().toIso8601String(),
           'hours': state.hours,
           'guard_count': state.guardCount,
+          // Send the map-pinned site coordinate when the customer picked one (the contract's
+          // optional lat/lng — both-or-neither). Lets the guard see the job location and feeds
+          // open-job radius discovery server-side. Omitted when only a typed address was used.
+          if (place != null) ...{
+            'lat': place.point.lat,
+            'lng': place.point.lng,
+          },
           // Up-front tip stays "0"; an optional tip is added at payment as charge surplus
           // (contract: amount must cover expected_total, surplus is treated as an extra tip).
         });
