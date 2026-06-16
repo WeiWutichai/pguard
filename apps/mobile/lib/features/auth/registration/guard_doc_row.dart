@@ -110,9 +110,13 @@ class GuardDocRow extends StatelessWidget {
   /// doesn't trigger the row's re-capture. Prompts to set one (brand ink) or shows the chosen date.
   Widget _expiryButton() {
     final e = expiry;
-    final label = e == null
-        ? (isThai ? 'ระบุวันหมดอายุ' : 'Set expiry')
+    // Expiry is REQUIRED for every attached document — when it's missing, prompt in the danger
+    // tone so it reads as a must-fill (the step won't advance without it), not an optional extra.
+    final missing = e == null;
+    final label = missing
+        ? (isThai ? 'ต้องระบุวันหมดอายุ' : 'Expiry required')
         : (isThai ? 'หมดอายุ ${_fmtDate(e)}' : 'Expires ${_fmtDate(e)}');
+    final accent = missing ? PgTokens.colorDanger : PgTokens.colorTextMuted;
     return Padding(
       padding: const EdgeInsets.only(top: 4),
       child: InkWell(
@@ -121,18 +125,15 @@ class GuardDocRow extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.event_outlined,
-                size: 13,
-                color: e == null
-                    ? PgTokens.colorPrimary
-                    : PgTokens.colorTextMuted),
+            Icon(missing ? Icons.event_busy_outlined : Icons.event_available_outlined,
+                size: 13, color: accent),
             const SizedBox(width: 4),
             Text(
               label,
               style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: FontWeight.w600,
-                color: e == null ? PgTokens.colorPrimary : PgTokens.colorText,
+                color: missing ? PgTokens.colorDanger : PgTokens.colorText,
               ),
             ),
           ],
