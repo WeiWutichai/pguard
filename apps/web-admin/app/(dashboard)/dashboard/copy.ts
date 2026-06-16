@@ -20,6 +20,7 @@ export const COPY = {
     alertsGap:
       "ต้องมี endpoint การแจ้งเตือนสำหรับแอดมิน (เช็คอินที่ขาด · คิวคืนเงิน · ผู้สมัครใหม่)",
     revenueTitle: "รายได้ 7 วันล่าสุด",
+    revenueEmpty: "ยังไม่มีรายได้ใน 7 วันที่ผ่านมา",
     feedTitle: "กิจกรรมล่าสุด",
     feedGap: "ต้องมี endpoint ฟีดกิจกรรมสำหรับแอดมิน",
   },
@@ -38,6 +39,7 @@ export const COPY = {
     alertsGap:
       "Needs an admin alerts endpoint (missed check-ins · refund queue · new applicants)",
     revenueTitle: "Revenue, last 7 days",
+    revenueEmpty: "No revenue in the last 7 days",
     feedTitle: "Recent activity",
     feedGap: "Needs an admin activity-feed endpoint",
   },
