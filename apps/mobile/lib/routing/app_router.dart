@@ -30,6 +30,7 @@ import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
 import '../features/guard/earnings_screen.dart';
+import '../features/guard/guard_jobs_screen.dart';
 import '../features/guard/job_detail_screen.dart';
 import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
@@ -152,6 +153,9 @@ GoRouter appRouter(AppRouterRef ref) {
           incomingCallId: state.uri.queryParameters['incoming'],
         ),
       ),
+      // Guard's full tabbed jobs list (Pending / Active / Done) — the bottom-nav "งาน" tab.
+      GoRoute(
+          path: '/guard/jobs', builder: (_, __) => const GuardJobsScreen()),
       GoRoute(
         path: '/guard/job/:id',
         builder: (context, state) =>
