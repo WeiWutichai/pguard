@@ -47,12 +47,15 @@ function guardLabel(g: GuardProfile, yearsUnit: string): string {
 export function BookingDetailModal({
   booking,
   customerName,
+  customerPhone,
   approvedGuards,
   onClose,
   onAssigned,
 }: {
   booking: Booking;
   customerName: string | null;
+  /** Optional — the bookings page enriches it from the customer directory; other callers omit it. */
+  customerPhone?: string | null;
   approvedGuards: GuardProfile[];
   onClose: () => void;
   onAssigned: () => void;
@@ -129,8 +132,7 @@ export function BookingDetailModal({
         />
       </div>
 
-      {/* Customer panel — name (admin customer directory) + address (on the booking). Phone is
-          identity-owned, not exposed to this page, so it is omitted (no fake value). */}
+      {/* Customer panel — name + phone (admin customer directory) + the booking address. */}
       <div className="mt-4 rounded-lg border border-border px-4 py-3">
         <div className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
           {c.customer}
@@ -138,6 +140,9 @@ export function BookingDetailModal({
         <div className="mt-1.5 text-sm font-semibold text-text-strong">
           {customerName ?? `ID #${booking.customer_id.slice(0, 8)}`}
         </div>
+        {customerPhone && (
+          <div className="mt-0.5 font-mono text-[12.5px] text-muted">{customerPhone}</div>
+        )}
         <div className="mt-0.5 text-[12.5px] text-muted">{booking.address}</div>
       </div>
 
