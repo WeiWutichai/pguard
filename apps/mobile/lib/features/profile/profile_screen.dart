@@ -38,7 +38,7 @@ class ProfileScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'โปรไฟล์' : 'Profile',
         subtitle: isThai ? 'โปรไฟล์และการตั้งค่า' : 'Profile & settings',
         showBack: true,

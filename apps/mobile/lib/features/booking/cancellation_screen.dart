@@ -235,7 +235,7 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ยกเลิกการจอง' : 'Cancellation',
         subtitle: address != null ? '$_shortId · $address' : _shortId,
         showBack: true,

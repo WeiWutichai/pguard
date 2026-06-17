@@ -82,7 +82,7 @@ class _PaymentScreenState extends ConsumerState<PaymentScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ชำระเงิน' : 'Payment',
         subtitle: isThai ? 'ตัดจริงตามเวลางาน' : 'Charged by actual hours',
         showBack: true,

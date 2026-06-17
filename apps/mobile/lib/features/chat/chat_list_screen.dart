@@ -28,7 +28,7 @@ class ChatListScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ข้อความ' : 'Messages',
         subtitle: isThai ? 'พูดคุยกับคู่สนทนา' : 'Conversations',
         showBack: true,

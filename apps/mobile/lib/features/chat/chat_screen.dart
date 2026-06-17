@@ -111,7 +111,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: widget.title ?? 'แชท',
         // Design state 3: read-only thread swaps the status line to "job completed".
         subtitle: widget.readOnly

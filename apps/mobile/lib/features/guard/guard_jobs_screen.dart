@@ -37,7 +37,7 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'งานของฉัน' : 'My Jobs',
         showBack: true,
       ),

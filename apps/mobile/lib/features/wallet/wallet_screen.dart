@@ -31,7 +31,7 @@ class WalletScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ใบเสร็จ' : 'Receipts',
         subtitle: isThai ? 'รายการชำระเงิน' : 'Your payments',
         showBack: true,

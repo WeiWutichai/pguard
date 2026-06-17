@@ -42,7 +42,7 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ประวัติการจ้าง' : 'Hirer history',
         subtitle: isThai ? 'รายการจองทั้งหมดของคุณ' : 'All your bookings',
         showBack: true,
