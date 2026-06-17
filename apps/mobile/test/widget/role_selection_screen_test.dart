@@ -23,7 +23,14 @@ void main() {
 
     expect(find.textContaining('ลูกค้า'), findsOneWidget);
     expect(find.textContaining('เจ้าหน้าที่ รปภ.'), findsOneWidget);
-    // The guard card flags that approval is required (it can't log in until approved).
-    expect(find.textContaining('ต้องผ่านการอนุมัติ'), findsOneWidget);
+    // Per the mockup (screen 6) the cards describe the role's value, not the approval gate
+    // (approval is surfaced later on the pending screen).
+    expect(find.textContaining('รับงาน ส่งรายงาน ดูรายได้'), findsOneWidget);
+    expect(find.textContaining('จองและติดตามเจ้าหน้าที่'), findsOneWidget);
+    // Guard is presented FIRST (above the customer card), matching the mockup order.
+    expect(
+      tester.getTopLeft(find.text('เจ้าหน้าที่ รปภ.')).dy,
+      lessThan(tester.getTopLeft(find.text('ลูกค้าจ้างงาน')).dy),
+    );
   });
 }
