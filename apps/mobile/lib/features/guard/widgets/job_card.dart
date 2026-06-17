@@ -13,6 +13,7 @@ class GuardJobCard extends StatelessWidget {
     required this.isThai,
     this.onTap,
     this.actions,
+    this.infoLine,
     this.highlight = false,
   });
 
@@ -20,6 +21,10 @@ class GuardJobCard extends StatelessWidget {
   final bool isThai;
   final VoidCallback? onTap;
   final Widget? actions;
+
+  /// Optional full-width line between the header and the actions (e.g. the incoming card's
+  /// guard→job distance). Kept generic so the card stays reusable + Riverpod-free.
+  final Widget? infoLine;
   final bool highlight;
 
   /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
@@ -106,6 +111,10 @@ class GuardJobCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (infoLine != null) ...[
+                const SizedBox(height: PgTokens.space2),
+                infoLine!,
+              ],
               if (actions != null) ...[
                 const SizedBox(height: PgTokens.space3),
                 actions!,

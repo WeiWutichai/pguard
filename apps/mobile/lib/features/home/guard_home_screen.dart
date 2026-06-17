@@ -11,6 +11,7 @@ import '../../core/controllers/session_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
+import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_bottom_nav.dart';
@@ -273,6 +274,23 @@ class GuardHomeStats {
   /// Number of the guard's jobs scheduled today.
   static int jobsToday(List<Booking> all, DateTime now) =>
       all.where((b) => _isToday(b.scheduledAt, now)).length;
+
+  /// HONEST guard→job-site distance+ETA label for the incoming card, or `null` when it can't be
+  /// shown truthfully. Straight-line [TravelEstimate] (the `~` marks the ETA approximate — no
+  /// routing service) computed ONLY when BOTH the guard's latest GPS fix [guardAt] AND the
+  /// booking's pinned coordinate exist; `null` otherwise (offline / no fix / no pin) so the card
+  /// omits the line rather than fabricating a distance. Pure → unit-testable without widgets.
+  static String? incomingDistanceLabel(
+    GeoPoint? guardAt,
+    Booking booking, {
+    required bool isThai,
+  }) {
+    final lat = booking.lat;
+    final lng = booking.lng;
+    if (guardAt == null || lat == null || lng == null) return null;
+    final est = TravelEstimate.between(guardAt, GeoPoint(lat, lng));
+    return '${est.distanceLabel(isThai)} · ${est.etaLabel(isThai)}';
+  }
 }
 
 /// Screen 1 stats row — 3 equal cards: today's earnings / jobs today / rating.
@@ -418,6 +436,7 @@ class _JobsBody extends StatelessWidget {
               isThai: isThai,
               highlight: true,
               onTap: () => onOpenDetail(b.id),
+              infoLine: _GuardDistanceLine(booking: b, isThai: isThai),
               actions: Row(
                 children: [
                   SizedBox(
@@ -439,6 +458,42 @@ class _JobsBody extends StatelessWidget {
             ),
             const SizedBox(height: PgTokens.space3),
           ],
+      ],
+    );
+  }
+}
+
+/// The guard→job-site distance + ~ETA line on an incoming card (design `.sb-line`: pin · "0.8
+/// กม. · ~4 นาที"). HONEST data only: straight-line haversine via the shared [TravelEstimate]
+/// (the `~` marks the ETA approximate — there is no routing service), shown ONLY when the guard's
+/// live GPS fix AND the booking's pinned coordinate both exist; otherwise it renders nothing
+/// (never a fabricated distance/ETA). Watches just the latest fix, so only THIS line rebuilds as
+/// the guard moves — not the whole dashboard.
+class _GuardDistanceLine extends ConsumerWidget {
+  const _GuardDistanceLine({required this.booking, required this.isThai});
+
+  final Booking booking;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final sample =
+        ref.watch(trackingControllerProvider.select((s) => s.lastSample));
+    final guardAt = sample == null ? null : GeoPoint(sample.lat, sample.lng);
+    final label =
+        GuardHomeStats.incomingDistanceLabel(guardAt, booking, isThai: isThai);
+    // No live fix (offline / no GPS) or no pinned job coordinate → omit the line entirely.
+    if (label == null) return const SizedBox.shrink();
+    return Row(
+      children: [
+        const Icon(Icons.place_outlined,
+            size: 14, color: PgTokens.colorTextMuted),
+        const SizedBox(width: PgTokens.space1),
+        Text(
+          label,
+          style:
+              const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+        ),
       ],
     );
   }
