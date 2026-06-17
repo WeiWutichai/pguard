@@ -36,7 +36,7 @@ class EarningsScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'รายได้' : 'Earnings',
         subtitle: isThai ? 'รายได้โดยประมาณ' : 'Earnings',
         showBack: true,

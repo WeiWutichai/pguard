@@ -81,7 +81,7 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'จองเจ้าหน้าที่' : 'Book a guard',
         subtitle: service != null
             ? (isThai ? service.labelTh : service.labelEn)

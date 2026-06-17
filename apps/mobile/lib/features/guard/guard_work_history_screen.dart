@@ -51,7 +51,7 @@ class _GuardWorkHistoryScreenState
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'ประวัติงาน' : 'Work history',
         showBack: true,
       ),

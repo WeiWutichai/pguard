@@ -43,7 +43,7 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'เลือกเจ้าหน้าที่' : 'Choose a guard',
         subtitle: state.guards.isNotEmpty
             ? (isThai

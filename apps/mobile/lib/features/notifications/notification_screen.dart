@@ -23,7 +23,7 @@ class NotificationScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'การแจ้งเตือน' : 'Notifications',
         showBack: true,
         trailing: hasUnread

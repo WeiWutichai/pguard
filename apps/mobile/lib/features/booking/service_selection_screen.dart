@@ -26,7 +26,7 @@ class ServiceSelectionScreen extends ConsumerWidget {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(
+      appBar: PGuardHeader(light: true, 
         title: isThai ? 'เลือกประเภทสถานที่' : 'Select place type',
         showBack: true,
       ),
