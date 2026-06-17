@@ -20,6 +20,20 @@ pub struct InternalGuard {
     pub years_of_experience: Option<i32>,
 }
 
+/// The lean, customer-facing guard mini-profile for the live-tracking map
+/// (`GET /guards/{id}/public`). Deliberately NARROW — only what the tracking card needs to
+/// identify the assigned guard: name + experience. NEVER bank/address/DOB/emergency-contact PII
+/// (least-privilege; those stay owner/admin-only). `full_name` is the new exposure — reachable
+/// ONLY by a customer with an ACTIVE booking with this guard (or the guard themselves / an admin),
+/// and ONLY for an `approved` guard (the repo filters; un-approved → 404). Photo is deferred (no
+/// avatar storage exists yet).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicGuardProfile {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub years_of_experience: Option<i32>,
+}
+
 /// Query for `GET /internal/profiles/recipients` — the broadcast audience selector
 /// (notification's bulk-send asks profile to resolve `user_id`s by role).
 #[derive(Debug, Deserialize)]

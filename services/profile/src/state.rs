@@ -2,10 +2,40 @@
 
 use jsonwebtoken::DecodingKey;
 use sqlx::PgPool;
+use uuid::Uuid;
 
 use shared::auth::HasJwtSecret;
 use shared::config::{JwtConfig, ServiceJwtConfig};
+use shared::error::AppError;
 use shared::service_jwt::HasServiceJwt;
+
+use crate::repo;
+
+/// The IDOR authorization read: does `customer_id` have an ACTIVE booking with `guard_id`?
+/// Decoupled from the DB so the customer-gate on the public guard-profile read is hermetically
+/// testable (mirrors presence's `BookingAuthz`). Backed by the event-derived
+/// `profile.guard_assignments` read-model.
+#[allow(async_fn_in_trait)] // internal trait, never `dyn`.
+pub trait BookingAuthz: Send + Sync {
+    async fn has_active_booking(&self, customer_id: Uuid, guard_id: Uuid)
+        -> Result<bool, AppError>;
+}
+
+/// DB-backed authz — reads the event-derived `profile.guard_assignments` read-model.
+#[derive(Clone)]
+pub struct DbBookingAuthz {
+    pub db: PgPool,
+}
+
+impl BookingAuthz for DbBookingAuthz {
+    async fn has_active_booking(
+        &self,
+        customer_id: Uuid,
+        guard_id: Uuid,
+    ) -> Result<bool, AppError> {
+        repo::has_active_booking(&self.db, customer_id, guard_id).await
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
@@ -20,6 +50,9 @@ pub struct AppState {
     /// Separate secret for service-to-service JWTs — guards the `/internal/guards` catalog
     /// read that booking's discovery calls (CLAUDE.md "Service auth (internal)").
     pub service_jwt_config: ServiceJwtConfig,
+    /// IDOR authz for the customer-readable guard mini-profile read — backed by the
+    /// event-derived `profile.guard_assignments` read-model.
+    pub booking_authz: DbBookingAuthz,
 }
 
 impl HasJwtSecret for AppState {
@@ -45,20 +78,30 @@ impl HasServiceJwt for AppState {
 /// gate with a lightweight state — the rejection paths short-circuit before the DB is
 /// touched (mirrors booking's `BookingDeps`).
 pub trait ProfileDeps: HasJwtSecret + Clone + Send + Sync + 'static {
+    /// The IDOR authz reader (associated type → static dispatch; the public guard-profile
+    /// handler's customer gate calls it). A test stub makes the gate hermetic.
+    type Authz: BookingAuthz;
+
     fn db(&self) -> &PgPool;
     /// Read-replica pool for admin list reads (C5.3). Defaults to primary (test doubles +
     /// single-node need no change); `AppState` overrides it with the replica pool.
     fn db_read(&self) -> &PgPool {
         self.db()
     }
+    fn booking_authz(&self) -> &Self::Authz;
 }
 
 impl ProfileDeps for AppState {
+    type Authz = DbBookingAuthz;
+
     fn db(&self) -> &PgPool {
         &self.db
     }
     fn db_read(&self) -> &PgPool {
         &self.db_read
+    }
+    fn booking_authz(&self) -> &Self::Authz {
+        &self.booking_authz
     }
 }
 

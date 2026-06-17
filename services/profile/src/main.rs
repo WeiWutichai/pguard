@@ -52,21 +52,36 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Redis cache connection (reconnecting)")?;
 
+    // IDOR authz reader for the customer-readable guard mini-profile — reads the event-derived
+    // `profile.guard_assignments` read-model (projected by the booking-events consumer below).
+    let booking_authz = state::DbBookingAuthz { db: db.clone() };
+
     let state = AppState {
         db,
         db_read,
         redis_conn,
         jwt_config,
         service_jwt_config,
+        booking_authz,
     };
 
-    // --- background outbox relay: drains profile.outbox → NATS (user.approved/rejected) ---
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
+    // --- background outbox relay: drains profile.outbox → NATS (user.approved/rejected) ---
     {
         let relay_db = state.db.clone();
+        let relay_nats = nats_url.clone();
         tokio::spawn(async move {
-            events::run_relay(relay_db, nats_url).await;
+            events::run_relay(relay_db, relay_nats).await;
+        });
+    }
+    // --- background booking-events consumer: projects pguard.events.booking.* into the
+    //     profile.guard_assignments IDOR read-model (gates the customer guard-profile read) ---
+    {
+        let consumer_db = state.db.clone();
+        let consumer_nats = nats_url.clone();
+        tokio::spawn(async move {
+            events::consumer::run_consumer(consumer_db, &consumer_nats).await;
         });
     }
 
@@ -82,6 +97,13 @@ async fn main() -> anyhow::Result<()> {
             post(api::upsert_customer_profile::<AppState>),
         )
         .route("/profile/me", get(api::get_my_profile::<AppState>))
+        // Customer-readable guard mini-profile (name + experience) for the live-tracking map.
+        // IDOR-gated: a customer reads it only for a guard on their ACTIVE booking; the guard's
+        // own read + admin allowed. Approval-gated (un-approved guards → 404).
+        .route(
+            "/guards/{id}/public",
+            get(api::get_public_guard_profile::<AppState>),
+        )
         .route(
             "/admin/guard-profiles",
             get(api::admin_list_guard_profiles::<AppState>),

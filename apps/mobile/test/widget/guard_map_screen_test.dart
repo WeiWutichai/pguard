@@ -8,13 +8,20 @@ import 'package:pguard_mobile/features/booking/guard_map_screen.dart';
 
 import '../support/fakes.dart';
 
-Map<String, dynamic> bookingJson({String? guardId, String status = 'en_route'}) =>
+Map<String, dynamic> bookingJson({
+  String? guardId,
+  String status = 'en_route',
+  double? lat,
+  double? lng,
+}) =>
     {
       'id': 'b1',
       'customer_id': 'c1',
       'guard_id': guardId,
       'status': status,
       'address': 'หมู่บ้านลัดดารมย์ ซ.5',
+      if (lat != null) 'lat': lat,
+      if (lng != null) 'lng': lng,
     };
 
 Map<String, dynamic> locationJson({bool live = true}) => {
@@ -26,6 +33,20 @@ Map<String, dynamic> locationJson({bool live = true}) => {
       'recorded_at': '2026-06-10T10:30:45Z',
       'is_online': live,
       'is_live': live,
+    };
+
+Map<String, dynamic> publicJson({String? fullName = 'ณัฐพล วงศ์ดี', int? years = 7}) =>
+    {
+      'user_id': 'g1',
+      if (fullName != null) 'full_name': fullName,
+      if (years != null) 'years_of_experience': years,
+    };
+
+Map<String, dynamic> ratingsJson({String? average = '4.9', int count = 12}) => {
+      'guard_id': 'g1',
+      'average': average,
+      'count': count,
+      'reviews': <Map<String, dynamic>>[],
     };
 
 Widget host({
@@ -63,6 +84,8 @@ void main() {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
       if (path == '/guards/g1/location') return locationJson();
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
       // The info panel's chat entry overlays an unread badge (one conversations fetch).
       if (path == '/conversations') return <Map<String, dynamic>>[];
       fail('unexpected GET $path');
@@ -73,6 +96,9 @@ void main() {
 
     expect(find.byIcon(Icons.shield), findsOneWidget, reason: 'guard marker');
     expect(find.text('คุณ'), findsOneWidget, reason: 'reference marker label');
+    // The profile block shows the real name + honest rating (no fake photo/ETA).
+    expect(find.text('ณัฐพล วงศ์ดี'), findsOneWidget, reason: 'guard name');
+    expect(find.textContaining('4.9'), findsOneWidget, reason: 'rating average');
     // En-route uses the design's customer-directed tracking copy, not the lifecycle label.
     expect(find.text('กำลังเดินทางมาหาคุณ'), findsOneWidget,
         reason: 'status chip');
@@ -181,6 +207,83 @@ void main() {
     expect(find.text('Live position'), findsOneWidget);
     expect(find.text('You'), findsOneWidget);
     expect(find.textContaining('from you'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'no profile name → generic role label + person avatar (never a fake name)',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (path == '/guards/g1/location') return locationJson();
+      if (path == '/guards/g1/public') {
+        return publicJson(fullName: null, years: null);
+      }
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      if (path == '/conversations') return <Map<String, dynamic>>[];
+      fail('unexpected GET $path');
+    });
+
+    await tester.pumpWidget(host(api: api));
+    await settle(tester);
+
+    expect(find.text('เจ้าหน้าที่รักษาความปลอดภัย'), findsOneWidget,
+        reason: 'generic role label — never a fabricated name');
+    expect(find.byIcon(Icons.person), findsOneWidget,
+        reason: 'avatar placeholder (not a fake photo, not the brand shield)');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('no visible reviews → "ยังไม่มีรีวิว" (never a fake 0.0)',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (path == '/guards/g1/location') return locationJson();
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') {
+        return ratingsJson(average: null, count: 0);
+      }
+      if (path == '/conversations') return <Map<String, dynamic>>[];
+      fail('unexpected GET $path');
+    });
+
+    await tester.pumpWidget(host(api: api));
+    await settle(tester);
+
+    expect(find.text('ยังไม่มีรีวิว'), findsOneWidget);
+    expect(find.textContaining('0.0'), findsNothing,
+        reason: 'never fabricate a 0.0 rating');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'booking with a pinned coordinate → "ปลายทาง" marker + distance from the '
+      'destination, and NEVER a fabricated ETA in minutes', (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return bookingJson(guardId: 'g1', lat: 13.80, lng: 100.60);
+      }
+      if (path == '/guards/g1/location') return locationJson();
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      if (path == '/conversations') return <Map<String, dynamic>>[];
+      fail('unexpected GET $path');
+    });
+
+    await tester.pumpWidget(host(api: api));
+    await settle(tester);
+
+    expect(find.text('ปลายทาง'), findsOneWidget,
+        reason: 'the marker labels the booking pin as the destination');
+    expect(find.text('คุณ'), findsNothing,
+        reason: 'the device-fix label is not used when a pin exists');
+    expect(find.textContaining('ห่างจากจุดหมาย'), findsOneWidget,
+        reason: 'distance measured to the destination');
+    expect(find.textContaining('นาที'), findsNothing,
+        reason: 'no routing service → distance only, never a fake ETA');
 
     await tester.pumpWidget(const SizedBox());
   });

@@ -23,8 +23,8 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuard, RecruitCandidate, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest,
+    GuardProfileResponse, InternalGuard, PublicGuardProfile, RecruitCandidate,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -368,6 +368,84 @@ pub async fn get_guard_profile(
     row.map(guard_row_from_tuple)
         .map(GuardRow::into_response)
         .transpose()
+}
+
+/// Fetch the customer-facing guard MINI-profile for the live-tracking map
+/// (`GET /guards/{id}/public`). Returns `None` (→ 404) unless the guard exists AND is
+/// `approved` — so an un-approved/unknown guard's existence is never revealed, and only vetted
+/// guards' names are ever exposed. Lean projection (user_id + full_name + experience) — NEVER
+/// the bank/address/DOB/emergency-contact PII columns (least-privilege). The IDOR gate
+/// (customer must have an ACTIVE booking with this guard) is the handler's job; this is the
+/// post-authz read.
+pub async fn get_public_guard_profile(
+    db: &PgPool,
+    guard_id: Uuid,
+) -> Result<Option<PublicGuardProfile>, AppError> {
+    let row = sqlx::query_as::<_, PublicGuardProfile>(
+        "SELECT user_id, full_name, years_of_experience FROM profile.guard_profiles \
+         WHERE user_id = $1 AND approval_status = 'approved'::profile.approval_status",
+    )
+    .bind(guard_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
+// ----- Event-derived IDOR read-model (guard_assignments) -----
+
+/// The IDOR read: does `customer_id` have an ACTIVE booking with `guard_id`? Reads the
+/// event-derived `profile.guard_assignments` read-model (projected from `pguard.events.booking.*`
+/// by the booking-links consumer). NO cross-schema read of booking's tables, NO cross-service FK.
+pub async fn has_active_booking(
+    db: &PgPool,
+    customer_id: Uuid,
+    guard_id: Uuid,
+) -> Result<bool, AppError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS( \
+            SELECT 1 FROM profile.guard_assignments \
+            WHERE customer_id = $1 AND guard_id = $2 AND active \
+         )",
+    )
+    .bind(customer_id)
+    .bind(guard_id)
+    .fetch_one(db)
+    .await?;
+    Ok(exists)
+}
+
+/// Project one booking event onto the read-model: upsert the (booking_id) link's `active` flag.
+/// Idempotent + LAST-WRITER-WINS by `occurred_at` — the `WHERE EXCLUDED.updated_at >
+/// profile.guard_assignments.updated_at` guard means a redelivered/reordered OLDER event never
+/// reactivates a finished booking (at-least-once JetStream delivery is safe). `customer_id`/
+/// `guard_id` are COALESCEd so a terminal event that omits them keeps the ids from the accept.
+pub async fn upsert_assignment(
+    db: &PgPool,
+    booking_id: Uuid,
+    customer_id: Option<Uuid>,
+    guard_id: Option<Uuid>,
+    active: bool,
+    occurred_at: DateTime<Utc>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO profile.guard_assignments \
+             (booking_id, customer_id, guard_id, active, updated_at) \
+         VALUES ($1, $2, $3, $4, $5) \
+         ON CONFLICT (booking_id) DO UPDATE SET \
+             customer_id = COALESCE(EXCLUDED.customer_id, profile.guard_assignments.customer_id), \
+             guard_id    = COALESCE(EXCLUDED.guard_id, profile.guard_assignments.guard_id), \
+             active      = EXCLUDED.active, \
+             updated_at  = EXCLUDED.updated_at \
+         WHERE EXCLUDED.updated_at > profile.guard_assignments.updated_at",
+    )
+    .bind(booking_id)
+    .bind(customer_id)
+    .bind(guard_id)
+    .bind(active)
+    .bind(occurred_at)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// List guard profiles for the admin onboarding queue, newest first. An optional
@@ -1087,6 +1165,145 @@ mod db_tests {
             .await;
         let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The customer-facing public read returns ONLY approved guards: a pending guard is invisible
+    /// (→ None → 404, no existence leak); once approved, the lean shape (name + experience) is
+    /// returned. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn public_profile_only_returns_approved_guards() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // A PENDING guard is NOT publicly readable.
+        let pending = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            pending,
+            &UpsertGuardProfileRequest {
+                full_name: Some("Pending Pat".to_string()),
+                years_of_experience: Some(2),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("upsert pending");
+        assert!(
+            get_public_guard_profile(&pool, pending)
+                .await
+                .expect("get")
+                .is_none(),
+            "an un-approved guard must not be publicly readable"
+        );
+
+        // Once APPROVED, the lean public shape (name + experience only) is returned.
+        let approved = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            approved,
+            &UpsertGuardProfileRequest {
+                full_name: Some("ณัฐพล วงศ์ดี".to_string()),
+                years_of_experience: Some(7),
+                account_number: Some("1234567890".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("upsert approved");
+        set_approval_status(&pool, approved, ApprovalStatus::Approved, "guard")
+            .await
+            .expect("approve");
+
+        let got = get_public_guard_profile(&pool, approved)
+            .await
+            .expect("get")
+            .expect("approved guard is publicly visible");
+        assert_eq!(got.user_id, approved);
+        assert_eq!(got.full_name.as_deref(), Some("ณัฐพล วงศ์ดี"));
+        assert_eq!(got.years_of_experience, Some(7));
+        // (No bank/PII fields exist on PublicGuardProfile — least-privilege is type-enforced.)
+
+        for id in [pending, approved] {
+            let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+                .bind(id)
+                .execute(&pool)
+                .await;
+        }
+        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
+            .bind(approved.to_string())
+            .execute(&pool)
+            .await;
+    }
+
+    /// The IDOR read-model is idempotent + LAST-WRITER-WINS by `occurred_at`: a redelivered OLDER
+    /// accept must never reactivate a finished booking (the `> updated_at` guard). This is the
+    /// security-critical correctness property for at-least-once JetStream delivery. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn assignment_read_model_is_lww_idempotent() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let booking = Uuid::new_v4();
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let t1 = DateTime::parse_from_rfc3339("2026-06-05T10:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let t2 = DateTime::parse_from_rfc3339("2026-06-05T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        // accept @ t1 → active link.
+        upsert_assignment(&pool, booking, Some(customer), Some(guard), true, t1)
+            .await
+            .expect("project accept");
+        assert!(
+            has_active_booking(&pool, customer, guard)
+                .await
+                .expect("authz"),
+            "accept activates the (customer, guard) link"
+        );
+
+        // completed @ t2 (later; ids omitted) → inactive. COALESCE keeps the known ids.
+        upsert_assignment(&pool, booking, None, None, false, t2)
+            .await
+            .expect("project completion");
+        assert!(
+            !has_active_booking(&pool, customer, guard)
+                .await
+                .expect("authz"),
+            "completion deactivates the link"
+        );
+
+        // REPLAY the older accept @ t1 → the LWW guard must NOT reactivate the finished booking.
+        upsert_assignment(&pool, booking, Some(customer), Some(guard), true, t1)
+            .await
+            .expect("replay older accept");
+        assert!(
+            !has_active_booking(&pool, customer, guard)
+                .await
+                .expect("authz"),
+            "a redelivered OLDER accept must NOT reactivate a finished booking (LWW by occurred_at)"
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.guard_assignments WHERE booking_id = $1")
+            .bind(booking)
             .execute(&pool)
             .await;
     }

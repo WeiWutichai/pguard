@@ -2021,6 +2021,7 @@ dependencies = [
  "async-trait",
  "axum 0.8.9",
  "chrono",
+ "futures",
  "jsonwebtoken",
  "observability",
  "redis",

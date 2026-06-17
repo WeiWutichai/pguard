@@ -154,6 +154,43 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /guards/{id}/public:
+    get:
+      tags: [Profile]
+      summary: Assigned guard's public mini-profile (customer live-tracking map)
+      description: |
+        The MINI-profile (name + years of experience) of the guard assigned to the caller's
+        booking, for the customer live-tracking map. **IDOR-gated:** a `customer` may read it ONLY
+        while they have an ACTIVE booking with this guard (an event-derived read-model projected
+        from `pguard.events.booking.*`); a `guard` may read only their own; an `admin` may read
+        any. A customer without an active booking gets **403** (NOT 404 — no existence probe).
+        **Approval-gated:** an un-approved or unknown guard returns **404** (its existence is never
+        revealed). Returns ONLY `{ user_id, full_name, years_of_experience }` — never the
+        bank/address/DOB/emergency-contact PII. `full_name` is PII reachable by a non-owner ONLY
+        under this active-booking trust boundary (PDPA §7); a photo is deferred (no avatar storage).
+      operationId: getPublicGuardProfile
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The assigned guard's user_id.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The assigned guard's public mini-profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PublicGuardProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/guard-profiles:
     get:
       tags: [Admin]
@@ -555,6 +592,19 @@ components:
       required: [user_id]
       properties:
         user_id: { type: string, format: uuid }
+        years_of_experience: { type: integer, format: int32, nullable: true }
+
+    PublicGuardProfile:
+      type: object
+      description: |
+        The lean, customer-facing guard mini-profile for the live-tracking map. NARROW by design —
+        only what identifies the assigned guard (name + experience); NEVER bank/address/DOB/
+        emergency-contact PII. `full_name` is reachable by a non-owner ONLY under the active-booking
+        IDOR gate (see `GET /guards/{id}/public`). Photo deferred (no avatar storage yet).
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        full_name: { type: string, nullable: true }
         years_of_experience: { type: integer, format: int32, nullable: true }
 
     GuardProfile:
