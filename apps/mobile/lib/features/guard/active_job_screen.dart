@@ -17,6 +17,7 @@ import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/status_stepper.dart';
+import '../../widgets/work_progress.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_entry_button.dart';
@@ -309,10 +310,11 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     super.dispose();
   }
 
-  /// Design G4 countdown reads H:MM:SS with no leading zero on the hours ("3:24:15").
-  static String _fmt(Duration d) {
+  /// The scheduled clock time of check-in slot [i] (startedAt + i hours), local "HH:MM".
+  static String _slotTime(DateTime startedAt, int i) {
+    final l = startedAt.add(Duration(hours: i)).toLocal();
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${d.inHours}:${two(d.inMinutes % 60)}:${two(d.inSeconds % 60)}';
+    return '${two(l.hour)}:${two(l.minute)}';
   }
 
   Future<void> _checkIn(int hour) async {
@@ -344,12 +346,9 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
       return const SizedBox.shrink();
     }
     final now = DateTime.now().toUtc();
-    final remaining = clock.remaining(now);
-    final progress = clock.progress(now).clamp(0.0, 1.0);
     final dueNow = schedule.isDueNow(now, state.completedCheckIns);
     final dueIndex = schedule.dueIndex(now);
-    final nextAt = schedule.nextDueAt(now)?.toLocal();
-    final missed = schedule.missed(now, state.completedCheckIns);
+    final startedAt = clock.startedAt; // clock != null ⟹ startedAt was set
 
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
@@ -361,68 +360,44 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Design `.sb-count`: big number first, side label with the booked total.
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.baseline,
-            textBaseline: TextBaseline.alphabetic,
-            children: [
-              Text(_fmt(remaining),
-                  style: const TextStyle(
-                      fontFamily: 'IBMPlexMono', // design `.sb-count` mono numerals
-                      fontSize: 28,
-                      fontWeight: FontWeight.w600,
-                      color: PgTokens.colorText,
-                      letterSpacing: -0.3,
-                      fontFeatures: [FontFeature.tabularFigures()])),
-              // Design gap 14px → space3, nearest token.
-              const SizedBox(width: PgTokens.space3),
-              Expanded(
-                child: Text(
-                  isThai
-                      ? 'เหลือ · จาก ${clock.hours} ชม.'
-                      : 'left · of ${clock.hours} h',
-                  style: const TextStyle(
-                      fontSize: 11.5, color: PgTokens.colorTextMuted),
-                ),
-              ),
-            ],
+          // Design G4: the 74px ring countdown (shared widget) — shift window + elapsed + bar.
+          WorkCountdownRing(clock: clock, isThai: isThai),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+            child: Divider(height: 1, color: PgTokens.colorBorder),
+          ),
+          // Design `.timeline` header: "ความคืบหน้า · 2 จาก 5 จุด".
+          Text(
+            isThai
+                ? 'ความคืบหน้า · ${state.completedCheckIns.length} จาก ${schedule.totalSlots} จุด'
+                : 'Progress · ${state.completedCheckIns.length} of ${schedule.totalSlots}',
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorText),
           ),
           const SizedBox(height: PgTokens.space3),
-          ClipRRect(
-            // Design `.sb-bar`: 7px tall, 4px radius.
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              value: progress,
-              minHeight: 7,
-              backgroundColor: PgTokens.colorSunken,
-              valueColor: const AlwaysStoppedAnimation(PgTokens.colorPrimary),
+          // Per-hour vertical timeline (shared widget). Slot i ↔ server hour i+1; the timestamp
+          // is the scheduled due time (startedAt + i h) — per-report notes/photos are a follow-up.
+          for (var i = 0; i < schedule.totalSlots; i++)
+            CheckInTimelineRow(
+              index: i + 1,
+              title: i == 0
+                  ? (isThai ? 'เริ่มงาน · เช็คอินจุดนัด' : 'Start · check in')
+                  : (isThai ? 'ตรวจรอบที่ $i' : 'Round $i check-in'),
+              done: state.completedCheckIns.contains(i),
+              isCurrent: i == dueIndex && !state.completedCheckIns.contains(i),
+              isLast: i == schedule.totalSlots - 1,
+              time: _slotTime(startedAt, i),
+              statusLabel: state.completedCheckIns.contains(i)
+                  ? (isThai ? 'รายงานแล้ว' : 'Reported')
+                  : i == dueIndex
+                      ? (isThai ? 'ถึงกำหนด' : 'Due now')
+                      : i < dueIndex
+                          ? (isThai ? 'พลาด' : 'Missed')
+                          : (isThai ? 'รอเช็คอิน' : 'Pending'),
             ),
-          ),
-          const SizedBox(height: PgTokens.space3),
-          _SlotTracker(
-            total: schedule.totalSlots,
-            dueIndex: dueIndex,
-            completed: state.completedCheckIns,
-          ),
-          const SizedBox(height: PgTokens.space3),
-          Row(
-            children: [
-              const Icon(Icons.schedule,
-                  size: 13, color: PgTokens.colorTextMuted),
-              const SizedBox(width: PgTokens.space1),
-              Expanded(
-                child: Text(
-                  '${isThai ? 'เช็คอินแล้ว' : 'Checked in'} '
-                  '${state.completedCheckIns.length}/${schedule.totalSlots}'
-                  '${missed.isNotEmpty ? (isThai ? ' · พลาด ${missed.length}' : ' · missed ${missed.length}') : ''}'
-                  '${nextAt != null ? (isThai ? ' · ถัดไป ${_hm(nextAt, isThai)}' : ' · next ${_hm(nextAt, isThai)}') : ''}',
-                  style: const TextStyle(
-                      fontSize: 12.5, color: PgTokens.colorTextMuted),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: PgTokens.space3),
+          const SizedBox(height: PgTokens.space4),
           if (dueNow)
             PgPrimaryButton(
               label: dueIndex == 0
@@ -438,51 +413,6 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
             const _CheckInIdle(),
         ],
       ),
-    );
-  }
-
-  static String _hm(DateTime d, bool isThai) {
-    String two(int n) => n.toString().padLeft(2, '0');
-    final hm = '${two(d.hour)}:${two(d.minute)}';
-    return isThai ? '$hm น.' : hm;
-  }
-}
-
-/// Design `.sb-slots`: per-hour check-in segments — done → success green, the currently due
-/// slot → amber, pending → sunken. Pure render of the existing [CheckInSchedule] state.
-class _SlotTracker extends StatelessWidget {
-  const _SlotTracker({
-    required this.total,
-    required this.dueIndex,
-    required this.completed,
-  });
-
-  final int total;
-  final int dueIndex;
-  final Set<int> completed;
-
-  @override
-  Widget build(BuildContext context) {
-    if (total <= 0) return const SizedBox.shrink();
-    return Row(
-      children: [
-        for (var i = 0; i < total; i++) ...[
-          if (i > 0) const SizedBox(width: 5),
-          Expanded(
-            child: Container(
-              height: 6,
-              decoration: BoxDecoration(
-                color: completed.contains(i)
-                    ? PgTokens.colorSuccess
-                    : i == dueIndex
-                        ? PgTokens.colorWarning // amber-500
-                        : PgTokens.colorSunken,
-                borderRadius: BorderRadius.circular(3),
-              ),
-            ),
-          ),
-        ],
-      ],
     );
   }
 }
