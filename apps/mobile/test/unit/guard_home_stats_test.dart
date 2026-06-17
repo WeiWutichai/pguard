@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/features/home/guard_home_screen.dart';
 
 Booking booking(
@@ -9,6 +10,8 @@ Booking booking(
   int? hours,
   int? guardCount,
   String? baseFee,
+  double? lat,
+  double? lng,
 }) =>
     Booking(
       id: id,
@@ -18,6 +21,8 @@ Booking booking(
       hours: hours,
       guardCount: guardCount,
       baseFee: baseFee,
+      lat: lat,
+      lng: lng,
     );
 
 void main() {
@@ -76,5 +81,48 @@ void main() {
 
   test('jobsToday counts every booking scheduled today', () {
     expect(GuardHomeStats.jobsToday(all, now), 4); // b1–b4
+  });
+
+  group('incomingDistanceLabel — honest guard→job distance', () {
+    final pinned = booking('p',
+        status: BookingStatus.requested, lat: 13.75, lng: 100.50);
+    const guardAt = GeoPoint(13.70, 100.50); // ~5.5 km south of the pin
+
+    test('null when the guard has no GPS fix (offline / no fix)', () {
+      expect(
+        GuardHomeStats.incomingDistanceLabel(null, pinned, isThai: true),
+        isNull,
+      );
+    });
+
+    test('null when the booking has no pinned coordinate', () {
+      final noPin = booking('np', status: BookingStatus.requested);
+      expect(
+        GuardHomeStats.incomingDistanceLabel(guardAt, noPin, isThai: true),
+        isNull,
+      );
+      // half-null (lat only) is also not a usable pin
+      final halfPin = booking('hp',
+          status: BookingStatus.requested, lat: 13.75);
+      expect(
+        GuardHomeStats.incomingDistanceLabel(guardAt, halfPin, isThai: true),
+        isNull,
+      );
+    });
+
+    test('both present → "distance · ~ETA" with the approximate-ETA tilde', () {
+      final th =
+          GuardHomeStats.incomingDistanceLabel(guardAt, pinned, isThai: true)!;
+      expect(th, contains('·'));
+      expect(th, contains('~'), reason: 'ETA must stay marked approximate');
+      expect(th, contains('กม.'), reason: '~5.5 km renders in kilometres');
+      expect(th, contains('นาที'));
+
+      final en =
+          GuardHomeStats.incomingDistanceLabel(guardAt, pinned, isThai: false)!;
+      expect(en, contains('km'));
+      expect(en, contains('~'));
+      expect(en, contains('min'));
+    });
   });
 }
