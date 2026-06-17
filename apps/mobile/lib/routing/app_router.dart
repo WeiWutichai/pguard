@@ -37,7 +37,10 @@ import '../features/guard/job_detail_screen.dart';
 import '../features/guard/withdraw_screen.dart';
 import '../features/home/customer_home_screen.dart';
 import '../features/home/guard_home_screen.dart';
+import '../features/help/help_screen.dart';
 import '../features/notifications/notification_screen.dart';
+import '../features/permissions/location_denied_screen.dart';
+import '../features/permissions/location_rationale_screen.dart';
 import '../features/ratings/guard_ratings_screen.dart';
 import '../features/profile/profile_edit_screen.dart';
 import '../features/profile/profile_screen.dart';
@@ -109,6 +112,18 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/auth/pending',
           builder: (_, __) => const RegistrationPendingScreen()),
       GoRoute(path: '/lock', builder: (_, __) => const PinLockScreen()),
+      // System screens: location-permission rationale + denied recovery, and Help/FAQ.
+      // `forGuard` (via extra) defaults the rationale's scope radio (guards → Always).
+      GoRoute(
+        path: '/permissions/location',
+        builder: (_, state) =>
+            LocationRationaleScreen(forGuard: state.extra == true),
+      ),
+      GoRoute(
+        path: '/permissions/location/denied',
+        builder: (_, __) => const LocationDeniedScreen(),
+      ),
+      GoRoute(path: '/help', builder: (_, __) => const HelpScreen()),
       GoRoute(
           path: '/home/customer',
           builder: (_, __) => const CustomerHomeScreen()),

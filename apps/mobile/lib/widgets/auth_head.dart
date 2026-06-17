@@ -63,12 +63,21 @@ class AuthHead extends StatelessWidget {
 }
 
 /// The hi-fi `.bio-circle` icon tile (64px rounded square, green-50 fill, brand-int
-/// icon) used as the [AuthHead.icon] on PIN setup / biometric screens.
+/// icon) used as the [AuthHead.icon] on PIN setup / biometric screens. Pass [background] /
+/// [foreground] for a non-brand variant (e.g. the danger-tinted permission-denied tile).
 class AuthHeadIconTile extends StatelessWidget {
-  const AuthHeadIconTile({super.key, required this.icon, this.size = 64});
+  const AuthHeadIconTile({
+    super.key,
+    required this.icon,
+    this.size = 64,
+    this.background,
+    this.foreground,
+  });
 
   final IconData icon;
   final double size;
+  final Color? background;
+  final Color? foreground;
 
   @override
   Widget build(BuildContext context) {
@@ -76,10 +85,11 @@ class AuthHeadIconTile extends StatelessWidget {
       width: size,
       height: size,
       decoration: BoxDecoration(
-        color: PgTokens.colorGreen50,
+        color: background ?? PgTokens.colorGreen50,
         borderRadius: BorderRadius.circular(size * 20 / 64),
       ),
-      child: Icon(icon, size: size * 30 / 64, color: PgTokens.colorPrimary),
+      child: Icon(icon,
+          size: size * 30 / 64, color: foreground ?? PgTokens.colorPrimary),
     );
   }
 }

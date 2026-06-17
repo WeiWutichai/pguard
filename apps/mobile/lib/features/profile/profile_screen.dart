@@ -87,6 +87,13 @@ class ProfileScreen extends ConsumerWidget {
                           : 'Completed & cancelled jobs',
                       onTap: () => context.push('/guard/history'),
                     ),
+                  _Tile(
+                    icon: Icons.help_outline,
+                    title: isThai ? 'ช่วยเหลือ' : 'Help',
+                    subtitle:
+                        isThai ? 'คำถามที่พบบ่อย · ติดต่อเรา' : 'FAQ & contact',
+                    onTap: () => context.push('/help'),
+                  ),
                   _ReadonlyRow(
                     icon: Icons.phone_outlined,
                     label: isThai ? 'เบอร์โทร (ใช้เข้าสู่ระบบ)' : 'Phone',
