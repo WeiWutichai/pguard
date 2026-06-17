@@ -8,12 +8,20 @@ import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
 
-Map<String, dynamic> bookingJson({String? guardId, String status = 'accepted'}) => {
+Map<String, dynamic> bookingJson({
+  String? guardId,
+  String status = 'accepted',
+  double? lat,
+  double? lng,
+}) =>
+    {
       'id': 'b1',
       'customer_id': 'c1',
       'guard_id': guardId,
       'status': status,
       'address': 'หมู่บ้านลัดดารมย์ ซ.5',
+      if (lat != null) 'lat': lat,
+      if (lng != null) 'lng': lng,
     };
 
 Map<String, dynamic> locationJson(double lat) => {
@@ -24,6 +32,19 @@ Map<String, dynamic> locationJson(double lat) => {
       'recorded_at': '2026-06-10T10:30:45Z',
       'is_online': true,
       'is_live': true,
+    };
+
+Map<String, dynamic> publicJson() => {
+      'user_id': 'g1',
+      'full_name': 'ณัฐพล วงศ์ดี',
+      'years_of_experience': 7,
+    };
+
+Map<String, dynamic> ratingsJson({String? average = '4.9', int count = 12}) => {
+      'guard_id': 'g1',
+      'average': average,
+      'count': count,
+      'reviews': <Map<String, dynamic>>[],
     };
 
 ({
@@ -60,6 +81,8 @@ void main() {
     final t = make(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
       if (path == '/guards/g1/location') return locationJson(lat += 0.01);
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
       fail('unexpected GET $path');
     });
 
@@ -71,7 +94,10 @@ void main() {
     expect(track.guard?.lat, closeTo(13.71, 1e-9));
     expect(track.status, BookingStatus.accepted);
     expect(track.reference, GeoPoint.bangkok,
-        reason: 'device fix becomes the reference marker');
+        reason: 'device fix is the fallback target (no booking pin)');
+    expect(track.profile?.fullName, 'ณัฐพล วงศ์ดี',
+        reason: 'public mini-profile enriches the track');
+    expect(track.ratings?.hasRatings, isTrue);
     expect(locationGets(t.api), 1);
 
     // A pushed status frame (guard_en_route) re-runs the build → ONE fresh snapshot.
@@ -90,8 +116,102 @@ void main() {
     // The booking snapshot itself was fetched exactly once (status came from the push).
     expect(t.api.calls.where((c) => c == 'GET /bookings/b1').length, 1);
 
-    // Distance guard ↔ reference is derived in the model (no widget math).
-    expect(updated.distanceFromReference, isNotNull);
+    // Distance guard ↔ target is derived in the model (no widget math).
+    expect(updated.distanceToTarget, isNotNull);
+  });
+
+  test(
+      'booking with a pinned coordinate → the destination is the booking pin '
+      '(not the device fix), and distance is measured to it', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return bookingJson(guardId: 'g1', lat: 13.80, lng: 100.60);
+      }
+      if (path == '/guards/g1/location') return locationJson(13.70);
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      fail('unexpected GET $path');
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.destination, const GeoPoint(13.80, 100.60));
+    expect(track.target, const GeoPoint(13.80, 100.60),
+        reason: 'the pinned destination wins over the device fix');
+    expect(track.targetIsDestination, isTrue);
+    expect(
+      track.distanceToTarget,
+      closeTo(
+        distanceMeters(
+            const GeoPoint(13.70, 100.5018), const GeoPoint(13.80, 100.60)),
+        1,
+      ),
+      reason: 'distance is guard→destination, not guard→device',
+    );
+  });
+
+  test(
+      'booking with no pinned coordinate → falls back to the device fix as the '
+      'target (legacy/address-only booking)', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (path == '/guards/g1/location') return locationJson(13.70);
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      fail('unexpected GET $path');
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.destination, isNull);
+    expect(track.target, GeoPoint.bangkok,
+        reason: 'device fix is the fallback target');
+    expect(track.targetIsDestination, isFalse);
+  });
+
+  test(
+      'a half-null coordinate (lat without lng — contract violation) is NOT a '
+      'destination; falls back to the device fix', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1', lat: 13.80);
+      if (path == '/guards/g1/location') return locationJson(13.70);
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      fail('unexpected GET $path');
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.destination, isNull,
+        reason: 'both-or-neither: a lone lat is not a usable pin');
+    expect(track.targetIsDestination, isFalse);
+    expect(track.target, GeoPoint.bangkok);
+  });
+
+  test(
+      'profile/ratings enrichment degrades to null on error without erroring '
+      'the screen (the core location read still succeeds)', () async {
+    final t = make(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson(guardId: 'g1');
+      if (path == '/guards/g1/location') return locationJson(13.75);
+      if (path == '/guards/g1/public') {
+        throw const ApiException(message: 'no active booking', statusCode: 403);
+      }
+      if (path == '/guards/g1/ratings') {
+        throw const ApiException(message: 'boom', statusCode: 500);
+      }
+      fail('unexpected GET $path');
+    });
+    final sub = t.c.listen(guardLocationControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final track = await t.c.read(guardLocationControllerProvider('b1').future);
+    expect(track.profile, isNull, reason: '403 enrichment degrades, no rethrow');
+    expect(track.ratings, isNull, reason: '500 enrichment degrades, no rethrow');
+    expect(track.guard, isNotNull, reason: 'core location read still succeeded');
   });
 
   test('no guard assigned → no location fetch; assignment event starts it',
@@ -99,6 +219,8 @@ void main() {
     final t = make(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson(guardId: null);
       if (path == '/guards/g1/location') return locationJson(13.75);
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
       fail('unexpected GET $path');
     });
 

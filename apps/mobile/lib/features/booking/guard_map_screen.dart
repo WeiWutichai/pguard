@@ -11,9 +11,12 @@ import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
+import '../../core/models/guard_public_profile.dart';
+import '../../core/models/rating.dart';
 import '../../core/models/tracking.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pguard_header.dart';
+import '../../widgets/star_rating.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'widgets/map_canvas.dart';
@@ -87,9 +90,12 @@ class _MapBody extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final guard = track.guard;
+    // Where the guard is heading: the booking's pinned destination when present, else the
+    // customer's device fix as a fallback (see GuardTrack.target).
+    final target = track.target;
     final viewport = MapViewport.fit([
       if (guard != null) guard.point,
-      if (track.reference != null) track.reference!,
+      if (target != null) target,
     ]);
 
     return Column(
@@ -108,23 +114,26 @@ class _MapBody extends StatelessWidget {
                               CustomPaint(painter: MapBackdropPainter()),
                         ),
                         // The design's dashed brand route between the guard pin and the
-                        // reference point (pure paint — projection stays in MapViewport).
-                        if (guard != null && track.reference != null)
+                        // destination (pure paint — projection stays in MapViewport).
+                        if (guard != null && target != null)
                           Positioned.fill(
                             child: CustomPaint(
                               painter: _RoutePathPainter(
                                 from: viewport.fractionFor(guard.point),
-                                to: viewport.fractionFor(track.reference!),
+                                to: viewport.fractionFor(target),
                               ),
                             ),
                           ),
-                        if (track.reference != null)
+                        if (target != null)
                           _placed(
-                            viewport.fractionFor(track.reference!),
+                            viewport.fractionFor(target),
                             size,
                             width: 90,
                             height: 44,
-                            child: _ReferenceMarker(isThai: isThai),
+                            child: _ReferenceMarker(
+                              isThai: isThai,
+                              isDestination: track.targetIsDestination,
+                            ),
                           ),
                         if (guard != null)
                           _placed(
@@ -208,12 +217,14 @@ class _GuardMarker extends StatelessWidget {
   }
 }
 
-/// The customer's own device fix — a labelled dot ("คุณ / You"), the booking-destination
-/// stand-in (the v2 booking has no lat/lng; see `GuardTrack.reference`).
+/// The destination marker — a labelled dot. Labelled "ปลายทาง / Destination" when it is the
+/// booking's pinned drop-off (`GuardTrack.destination`), or "คุณ / You" when it falls back to the
+/// customer's device fix (a legacy/address-only booking with no pinned coordinate).
 class _ReferenceMarker extends StatelessWidget {
-  const _ReferenceMarker({required this.isThai});
+  const _ReferenceMarker({required this.isThai, required this.isDestination});
 
   final bool isThai;
+  final bool isDestination;
 
   @override
   Widget build(BuildContext context) {
@@ -239,7 +250,9 @@ class _ReferenceMarker extends StatelessWidget {
             boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 3)],
           ),
           child: Text(
-            isThai ? 'คุณ' : 'You',
+            isDestination
+                ? (isThai ? 'ปลายทาง' : 'Destination')
+                : (isThai ? 'คุณ' : 'You'),
             style: const TextStyle(
                 fontSize: 10.5,
                 fontWeight: FontWeight.w600,
@@ -407,7 +420,7 @@ class _InfoPanel extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final guard = track.guard;
-    final distance = track.distanceFromReference;
+    final distance = track.distanceToTarget;
     final booking = track.booking;
     final myUserId = ref.watch(sessionProvider).user?.userId;
     return Container(
@@ -420,6 +433,19 @@ class _InfoPanel extends ConsumerWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // The design's guard-identity block (Screen 9) — shown once a guard is assigned, even
+          // before any GPS fix. Honest data only: real name or a generic role label, real rating
+          // or "no reviews yet", no photo, no ETA.
+          if (track.guardId != null) ...[
+            _GuardProfileBlock(
+              profile: track.profile,
+              ratings: track.ratings,
+              isThai: isThai,
+            ),
+            const SizedBox(height: PgTokens.space3),
+            const Divider(height: 1, color: PgTokens.colorBorder),
+            const SizedBox(height: PgTokens.space3),
+          ],
           Row(
             children: [
               Expanded(
@@ -451,9 +477,13 @@ class _InfoPanel extends ConsumerWidget {
             ),
           if (distance != null)
             Text(
-              isThai
-                  ? 'ห่างจากคุณประมาณ ${formatDistance(distance, thai: true)}'
-                  : 'About ${formatDistance(distance, thai: false)} from you',
+              track.targetIsDestination
+                  ? (isThai
+                      ? 'ห่างจากจุดหมายประมาณ ${formatDistance(distance, thai: true)}'
+                      : 'About ${formatDistance(distance, thai: false)} from the destination')
+                  : (isThai
+                      ? 'ห่างจากคุณประมาณ ${formatDistance(distance, thai: true)}'
+                      : 'About ${formatDistance(distance, thai: false)} from you'),
               style: const TextStyle(
                   fontSize: 12, color: PgTokens.colorTextMuted),
             ),
@@ -514,6 +544,134 @@ class _InfoPanel extends ConsumerWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// The assigned guard's identity card on the tracking sheet (design Screen 9 profile block):
+/// avatar (initials from the name, or a brand shield when no name is known — never a fabricated
+/// photo), the guard's name (a generic role label when the profile read is unavailable — never a
+/// fabricated name), an experience line, and an HONEST rating row. No ETA minutes (no routing
+/// service — distance only, shown elsewhere on the sheet).
+class _GuardProfileBlock extends StatelessWidget {
+  const _GuardProfileBlock({
+    required this.profile,
+    required this.ratings,
+    required this.isThai,
+  });
+
+  final GuardPublicProfile? profile;
+  final GuardRatings? ratings;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = profile?.fullName ??
+        (isThai ? 'เจ้าหน้าที่รักษาความปลอดภัย' : 'Security guard');
+    final initials = profile?.initials;
+    final years = profile?.yearsOfExperience;
+    return Row(
+      children: [
+        // Avatar: initials when we know the name, else a brand shield (no fabricated photo).
+        Container(
+          width: 46,
+          height: 46,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: PgTokens.colorGreen100,
+            borderRadius: BorderRadius.circular(PgTokens.radiusMd),
+          ),
+          child: initials != null
+              ? Text(
+                  initials,
+                  style: const TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      color: PgTokens.colorGreen800),
+                )
+              // No name → a person placeholder (NOT the brand shield, which is the map pin).
+              : const Icon(Icons.person,
+                  size: 24, color: PgTokens.colorGreen800),
+        ),
+        const SizedBox(width: PgTokens.space3),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 15, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  const SizedBox(width: PgTokens.space1),
+                  // Assigned ⇒ an approved/registered guard — a STATIC, justified badge (NOT a
+                  // per-guard verified flag the contract doesn't expose).
+                  const Icon(Icons.verified,
+                      size: 15, color: PgTokens.colorInfo),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                _subtitle(years),
+                style: const TextStyle(
+                    fontSize: 12, color: PgTokens.colorTextMuted),
+              ),
+              const SizedBox(height: 3),
+              _RatingRow(ratings: ratings, isThai: isThai),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// "Registered guard" always (assignment implies approval), plus the real years of experience
+  /// when known — never invented.
+  String _subtitle(int? years) {
+    final registered = isThai ? 'รปภ. ขึ้นทะเบียน' : 'Registered guard';
+    if (years == null || years <= 0) return registered;
+    final exp = isThai ? 'ประสบการณ์ $years ปี' : '$years yr experience';
+    return '$registered · $exp';
+  }
+}
+
+/// HONEST rating row: filled stars + numeric average + count when there ARE visible reviews;
+/// otherwise a plain "no reviews yet" — never a fabricated 0.0 (see [GuardRatings.hasRatings]).
+class _RatingRow extends StatelessWidget {
+  const _RatingRow({required this.ratings, required this.isThai});
+
+  final GuardRatings? ratings;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    final r = ratings;
+    if (r == null || !r.hasRatings) {
+      return Text(
+        isThai ? 'ยังไม่มีรีวิว' : 'No reviews yet',
+        style: const TextStyle(fontSize: 12, color: PgTokens.colorTextFaint),
+      );
+    }
+    final avg = r.averageValue!;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        StarRatingDisplay(value: avg.round(), size: 13),
+        const SizedBox(width: PgTokens.space1),
+        Text(
+          '${avg.toStringAsFixed(1)} (${r.count})',
+          style: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: PgTokens.colorText),
+        ),
+      ],
     );
   }
 }
