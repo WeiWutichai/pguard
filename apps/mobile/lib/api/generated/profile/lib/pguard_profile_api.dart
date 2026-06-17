@@ -29,6 +29,7 @@ export 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 export 'package:pguard_profile_api/src/model/error_body.dart';
 export 'package:pguard_profile_api/src/model/error_detail.dart';
 export 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+export 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 export 'package:pguard_profile_api/src/model/guard_profile.dart';
 export 'package:pguard_profile_api/src/model/inline_object.dart';
 export 'package:pguard_profile_api/src/model/inline_object1.dart';
@@ -37,6 +38,7 @@ export 'package:pguard_profile_api/src/model/internal_list_guards200_response.da
 export 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 export 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 export 'package:pguard_profile_api/src/model/my_profile.dart';
+export 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 export 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 export 'package:pguard_profile_api/src/model/reject_request.dart';
 export 'package:pguard_profile_api/src/model/stage_request.dart';

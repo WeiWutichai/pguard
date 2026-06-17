@@ -30,6 +30,7 @@ lib/src/model/document_expiry_input.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
 lib/src/model/get_my_profile200_response.dart
+lib/src/model/get_public_guard_profile200_response.dart
 lib/src/model/guard_profile.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
@@ -38,6 +39,7 @@ lib/src/model/internal_list_guards200_response.dart
 lib/src/model/my_customer_profile.dart
 lib/src/model/my_guard_profile.dart
 lib/src/model/my_profile.dart
+lib/src/model/public_guard_profile.dart
 lib/src/model/recruit_candidate.dart
 lib/src/model/reject_request.dart
 lib/src/model/stage_request.dart

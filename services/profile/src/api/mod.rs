@@ -23,11 +23,11 @@ use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, DocumentExpiryRow, GuardProfileResponse, InternalGuard, MyProfile,
-    RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    PublicGuardProfile, RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest,
+    StageRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
-use crate::state::{ProfileDeps, ProfileInternalDeps};
+use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
 
 /// Hard cap on the internal catalog response. NOT paginated yet — a roster beyond this is
 /// truncated (the handler logs a warn so the truncation is observable). Cursor pagination is
@@ -328,6 +328,64 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(profile)))
 }
 
+// ----- GET /guards/{id}/public — customer-readable guard mini-profile (live-tracking map) -----
+
+/// Authorize a guard mini-profile read. `admin` → any; `guard` → self only; `customer` → only a
+/// guard on their ACTIVE booking (the event-derived `profile.guard_assignments` read-model);
+/// any other role → 403. A customer WITHOUT an active booking gets 403 (NOT 404) so they cannot
+/// probe arbitrary guard ids by a status-code differential — mirrors presence's location gate.
+async fn authorize_guard_profile_read<S: ProfileDeps>(
+    state: &S,
+    user: &AuthUser,
+    guard_id: Uuid,
+) -> Result<(), AppError> {
+    match user.role.as_str() {
+        ROLE_ADMIN => Ok(()),
+        ROLE_GUARD => {
+            if user.user_id == guard_id {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden(
+                    "Guards can only read their own profile".to_string(),
+                ))
+            }
+        }
+        ROLE_CUSTOMER => {
+            if state
+                .booking_authz()
+                .has_active_booking(user.user_id, guard_id)
+                .await?
+            {
+                Ok(())
+            } else {
+                Err(AppError::Forbidden(
+                    "You can only view a guard assigned to your active booking".to_string(),
+                ))
+            }
+        }
+        _ => Err(AppError::Forbidden("Not authorized".to_string())),
+    }
+}
+
+/// GET /guards/{id}/public — the assigned guard's MINI-profile (name + experience) for the
+/// customer live-tracking map. IDOR-gated (see [`authorize_guard_profile_read`]) THEN
+/// approval-gated in the repo (un-approved/unknown guard → 404, so neither the gate nor the read
+/// reveals a guard outside the caller's bookings). Returns ONLY `{ user_id, full_name,
+/// years_of_experience }` — never the bank/address/DOB/emergency-contact PII. The authz read-model
+/// is on the primary (no replica lag on the security gate); the profile read uses the replica.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, guard = %guard_id))]
+pub async fn get_public_guard_profile<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(guard_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<PublicGuardProfile>>, AppError> {
+    authorize_guard_profile_read(&state, &user, guard_id).await?;
+    let profile = repo::get_public_guard_profile(state.db_read(), guard_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))?;
+    Ok(Json(ApiResponse::success(profile)))
+}
+
 // ----- GET /profile/me — the caller's own profile (account number MASKED) -----
 
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
@@ -613,11 +671,28 @@ mod tests {
 
     const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-profile-test!!!";
 
+    /// Hermetic IDOR-authz stub: `has_active_booking` returns a fixed answer without touching a
+    /// DB, so the public-profile customer gate (allow vs deny) is testable with a closed lazy pool.
+    #[derive(Clone)]
+    struct StubAuthz {
+        allow: bool,
+    }
+    impl crate::state::BookingAuthz for StubAuthz {
+        async fn has_active_booking(
+            &self,
+            _customer_id: Uuid,
+            _guard_id: Uuid,
+        ) -> Result<bool, AppError> {
+            Ok(self.allow)
+        }
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
         redis: redis::aio::ConnectionManager,
+        authz: StubAuthz,
     }
 
     impl HasJwtSecret for TestDeps {
@@ -632,8 +707,12 @@ mod tests {
         }
     }
     impl ProfileDeps for TestDeps {
+        type Authz = StubAuthz;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
+        }
+        fn booking_authz(&self) -> &StubAuthz {
+            &self.authz
         }
     }
 
@@ -662,6 +741,7 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db,
             redis,
+            authz: StubAuthz { allow: false },
         };
         Some(
             Router::new()
@@ -672,6 +752,10 @@ mod tests {
                     post(upsert_customer_profile::<TestDeps>),
                 )
                 .route("/profile/me", get(get_my_profile::<TestDeps>))
+                .route(
+                    "/guards/{id}/public",
+                    get(get_public_guard_profile::<TestDeps>),
+                )
                 .route(
                     "/admin/guard-profiles",
                     get(admin_list_guard_profiles::<TestDeps>),
@@ -708,6 +792,15 @@ mod tests {
         let ek = EncodingKey::from_secret(SECRET.as_bytes());
         let (tok, _) = encode_jwt_with_key(Uuid::new_v4(), role, 0, &ek, 60).unwrap();
         tok
+    }
+
+    /// A token plus the `user_id` it was minted for — for the guard-self path, where the route's
+    /// `{id}` must equal the caller.
+    fn token_with_id(role: &str) -> (String, Uuid) {
+        let uid = Uuid::new_v4();
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, _) = encode_jwt_with_key(uid, role, 0, &ek, 60).unwrap();
+        (tok, uid)
     }
 
     fn guard_body() -> Body {
@@ -962,6 +1055,165 @@ mod tests {
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
+    // ----- GET /guards/{id}/public — IDOR gate (customer needs an active booking) -----
+
+    /// Router exposing ONLY the public guard-profile route over a TestDeps whose authz stub
+    /// returns `allow`. Redis-gated like [`router`] (the `AuthUser` extractor needs Redis); the
+    /// lazy DB pool is to a closed port, so a request that PASSES the gate 500s at the repo
+    /// (proving the gate let it through) while a DENIED request 403s before any DB access.
+    async fn public_profile_router(allow: bool) -> Option<Router> {
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .ok()?;
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db,
+            redis,
+            authz: StubAuthz { allow },
+        };
+        Some(
+            Router::new()
+                .route(
+                    "/guards/{id}/public",
+                    get(get_public_guard_profile::<TestDeps>),
+                )
+                .with_state(deps),
+        )
+    }
+
+    fn get_with_bearer(uri: &str, token: &str) -> Request<Body> {
+        Request::builder()
+            .method("GET")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn public_profile_rejects_missing_token() {
+        let Some(app) = public_profile_router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/guards/{}/public", Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn public_profile_customer_without_active_booking_is_forbidden() {
+        let Some(app) = public_profile_router(false).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Customer, no active booking with this guard → 403 (NOT 404 — no existence probe), and
+        // the deny short-circuits before any DB read.
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/guards/{}/public", Uuid::new_v4()),
+                &token(ROLE_CUSTOMER),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer with no active booking must not read a guard's profile"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_profile_customer_with_active_booking_passes_authz() {
+        let Some(app) = public_profile_router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Customer WITH an active booking passes the gate → reaches the repo (500s on the closed
+        // lazy pool). NOT 401/403 proves authz let it through.
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/guards/{}/public", Uuid::new_v4()),
+                &token(ROLE_CUSTOMER),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer with an active booking must pass the IDOR gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_profile_guard_reading_other_is_forbidden() {
+        let Some(app) = public_profile_router(false).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard may read only their OWN profile; a different guard id → 403 (the guard branch
+        // never consults booking authz).
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/guards/{}/public", Uuid::new_v4()),
+                &token(ROLE_GUARD),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn public_profile_guard_reading_self_passes_authz() {
+        let Some(app) = public_profile_router(false).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard reading their OWN id passes the gate (booking authz=false is irrelevant on the
+        // guard branch) → reaches the repo (500 on the closed pool).
+        let (tok, uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(get_with_bearer(&format!("/guards/{uid}/public"), &tok))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn public_profile_admin_passes_authz() {
+        let Some(app) = public_profile_router(false).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Admin → any guard, no booking required → reaches the repo (500 on the closed pool).
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/guards/{}/public", Uuid::new_v4()),
+                &token(ROLE_ADMIN),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+    }
+
     // ----- dual-auth: single-use, purpose-isolated profile_token -----
 
     use redis::AsyncCommands;
@@ -984,6 +1236,7 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db,
             redis: redis.clone(),
+            authz: StubAuthz { allow: false },
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))
@@ -1140,6 +1393,7 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db: pool.clone(),
             redis: redis.clone(),
+            authz: StubAuthz { allow: false },
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))

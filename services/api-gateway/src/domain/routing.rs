@@ -415,6 +415,17 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Customer-readable guard MINI-profile (name + experience) for the live-tracking map.
+        // profile owns guard_profiles; the IDOR + approval gate is the profile service's job.
+        // Token-gated (NOT in PUBLIC_PATHS) — the gate needs AuthUser. `/public` is the segment
+        // after the `{id}`, so it can't collide with `/location`·`/history` (presence) or
+        // `/ratings` (rating).
+        prefix: "/guards/",
+        suffix: Some("/public"),
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Review submission (`/assignments/{id}/review`). Suffixed so ONLY the review
         // resource routes to rating — booking exposes no `/assignments` at the edge today,
         // and a future booking-owned `/assignments/{id}/…` resource can still be added
@@ -1251,6 +1262,16 @@ mod tests {
         assert_eq!(up, Upstream::Rating);
         assert_eq!(fwd, "/guards/abc-123/ratings");
         assert!(!public);
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn guards_id_public_routes_to_profile_protected() {
+        // Customer-readable guard mini-profile → profile, token-required (IDOR gate needs AuthUser).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/guards/abc-123/public"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/guards/abc-123/public");
+        assert!(!public, "/guards/{{id}}/public requires a token");
         assert_eq!(tier, Tier::Api);
     }
 

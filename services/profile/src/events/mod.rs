@@ -10,6 +10,12 @@
 //! Resilience: if NATS is down the relay logs and retries on the next tick — it never crashes
 //! the service. A row is marked published only AFTER a successful publish, so delivery is
 //! at-least-once (the consumer dedupes on `event_id`). Mirrors booking/chat's relay.
+//!
+//! profile is ALSO a consumer: [`consumer`] projects `pguard.events.booking.*` into the
+//! `profile.guard_assignments` IDOR read-model that gates the customer-readable guard
+//! mini-profile read (mirrors presence's own read-model — separate durable, separate table).
+
+pub mod consumer;
 
 use std::time::Duration;
 

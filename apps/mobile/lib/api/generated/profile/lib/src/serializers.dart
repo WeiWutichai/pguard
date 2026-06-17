@@ -30,6 +30,7 @@ import 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
@@ -38,6 +39,7 @@ import 'package:pguard_profile_api/src/model/internal_list_guards200_response.da
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/my_profile.dart';
+import 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
@@ -63,6 +65,7 @@ part 'serializers.g.dart';
   ErrorBody,
   ErrorDetail,
   GetMyProfile200Response,
+  GetPublicGuardProfile200Response,
   GuardProfile,$GuardProfile,
   InlineObject,
   InlineObject1,
@@ -71,6 +74,7 @@ part 'serializers.g.dart';
   MyCustomerProfile,
   MyGuardProfile,
   MyProfile,
+  PublicGuardProfile,
   RecruitCandidate,
   RejectRequest,
   StageRequest,

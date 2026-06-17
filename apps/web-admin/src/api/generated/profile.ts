@@ -96,6 +96,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/guards/{id}/public": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Assigned guard's public mini-profile (customer live-tracking map)
+         * @description The MINI-profile (name + years of experience) of the guard assigned to the caller's
+         *     booking, for the customer live-tracking map. **IDOR-gated:** a `customer` may read it ONLY
+         *     while they have an ACTIVE booking with this guard (an event-derived read-model projected
+         *     from `pguard.events.booking.*`); a `guard` may read only their own; an `admin` may read
+         *     any. A customer without an active booking gets **403** (NOT 404 — no existence probe).
+         *     **Approval-gated:** an un-approved or unknown guard returns **404** (its existence is never
+         *     revealed). Returns ONLY `{ user_id, full_name, years_of_experience }` — never the
+         *     bank/address/DOB/emergency-contact PII. `full_name` is PII reachable by a non-owner ONLY
+         *     under this active-booking trust boundary (PDPA §7); a photo is deferred (no avatar storage).
+         */
+        get: operations["getPublicGuardProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles": {
         parameters: {
             query?: never;
@@ -358,6 +386,19 @@ export interface components {
         InternalGuard: {
             /** Format: uuid */
             user_id: string;
+            /** Format: int32 */
+            years_of_experience?: number | null;
+        };
+        /**
+         * @description The lean, customer-facing guard mini-profile for the live-tracking map. NARROW by design —
+         *     only what identifies the assigned guard (name + experience); NEVER bank/address/DOB/
+         *     emergency-contact PII. `full_name` is reachable by a non-owner ONLY under the active-booking
+         *     IDOR gate (see `GET /guards/{id}/public`). Photo deferred (no avatar storage yet).
+         */
+        PublicGuardProfile: {
+            /** Format: uuid */
+            user_id: string;
+            full_name?: string | null;
             /** Format: int32 */
             years_of_experience?: number | null;
         };
@@ -667,6 +708,34 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getPublicGuardProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The assigned guard's user_id. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The assigned guard's public mini-profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PublicGuardProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
         };
     };
