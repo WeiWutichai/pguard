@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/location/location_service.dart';
 import '../../../core/models/geo.dart';
+import '../../../core/permissions/permission_gate.dart';
 import '../../../core/providers.dart';
 import 'map_canvas.dart';
 
@@ -71,7 +73,17 @@ class _MapPickerState extends ConsumerState<MapPicker> {
   }
 
   Future<void> _useCurrentLocation() async {
+    // Show the location rationale first if permission isn't granted yet (honest pre-prompt).
+    // The fix itself stays best-effort: the GPS source is stubbed, so it falls back to Bangkok.
+    // TODO(geolocator): once a real GPS source lands, re-check the status AFTER the rationale and
+    // skip currentLocation() on a denial instead of always falling back.
+    final status = await ref.read(permissionGateProvider).locationStatus();
+    if (status != PgPermissionState.granted && mounted) {
+      await context.push('/permissions/location');
+    }
+    if (!mounted) return;
     final fix = await ref.read(locationServiceProvider).currentLocation();
+    if (!mounted) return;
     _moveTo(fix ?? GeoPoint.bangkok);
   }
 

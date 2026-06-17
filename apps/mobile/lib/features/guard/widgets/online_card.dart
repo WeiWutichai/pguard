@@ -1,21 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/tracking_controller.dart';
 import '../../../core/network/sockets/presence_socket.dart';
+import '../../../core/permissions/permission_gate.dart';
+import '../../../core/providers.dart';
 
 /// The dashboard hero: a deep-forest-green panel with the online/standby toggle and the GPS
 /// connection + accuracy readout. Per `Mobile Guard.html` / `Mobile - Active Standby.html`.
 class OnlineCard extends ConsumerWidget {
   const OnlineCard({super.key});
 
+  /// Going OFFLINE needs no permission. Going ONLINE makes the guard GPS-trackable, so show the
+  /// location rationale first if it isn't granted yet (honest pre-prompt) — then go online
+  /// regardless: the presence socket works without a live fix (the GPS source is still stubbed
+  /// and degrades gracefully). Once geolocator lands, a denied permission will actually matter.
+  Future<void> _onToggle(
+      BuildContext context, WidgetRef ref, TrackingState state) async {
+    final ctrl = ref.read(trackingControllerProvider.notifier);
+    if (state.online) {
+      ctrl.toggle();
+      return;
+    }
+    final status = await ref.read(permissionGateProvider).locationStatus();
+    if (status != PgPermissionState.granted && context.mounted) {
+      await context.push('/permissions/location', extra: true);
+    }
+    // Don't go online if the guard navigated away during the rationale.
+    if (!context.mounted) return;
+    ctrl.toggle();
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(trackingControllerProvider);
-    final ctrl = ref.read(trackingControllerProvider.notifier);
 
     return Container(
       // Design hero `.online-card`: 20px padding + 20px corners.
@@ -32,7 +54,7 @@ class OnlineCard extends ConsumerWidget {
               Expanded(child: _StatusText(state: state, isThai: isThai)),
               Switch(
                 value: state.online,
-                onChanged: (_) => ctrl.toggle(),
+                onChanged: (_) => _onToggle(context, ref, state),
                 activeTrackColor: PgTokens.colorAccent,
                 activeThumbColor: Colors.white,
               ),

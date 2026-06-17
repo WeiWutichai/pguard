@@ -9,6 +9,7 @@ import 'package:pguard_mobile/core/media/chat_media_picker.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
+import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/models/call.dart';
 import 'package:pguard_mobile/core/models/chat.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
@@ -544,4 +545,31 @@ String fakeJwt(Map<String, dynamic> claims) {
   final header = seg({'alg': 'HS256', 'typ': 'JWT'});
   final payload = seg(claims);
   return '$header.$payload.sig';
+}
+
+/// In-memory [PermissionGate] for the location-permission tests. [status] is the current OS
+/// answer; [requestResult] (if set) is what `requestLocation()` flips it to. Counts calls.
+class FakePermissionGate implements PermissionGate {
+  FakePermissionGate(this.status, {this.requestResult});
+
+  PgPermissionState status;
+  PgPermissionState? requestResult;
+  int requestCount = 0;
+  int openSettingsCount = 0;
+
+  @override
+  Future<PgPermissionState> locationStatus() async => status;
+
+  @override
+  Future<PgPermissionState> requestLocation() async {
+    requestCount++;
+    if (requestResult != null) status = requestResult!;
+    return status;
+  }
+
+  @override
+  Future<bool> openSettings() async {
+    openSettingsCount++;
+    return true;
+  }
 }

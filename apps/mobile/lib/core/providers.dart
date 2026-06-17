@@ -16,6 +16,7 @@ import 'network/sockets/booking_status_socket.dart';
 import 'network/sockets/call_socket.dart';
 import 'network/sockets/chat_socket.dart';
 import 'network/sockets/presence_socket.dart';
+import 'permissions/permission_gate.dart';
 import 'storage/prefs_store.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
 
@@ -56,6 +57,12 @@ BiometricService biometricService(BiometricServiceRef ref) => BiometricService(
 @Riverpod(keepAlive: true)
 LocationService locationService(LocationServiceRef ref) =>
     const DefaultLocationService();
+
+/// OS LOCATION-permission gate (`permission_handler`). Governs only the permission, not the GPS
+/// source. Tests override with a fake (no platform channels).
+@Riverpod(keepAlive: true)
+PermissionGate permissionGate(PermissionGateRef ref) =>
+    const DefaultPermissionGate();
 
 /// Builds a live booking-status feed for a booking id. Production returns a real
 /// [BookingStatusSocket]; tests override this provider to inject a fake feed.
