@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
@@ -11,32 +13,49 @@ import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_segmented_tabs.dart';
 import '../../widgets/pguard_header.dart';
 
 /// Guard "รายได้" tab — estimated earnings derived from the guard's COMPLETED bookings
 /// (`GET /v1/bookings`, guard = assigned jobs). UI per Guard_App.md Screen 6 "Earnings":
-/// mono hero number + "รายการล่าสุด" per-job rows (green shield icon, place, date · hours,
-/// mono amount). Shares [guardJobsControllerProvider] with the guard dashboard (same
-/// endpoint — one cache); pull-to-refresh re-pulls, no polling.
+/// a Day/Week/Month segmented control, a windowed mono hero with a growth line, a 7-day
+/// bar chart, and "รายการล่าสุด" per-job rows. Shares [guardJobsControllerProvider] with the
+/// guard dashboard (same endpoint — one cache); pull-to-refresh re-pulls, no polling.
 ///
-/// Design sections OMITTED (need data that does not exist in v2 — never invented):
-///  - the Day/Week/Month tab bar, the 7-day bar chart, and the "↑ 14% จากสัปดาห์ก่อน"
-///    growth line all need a time-series earnings ledger; v2 has no earnings endpoint and
-///    `GET /v1/bookings` is a job list, not a guaranteed-complete ledger — windowed sums
-///    derived from it could silently under-report. The hero therefore shows the honest
-///    all-time total ("รวมรายได้") labelled "ประมาณการ / Estimated" instead of the mock's
-///    "รายได้สัปดาห์นี้ / This week".
-class EarningsScreen extends ConsumerWidget {
-  const EarningsScreen({super.key});
+/// HONESTY NOTE: v2 has no earnings/settlement ledger — every figure is a client-side ESTIMATE
+/// (`base_fee × hours` per completed job, tip + guard_count excluded) labelled
+/// "ประมาณการ / Estimated". The figures come from `GET /v1/bookings`, which is
+/// `ORDER BY created_at DESC LIMIT 100` ([GuardEarnings.feedRowCap]): below the cap the feed is
+/// complete and the windowed totals are exact; AT the cap the server has dropped the oldest-created
+/// rows, which can still belong in a window (we window by `scheduled_at`), so the screen shows a
+/// "ยอดอาจไม่ครบ / total may be incomplete" caveat ([GuardEarnings.feedMayBeTruncated]) rather than
+/// presenting a confident-but-possibly-low number. The growth line is omitted (not shown as 0%)
+/// when the prior window had no earnings, so there is never a fabricated baseline. See
+/// [GuardEarnings] for the math.
+class EarningsScreen extends ConsumerStatefulWidget {
+  const EarningsScreen({super.key, this.now});
+
+  /// Test seam: pins "now" so windowed sums are deterministic. Production passes null →
+  /// [DateTime.now] at build time.
+  @visibleForTesting
+  final DateTime? now;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<EarningsScreen> createState() => _EarningsScreenState();
+}
+
+class _EarningsScreenState extends ConsumerState<EarningsScreen> {
+  EarningsWindow _window = EarningsWindow.week;
+
+  @override
+  Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(guardJobsControllerProvider);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'รายได้' : 'Earnings',
         subtitle: isThai ? 'รายได้โดยประมาณ' : 'Earnings',
         showBack: true,
@@ -51,6 +70,7 @@ class EarningsScreen extends ConsumerWidget {
                 ref.read(guardJobsControllerProvider.notifier).refresh(),
           ),
           data: (all) {
+            final now = widget.now ?? DateTime.now();
             final completed = GuardEarnings.completedJobs(all);
             return RefreshIndicator(
               onRefresh: () =>
@@ -58,16 +78,34 @@ class EarningsScreen extends ConsumerWidget {
               child: ListView(
                 physics: const AlwaysScrollableScrollPhysics(),
                 children: [
+                  PgSegmentedTabs(
+                    labels: isThai
+                        ? const ['วัน', 'สัปดาห์', 'เดือน']
+                        : const ['Day', 'Week', 'Month'],
+                    selected: _window.index,
+                    onSelect: (i) =>
+                        setState(() => _window = EarningsWindow.values[i]),
+                  ),
                   _EarningsHero(
                     isThai: isThai,
-                    totalSatang: GuardEarnings.totalEarningsSatang(all),
+                    window: _window,
+                    satang: GuardEarnings.sumInWindow(all, now, _window),
+                    growth: GuardEarnings.growth(all, now, _window),
+                    mayBeIncomplete: GuardEarnings.feedMayBeTruncated(all),
                   ),
                   if (completed.isEmpty)
                     _EmptyEarnings(isThai: isThai)
                   else ...[
+                    _EarningsChart(
+                      series: GuardEarnings.dailySeries(all, now),
+                      dates: GuardEarnings.seriesDates(now),
+                      isThai: isThai,
+                    ),
+                    // The "Recent" list is an all-time activity feed (newest-first), independent of
+                    // the Day/Week/Month selector above — matching the mockup's flat "รายการล่าสุด".
                     Padding(
                       padding: const EdgeInsets.fromLTRB(PgTokens.space5,
-                          PgTokens.space4, PgTokens.space5, PgTokens.space2),
+                          PgTokens.space5, PgTokens.space5, PgTokens.space2),
                       child: Text(
                         isThai ? 'รายการล่าสุด' : 'Recent',
                         style: const TextStyle(
@@ -89,29 +127,54 @@ class EarningsScreen extends ConsumerWidget {
   }
 }
 
-/// Design `earn-hero`: padding 18×20, muted subtitle, 34px w600 mono big number — plus the
-/// honesty line where the mock's growth indicator sits.
+/// Design `earn-hero`: padding 18×20, muted window subtitle, 34px w600 mono big number, a
+/// success/danger growth line (omitted when there is no prior-window baseline), and the honesty
+/// caption where the mock has nothing — earnings here are an estimate.
 class _EarningsHero extends StatelessWidget {
-  const _EarningsHero({required this.isThai, required this.totalSatang});
+  const _EarningsHero({
+    required this.isThai,
+    required this.window,
+    required this.satang,
+    required this.growth,
+    required this.mayBeIncomplete,
+  });
 
   final bool isThai;
-  final int totalSatang;
+  final EarningsWindow window;
+  final int satang;
+  final double? growth;
+
+  /// The feed hit the row cap, so older jobs may be missing — the total can under-report.
+  final bool mayBeIncomplete;
+
+  String get _subtitle => switch (window) {
+        EarningsWindow.day => isThai ? 'รายได้วันนี้' : 'Today',
+        EarningsWindow.week => isThai ? 'รายได้สัปดาห์นี้' : 'This week',
+        EarningsWindow.month => isThai ? 'รายได้เดือนนี้' : 'This month',
+      };
+
+  String get _growthSuffix => switch (window) {
+        EarningsWindow.day => isThai ? 'จากวันก่อน' : 'vs yesterday',
+        EarningsWindow.week => isThai ? 'จากสัปดาห์ก่อน' : 'vs last week',
+        EarningsWindow.month => isThai ? 'จากเดือนก่อน' : 'vs last month',
+      };
 
   @override
   Widget build(BuildContext context) {
+    final g = growth;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            isThai ? 'รวมรายได้' : 'Total earnings',
+            _subtitle,
             style:
                 const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
           ),
           const SizedBox(height: PgTokens.space1),
           Text(
-            Money.format(totalSatang),
+            Money.format(satang),
             style: const TextStyle(
               fontSize: 34,
               fontWeight: FontWeight.w600,
@@ -120,16 +183,138 @@ class _EarningsHero extends StatelessWidget {
               color: PgTokens.colorTextStrong,
             ),
           ),
+          if (g != null) ...[
+            const SizedBox(height: PgTokens.space1),
+            Text(
+              '${g >= 0 ? '↑' : '↓'} ${(g.abs() * 100).round()}% $_growthSuffix',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: g >= 0 ? PgTokens.colorSuccess : PgTokens.colorDanger,
+              ),
+            ),
+          ],
           const SizedBox(height: PgTokens.space1),
           Text(
             isThai
-                ? 'ประมาณการ · ฿ พื้นฐาน × ชม. ต่องานที่เสร็จสิ้น'
-                : 'Estimated · base ฿ × hours per completed job',
+                ? 'ประมาณการจากงานที่เสร็จสิ้น (฿ พื้นฐาน × ชม.)'
+                : 'Estimated from completed jobs (base ฿ × hours)',
             style:
-                const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+                const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
           ),
+          if (mayBeIncomplete) ...[
+            const SizedBox(height: PgTokens.space1),
+            Row(
+              children: [
+                const Icon(Icons.info_outline,
+                    size: 13, color: PgTokens.colorWarning),
+                const SizedBox(width: 5),
+                Expanded(
+                  child: Text(
+                    isThai
+                        ? 'แสดงเฉพาะงานล่าสุด · ยอดอาจไม่ครบ'
+                        : 'Showing recent jobs only · total may be incomplete',
+                    style: const TextStyle(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w600,
+                        color: PgTokens.colorWarning),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
       ),
+    );
+  }
+}
+
+/// Design `ebars`: a 7-day daily bar chart (last 7 days ending today, oldest→newest). Bars are
+/// brand-green; today's bar is amber. Heights normalise to the busiest day; an empty day still
+/// shows the `min-height` stub. Weekday labels (จ อ พ … / Mo Tu …) come from each bar's real date.
+class _EarningsChart extends StatelessWidget {
+  const _EarningsChart({
+    required this.series,
+    required this.dates,
+    required this.isThai,
+  });
+
+  /// Satang per day, oldest-first, length == number of bars; last entry is today.
+  final List<int> series;
+
+  /// The LOCAL calendar date for each bar (from `GuardEarnings.seriesDates`, same order as
+  /// [series]) — the bar's weekday label is read from here so it can never drift from its value.
+  final List<DateTime> dates;
+  final bool isThai;
+
+  static const _thWeekday = ['', 'จ', 'อ', 'พ', 'พฤ', 'ศ', 'ส', 'อา'];
+  static const _enWeekday = ['', 'Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+
+  @override
+  Widget build(BuildContext context) {
+    final maxVal = series.fold<int>(0, math.max);
+    final weekday = isThai ? _thWeekday : _enWeekday;
+    return Padding(
+      padding:
+          const EdgeInsets.fromLTRB(PgTokens.space5, 14, PgTokens.space5, 0),
+      child: SizedBox(
+        height: 110,
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            for (var i = 0; i < series.length; i++) ...[
+              if (i > 0) const SizedBox(width: PgTokens.space2),
+              Expanded(
+                child: _Bar(
+                  // min-height stub (≈6px of the ~84px bar area) for empty days.
+                  fraction:
+                      maxVal == 0 ? 0.07 : math.max(series[i] / maxVal, 0.07),
+                  isToday: i == series.length - 1,
+                  label: weekday[dates[i].weekday],
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _Bar extends StatelessWidget {
+  const _Bar(
+      {required this.fraction, required this.isToday, required this.label});
+
+  final double fraction;
+  final bool isToday;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Expanded(
+          child: Align(
+            alignment: Alignment.bottomCenter,
+            child: FractionallySizedBox(
+              heightFactor: fraction.clamp(0.0, 1.0),
+              child: Container(
+                decoration: BoxDecoration(
+                  color:
+                      isToday ? PgTokens.colorAmber400 : PgTokens.colorPrimary,
+                  borderRadius:
+                      const BorderRadius.vertical(top: Radius.circular(5)),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text(
+          label,
+          style: const TextStyle(fontSize: 10, color: PgTokens.colorTextFaint),
+        ),
+      ],
     );
   }
 }

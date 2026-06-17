@@ -28,6 +28,10 @@ Map<String, dynamic> jobJson(
       'tip': '500.00',
     };
 
+// Pin "now" to the day after the jobs' fixed scheduled_at (2026-06-03T12:00Z) so the
+// default Week window contains them — the windowed hero is otherwise time-relative.
+final _now = DateTime.utc(2026, 6, 4, 12);
+
 Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
   await tester.pumpWidget(ProviderScope(
     overrides: [
@@ -35,7 +39,7 @@ Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ],
-    child: const MaterialApp(home: EarningsScreen()),
+    child: MaterialApp(home: EarningsScreen(now: _now)),
   ));
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 20));
@@ -52,13 +56,15 @@ void main() {
           ? [
               jobJson('b1', 'completed'), // ฿230 × 8h = ฿1,840
               jobJson('b2', 'completed', address: 'คอนโด ไอดีโอ', hours: 5),
-              jobJson('b3', 'accepted', address: 'โรงงาน ปทุม'), // not yet earned
+              jobJson('b3', 'accepted',
+                  address: 'โรงงาน ปทุม'), // not yet earned
             ]
           : const <Map<String, dynamic>>[],
     );
     await pumpScreen(tester, api);
 
-    expect(find.text('รวมรายได้'), findsOneWidget);
+    // Default tab is Week; both jobs fall in the window (2026-06-03, "now" = 2026-06-04).
+    expect(find.text('รายได้สัปดาห์นี้'), findsOneWidget);
     // ฿1,840 + ฿1,150 — per-guard share only: guard_count (2) and tip (฿500) excluded.
     expect(find.text('฿2,990'), findsOneWidget);
     expect(find.textContaining('ประมาณการ'), findsOneWidget);
@@ -72,6 +78,22 @@ void main() {
     expect(find.text('โรงงาน ปทุม'), findsNothing);
     // Both feeds (/bookings + /bookings/open) fetched once each — no polling.
     expect(api.getCount, 2);
+  });
+
+  testWidgets('surfaces the incompleteness caveat when the feed is at the cap',
+      (tester) async {
+    // A full page (100 rows) means the server may have dropped older jobs → the windowed
+    // total can under-report, so the hero must say so rather than show a confident number.
+    final full = [
+      for (var i = 0; i < 100; i++) jobJson('b$i', 'completed'),
+    ];
+    final api = FakeApi(
+      onGet: (path, _) async =>
+          path == '/bookings' ? full : const <Map<String, dynamic>>[],
+    );
+    await pumpScreen(tester, api);
+
+    expect(find.textContaining('ยอดอาจไม่ครบ'), findsOneWidget);
   });
 
   testWidgets('shows the empty state when nothing is completed yet',
