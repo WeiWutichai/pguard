@@ -5,6 +5,7 @@ import 'calling/webrtc_call_engine.dart';
 import 'controllers/biometric_service.dart';
 import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
+import 'location/geolocator_location_service.dart';
 import 'location/location_service.dart';
 import 'media/chat_attachment_service.dart';
 import 'media/chat_media_picker.dart';
@@ -52,11 +53,12 @@ BiometricService biometricService(BiometricServiceRef ref) => BiometricService(
       authenticator: LocalAuthAuthenticator(),
     );
 
-/// Location/geocoding for the booking map picker. Offline-safe by default; tests (and a future
-/// real geocoder) override this provider.
+/// Device GPS for the booking map picker + guard tracking — real `geolocator`-backed source
+/// (foreground only; reads the permission_handler-granted permission, never prompts). Degrades to
+/// null/empty when not granted or GPS is off. Tests override this provider with an in-memory fake.
 @Riverpod(keepAlive: true)
 LocationService locationService(LocationServiceRef ref) =>
-    const DefaultLocationService();
+    const GeolocatorLocationService();
 
 /// OS LOCATION-permission gate (`permission_handler`). Governs only the permission, not the GPS
 /// source. Tests override with a fake (no platform channels).
