@@ -9,6 +9,7 @@ Booking booking({
   int? hours = 8,
   int? guardCount = 1,
   String? tip,
+  DateTime? scheduledAt,
 }) =>
     Booking(
       id: id,
@@ -18,6 +19,7 @@ Booking booking({
       hours: hours,
       guardCount: guardCount,
       tip: tip,
+      scheduledAt: scheduledAt,
     );
 
 void main() {
@@ -67,6 +69,110 @@ void main() {
 
     test('empty list totals 0', () {
       expect(GuardEarnings.totalEarningsSatang(const []), 0);
+    });
+  });
+
+  group('GuardEarnings windowed', () {
+    final now = DateTime.utc(2026, 6, 17, 12);
+    // ฿230 × 8h = ฿1,840 = 184000 satang per completed job below.
+    final jobs = [
+      booking(id: 'today', scheduledAt: now.subtract(const Duration(hours: 2))),
+      booking(id: 'd3', scheduledAt: now.subtract(const Duration(days: 3))),
+      booking(id: 'd20', scheduledAt: now.subtract(const Duration(days: 20))),
+      booking(id: 'd40', scheduledAt: now.subtract(const Duration(days: 40))),
+      // Completed but undated → never counted in a window.
+      booking(id: 'nodate', scheduledAt: null),
+      // In-window but not completed → never earns.
+      booking(
+          id: 'open',
+          status: BookingStatus.accepted,
+          scheduledAt: now.subtract(const Duration(hours: 1))),
+    ];
+
+    test('day window keeps only the last 24h of completed jobs', () {
+      expect(GuardEarnings.sumInWindow(jobs, now, EarningsWindow.day), 184000);
+    });
+
+    test('week window keeps the last 7 days', () {
+      // today + d3 (d20/d40 are older; nodate/open excluded).
+      expect(GuardEarnings.sumInWindow(jobs, now, EarningsWindow.week),
+          184000 * 2);
+    });
+
+    test('month window keeps the last 30 days', () {
+      // today + d3 + d20 (d40 falls outside 30 days).
+      expect(GuardEarnings.sumInWindow(jobs, now, EarningsWindow.month),
+          184000 * 3);
+    });
+
+    test('a future-dated job is excluded from the window', () {
+      final withFuture = [
+        ...jobs,
+        booking(id: 'future', scheduledAt: now.add(const Duration(days: 1))),
+      ];
+      expect(GuardEarnings.sumInWindow(withFuture, now, EarningsWindow.day),
+          184000);
+    });
+
+    test('growth is null when the prior window earned nothing', () {
+      // Only a job today; the prior week (−14d…−7d) is empty → no baseline.
+      final onlyNow = [
+        booking(scheduledAt: now.subtract(const Duration(hours: 1)))
+      ];
+      expect(GuardEarnings.growth(onlyNow, now, EarningsWindow.week), isNull);
+    });
+
+    test('growth compares current vs prior window of equal length', () {
+      // Current week: two jobs (368000). Prior week (−14d…−7d): one job (184000).
+      final series = [
+        booking(id: 'c1', scheduledAt: now.subtract(const Duration(days: 1))),
+        booking(id: 'c2', scheduledAt: now.subtract(const Duration(days: 2))),
+        booking(id: 'p1', scheduledAt: now.subtract(const Duration(days: 9))),
+      ];
+      expect(GuardEarnings.growth(series, now, EarningsWindow.week), 1.0);
+    });
+
+    test('dailySeries buckets by local date, oldest-first, today last', () {
+      final s = GuardEarnings.dailySeries(jobs, now);
+      expect(s.length, 7);
+      expect(s.last, 184000); // today
+      expect(s[7 - 1 - 3], 184000); // 3 days ago
+      // Days with no completed job stay 0.
+      expect(s[0], 0);
+      expect(s.fold<int>(0, (a, b) => a + b), 184000 * 2);
+    });
+
+    test('dailySeries on empty input is all zeros', () {
+      expect(GuardEarnings.dailySeries(const [], now), List<int>.filled(7, 0));
+    });
+
+    test('dailySeries excludes a future-dated job', () {
+      final withFuture = [
+        booking(scheduledAt: now.add(const Duration(days: 1))),
+      ];
+      expect(
+          GuardEarnings.dailySeries(withFuture, now), List<int>.filled(7, 0));
+    });
+
+    test('seriesDates is oldest-first, today last, length days', () {
+      final d = GuardEarnings.seriesDates(now, days: 7);
+      expect(d.length, 7);
+      final today = now.toLocal();
+      expect(d.last.year, today.year);
+      expect(d.last.month, today.month);
+      expect(d.last.day, today.day);
+      // Strictly ascending, one calendar day apart.
+      for (var i = 1; i < d.length; i++) {
+        expect(d[i].difference(d[i - 1]).inDays, 1);
+      }
+    });
+
+    test('feedMayBeTruncated flips at the row cap', () {
+      List<Booking> n(int count) =>
+          List.generate(count, (i) => booking(id: 'b$i'));
+      expect(GuardEarnings.feedMayBeTruncated(n(99)), isFalse);
+      expect(GuardEarnings.feedMayBeTruncated(n(GuardEarnings.feedRowCap)),
+          isTrue);
     });
   });
 }
