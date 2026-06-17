@@ -45,8 +45,8 @@ export const COPY: Record<Lang, CustomersCopy> = {
     title: "ลูกค้า",
     subtitle: (n) => `ลูกค้าที่ส่งโปรไฟล์แล้ว ${n} คน`,
     kpiTotal: "ลูกค้าทั้งหมด",
-    kpiSpend: "ยอดใช้จ่ายรวม (เดือน)",
-    kpiBookings: "การจองทั้งหมด",
+    kpiSpend: "รายได้สุทธิ (30 วัน)",
+    kpiBookings: "การจอง (30 วัน)",
     kpiRepeat: "กลับมาใช้ซ้ำ",
     chipIndividual: "บุคคล",
     chipCompany: "นิติบุคคล",
@@ -75,8 +75,8 @@ export const COPY: Record<Lang, CustomersCopy> = {
     title: "Customers",
     subtitle: (n) => `${n} customers with a profile`,
     kpiTotal: "Total customers",
-    kpiSpend: "Monthly spend",
-    kpiBookings: "Total bookings",
+    kpiSpend: "Net revenue (30d)",
+    kpiBookings: "Bookings (30d)",
     kpiRepeat: "Repeat rate",
     chipIndividual: "Individual",
     chipCompany: "Company",
@@ -114,6 +114,22 @@ export function customerInitials(name: string | null | undefined, userId: string
       .join("");
   }
   return userId.slice(0, 2).toUpperCase();
+}
+
+/** Friendly label for a payment `payment_method` wire value — the validated v2 set is
+ * promptpay / credit_card / debit_card / mobile_banking. Falls back to the raw value
+ * (de-underscored + capitalized) so an unknown method is shown honestly, never hidden. */
+export function paymentMethodLabel(method: string, lang: Lang): string {
+  const known: Record<string, { th: string; en: string }> = {
+    promptpay: { th: "พร้อมเพย์", en: "PromptPay" },
+    credit_card: { th: "บัตรเครดิต", en: "Credit card" },
+    debit_card: { th: "บัตรเดบิต", en: "Debit card" },
+    mobile_banking: { th: "โมบายแบงก์กิ้ง", en: "Mobile banking" },
+  };
+  const hit = known[method.toLowerCase()];
+  if (hit) return lang === "th" ? hit.th : hit.en;
+  const pretty = method.replace(/_/g, " ");
+  return pretty.charAt(0).toUpperCase() + pretty.slice(1);
 }
 
 /** Localized signup date from the ISO `created_at`. */

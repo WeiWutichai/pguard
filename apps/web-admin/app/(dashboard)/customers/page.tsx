@@ -28,9 +28,9 @@ import {
   Th,
   Tr,
 } from "@/components/ui";
-import { profileApi } from "@/lib/api";
+import { bookingApi, paymentApi, profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
-import { fmtCappedCount } from "@/lib/format";
+import { fmtBaht, fmtCappedCount } from "@/lib/format";
 
 import { COPY, customerInitials } from "./copy";
 import { CustomerDetailModal } from "./customer-detail-modal";
@@ -46,6 +46,11 @@ export default function CustomersPage() {
   const c = COPY[lang];
 
   const [customers, setCustomers] = useState<CustomerProfileAdmin[]>([]);
+  // Platform 30-day aggregates from the report endpoints (net revenue + booking count); null
+  // until loaded / on failure → gap chip. These are platform-activity-this-month metrics, NOT
+  // all-time customer roll-ups (labels say "(30 วัน)/(30d)").
+  const [monthlySpend, setMonthlySpend] = useState<string | null>(null);
+  const [monthlyBookings, setMonthlyBookings] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -54,10 +59,19 @@ export default function CustomersPage() {
   const [page, setPage] = useState(1);
 
   const fetchInto = useCallback((alive: () => boolean) => {
-    return profileApi.GET("/admin/customer-profiles").then(({ data, error }) => {
+    return Promise.all([
+      profileApi.GET("/admin/customer-profiles"),
+      // Platform 30-day net revenue + booking count (the two activity KPIs). Both reports default
+      // to a 30-day window. A failed report sub-call degrades only its own KPI to a gap chip; the
+      // customer list still renders (only a profiles failure raises the page error banner).
+      paymentApi.GET("/admin/reports/revenue"),
+      bookingApi.GET("/admin/reports/bookings"),
+    ]).then(([profiles, revenue, bookings]) => {
       if (!alive()) return;
-      setHasError(Boolean(error));
-      setCustomers(error ? [] : (data?.data ?? []));
+      setHasError(Boolean(profiles.error));
+      setCustomers(profiles.error ? [] : (profiles.data?.data ?? []));
+      setMonthlySpend(revenue.error ? null : (revenue.data?.data?.total ?? null));
+      setMonthlyBookings(bookings.error ? null : (bookings.data?.data?.total ?? null));
       setLoading(false);
     });
   }, []);
@@ -93,8 +107,9 @@ export default function CustomersPage() {
   const summaryStart = filtered.length === 0 ? 0 : (safePage - 1) * PAGE_SIZE + 1;
   const summaryEnd = Math.min(safePage * PAGE_SIZE, filtered.length);
 
-  // Only the total count is a real aggregate; spend / bookings / repeat-rate need
-  // payment+booking roll-ups no v2 endpoint serves — honest gap chips, never invented.
+  // Customer count + the two 30-day platform KPIs (net revenue, bookings) are real; repeat-rate
+  // has no scalar endpoint and the per-row spend/bookings columns would need per-customer
+  // aggregates (or N per-row calls) — those stay honest gap chips, never invented.
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
 
   return (
@@ -129,8 +144,16 @@ export default function CustomersPage() {
           label={c.kpiTotal}
           value={loading || hasError ? gap : fmtCappedCount(customers.length)}
         />
-        <KpiCard icon={<TrendingUp />} label={c.kpiSpend} value={gap} />
-        <KpiCard icon={<CalendarRange />} label={c.kpiBookings} value={gap} />
+        <KpiCard
+          icon={<TrendingUp />}
+          label={c.kpiSpend}
+          value={monthlySpend == null ? gap : fmtBaht(monthlySpend)}
+        />
+        <KpiCard
+          icon={<CalendarRange />}
+          label={c.kpiBookings}
+          value={monthlyBookings == null ? gap : monthlyBookings.toLocaleString("en-US")}
+        />
         <KpiCard icon={<Repeat />} label={c.kpiRepeat} value={gap} />
       </KpiGrid>
 
