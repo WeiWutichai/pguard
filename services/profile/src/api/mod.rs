@@ -4,7 +4,7 @@
 //! Handlers are generic over [`ProfileDeps`] so the `AuthUser` guard + the role gates are
 //! unit-testable with a lightweight state (no live DB), mirroring booking's seam.
 
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{FromRequestParts, Multipart, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::HeaderMap;
 use axum::Json;
@@ -18,13 +18,15 @@ use shared::error::AppError;
 use shared::models::{ApiResponse, ApprovalStatus};
 use shared::service_jwt::ServiceCaller;
 
+use crate::domain::documents;
 use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, DocumentExpiryRow, GuardProfileResponse, InternalGuard, MyProfile,
-    PublicGuardProfile, RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest,
-    StageRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    CustomerProfileResponse, DocumentExpiryRow, GuardDocumentResponse, GuardProfileResponse,
+    InternalGuard, MyProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
+    RecruitCandidate, RejectRequest, StageRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -386,6 +388,136 @@ pub async fn get_public_guard_profile<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(profile)))
 }
 
+// ----- POST/GET /profile/guard/{user_id}/documents — guard credential image upload/read -----
+
+/// Hard body cap for a document upload (12 MiB) — set as the route's `DefaultBodyLimit` and
+/// mirrored by the gateway's `BodyCap::Large`. Slightly above the 10 MiB image cap to allow for
+/// multipart framing overhead.
+pub const MAX_DOCUMENT_BODY_BYTES: usize = 12 * 1024 * 1024;
+
+/// POST `/profile/guard/{user_id}/documents` — a guard uploads ONE of their own credential images
+/// (id_card / security_license / training_cert / criminal_check / driver_license / passbook_photo).
+/// Auth: logged-in guard, **own docs only** (no admin bypass on WRITE — first-person credential
+/// attestation). The image is magic-byte validated, stored under a server-generated UUID key, and
+/// the key written to the matching `*_key` column. Returns a short-lived presigned GET URL.
+#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id, target = %user_id))]
+pub async fn upload_guard_document<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<GuardDocumentResponse>>, AppError> {
+    require_role(&user, ROLE_GUARD)?;
+    // IDOR: a guard uploads ONLY their own credentials (path id must equal the caller).
+    if user_id != user.user_id {
+        return Err(AppError::Forbidden(
+            "You can only upload your own documents".to_string(),
+        ));
+    }
+
+    let (document_type, declared_mime, bytes) = parse_document_form(multipart).await?;
+
+    // Map the document_type to its column FIRST (closed allowlist; unknown → 400) so an unknown
+    // type is rejected before any S3 work, and the column name is never client-controlled.
+    let column = documents::key_column_for(&document_type)
+        .ok_or_else(|| AppError::BadRequest(format!("unknown document_type: {document_type}")))?;
+
+    // Validate the image (size BEFORE magic bytes; declared must match detected).
+    let canonical_mime = documents::validate_document_upload(&declared_mime, bytes.len(), &bytes)?;
+    let ext = documents::mime_to_extension(canonical_mime);
+    let key = format!("profile/{user_id}/documents/{}.{ext}", Uuid::new_v4());
+
+    state.s3().upload(&key, bytes, canonical_mime).await?;
+
+    // Persist the key; on failure compensate so the object doesn't orphan.
+    if let Err(e) = repo::update_document_key(state.db(), user_id, column, &key).await {
+        state.s3().delete_best_effort(&key).await;
+        return Err(e);
+    }
+
+    Ok(Json(ApiResponse::success(GuardDocumentResponse {
+        document_type,
+        download_url: state.s3().download_url(&key),
+    })))
+}
+
+/// GET `/profile/guard/{user_id}/documents?document_type=...` — a presigned URL for ONE stored
+/// document. Read auth is OWNER-OR-ADMIN (an admin must be able to verify a guard's credentials);
+/// 404 when the document type is valid but not yet uploaded (key NULL) or the guard has no profile.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, target = %user_id))]
+pub async fn get_guard_document<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    Query(q): Query<GuardDocumentQuery>,
+) -> Result<Json<ApiResponse<GuardDocumentResponse>>, AppError> {
+    // Owner or admin.
+    if user.role != ROLE_ADMIN && user.user_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only read your own documents".to_string(),
+        ));
+    }
+    let column = documents::key_column_for(&q.document_type).ok_or_else(|| {
+        AppError::BadRequest(format!("unknown document_type: {}", q.document_type))
+    })?;
+    let key = repo::get_document_key(state.db_read(), user_id, column)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Document not uploaded".to_string()))?;
+    Ok(Json(ApiResponse::success(GuardDocumentResponse {
+        document_type: q.document_type,
+        download_url: state.s3().download_url(&key),
+    })))
+}
+
+/// Query for the document GET (`?document_type=id_card`).
+#[derive(Debug, Deserialize)]
+pub struct GuardDocumentQuery {
+    pub document_type: String,
+}
+
+/// Parse the document multipart parts: required `document_type` (text) + `file` (bytes + declared
+/// content-type). The bytes are bounded by the route's `DefaultBodyLimit`.
+async fn parse_document_form(
+    mut multipart: Multipart,
+) -> Result<(String, String, Vec<u8>), AppError> {
+    let mut document_type: Option<String> = None;
+    let mut declared_mime: Option<String> = None;
+    let mut file: Option<Vec<u8>> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {e}")))?
+    {
+        match field.name().unwrap_or("") {
+            "document_type" => {
+                let text = field
+                    .text()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Invalid document_type: {e}")))?;
+                document_type = Some(text.trim().to_string());
+            }
+            "file" => {
+                declared_mime = field.content_type().map(|s| s.to_string());
+                file = Some(
+                    field
+                        .bytes()
+                        .await
+                        .map_err(|e| AppError::BadRequest(format!("Failed to read file: {e}")))?
+                        .to_vec(),
+                );
+            }
+            _ => {}
+        }
+    }
+
+    let document_type = document_type
+        .ok_or_else(|| AppError::BadRequest("document_type is required".to_string()))?;
+    let file = file.ok_or_else(|| AppError::BadRequest("file is required".to_string()))?;
+    let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
+    Ok((document_type, declared_mime, file))
+}
+
 // ----- GET /profile/me — the caller's own profile (account number MASKED) -----
 
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
@@ -693,6 +825,21 @@ mod tests {
         db: sqlx::PgPool,
         redis: redis::aio::ConnectionManager,
         authz: StubAuthz,
+        s3: crate::s3::S3Client,
+    }
+
+    /// Dummy S3 client for tests — does no I/O until a presigned URL is actually hit; the
+    /// role/IDOR rejection paths never reach `s3()`.
+    fn test_s3() -> crate::s3::S3Client {
+        crate::s3::S3Client::new(
+            reqwest::Client::new(),
+            "http://localhost:9000".to_string(),
+            None,
+            "test".to_string(),
+            "us-east-1".to_string(),
+            "k".to_string(),
+            "s".to_string(),
+        )
     }
 
     impl HasJwtSecret for TestDeps {
@@ -713,6 +860,9 @@ mod tests {
         }
         fn booking_authz(&self) -> &StubAuthz {
             &self.authz
+        }
+        fn s3(&self) -> &crate::s3::S3Client {
+            &self.s3
         }
     }
 
@@ -742,6 +892,7 @@ mod tests {
             db,
             redis,
             authz: StubAuthz { allow: false },
+            s3: test_s3(),
         };
         Some(
             Router::new()
@@ -755,6 +906,10 @@ mod tests {
                 .route(
                     "/guards/{id}/public",
                     get(get_public_guard_profile::<TestDeps>),
+                )
+                .route(
+                    "/profile/guard/{user_id}/documents",
+                    post(upload_guard_document::<TestDeps>).get(get_guard_document::<TestDeps>),
                 )
                 .route(
                     "/admin/guard-profiles",
@@ -1077,6 +1232,7 @@ mod tests {
             db,
             redis,
             authz: StubAuthz { allow },
+            s3: test_s3(),
         };
         Some(
             Router::new()
@@ -1214,6 +1370,135 @@ mod tests {
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
+    // ----- POST/GET /profile/guard/{id}/documents — upload auth + IDOR gate -----
+
+    /// Build a minimal `multipart/form-data` POST (text fields only) so the `Multipart` extractor
+    /// succeeds and the handler's role/IDOR gate runs (those reject before file parsing).
+    fn multipart_post(uri: &str, token: &str, fields: &[(&str, &str)]) -> Request<Body> {
+        const B: &str = "TESTBOUNDARY";
+        let mut body = String::new();
+        for (name, value) in fields {
+            body.push_str(&format!(
+                "--{B}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            ));
+        }
+        body.push_str(&format!("--{B}--\r\n"));
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", format!("multipart/form-data; boundary={B}"))
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn document_upload_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/profile/guard/{}/documents", Uuid::new_v4()))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn document_upload_rejects_customer_role() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let (tok, uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{uid}/documents"),
+                &tok,
+                &[("document_type", "id_card")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "only a guard may upload documents"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_upload_idor_rejects_other_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard uploading to a DIFFERENT guard's path → 403 (own-docs-only, no admin bypass).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{}/documents", Uuid::new_v4()),
+                &tok,
+                &[("document_type", "id_card")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a guard must not upload another guard's documents"
+        );
+    }
+
+    #[tokio::test]
+    async fn document_upload_guard_self_passes_role_and_idor() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Own path + guard role pass the gate → the handler proceeds to parse, where the missing
+        // file is a 400 (NOT 401/403). Proves the role + IDOR gate let the owner through.
+        let (tok, uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{uid}/documents"),
+                &tok,
+                &[("document_type", "id_card")], // no file part
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
+    }
+
+    #[tokio::test]
+    async fn document_get_rejects_other_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard reading ANOTHER guard's document → 403 (read is owner-or-admin).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!(
+                    "/profile/guard/{}/documents?document_type=id_card",
+                    Uuid::new_v4()
+                ),
+                &tok,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
     // ----- dual-auth: single-use, purpose-isolated profile_token -----
 
     use redis::AsyncCommands;
@@ -1237,6 +1522,7 @@ mod tests {
             db,
             redis: redis.clone(),
             authz: StubAuthz { allow: false },
+            s3: test_s3(),
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))
@@ -1394,6 +1680,7 @@ mod tests {
             db: pool.clone(),
             redis: redis.clone(),
             authz: StubAuthz { allow: false },
+            s3: test_s3(),
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))

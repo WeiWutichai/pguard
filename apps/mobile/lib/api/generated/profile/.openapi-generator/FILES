@@ -29,8 +29,10 @@ lib/src/model/document_expiry.dart
 lib/src/model/document_expiry_input.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
+lib/src/model/get_guard_document200_response.dart
 lib/src/model/get_my_profile200_response.dart
 lib/src/model/get_public_guard_profile200_response.dart
+lib/src/model/guard_document_response.dart
 lib/src/model/guard_profile.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart

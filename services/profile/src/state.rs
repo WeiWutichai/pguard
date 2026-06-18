@@ -10,6 +10,7 @@ use shared::error::AppError;
 use shared::service_jwt::HasServiceJwt;
 
 use crate::repo;
+use crate::s3::S3Client;
 
 /// The IDOR authorization read: does `customer_id` have an ACTIVE booking with `guard_id`?
 /// Decoupled from the DB so the customer-gate on the public guard-profile read is hermetically
@@ -53,6 +54,8 @@ pub struct AppState {
     /// IDOR authz for the customer-readable guard mini-profile read — backed by the
     /// event-derived `profile.guard_assignments` read-model.
     pub booking_authz: DbBookingAuthz,
+    /// S3/MinIO presigner for guard-document images (upload + presigned download).
+    pub s3: S3Client,
 }
 
 impl HasJwtSecret for AppState {
@@ -89,6 +92,8 @@ pub trait ProfileDeps: HasJwtSecret + Clone + Send + Sync + 'static {
         self.db()
     }
     fn booking_authz(&self) -> &Self::Authz;
+    /// S3 presigner for guard-document upload/download (mirrors booking's `BookingDeps::s3()`).
+    fn s3(&self) -> &S3Client;
 }
 
 impl ProfileDeps for AppState {
@@ -102,6 +107,9 @@ impl ProfileDeps for AppState {
     }
     fn booking_authz(&self) -> &Self::Authz {
         &self.booking_authz
+    }
+    fn s3(&self) -> &S3Client {
+        &self.s3
     }
 }
 
