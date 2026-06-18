@@ -23,11 +23,29 @@ export interface GuardsCopy {
   statJobs: string;
   statExp: string;
   docsHead: string;
+  /** Documents panel: status when a credential type has no stored image, the loading line, and
+   *  the "open full" link; `docLabels` maps each `document_type` to its display name. */
+  docsNotUploaded: string;
+  docsLoading: string;
+  docOpen: string;
+  /** `Record<GuardDocType, ...>` so adding a doc type forces a label in BOTH locales. */
+  docLabels: Record<GuardDocType, string>;
   jobHistory: string;
   suspend: string;
   /** Pagination summary connector: "1–8 จาก 384" / "1–8 of 384". */
   of: string;
 }
+
+/** The six guard credential `document_type`s (matches profile.yaml + mobile GuardCredential). */
+export const GUARD_DOC_TYPES = [
+  "id_card",
+  "security_license",
+  "training_cert",
+  "criminal_check",
+  "driver_license",
+  "passbook_photo",
+] as const;
+export type GuardDocType = (typeof GUARD_DOC_TYPES)[number];
 
 export const COPY: Record<Lang, GuardsCopy> = {
   th: {
@@ -47,6 +65,17 @@ export const COPY: Record<Lang, GuardsCopy> = {
     statJobs: "งานสำเร็จ",
     statExp: "ประสบการณ์",
     docsHead: "เอกสาร",
+    docsNotUploaded: "ยังไม่อัปโหลด",
+    docsLoading: "กำลังโหลดเอกสาร…",
+    docOpen: "เปิดดูเต็ม",
+    docLabels: {
+      id_card: "บัตรประชาชน",
+      security_license: "ใบอนุญาต รปภ.",
+      training_cert: "ใบรับรองการฝึก",
+      criminal_check: "ผลตรวจประวัติ",
+      driver_license: "ใบขับขี่",
+      passbook_photo: "หน้าสมุดบัญชี",
+    },
     jobHistory: "ดูประวัติงาน",
     suspend: "ระงับบัญชี",
     of: "จาก",
@@ -68,6 +97,17 @@ export const COPY: Record<Lang, GuardsCopy> = {
     statJobs: "Jobs",
     statExp: "Exp.",
     docsHead: "Documents",
+    docsNotUploaded: "Not uploaded",
+    docsLoading: "Loading documents…",
+    docOpen: "Open full",
+    docLabels: {
+      id_card: "ID card",
+      security_license: "Security license",
+      training_cert: "Training certificate",
+      criminal_check: "Criminal record check",
+      driver_license: "Driver license",
+      passbook_photo: "Bank passbook",
+    },
     jobHistory: "Job history",
     suspend: "Suspend",
     of: "of",
