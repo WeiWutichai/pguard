@@ -74,9 +74,8 @@ class _MapPickerState extends ConsumerState<MapPicker> {
 
   Future<void> _useCurrentLocation() async {
     // Show the location rationale first if permission isn't granted yet (honest pre-prompt).
-    // The fix itself stays best-effort: the GPS source is stubbed, so it falls back to Bangkok.
-    // TODO(geolocator): once a real GPS source lands, re-check the status AFTER the rationale and
-    // skip currentLocation() on a denial instead of always falling back.
+    // The fix is best-effort: GeolocatorLocationService self-guards on permission + GPS state and
+    // returns null when unavailable, so a denial cleanly falls back to Bangkok (no fake fix).
     final status = await ref.read(permissionGateProvider).locationStatus();
     if (status != PgPermissionState.granted && mounted) {
       await context.push('/permissions/location');

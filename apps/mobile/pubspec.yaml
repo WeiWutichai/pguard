@@ -46,6 +46,11 @@ dependencies:
   # Runtime mic/camera permission requests (Android + iOS) for the call media plane.
   permission_handler: ^11.3.1
 
+  # Real device GPS — foreground / while-in-use only (no background tracking in this slice).
+  # Consumes the location permission already granted via permission_handler (single OS prompt):
+  # this only CHECKS permission (never requests), so there is no second dialog.
+  geolocator: ^11.1.0
+
   # i18n — bilingual TH/EN.
   intl: ^0.19.0
 
