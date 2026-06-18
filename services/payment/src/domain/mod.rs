@@ -1,69 +1,10 @@
 //! PURE domain logic — no DB, no HTTP, no NATS. 100% unit-testable.
 //!
-//! - [`pricing`] — `expected_total` (server-computed authoritative total) + the
-//!   amount-covers-expected rule that closes the client-supplied-amount hole.
-//! - [`proration`] — `compute_proration` (ported verbatim from v1), the heart of the
-//!   refund-on-completion math.
-//! - [`validation`] — payment-method + amount validation (positive, under cap).
-//! - [`is_payable_status`] — the pure rule for whether a booking status admits a charge.
+//! - [`pricing`] — `post_pay_charge` (the POST-PAY bill: base prorated to worked hours + flat
+//!   tip, raised on completion). Builds on the module-internal `expected_total`.
+//! - [`proration`] — `compute_proration` (ported verbatim from v1), reused by `post_pay_charge`.
 
 pub mod pricing;
 pub mod proration;
-pub mod validation;
 
-pub use pricing::{amount_covers_expected, expected_total};
-pub use proration::{compute_proration, Proration};
-pub use validation::validate_payment;
-
-/// The booking status (as the internal read reports it) must be `accepted` for a charge to
-/// be legitimate: the guard has committed but work has not progressed past payment. Pure so
-/// the rule lives in one place and is unit-testable without a DB.
-///
-/// Kept as a free function over `&str` (the internal read returns status as text) — the
-/// payment service has no need to depend on booking's status enum.
-pub fn is_payable_status(status: &str) -> bool {
-    status == "accepted"
-}
-
-/// Proration/refund may only be applied once the booking is `completed` — otherwise there
-/// is no factual basis for "actual hours worked". Pure rule (mirrors `is_payable_status`).
-pub fn is_finalizable_status(status: &str) -> bool {
-    status == "completed"
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn only_accepted_is_payable() {
-        assert!(is_payable_status("accepted"));
-        for s in [
-            "requested",
-            "declined",
-            "en_route",
-            "arrived",
-            "completed",
-            "cancelled",
-            "",
-            "ACCEPTED",
-        ] {
-            assert!(!is_payable_status(s), "{s} must not be payable");
-        }
-    }
-
-    #[test]
-    fn only_completed_is_finalizable() {
-        assert!(is_finalizable_status("completed"));
-        for s in [
-            "requested",
-            "accepted",
-            "en_route",
-            "arrived",
-            "",
-            "COMPLETED",
-        ] {
-            assert!(!is_finalizable_status(s), "{s} must not be finalizable");
-        }
-    }
-}
+pub use pricing::post_pay_charge;

@@ -13,23 +13,15 @@ export interface paths {
         };
         /**
          * List the caller's payments
-         * @description Payments where the caller is the paying customer, newest first.
+         * @description Payments where the caller is the paying customer, newest first. v2 is POST-PAY: there is
+         *     no customer-initiated charge endpoint — the bill is RAISED on completion by the
+         *     `booking.completed` consumer (base prorated to the hours actually worked + the flat tip)
+         *     and emitted as `pguard.events.payment.completed`. This list is how the customer sees what
+         *     was billed.
          */
         get: operations["listPayments"];
         put?: never;
-        /**
-         * Pay for a booking (customer only)
-         * @description A customer pays for a booking. The handler (1) validates the amount is well-formed
-         *     (`> 0`, `<= cap`, ≤2dp), (2) verifies the booking via booking's internal read — caller
-         *     must be the booking's customer (403 otherwise) and the booking must be in a payable
-         *     status (409 otherwise), (3) computes `expected_total` from the authoritative booking
-         *     and rejects `amount` below it (400), then (4) idempotently inserts a `completed`
-         *     payment and enqueues `pguard.events.payment.completed`
-         *     `{ payment_id, booking_id, guard_id, amount }` into the outbox in the SAME
-         *     transaction. **Idempotent:** a retried request for an already-paid booking returns
-         *     the existing payment (no double-charge).
-         */
-        post: operations["createPayment"];
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -98,32 +90,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/payments/{booking_id}/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Apply proration on job completion (admin only)
-         * @description Finalize a booking's payment: compute the prorated `final_amount` and `refund_amount`
-         *     from the booked hours (read from the authoritative booking) and `actual_seconds`,
-         *     update the payment row, and — if a refund is owed — enqueue
-         *     `pguard.events.payment.refund_processed` in the SAME transaction. Gated to `admin`
-         *     for now; a system/service actor (driven by the booking-completion event) is a tracked
-         *     follow-up. Proration math: `final = original * clamp(actual, 0, booked) / booked`
-         *     (rounded 2 dp); `refund = max(0, original - final)`; overtime never adds to the bill.
-         */
-        post: operations["completePayment"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -133,26 +99,6 @@ export interface components {
          * @enum {string}
          */
         PaymentStatus: "pending" | "completed" | "refunded";
-        CreatePaymentRequest: {
-            /** Format: uuid */
-            booking_id: string;
-            /**
-             * @description Exact decimal amount as a string (e.g. "400.00") to avoid float rounding.
-             *     Validated `> 0`, `<= cap`, ≤2dp, AND must cover the server-computed
-             *     `expected_total` (the client can never undercut the price; surplus = extra tip).
-             * @example 2000.00
-             */
-            amount: string;
-            /** @enum {string} */
-            payment_method: "promptpay" | "credit_card" | "debit_card" | "mobile_banking";
-        };
-        CompletePaymentRequest: {
-            /**
-             * Format: int64
-             * @description Seconds the guard actually worked (clamped to [0, booked_hours]).
-             */
-            actual_seconds: number;
-        };
         Payment: {
             /** Format: uuid */
             id: string;
@@ -174,14 +120,14 @@ export interface components {
             expected_total?: string | null;
             payment_method?: string | null;
             status: components["schemas"]["PaymentStatus"];
-            /** @description Prorated amount after completion */
+            /** @description Legacy proration field; null under post-pay (the charged `amount` is already the final bill). */
             final_amount?: string | null;
-            /** @description Amount returned to the customer */
+            /** @description Legacy refund field; null under post-pay (no refunds — billed for actual hours). */
             refund_amount?: string | null;
-            /** @description Clamped hours actually worked */
+            /** @description Legacy proration field; null under post-pay. */
             actual_hours?: string | null;
             /**
-             * @description Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+             * @description Legacy refund-tracking field; null under post-pay (no refunds emitted).
              * @enum {string|null}
              */
             refund_status?: "pending" | "processed" | null;
@@ -320,27 +266,6 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
         };
     };
-    createPayment: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreatePaymentRequest"];
-            };
-        };
-        responses: {
-            200: components["responses"]["PaymentOk"];
-            400: components["responses"]["BadRequest"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
-        };
-    };
     adminListPayments: {
         parameters: {
             query?: {
@@ -412,27 +337,6 @@ export interface operations {
             cookie?: never;
         };
         requestBody?: never;
-        responses: {
-            200: components["responses"]["PaymentOk"];
-            401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
-            404: components["responses"]["NotFound"];
-        };
-    };
-    completePayment: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                booking_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CompletePaymentRequest"];
-            };
-        };
         responses: {
             200: components["responses"]["PaymentOk"];
             401: components["responses"]["Unauthorized"];

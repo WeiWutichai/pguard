@@ -18,8 +18,7 @@ serde_json = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
 rust_decimal = { workspace = true }     # money — Decimal everywhere, never f64
-jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + service-JWT minting
-reqwest = { workspace = true }          # calls booking's /internal read (service-JWT'd)
+jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + inbound service-JWT verify
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
 futures = { workspace = true }
 tracing = { workspace = true }

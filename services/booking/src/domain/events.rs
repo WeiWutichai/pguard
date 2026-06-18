@@ -8,6 +8,7 @@
 //! Not every status change emits — e.g. `declined`/`cancelled` do, `requested` does not
 //! (no cross-service consumer cares about a bare request yet).
 
+use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use uuid::Uuid;
 
@@ -25,16 +26,24 @@ pub struct EventMapping {
     pub payload: Value,
 }
 
-/// Proration inputs the completion event carries so the payment consumer can finalize
-/// without a round-trip back to booking. `actual_seconds` is `now − work_started_at`
-/// (the worked duration), or `None` if the guard never started (no factual basis to
-/// prorate → payment keeps the full charge). Mirrors v1's `started_at`/`completed_at`.
+/// Pricing + duration inputs the completion event carries so the payment consumer can raise the
+/// POST-PAY bill self-contained (no round-trip back to booking). `actual_seconds` is
+/// `now − work_started_at` (the worked duration), or `None` if the guard never started (no
+/// factual basis to prorate → payment bills the full booked base). The `base_fee`/`guard_count`/
+/// `tip` are booking's server-owned pricing columns, carried so payment never recomputes the
+/// price from a client. Mirrors v1's `started_at`/`completed_at`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CompletionInfo {
     /// The hours the customer booked (= `bookings.hours`), the proration denominator.
     pub booked_hours: i32,
     /// Seconds actually worked (`now − work_started_at`), clamped/used by payment.
     pub actual_seconds: Option<i64>,
+    /// Server-owned per-guard-hour fee (`bookings.base_fee`).
+    pub base_fee: Decimal,
+    /// Number of guards booked (`bookings.guard_count`).
+    pub guard_count: i32,
+    /// The customer's flat tip (`bookings.tip`) — billed in full, never prorated.
+    pub tip: Decimal,
 }
 
 /// Build the standard booking event payload. Always carries `booking_id` and
@@ -94,11 +103,14 @@ pub fn event_for_status(
         BookingStatus::Requested | BookingStatus::PendingCompletion => return None,
     };
     let mut payload = payload(booking_id, customer_id, guard_id);
-    // Completion carries the proration inputs the money path consumes.
+    // Completion carries the proration + pricing inputs the post-pay money path consumes.
     if new_status == BookingStatus::Completed {
         if let Some(info) = completion {
             payload["booked_hours"] = json!(info.booked_hours);
             payload["actual_seconds"] = json!(info.actual_seconds);
+            payload["base_fee"] = json!(info.base_fee);
+            payload["guard_count"] = json!(info.guard_count);
+            payload["tip"] = json!(info.tip);
         }
     }
     Some(EventMapping { topic, payload })
@@ -234,10 +246,12 @@ mod tests {
     }
 
     #[test]
-    fn completed_carries_proration_inputs() {
+    fn completed_carries_proration_and_pricing_inputs() {
         let b = Uuid::new_v4();
         let c = Uuid::new_v4();
         let g = Some(Uuid::new_v4());
+        let base_fee: Decimal = "500.00".parse().unwrap();
+        let tip: Decimal = "100.00".parse().unwrap();
         let m = event_for_status(
             BookingStatus::PendingCompletion,
             BookingStatus::Completed,
@@ -247,12 +261,20 @@ mod tests {
             Some(CompletionInfo {
                 booked_hours: 4,
                 actual_seconds: Some(7200),
+                base_fee,
+                guard_count: 2,
+                tip,
             }),
         )
         .expect("completed must emit");
         assert_eq!(m.topic, topics::BOOKING_COMPLETED);
         assert_eq!(m.payload["booked_hours"], json!(4));
         assert_eq!(m.payload["actual_seconds"], json!(7200));
+        // Pricing inputs ride the event so the post-pay consumer is self-contained (money
+        // serializes as a JSON string workspace-wide via rust_decimal serde-str).
+        assert_eq!(m.payload["base_fee"], json!(base_fee));
+        assert_eq!(m.payload["guard_count"], json!(2));
+        assert_eq!(m.payload["tip"], json!(tip));
     }
 
     #[test]
@@ -266,13 +288,16 @@ mod tests {
             Some(CompletionInfo {
                 booked_hours: 3,
                 actual_seconds: None,
+                base_fee: "300.00".parse().unwrap(),
+                guard_count: 1,
+                tip: Decimal::ZERO,
             }),
         )
         .expect("completed must emit");
         assert_eq!(m.payload["booked_hours"], json!(3));
         assert!(
             m.payload["actual_seconds"].is_null(),
-            "no work_started_at → null actual_seconds (payment keeps full charge)"
+            "no work_started_at → null actual_seconds (payment bills the full booked base)"
         );
     }
 
@@ -288,11 +313,16 @@ mod tests {
             Some(CompletionInfo {
                 booked_hours: 4,
                 actual_seconds: Some(7200),
+                base_fee: "500.00".parse().unwrap(),
+                guard_count: 1,
+                tip: Decimal::ZERO,
             }),
         )
         .expect("accepted must emit");
         assert!(m.payload.get("booked_hours").is_none());
         assert!(m.payload.get("actual_seconds").is_none());
+        assert!(m.payload.get("base_fee").is_none());
+        assert!(m.payload.get("tip").is_none());
     }
 
     #[test]

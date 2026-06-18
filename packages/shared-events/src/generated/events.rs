@@ -32,13 +32,15 @@ pub struct BookingRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookingCompleted {
     pub booking_id: Uuid,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub customer_id: Option<Uuid>,
+    pub customer_id: Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guard_id: Option<Uuid>,
     pub booked_hours: i32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub actual_seconds: Option<i64>,
+    pub base_fee: String,
+    pub guard_count: i32,
+    pub tip: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -5,6 +5,15 @@ metadata:
   type: project
 ---
 
+## Check-in capture additions (feat/mobile-checkin-capture — PR #30)
+
+**Three changes in this slice:**
+1. `ImagePickerPhotoCaptureService` (new) — `ImageSource.camera`, `imageQuality: 80, maxWidth: 2000` (matches chat picker). `XFile.length()` for size. Cancel→null, PlatformException→null. Injectable `pick` seam for tests. `UnavailablePhotoCaptureService` stays as the interface fallback; `providers.dart` flips default to the real one.
+2. `CheckInSchedule.totalSlots` = `hours` (was `hours+1`). Slots 0..hours-1. `dueIndex` capped at `hours-1`. `nextDueAt` returns null when the final slot is already due. PR #29 end-of-shift slot removed — each slot maps 1:1 to a server hour (slot N → hour N+1, always in 1..hours). The defensive clamp in `submitCheckIn` is unreachable for valid slot indices.
+3. `validateStatus` in `ApiClient` now excludes 401 (`s != 401`), making 401 a DioException that reaches `_onError` for reactive refresh+retry. Previously 401 was a normal response and `_onError` never fired (dead reactive path). Other 4xx (400/403/404/409/413) still land in `_send` as ApiException. Proactive refresh in `_onRequest` untouched.
+
+**Known edge: hours=0** — `CheckInSchedule` for a 0-hour booking produces `dueIndex=0` (phantom slot) and `isDueNow=true`. In practice unreachable (bookings always have hours≥1), but not guarded in the schedule.
+
 ## Check-in service architecture (feat/mobile-checkin-wiring)
 
 **Key files:**

@@ -78,14 +78,19 @@ fn booking_ref_without_guard_omits_the_field() {
 
 #[test]
 fn booking_completed_with_work_locks_proration_fields() {
+    // Pricing fields (base_fee/guard_count/tip) ride the event so the post-pay consumer bills
+    // self-contained; money is a decimal STRING (rust_decimal serde-str on the producer side).
     let payload = json!({
         "booking_id": B, "customer_id": C, "guard_id": G,
-        "booked_hours": 4, "actual_seconds": 7200
+        "booked_hours": 4, "actual_seconds": 7200,
+        "base_fee": "500.00", "guard_count": 2, "tip": "0"
     });
     let env: EventEnvelope<BookingCompleted> =
         parse(&envelope(topics::BOOKING_COMPLETED, payload.clone()));
     assert_eq!(env.payload.booked_hours, 4);
     assert_eq!(env.payload.actual_seconds, Some(7200));
+    assert_eq!(env.payload.base_fee, "500.00");
+    assert_eq!(env.payload.guard_count, 2);
     assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
 }
 
@@ -94,10 +99,14 @@ fn booking_completed_without_start_accepts_null_actual_seconds() {
     // "guard never started" → producer emits actual_seconds: null (explicit). The generated type
     // must accept null → None (proration basis absent). Re-serialize omits it (skip None), which is
     // semantically equivalent, so we lock the DESERIALIZE behavior here, not byte-equality.
-    let payload = json!({ "booking_id": B, "booked_hours": 3, "actual_seconds": null });
+    let payload = json!({
+        "booking_id": B, "customer_id": C, "booked_hours": 3, "actual_seconds": null,
+        "base_fee": "300.00", "guard_count": 1, "tip": "0"
+    });
     let env: EventEnvelope<BookingCompleted> = parse(&envelope(topics::BOOKING_COMPLETED, payload));
     assert_eq!(env.payload.booked_hours, 3);
     assert!(env.payload.actual_seconds.is_none());
+    assert_eq!(env.payload.guard_count, 1);
 }
 
 #[test]
