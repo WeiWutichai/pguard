@@ -39,7 +39,7 @@
 - [ ] **Mobile follow-up จาก post-pay** — `booking_flow_controller.pay()` ยัง POST `/payments` ที่ลบไปแล้ว (จะ 405) → ลบ pay-at-accept step ออกจาก customer booking flow + จอ receipt หลัง completion. **ต้องทำก่อน deploy mobile.** + **deploy order:** booking ก่อน/พร้อม payment (ไม่งั้น completion event เก่า shape ไม่มี pricing → poison-drop ไม่ถูกเก็บเงิน)
 
 **Ops:**
-- [x] **Deploy `main` ล่าสุดขึ้น staging VPS** — ✅ deployed `ec209b1` (PR #96/#97/#98) 2026-06-17: 14 custom images all (healthy), migrations idempotent (0 applied), `edge healthz → 200` + external smoke (otp challenge 200, web-admin / 307). Re-deploy เมื่อ merge รอบหน้า ตาม `docs/SMOKE-CHECKLIST.md`
+- [x] **Deploy `main` ล่าสุดขึ้น staging VPS** — ✅ deployed `3c229e9` (PR #111 geolocator · #113 doc-upload-mobile · #114 payment **post-pay**) 2026-06-18: 14 custom images @ 3c229e9 ทุกตัว **healthy**, migrations **0 applied** (28 already; post-pay ไม่มี migration ใหม่), `edge healthz → 200`. **ทุก service ขึ้น tag เดียวกันพร้อมกัน** → deploy-ordering risk ของ post-pay หาย (booking+payment เป็น post-pay พร้อมกัน). **backend+web เท่านั้น — mobile ยัง build เก่า**: smoke booking-flow §4–§6 จะติด **mobile `POST /payments` 405** จนกว่า mobile pay-step-removal follow-up จะ deploy. Re-deploy เมื่อ merge รอบหน้า ตาม `docs/SMOKE-CHECKLIST.md` *(prev: `ec209b1` PR #96/#97/#98 2026-06-17)*
 
 **Resolved findings (เก็บไว้อ้างอิง):** chaos case-3 gateway redis reconnect (HIGH) ✅ PR #41 · backend redis reconnect ทุก service ✅ (เนื้ออยู่ใน main) · android platform ✅ PR #42 (`apps/mobile/android` มีแล้ว)
 
