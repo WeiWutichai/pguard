@@ -124,6 +124,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/profile/guard/{user_id}/documents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A presigned URL for one of the guard's stored documents
+         * @description Returns a short-lived presigned GET URL for ONE stored credential image. Read auth is
+         *     **owner-or-admin** (an admin must be able to verify a guard's credentials). 404 when the
+         *     document type is valid but not yet uploaded, or the guard has no profile.
+         */
+        get: operations["getGuardDocument"];
+        put?: never;
+        /**
+         * Upload one of the guard's own credential images
+         * @description Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard,
+         *     own docs only** (`{user_id}` must equal the caller — no admin bypass on write). The
+         *     image is magic-byte validated (declared MIME must match the content), stored in private
+         *     S3 under a server-generated key, and the key written to the matching `*_key` column.
+         *     Returns a short-lived (1h) presigned GET URL — the raw key is never exposed.
+         */
+        post: operations["uploadGuardDocument"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles": {
         parameters: {
             query?: never;
@@ -401,6 +431,15 @@ export interface components {
             full_name?: string | null;
             /** Format: int32 */
             years_of_experience?: number | null;
+        };
+        /**
+         * @description The result of a guard-document upload/read: the canonical document type + a short-lived
+         *     (1h) presigned GET URL for the stored image. The raw S3 key is NEVER exposed.
+         */
+        GuardDocumentResponse: {
+            document_type: string;
+            /** @description Presigned GET URL (expires in ~1h). */
+            download_url: string;
         };
         GuardProfile: {
             /** Format: uuid */
@@ -737,6 +776,84 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getGuardDocument: {
+        parameters: {
+            query: {
+                document_type: "id_card" | "security_license" | "training_cert" | "criminal_check" | "driver_license" | "passbook_photo";
+            };
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A presigned download URL for the requested document */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardDocumentResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    uploadGuardDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The guard's user_id (must equal the caller). */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /** @enum {string} */
+                    document_type: "id_card" | "security_license" | "training_cert" | "criminal_check" | "driver_license" | "passbook_photo";
+                    /**
+                     * Format: binary
+                     * @description The credential image (JPEG/PNG/WEBP, ≤10 MiB).
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded; returns the type + a presigned download URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardDocumentResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Payload too large (image exceeds the 12 MiB body cap) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
         };
     };
     adminListGuardProfiles: {

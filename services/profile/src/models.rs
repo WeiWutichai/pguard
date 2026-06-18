@@ -34,6 +34,14 @@ pub struct PublicGuardProfile {
     pub years_of_experience: Option<i32>,
 }
 
+/// Response for a guard-document upload / read: the canonical type + a short-lived presigned GET
+/// URL (1h) for the stored image. The raw S3 key is never exposed (only the signed URL).
+#[derive(Debug, Serialize)]
+pub struct GuardDocumentResponse {
+    pub document_type: String,
+    pub download_url: String,
+}
+
 /// Query for `GET /internal/profiles/recipients` — the broadcast audience selector
 /// (notification's bulk-send asks profile to resolve `user_id`s by role).
 #[derive(Debug, Deserialize)]

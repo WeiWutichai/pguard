@@ -391,6 +391,48 @@ pub async fn get_public_guard_profile(
     Ok(row)
 }
 
+// ----- Guard document image keys (S3 object paths) -----
+
+/// Write the S3 object key for ONE guard document into its `*_key` column. `column` MUST be a
+/// value from the closed `domain::documents::key_column_for` allowlist (never user input) — it is
+/// the one justified dynamic-column `format!`; the key is a bound parameter. 404 when the guard
+/// has no profile row yet (they must submit their profile first, like `update_guard_profile`).
+pub async fn update_document_key(
+    db: &PgPool,
+    user_id: Uuid,
+    column: &'static str,
+    key: &str,
+) -> Result<(), AppError> {
+    let sql = format!(
+        "UPDATE profile.guard_profiles SET {column} = $2, updated_at = now() WHERE user_id = $1"
+    );
+    let n = sqlx::query(&sql)
+        .bind(user_id)
+        .bind(key)
+        .execute(db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound("Guard profile not found".to_string()));
+    }
+    Ok(())
+}
+
+/// Read the S3 object key stored in ONE guard document's `*_key` column. `column` MUST be from the
+/// `key_column_for` allowlist. `None` when the column is NULL (not uploaded) or no profile exists.
+pub async fn get_document_key(
+    db: &PgPool,
+    user_id: Uuid,
+    column: &'static str,
+) -> Result<Option<String>, AppError> {
+    let sql = format!("SELECT {column} FROM profile.guard_profiles WHERE user_id = $1");
+    let row: Option<(Option<String>,)> = sqlx::query_as(&sql)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.and_then(|(key,)| key))
+}
+
 // ----- Event-derived IDOR read-model (guard_assignments) -----
 
 /// The IDOR read: does `customer_id` have an ACTIVE booking with `guard_id`? Reads the
@@ -1304,6 +1346,73 @@ mod db_tests {
 
         let _ = sqlx::query("DELETE FROM profile.guard_assignments WHERE booking_id = $1")
             .bind(booking)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Document-key write/read round-trip: `update_document_key` writes ONE `*_key` column,
+    /// `get_document_key` reads it back; an un-set column reads None; a missing profile → 404.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn document_key_write_read_roundtrip() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // Missing profile → 404.
+        let missing = Uuid::new_v4();
+        let err = update_document_key(&pool, missing, "id_card_key", "profile/x/documents/a.jpg")
+            .await
+            .expect_err("no profile row");
+        assert!(matches!(err, AppError::NotFound(_)), "got {err:?}");
+
+        // Seed a guard profile, then write + read its id_card key.
+        let user_id = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            user_id,
+            &UpsertGuardProfileRequest {
+                years_of_experience: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed profile");
+
+        // Un-set column reads None.
+        assert_eq!(
+            get_document_key(&pool, user_id, "id_card_key")
+                .await
+                .expect("get"),
+            None,
+        );
+
+        let key = format!("profile/{user_id}/documents/abc.jpg");
+        update_document_key(&pool, user_id, "id_card_key", &key)
+            .await
+            .expect("write id_card_key");
+        assert_eq!(
+            get_document_key(&pool, user_id, "id_card_key")
+                .await
+                .expect("get"),
+            Some(key),
+        );
+        // A different column remains independently NULL (no clobber).
+        assert_eq!(
+            get_document_key(&pool, user_id, "security_license_key")
+                .await
+                .expect("get"),
+            None,
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(user_id)
             .execute(&pool)
             .await;
     }

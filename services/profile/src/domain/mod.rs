@@ -5,5 +5,6 @@
 //! field validators the handlers apply before touching the repo.
 
 pub mod approval;
+pub mod documents;
 pub mod mask;
 pub mod validate;

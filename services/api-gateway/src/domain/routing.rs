@@ -513,6 +513,15 @@ fn body_cap_for(stripped: &str) -> BodyCap {
             }
         }
     }
+    // `/profile/guard/{user_id}/documents`: one non-empty `{user_id}` segment, then the
+    // `documents` segment at a boundary (so `…/documentsx` does NOT match) — guard document image.
+    if let Some(rest) = stripped.strip_prefix("/profile/guard/") {
+        if let Some((id, tail)) = rest.split_once('/') {
+            if !id.is_empty() && (tail == "documents" || tail.starts_with("documents/")) {
+                return BodyCap::Large;
+            }
+        }
+    }
     BodyCap::Default
 }
 
@@ -1134,6 +1143,43 @@ mod tests {
         let d = resolve("/v1/attachments/abc-123");
         assert_eq!(body_cap(d.clone()), BodyCap::Large);
         assert_eq!(proxy(d).0, Upstream::Chat);
+        // Guard document upload — Large cap, routed to profile, token-gated.
+        assert_eq!(
+            body_cap(resolve("/v1/profile/guard/abc-123/documents")),
+            BodyCap::Large,
+            "POST /profile/guard/{{id}}/documents (guard credential image)"
+        );
+    }
+
+    #[test]
+    fn profile_guard_documents_is_large_protected_and_boundary_precise() {
+        let d = resolve("/v1/profile/guard/abc-123/documents");
+        let (up, fwd, public, _) = proxy(d.clone());
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/profile/guard/abc-123/documents");
+        assert!(
+            !public,
+            "document upload requires a token (NOT the public profile submit)"
+        );
+        assert_eq!(body_cap(d), BodyCap::Large);
+        // Near-misses keep the 1 MiB default.
+        assert_eq!(
+            body_cap(resolve("/v1/profile/guard/abc/documentsx")),
+            BodyCap::Default,
+            "suffix not at a boundary"
+        );
+        assert_eq!(
+            body_cap(resolve("/v1/profile/guard//documents")),
+            BodyCap::Default,
+            "empty {{user_id}} segment"
+        );
+        // The one-write profile submit stays public + default cap (unchanged).
+        let submit = resolve("/v1/profile/guard");
+        assert_eq!(body_cap(submit.clone()), BodyCap::Default);
+        assert!(
+            proxy(submit).2,
+            "/profile/guard submit is still public (dual-auth)"
+        );
     }
 
     #[test]

@@ -21,6 +21,9 @@ jsonwebtoken = { workspace = true }     # DecodingKey held in AppState (HasJwtSe
 async-nats = { workspace = true }       # outbox relay → JetStream (user.approved producer)
 async-trait = { workspace = true }      # dyn EventPublisher seam for the relay (unit-testable)
 futures = { workspace = true }          # booking-links consumer message stream (StreamExt)
+reqwest = { workspace = true }          # S3 presigned PUT/GET for guard-document images
+sha2 = { workspace = true }             # SigV4 canonical-request + signing-key hashing
+hmac = { workspace = true }             # SigV4 HMAC-SHA256 chain
 tracing = { workspace = true }
 anyhow = { workspace = true }
 shared = { workspace = true }
