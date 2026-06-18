@@ -42,6 +42,7 @@ import '../features/notifications/notification_screen.dart';
 import '../features/permissions/location_denied_screen.dart';
 import '../features/permissions/location_rationale_screen.dart';
 import '../features/ratings/guard_ratings_screen.dart';
+import '../features/profile/guard_documents_screen.dart';
 import '../features/profile/profile_edit_screen.dart';
 import '../features/profile/profile_screen.dart';
 import '../features/splash_screen.dart';
@@ -135,6 +136,9 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
       GoRoute(
           path: '/profile/edit', builder: (_, __) => const ProfileEditScreen()),
+      GoRoute(
+          path: '/profile/documents',
+          builder: (_, __) => const GuardDocumentsScreen()),
       // Bottom-nav tab destinations: customer booking history + wallet, guard earnings.
       GoRoute(
           path: '/bookings-history',
