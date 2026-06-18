@@ -21,10 +21,10 @@ part 'payment.g.dart';
 /// * [expectedTotal] - Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
 /// * [paymentMethod] 
 /// * [status] 
-/// * [finalAmount] - Prorated amount after completion
-/// * [refundAmount] - Amount returned to the customer
-/// * [actualHours] - Clamped hours actually worked
-/// * [refundStatus] - Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+/// * [finalAmount] - Legacy proration field; null under post-pay (the charged `amount` is already the final bill).
+/// * [refundAmount] - Legacy refund field; null under post-pay (no refunds — billed for actual hours).
+/// * [actualHours] - Legacy proration field; null under post-pay.
+/// * [refundStatus] - Legacy refund-tracking field; null under post-pay (no refunds emitted).
 /// * [paidAt] 
 /// * [createdAt] 
 /// * [updatedAt] 
@@ -57,19 +57,19 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   PaymentStatus get status;
   // enum statusEnum {  pending,  completed,  refunded,  };
 
-  /// Prorated amount after completion
+  /// Legacy proration field; null under post-pay (the charged `amount` is already the final bill).
   @BuiltValueField(wireName: r'final_amount')
   String? get finalAmount;
 
-  /// Amount returned to the customer
+  /// Legacy refund field; null under post-pay (no refunds — billed for actual hours).
   @BuiltValueField(wireName: r'refund_amount')
   String? get refundAmount;
 
-  /// Clamped hours actually worked
+  /// Legacy proration field; null under post-pay.
   @BuiltValueField(wireName: r'actual_hours')
   String? get actualHours;
 
-  /// Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
   @BuiltValueField(wireName: r'refund_status')
   PaymentRefundStatusEnum? get refundStatus;
   // enum refundStatusEnum {  pending,  processed,  };
@@ -356,10 +356,10 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
 
 class PaymentRefundStatusEnum extends EnumClass {
 
-  /// Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
   @BuiltValueEnumConst(wireName: r'pending')
   static const PaymentRefundStatusEnum pending = _$paymentRefundStatusEnum_pending;
-  /// Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
   @BuiltValueEnumConst(wireName: r'processed')
   static const PaymentRefundStatusEnum processed = _$paymentRefundStatusEnum_processed;
 

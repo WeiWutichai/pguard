@@ -62,6 +62,10 @@ channels:
     messages: { paymentCompleted: { $ref: '#/components/messages/PaymentCompleted' } }
   paymentRefundProcessed:
     address: pguard.events.payment.refund_processed
+    description: >-
+      RESERVED — not emitted under v2 POST-PAY (the customer is billed for actual hours on
+      completion, so there is no over-payment to refund). Kept for a future real-gateway
+      refund/dispute flow; the schema + topic remain stable.
     messages: { refundProcessed: { $ref: '#/components/messages/PaymentRefundProcessed' } }
   ratingSubmitted:
     address: pguard.events.rating.submitted
@@ -207,7 +211,7 @@ components:
           properties:
             payload:
               type: object
-              required: [booking_id, booked_hours]
+              required: [booking_id, customer_id, booked_hours, base_fee, guard_count, tip]
               properties:
                 booking_id: { type: string, format: uuid }
                 customer_id: { type: string, format: uuid }
@@ -219,8 +223,19 @@ components:
                   nullable: true
                   description: >-
                     Seconds actually worked (now − work_started_at). Null if the guard never
-                    started → payment keeps the full charge (no proration basis). The payment
-                    service consumes this to finalize proration/refund idempotently.
+                    started (defensive — completion requires a start). The payment service
+                    consumes this to raise the POST-PAY bill for the hours actually worked.
+                base_fee:
+                  type: string
+                  description: >-
+                    Booking's server-owned per-guard-hour fee (decimal string). Carried so the
+                    post-pay consumer bills self-contained, never recomputing from a client.
+                  example: "500.00"
+                guard_count: { type: integer, description: Guards booked. }
+                tip:
+                  type: string
+                  description: Customer's flat tip (decimal string) — billed in full, never prorated.
+                  example: "0"
 
     EnvelopeOf_ProgressReported:
       allOf:

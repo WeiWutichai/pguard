@@ -17,25 +17,6 @@ pub struct ReportRangeQuery {
     pub to: Option<DateTime<Utc>>,
 }
 
-/// A customer pays for a booking. `amount` is validated against the SERVER-computed
-/// `expected_total` (`base_fee × hours × guard_count + tip`, all from the authoritative
-/// booking read) — the client can never pay less than the authoritative total; the surplus,
-/// if any, is treated as an extra tip. The customer/guard/status also come from the booking
-/// read, never the client (CLAUDE.md money rules — no client-trusted authoritative fields).
-#[derive(Debug, Deserialize)]
-pub struct CreatePaymentRequest {
-    pub booking_id: Uuid,
-    pub amount: Decimal,
-    pub payment_method: String,
-}
-
-/// Apply proration to a completed booking. `actual_seconds` is the seconds the guard
-/// actually worked (read from the booking in a later slice; supplied explicitly for now).
-#[derive(Debug, Deserialize)]
-pub struct CompletePaymentRequest {
-    pub actual_seconds: i64,
-}
-
 /// Query params for `GET /admin/payments` (admin cross-user ledger). `status` is validated
 /// against the payment status enum (unknown → 400); `customer_id` narrows to one customer's
 /// payments (the customer-spend drill-down). House limit/offset pagination.
@@ -92,24 +73,6 @@ pub struct RevenueReport {
     pub total: Decimal,
     pub prev_total: Decimal,
     pub mom_pct: Option<f64>,
-}
-
-// ----- booking internal read (deserialized from booking's /internal/bookings/{id}) -----
-
-/// The authoritative booking fields the booking service returns to the payment service.
-/// Mirrors booking's `InternalBooking`. We deserialize the `{ success, data }` envelope's
-/// `data` into this. `base_fee`/`guard_count`/`tip` are the server-owned pricing inputs the
-/// money path uses to compute the expected total (never trusting the client).
-#[derive(Debug, Clone, Deserialize)]
-pub struct InternalBooking {
-    pub id: Uuid,
-    pub customer_id: Uuid,
-    pub guard_id: Option<Uuid>,
-    pub status: String,
-    pub hours: i32,
-    pub base_fee: Decimal,
-    pub guard_count: i32,
-    pub tip: Decimal,
 }
 
 #[cfg(test)]

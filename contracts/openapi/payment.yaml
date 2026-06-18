@@ -6,27 +6,26 @@ info:
     v2 OpenAPI contract for the payment service (the source of truth — codegen produces the
     Rust handler stubs/types, the Dart client, and the TS client). THE MONEY PATH.
 
-    Split from the v1 `../guard-dispatch/services/booking` god-service. v2 money rules baked
-    into the contract:
-      1. **No client-trusted authoritative fields.** The charge decision is verified against
-         the authoritative booking via booking's service-JWT'd internal read
-         (`GET /internal/bookings/{id}`): the caller must be the booking's customer, the
-         booking must be in a payable status, and `guard_id` (for the `payment.completed`
-         event) comes from the booking — never the request body.
-      2. **Server-computed total.** The required total is `expected_total = base_fee × hours
-         × guard_count + tip`, all from the authoritative booking (`base_fee` is server-owned;
-         the client never sets it). The charge `amount` must COVER `expected_total` — a client
-         can never undercut the price; any surplus is treated as an extra tip.
+    Split from the v1 `../guard-dispatch/services/booking` god-service. v2 is **POST-PAY** —
+    money rules baked into the contract:
+      1. **No client-initiated charge.** There is no "pay" endpoint. The customer is billed on
+         job completion, not up front — so this service exposes only READS (a customer's own
+         payment + ledger, the admin cross-user ledger + revenue report, the PDPA export).
+      2. **Bill raised on completion, for actual hours.** On `pguard.events.booking.completed`
+         the payment service raises the bill = the base (`base_fee × booked_hours × guard_count`)
+         prorated to the hours actually worked, PLUS the full flat tip. Booking's server-owned
+         pricing rides the (HMAC-signed) event, so payment never reads booking and never trusts
+         a client value.
       3. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
-         index + ON CONFLICT). A retried `POST /payments` returns the existing payment — it
-         never double-charges.
-      4. **Event-driven finalization.** On `pguard.events.booking.completed`, the payment
-         service finalizes proration (refund = expected − worked) **idempotently by event_id**
-         and emits `payment.refund_processed` when a refund is owed — no admin step needed.
+         index + ON CONFLICT). A redelivered completion event returns the existing payment and
+         emits no second `payment.completed` — it never double-charges.
+      4. **No refund flow.** Billing for actual usage means there is nothing to refund;
+         `payment.refund_processed` is reserved for a future real-gateway dispute/refund path
+         and is not emitted under post-pay.
       5. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
          never float (serialized as JSON strings on the wire).
-      6. **Transactional outbox.** A charge / refund writes the business row AND the event
-         row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
+      6. **Transactional outbox.** The charge writes the business row AND the `payment.completed`
+         event row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
          NATS JetStream (see `contracts/asyncapi/events.yaml`).
       7. **Generic errors.** No enumeration / no internal leak.
 
@@ -46,41 +45,19 @@ servers:
 
 tags:
   - name: Payments
-    description: Charge, proration/refund, and reads
+    description: Customer payment reads (post-pay — the bill is raised on completion, not via an endpoint)
 
 paths:
   /payments:
-    post:
-      tags: [Payments]
-      summary: Pay for a booking (customer only)
-      description: |
-        A customer pays for a booking. The handler (1) validates the amount is well-formed
-        (`> 0`, `<= cap`, ≤2dp), (2) verifies the booking via booking's internal read — caller
-        must be the booking's customer (403 otherwise) and the booking must be in a payable
-        status (409 otherwise), (3) computes `expected_total` from the authoritative booking
-        and rejects `amount` below it (400), then (4) idempotently inserts a `completed`
-        payment and enqueues `pguard.events.payment.completed`
-        `{ payment_id, booking_id, guard_id, amount }` into the outbox in the SAME
-        transaction. **Idempotent:** a retried request for an already-paid booking returns
-        the existing payment (no double-charge).
-      operationId: createPayment
-      security: [{ bearerAuth: [] }]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
-      responses:
-        '200': { $ref: '#/components/responses/PaymentOk' }
-        '400': { $ref: '#/components/responses/BadRequest' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
     get:
       tags: [Payments]
       summary: List the caller's payments
-      description: Payments where the caller is the paying customer, newest first.
+      description: |
+        Payments where the caller is the paying customer, newest first. v2 is POST-PAY: there is
+        no customer-initiated charge endpoint — the bill is RAISED on completion by the
+        `booking.completed` consumer (base prorated to the hours actually worked + the flat tip)
+        and emitted as `pguard.events.payment.completed`. This list is how the customer sees what
+        was billed.
       operationId: listPayments
       security: [{ bearerAuth: [] }]
       responses:
@@ -197,36 +174,6 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
-  /payments/{booking_id}/complete:
-    post:
-      tags: [Payments]
-      summary: Apply proration on job completion (admin only)
-      description: |
-        Finalize a booking's payment: compute the prorated `final_amount` and `refund_amount`
-        from the booked hours (read from the authoritative booking) and `actual_seconds`,
-        update the payment row, and — if a refund is owed — enqueue
-        `pguard.events.payment.refund_processed` in the SAME transaction. Gated to `admin`
-        for now; a system/service actor (driven by the booking-completion event) is a tracked
-        follow-up. Proration math: `final = original * clamp(actual, 0, booked) / booked`
-        (rounded 2 dp); `refund = max(0, original - final)`; overtime never adds to the bill.
-      operationId: completePayment
-      security: [{ bearerAuth: [] }]
-      parameters:
-        - name: booking_id
-          in: path
-          required: true
-          schema: { type: string, format: uuid }
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/CompletePaymentRequest' }
-      responses:
-        '200': { $ref: '#/components/responses/PaymentOk' }
-        '401': { $ref: '#/components/responses/Unauthorized' }
-        '403': { $ref: '#/components/responses/Forbidden' }
-        '404': { $ref: '#/components/responses/NotFound' }
-
 components:
   securitySchemes:
     bearerAuth:
@@ -281,31 +228,6 @@ components:
         - completed
         - refunded
 
-    CreatePaymentRequest:
-      type: object
-      required: [booking_id, amount, payment_method]
-      properties:
-        booking_id: { type: string, format: uuid }
-        amount:
-          type: string
-          description: |
-            Exact decimal amount as a string (e.g. "400.00") to avoid float rounding.
-            Validated `> 0`, `<= cap`, ≤2dp, AND must cover the server-computed
-            `expected_total` (the client can never undercut the price; surplus = extra tip).
-          example: "2000.00"
-        payment_method:
-          type: string
-          enum: [promptpay, credit_card, debit_card, mobile_banking]
-
-    CompletePaymentRequest:
-      type: object
-      required: [actual_seconds]
-      properties:
-        actual_seconds:
-          type: integer
-          format: int64
-          description: Seconds the guard actually worked (clamped to [0, booked_hours]).
-
     Payment:
       type: object
       required: [id, booking_id, customer_id, amount, status, created_at, updated_at]
@@ -322,14 +244,14 @@ components:
           example: "2000.00"
         payment_method: { type: string, nullable: true }
         status: { $ref: '#/components/schemas/PaymentStatus' }
-        final_amount: { type: string, nullable: true, description: Prorated amount after completion }
-        refund_amount: { type: string, nullable: true, description: Amount returned to the customer }
-        actual_hours: { type: string, nullable: true, description: Clamped hours actually worked }
+        final_amount: { type: string, nullable: true, description: 'Legacy proration field; null under post-pay (the charged `amount` is already the final bill).' }
+        refund_amount: { type: string, nullable: true, description: 'Legacy refund field; null under post-pay (no refunds — billed for actual hours).' }
+        actual_hours: { type: string, nullable: true, description: 'Legacy proration field; null under post-pay.' }
         refund_status:
           type: string
           nullable: true
           enum: [pending, processed]
-          description: Set to `pending` when a refund is owed (admin marks `processed` later); else null.
+          description: 'Legacy refund-tracking field; null under post-pay (no refunds emitted).'
         paid_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

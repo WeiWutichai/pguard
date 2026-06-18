@@ -1,22 +1,23 @@
 //! Event CONSUMER — the money path's reactive half: subscribe to
-//! `pguard.events.booking.completed` and finalize proration when a job completes.
+//! `pguard.events.booking.completed` and raise the POST-PAY charge when a job completes.
 //!
-//! This replaces v1's `review_completion()` doing proration inline inside booking's
-//! completion handler (`../guard-dispatch/services/booking/src/service.rs`, migrations
-//! 036/042). In v2 booking emits a completion event and payment reacts — no cross-service
-//! write, no god-service.
+//! v2 is POST-PAY: the customer is NOT charged up front. The bill is raised here, on completion,
+//! for the hours actually worked (base prorated + flat tip) — there is no up-front charge and no
+//! refund flow. booking emits the completion event carrying its server-owned pricing; payment
+//! reacts and charges — no cross-service write, no god-service.
 //!
 //! Resilience + correctness:
 //!  - A durable pull consumer filtered to `booking.completed` (JetStream at-least-once).
-//!  - Each event is finalized **idempotently by `event_id`** (`repo::finalize_on_booking_
-//!    completed` claims the id + applies proration + enqueues any refund in ONE tx), so a
-//!    redelivery never double-refunds.
-//!  - A message is acked only after a successful finalize; a failure leaves it for redelivery
-//!    (safe — the idempotency ledger absorbs the replay).
+//!  - The charge is **idempotent via the one-completed-per-booking unique index**
+//!    (`repo::charge_idempotent`): a redelivery inserts nothing and emits no second event, so a
+//!    job can never be billed twice.
+//!  - A message is acked only after a successful charge; a failure leaves it for redelivery
+//!    (safe — the unique index absorbs the replay).
 
 use std::time::Duration;
 
 use futures::StreamExt;
+use rust_decimal::Decimal;
 use serde::Deserialize;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -24,7 +25,13 @@ use uuid::Uuid;
 use shared::error::AppError;
 use shared_events::{topics, EventEnvelope};
 
-use crate::repo::{self, Finalized};
+use crate::repo;
+
+/// The recorded `payment_method` for a POST-PAY charge raised by this consumer. v2's gateway is
+/// simulated and there is no customer card-on-file step yet, so the bill is auto-raised on
+/// completion and tagged `post_paid`; a real gateway integration would replace this with the
+/// captured method.
+const POST_PAID_METHOD: &str = "post_paid";
 
 const STREAM: &str = "PGUARD_EVENTS";
 const SUBJECTS: &str = "pguard.events.>";
@@ -33,17 +40,30 @@ const DURABLE: &str = "payment-booking-completed";
 /// Backoff between reconnect attempts when NATS is down or the stream ends.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The `booking.completed` payload fields the proration needs (booking emits these; see
-/// booking `domain::events::CompletionInfo`). `booked_hours` is REQUIRED (AsyncAPI contract);
-/// a missing field fails the parse → the message is treated as poison (dropped + logged),
-/// never silently defaulted to a full charge. `actual_seconds` is genuinely optional: `None`
-/// when the guard never started (no factual basis to prorate → the full charge stands).
+/// The `booking.completed` payload fields the POST-PAY charge needs (booking emits these; see
+/// booking `domain::events::CompletionInfo`). `booked_hours` + the pricing inputs
+/// (`base_fee`/`guard_count`/`tip`) are REQUIRED (AsyncAPI contract): a missing field fails the
+/// parse → the message is treated as poison (dropped + logged), never silently billed at zero.
+/// `actual_seconds` is genuinely optional: `None` when the guard never started (defensive — a
+/// completion requires a start; the full booked base is billed). Money fields deserialize from a
+/// JSON string (rust_decimal serde-str, workspace-wide).
+///
+/// A local type (not the codegen'd `shared_events::BookingCompleted`, which models money as
+/// `String`) — deliberately, so the bill math gets `Decimal` directly. This matches the project
+/// convention that services build/parse payloads inline today; the contract is drift-locked by
+/// the generated type + `shared-events` tests.
 #[derive(Debug, Deserialize)]
 struct CompletedPayload {
     booking_id: Uuid,
+    customer_id: Uuid,
+    #[serde(default)]
+    guard_id: Option<Uuid>,
     booked_hours: i32,
     #[serde(default)]
     actual_seconds: Option<i64>,
+    base_fee: Decimal,
+    guard_count: i32,
+    tip: Decimal,
 }
 
 /// Run the booking.completed consumer FOREVER: (re)connect to NATS, drain, and on any
@@ -116,8 +136,8 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
             observability::record_consumer_lag(DURABLE, info.pending);
         }
 
-        // Verify the HMAC signature BEFORE dedupe/finalize — a forged `booking.completed` (which
-        // would drive proration/refunds) is dropped, counted, and never applied. Fail-closed.
+        // Verify the HMAC signature BEFORE charging — a forged `booking.completed` (which would
+        // bill a customer) is dropped, counted, and never applied. Fail-closed.
         if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
             observability::record_rejected_event(DURABLE);
             tracing::warn!(
@@ -128,11 +148,15 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
         }
 
         // Parse first. A malformed envelope is POISON — it can never become valid, so ACK it
-        // (drop) instead of letting it redeliver forever and wedge the consumer.
+        // (drop) instead of letting it redeliver forever and wedge the consumer. NB: an old-shape
+        // completion from a pre-deploy booking (missing the required pricing fields) lands here —
+        // it is dropped, never billed; count it so a deploy-window gap is observable (an operator
+        // reconciles via the booking). See the deploy-ordering note in PROGRESS.
         let envelope: EventEnvelope<CompletedPayload> =
             match serde_json::from_slice(message.payload.as_ref()) {
                 Ok(e) => e,
                 Err(e) => {
+                    observability::record_rejected_event(DURABLE);
                     tracing::error!("dropping malformed booking.completed envelope (poison): {e}");
                     let _ = message.ack().await;
                     continue;
@@ -147,8 +171,8 @@ async fn connect_and_consume(db: &sqlx::PgPool, nats_url: &str) -> Result<(), Ap
             }
             Err(e) => {
                 // Transient (e.g. DB) error → do NOT ack; JetStream redelivers and the
-                // idempotency ledger makes the reprocess safe (no double refund).
-                tracing::error!("booking.completed finalize failed (will redeliver): {e}");
+                // one-completed-per-booking index makes the reprocess safe (no double charge).
+                tracing::error!("booking.completed charge failed (will redeliver): {e}");
             }
         }
     }
@@ -183,31 +207,38 @@ async fn process(
     finalize(db, envelope).instrument(span).await
 }
 
-/// Drive the idempotent finalize, logging the outcome. Runs inside the event span.
+/// Raise the POST-PAY charge for a completed booking, logging the outcome. Runs inside the event
+/// span. The bill is the base prorated to the hours actually worked + the flat tip
+/// ([`crate::domain::post_pay_charge`]), computed entirely from the booking's server-owned pricing
+/// carried on the event (never a client). The charge is idempotent via the one-completed-per-
+/// booking unique index ([`repo::charge_idempotent`]): a redelivery returns the existing payment
+/// and emits no second `payment.completed`.
 async fn finalize(
     db: &sqlx::PgPool,
     envelope: EventEnvelope<CompletedPayload>,
 ) -> Result<(), AppError> {
     let p = &envelope.payload;
-    let outcome = repo::finalize_on_booking_completed(
-        db,
-        envelope.event_id,
-        &envelope.event_type,
-        p.booking_id,
+    let amount = crate::domain::post_pay_charge(
+        p.base_fee,
         p.booked_hours,
+        p.guard_count,
+        p.tip,
         p.actual_seconds,
+    );
+    // expected_total == the post-pay charge (the bill is already final — there is no separate
+    // refund basis in post-pay).
+    let payment = repo::charge_idempotent(
+        db,
+        p.booking_id,
+        p.customer_id,
+        p.guard_id,
+        amount,
+        amount,
+        POST_PAID_METHOD,
         envelope.correlation_id,
     )
     .await?;
-
-    match outcome {
-        Finalized::Applied { refunded } => {
-            tracing::info!(refunded, "payment finalized on booking completion")
-        }
-        Finalized::NoPayment => tracing::debug!("no payment for booking; nothing to finalize"),
-        Finalized::Duplicate => tracing::debug!("duplicate completion event; skipped"),
-        Finalized::AlreadyDone => tracing::debug!("payment already finalized; skipped"),
-    }
+    tracing::info!(payment_id = %payment.id, %amount, "post-pay charge raised on booking completion");
     Ok(())
 }
 
@@ -216,8 +247,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    /// The envelope/payload parse the consumer relies on: a well-formed booking.completed
-    /// event yields the booking_id + proration inputs. Pure (no DB/NATS).
+    /// The envelope/payload parse the consumer relies on: a well-formed booking.completed event
+    /// yields the booking_id + duration + the pricing inputs. Money fields are JSON STRINGS
+    /// (rust_decimal serde-str). Pure (no DB/NATS).
     #[test]
     fn parses_completed_envelope() {
         let booking_id = Uuid::new_v4();
@@ -231,7 +263,10 @@ mod tests {
                 "customer_id": Uuid::new_v4(),
                 "guard_id": Uuid::new_v4(),
                 "booked_hours": 4,
-                "actual_seconds": 7200
+                "actual_seconds": 7200,
+                "base_fee": "500.00",
+                "guard_count": 2,
+                "tip": "100.00"
             }
         });
         let env: EventEnvelope<CompletedPayload> = serde_json::from_value(raw).expect("parse");
@@ -239,9 +274,13 @@ mod tests {
         assert_eq!(env.payload.booking_id, booking_id);
         assert_eq!(env.payload.booked_hours, 4);
         assert_eq!(env.payload.actual_seconds, Some(7200));
+        assert_eq!(env.payload.base_fee, "500.00".parse::<Decimal>().unwrap());
+        assert_eq!(env.payload.guard_count, 2);
+        assert_eq!(env.payload.tip, "100.00".parse::<Decimal>().unwrap());
     }
 
-    /// A completion without a work-start carries null actual_seconds → `None` (full charge).
+    /// A completion without a work-start carries null actual_seconds → `None` (the full booked
+    /// base is billed).
     #[test]
     fn parses_completed_envelope_with_null_actual_seconds() {
         let raw = json!({
@@ -251,31 +290,37 @@ mod tests {
             "correlation_id": Uuid::new_v4(),
             "payload": {
                 "booking_id": Uuid::new_v4(),
+                "customer_id": Uuid::new_v4(),
                 "booked_hours": 3,
-                "actual_seconds": null
+                "actual_seconds": null,
+                "base_fee": "300.00",
+                "guard_count": 1,
+                "tip": "0"
             }
         });
         let env: EventEnvelope<CompletedPayload> = serde_json::from_value(raw).expect("parse");
         assert_eq!(env.payload.actual_seconds, None);
         assert_eq!(env.payload.booked_hours, 3);
+        assert_eq!(env.payload.guard_count, 1);
     }
 }
 
-/// END-TO-END smoke against REAL infra (Postgres + NATS JetStream): the money path's full
-/// vertical — booking (accepted) → pay → publish `booking.completed` to NATS → the payment
-/// consumer drains it → proration finalized → `payment.refund_processed` emitted to the
-/// outbox — AND a replay of the same event is idempotent (no double refund). The
-/// payment-events → notification leg is proven separately by the notification slice's e2e.
+/// END-TO-END smoke against REAL infra (Postgres + NATS JetStream): the POST-PAY money path's
+/// full vertical — publish a SIGNED `booking.completed` (booked 4h, worked 2h, base 500, 1 guard,
+/// no tip) to NATS → the payment consumer drains it → RAISES the bill for the actual hours
+/// (1000.00) as a completed payment → emits `payment.completed` to the outbox — AND a replay of
+/// the same event is idempotent (no double charge, one event). No booking read is needed: the
+/// consumer bills entirely from the event's pricing. The payment-events → notification leg is
+/// proven separately by the notification slice's e2e.
 ///
-/// Gated on BOTH `DATABASE_URL` (a migrated DB: booking 0001/0002 + payment 0001/0002) and
-/// `NATS_URL`; hermetic (SKIP) when either is absent, so `cargo test` stays offline-safe. Run:
+/// Gated on BOTH `DATABASE_URL` (a migrated DB: payment 0001/0002) and `NATS_URL`; hermetic
+/// (SKIP) when either is absent, so `cargo test` stays offline-safe. Run:
 ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
 ///   NATS_URL=nats://localhost:4222 \
-///     cargo test -p pguard-payment -- e2e_book_pay_complete --nocapture
+///     cargo test -p pguard-payment -- e2e_post_pay --nocapture
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
-    use crate::repo;
     use rust_decimal::Decimal;
     use serde_json::json;
     use shared_events::EventEnvelope;
@@ -287,7 +332,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
-    async fn e2e_book_pay_complete_finalizes_and_is_idempotent() {
+    async fn e2e_post_pay_charges_actual_hours_on_completion_and_is_idempotent() {
         let (Ok(db_url), Ok(nats_url)) = (std::env::var("DATABASE_URL"), std::env::var("NATS_URL"))
         else {
             eprintln!(
@@ -306,34 +351,8 @@ mod e2e_tests {
         let guard_id = Uuid::new_v4();
         let correlation = Uuid::new_v4();
 
-        // 1) booking fixture in `accepted` (payable). 500 ฿/hr × 4h × 1 + 0 = 2000 expected.
-        sqlx::query(
-            "INSERT INTO booking.bookings \
-               (id, customer_id, guard_id, status, address, scheduled_at, hours, base_fee, guard_count, tip) \
-             VALUES ($1, $2, $3, 'accepted'::booking.booking_status, '1 E2E Rd', now(), 4, 500.00, 1, 0)",
-        )
-        .bind(booking_id)
-        .bind(customer_id)
-        .bind(guard_id)
-        .execute(&pool)
-        .await
-        .expect("insert booking fixture");
-
-        // 2) pay the full expected total (2000.00).
-        repo::charge_idempotent(
-            &pool,
-            booking_id,
-            customer_id,
-            Some(guard_id),
-            dec("2000.00"),
-            dec("2000.00"),
-            "promptpay",
-            correlation,
-        )
-        .await
-        .expect("charge");
-
-        // 3) ensure the stream, then start the consumer.
+        // 1) ensure the stream, then start the consumer. (No booking fixture + NO up-front charge:
+        //    post-pay raises the bill purely from the completion event.)
         let client = shared_events::connect(&nats_url)
             .await
             .expect("nats connect");
@@ -347,7 +366,7 @@ mod e2e_tests {
         .expect("ensure stream");
 
         // Set the process signing key BEFORE spawning the consumer (whose verify path reads it)
-        // — the consumer now verifies HMAC signatures, and we publish SIGNED with this same key.
+        // — the consumer verifies HMAC signatures, and we publish SIGNED with this same key.
         shared_events::init_signing_key(
             b"payment-e2e-event-signing-secret-at-least-64-characters-long-okok!",
         );
@@ -360,7 +379,8 @@ mod e2e_tests {
         // Let the durable consumer bind before publishing.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // 4) publish booking.completed: booked 4h, worked 2h (7200s) → final 1000, refund 1000.
+        // 2) publish booking.completed: 500/hr × 4h × 1, worked 2h (7200s), no tip → bill 1000.00.
+        //    Money fields are JSON STRINGS (rust_decimal serde-str, matching booking's emission).
         let envelope = EventEnvelope::new(
             topics::BOOKING_COMPLETED,
             correlation,
@@ -370,6 +390,9 @@ mod e2e_tests {
                 "guard_id": guard_id,
                 "booked_hours": 4,
                 "actual_seconds": 7200,
+                "base_fee": "500.00",
+                "guard_count": 1,
+                "tip": "0",
             }),
         );
         let bytes = serde_json::to_vec(&envelope).expect("serialize envelope");
@@ -377,45 +400,52 @@ mod e2e_tests {
             .await
             .expect("signed publish");
 
-        // 5) poll until the consumer finalizes (bounded; ~10s).
-        let mut finalized = None;
+        // 3) poll until the consumer raises the bill (bounded; ~10s).
+        let mut charged: Option<(Decimal, String)> = None;
         for _ in 0..50 {
-            let p = repo::get_payment_for_booking_amount(&pool, booking_id)
-                .await
-                .expect("read payment");
-            if p.final_amount.is_some() {
-                finalized = Some(p);
+            let row: Option<(Decimal, String)> = sqlx::query_as(
+                "SELECT amount, status::text FROM payment.payments WHERE booking_id = $1",
+            )
+            .bind(booking_id)
+            .fetch_optional(&pool)
+            .await
+            .expect("read payment");
+            if row.is_some() {
+                charged = row;
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let p = finalized.expect("payment finalized via NATS within timeout");
-        assert_eq!(
-            p.final_amount,
-            Some(dec("1000.00")),
-            "2h of 4h → final 1000"
-        );
-        assert_eq!(p.refund_amount, Some(dec("1000.00")), "refund 1000");
-        assert_eq!(p.refund_status.as_deref(), Some("pending"));
+        let (amount, status) = charged.expect("post-pay charge raised via NATS within timeout");
+        assert_eq!(amount, dec("1000.00"), "2h of 4h × 500 → bill 1000.00");
+        assert_eq!(status, "completed");
 
-        // 6) replay the SAME event (same event_id) → idempotent, no double refund.
+        // 4) replay the SAME event → idempotent: still ONE payment, ONE payment.completed event.
         shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)
             .await
             .expect("signed replay");
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        let refund_events: i64 = sqlx::query_scalar(
+        let payment_rows: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM payment.payments WHERE booking_id = $1")
+                .bind(booking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count payments");
+        assert_eq!(payment_rows, 1, "exactly one payment despite the replay");
+
+        let completed_events: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM payment.outbox \
              WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
         )
-        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(topics::PAYMENT_COMPLETED)
         .bind(booking_id.to_string())
         .fetch_one(&pool)
         .await
-        .expect("count refund events");
+        .expect("count completed events");
         assert_eq!(
-            refund_events, 1,
-            "exactly one refund event despite the replay (idempotent)"
+            completed_events, 1,
+            "exactly one payment.completed event despite the replay (idempotent)"
         );
 
         // teardown
@@ -425,15 +455,7 @@ mod e2e_tests {
                 .bind(booking_id.to_string())
                 .execute(&pool)
                 .await;
-        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
-            .bind(envelope.event_id)
-            .execute(&pool)
-            .await;
         let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
-            .bind(booking_id)
-            .execute(&pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
             .bind(booking_id)
             .execute(&pool)
             .await;

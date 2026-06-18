@@ -1,23 +1,20 @@
-//! pguard payment service — payments, refunds, proration, receipts (split from v1 booking).
-//! THE MONEY PATH.
+//! pguard payment service — payments + receipts (split from v1 booking). THE MONEY PATH.
 //!
-//! v2 design (CLAUDE.md):
-//!  - The charge decision NEVER trusts client-supplied authoritative fields. It MINTS a
-//!    service-JWT and verifies against booking's `/internal/bookings/{id}` (the caller must
-//!    be the booking's customer; the booking must be payable; guard_id comes from booking).
-//!  - At most ONE completed payment per booking (DB UNIQUE partial index + ON CONFLICT) —
-//!    a retried charge cannot double-charge; it returns the existing payment.
-//!  - Proration on completion (`compute_proration`, ported verbatim from v1) computes the
-//!    final amount + refund; a refund event is enqueued in the same tx (transactional outbox).
+//! v2 design (CLAUDE.md) — POST-PAY:
+//!  - The customer is NOT charged up front. The bill is RAISED on completion by the
+//!    `booking.completed` consumer for the hours actually worked (`domain::post_pay_charge`:
+//!    base prorated + flat tip) — computed entirely from booking's server-owned pricing carried
+//!    on the (signed) event, never a client. There is no up-front charge endpoint and no refund.
+//!  - At most ONE completed payment per booking (DB UNIQUE partial index + ON CONFLICT) — a
+//!    redelivered completion event cannot double-charge; it returns the existing payment.
 //!  - All money is `rust_decimal::Decimal` — never f64.
 //!
-//! This file is wiring only — configs, db pool, redis, the booking reqwest client, the
-//! outbox relay spawn, telemetry, CORS. Logic lives in `domain/` (pure proration +
-//! validation), `repo/` (atomic charge/proration + outbox), `events/` (relay → NATS),
-//! `booking_client/` (the service-JWT'd cross-service read), `api/` (transport).
+//! This file is wiring only — configs, db pool, redis, the outbox relay spawn, the
+//! booking.completed consumer, telemetry, CORS. Logic lives in `domain/` (pure pricing —
+//! `post_pay_charge` + proration), `repo/` (atomic charge + outbox), `events/` (relay → NATS +
+//! consumer), `api/` (transport: the read endpoints + admin ledger/reports + data export).
 
 mod api;
-mod booking_client;
 mod domain;
 mod events;
 mod models;
@@ -25,14 +22,13 @@ mod repo;
 mod state;
 
 use anyhow::Context;
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_connection_manager;
 
-use crate::booking_client::HttpBookingReader;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "payment";
@@ -49,11 +45,10 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
-    // The payment service MINTS service-JWTs (to call booking's internal read), so it needs
-    // the encoding key from the shared SERVICE_JWT_SECRET.
+    // The payment service verifies inbound service-JWTs on its internal data-export read; it no
+    // longer MINTS service-JWTs (the post-pay bill is raised from the completion event, not a
+    // cross-service booking read), so only the decoding key is used.
     let service_jwt_config = ServiceJwtConfig::from_env()?;
-    let booking_url =
-        std::env::var("BOOKING_URL").unwrap_or_else(|_| "http://localhost:3005".to_string());
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -65,20 +60,12 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("Redis cache connection (reconnecting)")?;
 
-    let booking_reader = HttpBookingReader::new(
-        reqwest::Client::new(),
-        booking_url,
-        service_jwt_config.encoding_key.clone(),
-        service_jwt_config.ttl_secs,
-    );
-
     let state = AppState {
         db: db.clone(),
         db_read,
         redis_conn,
         jwt_config,
         service_decoding_key: service_jwt_config.decoding_key.clone(),
-        booking_reader,
     };
 
     // --- background outbox relay (publishes payment.* events) ---
@@ -95,9 +82,9 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // --- background booking.completed consumer (finalizes proration idempotently) ---
-    // The reactive half of the money path: a completed job triggers proration/refund. Like
-    // the relay, it owns its retry and a NATS outage never crashes payment.
+    // --- background booking.completed consumer (raises the post-pay charge idempotently) ---
+    // The reactive half of the money path: a completed job raises the bill for actual hours.
+    // Like the relay, it owns its retry and a NATS outage never crashes payment.
     {
         let consumer_db = db.clone();
         let consumer_nats = nats_url.clone();
@@ -108,17 +95,12 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
+    // POST-PAY: no customer-initiated charge endpoint — only reads (the bill is raised by the
+    // consumer). `GET /payments` (own ledger) + `GET /payments/{id}`.
     let app = Router::new()
         .route("/healthz", get(healthz))
-        .route(
-            "/payments",
-            post(api::create_payment::<AppState>).get(api::list_payments::<AppState>),
-        )
+        .route("/payments", get(api::list_payments::<AppState>))
         .route("/payments/{id}", get(api::get_payment::<AppState>))
-        .route(
-            "/payments/{booking_id}/complete",
-            post(api::complete_payment::<AppState>),
-        )
         // Admin cross-user payment ledger (admin-role gated in the handler). Needs a NEW
         // gateway `/admin/payments` prefix rule → Payment.
         .route("/admin/payments", get(api::admin_list_payments::<AppState>))

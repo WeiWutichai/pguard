@@ -534,6 +534,10 @@ pub async fn transition(
         Some(CompletionInfo {
             booked_hours: hours,
             actual_seconds,
+            // Carry booking's server-owned pricing so the post-pay consumer bills self-contained.
+            base_fee: updated.base_fee,
+            guard_count: updated.guard_count,
+            tip: updated.tip,
         })
     } else {
         None
