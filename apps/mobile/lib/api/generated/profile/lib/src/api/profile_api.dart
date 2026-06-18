@@ -10,6 +10,7 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
+import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
@@ -24,6 +25,94 @@ class ProfileApi {
   final Serializers _serializers;
 
   const ProfileApi(this._dio, this._serializers);
+
+  /// A presigned URL for one of the guard&#39;s stored documents
+  /// Returns a short-lived presigned GET URL for ONE stored credential image. Read auth is **owner-or-admin** (an admin must be able to verify a guard&#39;s credentials). 404 when the document type is valid but not yet uploaded, or the guard has no profile. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [documentType] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetGuardDocument200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetGuardDocument200Response>> getGuardDocument({ 
+    required String userId,
+    required String documentType,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/profile/guard/{user_id}/documents'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _queryParameters = <String, dynamic>{
+      r'document_type': encodeQueryParameter(_serializers, documentType, const FullType(String)),
+    };
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      queryParameters: _queryParameters,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetGuardDocument200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetGuardDocument200Response),
+      ) as GetGuardDocument200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetGuardDocument200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// The caller&#39;s own profile (account number MASKED)
   /// Returns the caller&#39;s profile, tagged by &#x60;kind&#x60; (&#x60;guard&#x60; or &#x60;customer&#x60;) so the client need not guess. For a guard the &#x60;account_number&#x60; is MASKED to its last 4 characters (PDPA §7). A caller with no profile (or an admin, who has no self-profile in this slice) receives 404. 
@@ -275,6 +364,113 @@ class ProfileApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Upload one of the guard&#39;s own credential images
+  /// Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard, own docs only** (&#x60;{user_id}&#x60; must equal the caller — no admin bypass on write). The image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to the matching &#x60;*_key&#x60; column. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
+  ///
+  /// Parameters:
+  /// * [userId] - The guard's user_id (must equal the caller).
+  /// * [documentType] 
+  /// * [file] - The credential image (JPEG/PNG/WEBP, ≤10 MiB).
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetGuardDocument200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetGuardDocument200Response>> uploadGuardDocument({ 
+    required String userId,
+    required String documentType,
+    required MultipartFile file,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/profile/guard/{user_id}/documents'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'multipart/form-data',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      _bodyData = FormData.fromMap(<String, dynamic>{
+        r'document_type': encodeFormParameter(_serializers, documentType, const FullType(String)),
+        r'file': file,
+      });
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetGuardDocument200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetGuardDocument200Response),
+      ) as GetGuardDocument200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetGuardDocument200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

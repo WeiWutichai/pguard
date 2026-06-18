@@ -13,16 +13,19 @@ mod domain;
 mod events;
 mod models;
 mod repo;
+mod s3;
 mod state;
 
 use anyhow::Context;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_connection_manager;
 
+use crate::s3::S3Client;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "profile";
@@ -56,6 +59,29 @@ async fn main() -> anyhow::Result<()> {
     // `profile.guard_assignments` read-model (projected by the booking-events consumer below).
     let booking_authz = state::DbBookingAuthz { db: db.clone() };
 
+    // --- S3/MinIO for guard-document images (fail-fast: S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/
+    //     S3_BUCKET required). Region + public URL read ad-hoc like booking's main.rs: an empty
+    //     S3_PUBLIC_URL (single-host dev) is treated as absent → falls back to the internal endpoint.
+    let s3_config = S3Config::from_env()?;
+    let s3_region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let s3_public_url = std::env::var("S3_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let s3_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("build S3 HTTP client")?;
+    let s3 = S3Client::new(
+        s3_http,
+        s3_config.endpoint,
+        s3_public_url,
+        s3_config.bucket,
+        s3_region,
+        s3_config.access_key,
+        s3_config.secret_key,
+    );
+
     let state = AppState {
         db,
         db_read,
@@ -63,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_jwt_config,
         booking_authz,
+        s3,
     };
 
     let nats_url =
@@ -103,6 +130,14 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/guards/{id}/public",
             get(api::get_public_guard_profile::<AppState>),
+        )
+        // Guard document image upload/read. Own-docs-only write (logged-in guard); owner-or-admin
+        // read (presigned). 12 MiB body cap on THIS route only (images); gateway carves the same.
+        .route(
+            "/profile/guard/{user_id}/documents",
+            post(api::upload_guard_document::<AppState>)
+                .get(api::get_guard_document::<AppState>)
+                .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
         )
         .route(
             "/admin/guard-profiles",

@@ -80,6 +80,15 @@ class ProfileScreen extends ConsumerWidget {
                     ),
                   if (profile.isGuard)
                     _Tile(
+                      icon: Icons.badge_outlined,
+                      title: isThai ? 'เอกสารของฉัน' : 'My documents',
+                      subtitle: isThai
+                          ? 'อัปโหลดเอกสารประจำตัว'
+                          : 'Upload your credentials',
+                      onTap: () => context.push('/profile/documents'),
+                    ),
+                  if (profile.isGuard)
+                    _Tile(
                       icon: Icons.history,
                       title: isThai ? 'ประวัติงาน' : 'Work history',
                       subtitle: isThai

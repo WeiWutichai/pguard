@@ -29,8 +29,10 @@ import 'package:pguard_profile_api/src/model/document_expiry.dart';
 import 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
+import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
+import 'package:pguard_profile_api/src/model/guard_document_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
@@ -64,8 +66,10 @@ part 'serializers.g.dart';
   DocumentExpiryInput,
   ErrorBody,
   ErrorDetail,
+  GetGuardDocument200Response,
   GetMyProfile200Response,
   GetPublicGuardProfile200Response,
+  GuardDocumentResponse,
   GuardProfile,$GuardProfile,
   InlineObject,
   InlineObject1,
