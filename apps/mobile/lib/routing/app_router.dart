@@ -23,8 +23,6 @@ import '../features/booking/cancellation_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
-import '../features/booking/payment_screen.dart';
-import '../features/booking/payment_success_screen.dart';
 import '../features/booking/review_screen.dart';
 import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
@@ -211,10 +209,7 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
           path: '/book/guards',
           builder: (_, __) => const GuardDiscoveryScreen()),
-      GoRoute(path: '/book/payment', builder: (_, __) => const PaymentScreen()),
-      GoRoute(
-          path: '/book/success',
-          builder: (_, __) => const PaymentSuccessScreen()),
+      // (post-pay: no up-front payment screen — discovery confirms straight to live status)
       GoRoute(
         path: '/booking/:id/live',
         builder: (context, state) =>

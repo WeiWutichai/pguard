@@ -12,6 +12,7 @@ import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import 'service_selection_screen.dart' show serviceIcon;
 import 'widgets/map_picker.dart';
+import 'widgets/tip_selector.dart';
 
 /// Step 2 — the booking form. Captures location (map picker → reverse-geocoded place name),
 /// schedule, hours, and guard count, then `POST /v1/bookings`. The price shown here is an
@@ -422,6 +423,9 @@ class _PriceBar extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // Flat tip rides the booking (post-pay bills it in full on completion).
+            const TipSelector(),
+            const SizedBox(height: PgTokens.space3),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
@@ -434,8 +438,8 @@ class _PriceBar extends StatelessWidget {
                               fontSize: 12, color: PgTokens.colorTextMuted)),
                       Text(
                         state.hasEstimate
-                            ? '${Money.format(state.estimateHourlySatang)}/ชม. × ${state.hours} ชม. × ${state.guardCount}'
-                            : (isThai ? 'คิดราคาตามจริง' : 'Priced on actuals'),
+                            ? '${Money.format(state.estimateHourlySatang)}/ชม. × ${state.hours} ชม. × ${state.guardCount}${state.tipSatang > 0 ? (isThai ? ' + ทิป' : ' + tip') : ''}'
+                            : (isThai ? 'คิดเงินเมื่องานเสร็จตามเวลาจริง' : 'Charged on completion (actual hours)'),
                         style: const TextStyle(
                             fontSize: 11, color: PgTokens.colorTextFaint),
                       ),
@@ -444,7 +448,7 @@ class _PriceBar extends StatelessWidget {
                 ),
                 Text(
                   state.hasEstimate
-                      ? Money.format(state.estimateTotalSatang)
+                      ? Money.format(state.estimateWithTipSatang)
                       : '—',
                   style: const TextStyle(
                       fontSize: 22, fontWeight: FontWeight.w700),
