@@ -4,7 +4,6 @@ import '../models/available_guard.dart';
 import '../models/booking.dart';
 import '../models/geo.dart';
 import '../models/money.dart';
-import '../models/payment.dart';
 import '../models/service_catalog.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
@@ -14,11 +13,11 @@ part 'booking_flow_controller.g.dart';
 
 const Object _unset = Object();
 
-/// Cross-screen state for the customer book-a-guard flow (service → form → discovery →
-/// payment). One shared session object instead of v1's ~12 constructor args threaded across
-/// five screens. All money is held as integer satang (see [Money]); the only authoritative
-/// figures come from the server (`base_fee` on the created [booking], `expected_total` on the
-/// [payment]).
+/// Cross-screen state for the customer book-a-guard flow (service → form → discovery). One
+/// shared session object instead of v1's ~12 constructor args threaded across the screens. All
+/// money is held as integer satang (see [Money]). v2 is POST-PAY: the customer is NOT charged
+/// here — the booking is created (carrying the chosen `tip`), a guard accepts, and the bill is
+/// raised on completion for the actual hours (seen on live-status / the wallet).
 class BookingFlowState {
   const BookingFlowState({
     this.service,
@@ -31,7 +30,6 @@ class BookingFlowState {
     this.booking,
     this.guards = const [],
     this.selectedGuardId,
-    this.payment,
     this.busy = false,
     this.error,
   });
@@ -48,7 +46,8 @@ class BookingFlowState {
   final int hours;
   final int guardCount;
 
-  /// Optional extra tip (satang), added on the payment screen as charge surplus.
+  /// Optional flat tip (satang), chosen on the booking form and sent with the booking — the
+  /// post-pay bill adds it in full on completion (never prorated).
   final int tipSatang;
 
   /// The created booking — carries the SERVER-OWNED [Booking.baseFee].
@@ -58,7 +57,6 @@ class BookingFlowState {
   /// Discovery preview selection. v2 is first-come-accept, so this does NOT assign the guard;
   /// it only highlights the customer's preferred guard in the UI.
   final String? selectedGuardId;
-  final Payment? payment;
   final bool busy;
   final String? error;
 
@@ -70,27 +68,12 @@ class BookingFlowState {
   /// Pre-booking estimate total (satang) = indicative rate × hours × guards. Display only.
   int get estimateTotalSatang => estimateHourlySatang * hours * guardCount;
 
+  /// Estimate total including the chosen flat tip (satang) — the form's headline figure. Still an
+  /// ESTIMATE; the authoritative bill (actual hours + tip) is raised on completion.
+  int get estimateWithTipSatang => estimateTotalSatang + tipSatang;
+
   /// Whether the selected service has an indicative price (the "Other/custom" one does not).
   bool get hasEstimate => service?.indicativeHourlySatang != null;
-
-  /// Authoritative service subtotal (satang) once the booking exists: `base_fee × hours ×
-  /// guard_count`, all from the server-owned booking. `null` until the booking is created OR if
-  /// the server-owned `base_fee` is missing/unparseable (so the UI shows "not ready" rather
-  /// than a misleading ฿0 that the payment service would reject).
-  int? get bookingSubtotalSatang {
-    final b = booking;
-    if (b?.baseFee == null) return null;
-    final baseFeeSatang = Money.satangFromString(b!.baseFee);
-    if (baseFeeSatang <= 0) return null;
-    return baseFeeSatang * (b.hours ?? hours) * (b.guardCount ?? guardCount);
-  }
-
-  /// Amount the client will send to `POST /v1/payments` (satang) = authoritative subtotal +
-  /// tip. The server re-verifies it covers `expected_total`. `null` until the booking exists.
-  int? get payTotalSatang {
-    final subtotal = bookingSubtotalSatang;
-    return subtotal == null ? null : subtotal + tipSatang;
-  }
 
   /// The booked end instant (start + booked hours; server values when present) — drives the
   /// success screen's "14:00 – 22:00" time-range row. Display only; `null` until scheduled.
@@ -111,7 +94,6 @@ class BookingFlowState {
     Booking? booking,
     List<AvailableGuard>? guards,
     String? selectedGuardId,
-    Payment? payment,
     bool? busy,
     Object? error = _unset,
   }) {
@@ -126,7 +108,6 @@ class BookingFlowState {
       booking: booking ?? this.booking,
       guards: guards ?? this.guards,
       selectedGuardId: selectedGuardId ?? this.selectedGuardId,
-      payment: payment ?? this.payment,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
     );
@@ -174,8 +155,8 @@ class BookingFlowController extends _$BookingFlowController {
   void selectGuard(String guardId) =>
       state = state.copyWith(selectedGuardId: guardId, error: null);
 
-  /// `POST /v1/bookings` — create the request. Stores the authoritative [Booking] (with the
-  /// server-owned `base_fee`) for the payment step.
+  /// `POST /v1/bookings` — create the request, carrying the chosen flat `tip`. Stores the
+  /// authoritative [Booking] (with the server-owned `base_fee`). No charge happens here (post-pay).
   Future<bool> createBooking() => _guard(() async {
         final address = state.address.trim();
         if (address.isEmpty) {
@@ -198,8 +179,8 @@ class BookingFlowController extends _$BookingFlowController {
             'lat': place.point.lat,
             'lng': place.point.lng,
           },
-          // Up-front tip stays "0"; an optional tip is added at payment as charge surplus
-          // (contract: amount must cover expected_total, surplus is treated as an extra tip).
+          // Flat tip chosen on the form. Post-pay bills it in full (never prorated) on completion.
+          'tip': Money.amountString(state.tipSatang),
         });
         final booking = Booking.fromJson(data as Map<String, dynamic>);
         state = state.copyWith(booking: booking, scheduledAt: when);
@@ -216,27 +197,6 @@ class BookingFlowController extends _$BookingFlowController {
             .map(AvailableGuard.fromJson)
             .toList();
         state = state.copyWith(guards: list);
-        return true;
-      });
-
-  /// `POST /v1/payments` — charge for the booking. The `amount` is DERIVED from the booking's
-  /// server-owned `base_fee` (+ optional tip) and RE-VERIFIED server-side against the computed
-  /// `expected_total` (the client can never undercut the price).
-  Future<bool> pay(PaymentMethod method) => _guard(() async {
-        final booking = state.booking;
-        final total = state.payTotalSatang;
-        if (booking == null || total == null) {
-          state = state.copyWith(
-              error: _isThai ? 'ยังไม่พบการจอง' : 'Booking not ready');
-          return false;
-        }
-        final data = await ref.read(pguardApiProvider).post('/payments', data: {
-          'booking_id': booking.id,
-          'amount': Money.amountString(total),
-          'payment_method': method.wire,
-        });
-        final payment = Payment.fromJson(data as Map<String, dynamic>);
-        state = state.copyWith(payment: payment);
         return true;
       });
 
