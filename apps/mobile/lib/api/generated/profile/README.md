@@ -104,10 +104,12 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminRejectGuard**](doc/AdminApi.md#adminrejectguard) | **POST** /admin/guard-profiles/{user_id}/reject | Reject a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminSetCandidateStage**](doc/AdminApi.md#adminsetcandidatestage) | **PUT** /admin/recruitment/candidates/{user_id}/stage | Move a pending candidate to a pipeline stage (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
+[*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
 [*ProfileApi*](doc/ProfileApi.md) | [**getMyProfile**](doc/ProfileApi.md#getmyprofile) | **GET** /profile/me | The caller&#39;s own profile (account number MASKED)
 [*ProfileApi*](doc/ProfileApi.md) | [**getPublicGuardProfile**](doc/ProfileApi.md#getpublicguardprofile) | **GET** /guards/{id}/public | Assigned guard&#39;s public mini-profile (customer live-tracking map)
 [*ProfileApi*](doc/ProfileApi.md) | [**updateGuardProfile**](doc/ProfileApi.md#updateguardprofile) | **PUT** /profile/guard | Update the caller&#39;s EXISTING guard profile (role&#x3D;guard)
+[*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardAvatar**](doc/ProfileApi.md#uploadguardavatar) | **POST** /profile/guard/{user_id}/avatar | Upload the guard&#39;s own profile picture
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardDocument**](doc/ProfileApi.md#uploadguarddocument) | **POST** /profile/guard/{user_id}/documents | Upload one of the guard&#39;s own credential images
 [*ProfileApi*](doc/ProfileApi.md) | [**upsertCustomerProfile**](doc/ProfileApi.md#upsertcustomerprofile) | **POST** /profile/customer | Create or update the caller&#39;s customer profile (profile_token OR logged-in customer)
 [*ProfileApi*](doc/ProfileApi.md) | [**upsertGuardProfile**](doc/ProfileApi.md#upsertguardprofile) | **POST** /profile/guard | Create or update the caller&#39;s guard profile (profile_token OR logged-in guard)
@@ -130,9 +132,11 @@ Class | Method | HTTP request | Description
  - [DocumentExpiryInput](doc/DocumentExpiryInput.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
+ - [GetGuardAvatar200Response](doc/GetGuardAvatar200Response.md)
  - [GetGuardDocument200Response](doc/GetGuardDocument200Response.md)
  - [GetMyProfile200Response](doc/GetMyProfile200Response.md)
  - [GetPublicGuardProfile200Response](doc/GetPublicGuardProfile200Response.md)
+ - [GuardAvatarResponse](doc/GuardAvatarResponse.md)
  - [GuardDocumentResponse](doc/GuardDocumentResponse.md)
  - [GuardProfile](doc/GuardProfile.md)
  - [InlineObject](doc/InlineObject.md)

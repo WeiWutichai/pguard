@@ -513,11 +513,17 @@ fn body_cap_for(stripped: &str) -> BodyCap {
             }
         }
     }
-    // `/profile/guard/{user_id}/documents`: one non-empty `{user_id}` segment, then the
-    // `documents` segment at a boundary (so `…/documentsx` does NOT match) — guard document image.
+    // `/profile/guard/{user_id}/documents` (credential image) and `…/avatar` (profile picture):
+    // one non-empty `{user_id}` segment, then the segment at a boundary (so `…/documentsx` /
+    // `…/avatarx` do NOT match).
     if let Some(rest) = stripped.strip_prefix("/profile/guard/") {
         if let Some((id, tail)) = rest.split_once('/') {
-            if !id.is_empty() && (tail == "documents" || tail.starts_with("documents/")) {
+            if !id.is_empty()
+                && (tail == "documents"
+                    || tail.starts_with("documents/")
+                    || tail == "avatar"
+                    || tail.starts_with("avatar/"))
+            {
                 return BodyCap::Large;
             }
         }
@@ -1148,6 +1154,21 @@ mod tests {
             body_cap(resolve("/v1/profile/guard/abc-123/documents")),
             BodyCap::Large,
             "POST /profile/guard/{{id}}/documents (guard credential image)"
+        );
+        // Guard avatar upload — same Large carve-out + routing + token gate.
+        let av = resolve("/v1/profile/guard/abc-123/avatar");
+        assert_eq!(
+            body_cap(av.clone()),
+            BodyCap::Large,
+            "POST /profile/guard/{{id}}/avatar (guard profile picture)"
+        );
+        assert_eq!(proxy(av.clone()).0, Upstream::Profile);
+        assert!(!proxy(av).2, "avatar upload requires a token (not public)");
+        // Near-miss keeps the 1 MiB default.
+        assert_eq!(
+            body_cap(resolve("/v1/profile/guard/abc/avatarx")),
+            BodyCap::Default,
+            "avatar suffix not at a boundary"
         );
     }
 
