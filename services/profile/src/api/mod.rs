@@ -506,6 +506,10 @@ pub async fn upload_guard_avatar<S: ProfileDeps>(
     // credential-doc validator (image-only allowlist).
     let canonical_mime = documents::validate_document_upload(&declared_mime, bytes.len(), &bytes)?;
     let ext = documents::mime_to_extension(canonical_mime);
+    // Key MUST stay within RFC-3986 unreserved chars (UUID + fixed prefix + whitelisted ext): the
+    // staging edge serves presigned GETs via an nginx `/minio-files/` prefix-strip that
+    // re-canonicalizes the path, so a key with reserved/encoded bytes would diverge from the
+    // SigV4-signed path → 403.
     let key = format!("profile/{user_id}/avatar/{}.{ext}", Uuid::new_v4());
 
     state.s3().upload(&key, bytes, canonical_mime).await?;
