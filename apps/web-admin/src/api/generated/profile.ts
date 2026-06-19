@@ -141,9 +141,11 @@ export interface paths {
         put?: never;
         /**
          * Upload one of the guard's own credential images
-         * @description Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard,
-         *     own docs only** (`{user_id}` must equal the caller — no admin bypass on write). The
-         *     image is magic-byte validated (declared MIME must match the content), stored in private
+         * @description Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: **own docs only**
+         *     (`{user_id}` must equal the caller — no admin bypass on write) via EITHER a logged-in
+         *     guard (post-approval) OR the short-lived `doc_upload_token` returned by `POST /profile/guard`
+         *     (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving).
+         *     The image is magic-byte validated (declared MIME must match the content), stored in private
          *     S3 under a server-generated key, and the key written to the matching `*_key` column.
          *     Returns a short-lived (1h) presigned GET URL — the raw key is never exposed.
          */
@@ -630,6 +632,25 @@ export interface components {
                 };
             };
         };
+        /**
+         * @description Registration profile submit: the masked guard profile PLUS a short-lived, MULTI-use
+         *     `doc_upload_token`. The client uploads credential images with this token (Bearer) at
+         *     `POST /profile/guard/{user_id}/documents` immediately after — BEFORE approval — so an admin
+         *     can review the documents when deciding. The token is own-scoped and expires in ~30 min.
+         */
+        GuardProfileSubmitOk: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                    data?: components["schemas"]["GuardProfile"] & {
+                        /** @description Short-lived (~30 min) Bearer token for credential-image uploads. */
+                        doc_upload_token: string;
+                    };
+                };
+            };
+        };
         /** @description The guard profile (FULL account number — admin response). */
         GuardProfileFullOk: {
             headers: {
@@ -738,7 +759,7 @@ export interface operations {
             };
         };
         responses: {
-            200: components["responses"]["GuardProfileOk"];
+            200: components["responses"]["GuardProfileSubmitOk"];
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];

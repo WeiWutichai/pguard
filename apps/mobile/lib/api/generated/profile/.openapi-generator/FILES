@@ -38,6 +38,8 @@ lib/src/model/guard_document_response.dart
 lib/src/model/guard_profile.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
+lib/src/model/inline_object1_all_of_data.dart
+lib/src/model/inline_object2.dart
 lib/src/model/internal_guard.dart
 lib/src/model/internal_list_guards200_response.dart
 lib/src/model/my_customer_profile.dart

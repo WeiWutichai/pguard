@@ -38,6 +38,8 @@ import 'package:pguard_profile_api/src/model/guard_document_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
+import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
+import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_guard.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
@@ -77,6 +79,8 @@ part 'serializers.g.dart';
   GuardProfile,$GuardProfile,
   InlineObject,
   InlineObject1,
+  InlineObject1AllOfData,
+  InlineObject2,
   InternalGuard,
   InternalListGuards200Response,
   MyCustomerProfile,

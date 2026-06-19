@@ -28,11 +28,12 @@ info:
     **Documents:** a guard uploads their own credential IMAGES (id card, security license,
     training cert, criminal check, driver license, passbook photo) via
     `POST /profile/guard/{user_id}/documents` — multipart, magic-byte validated, stored in
-    private S3 under a server-generated key. Auth is logged-in guard, **own docs only** (so it
-    happens after approval, once the guard can authenticate); the owner or an admin reads a
-    document via the matching `GET` (short-lived presigned URL, never the raw key). Document
-    **expiry dates** are captured separately (metadata only) via `document_expiries` on the
-    guard profile submit — these feed the admin "expiring documents" surface.
+    private S3 under a server-generated key. **Own docs only**, authed by EITHER the short-lived
+    `doc_upload_token` from the profile submit (registration — so an admin can review the documents
+    BEFORE approving) OR a logged-in guard (post-approval). The owner or an admin reads a document
+    via the matching `GET` (short-lived presigned URL, never the raw key). Document **expiry dates**
+    are captured separately (metadata only) via `document_expiries` on the guard profile submit —
+    these feed the admin "expiring documents" surface.
   license:
     name: UNLICENSED
 
@@ -74,7 +75,7 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/UpsertGuardProfileRequest' }
       responses:
-        '200': { $ref: '#/components/responses/GuardProfileOk' }
+        '200': { $ref: '#/components/responses/GuardProfileSubmitOk' }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
@@ -199,13 +200,15 @@ paths:
       tags: [Profile]
       summary: Upload one of the guard's own credential images
       description: |
-        Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard,
-        own docs only** (`{user_id}` must equal the caller — no admin bypass on write). The
-        image is magic-byte validated (declared MIME must match the content), stored in private
+        Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: **own docs only**
+        (`{user_id}` must equal the caller — no admin bypass on write) via EITHER a logged-in
+        guard (post-approval) OR the short-lived `doc_upload_token` returned by `POST /profile/guard`
+        (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving).
+        The image is magic-byte validated (declared MIME must match the content), stored in private
         S3 under a server-generated key, and the key written to the matching `*_key` column.
         Returns a short-lived (1h) presigned GET URL — the raw key is never exposed.
       operationId: uploadGuardDocument
-      security: [{ bearerAuth: [] }]
+      security: [{ bearerAuth: [] }, { profileToken: [] }]
       parameters:
         - name: user_id
           in: path
@@ -655,6 +658,28 @@ components:
               - type: object
                 properties:
                   data: { $ref: '#/components/schemas/GuardProfile' }
+    GuardProfileSubmitOk:
+      description: |
+        Registration profile submit: the masked guard profile PLUS a short-lived, MULTI-use
+        `doc_upload_token`. The client uploads credential images with this token (Bearer) at
+        `POST /profile/guard/{user_id}/documents` immediately after — BEFORE approval — so an admin
+        can review the documents when deciding. The token is own-scoped and expires in ~30 min.
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data:
+                    allOf:
+                      - $ref: '#/components/schemas/GuardProfile'
+                      - type: object
+                        required: [doc_upload_token]
+                        properties:
+                          doc_upload_token:
+                            type: string
+                            description: Short-lived (~30 min) Bearer token for credential-image uploads.
     GuardProfileFullOk:
       description: The guard profile (FULL account number — admin response).
       content:

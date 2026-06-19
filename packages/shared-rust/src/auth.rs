@@ -121,6 +121,13 @@ pub const PHONE_VERIFY_PURPOSE: &str = "phone_verify";
 pub const PROFILE_PURPOSE_GUARD: &str = "guard_profile";
 /// Profile-token purpose for a CUSTOMER registration (identity → profile `/profile/customer`).
 pub const PROFILE_PURPOSE_CUSTOMER: &str = "customer_profile";
+/// Purpose for the short-lived, MULTI-use guard document-upload token minted by the profile
+/// service at `POST /profile/guard` (registration). Unlike the single-use profile token, it is
+/// NOT tracked in Redis — it is a plain purpose-scoped, own-scoped (`sub`=user_id), short-TTL JWT
+/// that lets a NOT-YET-APPROVED guard upload their credential images so an admin can review them
+/// BEFORE approving. Verified by signature + purpose + expiry + own-only; never grants anything
+/// beyond writing that user's own document images during the registration window.
+pub const PROFILE_PURPOSE_GUARD_DOC: &str = "guard_doc_upload";
 
 /// Build a `Validation` for the purpose-scoped tokens: HS256, expiry enforced, and
 /// NO issuer/audience requirement (these tokens deliberately omit iss/aud). Without

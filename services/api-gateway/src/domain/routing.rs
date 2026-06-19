@@ -531,6 +531,22 @@ fn body_cap_for(stripped: &str) -> BodyCap {
     BodyCap::Default
 }
 
+/// `true` for `/profile/guard/{user_id}/documents` (one non-empty `{user_id}` segment, then
+/// `documents` at a boundary). Edge-PUBLIC for the SAME reason as the `/profile/guard` submit
+/// (see PUBLIC_PATHS): the registration upload presents a purpose-scoped `guard_doc_upload` Bearer
+/// (NOT an access token) that the edge cannot decode, and the post-approval path an access token —
+/// BOTH are validated by the profile service (`GuardDocWriter` / `AuthUser`, own-only). So a
+/// no-/invalid-credential request still gets the service's 401/403; it is NOT anonymously open.
+/// The Large body cap (above) + the edge rate-limit still apply.
+fn is_guard_documents_path(stripped: &str) -> bool {
+    if let Some(rest) = stripped.strip_prefix("/profile/guard/") {
+        if let Some((id, tail)) = rest.split_once('/') {
+            return !id.is_empty() && (tail == "documents" || tail.starts_with("documents/"));
+        }
+    }
+    false
+}
+
 /// Resolve an inbound request path (the raw URI path, e.g. `/v1/auth/login`) into a
 /// [`RouteDecision`]. Query strings must be stripped by the caller before this point.
 ///
@@ -577,7 +593,9 @@ pub fn resolve(path: &str) -> RouteDecision {
         Some(rule) => RouteDecision::Proxy {
             upstream: rule.upstream,
             forward_path: stripped.to_string(),
-            public: PUBLIC_PATHS.contains(&stripped),
+            // Edge-public if an exact public path OR the guard documents route (dual-auth like the
+            // `/profile/guard` submit — the profile service validates the purpose/access token).
+            public: PUBLIC_PATHS.contains(&stripped) || is_guard_documents_path(stripped),
             tier: rule.tier,
             body_cap: body_cap_for(stripped),
         },
@@ -1173,26 +1191,34 @@ mod tests {
     }
 
     #[test]
-    fn profile_guard_documents_is_large_protected_and_boundary_precise() {
+    fn profile_guard_documents_is_edge_public_dual_auth_and_boundary_precise() {
         let d = resolve("/v1/profile/guard/abc-123/documents");
         let (up, fwd, public, _) = proxy(d.clone());
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/profile/guard/abc-123/documents");
+        // Edge-PUBLIC (dual-auth, like /profile/guard submit): registration presents a
+        // `guard_doc_upload` purpose token the edge can't decode; the profile service validates it
+        // (or an access token) + enforces own-only. A no-token request still gets the service's 401.
         assert!(
-            !public,
-            "document upload requires a token (NOT the public profile submit)"
+            public,
+            "guard documents is edge-public dual-auth (profile validates the purpose/access token)"
         );
         assert_eq!(body_cap(d), BodyCap::Large);
-        // Near-misses keep the 1 MiB default.
-        assert_eq!(
-            body_cap(resolve("/v1/profile/guard/abc/documentsx")),
-            BodyCap::Default,
-            "suffix not at a boundary"
+        // Boundary precision — near-misses are NOT public (and keep the 1 MiB default).
+        let near = resolve("/v1/profile/guard/abc/documentsx");
+        assert!(
+            !proxy(near.clone()).2,
+            "suffix not at a boundary → not public"
         );
-        assert_eq!(
-            body_cap(resolve("/v1/profile/guard//documents")),
-            BodyCap::Default,
-            "empty {{user_id}} segment"
+        assert_eq!(body_cap(near), BodyCap::Default);
+        assert!(
+            !proxy(resolve("/v1/profile/guard//documents")).2,
+            "empty {{user_id}} segment → not public"
+        );
+        // The avatar upload is NOT made public by this rule (no purpose token; access-token only).
+        assert!(
+            !proxy(resolve("/v1/profile/guard/abc-123/avatar")).2,
+            "avatar stays edge-protected (access-token only)"
         );
         // The one-write profile submit stays public + default cap (unchanged).
         let submit = resolve("/v1/profile/guard");
