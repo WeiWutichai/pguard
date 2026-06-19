@@ -111,6 +111,32 @@ Required values to fill (the compose fails fast if any are empty):
   with SMS ON.
 - `infra/.env.staging` is **gitignored** (matches `.env`/`.env.*.local`). Never commit it.
 
+### MinIO object bucket (avatars / guard documents / check-in photos)
+
+These features store images in MinIO and serve them to clients as **SigV4 presigned GET URLs**
+through the nginx `/minio-files/` path. Two prerequisites (do once, after the stack is up):
+
+1. **`S3_PUBLIC_URL`** in `.env.staging` must be `https://<your-domain>/minio-files`, and its **host
+   must equal the nginx `server_name`** — the signature binds the host, so a mismatch 403s every read.
+2. **The bucket must exist and stay PRIVATE.** The public route is safe *only* because MinIO rejects
+   unsigned requests; a public-read policy would turn `/minio-files/` into an anonymous file server for
+   PDPA-sensitive ID documents. Create it + assert private once (mc is bundled in the minio image):
+
+   ```bash
+   # ${S3_BUCKET:-pguard}; creds = MINIO_ROOT_USER / MINIO_ROOT_PASSWORD from .env.staging
+   docker compose -f infra/docker/docker-compose.prod.yml -f infra/docker/docker-compose.staging.yml \
+     exec minio sh -c 'mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" \
+       && mc mb --ignore-existing local/pguard \
+       && mc anonymous set none local/pguard'
+   ```
+
+3. **Negative smoke test** (must return 403 — proves no anonymous access):
+
+   ```bash
+   curl -s -o /dev/null -w '%{http_code}\n' https://<your-domain>/minio-files/pguard/any-key
+   # expect: 403
+   ```
+
 Then export the image coordinates + secrets for this shell:
 
 ```bash
