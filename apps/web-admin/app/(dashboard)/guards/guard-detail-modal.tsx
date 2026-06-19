@@ -10,6 +10,7 @@ import { ADMIN_LIST_CAP, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
 import { COPY } from "./copy";
+import { GuardDocumentsPanel } from "./guard-documents-panel";
 import { initialsOf } from "./guard-identity";
 
 type GuardProfile = components["schemas"]["GuardProfile"];
@@ -188,15 +189,9 @@ export function GuardDetailModal({
         ))}
       </dl>
 
-      {/* Documents panel from the design — no /guards/{id}/documents endpoint in v2. */}
-      <div className="mt-4 rounded-lg border border-border">
-        <div className="flex items-center gap-2 px-4 py-3">
-          <span className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
-            {c.docsHead}
-          </span>
-          {gap}
-        </div>
-      </div>
+      {/* Documents panel — the guard's six credential images (admin reads via the owner-or-admin
+          GET; uploads happen on the guard's mobile screen). Honest "not uploaded" until present. */}
+      <GuardDocumentsPanel key={guard.user_id} userId={guard.user_id} />
 
       {/* Bank panel — real data. Admin detail keeps showing the FULL account number the
           contract returns to admins (the at-a-glance list stays masked — PDPA). */}
