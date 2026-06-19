@@ -154,6 +154,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/profile/guard/{user_id}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A presigned URL for the guard's avatar
+         * @description Returns a short-lived presigned GET URL for the stored avatar. Read auth is
+         *     **owner-or-admin**. 404 when no avatar is set or the guard has no profile.
+         */
+        get: operations["getGuardAvatar"];
+        put?: never;
+        /**
+         * Upload the guard's own profile picture
+         * @description Upload/replace the guard's avatar (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard, own
+         *     avatar only** (`{user_id}` must equal the caller — no admin bypass on write). Image is
+         *     magic-byte validated (declared MIME must match the content), stored in private S3 under a
+         *     server-generated key, and the key written to `avatar_key`. Returns a short-lived (1h)
+         *     presigned GET URL — the raw key is never exposed.
+         */
+        post: operations["uploadGuardAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/guard-profiles": {
         parameters: {
             query?: never;
@@ -440,6 +469,14 @@ export interface components {
             document_type: string;
             /** @description Presigned GET URL (expires in ~1h). */
             download_url: string;
+        };
+        /**
+         * @description The result of a guard avatar upload/read: a short-lived (1h) presigned GET URL for the
+         *     stored profile picture. The raw S3 key is NEVER exposed.
+         */
+        GuardAvatarResponse: {
+            /** @description Presigned GET URL (expires in ~1h). */
+            avatar_url: string;
         };
         GuardProfile: {
             /** Format: uuid */
@@ -840,6 +877,79 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["GuardDocumentResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Payload too large (image exceeds the 12 MiB body cap) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getGuardAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A presigned download URL for the avatar */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardAvatarResponse"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    uploadGuardAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The guard's user_id (must equal the caller). */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description The avatar image (JPEG/PNG/WEBP, ≤10 MiB).
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded; returns a presigned download URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardAvatarResponse"];
                     };
                 };
             };

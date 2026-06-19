@@ -42,6 +42,13 @@ pub struct GuardDocumentResponse {
     pub download_url: String,
 }
 
+/// The result of a guard avatar upload/read: a short-lived (1h) presigned GET URL for the stored
+/// profile picture. The raw S3 key is never exposed (only the signed URL).
+#[derive(Debug, Serialize)]
+pub struct GuardAvatarResponse {
+    pub avatar_url: String,
+}
+
 /// Query for `GET /internal/profiles/recipients` — the broadcast audience selector
 /// (notification's bulk-send asks profile to resolve `user_id`s by role).
 #[derive(Debug, Deserialize)]

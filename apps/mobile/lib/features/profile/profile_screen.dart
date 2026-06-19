@@ -3,10 +3,13 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/guard_avatar_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
+import '../../core/media/document_picker.dart';
 import '../../core/models/profile.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -211,17 +214,11 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        CircleAvatar(
-          radius: 37,
-          backgroundColor: PgTokens.colorGreen100,
-          child: Text(
-            profile.initials,
-            style: const TextStyle(
-                color: PgTokens.colorGreen800,
-                fontSize: 26,
-                fontWeight: FontWeight.w600),
-          ),
-        ),
+        // Guards can upload/replace their own profile picture; customers see initials only
+        // (no customer avatar endpoint yet).
+        profile.isGuard
+            ? _GuardAvatarEditable(initials: profile.initials)
+            : _InitialsAvatar(initials: profile.initials),
         const SizedBox(height: PgTokens.space3),
         Text(profile.displayName,
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
@@ -243,6 +240,121 @@ class _Header extends StatelessWidget {
           ],
         ),
       ],
+    );
+  }
+}
+
+/// Plain initials avatar (customers, and the guard fallback before an image is set / on load error).
+class _InitialsAvatar extends StatelessWidget {
+  const _InitialsAvatar({required this.initials});
+
+  final String initials;
+
+  @override
+  Widget build(BuildContext context) {
+    return CircleAvatar(
+      radius: 37,
+      backgroundColor: PgTokens.colorGreen100,
+      child: Text(
+        initials,
+        style: const TextStyle(
+            color: PgTokens.colorGreen800,
+            fontSize: 26,
+            fontWeight: FontWeight.w600),
+      ),
+    );
+  }
+}
+
+/// The guard's editable avatar: their uploaded profile picture (presigned URL) over an initials
+/// fallback, with a camera badge and tap-to-upload (camera/gallery → own-only multipart). A spinner
+/// overlays while uploading; the previous image stays visible underneath. Honest: shows initials
+/// (never a fake image) until one is uploaded or if the presigned URL fails to load.
+class _GuardAvatarEditable extends ConsumerWidget {
+  const _GuardAvatarEditable({required this.initials});
+
+  final String initials;
+
+  Future<void> _pickAndUpload(
+      BuildContext context, WidgetRef ref, bool isThai) async {
+    final source = await showModalBottomSheet<DocSource>(
+      context: context,
+      builder: (ctx) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.photo_camera_outlined),
+              title: Text(isThai ? 'ถ่ายรูป' : 'Take photo'),
+              onTap: () => Navigator.pop(ctx, DocSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: Text(isThai ? 'เลือกจากคลัง' : 'Choose from gallery'),
+              onTap: () => Navigator.pop(ctx, DocSource.gallery),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (source == null) return;
+    final path = await ref.read(documentPickerProvider).pick(source);
+    if (path == null) return;
+    if (!context.mounted) return;
+    final err =
+        await ref.read(guardAvatarControllerProvider.notifier).upload(path);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(err)));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final async = ref.watch(guardAvatarControllerProvider);
+    final url = async.valueOrNull;
+    final uploading = async.isLoading;
+
+    return GestureDetector(
+      onTap: uploading ? null : () => _pickAndUpload(context, ref, isThai),
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          ClipOval(
+            child: url != null
+                ? Image.network(
+                    url,
+                    width: 74,
+                    height: 74,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _InitialsAvatar(initials: initials),
+                  )
+                : _InitialsAvatar(initials: initials),
+          ),
+          if (uploading)
+            const SizedBox(
+              width: 28,
+              height: 28,
+              child: CircularProgressIndicator(strokeWidth: 2.5),
+            ),
+          // Camera badge (bottom-right) — the affordance to (re)upload.
+          Positioned(
+            bottom: -2,
+            right: -2,
+            child: Container(
+              padding: const EdgeInsets.all(5),
+              decoration: const BoxDecoration(
+                color: PgTokens.colorPrimary,
+                shape: BoxShape.circle,
+              ),
+              child: const Icon(Icons.photo_camera,
+                  size: 14, color: PgTokens.colorSurface),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

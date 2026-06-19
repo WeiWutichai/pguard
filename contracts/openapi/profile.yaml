@@ -279,6 +279,80 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /profile/guard/{user_id}/avatar:
+    post:
+      tags: [Profile]
+      summary: Upload the guard's own profile picture
+      description: |
+        Upload/replace the guard's avatar (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard, own
+        avatar only** (`{user_id}` must equal the caller — no admin bypass on write). Image is
+        magic-byte validated (declared MIME must match the content), stored in private S3 under a
+        server-generated key, and the key written to `avatar_key`. Returns a short-lived (1h)
+        presigned GET URL — the raw key is never exposed.
+      operationId: uploadGuardAvatar
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The guard's user_id (must equal the caller).
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The avatar image (JPEG/PNG/WEBP, ≤10 MiB).
+      responses:
+        '200':
+          description: Uploaded; returns a presigned download URL
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GuardAvatarResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { description: Payload too large (image exceeds the 12 MiB body cap) }
+    get:
+      tags: [Profile]
+      summary: A presigned URL for the guard's avatar
+      description: |
+        Returns a short-lived presigned GET URL for the stored avatar. Read auth is
+        **owner-or-admin**. 404 when no avatar is set or the guard has no profile.
+      operationId: getGuardAvatar
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: A presigned download URL for the avatar
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GuardAvatarResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /admin/guard-profiles:
     get:
       tags: [Admin]
@@ -704,6 +778,15 @@ components:
       properties:
         document_type: { type: string }
         download_url: { type: string, description: 'Presigned GET URL (expires in ~1h).' }
+
+    GuardAvatarResponse:
+      type: object
+      description: |
+        The result of a guard avatar upload/read: a short-lived (1h) presigned GET URL for the
+        stored profile picture. The raw S3 key is NEVER exposed.
+      required: [avatar_url]
+      properties:
+        avatar_url: { type: string, description: 'Presigned GET URL (expires in ~1h).' }
 
     GuardProfile:
       type: object

@@ -23,10 +23,10 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, DocumentExpiryRow, GuardDocumentResponse, GuardProfileResponse,
-    InternalGuard, MyProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
-    RecruitCandidate, RejectRequest, StageRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentResponse,
+    GuardProfileResponse, InternalGuard, MyProfile, PublicGuardProfile, RecipientsQuery,
+    RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -475,6 +475,100 @@ pub struct GuardDocumentQuery {
     pub document_type: String,
 }
 
+// ----- POST/GET /profile/guard/{user_id}/avatar — guard self-uploaded profile picture -----
+
+/// The `guard_profiles` column holding the avatar's S3 key. A fixed `&'static str` (never client-
+/// controlled), passed to the same allowlisted key-column repo helpers as the credential docs.
+const AVATAR_KEY_COLUMN: &str = "avatar_key";
+
+/// POST `/profile/guard/{user_id}/avatar` — a guard uploads/replaces their OWN profile picture.
+/// Auth: logged-in guard, **own avatar only** (no admin bypass on write). Image magic-byte
+/// validated (JPEG/PNG/WEBP ≤10 MiB, same gate as credential docs), stored under a server-generated
+/// UUID key, the key written to `avatar_key`. Returns a short-lived presigned GET URL.
+#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id, target = %user_id))]
+pub async fn upload_guard_avatar<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<GuardAvatarResponse>>, AppError> {
+    require_role(&user, ROLE_GUARD)?;
+    // IDOR: a guard sets ONLY their own avatar (path id must equal the caller).
+    if user_id != user.user_id {
+        return Err(AppError::Forbidden(
+            "You can only upload your own avatar".to_string(),
+        ));
+    }
+
+    let (declared_mime, bytes) = parse_avatar_form(multipart).await?;
+
+    // Validate the image (size BEFORE magic bytes; declared must match detected) — shares the
+    // credential-doc validator (image-only allowlist).
+    let canonical_mime = documents::validate_document_upload(&declared_mime, bytes.len(), &bytes)?;
+    let ext = documents::mime_to_extension(canonical_mime);
+    let key = format!("profile/{user_id}/avatar/{}.{ext}", Uuid::new_v4());
+
+    state.s3().upload(&key, bytes, canonical_mime).await?;
+
+    // Persist the key (reuses the allowlisted key-column writer); compensate on DB failure so the
+    // object doesn't orphan.
+    if let Err(e) = repo::update_document_key(state.db(), user_id, AVATAR_KEY_COLUMN, &key).await {
+        state.s3().delete_best_effort(&key).await;
+        return Err(e);
+    }
+
+    Ok(Json(ApiResponse::success(GuardAvatarResponse {
+        avatar_url: state.s3().download_url(&key),
+    })))
+}
+
+/// GET `/profile/guard/{user_id}/avatar` — a presigned URL for the stored avatar. Read auth is
+/// OWNER-OR-ADMIN; 404 when no avatar is set (key NULL) or the guard has no profile.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, target = %user_id))]
+pub async fn get_guard_avatar<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<GuardAvatarResponse>>, AppError> {
+    if user.role != ROLE_ADMIN && user.user_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only read your own avatar".to_string(),
+        ));
+    }
+    let key = repo::get_document_key(state.db_read(), user_id, AVATAR_KEY_COLUMN)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Avatar not set".to_string()))?;
+    Ok(Json(ApiResponse::success(GuardAvatarResponse {
+        avatar_url: state.s3().download_url(&key),
+    })))
+}
+
+/// Parse the avatar multipart: a single `file` part (bytes + declared content-type). Bounded by
+/// the route's `DefaultBodyLimit`.
+async fn parse_avatar_form(mut multipart: Multipart) -> Result<(String, Vec<u8>), AppError> {
+    let mut declared_mime: Option<String> = None;
+    let mut file: Option<Vec<u8>> = None;
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| AppError::BadRequest(format!("Failed to read multipart: {e}")))?
+    {
+        if field.name().unwrap_or("") == "file" {
+            declared_mime = field.content_type().map(|s| s.to_string());
+            file = Some(
+                field
+                    .bytes()
+                    .await
+                    .map_err(|e| AppError::BadRequest(format!("Failed to read file: {e}")))?
+                    .to_vec(),
+            );
+        }
+    }
+    let file = file.ok_or_else(|| AppError::BadRequest("file is required".to_string()))?;
+    let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
+    Ok((declared_mime, file))
+}
+
 /// Parse the document multipart parts: required `document_type` (text) + `file` (bytes + declared
 /// content-type). The bytes are bounded by the route's `DefaultBodyLimit`.
 async fn parse_document_form(
@@ -910,6 +1004,10 @@ mod tests {
                 .route(
                     "/profile/guard/{user_id}/documents",
                     post(upload_guard_document::<TestDeps>).get(get_guard_document::<TestDeps>),
+                )
+                .route(
+                    "/profile/guard/{user_id}/avatar",
+                    post(upload_guard_avatar::<TestDeps>).get(get_guard_avatar::<TestDeps>),
                 )
                 .route(
                     "/admin/guard-profiles",
@@ -1492,6 +1590,93 @@ mod tests {
                     "/profile/guard/{}/documents?document_type=id_card",
                     Uuid::new_v4()
                 ),
+                &tok,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- avatar (mirrors the document upload/read gates: own-only write, owner-or-admin read) -----
+
+    #[tokio::test]
+    async fn avatar_upload_rejects_customer_role() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let (tok, uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{uid}/avatar"),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "only a guard may upload an avatar"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_upload_idor_rejects_other_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard uploading to a DIFFERENT guard's avatar path → 403 (own-only, no admin bypass).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{}/avatar", Uuid::new_v4()),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a guard must not set another guard's avatar"
+        );
+    }
+
+    #[tokio::test]
+    async fn avatar_upload_guard_self_passes_role_and_idor() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Own path + guard role pass the gate → the handler proceeds to parse, where the missing
+        // file is a 400 (NOT 401/403). Proves the role + IDOR gate let the owner through.
+        let (tok, uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{uid}/avatar"),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
+    }
+
+    #[tokio::test]
+    async fn avatar_get_rejects_other_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard reading ANOTHER guard's avatar → 403 (read is owner-or-admin).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/profile/guard/{}/avatar", Uuid::new_v4()),
                 &tok,
             ))
             .await

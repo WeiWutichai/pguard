@@ -140,6 +140,12 @@ async fn main() -> anyhow::Result<()> {
                 .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
         )
         .route(
+            "/profile/guard/{user_id}/avatar",
+            post(api::upload_guard_avatar::<AppState>)
+                .get(api::get_guard_avatar::<AppState>)
+                .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
+        )
+        .route(
             "/admin/guard-profiles",
             get(api::admin_list_guard_profiles::<AppState>),
         )
