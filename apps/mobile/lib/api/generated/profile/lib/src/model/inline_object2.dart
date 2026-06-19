@@ -3,52 +3,52 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
+import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object1.g.dart';
+part 'inline_object2.g.dart';
 
-/// InlineObject1
+/// InlineObject2
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject1 implements ApiResponseEnvelope, Built<InlineObject1, InlineObject1Builder> {
+abstract class InlineObject2 implements ApiResponseEnvelope, Built<InlineObject2, InlineObject2Builder> {
   @BuiltValueField(wireName: r'data')
-  InlineObject1AllOfData? get data;
+  CustomerProfile? get data;
 
-  InlineObject1._();
+  InlineObject2._();
 
-  factory InlineObject1([void updates(InlineObject1Builder b)]) = _$InlineObject1;
+  factory InlineObject2([void updates(InlineObject2Builder b)]) = _$InlineObject2;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObject1Builder b) => b;
+  static void _defaults(InlineObject2Builder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject1> get serializer => _$InlineObject1Serializer();
+  static Serializer<InlineObject2> get serializer => _$InlineObject2Serializer();
 }
 
-class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
+class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
   @override
-  final Iterable<Type> types = const [InlineObject1, _$InlineObject1];
+  final Iterable<Type> types = const [InlineObject2, _$InlineObject2];
 
   @override
-  final String wireName = r'InlineObject1';
+  final String wireName = r'InlineObject2';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject1 object, {
+    InlineObject2 object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType(InlineObject1AllOfData),
+        specifiedType: const FullType(CustomerProfile),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject1 object, {
+    InlineObject2 object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObject1Builder result,
+    required InlineObject2Builder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,9 +89,9 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(InlineObject1AllOfData),
-          ) as InlineObject1AllOfData;
-          result.data.replace(valueDes);
+            specifiedType: const FullType(CustomerProfile),
+          ) as CustomerProfile;
+          result.data = valueDes;
           break;
         case r'error':
           final valueDes = serializers.deserialize(
@@ -116,12 +116,12 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
   }
 
   @override
-  InlineObject1 deserialize(
+  InlineObject2 deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObject1Builder();
+    final result = InlineObject2Builder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

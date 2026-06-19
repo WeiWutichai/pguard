@@ -16,6 +16,7 @@ import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
+import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
 
@@ -562,7 +563,7 @@ class ProfileApi {
   }
 
   /// Upload one of the guard&#39;s own credential images
-  /// Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: logged-in **guard, own docs only** (&#x60;{user_id}&#x60; must equal the caller — no admin bypass on write). The image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to the matching &#x60;*_key&#x60; column. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
+  /// Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: **own docs only** (&#x60;{user_id}&#x60; must equal the caller — no admin bypass on write) via EITHER a logged-in guard (post-approval) OR the short-lived &#x60;doc_upload_token&#x60; returned by &#x60;POST /profile/guard&#x60; (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving). The image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to the matching &#x60;*_key&#x60; column. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
   ///
   /// Parameters:
   /// * [userId] - The guard's user_id (must equal the caller).
@@ -597,6 +598,10 @@ class ProfileApi {
       extra: <String, dynamic>{
         'secure': <Map<String, String>>[
           {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'profileToken',
+          },{
             'type': 'http',
             'scheme': 'bearer',
             'name': 'bearerAuth',
@@ -680,9 +685,9 @@ class ProfileApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject1>> upsertCustomerProfile({ 
+  Future<Response<InlineObject2>> upsertCustomerProfile({ 
     required UpsertCustomerProfileRequest upsertCustomerProfileRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -742,14 +747,14 @@ class ProfileApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject1? _responseData;
+    InlineObject2? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject1),
-      ) as InlineObject1;
+        specifiedType: const FullType(InlineObject2),
+      ) as InlineObject2;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -761,7 +766,7 @@ class ProfileApi {
       );
     }
 
-    return Response<InlineObject1>(
+    return Response<InlineObject2>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -785,9 +790,9 @@ class ProfileApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject>> upsertGuardProfile({ 
+  Future<Response<InlineObject1>> upsertGuardProfile({ 
     required UpsertGuardProfileRequest upsertGuardProfileRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -847,14 +852,14 @@ class ProfileApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject? _responseData;
+    InlineObject1? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject),
-      ) as InlineObject;
+        specifiedType: const FullType(InlineObject1),
+      ) as InlineObject1;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -866,7 +871,7 @@ class ProfileApi {
       );
     }
 
-    return Response<InlineObject>(
+    return Response<InlineObject1>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

@@ -194,6 +194,17 @@ pub struct GuardProfileResponse {
     pub approval_status: ApprovalStatus,
 }
 
+/// The `POST /profile/guard` (registration) response: the masked profile PLUS a short-lived,
+/// MULTI-use `doc_upload_token` the client uses to upload credential images immediately after — so
+/// an admin can review them BEFORE approving. Flattened: the JSON carries the profile fields with
+/// `doc_upload_token` alongside (the read endpoints keep returning the bare profile, no token).
+#[derive(Debug, Serialize)]
+pub struct GuardProfileSubmitResponse {
+    #[serde(flatten)]
+    pub profile: GuardProfileResponse,
+    pub doc_upload_token: String,
+}
+
 /// A customer profile as returned to the owner.
 #[derive(Debug, Serialize)]
 pub struct CustomerProfileResponse {

@@ -11,8 +11,10 @@ use axum::Json;
 use serde::Deserialize;
 use uuid::Uuid;
 
+use jsonwebtoken::EncodingKey;
 use shared::auth::{
-    decode_profile_token, AuthUser, HasJwtSecret, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
+    decode_profile_token, encode_profile_token, AuthUser, HasJwtSecret, PROFILE_PURPOSE_CUSTOMER,
+    PROFILE_PURPOSE_GUARD, PROFILE_PURPOSE_GUARD_DOC,
 };
 use shared::error::AppError;
 use shared::models::{ApiResponse, ApprovalStatus};
@@ -24,8 +26,8 @@ use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentResponse,
-    GuardProfileResponse, InternalGuard, MyProfile, PublicGuardProfile, RecipientsQuery,
-    RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
+    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, MyProfile, PublicGuardProfile,
+    RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
@@ -155,6 +157,43 @@ where
     }
 }
 
+/// Authorized writer of a guard's DOCUMENT IMAGES — EITHER a short-lived `guard_doc_upload` token
+/// (registration, BEFORE approval) OR a logged-in guard (post-approval). The token is decoded +
+/// purpose-checked but **NOT consumed** (multi-use within its short TTL, so a guard can upload all
+/// their credential images in one session); it grants nothing beyond writing its own `sub`'s
+/// documents. Own-only is enforced by the handler (resolved `user_id` must equal the path id).
+pub struct GuardDocWriter {
+    pub user_id: Uuid,
+}
+
+impl<S> FromRequestParts<S> for GuardDocWriter
+where
+    S: HasJwtSecret + Send + Sync,
+{
+    type Rejection = AppError;
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
+        // 1) guard_doc_upload token (registration) — signature + purpose + expiry only, no Redis
+        //    consume (multi-use). A wrong-purpose / non-profile Bearer falls through to (2).
+        if let Some(tok) = bearer_token(&parts.headers) {
+            if let Ok((user_id, _jti)) =
+                decode_profile_token(&tok, state.decoding_key(), PROFILE_PURPOSE_GUARD_DOC)
+            {
+                return Ok(Self { user_id });
+            }
+        }
+        // 2) logged-in guard (post-approval).
+        let user = AuthUser::from_request_parts(parts, state).await?;
+        if user.role != ROLE_GUARD {
+            return Err(AppError::Forbidden(
+                "This action requires the guard role".to_string(),
+            ));
+        }
+        Ok(Self {
+            user_id: user.user_id,
+        })
+    }
+}
+
 /// Apply the shared field validators to a guard-profile write. Maps the pure validators'
 /// `String` errors to `BadRequest`.
 fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
@@ -224,7 +263,7 @@ pub async fn upsert_guard_profile<S: ProfileDeps>(
     State(state): State<S>,
     writer: GuardProfileWriter,
     Json(req): Json<UpsertGuardProfileRequest>,
-) -> Result<Json<ApiResponse<GuardProfileResponse>>, AppError> {
+) -> Result<Json<ApiResponse<GuardProfileSubmitResponse>>, AppError> {
     validate_guard_req(&req)?;
     // Writes ONLY the profile schema (approval_status defaults to 'pending'); identity owns
     // the account role/state and is never touched here. Owner read-back is masked (PDPA).
@@ -232,8 +271,26 @@ pub async fn upsert_guard_profile<S: ProfileDeps>(
     // Capture any document expiry dates that rode along (registration's doc step). Best-effort —
     // see [`apply_document_expiries`] — so it never fails the profile submit.
     apply_document_expiries(&state, writer.user_id, &req).await;
-    Ok(Json(ApiResponse::success(mask_guard_response(profile))))
+    // Mint a short-lived, MULTI-use, own-scoped doc-upload token so the (still-pending) guard can
+    // upload their credential images right after this submit — admins MUST see the documents
+    // BEFORE approving (registration is pre-approval; the guard cannot log in yet). The row now
+    // exists, so the subsequent `POST …/documents` writes land on it.
+    let enc = EncodingKey::from_secret(state.jwt_secret().as_bytes());
+    let (doc_upload_token, _jti) = encode_profile_token(
+        writer.user_id,
+        PROFILE_PURPOSE_GUARD_DOC,
+        &enc,
+        DOC_UPLOAD_TOKEN_MINUTES,
+    )?;
+    Ok(Json(ApiResponse::success(GuardProfileSubmitResponse {
+        profile: mask_guard_response(profile),
+        doc_upload_token,
+    })))
 }
+
+/// Lifetime of the guard document-upload token minted at profile submit — the registration window
+/// for uploading credential images. Short, since the guard uploads immediately after submitting.
+const DOC_UPLOAD_TOKEN_MINUTES: i64 = 30;
 
 /// Capture the OPTIONAL document expiry dates that ride a guard-profile write (the registration
 /// doc step folds them into the profile submit because the single-use `profile_token` authorizes
@@ -397,19 +454,20 @@ pub const MAX_DOCUMENT_BODY_BYTES: usize = 12 * 1024 * 1024;
 
 /// POST `/profile/guard/{user_id}/documents` — a guard uploads ONE of their own credential images
 /// (id_card / security_license / training_cert / criminal_check / driver_license / passbook_photo).
-/// Auth: logged-in guard, **own docs only** (no admin bypass on WRITE — first-person credential
-/// attestation). The image is magic-byte validated, stored under a server-generated UUID key, and
-/// the key written to the matching `*_key` column. Returns a short-lived presigned GET URL.
-#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id, target = %user_id))]
+/// Auth: a registration `guard_doc_upload` token (pre-approval) OR a logged-in guard — **own docs
+/// only** (no admin bypass on WRITE — first-person credential attestation). The image is magic-byte
+/// validated, stored under a server-generated UUID key, and the key written to the matching `*_key`
+/// column. Returns a short-lived presigned GET URL.
+#[tracing::instrument(skip(state, multipart, writer), fields(user = %writer.user_id, target = %user_id))]
 pub async fn upload_guard_document<S: ProfileDeps>(
     State(state): State<S>,
-    user: AuthUser,
+    writer: GuardDocWriter,
     Path(user_id): Path<Uuid>,
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<GuardDocumentResponse>>, AppError> {
-    require_role(&user, ROLE_GUARD)?;
-    // IDOR: a guard uploads ONLY their own credentials (path id must equal the caller).
-    if user_id != user.user_id {
+    // Auth: a registration `guard_doc_upload` token (pre-approval) OR a logged-in guard — see
+    // [`GuardDocWriter`]. IDOR: a guard uploads ONLY their own credentials (resolved id == path id).
+    if user_id != writer.user_id {
         return Err(AppError::Forbidden(
             "You can only upload your own documents".to_string(),
         ));
@@ -1682,6 +1740,54 @@ mod tests {
             .oneshot(get_with_bearer(
                 &format!("/profile/guard/{}/avatar", Uuid::new_v4()),
                 &tok,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- registration doc-upload token (pre-approval): guard uploads BEFORE admin review -----
+
+    #[tokio::test]
+    async fn document_upload_accepts_registration_doc_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A `guard_doc_upload` token for THIS user (multi-use, NOT Redis-tracked) is accepted on
+        // its OWN documents path → the gate passes, so the handler proceeds to parse, where the
+        // missing file is a 400 (NOT 401/403). Proves a not-yet-approved guard can upload.
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let uid = Uuid::new_v4();
+        let (tok, _jti) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD_DOC, &ek, 30).unwrap();
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{uid}/documents"),
+                &tok,
+                &[("document_type", "id_card")], // no file part
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
+    }
+
+    #[tokio::test]
+    async fn document_upload_doc_token_idor_rejects_other_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A doc token minted for user A must NOT upload to user B's documents path (own-only).
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, _jti) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD_DOC, &ek, 30).unwrap();
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{}/documents", Uuid::new_v4()),
+                &tok,
+                &[("document_type", "id_card")],
             ))
             .await
             .unwrap();

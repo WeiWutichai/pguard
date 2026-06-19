@@ -1,5 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/registration.dart';
@@ -234,14 +237,14 @@ class RegistrationController extends _$RegistrationController {
     String? companyName,
     String? email,
     String? contactPhone,
-  }) {
+  }) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final name = fullName?.trim();
     final addr = address.trim();
     final company = companyName?.trim();
     final mail = email?.trim();
     final phone = contactPhone?.trim();
-    return _submitProfile(
+    return await _submitProfile(
       '/profile/customer',
       {
         if (name != null && name.isNotEmpty) 'full_name': name,
@@ -264,13 +267,14 @@ class RegistrationController extends _$RegistrationController {
             (label: isThai ? 'เบอร์ติดต่อ' : 'Phone', value: phone),
         ],
       ),
-    );
+    ) !=
+        null;
   }
 
   /// `POST /profile/guard` with the `profile_token`. The FULL account number is sent to the
   /// backend; the locally-persisted summary masks it to last-4. `docPaths` are the real-picker
-  /// document images — captured + validated client-side and held for the future upload endpoint
-  /// (v2 `profile.yaml` has no document-upload route yet; see [GuardDocKind]).
+  /// document images — uploaded right after the submit (via [_uploadGuardDocs], using the
+  /// `doc_upload_token` the submit returns) so an admin can review them BEFORE approving.
   Future<bool> submitGuardProfile({
     String? fullName,
     String? gender,
@@ -286,7 +290,7 @@ class RegistrationController extends _$RegistrationController {
     String? emergencyContactRelationship,
     Map<GuardDocKind, String> docPaths = const {},
     Map<GuardDocKind, DateTime> docExpiry = const {},
-  }) {
+  }) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final digits = accountNumber.replaceAll(RegExp(r'\D'), '');
     final name = fullName?.trim();
@@ -297,7 +301,7 @@ class RegistrationController extends _$RegistrationController {
     final ecName = emergencyContactName?.trim();
     final ecPhone = emergencyContactPhone?.trim();
     final ecRel = emergencyContactRelationship?.trim();
-    return _submitProfile(
+    final submitData = await _submitProfile(
       '/profile/guard',
       {
         if (name != null && name.isNotEmpty) 'full_name': name,
@@ -360,18 +364,103 @@ class RegistrationController extends _$RegistrationController {
         ],
       ),
     );
-    // NOTE: docPaths are intentionally NOT uploaded — v2 exposes no document endpoint yet. When
-    // it lands, hand them to an upload seam here (best-effort, never blocking the profile submit).
+    if (submitData == null) return false;
+    // Upload the attached credential images with the registration `doc_upload_token` so an admin
+    // can review them BEFORE approving. Best-effort + per-doc: the profile + expiry are already
+    // saved, so one failed image never aborts the others or the registration (the guard can
+    // re-upload from "My documents" once approved). Keep `busy` ON across the uploads so the
+    // CTA can't re-fire (and re-POST the now-spent profile_token) mid-upload.
+    if (docPaths.isNotEmpty) {
+      state = state.copyWith(busy: true);
+      await _uploadGuardDocs(submitData, docPaths);
+      state = state.copyWith(busy: false);
+    }
+    return true;
   }
 
-  Future<bool> _submitProfile(
+  /// Upload each freshly-picked credential image to its own-only doc endpoint using the
+  /// registration `doc_upload_token` (and `user_id`) returned by the profile submit. MIME is
+  /// declared from the file's magic bytes so the server's content check always matches.
+  Future<void> _uploadGuardDocs(
+    Map<String, dynamic> submitData,
+    Map<GuardDocKind, String> docPaths,
+  ) async {
+    if (docPaths.isEmpty) return;
+    final token = submitData['doc_upload_token'] as String?;
+    final userId = submitData['user_id'] as String?;
+    if (token == null || userId == null) return;
+    final api = ref.read(pguardApiProvider);
+    for (final entry in docPaths.entries) {
+      try {
+        final mime = _detectImageMime(await _readHead(entry.value, 12)) ?? 'image/jpeg';
+        final form = FormData.fromMap({
+          'document_type': entry.key.key,
+          'file': await MultipartFile.fromFile(
+            entry.value,
+            filename: entry.value.split('/').last,
+            contentType: DioMediaType.parse(mime),
+          ),
+        });
+        await api.post('/profile/guard/$userId/documents',
+            data: form, bearer: token);
+      } catch (e) {
+        // best-effort per document — never block the rest or the (already-saved) registration.
+        // Breadcrumb so a silently-lost upload (e.g. expired token) is observable in the field;
+        // the guard can re-upload from "My documents" once approved.
+        debugPrint('guard doc upload (${entry.key.key}) failed: $e');
+      }
+    }
+  }
+
+  /// First [n] bytes of [path] (a magic-byte sniff) without loading the whole file.
+  static Future<List<int>> _readHead(String path, int n) async {
+    final f = await File(path).open();
+    try {
+      return await f.read(n);
+    } finally {
+      await f.close();
+    }
+  }
+
+  /// Image MIME from magic bytes — mirrors the server's detector (JPEG/PNG/WEBP). null otherwise.
+  /// (Same logic as the guard-documents/avatar controllers; a shared image-upload util is a small
+  /// follow-up — tracked in PROGRESS.)
+  static String? _detectImageMime(List<int> b) {
+    if (b.length >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) {
+      return 'image/jpeg';
+    }
+    if (b.length >= 8 &&
+        b[0] == 0x89 &&
+        b[1] == 0x50 &&
+        b[2] == 0x4E &&
+        b[3] == 0x47) {
+      return 'image/png';
+    }
+    if (b.length >= 12 &&
+        b[0] == 0x52 &&
+        b[1] == 0x49 &&
+        b[2] == 0x46 &&
+        b[3] == 0x46 &&
+        b[8] == 0x57 &&
+        b[9] == 0x45 &&
+        b[10] == 0x42 &&
+        b[11] == 0x50) {
+      return 'image/webp';
+    }
+    return null;
+  }
+
+  /// POST a profile with the single-use `profile_token`. Returns the server's response `data`
+  /// (the masked profile; for a guard it ALSO carries `user_id` + `doc_upload_token`) on success,
+  /// or `null` on failure.
+  Future<Map<String, dynamic>?> _submitProfile(
     String path,
     Map<String, dynamic> data, {
     required RegistrationSummary summary,
   }) async {
     // Guard against a double-tap before the busy flag propagates.
     if (state.busy) {
-      return false;
+      return null;
     }
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     // Busy BEFORE the async token read so the screen can't launch a second concurrent submit
@@ -385,11 +474,12 @@ class RegistrationController extends _$RegistrationController {
           error: isThai
               ? 'หมดเวลา กรุณาลงทะเบียนใหม่'
               : 'Session expired — register again');
-      return false;
+      return null;
     }
     try {
       // The single-use profile_token is the Bearer (no session exists yet).
-      await ref.read(pguardApiProvider).post(path, data: data, bearer: token);
+      final resp =
+          await ref.read(pguardApiProvider).post(path, data: data, bearer: token);
       // Now that the profile is submitted, persist the pending flag + MASKED summary (prefs,
       // non-sensitive) so a cold start resumes the pending screen with the submitted summary.
       final prefs = ref.read(prefsStoreProvider);
@@ -397,15 +487,15 @@ class RegistrationController extends _$RegistrationController {
       await prefs.setString(kRegSummaryKey, jsonEncode(summary.toJson()));
       _profileToken = null; // consumed single-use
       state = state.copyWith(busy: false, submitted: summary);
-      return true;
+      return resp is Map<String, dynamic> ? resp : <String, dynamic>{};
     } on ApiException catch (e) {
       state = state.copyWith(busy: false, error: e.message);
-      return false;
+      return null;
     } catch (_) {
       state = state.copyWith(
           busy: false,
           error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
-      return false;
+      return null;
     }
   }
 

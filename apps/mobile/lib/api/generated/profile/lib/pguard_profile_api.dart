@@ -37,6 +37,8 @@ export 'package:pguard_profile_api/src/model/guard_document_response.dart';
 export 'package:pguard_profile_api/src/model/guard_profile.dart';
 export 'package:pguard_profile_api/src/model/inline_object.dart';
 export 'package:pguard_profile_api/src/model/inline_object1.dart';
+export 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
+export 'package:pguard_profile_api/src/model/inline_object2.dart';
 export 'package:pguard_profile_api/src/model/internal_guard.dart';
 export 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
 export 'package:pguard_profile_api/src/model/my_customer_profile.dart';
