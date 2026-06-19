@@ -2,7 +2,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/booking_flow_controller.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
-import 'package:pguard_mobile/core/models/payment.dart';
 import 'package:pguard_mobile/core/models/service_catalog.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -29,7 +28,7 @@ void main() {
         'hours': req['hours'],
         'base_fee': '500.00',
         'guard_count': req['guard_count'],
-        'tip': '0',
+        'tip': req['tip'] ?? '0',
         'lat': req['lat'],
         'lng': req['lng'],
         'created_at': '2026-06-05T10:00:00Z',
@@ -37,8 +36,9 @@ void main() {
       };
 
   test(
-      'happy path: select service → create booking → discover guards → select → pay',
+      'happy path (POST-PAY): form (with tip) → create booking → discover guards → select; NO charge',
       () async {
+    Map<String, dynamic>? bookingBody;
     final api = FakeApi(
       onGet: (path, _) async {
         expect(path, '/available-guards');
@@ -59,52 +59,37 @@ void main() {
       },
       onPost: (path, data) async {
         final body = data as Map<String, dynamic>;
-        switch (path) {
-          case '/bookings':
-            expect(body['address'], '123 ลัดดารมย์ ซ.5');
-            expect(body['hours'], 8);
-            expect(body['guard_count'], 2);
-            expect(body['scheduled_at'], isA<String>());
-            return bookingJson(body);
-          case '/payments':
-            expect(body['booking_id'], 'bk1');
-            // ฿500 × 8 × 2 = ฿8,000 + ฿50 tip = ฿8,050.00
-            expect(body['amount'], '8050.00');
-            expect(body['payment_method'], 'promptpay');
-            return {
-              'id': 'pay1',
-              'booking_id': 'bk1',
-              'customer_id': 'c1',
-              'guard_id': null,
-              'amount': body['amount'],
-              'expected_total': '8000.00',
-              'payment_method': 'promptpay',
-              'status': 'completed',
-              'created_at': '2026-06-05T10:01:00Z',
-              'updated_at': '2026-06-05T10:01:00Z',
-            };
-          default:
-            throw StateError('unexpected POST $path');
-        }
+        expect(path, '/bookings'); // post-pay: there is NO /payments call
+        expect(body['address'], '123 ลัดดารมย์ ซ.5');
+        expect(body['hours'], 8);
+        expect(body['guard_count'], 2);
+        expect(body['scheduled_at'], isA<String>());
+        // The flat tip rides the booking (sent as a decimal string), not a separate charge.
+        expect(body['tip'], '50.00');
+        bookingBody = body;
+        return bookingJson(body);
       },
     );
     final c = container(api: api);
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     BookingFlowState state() => c.read(bookingFlowControllerProvider);
 
-    // Form input
+    // Form input — tip is chosen here (rides the booking under post-pay).
     ctrl.selectService(SecurityService.condo);
     ctrl.setAddress('123 ลัดดารมย์ ซ.5');
     ctrl.setSchedule(DateTime.utc(2026, 6, 6, 14));
     ctrl.setHours(8);
     ctrl.setGuardCount(2);
+    ctrl.setTipSatang(5000); // ฿50
     expect(state().service, SecurityService.condo);
+    // ฿500/hr indicative est is service-derived; estimate-with-tip is display-only.
+    expect(state().estimateWithTipSatang, state().estimateTotalSatang + 5000);
 
-    // Create booking → authoritative base_fee captured
+    // Create booking → authoritative base_fee captured; tip sent in the body.
     expect(await ctrl.createBooking(), isTrue);
     expect(state().booking?.id, 'bk1');
     expect(state().booking?.baseFee, '500.00');
-    expect(state().bookingSubtotalSatang, 800000); // ฿8,000
+    expect(bookingBody?['tip'], '50.00');
 
     // Discover guards (single GET, no polling)
     expect(await ctrl.loadGuards(), isTrue);
@@ -116,14 +101,8 @@ void main() {
     ctrl.selectGuard(state().guards.first.guardId);
     expect(state().selectedGuardId, 'guard-aaaa-1111');
 
-    // Tip + pay → derived amount sent, server total verified
-    ctrl.setTipSatang(5000); // ฿50
-    expect(state().payTotalSatang, 805000);
-    expect(await ctrl.pay(PaymentMethod.promptpay), isTrue);
-    expect(state().payment?.isCompleted, isTrue);
-
-    // Exactly one REST call per step, in order — proves there is NO polling.
-    expect(api.calls, ['POST /bookings', 'GET /available-guards', 'POST /payments']);
+    // Exactly one REST call per step, in order — proves NO polling and NO up-front charge.
+    expect(api.calls, ['POST /bookings', 'GET /available-guards']);
     expect(api.getCount, 1);
   });
 
@@ -183,15 +162,12 @@ void main() {
     expect(c.read(bookingFlowControllerProvider).booking?.lat, isNull);
   });
 
-  test('pay surfaces the server message and keeps no payment', () async {
+  test('createBooking surfaces the server message and keeps no booking', () async {
     final api = FakeApi(
-      onPost: (path, data) async {
-        if (path == '/bookings') return bookingJson(data as Map<String, dynamic>);
-        if (path == '/payments') {
-          throw const ApiException(
-              message: 'Payment failed', code: 'BAD_REQUEST', statusCode: 400);
-        }
-        throw StateError('unexpected POST $path');
+      onPost: (path, _) async {
+        expect(path, '/bookings');
+        throw const ApiException(
+            message: 'Booking failed', code: 'BAD_REQUEST', statusCode: 400);
       },
     );
     final c = container(api: api);
@@ -199,9 +175,8 @@ void main() {
     ctrl.setAddress('123');
     ctrl.setHours(8);
     ctrl.setGuardCount(1);
-    expect(await ctrl.createBooking(), isTrue);
-    expect(await ctrl.pay(PaymentMethod.creditCard), isFalse);
-    expect(c.read(bookingFlowControllerProvider).error, 'Payment failed');
-    expect(c.read(bookingFlowControllerProvider).payment, isNull);
+    expect(await ctrl.createBooking(), isFalse);
+    expect(c.read(bookingFlowControllerProvider).error, 'Booking failed');
+    expect(c.read(bookingFlowControllerProvider).booking, isNull);
   });
 }

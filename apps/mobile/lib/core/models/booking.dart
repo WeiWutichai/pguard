@@ -97,7 +97,8 @@ class Booking {
   /// sets it; it arrives on the created booking and drives the authoritative charge amount.
   final String? baseFee;
 
-  /// Up-front tip as an exact decimal STRING ("0").
+  /// Flat tip chosen on the booking form, exact decimal STRING ("0"); under post-pay it is billed
+  /// in full on completion (never prorated).
   final String? tip;
 
   /// Optional site coordinate (WGS84) the customer pinned on the map at create time; `null`

@@ -20,23 +20,8 @@ enum PaymentStatus {
   }
 }
 
-/// The customer-selectable payment methods (contract enum + bilingual labels).
-enum PaymentMethod {
-  promptpay('promptpay', 'พร้อมเพย์', 'PromptPay'),
-  creditCard('credit_card', 'บัตรเครดิต', 'Credit card'),
-  debitCard('debit_card', 'บัตรเดบิต', 'Debit card'),
-  mobileBanking('mobile_banking', 'โมบายแบงก์กิ้ง', 'Mobile banking');
-
-  const PaymentMethod(this.wire, this.labelTh, this.labelEn);
-
-  /// The value sent in `payment_method`.
-  final String wire;
-  final String labelTh;
-  final String labelEn;
-}
-
-/// A payment as returned by `POST /v1/payments` / `GET /v1/payments` (money fields are
-/// decimal STRINGS).
+/// A payment as returned by `GET /v1/payments` (post-pay: the bill is raised on completion; money
+/// fields are decimal STRINGS). `payment_method` is a plain string (e.g. `post_paid`).
 class Payment {
   const Payment({
     required this.id,

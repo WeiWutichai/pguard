@@ -57,8 +57,18 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
           children: [
             Expanded(child: _body(state, ctrl, isThai)),
             _ContinueBar(
-              enabled: !state.busy && state.guards.isNotEmpty,
-              onContinue: () => context.push('/book/payment'),
+              // Require the (already-created) booking too, so the button is never an enabled
+              // dead-end if discovery is somehow reached with no booking (e.g. a mid-flow deep link).
+              enabled: !state.busy &&
+                  state.guards.isNotEmpty &&
+                  state.booking != null,
+              // Post-pay: the booking is already created (form step) — confirm goes straight to
+              // live status (no up-front payment). A guard accepts first-come; billing is on
+              // completion.
+              onContinue: () {
+                final id = state.booking?.id;
+                if (id != null) context.go('/booking/$id/live');
+              },
               isThai: isThai,
             ),
           ],
