@@ -187,9 +187,14 @@ pub async fn utilization(
     to: DateTime<Utc>,
 ) -> Result<Vec<UtilizationCell>, AppError> {
     let rows = sqlx::query_as::<_, UtilizationCell>(
+        // `EXTRACT(hour ...)` returns numeric, so it MUST be cast to int BEFORE the `/ 2` —
+        // otherwise the division is numeric (e.g. 23/2 = 11.5) and the trailing `::int` ROUNDS
+        // half-to-even (11.5 → 12), spilling hours 22-23 into a phantom bucket 12 that the
+        // contract (buckets 0..11) and web-admin (`cell.bucket < 12`) silently drop. Casting
+        // first makes it integer (truncating) division: 23 / 2 = 11. Bucket = floor(hour / 2).
         r#"
         SELECT EXTRACT(dow FROM scheduled_at)::int AS dow,
-               (EXTRACT(hour FROM scheduled_at) / 2)::int AS bucket,
+               (EXTRACT(hour FROM scheduled_at)::int / 2) AS bucket,
                COALESCE(SUM(hours * guard_count), 0)::bigint AS hours
         FROM booking.bookings
         WHERE scheduled_at >= $1 AND scheduled_at < $2
@@ -840,28 +845,43 @@ async fn enqueue_outbox(
 
 // ----- Outbox relay support -----
 
-/// Fetch up to `limit` unpublished outbox rows, oldest first.
-pub async fn fetch_unpublished(db: &sqlx::PgPool, limit: i64) -> Result<Vec<OutboxRow>, AppError> {
+/// Claim up to `limit` unpublished outbox rows, oldest first, INSIDE the caller's
+/// transaction. `FOR UPDATE SKIP LOCKED` locks each returned row for the life of `tx` and
+/// skips rows another relay instance is already holding, so two concurrent relays (scaled
+/// replicas, or a rolling-deploy overlap) never claim — and therefore never double-publish —
+/// the same row. The lock only holds while the transaction is open, so the relay MUST keep
+/// `tx` open across publish + [`mark_published`] (see `drain_once`); a plain pool fetch would
+/// release the lock immediately and defeat the guard.
+pub async fn fetch_unpublished(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    limit: i64,
+) -> Result<Vec<OutboxRow>, AppError> {
     let rows = sqlx::query_as::<_, OutboxRow>(
         r#"
         SELECT id, topic, payload
         FROM booking.outbox
         WHERE published_at IS NULL
         ORDER BY created_at
+        FOR UPDATE SKIP LOCKED
         LIMIT $1
         "#,
     )
     .bind(limit)
-    .fetch_all(db)
+    .fetch_all(&mut **tx)
     .await?;
     Ok(rows)
 }
 
-/// Stamp one outbox row published (called only after a successful NATS publish).
-pub async fn mark_published(db: &sqlx::PgPool, id: Uuid) -> Result<(), AppError> {
+/// Stamp one outbox row published (called only after a successful NATS publish), INSIDE the
+/// same transaction that claimed it via [`fetch_unpublished`] — so the `FOR UPDATE SKIP
+/// LOCKED` claim still holds the row and the mark commits atomically with the release.
+pub async fn mark_published(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    id: Uuid,
+) -> Result<(), AppError> {
     sqlx::query("UPDATE booking.outbox SET published_at = now() WHERE id = $1")
         .bind(id)
-        .execute(db)
+        .execute(&mut **tx)
         .await?;
     Ok(())
 }
@@ -2278,5 +2298,90 @@ mod db_tests {
             .bind(created.id)
             .execute(&pool)
             .await;
+    }
+
+    /// Regression for the heatmap-bucket rounding bug: `bucket = floor(hour / 2)` must use
+    /// INTEGER (truncating) division, so the late-evening hours land in the LAST valid bucket
+    /// (11), never a phantom bucket 12 that the contract / web-admin drop. Asserts the exact
+    /// mapping at the boundary: hour 21 → 10, hour 22 → 11, hour 23 → 11. Uses a far-future,
+    /// 1-day window so only the rows this test inserts fall inside it, and pins the session to
+    /// UTC so `EXTRACT(hour ...)` reads the hour we stored (scheduled_at is TIMESTAMPTZ).
+    /// DATABASE_URL-gated (hermetic SKIP otherwise).
+    #[tokio::test]
+    async fn utilization_bucket_uses_integer_truncating_division() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .after_connect(|conn, _| {
+                Box::pin(async move {
+                    // Pin EXTRACT(hour ...) to the stored UTC hour regardless of server tz.
+                    sqlx::query("SET TIME ZONE 'UTC'").execute(conn).await?;
+                    Ok(())
+                })
+            })
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        // A far-future Monday (2099-01-05 is a Monday), one row per boundary hour.
+        let day = "2099-01-05T00:00:00Z"
+            .parse::<DateTime<Utc>>()
+            .expect("parse anchor day");
+        let cases = [(21, 10_i32), (22, 11_i32), (23, 11_i32)];
+        let mut ids = Vec::new();
+        for (hour, _expected) in cases {
+            let scheduled_at = day + chrono::Duration::hours(hour) + chrono::Duration::minutes(30);
+            let created = create_booking(
+                &pool,
+                customer_id,
+                &CreateBookingRequest {
+                    address: format!("{hour}:30 Heatmap Rd"),
+                    scheduled_at,
+                    hours: 1,
+                    guard_count: None,
+                    tip: None,
+                    lat: None,
+                    lng: None,
+                },
+                1,
+                rust_decimal::Decimal::ZERO,
+            )
+            .await
+            .expect("create");
+            ids.push(created.id);
+        }
+
+        // Window: the whole far-future day. Only this test's rows fall inside it.
+        let from = day;
+        let to = day + chrono::Duration::days(1);
+        let cells = utilization(&pool, from, to).await.expect("utilization");
+
+        // dow of 2099-01-05 (Monday) is 1 in Postgres EXTRACT(dow ...).
+        for (hour, expected_bucket) in cases {
+            let cell = cells
+                .iter()
+                .find(|c| c.dow == 1 && c.bucket == expected_bucket)
+                .unwrap_or_else(|| {
+                    panic!("hour {hour} must map to bucket {expected_bucket}; got {cells:?}")
+                });
+            assert!(
+                cell.bucket <= 11,
+                "bucket must stay within the contract range 0..=11, got {}",
+                cell.bucket
+            );
+        }
+        // No phantom bucket 12 (the bug pushed hours 22-23 there).
+        assert!(
+            !cells.iter().any(|c| c.bucket >= 12),
+            "no row may land in a bucket >= 12; got {cells:?}"
+        );
+
+        for id in ids {
+            cleanup_booking(&pool, id).await;
+        }
     }
 }
