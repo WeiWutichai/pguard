@@ -13,19 +13,23 @@ import { assertResponseMatchesSpec } from "../src/validate.js";
 
 // Seed conversation #1: participants = the test customer + pool guard #1 (NOT the test guard).
 const SEED_CONVERSATION_ID = "22222222-0000-0000-0000-000000000001";
+// The CUSTOMER's seeded booking (booking schema). chat now VALIDATES request_id against booking
+// (service-JWT GET /internal/bookings/{id}) and derives the participants/status from it, so creating
+// a conversation requires a REAL booking the caller is a party of.
+const CUSTOMER_BOOKING_ID = "11111111-0000-0000-0000-000000000001";
 
 describe("chat contract (gateway /v1)", () => {
-  it("POST /conversations (find-then-create) returns a contract-shaped ConversationResponse", async () => {
+  it("POST /conversations (booking-authoritative get-or-create) returns a contract-shaped ConversationResponse", async () => {
     const token = await accessToken(CUSTOMER);
     const res = await http(gatewayUrl("/conversations"), {
       method: "POST",
       headers: { ...bearer(token), "content-type": "application/json" },
       body: JSON.stringify({
-        // request_id is a bare uuid (no cross-service FK); caller must be a participant.
-        request_id: "dddddddd-0000-0000-0000-000000000001",
+        // chat validates this against booking + derives participants/status server-side; the
+        // client participants below are IGNORED (kept only to satisfy the request schema).
+        request_id: CUSTOMER_BOOKING_ID,
         participants: [
           { user_id: CUSTOMER.userId, role: "customer", display_name: "Contract Customer" },
-          { user_id: GUARD.userId, role: "guard", display_name: "Contract Guard" },
         ],
       }),
     });
