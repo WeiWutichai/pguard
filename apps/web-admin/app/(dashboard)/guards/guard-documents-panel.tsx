@@ -22,6 +22,11 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
   // The document the admin is previewing full-size IN-PAGE (lightbox), or null. Clicking a
   // thumbnail opens this instead of navigating to a new browser tab.
   const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+  // Admin upload-on-behalf state: which type is uploading (spinner), a soft error, and a counter
+  // that re-runs the probe effect after a successful upload so the new thumbnail appears.
+  const [uploading, setUploading] = useState<GuardDocType | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   // The modal mounts this with `key={userId}`, so a fresh guard gets fresh initial state — no
   // synchronous reset in the effect (which trips react-hooks/set-state-in-effect).
@@ -51,12 +56,36 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
     return () => {
       alive = false;
     };
-  }, [userId]);
+  }, [userId, reloadKey]);
 
   const closeLabel = lang === "th" ? "ปิด" : "Close";
   // Diagonal repeating watermark on the full-size preview — deters a reviewer's screenshot of a
   // sensitive credential being passed off as an original (PDPA / document-misuse guard).
   const watermark = lang === "th" ? "pguard · ใช้ตรวจสอบ" : "pguard · review only";
+  const uploadLabel = lang === "th" ? "อัปโหลด" : "Upload";
+  const replaceLabel = lang === "th" ? "แทนที่" : "Replace";
+
+  // Admin uploads a credential on the guard's behalf (the "guard forgot to attach" case). The
+  // endpoint is admin-allowed + audit-logged server-side; on success we re-probe to show the image.
+  async function handleUpload(dt: GuardDocType, file: File) {
+    setUploading(dt);
+    setUploadError(null);
+    const { error } = await profileApi.POST("/profile/guard/{user_id}/documents", {
+      params: { path: { user_id: userId } },
+      // Multipart: openapi-fetch sends the FormData from bodySerializer (the typed body just
+      // satisfies the generated shape; the binary File rides via the closure).
+      body: { document_type: dt, file: file as unknown as string },
+      bodySerializer() {
+        const fd = new FormData();
+        fd.append("document_type", dt);
+        fd.append("file", file);
+        return fd;
+      },
+    });
+    setUploading(null);
+    if (error) setUploadError(lang === "th" ? "อัปโหลดไม่สำเร็จ ลองใหม่" : "Upload failed — try again");
+    else setReloadKey((k) => k + 1);
+  }
 
   return (
     <div className="mt-4 rounded-lg border border-border">
@@ -74,10 +103,16 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
               url={urls[dt]}
               notUploaded={c.docsNotUploaded}
               openLabel={c.docOpen}
+              actionLabel={urls[dt] ? replaceLabel : uploadLabel}
+              uploading={uploading === dt}
               onOpen={(url, label) => setPreview({ url, label })}
+              onPick={(file) => handleUpload(dt, file)}
             />
           ))}
         </div>
+      )}
+      {uploadError && (
+        <div className="border-t border-border px-4 py-2 text-[12px] text-danger">{uploadError}</div>
       )}
       {preview && (
         <DocLightbox
@@ -101,13 +136,19 @@ function DocCell({
   url,
   notUploaded,
   openLabel,
+  actionLabel,
+  uploading,
   onOpen,
+  onPick,
 }: {
   label: string;
   url?: string;
   notUploaded: string;
   openLabel: string;
+  actionLabel: string;
+  uploading: boolean;
   onOpen: (url: string, label: string) => void;
+  onPick: (file: File) => void;
 }) {
   const [imgError, setImgError] = useState(false);
 
@@ -140,6 +181,21 @@ function DocCell({
           {notUploaded}
         </div>
       )}
+      {/* Admin upload-on-behalf: pick an image for this type (the "guard forgot to attach" fix). */}
+      <label className="cursor-pointer text-center text-[11px] font-medium text-text-strong underline">
+        {uploading ? "…" : actionLabel}
+        <input
+          type="file"
+          accept="image/jpeg,image/png,image/webp"
+          disabled={uploading}
+          className="hidden"
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) onPick(f);
+            e.target.value = ""; // allow re-picking the same file
+          }}
+        />
+      </label>
     </div>
   );
 }

@@ -163,7 +163,12 @@ where
 /// their credential images in one session); it grants nothing beyond writing its own `sub`'s
 /// documents. Own-only is enforced by the handler (resolved `user_id` must equal the path id).
 pub struct GuardDocWriter {
+    /// The resolved caller's user_id (the registration token's `sub`, or the logged-in user).
     pub user_id: Uuid,
+    /// `true` when the caller is an ADMIN — who may upload a document on behalf of ANY guard (the
+    /// "guard forgot to attach" staff override). The guard own-only and registration-token paths
+    /// are `false`. Admin writes are audit-logged by the handler.
+    pub is_admin: bool,
 }
 
 impl<S> FromRequestParts<S> for GuardDocWriter
@@ -178,18 +183,22 @@ where
             if let Ok((user_id, _jti)) =
                 decode_profile_token(&tok, state.decoding_key(), PROFILE_PURPOSE_GUARD_DOC)
             {
-                return Ok(Self { user_id });
+                return Ok(Self {
+                    user_id,
+                    is_admin: false,
+                });
             }
         }
-        // 2) logged-in guard (post-approval).
+        // 2) logged-in guard (own docs) OR admin (any guard's docs — the forgot-to-attach override).
         let user = AuthUser::from_request_parts(parts, state).await?;
-        if user.role != ROLE_GUARD {
+        if user.role != ROLE_GUARD && user.role != ROLE_ADMIN {
             return Err(AppError::Forbidden(
-                "This action requires the guard role".to_string(),
+                "This action requires the guard or admin role".to_string(),
             ));
         }
         Ok(Self {
             user_id: user.user_id,
+            is_admin: user.role == ROLE_ADMIN,
         })
     }
 }
@@ -465,15 +474,36 @@ pub async fn upload_guard_document<S: ProfileDeps>(
     Path(user_id): Path<Uuid>,
     multipart: Multipart,
 ) -> Result<Json<ApiResponse<GuardDocumentResponse>>, AppError> {
-    // Auth: a registration `guard_doc_upload` token (pre-approval) OR a logged-in guard — see
-    // [`GuardDocWriter`]. IDOR: a guard uploads ONLY their own credentials (resolved id == path id).
-    if user_id != writer.user_id {
+    // Auth: a registration `guard_doc_upload` token / a logged-in guard (OWN docs only) — OR an
+    // ADMIN, who may upload on behalf of ANY guard (the "guard forgot to attach" staff override).
+    if !writer.is_admin && user_id != writer.user_id {
         return Err(AppError::Forbidden(
             "You can only upload your own documents".to_string(),
         ));
     }
 
     let (document_type, declared_mime, bytes) = parse_document_form(multipart).await?;
+
+    // Accountability: an admin writing/replacing a credential on a guard's behalf is the one
+    // exception to first-person attestation. Record it in the SAME durable, admin-queryable sink
+    // as the §30 read-audit (GET /admin/access-audit) — fail-loud (before any S3 work) so a
+    // credential is never substituted un-audited — plus a live log line.
+    if writer.is_admin && user_id != writer.user_id {
+        let audit_target = format!("{user_id}/{document_type}");
+        repo::record_access(
+            state.db(),
+            writer.user_id,
+            "admin_upload_guard_document",
+            Some(&audit_target),
+        )
+        .await?;
+        tracing::info!(
+            admin = %writer.user_id,
+            target = %user_id,
+            %document_type,
+            "admin uploaded a guard document on the guard's behalf"
+        );
+    }
 
     // Map the document_type to its column FIRST (closed allowlist; unknown → 400) so an unknown
     // type is rejected before any S3 work, and the column name is never client-controlled.
@@ -1792,6 +1822,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn document_upload_admin_can_upload_for_any_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // An admin may upload a document on behalf of ANY guard (forgot-to-attach override) — the
+        // gate passes for a DIFFERENT user_id, so the handler proceeds to parse, where the missing
+        // file is a 400 (NOT 401/403). Proves admin is NOT blocked by the own-only IDOR check.
+        let (tok, _uid) = token_with_id(ROLE_ADMIN);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{}/documents", Uuid::new_v4()),
+                &tok,
+                &[("document_type", "id_card")], // no file part
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
     }
 
     // ----- dual-auth: single-use, purpose-isolated profile_token -----
