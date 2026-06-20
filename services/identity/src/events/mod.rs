@@ -146,9 +146,11 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     let payload: UserCompromised = serde_json::from_value(envelope.payload)
         .map_err(|e| AppError::BadRequest(format!("invalid user.compromised payload: {e}")))?;
     let version = repo::revoke_all(&state.db, payload.user_id).await?;
-    // Publish the marker so in-flight access tokens are rejected immediately, not just
-    // refresh tokens.
+    // Publish the marker so in-flight access tokens are rejected immediately, not just refresh
+    // tokens. A persistent marker-write failure propagates as Err so the event is NOT acked and
+    // JetStream redelivers — revoke_all is idempotent, so a redelivery just re-bumps the version
+    // and retries the marker until it lands.
     let mut redis = state.redis_conn.clone();
-    crate::state::mark_user_revoked(&mut redis, payload.user_id, version).await;
+    crate::state::mark_user_revoked(&mut redis, payload.user_id, version).await?;
     Ok(())
 }
