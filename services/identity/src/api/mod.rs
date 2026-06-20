@@ -107,8 +107,13 @@ pub async fn login(
 /// cannot authenticate until approved (login gates on `approval_status`).
 ///
 /// Order is deliberate: cheap input validation (role/pin shape) runs FIRST so a bad request
-/// (e.g. self-assigning `admin`) is rejected WITHOUT burning the user's single-use OTP
-/// token; only then is the phone-verify token verified and atomically consumed (GETDEL).
+/// (e.g. self-assigning `admin`) is rejected WITHOUT burning the user's single-use OTP token;
+/// then the phone-verify token is verified (signature/purpose/expiry); then the account row is
+/// UPSERTed; and ONLY THEN is the single-use jti atomically consumed (GETDEL). Deferring the
+/// GETDEL until after the UPSERT commits means a transient UPSERT/profile-token failure returns
+/// 500 WITHOUT consuming the jti, so the client can safely retry with the same token instead of
+/// being stranded on "already used". The UPSERT's `ON CONFLICT WHERE pending` idempotency
+/// absorbs a rare double-submit that races in before the consume.
 ///
 /// `skip_all`: never log the tokens, the pin_hash, or the phone (PII).
 #[tracing::instrument(skip_all)]
@@ -130,9 +135,21 @@ pub async fn register<S: RegisterDeps>(
     //    malformed-phone token is rejected WITHOUT burning the user's single-use OTP token.
     let phone = registration::validate_thai_phone(&phone)?;
 
-    // 4) Single-use: atomically claim the jti (GETDEL). A reused/expired/forged token has no
-    //    live "valid" marker → reject. This runs before the UPSERT so concurrent registers
-    //    with the same token cannot both proceed.
+    // 4) UPSERT the pending account FIRST (Argon2 of pin_hash happens inside repo via
+    //    spawn_blocking). A non-pending phone → Conflict ("log in instead"). The UPSERT is
+    //    idempotent (ON CONFLICT WHERE pending), so a rare double-submit racing in before the
+    //    one-time GETDEL claim below is absorbed rather than losing the account row.
+    //    The phone-verify token's signature/purpose/expiry were already validated above; only
+    //    the single-use GETDEL claim is deferred to after the account row is committed so that
+    //    a failed UPSERT or profile_token write does NOT consume the jti and strand the user
+    //    on retry (same token → "already used").
+    let user_id =
+        repo::upsert_pending_user(state.db(), &phone, &role.to_string(), &req.pin_hash).await?;
+
+    // 5) Single-use: atomically claim the jti (GETDEL) AFTER the account row is committed. A
+    //    reused/expired/forged token has no live "valid" marker → reject. Running it here (not
+    //    before the UPSERT) keeps the token replayable until the account exists, so a transient
+    //    UPSERT failure leaves the client free to retry with the same token.
     let mut redis = state.redis();
     let jti_status: Option<String> = redis::cmd("GETDEL")
         .arg(format!("phone_verify_jti:{jti}"))
@@ -143,11 +160,6 @@ pub async fn register<S: RegisterDeps>(
             "Phone verification token is invalid, expired, or already used".to_string(),
         ));
     }
-
-    // 5) UPSERT the pending account (Argon2 of pin_hash happens inside repo via spawn_blocking).
-    //    A non-pending phone → Conflict ("log in instead").
-    let user_id =
-        repo::upsert_pending_user(state.db(), &phone, &role.to_string(), &req.pin_hash).await?;
 
     // 6) Mint the single-use profile_token for this role's onboarding route + record its jti
     //    so profile can GETDEL it once. (admin has no profile route — but it was already
@@ -363,9 +375,11 @@ pub async fn delete_me(
 ) -> Result<impl IntoResponse, AppError> {
     let new_version = repo::soft_delete_and_redact(&state.db, user.user_id).await?;
 
-    // Reject every outstanding access token immediately (force-revoke-all marker).
+    // Reject every outstanding access token immediately (force-revoke-all marker). A persistent
+    // marker-write failure propagates as 500 so the client knows revocation isn't fully
+    // effective (in-flight access tokens would otherwise live until natural expiry).
     let mut redis = state.redis_conn.clone();
-    crate::state::mark_user_revoked(&mut redis, user.user_id, new_version).await;
+    crate::state::mark_user_revoked(&mut redis, user.user_id, new_version).await?;
 
     // Clear the auth cookies on the way out (web).
     let mut headers = HeaderMap::new();
@@ -429,8 +443,10 @@ pub async fn revoke_all_sessions(
     user: AuthUser,
 ) -> Result<impl IntoResponse, AppError> {
     let version = repo::revoke_all(&state.db, user.user_id).await?;
+    // Propagate a persistent marker-write failure (500) rather than reporting a revoke that
+    // wouldn't actually reject in-flight access tokens.
     let mut redis = state.redis_conn.clone();
-    crate::state::mark_user_revoked(&mut redis, user.user_id, version).await;
+    crate::state::mark_user_revoked(&mut redis, user.user_id, version).await?;
 
     let mut headers = HeaderMap::new();
     append_cookie(&mut headers, &build_clear_cookie(ACCESS_TOKEN_COOKIE, "/"));
@@ -457,9 +473,11 @@ pub async fn internal_revoke_all<S: RevokeAllDeps>(
 ) -> Result<Json<ApiResponse<()>>, AppError> {
     tracing::info!(caller = %caller.service, %user_id, "internal revoke-all");
     let version = repo::revoke_all(state.db(), user_id).await?;
-    // Publish the marker so the AuthUser extractor rejects older access tokens at once.
+    // Publish the marker so the AuthUser extractor rejects older access tokens at once. A
+    // persistent failure propagates (500) so the calling service learns revocation isn't fully
+    // effective rather than getting a false 200.
     if let Some(mut redis) = state.revocation_redis() {
-        crate::state::mark_user_revoked(&mut redis, user_id, version).await;
+        crate::state::mark_user_revoked(&mut redis, user_id, version).await?;
     }
     Ok(Json(ApiResponse::success(())))
 }

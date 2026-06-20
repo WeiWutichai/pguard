@@ -85,18 +85,92 @@ impl RegisterDeps for AppState {
     }
 }
 
+/// Max attempts (1 initial + retries) for the revocation-marker write before giving up.
+const MARK_REVOKED_MAX_ATTEMPTS: u32 = 3;
+/// Base backoff between marker-write attempts; doubles each retry (50ms, 100ms).
+const MARK_REVOKED_BACKOFF: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// Publish the user's new revocation version so the [`shared::auth::AuthUser`] extractor
 /// rejects access tokens stamped with an older version immediately (writes
-/// `user_trv:{user_id}`). Best-effort: a Redis hiccup must not fail the revoke — the DB is
-/// the source of truth and refresh families are already revoked. No TTL: this marker is the
-/// authoritative cache the decode path reads for force-revoke-all.
+/// `user_trv:{user_id}`). No TTL: this marker is the authoritative cache the decode path
+/// (identity + gateway) reads for force-revoke-all, defaulting to version 0 when absent.
+///
+/// Durability matters: `authenticate_token` reads the marker SOLELY from Redis, so a dropped
+/// write silently re-validates already-revoked ACCESS tokens. The write is therefore retried
+/// with a small bounded backoff; on persistent failure it emits a loud `tracing::error!` and
+/// returns `Err` so the caller knows revocation is NOT fully effective (the DB version bump +
+/// refresh-family revocation still stand — only the in-flight access-token marker is missing).
 pub async fn mark_user_revoked(
     redis: &mut redis::aio::ConnectionManager,
     user_id: Uuid,
     version: i32,
-) {
+) -> Result<(), redis::RedisError> {
     let key = format!("user_trv:{user_id}");
-    if let Err(e) = redis.set::<_, _, ()>(&key, version).await {
-        tracing::warn!("failed to publish revocation marker for {user_id}: {e}");
+    let mut last_err = None;
+    for attempt in 1..=MARK_REVOKED_MAX_ATTEMPTS {
+        match redis.set::<_, _, ()>(&key, version).await {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                tracing::warn!(
+                    %user_id,
+                    attempt,
+                    "failed to publish revocation marker (will retry): {e}"
+                );
+                last_err = Some(e);
+                if attempt < MARK_REVOKED_MAX_ATTEMPTS {
+                    tokio::time::sleep(MARK_REVOKED_BACKOFF * (1 << (attempt - 1))).await;
+                }
+            }
+        }
+    }
+    // Persistent failure: in-flight access tokens for this user will NOT be rejected until they
+    // expire naturally. Make it loud and propagate so the revoke path does not falsely succeed.
+    let err = last_err.unwrap_or_else(|| {
+        redis::RedisError::from((redis::ErrorKind::IoError, "revocation marker write failed"))
+    });
+    tracing::error!(
+        %user_id,
+        attempts = MARK_REVOKED_MAX_ATTEMPTS,
+        "REVOCATION MARKER WRITE FAILED — in-flight access tokens remain valid until expiry: {err}"
+    );
+    Err(err)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// On a live Redis, `mark_user_revoked` writes the `user_trv:{id}` marker and returns `Ok`,
+    /// and the written version is readable by the decode path. Redis-gated (matches the crate's
+    /// SKIP-without-Redis convention); the persistent-failure path can't be exercised hermetically
+    /// because `ConnectionManager` awaits a live initial connect.
+    #[tokio::test]
+    async fn mark_user_revoked_writes_marker_and_returns_ok() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let Ok(mut redis) = shared::redis_client::create_connection_manager(&redis_url).await
+        else {
+            eprintln!("SKIP: could not connect to test Redis");
+            return;
+        };
+
+        let user_id = Uuid::new_v4();
+        let key = format!("user_trv:{user_id}");
+
+        mark_user_revoked(&mut redis, user_id, 7)
+            .await
+            .expect("marker write should succeed against live Redis");
+
+        let stored: i32 = redis
+            .get(&key)
+            .await
+            .expect("read back the revocation marker");
+        assert_eq!(stored, 7, "marker holds the published revocation version");
+
+        let _: () = redis.del(&key).await.expect("cleanup marker");
     }
 }
