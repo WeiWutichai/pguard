@@ -281,7 +281,23 @@ pub async fn create_broadcast(
     .await?;
 
     if matches!(req.mode, BroadcastMode::Now) {
-        let count = fan_out(&state, &created).await?;
+        // Atomically claim the just-created draft before fanning out (same guard as `send_broadcast`):
+        // the row is freshly minted, so the claim is effectively unconditional here, but routing the
+        // send through the single claim path keeps the "claim then fan out" invariant in one place.
+        let claimed = repo::claim_broadcast_for_send(&state.db, created.id)
+            .await?
+            .ok_or_else(|| AppError::Internal("broadcast vanished after create".to_string()))?;
+        let count = match fan_out(&state, &claimed).await {
+            Ok(count) => count,
+            Err(e) => {
+                // Roster lookup failed before any push: release the claim so it lands as an
+                // editable draft the admin can retry, not a stuck `sent`-with-0-recipients row.
+                if let Err(re) = repo::release_broadcast_claim(&state.db, created.id).await {
+                    tracing::error!(broadcast = %created.id, "release claim failed after fan-out error: {re}");
+                }
+                return Err(e);
+            }
+        };
         let sent = repo::mark_broadcast_sent(&state.db, created.id, count)
             .await?
             .ok_or_else(|| AppError::Internal("broadcast vanished after send".to_string()))?;
@@ -356,13 +372,30 @@ pub async fn send_broadcast(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BroadcastResponse>>, AppError> {
     require_admin(&user)?;
-    let b = repo::get_broadcast(&state.db, id)
-        .await?
-        .ok_or_else(|| AppError::NotFound("Broadcast not found".to_string()))?;
-    if b.status == "sent" {
-        return Err(AppError::Conflict("broadcast already sent".to_string()));
-    }
-    let count = fan_out(&state, &b).await?;
+    // ATOMIC CLAIM before fan-out: flip draft/scheduled → sent in one UPDATE. Only the call
+    // that wins the transition (Some) fans out, so two concurrent /send (or /send racing the
+    // scheduler) can't both notify every recipient. A loser sees None → 404 (gone) or 409
+    // (already sent).
+    let claimed = match repo::claim_broadcast_for_send(&state.db, id).await? {
+        Some(b) => b,
+        None => {
+            return match repo::get_broadcast(&state.db, id).await? {
+                Some(_) => Err(AppError::Conflict("broadcast already sent".to_string())),
+                None => Err(AppError::NotFound("Broadcast not found".to_string())),
+            };
+        }
+    };
+    let count = match fan_out(&state, &claimed).await {
+        Ok(count) => count,
+        // Roster lookup failed before any push (fan_out is per-recipient best-effort): release the
+        // claim so the campaign can be retried instead of being stuck `sent` with 0 recipients.
+        Err(e) => {
+            if let Err(re) = repo::release_broadcast_claim(&state.db, id).await {
+                tracing::error!(broadcast = %id, "release claim failed after fan-out error: {re}");
+            }
+            return Err(e);
+        }
+    };
     let sent = repo::mark_broadcast_sent(&state.db, id, count)
         .await?
         .ok_or_else(|| AppError::Internal("broadcast vanished after send".to_string()))?;
@@ -400,16 +433,32 @@ pub async fn dispatch_due_broadcasts(state: &AppState) -> Result<u64, AppError> 
     let due = repo::due_broadcasts(&state.db, 20).await?;
     let mut dispatched = 0u64;
     for b in &due {
-        match fan_out(state, b).await {
+        // ATOMIC CLAIM before fan-out so the timer and a manual /send can't both fan out the same
+        // row. If the claim returns None this tick lost the race (a manual send already flipped it
+        // to sent) → skip silently.
+        let claimed = match repo::claim_broadcast_for_send(&state.db, b.id).await {
+            Ok(Some(c)) => c,
+            Ok(None) => continue,
+            Err(e) => {
+                tracing::error!(broadcast = %b.id, "claim failed: {e}");
+                continue;
+            }
+        };
+        match fan_out(state, &claimed).await {
             Ok(count) => {
-                if let Err(e) = repo::mark_broadcast_sent(&state.db, b.id, count).await {
-                    tracing::error!(broadcast = %b.id, "mark_sent failed after fan-out: {e}");
+                if let Err(e) = repo::mark_broadcast_sent(&state.db, claimed.id, count).await {
+                    tracing::error!(broadcast = %claimed.id, "mark_sent failed after fan-out: {e}");
                 } else {
                     dispatched += 1;
                 }
             }
+            // Roster lookup failed before any push: release the claim (back to `scheduled`) so the
+            // next tick retries it — restoring the retry ledger without a double-send window.
             Err(e) => {
-                tracing::warn!(broadcast = %b.id, "scheduled broadcast fan-out failed (will retry): {e}")
+                tracing::warn!(broadcast = %claimed.id, "scheduled broadcast fan-out failed (will retry): {e}");
+                if let Err(re) = repo::release_broadcast_claim(&state.db, claimed.id).await {
+                    tracing::error!(broadcast = %claimed.id, "release claim failed after fan-out error: {re}");
+                }
             }
         }
     }
