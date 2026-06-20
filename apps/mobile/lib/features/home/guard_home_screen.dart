@@ -415,7 +415,11 @@ class _JobsBody extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         if (active.isNotEmpty) ...[
-          _SectionHeader(isThai ? 'งานที่กำลังทำ' : 'Active'),
+          _SectionHeader(
+            isThai ? 'งานที่กำลังทำ' : 'Active',
+            onSeeAll: () => context.push('/guard/jobs'),
+            seeAllLabel: isThai ? 'ดูทั้งหมด' : 'See all',
+          ),
           for (final b in active) ...[
             GuardJobCard(
                 booking: b, isThai: isThai, onTap: () => onOpenActive(b.id)),
@@ -500,14 +504,37 @@ class _GuardDistanceLine extends ConsumerWidget {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader(this.text);
+  const _SectionHeader(this.text, {this.onSeeAll, this.seeAllLabel});
   final String text;
+
+  /// Optional trailing "see all" link (design `.sec-h .more`) — a brand-green link pushed right.
+  final VoidCallback? onSeeAll;
+  final String? seeAllLabel;
 
   @override
   Widget build(BuildContext context) => Padding(
         padding: const EdgeInsets.only(bottom: PgTokens.space2),
-        child: Text(text,
-            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(text,
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w600)),
+            ),
+            if (onSeeAll != null)
+              InkWell(
+                onTap: onSeeAll,
+                child: Text(
+                  seeAllLabel ?? 'ดูทั้งหมด',
+                  style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorGreen500,
+                  ),
+                ),
+              ),
+          ],
+        ),
       );
 }
 
