@@ -54,6 +54,9 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
   }, [userId]);
 
   const closeLabel = lang === "th" ? "ปิด" : "Close";
+  // Diagonal repeating watermark on the full-size preview — deters a reviewer's screenshot of a
+  // sensitive credential being passed off as an original (PDPA / document-misuse guard).
+  const watermark = lang === "th" ? "pguard · ใช้ตรวจสอบ" : "pguard · review only";
 
   return (
     <div className="mt-4 rounded-lg border border-border">
@@ -82,6 +85,7 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
           label={preview.label}
           openLabel={c.docOpen}
           closeLabel={closeLabel}
+          watermark={watermark}
           onClose={() => setPreview(null)}
         />
       )}
@@ -148,12 +152,14 @@ function DocLightbox({
   label,
   openLabel,
   closeLabel,
+  watermark,
   onClose,
 }: {
   url: string;
   label: string;
   openLabel: string;
   closeLabel: string;
+  watermark: string;
   onClose: () => void;
 }) {
   const [imgError, setImgError] = useState(false);
@@ -194,13 +200,25 @@ function DocLightbox({
         </a>
       ) : (
         <figure onClick={(e) => e.stopPropagation()} className="flex flex-col items-center gap-2">
-          {/* eslint-disable-next-line @next/next/no-img-element -- presigned S3 URL, not a static asset */}
-          <img
-            src={url}
-            alt={label}
-            onError={() => setImgError(true)}
-            className="max-h-[85vh] max-w-[90vw] rounded object-contain shadow-2xl"
-          />
+          <div className="relative inline-flex overflow-hidden rounded shadow-2xl">
+            {/* eslint-disable-next-line @next/next/no-img-element -- presigned S3 URL, not a static asset */}
+            <img
+              src={url}
+              alt={label}
+              onError={() => setImgError(true)}
+              className="max-h-[85vh] max-w-[90vw] object-contain"
+            />
+            {/* Diagonal tiled watermark; mix-blend-difference keeps it legible over any image. */}
+            <div className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div className="flex h-full w-full -rotate-[24deg] scale-150 flex-wrap content-center justify-center gap-x-12 gap-y-10 opacity-50 mix-blend-difference">
+                {Array.from({ length: 60 }).map((_, i) => (
+                  <span key={i} className="whitespace-nowrap text-sm font-bold tracking-wider text-white">
+                    {watermark}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
           <figcaption className="text-xs text-white/80">{label}</figcaption>
         </figure>
       )}

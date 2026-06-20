@@ -290,6 +290,9 @@ class RegistrationController extends _$RegistrationController {
     String? emergencyContactRelationship,
     Map<GuardDocKind, String> docPaths = const {},
     Map<GuardDocKind, DateTime> docExpiry = const {},
+    // The passbook photo is captured separately on the form (its own box, no expiry, not a
+    // [GuardDocKind]); it uploads under document_type `passbook_photo`.
+    String? passbookPath,
   }) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final digits = accountNumber.replaceAll(RegExp(r'\D'), '');
@@ -370,9 +373,16 @@ class RegistrationController extends _$RegistrationController {
     // saved, so one failed image never aborts the others or the registration (the guard can
     // re-upload from "My documents" once approved). Keep `busy` ON across the uploads so the
     // CTA can't re-fire (and re-POST the now-spent profile_token) mid-upload.
-    if (docPaths.isNotEmpty) {
+    // document_type → image path: the 5 credential kinds PLUS the separately-captured passbook
+    // (which has no [GuardDocKind]). Without the passbook here it was captured but never uploaded.
+    final uploads = <String, String>{
+      for (final e in docPaths.entries) e.key.key: e.value,
+      if (passbookPath != null && passbookPath.isNotEmpty)
+        'passbook_photo': passbookPath,
+    };
+    if (uploads.isNotEmpty) {
       state = state.copyWith(busy: true);
-      await _uploadGuardDocs(submitData, docPaths);
+      await _uploadGuardDocs(submitData, uploads);
       state = state.copyWith(busy: false);
     }
     return true;
@@ -383,18 +393,18 @@ class RegistrationController extends _$RegistrationController {
   /// declared from the file's magic bytes so the server's content check always matches.
   Future<void> _uploadGuardDocs(
     Map<String, dynamic> submitData,
-    Map<GuardDocKind, String> docPaths,
+    Map<String, String> uploads,
   ) async {
-    if (docPaths.isEmpty) return;
+    if (uploads.isEmpty) return;
     final token = submitData['doc_upload_token'] as String?;
     final userId = submitData['user_id'] as String?;
     if (token == null || userId == null) return;
     final api = ref.read(pguardApiProvider);
-    for (final entry in docPaths.entries) {
+    for (final entry in uploads.entries) {
       try {
         final mime = _detectImageMime(await _readHead(entry.value, 12)) ?? 'image/jpeg';
         final form = FormData.fromMap({
-          'document_type': entry.key.key,
+          'document_type': entry.key,
           'file': await MultipartFile.fromFile(
             entry.value,
             filename: entry.value.split('/').last,
@@ -407,7 +417,7 @@ class RegistrationController extends _$RegistrationController {
         // best-effort per document — never block the rest or the (already-saved) registration.
         // Breadcrumb so a silently-lost upload (e.g. expired token) is observable in the field;
         // the guard can re-upload from "My documents" once approved.
-        debugPrint('guard doc upload (${entry.key.key}) failed: $e');
+        debugPrint('guard doc upload (${entry.key}) failed: $e');
       }
     }
   }

@@ -358,6 +358,7 @@ class _GuardRegistrationScreenState
       emergencyContactRelationship: _ecRel.text,
       docPaths: Map.of(_docs),
       docExpiry: Map.of(_docExpiry),
+      passbookPath: _passbookPath,
     );
     if (ok && mounted) context.push('/auth/pending');
   }
