@@ -33,16 +33,25 @@ void main() {
     return c;
   }
 
-  /// A FakeApi that answers `/auth/me` with [guardId] and each documents probe from [stored]
-  /// (a present key returns a presigned url; an absent one 404s, like the real GET).
+  /// A FakeApi that answers `/auth/me` with [guardId], each documents probe from [stored] (a
+  /// present key returns a presigned url; an absent one 404s, like the real GET), and the
+  /// document-expiries list from [expiries] (document_type → 'YYYY-MM-DD').
   FakeApi probeApi({
     String guardId = 'g1',
     Map<String, String> stored = const {},
+    Map<String, String> expiries = const {},
     Future<dynamic> Function(String path, Object? data)? onPost,
+    Future<dynamic> Function(String path, Object? data)? onPut,
   }) {
     return FakeApi(
       onGet: (path, query) async {
         if (path == '/auth/me') return {'user_id': guardId};
+        if (path == '/profile/guard/$guardId/document-expiries') {
+          return [
+            for (final e in expiries.entries)
+              {'document_type': e.key, 'expiry_date': e.value},
+          ];
+        }
         if (path == '/profile/guard/$guardId/documents') {
           final type = query?['document_type'] as String?;
           final url = stored[type];
@@ -54,15 +63,19 @@ void main() {
         throw ApiException(message: 'unexpected GET $path', statusCode: 500);
       },
       onPost: onPost,
+      onPut: onPut,
     );
   }
 
   test('build probes every credential once → uploaded reflects server truth, no polling',
       () async {
-    final api = probeApi(stored: {
-      'id_card': 'https://s3/idcard.jpg',
-      'security_license': 'https://s3/lic.jpg',
-    });
+    final api = probeApi(
+      stored: {
+        'id_card': 'https://s3/idcard.jpg',
+        'security_license': 'https://s3/lic.jpg',
+      },
+      expiries: {'id_card': '2027-06-16'},
+    );
     final c = container(api);
     final state = await c.read(guardDocumentsControllerProvider.future);
 
@@ -75,9 +88,13 @@ void main() {
     expect(state.slotFor(GuardCredential.trainingCert).uploaded, isFalse);
     expect(state.slotFor(GuardCredential.passbookPhoto).uploaded, isFalse);
     expect(state.uploadedCount, 2);
+    // Recorded expiry is folded onto its slot; others stay null.
+    expect(state.slotFor(GuardCredential.idCard).expiry,
+        DateTime.parse('2027-06-16'));
+    expect(state.slotFor(GuardCredential.securityLicense).expiry, isNull);
 
-    // /auth/me once + one probe per credential — and NEVER repeated (no polling loop).
-    expect(api.getCount, 1 + GuardCredential.values.length);
+    // /auth/me once + one probe per credential + ONE expiries list — never repeated (no polling).
+    expect(api.getCount, 2 + GuardCredential.values.length);
   });
 
   test('a probe error degrades that slot to not-uploaded (load never fails)', () async {
@@ -176,6 +193,51 @@ void main() {
     gate.complete();
     expect(await first, isNull);
     expect(posts, 1);
+  });
+
+  test('setExpiry PUTs a date-only payload to the own endpoint → slot expiry updates', () async {
+    final puts = <String>[];
+    Object? body;
+    final api = probeApi(onPut: (path, data) async {
+      puts.add(path);
+      body = data;
+      return {'document_type': 'id_card', 'expiry_date': '2028-01-31'};
+    });
+    final c = container(api);
+    await c.read(guardDocumentsControllerProvider.future);
+
+    final err = await c
+        .read(guardDocumentsControllerProvider.notifier)
+        .setExpiry(GuardCredential.idCard, DateTime(2028, 1, 31));
+
+    expect(err, isNull);
+    expect(puts, ['/profile/guard/g1/document-expiry']);
+    expect(body, {'document_type': 'id_card', 'expiry_date': '2028-01-31'});
+    final slot = c
+        .read(guardDocumentsControllerProvider)
+        .value!
+        .slotFor(GuardCredential.idCard);
+    expect(slot.expiry, DateTime(2028, 1, 31));
+    expect(slot.busy, isFalse);
+    expect(slot.error, isNull);
+  });
+
+  test('setExpiry is a no-op for the passbook (no expiry) — never PUTs', () async {
+    var puts = 0;
+    final api = probeApi(onPut: (_, __) async {
+      puts++;
+      return <String, dynamic>{};
+    });
+    final c = container(api);
+    await c.read(guardDocumentsControllerProvider.future);
+
+    final err = await c
+        .read(guardDocumentsControllerProvider.notifier)
+        .setExpiry(GuardCredential.passbookPhoto, DateTime(2028, 1, 1));
+
+    expect(err, isNull); // silently ignored, not an error
+    expect(puts, 0);
+    expect(GuardCredential.passbookPhoto.hasExpiry, isFalse);
   });
 
   test('GuardCredential wire keys match the profile.yaml document_type enum exactly (drift-lock)',

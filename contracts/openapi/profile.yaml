@@ -357,6 +357,70 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /profile/guard/{user_id}/document-expiries:
+    get:
+      tags: [Profile]
+      summary: The guard's recorded credential expiry dates
+      description: |
+        Owner-or-admin: a guard reads their OWN expiry dates (the "My documents" screen), an admin
+        reads any guard's. Only the expiring credential types appear (the passbook has no expiry).
+      operationId: listGuardDocumentExpiries
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The recorded expiry dates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/GuardDocumentExpiry' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+  /profile/guard/{user_id}/document-expiry:
+    put:
+      tags: [Profile]
+      summary: Set/replace one credential's expiry date
+      description: |
+        Owner-or-admin: a guard edits their OWN expiry (post-approval), an admin may edit ANY guard's
+        (audit-logged). `document_type` must be an expiring credential (id_card / security_license /
+        training_cert / criminal_check / driver_license — the passbook has none) else 400.
+      operationId: setGuardDocumentExpiry
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetDocumentExpiryRequest' }
+      responses:
+        '200':
+          description: The saved expiry
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/GuardDocumentExpiry' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/guard-profiles:
     get:
       tags: [Admin]
@@ -813,6 +877,23 @@ components:
       required: [avatar_url]
       properties:
         avatar_url: { type: string, description: 'Presigned GET URL (expires in ~1h).' }
+
+    GuardDocumentExpiry:
+      type: object
+      description: One credential's expiry date (owner/admin view + edit).
+      required: [document_type, expiry_date]
+      properties:
+        document_type: { type: string, example: id_card }
+        expiry_date: { type: string, format: date, example: '2027-06-16' }
+
+    SetDocumentExpiryRequest:
+      type: object
+      required: [document_type, expiry_date]
+      properties:
+        document_type:
+          type: string
+          description: An expiring credential (id_card / security_license / training_cert / criminal_check / driver_license).
+        expiry_date: { type: string, format: date }
 
     GuardProfile:
       type: object

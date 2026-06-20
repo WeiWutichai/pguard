@@ -34,6 +34,7 @@ import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/guard_avatar_response.dart';
+import 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
 import 'package:pguard_profile_api/src/model/guard_document_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
@@ -42,12 +43,15 @@ import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
 import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_guard.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
+import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_response.dart';
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/my_profile.dart';
 import 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
+import 'package:pguard_profile_api/src/model/set_document_expiry_request.dart';
+import 'package:pguard_profile_api/src/model/set_guard_document_expiry200_response.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
@@ -75,6 +79,7 @@ part 'serializers.g.dart';
   GetMyProfile200Response,
   GetPublicGuardProfile200Response,
   GuardAvatarResponse,
+  GuardDocumentExpiry,
   GuardDocumentResponse,
   GuardProfile,$GuardProfile,
   InlineObject,
@@ -83,12 +88,15 @@ part 'serializers.g.dart';
   InlineObject2,
   InternalGuard,
   InternalListGuards200Response,
+  ListGuardDocumentExpiries200Response,
   MyCustomerProfile,
   MyGuardProfile,
   MyProfile,
   PublicGuardProfile,
   RecruitCandidate,
   RejectRequest,
+  SetDocumentExpiryRequest,
+  SetGuardDocumentExpiry200Response,
   StageRequest,
   UpsertCustomerProfileRequest,
   UpsertGuardProfileRequest,

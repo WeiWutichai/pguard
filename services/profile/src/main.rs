@@ -146,6 +146,14 @@ async fn main() -> anyhow::Result<()> {
                 .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
         )
         .route(
+            "/profile/guard/{user_id}/document-expiries",
+            get(api::list_guard_document_expiries::<AppState>),
+        )
+        .route(
+            "/profile/guard/{user_id}/document-expiry",
+            axum::routing::put(api::set_guard_document_expiry::<AppState>),
+        )
+        .route(
             "/admin/guard-profiles",
             get(api::admin_list_guard_profiles::<AppState>),
         )

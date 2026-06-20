@@ -12,8 +12,9 @@ import '../../widgets/pguard_header.dart';
 
 /// Post-approval guard documents: an approved, logged-in guard uploads photos of their six
 /// credentials (`POST /profile/guard/{user_id}/documents`, own-only). Status is the server's
-/// truth (probed on open, no polling); a stored image shows its presigned thumbnail. Expiry
-/// dates are captured at registration, not here (see [GuardDocumentsController]).
+/// truth (probed on open, no polling); a stored image shows its presigned thumbnail. Each expiring
+/// credential also shows its expiry date, editable in-place via a date picker (see
+/// [GuardDocumentsController]).
 class GuardDocumentsScreen extends ConsumerWidget {
   const GuardDocumentsScreen({super.key});
 
@@ -60,6 +61,10 @@ class GuardDocumentsScreen extends ConsumerWidget {
                         isThai: isThai,
                         isLast: c == GuardCredential.values.last,
                         onTap: () => _pickAndUpload(context, ref, c, isThai),
+                        onEditExpiry: c.hasExpiry
+                            ? () => _pickExpiry(
+                                context, ref, c, docs.slotFor(c).expiry, isThai)
+                            : null,
                       ),
                   ],
                 ),
@@ -111,6 +116,34 @@ class GuardDocumentsScreen extends ConsumerWidget {
           .showSnackBar(SnackBar(content: Text(err)));
     }
   }
+
+  /// Date picker → save the chosen expiry for [credential]. Initial = the current value, else ~1y
+  /// out; range spans a few years back (record an already-expired doc) to well ahead.
+  Future<void> _pickExpiry(
+    BuildContext context,
+    WidgetRef ref,
+    GuardCredential credential,
+    DateTime? current,
+    bool isThai,
+  ) async {
+    final now = DateTime.now();
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: current ?? DateTime(now.year + 1, now.month, now.day),
+      firstDate: DateTime(now.year - 5),
+      lastDate: DateTime(now.year + 15),
+      helpText: isThai ? 'เลือกวันหมดอายุ' : 'Select expiry date',
+    );
+    if (picked == null) return; // dismissed
+    if (!context.mounted) return; // screen popped during the picker
+    final err = await ref
+        .read(guardDocumentsControllerProvider.notifier)
+        .setExpiry(credential, picked);
+    if (err != null && context.mounted) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(err)));
+    }
+  }
 }
 
 /// The honest intro: what this screen is for + a non-fabricated progress count.
@@ -156,12 +189,20 @@ class _DocRow extends StatelessWidget {
     required this.isThai,
     required this.isLast,
     required this.onTap,
+    this.onEditExpiry,
   });
 
   final DocSlot slot;
   final bool isThai;
   final bool isLast;
   final VoidCallback onTap;
+
+  /// Tap handler for the expiry line (date picker → save). Null for credentials with no expiry
+  /// (the passbook), which then render no expiry line.
+  final VoidCallback? onEditExpiry;
+
+  static String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   @override
   Widget build(BuildContext context) {
@@ -205,6 +246,43 @@ class _DocRow extends StatelessWidget {
                           : PgTokens.colorTextMuted,
                     ),
                   ),
+                  if (onEditExpiry != null) ...[
+                    const SizedBox(height: 3),
+                    InkWell(
+                      // Inner tap target: edits the expiry without firing the row's upload tap.
+                      onTap: slot.busy ? null : onEditExpiry,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.event_outlined,
+                            size: 13,
+                            color: slot.expiry != null
+                                ? PgTokens.colorTextMuted
+                                : PgTokens.colorPrimary,
+                          ),
+                          const SizedBox(width: 4),
+                          Text(
+                            slot.expiry != null
+                                ? (isThai
+                                    ? 'หมดอายุ ${_fmtDate(slot.expiry!)}'
+                                    : 'Expires ${_fmtDate(slot.expiry!)}')
+                                : (isThai
+                                    ? 'เพิ่มวันหมดอายุ'
+                                    : 'Add expiry date'),
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.w500,
+                              color: slot.expiry != null
+                                  ? PgTokens.colorText
+                                  : PgTokens.colorPrimary,
+                              decoration: TextDecoration.underline,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   if (slot.error != null) ...[
                     const SizedBox(height: 2),
                     Text(
