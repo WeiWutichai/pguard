@@ -32,6 +32,7 @@ import 'package:pguard_booking_api/src/model/get_internal_booking200_response.da
 import 'package:pguard_booking_api/src/model/inline_object.dart';
 import 'package:pguard_booking_api/src/model/inline_object1.dart';
 import 'package:pguard_booking_api/src/model/internal_booking.dart';
+import 'package:pguard_booking_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
 import 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 import 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
@@ -63,6 +64,7 @@ part 'serializers.g.dart';
   InlineObject,
   InlineObject1,
   InternalBooking,
+  InternalExportUser200Response,
   ListAvailableGuards200Response,
   ListBookings200Response,
   ListProgressReports200Response,

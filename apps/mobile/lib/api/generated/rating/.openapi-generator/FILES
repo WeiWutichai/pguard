@@ -24,6 +24,7 @@ lib/src/model/error_detail.dart
 lib/src/model/get_guard_ratings200_response.dart
 lib/src/model/get_internal_rating_summary200_response.dart
 lib/src/model/guard_ratings.dart
+lib/src/model/internal_export_user200_response.dart
 lib/src/model/list_admin_reviews200_response.dart
 lib/src/model/rating_summary.dart
 lib/src/model/review.dart

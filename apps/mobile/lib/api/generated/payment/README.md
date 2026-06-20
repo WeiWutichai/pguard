@@ -99,6 +99,7 @@ Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
 [*AdminApi*](doc/AdminApi.md) | [**adminRevenueReport**](doc/AdminApi.md#adminrevenuereport) | **GET** /admin/reports/revenue | Revenue-trend analytics (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**listPayments**](doc/PaymentsApi.md#listpayments) | **GET** /payments | List the caller&#39;s payments
 
@@ -110,6 +111,7 @@ Class | Method | HTTP request | Description
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
+ - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListPayments200Response](doc/ListPayments200Response.md)
  - [Payment](doc/Payment.md)
  - [PaymentStatus](doc/PaymentStatus.md)
@@ -122,6 +124,10 @@ Class | Method | HTTP request | Description
 
 Authentication schemes defined for the API:
 ### bearerAuth
+
+- **Type**: HTTP Bearer Token authentication (JWT)
+
+### serviceAuth
 
 - **Type**: HTTP Bearer Token authentication (JWT)
 

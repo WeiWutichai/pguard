@@ -104,6 +104,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminListGuardProfiles**](doc/AdminApi.md#adminlistguardprofiles) | **GET** /admin/guard-profiles | List guard profiles for onboarding review (role&#x3D;admin; FULL bank details)
 [*AdminApi*](doc/AdminApi.md) | [**adminRejectGuard**](doc/AdminApi.md#adminrejectguard) | **POST** /admin/guard-profiles/{user_id}/reject | Reject a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminSetCandidateStage**](doc/AdminApi.md#adminsetcandidatestage) | **PUT** /admin/recruitment/candidates/{user_id}/stage | Move a pending candidate to a pipeline stage (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
@@ -147,6 +148,7 @@ Class | Method | HTTP request | Description
  - [InlineObject1](doc/InlineObject1.md)
  - [InlineObject1AllOfData](doc/InlineObject1AllOfData.md)
  - [InlineObject2](doc/InlineObject2.md)
+ - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [InternalGuard](doc/InternalGuard.md)
  - [InternalListGuards200Response](doc/InternalListGuards200Response.md)
  - [ListGuardDocumentExpiries200Response](doc/ListGuardDocumentExpiries200Response.md)

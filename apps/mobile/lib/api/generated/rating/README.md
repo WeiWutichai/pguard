@@ -85,6 +85,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**getInternalRatingSummary**](doc/AdminApi.md#getinternalratingsummary) | **GET** /internal/guards/{id}/rating-summary | Guard rating summary (service-to-service)
+[*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**listAdminReviews**](doc/AdminApi.md#listadminreviews) | **GET** /admin/reviews | List reviews with filters (admin only)
 [*AdminApi*](doc/AdminApi.md) | [**setReviewVisibility**](doc/AdminApi.md#setreviewvisibility) | **PUT** /admin/reviews/{id}/visibility | Toggle a review&#39;s public visibility (admin only)
 [*ReviewsApi*](doc/ReviewsApi.md) | [**getGuardRatings**](doc/ReviewsApi.md#getguardratings) | **GET** /guards/{id}/ratings | Guard ratings — visible reviews + aggregate summary
@@ -103,6 +104,7 @@ Class | Method | HTTP request | Description
  - [GetGuardRatings200Response](doc/GetGuardRatings200Response.md)
  - [GetInternalRatingSummary200Response](doc/GetInternalRatingSummary200Response.md)
  - [GuardRatings](doc/GuardRatings.md)
+ - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListAdminReviews200Response](doc/ListAdminReviews200Response.md)
  - [RatingSummary](doc/RatingSummary.md)
  - [Review](doc/Review.md)

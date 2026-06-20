@@ -18,6 +18,7 @@ export 'package:pguard_payment_api/src/model/api_response_envelope.dart';
 export 'package:pguard_payment_api/src/model/error_body.dart';
 export 'package:pguard_payment_api/src/model/error_detail.dart';
 export 'package:pguard_payment_api/src/model/inline_object.dart';
+export 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
 export 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 export 'package:pguard_payment_api/src/model/payment.dart';
 export 'package:pguard_payment_api/src/model/payment_status.dart';

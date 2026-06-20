@@ -655,6 +655,36 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /internal/users/{user_id}/export:
+    get:
+      tags: [Internal]
+      summary: PDPA data export aggregation (service-to-service)
+      description: |
+        Service-to-service read used by identity's `ExportClient` fan-out to aggregate this
+        service's slice of a user's PDPA data export. **Requires a service-JWT** (`serviceAuth`,
+        audience `pguard-internal`); never reachable from the public edge (the gateway blocks
+        `/internal/`). Returns this service's per-user export blob (an opaque object).
+      operationId: internalExportUser
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: This service's per-user export blob
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
 components:
   securitySchemes:
     bearerAuth:

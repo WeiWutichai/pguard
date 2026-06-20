@@ -41,6 +41,7 @@ lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/inline_object1_all_of_data.dart
 lib/src/model/inline_object2.dart
+lib/src/model/internal_export_user200_response.dart
 lib/src/model/internal_guard.dart
 lib/src/model/internal_list_guards200_response.dart
 lib/src/model/list_guard_document_expiries200_response.dart
