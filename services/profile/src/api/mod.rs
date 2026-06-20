@@ -235,6 +235,20 @@ fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
         validate::MAX_ACCOUNT_NUMBER_LEN,
     )
     .map_err(AppError::BadRequest)?;
+    // GET /profile/me returns account_number MASKED (e.g. "******7890"). The upsert/update write it
+    // UNCONDITIONALLY (no COALESCE), so a client that loads the profile, edits another field, and
+    // PUTs the whole object back would persist the masked string as the real account number. Reject
+    // any write whose account_number still carries mask characters — the masked value is never a
+    // valid account number, so this can only be an unintended round-trip.
+    if req
+        .account_number
+        .as_deref()
+        .is_some_and(|a| a.contains('*'))
+    {
+        return Err(AppError::BadRequest(
+            "account_number looks masked — resend the full bank account number".to_string(),
+        ));
+    }
     // v1-parity registration fields.
     for (val, field) in [
         (req.full_name.as_deref(), "full_name"),
@@ -546,6 +560,19 @@ pub async fn get_guard_document<S: ProfileDeps>(
             "You can only read your own documents".to_string(),
         ));
     }
+    // PDPA §30: an admin pulling another guard's credential image (the highest-PII surface) is
+    // recorded in the durable audit sink, fail-loud — mirrors the admin upload/list audits. An
+    // owner reading their OWN document is not audited.
+    if user.role == ROLE_ADMIN && user.user_id != user_id {
+        let audit_target = format!("{user_id}/{}", q.document_type);
+        repo::record_access(
+            state.db(),
+            user.user_id,
+            "admin_read_guard_document",
+            Some(&audit_target),
+        )
+        .await?;
+    }
     let column = documents::key_column_for(&q.document_type).ok_or_else(|| {
         AppError::BadRequest(format!("unknown document_type: {}", q.document_type))
     })?;
@@ -578,6 +605,16 @@ pub async fn list_guard_document_expiries<S: ProfileDeps>(
         return Err(AppError::Forbidden(
             "You can only read your own document expiries".to_string(),
         ));
+    }
+    // PDPA §30: record an admin reading another guard's expiry data (fail-loud).
+    if user.role == ROLE_ADMIN && user.user_id != user_id {
+        repo::record_access(
+            state.db(),
+            user.user_id,
+            "admin_list_document_expiries",
+            Some(&user_id.to_string()),
+        )
+        .await?;
     }
     let rows = repo::list_document_expiries(state.db_read(), user_id).await?;
     let out = rows
@@ -696,6 +733,16 @@ pub async fn get_guard_avatar<S: ProfileDeps>(
         return Err(AppError::Forbidden(
             "You can only read your own avatar".to_string(),
         ));
+    }
+    // PDPA §30: record an admin reading another guard's avatar (fail-loud).
+    if user.role == ROLE_ADMIN && user.user_id != user_id {
+        repo::record_access(
+            state.db(),
+            user.user_id,
+            "admin_read_guard_avatar",
+            Some(&user_id.to_string()),
+        )
+        .await?;
     }
     let key = repo::get_document_key(state.db_read(), user_id, AVATAR_KEY_COLUMN)
         .await?
@@ -1254,6 +1301,23 @@ mod tests {
             tomorrow,
             today
         ));
+    }
+
+    #[test]
+    fn masked_account_number_is_rejected() {
+        // A client that round-trips the MASKED account_number from GET /profile/me must be rejected
+        // so the masked string never overwrites the real bank account on the non-coalescing upsert.
+        let mut req: UpsertGuardProfileRequest =
+            serde_json::from_value(serde_json::json!({ "gender": "male" })).unwrap();
+        req.account_number = Some("******7890".to_string());
+        assert!(matches!(
+            validate_guard_req(&req),
+            Err(AppError::BadRequest(_))
+        ));
+        // A genuine number does NOT trip the mask guard.
+        req.account_number = Some("1234567890".to_string());
+        let r = validate_guard_req(&req);
+        assert!(r.is_ok(), "real account number must pass: {r:?}");
     }
 
     // ----- 401: missing / invalid token -----
