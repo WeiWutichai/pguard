@@ -148,6 +148,11 @@ async fn session(
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Message>();
 
+    // Per-connection session token: stamped on every upsert + fences the offline write so only
+    // THIS session can mark its own row offline. A late-closing OLD socket (stale `session`) can
+    // no longer clobber a freshly-reconnected live session offline (no more last-disconnect-wins).
+    let session = Uuid::new_v4();
+
     // Rate-limit clocks: seed "one interval ago" so the FIRST fix/heartbeat is always allowed.
     // `checked_sub` (not `-`) avoids a panic if the host's monotonic clock is younger than the
     // interval — a guard connecting within ~10s of system boot. The `unwrap_or(seed)` fallback is
@@ -220,6 +225,7 @@ async fn session(
                             &redis_pub,
                             &tx,
                             guard_id,
+                            session,
                             text.as_str(),
                             &mut last_gps,
                             &mut last_heartbeat,
@@ -273,7 +279,9 @@ async fn session(
     }
 
     // Disconnect (any cause): mark the guard offline so discovery/the map drop them immediately.
-    if let Err(e) = repo::set_offline(&db, guard_id).await {
+    // Fenced on `session` — only THIS session can offline its own row, so a late close from a
+    // superseded socket can never knock a live reconnect offline.
+    if let Err(e) = repo::set_offline(&db, guard_id, session).await {
         tracing::error!(guard = %guard_id, "failed to set guard offline on disconnect: {e}");
     }
     tracing::info!(guard = %guard_id, "gps ws session closed");
@@ -282,11 +290,13 @@ async fn session(
 /// Handle one inbound text frame: classify, then either run the heartbeat keep-alive (rate-
 /// limited, NO DB) or the GPS pipeline (rate-limited, validate+sanitize, persist + publish,
 /// ack). The heartbeat is gated on its OWN clock so it can never consume the GPS 1/sec slot.
+#[allow(clippy::too_many_arguments)]
 async fn handle_text(
     db: &sqlx::PgPool,
     redis_pub: &redis::aio::ConnectionManager,
     tx: &mpsc::UnboundedSender<Message>,
     guard_id: Uuid,
+    session: Uuid,
     text: &str,
     last_gps: &mut Instant,
     last_heartbeat: &mut Instant,
@@ -328,7 +338,7 @@ async fn handle_text(
 
             // Independent writes run concurrently (mirrors v1 tracking handlers.rs:172).
             let (upsert_res, history_res, publish_res) = tokio::join!(
-                repo::upsert_location(db, guard_id, recorded_at, &clean),
+                repo::upsert_location(db, guard_id, session, recorded_at, &clean),
                 repo::insert_history(db, guard_id, recorded_at, &clean),
                 events::publish_gps(redis_pub, &event),
             );
@@ -580,6 +590,7 @@ mod tests {
         };
         let state = AppState {
             db: db.clone(),
+            db_read: db.clone(),
             redis_cache: redis.clone(),
             redis_pub: redis,
             jwt_config,

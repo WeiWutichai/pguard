@@ -30,7 +30,7 @@ use axum::{Json, Router};
 use serde_json::{json, Value};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
-use shared::db::create_pool;
+use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_connection_manager;
 
 use crate::state::{AppState, DbBookingAuthz};
@@ -59,6 +59,9 @@ async fn main() -> anyhow::Result<()> {
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
+    // Read-replica pool (C5.3) for the heavy admin/bulk reads (/locations, /guards/{id}/history);
+    // falls back to the primary URL when DATABASE_READ_URL is unset (single-node dev unchanged).
+    let db_read = create_read_pool(&db_config).await?;
 
     // Cache connection: the AuthUser revocation blocklist + the WS re-auth tick. A reconnecting
     // manager (not a one-shot MultiplexedConnection) so a Redis restart self-heals instead of
@@ -78,6 +81,7 @@ async fn main() -> anyhow::Result<()> {
 
     let state = AppState {
         db: db.clone(),
+        db_read,
         redis_cache,
         redis_pub,
         jwt_config,
