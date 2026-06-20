@@ -164,9 +164,30 @@ pub async fn request(
     repo::store_code(&state.db, &phone, &code_hash, expires_at).await?;
 
     // 8. Send via the INET SMS port. Plaintext code never leaves this scope.
+    //    On a delivery failure (transient gateway timeout / INET '08' insufficient
+    //    credits / '13' disabled — all AppError::Internal) the quota+cooldown set in
+    //    steps 4–5 above would otherwise stay consumed, turning a gateway hiccup into a
+    //    self-DoS on the user's daily budget. Compensate (best-effort) by reverting the
+    //    daily counter and clearing the short cooldown before propagating a GENERIC error.
     let message = domain::format_otp_message(&code, state.otp_config.expiry_minutes);
     let sms_phone = domain::to_international_format(&phone);
-    state.sms.send(&sms_phone, &message).await?;
+    if let Err(send_err) = state.sms.send(&sms_phone, &message).await {
+        let compensation: Result<(), redis::RedisError> = redis::pipe()
+            .atomic()
+            .decr(&daily_key, 1)
+            .del(&rate_key)
+            .query_async(&mut conn)
+            .await;
+        if let Err(comp_err) = compensation {
+            // Compensation is best-effort; the keys self-expire either way. Log so the
+            // residual quota/cooldown is diagnosable. Never log the phone or OTP.
+            tracing::warn!(
+                error = %comp_err,
+                "failed to revert OTP quota/cooldown after SMS send failure"
+            );
+        }
+        return Err(send_err);
+    }
 
     // Generic success — does not reveal whether the phone is registered.
     Ok(Json(ApiResponse::success(RequestOtpResponse {
@@ -261,11 +282,25 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::config::OtpConfig;
-    use crate::sms::NoopSender;
+    use crate::sms::{NoopSender, SmsSender};
+    use async_trait::async_trait;
     use shared::config::JwtConfig;
     use sqlx::postgres::PgPoolOptions;
 
     const SECRET: &str = "test-secret-key-at-least-64-chars-long-for-testing-purposes-only!!";
+
+    /// Fault-injecting sender: always fails the way a transient INET error does
+    /// (`AppError::Internal`), to exercise `request`'s SMS-failure compensation path.
+    struct FailingSender;
+
+    #[async_trait]
+    impl SmsSender for FailingSender {
+        async fn send(&self, _to: &str, _text: &str) -> Result<String, AppError> {
+            Err(AppError::Internal(
+                "simulated SMS gateway failure".to_string(),
+            ))
+        }
+    }
 
     async fn test_state(redis_conn: redis::aio::ConnectionManager) -> AppState {
         // Lazy pool to a closed port: never connects unless a handler queries. The
@@ -358,5 +393,101 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// `request` must NOT consume the user's daily quota / cooldown when SMS delivery
+    /// fails: the deep-review MEDIUM fix compensates (DECR otp_daily + DEL otp_rate) on a
+    /// send error so a transient gateway fault is not a self-DoS on the user's budget.
+    /// Gated on BOTH Redis AND Postgres — the failure happens AFTER `store_code` writes
+    /// the row (step 7), so a real DB is required to reach the SMS step. Skips otherwise.
+    #[tokio::test]
+    async fn request_reverts_quota_and_cooldown_on_sms_failure() {
+        let Some(mut conn) = maybe_redis().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let Ok(db) = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(2))
+            .connect(&db_url)
+            .await
+        else {
+            eprintln!("SKIP: DATABASE_URL unreachable");
+            return;
+        };
+
+        // Unique phone per run so daily/cooldown/lock keys start clean.
+        let suffix: u32 = uuid::Uuid::new_v4().as_u128() as u32 % 1_000_000;
+        let phone = format!("08{suffix:08}");
+        let phone = &phone[..10];
+        let daily_key = format!("otp_daily:{phone}");
+        let rate_key = format!("otp_rate:{phone}");
+        let lock_key = format!("otp_lock:{phone}");
+        let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+            .arg(&daily_key)
+            .arg(&rate_key)
+            .arg(&lock_key)
+            .query_async(&mut conn)
+            .await;
+
+        // Pre-solve a captcha so `request` passes step 1 (GETDEL).
+        let challenge_id = uuid::Uuid::new_v4().to_string();
+        conn.set_ex::<_, _, ()>(format!("otp_captcha:{challenge_id}"), "7", CAPTCHA_TTL_SECS)
+            .await
+            .unwrap();
+
+        let mut state = test_state(conn.clone()).await;
+        state.db = db;
+        state.sms = Arc::new(FailingSender);
+
+        let app = Router::new()
+            .route("/otp/request", post(request))
+            .with_state(state);
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/otp/request")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "phone": phone,
+                            "challenge_id": challenge_id,
+                            "answer": "7",
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        // Delivery failed → generic 500 surfaced to the caller.
+        assert_eq!(res.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        // Compensation ran: daily counter reverted (key DECRed back to 0 → DEL'd or 0)
+        // and the cooldown cleared, so the user can retry immediately.
+        let daily: Option<i64> = conn.get(&daily_key).await.unwrap();
+        assert!(
+            daily.unwrap_or(0) <= 0,
+            "otp_daily must be reverted after SMS failure, got {daily:?}"
+        );
+        let rate_exists: bool = conn.exists(&rate_key).await.unwrap();
+        assert!(
+            !rate_exists,
+            "otp_rate cooldown must be cleared after SMS failure"
+        );
+
+        // Cleanup.
+        let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+            .arg(&daily_key)
+            .arg(&rate_key)
+            .arg(&lock_key)
+            .query_async(&mut conn)
+            .await;
     }
 }
