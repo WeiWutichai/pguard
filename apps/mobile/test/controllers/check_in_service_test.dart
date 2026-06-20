@@ -32,8 +32,11 @@ void main() {
 
   setUp(() async {
     tmp = await Directory.systemTemp.createTemp('pguard_checkin_test');
+    // Real JPEG magic bytes (FF D8 FF E0) + padding — the service declares the MIME from the
+    // CONTENT, not the .jpg name, so the fixture must actually start like a JPEG.
     photo = File('${tmp.path}/checkpoint.jpg')
-      ..writeAsBytesSync(List<int>.filled(64, 7));
+      ..writeAsBytesSync(
+          <int>[0xFF, 0xD8, 0xFF, 0xE0, ...List<int>.filled(60, 7)]);
   });
 
   tearDown(() => tmp.delete(recursive: true));
@@ -123,7 +126,13 @@ void main() {
     test('rejects a non-image photo client-side (no upload attempt)', () async {
       final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
       final service = ApiCheckInService(api: api);
-      final mov = CapturedPhoto(path: '${tmp.path}/clip.mov', sizeBytes: 10);
+      // A real on-disk file whose bytes are NOT a supported image (MP4/MOV `ftyp`) — the service
+      // reads the magic bytes, gets null, and rejects before any upload.
+      final movFile = File('${tmp.path}/clip.mov')
+        ..writeAsBytesSync(<int>[
+          0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20,
+        ]);
+      final mov = CapturedPhoto(path: movFile.path, sizeBytes: 12);
       await expectLater(
         () => service.submit(
             bookingId: 'b1', hourNumber: 1, photo: mov, isThai: true),
