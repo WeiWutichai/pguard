@@ -66,6 +66,11 @@ const BATCH: i64 = 100;
 
 /// Run the outbox relay forever: connect to NATS (retrying), then loop draining the
 /// outbox. Spawned as a background task by `main`. Never returns under normal operation.
+///
+/// Concurrency: each drain claims its batch with `FOR UPDATE SKIP LOCKED` (see `drain_once`),
+/// so running this at >1 replica is safe — concurrent relays partition the unpublished rows
+/// rather than double-publishing them. The single-instance crash-recovery contract is still
+/// at-least-once (the consumer dedupes on `event_id`).
 pub async fn run_relay(db: sqlx::PgPool, nats_url: String) {
     loop {
         let publisher = match JetStreamPublisher::connect(&nats_url).await {
@@ -96,21 +101,31 @@ pub async fn run_relay(db: sqlx::PgPool, nats_url: String) {
 }
 
 /// Publish one batch of unpublished outbox rows. Returns the number published.
-/// Each row is marked published only AFTER its publish acks, so a crash mid-batch simply
-/// redelivers (at-least-once; the consumer dedupes on `event_id`).
+///
+/// The batch is claimed and marked inside ONE transaction: `fetch_unpublished` takes a
+/// `FOR UPDATE SKIP LOCKED` row lock on each claimed row, and that lock is held until the
+/// transaction commits at the end of the batch. So if this relay runs at >1 replica (scaled,
+/// or a rolling-deploy overlap), a second instance simply skips the locked rows and works a
+/// different slice — no row is ever published twice by concurrent relays. Within a single
+/// instance, each row is marked published only AFTER its publish acks, so a crash mid-batch
+/// rolls back the uncommitted marks and the rows redeliver next tick (at-least-once; the
+/// consumer dedupes on `event_id`). A publish error aborts the batch (early return drops `tx`,
+/// rolling it back) and bubbles up so `run_relay` reconnects.
 #[tracing::instrument(skip_all, fields(batch = BATCH))]
 async fn drain_once(
     db: &sqlx::PgPool,
     publisher: &dyn EventPublisher,
 ) -> Result<u64, anyhow::Error> {
-    let rows: Vec<OutboxRow> = repo::fetch_unpublished(db, BATCH).await?;
+    let mut tx = db.begin().await?;
+    let rows: Vec<OutboxRow> = repo::fetch_unpublished(&mut tx, BATCH).await?;
     let mut published = 0u64;
     for row in rows {
         let bytes = serde_json::to_vec(&row.payload)?;
         publisher.publish(&row.topic, &bytes).await?;
-        repo::mark_published(db, row.id).await?;
+        repo::mark_published(&mut tx, row.id).await?;
         published += 1;
     }
+    tx.commit().await?;
     Ok(published)
 }
 
