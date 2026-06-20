@@ -102,6 +102,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**reviewCompletion**](doc/BookingsApi.md#reviewcompletion) | **PUT** /bookings/{id}/review-completion | Customer reviews the guard&#39;s completion request
 [*BookingsApi*](doc/BookingsApi.md) | [**startBooking**](doc/BookingsApi.md#startbooking) | **PUT** /bookings/{id}/start | Assigned guard starts the job
 [*InternalApi*](doc/InternalApi.md) | [**getInternalBooking**](doc/InternalApi.md#getinternalbooking) | **GET** /internal/bookings/{id} | Read authoritative booking fields (service-JWT only)
+[*InternalApi*](doc/InternalApi.md) | [**internalExportUser**](doc/InternalApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 
 
 ## Documentation For Models
@@ -124,6 +125,7 @@ Class | Method | HTTP request | Description
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InternalBooking](doc/InternalBooking.md)
+ - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListAvailableGuards200Response](doc/ListAvailableGuards200Response.md)
  - [ListBookings200Response](doc/ListBookings200Response.md)
  - [ListProgressReports200Response](doc/ListProgressReports200Response.md)

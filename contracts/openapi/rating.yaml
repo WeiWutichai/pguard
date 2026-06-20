@@ -215,6 +215,36 @@ paths:
                       data: { $ref: '#/components/schemas/RatingSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /internal/users/{user_id}/export:
+    get:
+      tags: [Admin]
+      summary: PDPA data export aggregation (service-to-service)
+      description: |
+        Internal read for identity's `ExportClient` fan-out — aggregates this service's slice
+        of a user's PDPA data export. Guarded by a **service-JWT** (`serviceAuth`, aud
+        `pguard-internal`), never reachable from the public edge (the gateway blocks
+        `/internal/`). Returns this service's per-user export blob (an opaque object).
+      operationId: internalExportUser
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: This service's per-user export blob
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { type: object, additionalProperties: true }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
 components:
   securitySchemes:
     bearerAuth:

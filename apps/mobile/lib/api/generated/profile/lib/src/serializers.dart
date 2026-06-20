@@ -41,6 +41,7 @@ import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
 import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
 import 'package:pguard_profile_api/src/model/inline_object2.dart';
+import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_guard.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
 import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_response.dart';
@@ -86,6 +87,7 @@ part 'serializers.g.dart';
   InlineObject1,
   InlineObject1AllOfData,
   InlineObject2,
+  InternalExportUser200Response,
   InternalGuard,
   InternalListGuards200Response,
   ListGuardDocumentExpiries200Response,

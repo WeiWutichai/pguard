@@ -32,6 +32,7 @@ export 'package:pguard_booking_api/src/model/get_internal_booking200_response.da
 export 'package:pguard_booking_api/src/model/inline_object.dart';
 export 'package:pguard_booking_api/src/model/inline_object1.dart';
 export 'package:pguard_booking_api/src/model/internal_booking.dart';
+export 'package:pguard_booking_api/src/model/internal_export_user200_response.dart';
 export 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
 export 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 export 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';

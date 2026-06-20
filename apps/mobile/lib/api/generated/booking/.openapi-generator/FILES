@@ -33,6 +33,7 @@ lib/src/model/get_internal_booking200_response.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/internal_booking.dart
+lib/src/model/internal_export_user200_response.dart
 lib/src/model/list_available_guards200_response.dart
 lib/src/model/list_bookings200_response.dart
 lib/src/model/list_progress_reports200_response.dart
