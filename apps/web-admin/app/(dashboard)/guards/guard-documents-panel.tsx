@@ -19,6 +19,9 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
   const c = COPY[lang];
   const [urls, setUrls] = useState<Partial<Record<GuardDocType, string>>>({});
   const [loading, setLoading] = useState(true);
+  // The document the admin is previewing full-size IN-PAGE (lightbox), or null. Clicking a
+  // thumbnail opens this instead of navigating to a new browser tab.
+  const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
 
   // The modal mounts this with `key={userId}`, so a fresh guard gets fresh initial state — no
   // synchronous reset in the effect (which trips react-hooks/set-state-in-effect).
@@ -50,6 +53,8 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
     };
   }, [userId]);
 
+  const closeLabel = lang === "th" ? "ปิด" : "Close";
+
   return (
     <div className="mt-4 rounded-lg border border-border">
       <div className="border-b border-border px-4 py-3 text-xs font-semibold uppercase tracking-[0.04em] text-muted">
@@ -66,27 +71,39 @@ export function GuardDocumentsPanel({ userId }: { userId: string }) {
               url={urls[dt]}
               notUploaded={c.docsNotUploaded}
               openLabel={c.docOpen}
+              onOpen={(url, label) => setPreview({ url, label })}
             />
           ))}
         </div>
+      )}
+      {preview && (
+        <DocLightbox
+          url={preview.url}
+          label={preview.label}
+          openLabel={c.docOpen}
+          closeLabel={closeLabel}
+          onClose={() => setPreview(null)}
+        />
       )}
     </div>
   );
 }
 
-/** One credential cell: a thumbnail linking to the full presigned image, or an honest
+/** One credential cell: a thumbnail that opens a full-size IN-PAGE preview, or an honest
  *  "not uploaded" placeholder. If the inline image fails to load (expired/unreachable URL), it
- *  degrades to an "open full" link rather than a broken-image glyph. */
+ *  degrades to an "open full" affordance rather than a broken-image glyph. */
 function DocCell({
   label,
   url,
   notUploaded,
   openLabel,
+  onOpen,
 }: {
   label: string;
   url?: string;
   notUploaded: string;
   openLabel: string;
+  onOpen: (url: string, label: string) => void;
 }) {
   const [imgError, setImgError] = useState(false);
 
@@ -94,10 +111,9 @@ function DocCell({
     <div className="flex flex-col gap-1.5">
       <div className="text-[11.5px] font-medium text-muted">{label}</div>
       {url ? (
-        <a
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
+        <button
+          type="button"
+          onClick={() => onOpen(url, label)}
           title={openLabel}
           className="group block h-24 w-full overflow-hidden rounded-md border border-border"
         >
@@ -114,11 +130,79 @@ function DocCell({
               className="h-full w-full object-cover transition group-hover:opacity-90"
             />
           )}
-        </a>
+        </button>
       ) : (
         <div className="flex h-24 w-full items-center justify-center rounded-md border border-dashed border-border-strong text-[11px] text-faint">
           {notUploaded}
         </div>
+      )}
+    </div>
+  );
+}
+
+/** Full-size document preview shown IN-PAGE (no new tab). Dismisses on backdrop click, the ✕
+ *  button, or Esc. A broken/expired URL degrades to an "open in a new tab" link as a last resort.
+ *  Sits above the guard-detail modal (z-[100]). */
+function DocLightbox({
+  url,
+  label,
+  openLabel,
+  closeLabel,
+  onClose,
+}: {
+  url: string;
+  label: string;
+  openLabel: string;
+  closeLabel: string;
+  onClose: () => void;
+}) {
+  const [imgError, setImgError] = useState(false);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={label}
+      onClick={onClose}
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/75 p-4"
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={closeLabel}
+        className="absolute right-4 top-4 flex h-9 w-9 items-center justify-center rounded-full bg-white/15 text-lg text-white transition hover:bg-white/25"
+      >
+        ✕
+      </button>
+      {imgError ? (
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          className="text-sm font-medium text-white underline"
+        >
+          {openLabel}
+        </a>
+      ) : (
+        <figure onClick={(e) => e.stopPropagation()} className="flex flex-col items-center gap-2">
+          {/* eslint-disable-next-line @next/next/no-img-element -- presigned S3 URL, not a static asset */}
+          <img
+            src={url}
+            alt={label}
+            onError={() => setImgError(true)}
+            className="max-h-[85vh] max-w-[90vw] rounded object-contain shadow-2xl"
+          />
+          <figcaption className="text-xs text-white/80">{label}</figcaption>
+        </figure>
       )}
     </div>
   );
