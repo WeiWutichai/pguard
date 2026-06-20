@@ -1,6 +1,6 @@
 import 'package:dio/dio.dart';
 
-import '../media/chat_media_picker.dart' show ChatMime;
+import '../media/image_mime.dart';
 import '../media/photo_capture.dart';
 import '../models/progress_report.dart';
 import '../models/tracking.dart';
@@ -66,11 +66,12 @@ class ApiCheckInService implements CheckInService {
     GpsSample? gps,
     String? note,
   }) async {
-    // Derive the declared Content-Type from the file extension (CapturedPhoto has no MIME).
-    // Check-in is image-only — reject anything that isn't JPEG/PNG/WEBP (ChatMime also maps
-    // video extensions) before spending an upload, with the same outcome the server would give.
-    final mime = ChatMime.fromPath(photo.path);
-    if (mime == null || !mime.startsWith('image/')) {
+    // Declare the Content-Type from the file's MAGIC BYTES, not its extension: image_picker
+    // re-encodes captures to JPEG while keeping the source name, and the server magic-byte-validates
+    // AND requires the declared MIME to match the content — an extension-derived MIME would be
+    // rejected. detectImageMime returns null for non-JPEG/PNG/WEBP, which we reject up front.
+    final mime = detectImageMime(await readImageHead(photo.path, 12));
+    if (mime == null) {
       throw ApiException(
         message: isThai
             ? 'รองรับเฉพาะรูปภาพ JPEG/PNG/WEBP'
