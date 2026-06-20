@@ -53,6 +53,9 @@ spec:
             - name: NATS_PASSWORD
               valueFrom:
                 secretKeyRef: { name: pguard-nats-secrets, key: NATS_CHAT_PASSWORD }
+            # chat validates conversation creation against booking (service-JWT GET /internal/bookings/{id}).
+            - name: BOOKING_URL
+              value: "http://booking:3005"
           ports:
             - name: http
               containerPort: 3010

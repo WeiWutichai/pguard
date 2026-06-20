@@ -597,6 +597,8 @@ services:
       NATS_USER: chat
       NATS_PASSWORD: ${NATS_CHAT_PASSWORD:?NATS_CHAT_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      # chat validates conversation creation against booking (service-JWT GET /internal/bookings/{id}).
+      BOOKING_URL: http://booking:3005
       # Attachment object store (MinIO/R2). chat signs its own SigV4 presigned URLs.
       S3_ENDPOINT: http://minio:9000
       S3_BUCKET: ${S3_BUCKET:-pguard}

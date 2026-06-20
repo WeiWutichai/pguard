@@ -17,6 +17,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
+use crate::booking_client::BookingReader;
 use crate::domain;
 use crate::events;
 use crate::models::{
@@ -57,21 +58,90 @@ fn attachment_view(row: AttachmentRow, file_url: String) -> AttachmentResponse {
 
 // ----- POST /conversations -----
 
-/// Create a booking-scoped conversation. Participant gate: the caller must be one of the
-/// participants (or admin) — `AuthUser` alone is NOT sufficient (IDOR).
+const ROLE_CUSTOMER: &str = "customer";
+const ROLE_GUARD: &str = "guard";
+
+/// Create (or fetch) a booking-scoped conversation. The conversation's IDENTITY — who the
+/// parties are, their roles, and the lifecycle status — is AUTHORITATIVE from booking, never
+/// trusted from the client. This closes the IDOR where a client could fabricate a conversation
+/// with any victim's `user_id` for any `request_id`, inject display text into the victim's list,
+/// or set `request_status='accepted'` to bypass the read-only gate.
+///
+/// Flow (non-admin): GET booking's `/internal/bookings/{request_id}` (service-JWT'd). A 404 or a
+/// caller who is neither the booking's customer nor its assigned guard → `403` (same denial, no
+/// existence oracle). Then BUILD the participants from the booking (customer + guard-when-present)
+/// and take `request_status` from `booking.status` — `req.participants`/`req.request_status` are
+/// ignored for identity/role/status. `display_name`/`avatar_url` are carried through ONLY for the
+/// now-validated `user_id`s (the client may denormalize the counterpart's name; it can't forge an
+/// identity). The repo is GET-OR-CREATE (idempotent on `request_id`), so a repeat POST returns the
+/// EXISTING conversation. An admin (moderation) may create directly from the request body.
 #[tracing::instrument(skip(state, req), fields(user = %user.user_id, request_id = %req.request_id))]
 pub async fn create_conversation<S: ChatDeps>(
     State(state): State<S>,
     user: AuthUser,
     Json(req): Json<CreateConversationRequest>,
 ) -> Result<Json<ApiResponse<ConversationResponse>>, AppError> {
-    if user.role != ROLE_ADMIN && !req.participants.iter().any(|p| p.user_id == user.user_id) {
+    // Admin (moderation) bypass: trust the body as supplied.
+    if user.role == ROLE_ADMIN {
+        let conv = repo::create_conversation(state.db(), &req).await?;
+        return Ok(Json(ApiResponse::success(conv)));
+    }
+
+    // Authoritative booking → who the parties are + the lifecycle status. A missing booking is a
+    // `NotFound` from the client; normalize it to `403` so it's indistinguishable from "not your
+    // booking" (no existence oracle on request_ids).
+    let booking = match state.booking().get_booking(req.request_id).await {
+        Ok(b) => b,
+        Err(AppError::NotFound(_)) => {
+            return Err(AppError::Forbidden(
+                "You must be a party of this booking".to_string(),
+            ))
+        }
+        Err(e) => return Err(e),
+    };
+
+    // The caller MUST be the booking's customer or its assigned guard.
+    let is_party = user.user_id == booking.customer_id || booking.guard_id == Some(user.user_id);
+    if !is_party {
         return Err(AppError::Forbidden(
-            "You must be a participant of the conversation".to_string(),
+            "You must be a party of this booking".to_string(),
         ));
     }
-    let conv = repo::create_conversation(state.db(), &req).await?;
+
+    // Build the participants from the AUTHORITATIVE booking, not the client. display_name/avatar
+    // may be denormalized from the client's matching entry (identities are now validated), else
+    // null. status comes from the booking (drives the read-only gate).
+    let authoritative = CreateConversationRequest {
+        request_id: req.request_id,
+        request_status: Some(booking.status.clone()),
+        participants: authoritative_participants(&booking, &req.participants),
+    };
+    let conv = repo::create_conversation(state.db(), &authoritative).await?;
     Ok(Json(ApiResponse::success(conv)))
+}
+
+/// Build the authoritative participant set from the booking: the customer (role `customer`) and
+/// the assigned guard (role `guard`) when present. `display_name`/`avatar_url` are carried over
+/// ONLY from the client entry whose `user_id` matches a validated party — a client can denormalize
+/// the counterpart's name but cannot forge an identity, role, or inject a phantom participant.
+fn authoritative_participants(
+    booking: &crate::booking_client::InternalBooking,
+    client: &[crate::models::ParticipantInput],
+) -> Vec<crate::models::ParticipantInput> {
+    let denorm = |user_id: Uuid, role: &str| {
+        let hint = client.iter().find(|p| p.user_id == user_id);
+        crate::models::ParticipantInput {
+            user_id,
+            role: role.to_string(),
+            display_name: hint.and_then(|p| p.display_name.clone()),
+            avatar_url: hint.and_then(|p| p.avatar_url.clone()),
+        }
+    };
+    let mut parts = vec![denorm(booking.customer_id, ROLE_CUSTOMER)];
+    if let Some(guard_id) = booking.guard_id {
+        parts.push(denorm(guard_id, ROLE_GUARD));
+    }
+    parts
 }
 
 // ----- GET /conversations?role= -----
@@ -328,6 +398,22 @@ mod tests {
     const SERVICE_SECRET: &str =
         "service-secret-at-least-64-characters-long-for-internal-hs256-chat!!";
 
+    use crate::booking_client::{BookingReader, InternalBooking};
+
+    /// In-memory [`BookingReader`] stub: returns a fixed booking (or `NotFound`) so the
+    /// create-conversation authz path is testable without a live booking service.
+    #[derive(Clone)]
+    struct StubBooking {
+        booking: Option<InternalBooking>,
+    }
+    impl BookingReader for StubBooking {
+        async fn get_booking(&self, _booking_id: Uuid) -> Result<InternalBooking, AppError> {
+            self.booking
+                .clone()
+                .ok_or_else(|| AppError::NotFound("Booking not found".to_string()))
+        }
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
@@ -336,6 +422,7 @@ mod tests {
         redis: redis::aio::ConnectionManager,
         pubsub_client: redis::Client,
         s3: S3Client,
+        booking: StubBooking,
     }
     impl HasJwtSecret for TestDeps {
         fn jwt_secret(&self) -> &str {
@@ -354,6 +441,7 @@ mod tests {
         }
     }
     impl ChatDeps for TestDeps {
+        type Booking = StubBooking;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
@@ -368,6 +456,9 @@ mod tests {
         }
         fn s3(&self) -> &S3Client {
             &self.s3
+        }
+        fn booking(&self) -> &StubBooking {
+            &self.booking
         }
     }
     impl ChatInternalDeps for TestDeps {
@@ -412,7 +503,20 @@ mod tests {
             redis,
             pubsub_client: redis_client,
             s3: s3_stub(),
+            // Default: no booking (create-conversation denies). Tests that exercise the create
+            // path set an authoritative booking via `with_booking`.
+            booking: StubBooking { booking: None },
         })
+    }
+
+    impl TestDeps {
+        /// Configure the stub booking the create-conversation authz path reads.
+        fn with_booking(mut self, booking: InternalBooking) -> Self {
+            self.booking = StubBooking {
+                booking: Some(booking),
+            };
+            self
+        }
     }
 
     fn router(deps: TestDeps) -> Router {
@@ -508,34 +612,73 @@ mod tests {
         assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
     }
 
+    /// Build an authoritative booking the stub reader returns for create-conversation.
+    fn stub_booking(customer_id: Uuid, guard_id: Option<Uuid>, status: &str) -> InternalBooking {
+        InternalBooking {
+            id: Uuid::new_v4(),
+            customer_id,
+            guard_id,
+            status: status.to_string(),
+        }
+    }
+
+    fn create_req(caller: Uuid, role: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/conversations")
+            .header("authorization", format!("Bearer {}", token(caller, role)))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
     #[tokio::test]
-    async fn create_conversation_rejects_non_participant() {
-        // Authenticated, but the caller is NOT among the participants → 403 (in-memory gate,
-        // no DB access). This is the create-side participant gate (`_user` is never ignored).
+    async fn create_conversation_rejects_non_party_of_booking() {
+        // Authenticated, but the caller is NEITHER the booking's customer NOR its assigned guard
+        // → 403. Even though the client claims to be a participant in the body, identity is taken
+        // from the AUTHORITATIVE booking (the stub), so the spoofed `participants` is ignored. The
+        // 403 fires before any conversation INSERT (in-memory party check).
         let Some(deps) = deps(lazy_pool()).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        let caller = Uuid::new_v4();
-        let other = Uuid::new_v4();
+        let caller = Uuid::new_v4(); // NOT the booking's customer or guard
+        let real_customer = Uuid::new_v4();
+        let real_guard = Uuid::new_v4();
+        let deps = deps.with_booking(stub_booking(real_customer, Some(real_guard), "accepted"));
+        // The caller lies and lists THEMSELVES as the customer — must not matter.
         let body = serde_json::json!({
             "request_id": Uuid::new_v4(),
+            "request_status": "accepted",
             "participants": [
-                { "user_id": other, "role": "customer" },
-                { "user_id": Uuid::new_v4(), "role": "guard" }
+                { "user_id": caller, "role": "customer" },
+                { "user_id": real_guard, "role": "guard" }
             ]
         });
-        let req = Request::builder()
-            .method("POST")
-            .uri("/conversations")
-            .header(
-                "authorization",
-                format!("Bearer {}", token(caller, "customer")),
-            )
-            .header("content-type", "application/json")
-            .body(Body::from(body.to_string()))
-            .unwrap();
-        assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
+        assert_eq!(
+            status_of(router(deps), create_req(caller, "customer", body)).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn create_conversation_rejects_unknown_booking() {
+        // No such booking (the stub returns NotFound) → 403, indistinguishable from "not your
+        // booking" (no existence oracle on request_ids).
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // `deps` defaults to `booking: None` → the reader returns NotFound.
+        let caller = Uuid::new_v4();
+        let body = serde_json::json!({
+            "request_id": Uuid::new_v4(),
+            "participants": [{ "user_id": caller, "role": "customer" }]
+        });
+        assert_eq!(
+            status_of(router(deps), create_req(caller, "customer", body)).await,
+            StatusCode::FORBIDDEN
+        );
     }
 
     // ----- internal endpoint: service-JWT guard (no DB needed to prove the guard) -----
@@ -582,6 +725,111 @@ mod tests {
             .await
             .ok()?;
         deps(db).await
+    }
+
+    /// Parse a `ConversationResponse` out of an `{ success, data }` body.
+    async fn conv_from_response(res: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .expect("read body");
+        let v: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        v["data"].clone()
+    }
+
+    /// create_conversation DERIVES participants + status from the AUTHORITATIVE booking, ignoring
+    /// the client-supplied identity/role/status — and is GET-OR-CREATE (a second POST for the same
+    /// request_id returns the SAME conversation, no duplicate).
+    #[tokio::test]
+    async fn create_conversation_derives_from_booking_and_is_idempotent() {
+        let Some(deps) = real_deps().await else {
+            eprintln!(
+                "SKIP: DATABASE_URL + TEST_REDIS_URL required for the create-conversation test"
+            );
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let request_id = Uuid::new_v4();
+        // The booking is the source of truth (status `accepted`); the client will LIE below.
+        let deps = deps.with_booking(stub_booking(customer, Some(guard), "accepted"));
+
+        // The customer POSTs a body that injects a PHANTOM participant, a forged role, and a
+        // forged status — none of which must survive (identity is booking-authoritative).
+        let phantom = Uuid::new_v4();
+        let body = serde_json::json!({
+            "request_id": request_id,
+            "request_status": "completed", // forged: would wrongly make it read-only
+            "participants": [
+                { "user_id": customer, "role": "guard", "display_name": "Me" }, // forged role
+                { "user_id": phantom, "role": "customer", "display_name": "Phantom" } // injected
+            ]
+        });
+        let res = router(deps.clone())
+            .oneshot(create_req(customer, "customer", body))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let data = conv_from_response(res).await;
+        let conv_id: Uuid = serde_json::from_value(data["id"].clone()).unwrap();
+        // Status comes from the booking (`accepted`), NOT the forged `completed`.
+        assert_eq!(data["request_status"], serde_json::json!("accepted"));
+
+        // Participants are exactly the booking's parties with their AUTHORITATIVE roles; the
+        // phantom is absent, and the customer keeps role `customer` (not the forged `guard`).
+        let parts: Vec<(Uuid, String)> = sqlx::query_as(
+            "SELECT user_id, user_role FROM chat.participants WHERE conversation_id = $1 ORDER BY user_role",
+        )
+        .bind(conv_id)
+        .fetch_all(&deps.db)
+        .await
+        .expect("load participants");
+        assert_eq!(parts.len(), 2, "only the booking's two parties");
+        assert!(
+            parts.iter().any(|(u, r)| *u == customer && r == "customer"),
+            "customer keeps role customer (forged guard role ignored)"
+        );
+        assert!(
+            parts.iter().any(|(u, r)| *u == guard && r == "guard"),
+            "the booking's guard is the other party"
+        );
+        assert!(
+            !parts.iter().any(|(u, _)| *u == phantom),
+            "the injected phantom participant is rejected"
+        );
+
+        // GET-OR-CREATE: a SECOND POST (now by the guard) for the same request_id returns the
+        // SAME conversation — no duplicate row.
+        let body2 = serde_json::json!({
+            "request_id": request_id,
+            "participants": [{ "user_id": guard, "role": "guard" }]
+        });
+        let res2 = router(deps.clone())
+            .oneshot(create_req(guard, "guard", body2))
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        let data2 = conv_from_response(res2).await;
+        let conv_id2: Uuid = serde_json::from_value(data2["id"].clone()).unwrap();
+        assert_eq!(
+            conv_id2, conv_id,
+            "second create returns the existing conversation"
+        );
+
+        let count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat.conversations WHERE request_id = $1")
+                .bind(request_id)
+                .fetch_one(&deps.db)
+                .await
+                .expect("count");
+        assert_eq!(
+            count, 1,
+            "exactly one conversation per request_id (idempotent)"
+        );
+
+        let _ = sqlx::query("DELETE FROM chat.conversations WHERE id = $1")
+            .bind(conv_id)
+            .execute(&deps.db)
+            .await;
     }
 
     #[tokio::test]

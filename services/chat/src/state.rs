@@ -18,6 +18,7 @@ use shared::auth::HasJwtSecret;
 use shared::config::JwtConfig;
 use shared::service_jwt::HasServiceJwt;
 
+use crate::booking_client::HttpBookingReader;
 use crate::s3::S3Client;
 
 #[derive(Clone)]
@@ -37,6 +38,9 @@ pub struct AppState {
     pub service_decoding_key: DecodingKey,
     /// S3/MinIO client (attachment upload + presigned download).
     pub s3: S3Client,
+    /// Service-JWT'd reader of booking's `/internal/bookings/{id}` — makes a conversation's
+    /// identity (parties + status) AUTHORITATIVE at create time instead of client-supplied.
+    pub booking: HttpBookingReader,
 }
 
 impl HasJwtSecret for AppState {
@@ -61,14 +65,21 @@ impl HasServiceJwt for AppState {
 /// trait (not the concrete [`AppState`]) lets tests exercise auth + IDOR + read-only with a
 /// lightweight state (no live S3/NATS).
 pub trait ChatDeps: HasJwtSecret + Clone + Send + Sync + 'static {
+    /// The booking reader (over the [`BookingReader`](crate::booking_client::BookingReader)
+    /// port) so `create_conversation`'s authz is testable with a stub.
+    type Booking: crate::booking_client::BookingReader;
+
     fn db(&self) -> &PgPool;
     fn db_read(&self) -> &PgPool;
     fn pubsub_conn(&self) -> &redis::aio::ConnectionManager;
     fn pubsub_client(&self) -> &redis::Client;
     fn s3(&self) -> &S3Client;
+    fn booking(&self) -> &Self::Booking;
 }
 
 impl ChatDeps for AppState {
+    type Booking = HttpBookingReader;
+
     fn db(&self) -> &PgPool {
         &self.db
     }
@@ -83,6 +94,9 @@ impl ChatDeps for AppState {
     }
     fn s3(&self) -> &S3Client {
         &self.s3
+    }
+    fn booking(&self) -> &HttpBookingReader {
+        &self.booking
     }
 }
 
