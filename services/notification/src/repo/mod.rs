@@ -25,12 +25,17 @@ pub async fn register_token(
     token: &str,
     device_type: &str,
 ) -> Result<(), AppError> {
+    // A device token belongs to AT MOST one user (UNIQUE(token), migration 0005): re-registering
+    // a token that FCM rotated onto a new login RE-POINTS it to the current user instead of
+    // leaving a duplicate row that would deliver the previous user's pushes to this device.
     sqlx::query(
         r#"
         INSERT INTO notification.fcm_tokens (user_id, token, device_type)
         VALUES ($1, $2, $3)
-        ON CONFLICT (user_id, token)
-        DO UPDATE SET device_type = $3, updated_at = now()
+        ON CONFLICT (token)
+        DO UPDATE SET user_id = EXCLUDED.user_id,
+                      device_type = EXCLUDED.device_type,
+                      updated_at = now()
         "#,
     )
     .bind(user_id)
@@ -38,6 +43,17 @@ pub async fn register_token(
     .bind(device_type)
     .execute(db)
     .await?;
+    Ok(())
+}
+
+/// Delete a device token across ALL users. Called when FCM reports it UNREGISTERED /
+/// NOT_FOUND / INVALID_ARGUMENT on send: the token is dead/rotated, so leaving the row would
+/// keep mis-delivering (a reassigned token would push user A's notifications to user B's device).
+pub async fn delete_token(db: &PgPool, token: &str) -> Result<(), AppError> {
+    sqlx::query("DELETE FROM notification.fcm_tokens WHERE token = $1")
+        .bind(token)
+        .execute(db)
+        .await?;
     Ok(())
 }
 
@@ -284,6 +300,61 @@ pub async fn update_draft_broadcast(
         .fetch_optional(db)
         .await?;
     Ok(row)
+}
+
+/// ATOMIC CLAIM for a send. Flip a still-unsent broadcast (`draft`/`scheduled`) to `sent` in a
+/// single UPDATE and return the row — but ONLY if THIS call won the transition. A second
+/// concurrent `/send` (or the scheduler racing a manual send) sees `status = 'sent'` already and
+/// the `WHERE` matches nothing, so it gets `None` and MUST NOT fan out. This is the guard against
+/// double-fan-out: claim first, fan out only on `Some`, then `mark_broadcast_sent` records the
+/// final recipient count. `recipient_count`/`sent_at` are stamped provisionally here.
+pub async fn claim_broadcast_for_send(
+    db: &PgPool,
+    id: Uuid,
+) -> Result<Option<BroadcastResponse>, AppError> {
+    let sql = format!(
+        r#"
+        UPDATE notification.broadcasts
+        SET status = 'sent'::notification.broadcast_status,
+            sent_at = now(),
+            updated_at = now()
+        WHERE id = $1
+          AND status IN ('draft'::notification.broadcast_status,
+                         'scheduled'::notification.broadcast_status)
+        RETURNING {BROADCAST_COLUMNS}
+        "#
+    );
+    let row = sqlx::query_as::<_, BroadcastResponse>(&sql)
+        .bind(id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row)
+}
+
+/// Release a claim taken by [`claim_broadcast_for_send`] when the fan-out failed BEFORE any
+/// recipient was notified (the roster lookup errored — `fan_out` is per-recipient best-effort,
+/// so an `Err` means zero pushes went out). Reverts `sent` → the prior lifecycle so the row can
+/// be retried, restoring the scheduler's retry-ledger semantics without risking a double-send
+/// (the claim still serialised the attempt). `scheduled_at IS NOT NULL` → it was a scheduled
+/// broadcast; otherwise it was sent from a draft.
+pub async fn release_broadcast_claim(db: &PgPool, id: Uuid) -> Result<(), AppError> {
+    sqlx::query(
+        r#"
+        UPDATE notification.broadcasts
+        SET status = CASE
+                WHEN scheduled_at IS NOT NULL
+                    THEN 'scheduled'::notification.broadcast_status
+                ELSE 'draft'::notification.broadcast_status
+            END,
+            sent_at = NULL,
+            updated_at = now()
+        WHERE id = $1 AND status = 'sent'::notification.broadcast_status AND recipient_count = 0
+        "#,
+    )
+    .bind(id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// Mark a broadcast sent (status → sent, set `recipient_count` + `sent_at`). Used by the

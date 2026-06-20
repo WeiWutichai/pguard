@@ -125,14 +125,19 @@ pub struct FcmPusher {
     service_account: ServiceAccount,
     http: reqwest::Client,
     cached: Arc<RwLock<Option<CachedToken>>>,
+    /// DB handle for self-pruning stale tokens: when FCM reports a token UNREGISTERED /
+    /// NOT_FOUND / INVALID_ARGUMENT we delete its row so a rotated/reassigned token can't keep
+    /// delivering one user's pushes to another user's device.
+    db: sqlx::PgPool,
 }
 
 impl FcmPusher {
-    pub fn new(config: FcmConfig, http: reqwest::Client) -> Self {
+    pub fn new(config: FcmConfig, http: reqwest::Client, db: sqlx::PgPool) -> Self {
         Self {
             service_account: config.service_account,
             http,
             cached: Arc::new(RwLock::new(None)),
+            db,
         }
     }
 
@@ -273,10 +278,44 @@ impl FcmPusher {
                 let status = resp.status();
                 let body = resp.text().await.unwrap_or_else(|_| "unknown".to_string());
                 tracing::warn!("FCM API error: status={status}, body={body}");
+                // A stale/rotated token reports UNREGISTERED / NOT_FOUND / INVALID_ARGUMENT.
+                // Prune it (across ALL users) so a reassigned token stops mis-delivering.
+                if is_stale_token_error(&body) {
+                    if let Err(e) = crate::repo::delete_token(&self.db, device_token).await {
+                        tracing::warn!("failed to prune stale FCM token: {e}");
+                    } else {
+                        tracing::info!("pruned stale FCM token reported by FCM");
+                    }
+                }
             }
             Err(e) => tracing::warn!("FCM request failed: {e}"),
         }
     }
+}
+
+/// Classify an FCM HTTP v1 error body as "this device token is dead" (so the row should be
+/// deleted). FCM signals this two ways: `error.status == "NOT_FOUND" | "INVALID_ARGUMENT"`, or a
+/// `messaging.googleapis.com/FcmError` detail with `errorCode == "UNREGISTERED"`. We parse the
+/// JSON when possible and fall back to a substring check so a shape change never resurrects the
+/// old mis-delivery bug.
+fn is_stale_token_error(body: &str) -> bool {
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        let err = &v["error"];
+        if let Some(status) = err["status"].as_str() {
+            if status == "NOT_FOUND" || status == "INVALID_ARGUMENT" {
+                return true;
+            }
+        }
+        if let Some(details) = err["details"].as_array() {
+            for d in details {
+                if d["errorCode"].as_str() == Some("UNREGISTERED") {
+                    return true;
+                }
+            }
+        }
+    }
+    // Defensive fallback for non-JSON / unexpected shapes.
+    body.contains("UNREGISTERED") || body.contains("NOT_FOUND")
 }
 
 #[async_trait]
@@ -297,7 +336,35 @@ impl Pusher for FcmPusher {
 
 #[cfg(test)]
 mod tests {
-    use super::fcm_disabled;
+    use super::{fcm_disabled, is_stale_token_error};
+
+    #[test]
+    fn stale_token_error_detects_dead_tokens() {
+        // FCM v1 UNREGISTERED (rotated/reassigned token) — surfaced in error.details.
+        let unregistered = r#"{"error":{"code":404,"message":"Requested entity was not found.",
+            "status":"NOT_FOUND","details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError",
+            "errorCode":"UNREGISTERED"}]}}"#;
+        assert!(is_stale_token_error(unregistered));
+
+        // INVALID_ARGUMENT (malformed/expired token) — prune it too.
+        let invalid = r#"{"error":{"code":400,"message":"The registration token is not a valid FCM registration token",
+            "status":"INVALID_ARGUMENT"}}"#;
+        assert!(is_stale_token_error(invalid));
+
+        // Non-JSON fallback still catches the marker.
+        assert!(is_stale_token_error("error: UNREGISTERED"));
+    }
+
+    #[test]
+    fn stale_token_error_ignores_transient_failures() {
+        // A transient server/quota error must NOT delete the token (it's still valid).
+        let unavailable = r#"{"error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}"#;
+        assert!(!is_stale_token_error(unavailable));
+        let quota =
+            r#"{"error":{"code":429,"message":"Quota exceeded.","status":"RESOURCE_EXHAUSTED"}}"#;
+        assert!(!is_stale_token_error(quota));
+        assert!(!is_stale_token_error("unknown"));
+    }
 
     #[test]
     fn fcm_disabled_is_value_aware_not_presence_based() {

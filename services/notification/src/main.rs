@@ -67,7 +67,11 @@ async fn main() -> anyhow::Result<()> {
             );
             Arc::new(NoopPusher)
         } else {
-            Arc::new(FcmPusher::new(FcmConfig::from_env()?, http_client.clone()))
+            Arc::new(FcmPusher::new(
+                FcmConfig::from_env()?,
+                http_client.clone(),
+                db.clone(),
+            ))
         };
 
     // Service-JWT'd client for profile's broadcast-recipient roster (admin bulk-send). Mints
