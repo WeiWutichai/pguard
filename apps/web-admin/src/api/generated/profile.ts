@@ -140,14 +140,15 @@ export interface paths {
         get: operations["getGuardDocument"];
         put?: never;
         /**
-         * Upload one of the guard's own credential images
-         * @description Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: **own docs only**
-         *     (`{user_id}` must equal the caller — no admin bypass on write) via EITHER a logged-in
-         *     guard (post-approval) OR the short-lived `doc_upload_token` returned by `POST /profile/guard`
-         *     (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving).
-         *     The image is magic-byte validated (declared MIME must match the content), stored in private
-         *     S3 under a server-generated key, and the key written to the matching `*_key` column.
-         *     Returns a short-lived (1h) presigned GET URL — the raw key is never exposed.
+         * Upload one of a guard's credential images
+         * @description Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth (any one):
+         *     a logged-in **guard** (OWN docs only), the short-lived `doc_upload_token` from
+         *     `POST /profile/guard` (registration — lets a not-yet-approved guard upload so an admin can
+         *     review BEFORE approving), OR a logged-in **admin** (may upload on behalf of ANY guard — the
+         *     "guard forgot to attach" staff override; admin writes are audit-logged). The image is
+         *     magic-byte validated (declared MIME must match the content), stored in private S3 under a
+         *     server-generated key, and the key written to the matching `*_key` column. Returns a
+         *     short-lived (1h) presigned GET URL — the raw key is never exposed.
          */
         post: operations["uploadGuardDocument"];
         delete?: never;

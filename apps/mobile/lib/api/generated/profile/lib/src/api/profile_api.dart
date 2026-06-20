@@ -562,8 +562,8 @@ class ProfileApi {
     );
   }
 
-  /// Upload one of the guard&#39;s own credential images
-  /// Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth: **own docs only** (&#x60;{user_id}&#x60; must equal the caller — no admin bypass on write) via EITHER a logged-in guard (post-approval) OR the short-lived &#x60;doc_upload_token&#x60; returned by &#x60;POST /profile/guard&#x60; (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving). The image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to the matching &#x60;*_key&#x60; column. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
+  /// Upload one of a guard&#39;s credential images
+  /// Upload ONE guard credential image (JPEG/PNG/WEBP, ≤10 MiB). Auth (any one): a logged-in **guard** (OWN docs only), the short-lived &#x60;doc_upload_token&#x60; from &#x60;POST /profile/guard&#x60; (registration — lets a not-yet-approved guard upload so an admin can review BEFORE approving), OR a logged-in **admin** (may upload on behalf of ANY guard — the \&quot;guard forgot to attach\&quot; staff override; admin writes are audit-logged). The image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to the matching &#x60;*_key&#x60; column. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
   ///
   /// Parameters:
   /// * [userId] - The guard's user_id (must equal the caller).

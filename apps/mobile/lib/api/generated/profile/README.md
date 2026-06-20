@@ -111,7 +111,7 @@ Class | Method | HTTP request | Description
 [*ProfileApi*](doc/ProfileApi.md) | [**getPublicGuardProfile**](doc/ProfileApi.md#getpublicguardprofile) | **GET** /guards/{id}/public | Assigned guard&#39;s public mini-profile (customer live-tracking map)
 [*ProfileApi*](doc/ProfileApi.md) | [**updateGuardProfile**](doc/ProfileApi.md#updateguardprofile) | **PUT** /profile/guard | Update the caller&#39;s EXISTING guard profile (role&#x3D;guard)
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardAvatar**](doc/ProfileApi.md#uploadguardavatar) | **POST** /profile/guard/{user_id}/avatar | Upload the guard&#39;s own profile picture
-[*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardDocument**](doc/ProfileApi.md#uploadguarddocument) | **POST** /profile/guard/{user_id}/documents | Upload one of the guard&#39;s own credential images
+[*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardDocument**](doc/ProfileApi.md#uploadguarddocument) | **POST** /profile/guard/{user_id}/documents | Upload one of a guard&#39;s credential images
 [*ProfileApi*](doc/ProfileApi.md) | [**upsertCustomerProfile**](doc/ProfileApi.md#upsertcustomerprofile) | **POST** /profile/customer | Create or update the caller&#39;s customer profile (profile_token OR logged-in customer)
 [*ProfileApi*](doc/ProfileApi.md) | [**upsertGuardProfile**](doc/ProfileApi.md#upsertguardprofile) | **POST** /profile/guard | Create or update the caller&#39;s guard profile (profile_token OR logged-in guard)
 
