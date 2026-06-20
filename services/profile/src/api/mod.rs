@@ -25,10 +25,11 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentResponse,
-    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, MyProfile, PublicGuardProfile,
-    RecipientsQuery, RecipientsResponse, RecruitCandidate, RejectRequest, StageRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentExpiry,
+    GuardDocumentResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
+    MyProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse, RecruitCandidate,
+    RejectRequest, SetDocumentExpiryRequest, StageRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -561,6 +562,75 @@ pub async fn get_guard_document<S: ProfileDeps>(
 #[derive(Debug, Deserialize)]
 pub struct GuardDocumentQuery {
     pub document_type: String,
+}
+
+// ----- GET/PUT /profile/guard/{user_id}/document-expiries — owner/admin view + edit -----
+
+/// GET `/profile/guard/{user_id}/document-expiries` — the guard's recorded credential expiry dates.
+/// OWNER-OR-ADMIN read (a guard sees their own on the "My documents" screen; an admin sees any).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, target = %user_id))]
+pub async fn list_guard_document_expiries<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<Vec<GuardDocumentExpiry>>>, AppError> {
+    if user.role != ROLE_ADMIN && user.user_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only read your own document expiries".to_string(),
+        ));
+    }
+    let rows = repo::list_document_expiries(state.db_read(), user_id).await?;
+    let out = rows
+        .into_iter()
+        .map(|r| GuardDocumentExpiry {
+            document_type: r.document_type,
+            expiry_date: r.expiry_date,
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(out)))
+}
+
+/// PUT `/profile/guard/{user_id}/document-expiry` — set/replace ONE credential's expiry date.
+/// OWNER-OR-ADMIN: a guard edits their OWN (post-approval), an admin may edit ANY guard's (audited).
+/// The `document_type` must be an expiring credential (the passbook has none) → else 400.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, target = %user_id))]
+pub async fn set_guard_document_expiry<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    Json(req): Json<SetDocumentExpiryRequest>,
+) -> Result<Json<ApiResponse<GuardDocumentExpiry>>, AppError> {
+    let is_admin = user.role == ROLE_ADMIN;
+    if !is_admin && user.user_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only edit your own document expiries".to_string(),
+        ));
+    }
+    if !EXPIRING_DOCUMENT_TYPES.contains(&req.document_type.as_str()) {
+        return Err(AppError::BadRequest(format!(
+            "document_type '{}' has no expiry date",
+            req.document_type
+        )));
+    }
+    // Accountability: an admin editing a guard's expiry on their behalf is recorded in the durable
+    // §30 audit sink (fail-loud), like the admin doc upload.
+    if is_admin && user.user_id != user_id {
+        let audit_target = format!("{user_id}/{}", req.document_type);
+        repo::record_access(
+            state.db(),
+            user.user_id,
+            "admin_set_document_expiry",
+            Some(&audit_target),
+        )
+        .await?;
+    }
+    let row =
+        repo::upsert_document_expiry(state.db(), user_id, &req.document_type, req.expiry_date)
+            .await?;
+    Ok(Json(ApiResponse::success(GuardDocumentExpiry {
+        document_type: row.document_type,
+        expiry_date: row.expiry_date,
+    })))
 }
 
 // ----- POST/GET /profile/guard/{user_id}/avatar — guard self-uploaded profile picture -----
@@ -1100,6 +1170,14 @@ mod tests {
                 .route(
                     "/profile/guard/{user_id}/avatar",
                     post(upload_guard_avatar::<TestDeps>).get(get_guard_avatar::<TestDeps>),
+                )
+                .route(
+                    "/profile/guard/{user_id}/document-expiries",
+                    get(list_guard_document_expiries::<TestDeps>),
+                )
+                .route(
+                    "/profile/guard/{user_id}/document-expiry",
+                    put(set_guard_document_expiry::<TestDeps>),
                 )
                 .route(
                     "/admin/guard-profiles",
@@ -1845,6 +1923,81 @@ mod tests {
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
         assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
+    }
+
+    #[tokio::test]
+    async fn document_expiries_get_idor_rejects_other_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard reads ONLY their own expiries — another guard's path → 403 (before any DB read).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/profile/guard/{}/document-expiries",
+                        Uuid::new_v4()
+                    ))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn document_expiry_put_idor_rejects_other_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard edits ONLY their own expiry — another guard's path → 403 (before any DB write).
+        let (tok, _uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/profile/guard/{}/document-expiry", Uuid::new_v4()))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"document_type":"id_card","expiry_date":"2028-01-01"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn document_expiry_put_rejects_non_expiring_type() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Own guard, but the passbook has no expiry → 400 (validated BEFORE any DB write).
+        let (tok, uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/profile/guard/{uid}/document-expiry"))
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        r#"{"document_type":"passbook_photo","expiry_date":"2028-01-01"}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     // ----- dual-auth: single-use, purpose-isolated profile_token -----

@@ -31,6 +31,10 @@ enum GuardCredential {
   final String labelEn;
 
   String label(bool isThai) => isThai ? labelTh : labelEn;
+
+  /// The passbook is a bank document, not an expiring credential (mirrors the server's
+  /// `EXPIRING_DOCUMENT_TYPES`). Only credentials with an expiry show the date + edit control.
+  bool get hasExpiry => this != GuardCredential.passbookPhoto;
 }
 
 /// One credential's state on the documents screen.
@@ -39,6 +43,7 @@ class DocSlot {
     required this.credential,
     this.uploaded = false,
     this.downloadUrl,
+    this.expiry,
     this.busy = false,
     this.error,
   });
@@ -52,7 +57,12 @@ class DocSlot {
   /// raw S3 key is never exposed by the server.
   final String? downloadUrl;
 
-  /// An upload for this credential is in flight.
+  /// The recorded expiry date for this credential, if any (loaded from
+  /// `GET …/document-expiries`). Null for the passbook (no expiry) or an unset credential. Shown
+  /// and editable on the documents screen.
+  final DateTime? expiry;
+
+  /// An upload (or an expiry save) for this credential is in flight.
   final bool busy;
 
   /// The last user-safe error for this slot (cleared when the next upload starts).
@@ -61,6 +71,8 @@ class DocSlot {
   DocSlot copyWith({
     bool? uploaded,
     String? downloadUrl,
+    DateTime? expiry,
+    bool clearExpiry = false,
     bool? busy,
     String? error,
     bool clearError = false,
@@ -69,6 +81,7 @@ class DocSlot {
       credential: credential,
       uploaded: uploaded ?? this.uploaded,
       downloadUrl: downloadUrl ?? this.downloadUrl,
+      expiry: clearExpiry ? null : (expiry ?? this.expiry),
       busy: busy ?? this.busy,
       error: clearError ? null : (error ?? this.error),
     );
@@ -102,14 +115,11 @@ class GuardDocumentsState {
 /// stored (one-shot, NO polling) and uploads a freshly-picked image to the dedicated own-only
 /// multipart endpoint.
 ///
-/// Expiry dates are intentionally NOT edited here. They are captured once at registration (folded
-/// into the single profile submit, which carries the full account number). The expiry itself lives
-/// in a SEPARATE table (`profile.document_expiry`) and never touches `guard_profiles`. The reason
-/// post-approval editing is deferred is only that no expiry-only endpoint is exposed yet: the one
-/// current write path is `POST/PUT /profile/guard`, which does a NON-coalescing column overwrite
-/// and reads `account_number` back masked, so round-tripping the profile to set an expiry would
-/// corrupt the bank account. The safe follow-up is a dedicated endpoint over the already-existing
-/// `repo::upsert_document_expiry` (which writes only `document_expiry`, never the bank fields).
+/// Expiry dates are loaded AND edited here via the dedicated own-or-admin endpoints
+/// (`GET/PUT /profile/guard/{id}/document-expir*`), which touch ONLY the separate
+/// `profile.document_expiry` table — never `guard_profiles`. (Round-tripping the profile to set an
+/// expiry would corrupt the bank account: `POST/PUT /profile/guard` does a non-coalescing column
+/// overwrite and reads `account_number` back masked — hence the dedicated path.)
 @riverpod
 class GuardDocumentsController extends _$GuardDocumentsController {
   bool _disposed = false;
@@ -135,7 +145,38 @@ class GuardDocumentsController extends _$GuardDocumentsController {
     final slots = await Future.wait([
       for (final c in GuardCredential.values) _probe(api, guardId, c),
     ]);
-    return GuardDocumentsState(guardId: guardId, slots: slots);
+    // Fold in any recorded expiry dates (best-effort — a failure leaves them null, never fails load).
+    return GuardDocumentsState(
+      guardId: guardId,
+      slots: await _withExpiries(api, guardId, slots),
+    );
+  }
+
+  /// Overlay the recorded expiry dates onto the freshly-probed [slots]
+  /// (`GET /profile/guard/{id}/document-expiries` → list of `{document_type, expiry_date}`).
+  Future<List<DocSlot>> _withExpiries(
+      PguardApi api, String guardId, List<DocSlot> slots) async {
+    try {
+      final data = await api.get('/profile/guard/$guardId/document-expiries');
+      final byType = <String, DateTime>{};
+      if (data is List) {
+        for (final e in data) {
+          if (e is Map<String, dynamic>) {
+            final t = e['document_type'] as String?;
+            final parsed = DateTime.tryParse(e['expiry_date'] as String? ?? '');
+            if (t != null && parsed != null) byType[t] = parsed;
+          }
+        }
+      }
+      return [
+        for (final s in slots)
+          byType.containsKey(s.credential.key)
+              ? s.copyWith(expiry: byType[s.credential.key])
+              : s,
+      ];
+    } catch (_) {
+      return slots;
+    }
   }
 
   Future<DocSlot> _probe(
@@ -202,6 +243,42 @@ class GuardDocumentsController extends _$GuardDocumentsController {
       return msg;
     } catch (_) {
       final msg = isThai ? 'อัปโหลดไม่สำเร็จ' : 'Upload failed';
+      _patchSlot(credential, (s) => s.copyWith(busy: false, error: msg));
+      return msg;
+    }
+  }
+
+  /// Set/replace [credential]'s expiry date via the dedicated own endpoint
+  /// (`PUT /profile/guard/{guardId}/document-expiry`). No-op for the passbook (no expiry). Returns
+  /// null on success or a user-safe error message.
+  Future<String?> setExpiry(GuardCredential credential, DateTime date) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    if (!credential.hasExpiry) return null;
+    final current = state.valueOrNull;
+    if (current == null) return isThai ? 'ยังไม่พร้อม' : 'Not ready';
+    if (current.slotFor(credential).busy) return null; // ignore a double-tap
+    _patchSlot(credential, (s) => s.copyWith(busy: true, clearError: true));
+
+    final api = ref.read(pguardApiProvider);
+    try {
+      // Date-only (YYYY-MM-DD) to match the server's `format: date` field.
+      final ymd = '${date.year.toString().padLeft(4, '0')}-'
+          '${date.month.toString().padLeft(2, '0')}-'
+          '${date.day.toString().padLeft(2, '0')}';
+      await api.put(
+        '/profile/guard/${current.guardId}/document-expiry',
+        data: {'document_type': credential.key, 'expiry_date': ymd},
+      );
+      _patchSlot(
+        credential,
+        (s) => s.copyWith(expiry: date, busy: false, clearError: true),
+      );
+      return null;
+    } on ApiException catch (e) {
+      _patchSlot(credential, (s) => s.copyWith(busy: false, error: e.message));
+      return e.message;
+    } catch (_) {
+      final msg = isThai ? 'บันทึกไม่สำเร็จ' : 'Save failed';
       _patchSlot(credential, (s) => s.copyWith(busy: false, error: msg));
       return msg;
     }

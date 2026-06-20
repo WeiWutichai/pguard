@@ -107,6 +107,22 @@ pub async fn list_expiring_documents(
     Ok(rows)
 }
 
+/// All recorded document expiries for ONE guard (the owner/admin view + edit). Ordered by type for
+/// a stable list.
+pub async fn list_document_expiries(
+    db: &PgPool,
+    guard_id: Uuid,
+) -> Result<Vec<DocumentExpiryRow>, AppError> {
+    let rows = sqlx::query_as::<_, DocumentExpiryRow>(
+        "SELECT id, guard_id, document_type, expiry_date, last_reminded_at \
+         FROM profile.document_expiry WHERE guard_id = $1 ORDER BY document_type",
+    )
+    .bind(guard_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 /// Upsert one guard document's expiry date — one row per (guard, document_type), keyed on the
 /// table's UNIQUE constraint so a later re-capture overwrites the date. Writes the PRIMARY (not
 /// the replica). Returns the resulting row for the response.

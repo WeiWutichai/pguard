@@ -34,6 +34,7 @@ lib/src/model/get_guard_document200_response.dart
 lib/src/model/get_my_profile200_response.dart
 lib/src/model/get_public_guard_profile200_response.dart
 lib/src/model/guard_avatar_response.dart
+lib/src/model/guard_document_expiry.dart
 lib/src/model/guard_document_response.dart
 lib/src/model/guard_profile.dart
 lib/src/model/inline_object.dart
@@ -42,12 +43,15 @@ lib/src/model/inline_object1_all_of_data.dart
 lib/src/model/inline_object2.dart
 lib/src/model/internal_guard.dart
 lib/src/model/internal_list_guards200_response.dart
+lib/src/model/list_guard_document_expiries200_response.dart
 lib/src/model/my_customer_profile.dart
 lib/src/model/my_guard_profile.dart
 lib/src/model/my_profile.dart
 lib/src/model/public_guard_profile.dart
 lib/src/model/recruit_candidate.dart
 lib/src/model/reject_request.dart
+lib/src/model/set_document_expiry_request.dart
+lib/src/model/set_guard_document_expiry200_response.dart
 lib/src/model/stage_request.dart
 lib/src/model/upsert_customer_profile_request.dart
 lib/src/model/upsert_guard_profile_request.dart

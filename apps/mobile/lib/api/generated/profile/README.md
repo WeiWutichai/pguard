@@ -109,6 +109,8 @@ Class | Method | HTTP request | Description
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
 [*ProfileApi*](doc/ProfileApi.md) | [**getMyProfile**](doc/ProfileApi.md#getmyprofile) | **GET** /profile/me | The caller&#39;s own profile (account number MASKED)
 [*ProfileApi*](doc/ProfileApi.md) | [**getPublicGuardProfile**](doc/ProfileApi.md#getpublicguardprofile) | **GET** /guards/{id}/public | Assigned guard&#39;s public mini-profile (customer live-tracking map)
+[*ProfileApi*](doc/ProfileApi.md) | [**listGuardDocumentExpiries**](doc/ProfileApi.md#listguarddocumentexpiries) | **GET** /profile/guard/{user_id}/document-expiries | The guard&#39;s recorded credential expiry dates
+[*ProfileApi*](doc/ProfileApi.md) | [**setGuardDocumentExpiry**](doc/ProfileApi.md#setguarddocumentexpiry) | **PUT** /profile/guard/{user_id}/document-expiry | Set/replace one credential&#39;s expiry date
 [*ProfileApi*](doc/ProfileApi.md) | [**updateGuardProfile**](doc/ProfileApi.md#updateguardprofile) | **PUT** /profile/guard | Update the caller&#39;s EXISTING guard profile (role&#x3D;guard)
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardAvatar**](doc/ProfileApi.md#uploadguardavatar) | **POST** /profile/guard/{user_id}/avatar | Upload the guard&#39;s own profile picture
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardDocument**](doc/ProfileApi.md#uploadguarddocument) | **POST** /profile/guard/{user_id}/documents | Upload one of a guard&#39;s credential images
@@ -138,6 +140,7 @@ Class | Method | HTTP request | Description
  - [GetMyProfile200Response](doc/GetMyProfile200Response.md)
  - [GetPublicGuardProfile200Response](doc/GetPublicGuardProfile200Response.md)
  - [GuardAvatarResponse](doc/GuardAvatarResponse.md)
+ - [GuardDocumentExpiry](doc/GuardDocumentExpiry.md)
  - [GuardDocumentResponse](doc/GuardDocumentResponse.md)
  - [GuardProfile](doc/GuardProfile.md)
  - [InlineObject](doc/InlineObject.md)
@@ -146,12 +149,15 @@ Class | Method | HTTP request | Description
  - [InlineObject2](doc/InlineObject2.md)
  - [InternalGuard](doc/InternalGuard.md)
  - [InternalListGuards200Response](doc/InternalListGuards200Response.md)
+ - [ListGuardDocumentExpiries200Response](doc/ListGuardDocumentExpiries200Response.md)
  - [MyCustomerProfile](doc/MyCustomerProfile.md)
  - [MyGuardProfile](doc/MyGuardProfile.md)
  - [MyProfile](doc/MyProfile.md)
  - [PublicGuardProfile](doc/PublicGuardProfile.md)
  - [RecruitCandidate](doc/RecruitCandidate.md)
  - [RejectRequest](doc/RejectRequest.md)
+ - [SetDocumentExpiryRequest](doc/SetDocumentExpiryRequest.md)
+ - [SetGuardDocumentExpiry200Response](doc/SetGuardDocumentExpiry200Response.md)
  - [StageRequest](doc/StageRequest.md)
  - [UpsertCustomerProfileRequest](doc/UpsertCustomerProfileRequest.md)
  - [UpsertGuardProfileRequest](doc/UpsertGuardProfileRequest.md)

@@ -149,6 +149,22 @@ pub const EXPIRING_DOCUMENT_TYPES: [&str; 5] = [
     "driver_license",
 ];
 
+/// One document's expiry as the OWNER (or an admin) sees/edits it — the slim public shape (no
+/// internal id / reminder bookkeeping). `GET /profile/guard/{id}/document-expiries`.
+#[derive(Debug, Serialize)]
+pub struct GuardDocumentExpiry {
+    pub document_type: String,
+    pub expiry_date: NaiveDate,
+}
+
+/// Body for `PUT /profile/guard/{id}/document-expiry` — set/replace ONE document's expiry. The
+/// `document_type` must be an [`EXPIRING_DOCUMENT_TYPES`] credential (the passbook has no expiry).
+#[derive(Debug, Deserialize)]
+pub struct SetDocumentExpiryRequest {
+    pub document_type: String,
+    pub expiry_date: NaiveDate,
+}
+
 /// One guard-document expiry row (`GET /admin/documents/expiring`). The web-admin client buckets
 /// by `expiry_date` (expired / 7 / 30 / 90 days). Populated by the guard profile submit
 /// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
