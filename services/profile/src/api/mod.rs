@@ -1172,6 +1172,14 @@ mod tests {
                     post(upload_guard_avatar::<TestDeps>).get(get_guard_avatar::<TestDeps>),
                 )
                 .route(
+                    "/profile/guard/{user_id}/document-expiries",
+                    get(list_guard_document_expiries::<TestDeps>),
+                )
+                .route(
+                    "/profile/guard/{user_id}/document-expiry",
+                    put(set_guard_document_expiry::<TestDeps>),
+                )
+                .route(
                     "/admin/guard-profiles",
                     get(admin_list_guard_profiles::<TestDeps>),
                 )
