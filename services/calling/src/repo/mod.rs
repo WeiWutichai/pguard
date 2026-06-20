@@ -124,6 +124,16 @@ pub async fn initiate(
 ) -> Result<CallResponse, AppError> {
     let mut tx = db.begin().await?;
 
+    // Serialize concurrent initiations against the SAME callee. Without this, two concurrent
+    // dials both pass the busy SELECT below under READ COMMITTED (neither sees the other's
+    // uncommitted row) and both COMMIT → two simultaneous `initiated` calls. The transaction-
+    // scoped advisory lock (keyed on callee_id) makes the busy check-then-INSERT atomic per
+    // callee; it auto-releases at tx end (commit OR rollback), so no row/index is needed.
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtext($1::text))")
+        .bind(callee_id)
+        .execute(&mut *tx)
+        .await?;
+
     // Busy guard: de-dupe rapid re-rings — a fresh dial within a 30s window of the callee's
     // last active call is refused. The window is intentionally bounded (anchored on
     // `started_at`) so a dead client mid-call can NEVER permanently lock the callee out; it is
