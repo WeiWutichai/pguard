@@ -414,18 +414,22 @@ class _JobsBody extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        if (active.isNotEmpty) ...[
-          _SectionHeader(
-            isThai ? 'งานที่กำลังทำ' : 'Active',
-            onSeeAll: () => context.push('/guard/jobs'),
-            seeAllLabel: isThai ? 'ดูทั้งหมด' : 'See all',
-          ),
+        // Always surface BOTH the in-progress and incoming sections (each with an empty state),
+        // so the dashboard's middle shows the guard's work even before any job lands.
+        _SectionHeader(
+          isThai ? 'งานที่กำลังทำ' : 'Active',
+          onSeeAll: () => context.push('/guard/jobs'),
+          seeAllLabel: isThai ? 'ดูทั้งหมด' : 'See all',
+        ),
+        if (active.isEmpty)
+          _EmptyActive(isThai: isThai)
+        else
           for (final b in active) ...[
             GuardJobCard(
                 booking: b, isThai: isThai, onTap: () => onOpenActive(b.id)),
             const SizedBox(height: PgTokens.space3),
           ],
-        ],
+        const SizedBox(height: PgTokens.space4),
         _SectionHeader(isThai
             ? (incoming.isEmpty
                 ? 'งานรอตอบรับ'
@@ -536,6 +540,30 @@ class _SectionHeader extends StatelessWidget {
           ],
         ),
       );
+}
+
+class _EmptyActive extends StatelessWidget {
+  const _EmptyActive({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSurface,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+        border: Border.all(color: PgTokens.colorBorder),
+      ),
+      child: Text(
+        isThai
+            ? 'ยังไม่มีงานที่กำลังทำ'
+            : 'No active jobs yet',
+        style: const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
+      ),
+    );
+  }
 }
 
 class _EmptyIncoming extends StatelessWidget {
