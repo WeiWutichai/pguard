@@ -32,7 +32,8 @@ pub async fn list_locations<S: PresenceDeps>(
         ));
     }
     let now = Utc::now();
-    let locations = repo::list_locations(state.db(), q.online_only)
+    // Heavy admin bulk read → read replica (C5.3); falls back to primary when unset.
+    let locations = repo::list_locations(state.db_read(), q.online_only)
         .await?
         .into_iter()
         .map(|row| to_location(row, now))
@@ -62,7 +63,8 @@ pub async fn guard_history<S: PresenceDeps>(
     Query(q): Query<HistoryQuery>,
 ) -> Result<Json<ApiResponse<Vec<HistoryPoint>>>, AppError> {
     authorize_guard_read(&state, &user, id).await?;
-    let history = repo::history(state.db(), id, q.limit, q.offset)
+    // Heavy paginated history read → read replica (C5.3); the authz gate above ran first.
+    let history = repo::history(state.db_read(), id, q.limit, q.offset)
         .await?
         .into_iter()
         .map(HistoryPoint::from)

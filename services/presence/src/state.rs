@@ -47,6 +47,10 @@ impl BookingAuthz for DbBookingAuthz {
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
+    /// Read-replica pool (C5.3) for the heavy admin/bulk reads (`/locations`, `/guards/{id}/
+    /// history`); falls back to the primary URL when `DATABASE_READ_URL` is unset. The WS
+    /// ingress writes (upsert/insert/set_offline) + the IDOR authz read stay on `db`.
+    pub db_read: PgPool,
     /// Cache Redis — the `AuthUser` jti/force-revoke blocklist + the WS re-auth tick.
     pub redis_cache: redis::aio::ConnectionManager,
     /// Pub/sub Redis — republish raw GPS to the admin live map (channel `presence:gps`).
@@ -75,6 +79,11 @@ pub trait PresenceDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Authz: BookingAuthz;
 
     fn db(&self) -> &PgPool;
+    /// Read-replica pool for the heavy admin/bulk reads (`/locations`, `/guards/{id}/history`)
+    /// — C5.3. Defaults to the primary; the WS writes + the IDOR authz read stay on `db`.
+    fn db_read(&self) -> &PgPool {
+        self.db()
+    }
     fn booking_authz(&self) -> &Self::Authz;
     /// Redis connection raw GPS is published on (WS path).
     fn redis_pub(&self) -> &redis::aio::ConnectionManager;
@@ -85,6 +94,9 @@ impl PresenceDeps for AppState {
 
     fn db(&self) -> &PgPool {
         &self.db
+    }
+    fn db_read(&self) -> &PgPool {
+        &self.db_read
     }
     fn booking_authz(&self) -> &Self::Authz {
         &self.booking_authz

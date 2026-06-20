@@ -59,23 +59,26 @@ pub async fn purge_older_than(pool: &PgPool, cutoff: DateTime<Utc>) -> Result<u6
 // Live position store (`guard_locations`) — WS ingress writes, reads serve the map/APIs.
 // =============================================================================
 
-/// Upsert the guard's CURRENT position from a (validated) fix: sets `is_online = true` and
-/// advances `recorded_at` to the supplied server timestamp. Called only for a real GPS fix —
+/// Upsert the guard's CURRENT position from a (validated) fix: sets `is_online = true`, advances
+/// `recorded_at` to the supplied server timestamp, and stamps the OWNING session's id so the
+/// offline write can be fenced to it (see [`set_offline`]). Called only for a real GPS fix —
 /// never for a keep-alive (so a guard who lost GPS but holds the socket does not stay fresh).
 pub async fn upsert_location(
     db: &PgPool,
     guard_id: Uuid,
+    session: Uuid,
     recorded_at: DateTime<Utc>,
     fix: &GpsUpdate,
 ) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO presence.guard_locations \
-             (guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, true) \
+             (guard_id, lat, lng, accuracy, heading, speed, recorded_at, is_online, connected_session) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, true, $8) \
          ON CONFLICT (guard_id) DO UPDATE SET \
              lat = EXCLUDED.lat, lng = EXCLUDED.lng, \
              accuracy = EXCLUDED.accuracy, heading = EXCLUDED.heading, speed = EXCLUDED.speed, \
-             recorded_at = EXCLUDED.recorded_at, is_online = true",
+             recorded_at = EXCLUDED.recorded_at, is_online = true, \
+             connected_session = EXCLUDED.connected_session",
     )
     .bind(guard_id)
     .bind(fix.lat)
@@ -84,6 +87,7 @@ pub async fn upsert_location(
     .bind(fix.heading)
     .bind(fix.speed)
     .bind(recorded_at)
+    .bind(session)
     .execute(db)
     .await?;
     Ok(())
@@ -114,12 +118,21 @@ pub async fn insert_history(
 
 /// Mark the guard offline (WS disconnect / zombie reap). Does NOT touch `recorded_at` — the
 /// last fix's timestamp is preserved so freshness reflects when GPS was actually last seen.
-/// A no-op if the guard never sent a fix (no row) — they were never on the map.
-pub async fn set_offline(db: &PgPool, guard_id: Uuid) -> Result<(), AppError> {
-    sqlx::query("UPDATE presence.guard_locations SET is_online = false WHERE guard_id = $1")
-        .bind(guard_id)
-        .execute(db)
-        .await?;
+///
+/// FENCED on `session`: only the session that currently OWNS the row (its id was stamped by the
+/// last [`upsert_location`]) may flip it offline. A late-closing OLD socket whose
+/// `connected_session` no longer matches is a no-op — so it can never clobber a freshly
+/// reconnected LIVE session offline (last-disconnect-wins is gone). Also a no-op if the guard
+/// never sent a fix (no row, or `connected_session` still NULL) — they were never on the map.
+pub async fn set_offline(db: &PgPool, guard_id: Uuid, session: Uuid) -> Result<(), AppError> {
+    sqlx::query(
+        "UPDATE presence.guard_locations SET is_online = false \
+         WHERE guard_id = $1 AND connected_session = $2",
+    )
+    .bind(guard_id)
+    .bind(session)
+    .execute(db)
+    .await?;
     Ok(())
 }
 
@@ -319,9 +332,10 @@ mod tests {
             return;
         };
         let guard = Uuid::new_v4();
+        let session = Uuid::new_v4();
         let now = Utc::now();
 
-        upsert_location(&pool, guard, now, &fix(13.75, 100.50))
+        upsert_location(&pool, guard, session, now, &fix(13.75, 100.50))
             .await
             .expect("upsert");
         insert_history(&pool, guard, now, &fix(13.75, 100.50))
@@ -338,8 +352,8 @@ mod tests {
         let online = list_locations(&pool, true).await.expect("list online");
         assert!(online.iter().any(|r| r.guard_id == guard));
 
-        // Disconnect → offline, recorded_at untouched.
-        set_offline(&pool, guard).await.expect("offline");
+        // Disconnect → offline, recorded_at untouched. Fenced on the OWNING session.
+        set_offline(&pool, guard, session).await.expect("offline");
         let row2 = latest_location(&pool, guard).await.expect("latest2");
         assert!(!row2.is_online, "disconnect sets offline");
         assert_eq!(
@@ -359,6 +373,58 @@ mod tests {
             .execute(&pool)
             .await;
         let _ = sqlx::query("DELETE FROM presence.location_history WHERE user_id = $1")
+            .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The stale-socket clobber fix: a LATE-closing OLD session must NOT flip a freshly
+    /// reconnected LIVE session offline. After session B's fix owns the row, session A's
+    /// `set_offline` (stale `connected_session`) is a no-op — the guard stays online.
+    #[tokio::test]
+    async fn stale_session_offline_does_not_clobber_live_reconnect() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the stale-session fence test");
+            return;
+        };
+        let guard = Uuid::new_v4();
+        let session_a = Uuid::new_v4();
+        let session_b = Uuid::new_v4();
+        let now = Utc::now();
+
+        // Session A connects + sends a fix → owns the row, online.
+        upsert_location(&pool, guard, session_a, now, &fix(13.75, 100.50))
+            .await
+            .expect("A upsert");
+        // Guard reconnects as session B + sends a fix → B now owns the row.
+        upsert_location(
+            &pool,
+            guard,
+            session_b,
+            now + Duration::seconds(1),
+            &fix(13.76, 100.51),
+        )
+        .await
+        .expect("B upsert");
+
+        // A's late close fires set_offline for the OLD session → fenced out, no-op.
+        set_offline(&pool, guard, session_a)
+            .await
+            .expect("A stale offline");
+        let row = latest_location(&pool, guard).await.expect("latest");
+        assert!(
+            row.is_online,
+            "a stale OLD session must not flip the live reconnected session offline"
+        );
+
+        // B's own close DOES set offline (it owns the row).
+        set_offline(&pool, guard, session_b)
+            .await
+            .expect("B offline");
+        let row2 = latest_location(&pool, guard).await.expect("latest2");
+        assert!(!row2.is_online, "the owning session can set itself offline");
+
+        let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = $1")
             .bind(guard)
             .execute(&pool)
             .await;
