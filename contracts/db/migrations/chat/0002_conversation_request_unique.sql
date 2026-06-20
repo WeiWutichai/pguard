@@ -12,9 +12,17 @@
 -- CREATE [UNIQUE] INDEX CONCURRENTLY (CLAUDE.md "Data") — runs outside a transaction (the
 -- migrator applies each file in autocommit; this file has no BEGIN/COMMIT).
 --
--- NOTE: if pre-existing duplicate request_id rows exist, the CONCURRENTLY build will fail and
--- the index lands INVALID; de-dup first (keep the oldest conversation per request_id) then
--- REINDEX. A fresh v2 environment has none, so the normal path is a clean build.
+-- De-dup pre-existing duplicate request_id rows FIRST so the CONCURRENTLY unique build can't land
+-- INVALID on an environment that accumulated duplicates under the old plain index. Keep the OLDEST
+-- conversation per request_id (the canonical thread); a dropped duplicate's messages/participants/
+-- receipts become unreachable (no cross-row FK) — acceptable in v2 (no production users). Runs in
+-- its OWN transaction; the CONCURRENTLY statements below must stay outside any tx.
+BEGIN;
+DELETE FROM chat.conversations a
+USING chat.conversations b
+WHERE a.request_id = b.request_id
+  AND (a.created_at, a.id) > (b.created_at, b.id);
+COMMIT;
 
 -- The unique index also serves every existing `request_id` lookup (the status-push UPDATE +
 -- the by-request reads), so the old plain index is now redundant — drop it to avoid a
