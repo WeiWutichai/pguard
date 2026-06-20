@@ -187,6 +187,22 @@ async fn session<S: ChatDeps>(socket: WebSocket, user: AuthUser, token: Option<S
                     let _ = sink.send(Message::Close(None)).await;
                     break;
                 }
+                // RE-PREFETCH the authorized-rooms set: a conversation created/added AFTER connect
+                // (e.g. the booking conversation created once this recipient is online) is otherwise
+                // never in the set — the user joined only via SENDS, so an inbound-only recipient
+                // would silently drop every realtime message for it. Replacing the set on each tick
+                // (≤60s lag) closes that gap with one cheap query per session per interval. (Admins
+                // use the wildcard bypass, so they skip this.)
+                if !is_admin {
+                    match repo::participant_conversation_ids(state.db(), uid).await {
+                        Ok(ids) => {
+                            authorized.clear();
+                            authorized.extend(ids);
+                        }
+                        // Keep the existing set on a transient DB error — never widen access on failure.
+                        Err(e) => tracing::warn!(user = %uid, "chat ws reauth room re-prefetch failed: {e}"),
+                    }
+                }
                 if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
                     break;
                 }
@@ -233,6 +249,17 @@ mod tests {
 
     const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-chatws-test!!!!!";
 
+    use crate::booking_client::{BookingReader, InternalBooking};
+
+    /// No-op [`BookingReader`] stub — the WS path never reads booking (create-conversation does).
+    #[derive(Clone)]
+    struct StubBooking;
+    impl BookingReader for StubBooking {
+        async fn get_booking(&self, _booking_id: Uuid) -> Result<InternalBooking, AppError> {
+            Err(AppError::NotFound("Booking not found".to_string()))
+        }
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
@@ -240,6 +267,7 @@ mod tests {
         redis: redis::aio::ConnectionManager,
         pubsub_client: redis::Client,
         s3: S3Client,
+        booking: StubBooking,
     }
     impl HasJwtSecret for TestDeps {
         fn jwt_secret(&self) -> &str {
@@ -253,6 +281,7 @@ mod tests {
         }
     }
     impl ChatDeps for TestDeps {
+        type Booking = StubBooking;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
@@ -267,6 +296,9 @@ mod tests {
         }
         fn s3(&self) -> &S3Client {
             &self.s3
+        }
+        fn booking(&self) -> &StubBooking {
+            &self.booking
         }
     }
 
@@ -300,6 +332,7 @@ mod tests {
             redis,
             pubsub_client: client,
             s3: s3_stub(),
+            booking: StubBooking,
         };
         Some(
             Router::new()
@@ -461,6 +494,14 @@ mod tests {
                 b"unused-service-secret-for-this-chat-ws-e2e-only!!!!",
             ),
             s3: s3_stub(),
+            // The WS path never reads booking (the conversation is seeded directly above); the
+            // reader points at an unused address.
+            booking: crate::booking_client::HttpBookingReader::new(
+                reqwest::Client::new(),
+                "http://127.0.0.1:1".to_string(),
+                EncodingKey::from_secret(b"unused-service-secret-for-this-chat-ws-e2e-only!!!!"),
+                60,
+            ),
         };
         let app = Router::new()
             .route("/ws/chat", get(ws_chat::<AppState>))

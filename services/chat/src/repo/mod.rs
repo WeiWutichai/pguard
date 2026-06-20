@@ -80,9 +80,13 @@ pub struct OutboxRow {
 
 // ----- Create -----
 
-/// Create a conversation + its participants in ONE transaction. The booking-derived role +
-/// display data are stored on `chat.participants` so the enriched list needs no cross-schema
-/// reach. Roles are validated (`guard`/`customer`).
+/// GET-OR-CREATE a conversation + its participants in ONE transaction (idempotent on
+/// `request_id`). The booking-derived role + display data are stored on `chat.participants` so
+/// the enriched list needs no cross-schema reach. Roles are validated (`guard`/`customer`).
+///
+/// `request_id` is UNIQUE (migration 0002): on a concurrent/repeat call the
+/// `ON CONFLICT (request_id) DO NOTHING` insert returns no row, so we read the EXISTING
+/// conversation back and return it (no duplicate accumulates, the original participants stand).
 pub async fn create_conversation(
     db: &sqlx::PgPool,
     req: &CreateConversationRequest,
@@ -103,18 +107,36 @@ pub async fn create_conversation(
 
     let mut tx = db.begin().await?;
 
-    let conv = sqlx::query_as::<_, ConversationResponse>(
+    // Idempotent insert: a second call for the same request_id conflicts and inserts nothing.
+    let inserted = sqlx::query_as::<_, ConversationResponse>(
         "INSERT INTO chat.conversations (request_id, request_status) VALUES ($1, $2) \
+         ON CONFLICT (request_id) DO NOTHING \
          RETURNING id, request_id, request_status, created_at",
     )
     .bind(req.request_id)
     .bind(&req.request_status)
-    .fetch_one(&mut *tx)
+    .fetch_optional(&mut *tx)
     .await?;
 
-    for p in &req.participants {
-        insert_participant(&mut tx, conv.id, p).await?;
-    }
+    let conv = match inserted {
+        Some(conv) => {
+            // Fresh row → seed the participants (the conversation's authoritative members).
+            for p in &req.participants {
+                insert_participant(&mut tx, conv.id, p).await?;
+            }
+            conv
+        }
+        None => {
+            // Already existed → return it untouched (GET-OR-CREATE; don't re-seed participants).
+            sqlx::query_as::<_, ConversationResponse>(
+                "SELECT id, request_id, request_status, created_at \
+                 FROM chat.conversations WHERE request_id = $1",
+            )
+            .bind(req.request_id)
+            .fetch_one(&mut *tx)
+            .await?
+        }
+    };
 
     tx.commit().await?;
     Ok(conv)

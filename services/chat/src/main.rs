@@ -16,6 +16,7 @@
 //! `s3/` (upload + presign), `events/` (relay + pub/sub), `api/` (REST + WS).
 
 mod api;
+mod booking_client;
 mod domain;
 mod events;
 mod models;
@@ -32,6 +33,7 @@ use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJw
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::{create_connection_manager, create_redis_client};
 
+use crate::booking_client::HttpBookingReader;
 use crate::s3::S3Client;
 use crate::state::AppState;
 
@@ -53,9 +55,14 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
-    // chat exposes a service-JWT'd `/internal` endpoint (booking → request-status push); it only
-    // VALIDATES tokens, so it needs the decoding side of the shared service secret.
+    // chat exposes a service-JWT'd `/internal` endpoint (booking → request-status push) AND mints
+    // its own service-JWT to read booking's `/internal/bookings/{id}` (authoritative conversation
+    // identity at create time) — so it needs BOTH sides of the shared service secret.
     let service_jwt_config = ServiceJwtConfig::from_env()?;
+    // Booking internal-read upstream (service-JWT'd; makes conversation identity authoritative at
+    // create time). Same env var the other booking-internal consumers use (calling/rating).
+    let booking_url =
+        std::env::var("BOOKING_URL").unwrap_or_else(|_| "http://localhost:3005".to_string());
     let s3_config = S3Config::from_env()?;
     let s3_region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
     // Client-facing GET URLs are signed for the PUBLIC host (falls back to the internal endpoint
@@ -103,6 +110,19 @@ async fn main() -> anyhow::Result<()> {
         s3_config.secret_key,
     );
 
+    // Bounded timeouts so a stalled booking can't hang a create-conversation request.
+    let booking_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(2))
+        .build()
+        .context("build booking HTTP client")?;
+    let booking = HttpBookingReader::new(
+        booking_http,
+        booking_url,
+        service_jwt_config.encoding_key,
+        service_jwt_config.ttl_secs,
+    );
+
     let state = AppState {
         db: db.clone(),
         db_read,
@@ -112,6 +132,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_decoding_key: service_jwt_config.decoding_key,
         s3,
+        booking,
     };
 
     // --- background outbox relay (publishes chat.message_sent events) ---
