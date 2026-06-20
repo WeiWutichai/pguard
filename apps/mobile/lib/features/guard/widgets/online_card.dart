@@ -45,6 +45,14 @@ class OnlineCard extends ConsumerWidget {
       decoration: BoxDecoration(
         color: PgTokens.colorBrand,
         borderRadius: BorderRadius.circular(20),
+        // Design hero `.online-card` carries --sh-sm: a soft, small elevation.
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x14000000),
+            blurRadius: 10,
+            offset: Offset(0, 2),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,

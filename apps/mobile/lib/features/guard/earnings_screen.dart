@@ -104,8 +104,9 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                     // The "Recent" list is an all-time activity feed (newest-first), independent of
                     // the Day/Week/Month selector above — matching the mockup's flat "รายการล่าสุด".
                     Padding(
-                      padding: const EdgeInsets.fromLTRB(PgTokens.space5,
-                          PgTokens.space5, PgTokens.space5, PgTokens.space2),
+                      // Design separates 'รายการล่าสุด' from the chart by ~28px above.
+                      padding: const EdgeInsets.fromLTRB(
+                          PgTokens.space5, 28, PgTokens.space5, PgTokens.space2),
                       child: Text(
                         isThai ? 'รายการล่าสุด' : 'Recent',
                         style: const TextStyle(
@@ -335,8 +336,9 @@ class _EarningsRow extends StatelessWidget {
     ].join(' · ');
 
     return Container(
+      // Design `.prow` insets rows by 16px horizontally (align with the section header edge).
       padding:
-          const EdgeInsets.symmetric(horizontal: PgTokens.space5, vertical: 14),
+          const EdgeInsets.symmetric(horizontal: PgTokens.space4, vertical: 14),
       decoration: const BoxDecoration(
         border: Border(bottom: BorderSide(color: PgTokens.colorBorder)),
       ),

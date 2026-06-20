@@ -73,7 +73,8 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
                     child: current.isEmpty
                         ? _Empty(isThai: isThai, tab: _tab)
                         : ListView.separated(
-                            padding: const EdgeInsets.fromLTRB(20, 4, 20, 20),
+                            // Tabs already supply ~12px below; match the design's tab→card gap.
+                            padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
                             itemCount: current.length,
                             separatorBuilder: (_, __) =>
                                 const SizedBox(height: 12),
