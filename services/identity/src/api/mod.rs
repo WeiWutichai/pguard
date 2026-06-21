@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use shared::auth::{
     build_clear_cookie, build_cookie, decode_jwt_with_key, decode_phone_verify_token,
-    encode_jwt_with_key, encode_profile_token, extract_cookie_value, AuthUser, ACCESS_TOKEN_COOKIE,
+    decode_profile_token, encode_jwt_with_key, encode_profile_token, extract_cookie_value,
+    AuthUser, ACCESS_TOKEN_COOKIE, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
     REFRESH_TOKEN_COOKIE,
 };
 use shared::error::AppError;
@@ -20,7 +21,8 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::rotation::{decide, RotationDecision};
 use crate::domain::{registration, token};
 use crate::models::{
-    LoginRequest, MeResponse, RefreshRequest, RegisterRequest, RegisterResult, TokenPair,
+    LoginRequest, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
+    ReissueProfileTokenRequest, TokenPair,
 };
 use crate::repo;
 use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
@@ -180,6 +182,80 @@ pub async fn register<S: RegisterDeps>(
 
     // 7) 202 Accepted — NO tokens, NO session row. The client submits its profile with the
     //    profile_token, then waits for approval before it can log in.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::success(RegisterResult {
+            user_id,
+            profile_token,
+        })),
+    ))
+}
+
+// ----- POST /auth/register/reissue -----
+
+/// Switch a still-PENDING account's role WITHOUT re-OTP. The single-use `phone_verified_token`
+/// is already spent by the first `register`, so the onboarding "back → pick another role" path
+/// authenticates with the still-valid `profile_token` from that register (presented as the Bearer):
+/// we decode it (either onboarding purpose) to the `user_id`, update the role (pending accounts
+/// only), CONSUME the old profile token's jti, and mint+return a fresh profile_token for the new
+/// role. The phone-verify token stays single-use; only the role choice is reversible, and only
+/// within the profile token's short lifetime.
+#[tracing::instrument(skip_all)]
+pub async fn reissue_profile_token<S: RegisterDeps>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(req): Json<ReissueProfileTokenRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let role = registration::validate_registration_role(&req.role)?;
+
+    // Auth: the prior register's profile_token (Bearer). Accept EITHER onboarding purpose so a
+    // guard→customer (or customer→guard) switch both resolve; a doc-upload / access / forged token
+    // matches neither and is rejected. The decode also yields the old jti to consume.
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .ok_or_else(|| AppError::Unauthorized("Missing registration token".to_string()))?;
+    let (user_id, old_jti) =
+        decode_profile_token(presented, state.jwt_decoding_key(), PROFILE_PURPOSE_GUARD)
+            .or_else(|_| {
+                decode_profile_token(
+                    presented,
+                    state.jwt_decoding_key(),
+                    PROFILE_PURPOSE_CUSTOMER,
+                )
+            })
+            .map_err(|_| {
+                AppError::Unauthorized(
+                    "Registration token is invalid or expired".to_string(),
+                )
+            })?;
+
+    // Update the role — pending accounts only (a non-pending phone → Conflict: "log in instead").
+    repo::update_pending_user_role(state.db(), user_id, &role.to_string()).await?;
+
+    // Consume the OLD profile token's jti so it can never also be used (single-use preserved).
+    let mut redis = state.redis();
+    let _: Option<String> = redis::cmd("GETDEL")
+        .arg(format!("profile_jti:{old_jti}"))
+        .query_async(&mut redis)
+        .await?;
+
+    // Mint the new-role profile token (same TTL + jti marker as register step 6).
+    let purpose = registration::profile_purpose_for_role(&role)?;
+    let (profile_token, profile_jti) = encode_profile_token(
+        user_id,
+        purpose,
+        state.jwt_encoding_key(),
+        PROFILE_TOKEN_TTL_MINUTES,
+    )?;
+    let ttl_secs = (PROFILE_TOKEN_TTL_MINUTES * 60 + PROFILE_JTI_SKEW_BUFFER_SECS) as u64;
+    redis
+        .set_ex::<_, _, ()>(format!("profile_jti:{profile_jti}"), "valid", ttl_secs)
+        .await?;
+
+    tracing::info!(%user_id, role = %role, "pending account role switched (profile token reissued)");
+
     Ok((
         StatusCode::ACCEPTED,
         Json(ApiResponse::success(RegisterResult {

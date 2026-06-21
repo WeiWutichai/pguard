@@ -28,6 +28,15 @@ pub struct RegisterRequest {
     pub pin_hash: String,
 }
 
+/// Switch a still-PENDING account's role without re-OTP. Authenticated by the still-valid
+/// single-use `profile_token` from the prior register (presented as the Bearer), so the
+/// onboarding "back → pick another role" path works within the profile token's lifetime.
+#[derive(Debug, Deserialize)]
+pub struct ReissueProfileTokenRequest {
+    /// The newly-chosen `guard` | `customer` role.
+    pub role: String,
+}
+
 // ----- Responses -----
 
 /// Issued token pair. Also mirrored into httpOnly cookies on the response.

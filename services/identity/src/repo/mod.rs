@@ -158,6 +158,36 @@ pub async fn upsert_pending_user(
     })
 }
 
+/// Switch a PENDING account's role (the onboarding "pick another role" path). Pending accounts
+/// only — a non-pending row is left untouched and the caller gets a Conflict ("log in instead"),
+/// mirroring [`upsert_pending_user`]. No password/phone change.
+pub async fn update_pending_user_role(
+    db: &PgPool,
+    user_id: Uuid,
+    role: &str,
+) -> Result<(), AppError> {
+    let res = sqlx::query(
+        r#"
+        UPDATE identity.users
+           SET role = $2::identity.user_role,
+               updated_at = now()
+         WHERE id = $1
+           AND approval_status = 'pending'::identity.approval_status
+        "#,
+    )
+    .bind(user_id)
+    .bind(role)
+    .execute(db)
+    .await?;
+
+    if res.rows_affected() == 0 {
+        return Err(AppError::Conflict(
+            "This account can no longer change role. Please log in instead.".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 /// Outcome of consuming a `user.approved` event.
 #[derive(Debug, PartialEq, Eq)]
 pub enum ApprovedOutcome {
