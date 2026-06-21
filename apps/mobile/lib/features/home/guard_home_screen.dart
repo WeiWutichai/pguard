@@ -198,8 +198,7 @@ class _GreetingHeader extends ConsumerWidget {
                   style: const TextStyle(
                       color: PgTokens.colorGreen800,
                       fontWeight: FontWeight.w600))
-              : const Icon(Icons.person_outline,
-                  color: PgTokens.colorGreen800),
+              : const Icon(Icons.person_outline, color: PgTokens.colorGreen800),
         ),
         const SizedBox(width: PgTokens.space3),
         Expanded(
@@ -303,26 +302,32 @@ class _StatsRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final now = DateTime.now();
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Expanded(
-          child: _StatCard(
-            value:
-                Money.format(GuardHomeStats.earningsTodaySatang(bookings, now)),
-            label: isThai ? 'รายได้วันนี้' : 'Today',
+    // Bound the row's height: CrossAxisAlignment.stretch (equal-height cards) needs a FINITE
+    // height, but this Row sits directly in a ListView (UNBOUNDED height). Without IntrinsicHeight
+    // the constraint is h=∞ → in release (asserts off) the row grows unbounded and pushes the jobs
+    // sections below it OFF-SCREEN (the home looked "empty"); debug throws a RenderFlex assert.
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _StatCard(
+              value: Money.format(
+                  GuardHomeStats.earningsTodaySatang(bookings, now)),
+              label: isThai ? 'รายได้วันนี้' : 'Today',
+            ),
           ),
-        ),
-        const SizedBox(width: PgTokens.space3),
-        Expanded(
-          child: _StatCard(
-            value: '${GuardHomeStats.jobsToday(bookings, now)}',
-            label: isThai ? 'งานวันนี้' : 'Jobs',
+          const SizedBox(width: PgTokens.space3),
+          Expanded(
+            child: _StatCard(
+              value: '${GuardHomeStats.jobsToday(bookings, now)}',
+              label: isThai ? 'งานวันนี้' : 'Jobs',
+            ),
           ),
-        ),
-        const SizedBox(width: PgTokens.space3),
-        Expanded(child: _RatingStatCard(isThai: isThai)),
-      ],
+          const SizedBox(width: PgTokens.space3),
+          Expanded(child: _RatingStatCard(isThai: isThai)),
+        ],
+      ),
     );
   }
 }
@@ -557,9 +562,7 @@ class _EmptyActive extends StatelessWidget {
         border: Border.all(color: PgTokens.colorBorder),
       ),
       child: Text(
-        isThai
-            ? 'ยังไม่มีงานที่กำลังทำ'
-            : 'No active jobs yet',
+        isThai ? 'ยังไม่มีงานที่กำลังทำ' : 'No active jobs yet',
         style: const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
       ),
     );
