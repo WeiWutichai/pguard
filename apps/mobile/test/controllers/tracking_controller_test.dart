@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/tracking_controller.dart';
 import 'package:pguard_mobile/core/models/tracking.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
+import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
@@ -17,6 +18,10 @@ void main() {
       presenceFeedBuilderProvider.overrideWithValue((_) => feed),
       locationServiceProvider.overrideWithValue(loc),
       pguardApiProvider.overrideWithValue(FakeApi()),
+      // goOnline() now requests location permission on every path — grant it in the fake so the
+      // test exercises the connect/stream path (the real gate would hit platform channels).
+      permissionGateProvider
+          .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
       appStoreProvider
           .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
@@ -78,5 +83,22 @@ void main() {
     expect(c.read(trackingControllerProvider).online, isTrue);
     await ctrl.toggle();
     expect(c.read(trackingControllerProvider).online, isFalse);
+  });
+
+  test('goOnline requests location permission (OS dialog shows on every path, incl. the duty FAB)',
+      () async {
+    final gate = FakePermissionGate(PgPermissionState.granted);
+    final c = ProviderContainer(overrides: [
+      presenceFeedBuilderProvider.overrideWithValue((_) => FakePresenceFeed()),
+      locationServiceProvider.overrideWithValue(FakeLocationService()),
+      pguardApiProvider.overrideWithValue(FakeApi()),
+      permissionGateProvider.overrideWithValue(gate),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+    ]);
+    addTearDown(c.dispose);
+    expect(gate.requestCount, 0);
+    await c.read(trackingControllerProvider.notifier).goOnline();
+    expect(gate.requestCount, 1, reason: 'goOnline must request the location permission');
   });
 }

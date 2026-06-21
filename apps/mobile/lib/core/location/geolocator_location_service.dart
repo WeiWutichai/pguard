@@ -1,3 +1,5 @@
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform;
 import 'package:geolocator/geolocator.dart';
 
 import '../models/geo.dart';
@@ -35,9 +37,29 @@ class GeolocatorLocationService implements LocationService {
   const GeolocatorLocationService();
 
   /// Continuous uplink: high accuracy, emit only after ~15 m of movement so a STATIONARY guard
-  /// does not flood the presence WebSocket (event-driven; no `Timer.periodic`).
-  static const LocationSettings _stream =
-      LocationSettings(accuracy: LocationAccuracy.high, distanceFilter: 15);
+  /// does not flood the presence WebSocket (event-driven; no `Timer.periodic`). On Android the
+  /// stream runs inside a FOREGROUND SERVICE (a persistent notification) so the uplink keeps going
+  /// with the screen off / app backgrounded — a guard waiting for jobs stays trackable.
+  static LocationSettings _streamSettings() {
+    const accuracy = LocationAccuracy.high;
+    const distanceFilter = 15;
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return AndroidSettings(
+        accuracy: accuracy,
+        distanceFilter: distanceFilter,
+        foregroundNotificationConfig: const ForegroundNotificationConfig(
+          notificationTitle: 'pguard • พร้อมรับงาน',
+          notificationText: 'กำลังแชร์ตำแหน่งเพื่อรับงานใกล้คุณ',
+          enableWakeLock: true,
+          setOngoing: true,
+          notificationIcon:
+              AndroidResource(name: 'ic_launcher', defType: 'mipmap'),
+        ),
+      );
+    }
+    return const LocationSettings(
+        accuracy: accuracy, distanceFilter: distanceFilter);
+  }
 
   /// True only when the GPS hardware is on AND the OS permission is already granted. Read-only —
   /// never prompts (the rationale screen owns the request).
@@ -66,7 +88,7 @@ class GeolocatorLocationService implements LocationService {
   @override
   Stream<GpsSample> positionStream() async* {
     if (!await _ready()) return; // empty stream when not granted / GPS off
-    yield* Geolocator.getPositionStream(locationSettings: _stream)
+    yield* Geolocator.getPositionStream(locationSettings: _streamSettings())
         .map(sampleFromPosition)
         .handleError((Object _) {}); // swallow transient platform errors
   }
