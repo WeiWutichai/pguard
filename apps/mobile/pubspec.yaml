@@ -81,6 +81,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  # Bundled illustrations (role-chooser hero, etc.).
+  assets:
+    - assets/images/
   # Brand typefaces per the hi-fi design (tokens.css --font-thai / --font-mono): bundled
   # OFL TTFs (assets/fonts, from google/fonts) — self-contained, no runtime fetch.
   fonts:
