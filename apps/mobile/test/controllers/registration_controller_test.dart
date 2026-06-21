@@ -199,6 +199,36 @@ void main() {
   });
 
   test(
+      'switch role without re-OTP: register reissues a customer token from a leftover guard token',
+      () async {
+    // After registering as guard, the single-use phone-verify token is spent. Backing out and
+    // picking "customer" must NOT dead-end with "expired" — it re-issues a correct-role token via
+    // the still-valid (guard) profile_token (POST /auth/register/reissue).
+    final guardTok =
+        fakeJwt({'sub': 'u1', 'purpose': 'guard_profile', 'exp': 9999999999});
+    final customerTok = fakeJwt(
+        {'sub': 'u1', 'purpose': 'customer_profile', 'exp': 9999999999});
+    final store = InMemoryStore()..profileToken = guardTok; // leftover guard token, no pvt
+    final prefs = FakePrefsStore();
+    String? reissueRole;
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/auth/register/reissue');
+      reissueRole = (data as Map<String, dynamic>)['role'] as String;
+      return {'user_id': 'u1', 'profile_token': customerTok};
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    ctrl.selectRole(RegistrationRole.customer);
+
+    final outcome = await ctrl.register();
+
+    expect(outcome, RegisterOutcome.needsProfile);
+    expect(reissueRole, 'customer'); // asked the server for the new role
+    expect(api.postBearer['/auth/register/reissue'], guardTok); // old token authorised it
+    expect(store.profileToken, customerTok); // new correct-role token persisted
+  });
+
+  test(
       'submitGuardProfile folds per-document expiry dates into document_expiries (ISO date)',
       () async {
     final store = InMemoryStore();

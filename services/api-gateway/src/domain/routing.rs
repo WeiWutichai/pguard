@@ -447,6 +447,11 @@ const PUBLIC_PATHS: &[&str] = &[
     // this, the edge access-token validator rejects every register attempt (401) and new-user
     // onboarding cannot complete through the gateway.
     "/auth/register",
+    // Role switch during onboarding ("back → pick another role"): authenticated by the still-valid
+    // `profile_token` from the prior register (Bearer), NOT an access token — identity validates it
+    // internally. Like `/auth/register`, the edge access-token validator can't decode it, so it must
+    // be edge-public.
+    "/auth/register/reissue",
     // Initial profile submission is DUAL-AUTH: the client presents a purpose-scoped
     // `profile_token` (not an access token) as Bearer, which the profile service validates
     // itself (or an `AuthUser` for later updates). The edge access-token validator cannot
@@ -684,6 +689,7 @@ mod tests {
         // itself. Both MUST be edge-public or onboarding is rejected (401) at the gateway.
         for path in [
             "/v1/auth/register",
+            "/v1/auth/register/reissue",
             "/v1/profile/guard",
             "/v1/profile/customer",
         ] {

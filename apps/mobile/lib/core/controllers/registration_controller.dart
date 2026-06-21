@@ -623,12 +623,15 @@ class RegistrationController extends _$RegistrationController {
     final store = ref.read(appStoreProvider);
     final existing = _profileToken ?? await store.readProfileToken();
     if (existing == null) return null;
-    // Never resume ACROSS roles: a leftover token minted for a different role (e.g. a guard token
-    // from earlier when the user is now registering as a customer) must not be carried into this
-    // role's profile form — the server rejects a wrong-purpose token. Drop it so the caller starts
-    // a clean registration that mints the correct-purpose token.
+    // Switching roles after a prior register (the single-use phone-verify token is already spent):
+    // the leftover token is for the OTHER role and must NOT be carried into this role's profile form
+    // (the server rejects a wrong-purpose token). Re-issue a correct-role profile_token via the
+    // still-valid one — NO re-OTP — so "back → pick another role" just works within its lifetime.
+    // On failure (e.g. the token finally expired) drop it and fall through to a clean restart.
     final tokenRole = _roleOfProfileToken(existing);
     if (state.role != null && tokenRole != null && tokenRole != state.role) {
+      final switched = await _reissueProfileTokenForRole(existing, state.role!);
+      if (switched != null) return switched;
       await store.clearRegistrationTokens();
       _profileToken = null;
       return null;
@@ -640,6 +643,32 @@ class RegistrationController extends _$RegistrationController {
     ref.read(sessionProvider.notifier).onPendingApproval();
     state = state.copyWith(busy: false, error: null);
     return RegisterOutcome.needsProfile;
+  }
+
+  /// Switch the pending account to [role] WITHOUT re-OTP: exchange the still-valid (but wrong-role)
+  /// [oldToken] for a fresh correct-role `profile_token` via `POST /auth/register/reissue` (Bearer =
+  /// the old token). Identity updates the pending account's role, consumes the old token, and mints
+  /// the new one. Returns [RegisterOutcome.needsProfile] on success, else null (caller restarts).
+  Future<RegisterOutcome?> _reissueProfileTokenForRole(
+      String oldToken, RegistrationRole role) async {
+    try {
+      final data = await ref.read(pguardApiProvider).post(
+        '/auth/register/reissue',
+        data: {'role': role.wire},
+        bearer: oldToken,
+      );
+      final newToken = (data is Map<String, dynamic>)
+          ? data['profile_token'] as String?
+          : null;
+      if (newToken == null) return null;
+      _profileToken = newToken;
+      await ref.read(appStoreProvider).saveProfileToken(newToken);
+      ref.read(sessionProvider.notifier).onPendingApproval();
+      state = state.copyWith(busy: false, error: null);
+      return RegisterOutcome.needsProfile;
+    } on ApiException catch (_) {
+      return null;
+    }
   }
 
   /// Drop the onboarding RESUME state only (prefs stage marker + raw PIN in secure storage),

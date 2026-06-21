@@ -114,6 +114,10 @@ async fn main() -> anyhow::Result<()> {
     let app = Router::new()
         .route("/healthz", get(healthz))
         .route("/auth/register", post(api::register::<AppState>))
+        .route(
+            "/auth/register/reissue",
+            post(api::reissue_profile_token::<AppState>),
+        )
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))

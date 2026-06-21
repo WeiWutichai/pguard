@@ -10,7 +10,8 @@ use uuid::Uuid;
 
 use shared::auth::{
     build_clear_cookie, build_cookie, decode_jwt_with_key, decode_phone_verify_token,
-    encode_jwt_with_key, encode_profile_token, extract_cookie_value, AuthUser, ACCESS_TOKEN_COOKIE,
+    decode_profile_token, encode_jwt_with_key, encode_profile_token, extract_cookie_value,
+    AuthUser, ACCESS_TOKEN_COOKIE, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
     REFRESH_TOKEN_COOKIE,
 };
 use shared::error::AppError;
@@ -20,7 +21,8 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::rotation::{decide, RotationDecision};
 use crate::domain::{registration, token};
 use crate::models::{
-    LoginRequest, MeResponse, RefreshRequest, RegisterRequest, RegisterResult, TokenPair,
+    LoginRequest, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
+    ReissueProfileTokenRequest, TokenPair,
 };
 use crate::repo;
 use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
@@ -180,6 +182,87 @@ pub async fn register<S: RegisterDeps>(
 
     // 7) 202 Accepted — NO tokens, NO session row. The client submits its profile with the
     //    profile_token, then waits for approval before it can log in.
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::success(RegisterResult {
+            user_id,
+            profile_token,
+        })),
+    ))
+}
+
+// ----- POST /auth/register/reissue -----
+
+/// Switch a still-PENDING account's role WITHOUT re-OTP. The single-use `phone_verified_token`
+/// is already spent by the first `register`, so the onboarding "back → pick another role" path
+/// authenticates with the still-valid `profile_token` from that register (presented as the Bearer):
+/// we decode it (either onboarding purpose) to the `user_id`, update the role (pending accounts
+/// only), CONSUME the old profile token's jti, and mint+return a fresh profile_token for the new
+/// role. The phone-verify token stays single-use; only the role choice is reversible, and only
+/// within the profile token's short lifetime.
+#[tracing::instrument(skip_all)]
+pub async fn reissue_profile_token<S: RegisterDeps>(
+    State(state): State<S>,
+    headers: HeaderMap,
+    Json(req): Json<ReissueProfileTokenRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    let role = registration::validate_registration_role(&req.role)?;
+
+    // Auth: the prior register's profile_token (Bearer). Accept EITHER onboarding purpose so a
+    // guard→customer (or customer→guard) switch both resolve; a doc-upload / access / forged token
+    // matches neither and is rejected. The decode also yields the old jti to consume.
+    let presented = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .ok_or_else(|| AppError::Unauthorized("Missing registration token".to_string()))?;
+    let (user_id, old_jti) =
+        decode_profile_token(presented, state.jwt_decoding_key(), PROFILE_PURPOSE_GUARD)
+            .or_else(|_| {
+                decode_profile_token(
+                    presented,
+                    state.jwt_decoding_key(),
+                    PROFILE_PURPOSE_CUSTOMER,
+                )
+            })
+            .map_err(|_| {
+                AppError::Unauthorized("Registration token is invalid or expired".to_string())
+            })?;
+
+    // Consume the OLD profile token's jti FIRST (atomic single-use claim). A spent (e.g. already
+    // submitted at /profile/*), expired, or forged token has no live "valid" marker → reject. Doing
+    // this BEFORE the role write means a stale-token replay performs no side effect, and an
+    // already-used profile_token can't be resurrected into a fresh one. Mirrors register's
+    // phone-verify consume and the profile service's profile_jti consume.
+    let mut redis = state.redis();
+    let old_status: Option<String> = redis::cmd("GETDEL")
+        .arg(format!("profile_jti:{old_jti}"))
+        .query_async(&mut redis)
+        .await?;
+    if old_status.as_deref() != Some("valid") {
+        return Err(AppError::Unauthorized(
+            "Registration token is invalid, expired, or already used".to_string(),
+        ));
+    }
+
+    // Update the role — pending accounts only (a non-pending phone → Conflict: "log in instead").
+    repo::update_pending_user_role(state.db(), user_id, &role.to_string()).await?;
+
+    // Mint the new-role profile token (same TTL + jti marker as register step 6).
+    let purpose = registration::profile_purpose_for_role(&role)?;
+    let (profile_token, profile_jti) = encode_profile_token(
+        user_id,
+        purpose,
+        state.jwt_encoding_key(),
+        PROFILE_TOKEN_TTL_MINUTES,
+    )?;
+    let ttl_secs = (PROFILE_TOKEN_TTL_MINUTES * 60 + PROFILE_JTI_SKEW_BUFFER_SECS) as u64;
+    redis
+        .set_ex::<_, _, ()>(format!("profile_jti:{profile_jti}"), "valid", ttl_secs)
+        .await?;
+
+    tracing::info!(%user_id, role = %role, "pending account role switched (profile token reissued)");
+
     Ok((
         StatusCode::ACCEPTED,
         Json(ApiResponse::success(RegisterResult {
@@ -655,8 +738,22 @@ mod tests {
         };
         let app = Router::new()
             .route("/auth/register", post(register::<RegisterTestDeps>))
+            .route(
+                "/auth/register/reissue",
+                post(reissue_profile_token::<RegisterTestDeps>),
+            )
             .with_state(deps);
         Some((app, redis))
+    }
+
+    fn post_reissue(bearer: &str, role: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/register/reissue")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(serde_json::json!({ "role": role }).to_string()))
+            .unwrap()
     }
 
     fn register_body(token: &str, role: &str) -> Body {
@@ -718,6 +815,49 @@ mod tests {
         let (token, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
         let res = post_register(app, register_body(&token, "guard")).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// Reissue can never assign admin → 403, BEFORE any token/Redis/DB side effect.
+    #[tokio::test]
+    async fn reissue_rejects_admin_role() {
+        let Some((app, _redis)) = register_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app.oneshot(post_reissue("x.y.z", "admin")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// A non-profile Bearer (here a phone-verify token) matches neither profile purpose → 401.
+    /// Proves a doc-upload / access / wrong-purpose token cannot drive a role switch.
+    #[tokio::test]
+    async fn reissue_rejects_non_profile_token() {
+        let Some((app, _redis)) = register_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
+        let (tok, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let res = app.oneshot(post_reissue(&tok, "customer")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Single-use regression: a signature-valid profile_token whose jti is NOT live in Redis
+    /// (already consumed at `/profile/*`, or never stored) must NOT be reissuable → 401. Proves a
+    /// spent profile_token can't be resurrected into a fresh one (consume-before-mutate).
+    #[tokio::test]
+    async fn reissue_rejects_spent_profile_token() {
+        let Some((app, _redis)) = register_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
+        // Valid signature + guard purpose, but the jti is NOT stored → GETDEL returns nil → reject
+        // (BEFORE the role write, so a non-pending/absent account is never even touched).
+        let (tok, _jti) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let res = app.oneshot(post_reissue(&tok, "customer")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     /// Full happy path (DATABASE_URL + Redis): a valid, stored phone-verify token registers a
