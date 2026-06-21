@@ -367,28 +367,35 @@ class _StatCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      // Design `.gstat .s`: 13px padding, 16px corners.
-      padding: const EdgeInsets.all(13),
+      // Design `.summary-card` (bento): 16px padding, 12px corners, centered, soft elevation.
+      padding: const EdgeInsets.all(PgTokens.space4),
       decoration: BoxDecoration(
         color: PgTokens.colorSurface,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: PgTokens.colorBorder),
+        boxShadow: const [
+          BoxShadow(color: Color(0x0A000000), blurRadius: 4, offset: Offset(0, 2)),
+        ],
       ),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          // Design `.gstat .v`: the mono numeric face (matches the job-card / online-card numerals).
+          // Bold centered value with tabular figures so the three cards' numerals align.
           Text(value,
+              textAlign: TextAlign.center,
               style: const TextStyle(
-                  fontFamily: 'IBMPlexMono',
-                  fontSize: 19,
-                  fontWeight: FontWeight.w600,
+                  fontSize: 21,
+                  fontWeight: FontWeight.w700,
                   color: PgTokens.colorText,
                   fontFeatures: [FontFeature.tabularFigures()])),
-          const SizedBox(height: 2),
+          const SizedBox(height: 4),
           Text(label,
+              textAlign: TextAlign.center,
               style: const TextStyle(
-                  fontSize: 11, color: PgTokens.colorTextMuted)),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: PgTokens.colorTextMuted)),
         ],
       ),
     );
@@ -553,20 +560,11 @@ class _EmptyActive extends StatelessWidget {
   final bool isThai;
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(PgTokens.space4),
-      decoration: BoxDecoration(
-        color: PgTokens.colorSurface,
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        border: Border.all(color: PgTokens.colorBorder),
-      ),
-      child: Text(
-        isThai ? 'ยังไม่มีงานที่กำลังทำ' : 'No active jobs yet',
-        style: const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _EmptyJobsCard(
+        icon: Icons.pending_actions_outlined,
+        text: isThai ? 'ยังไม่มีงานที่กำลังทำ' : 'No active jobs yet',
+        minHeight: 100,
+      );
 }
 
 class _EmptyIncoming extends StatelessWidget {
@@ -575,22 +573,108 @@ class _EmptyIncoming extends StatelessWidget {
   final bool isThai;
 
   @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(PgTokens.space4),
-      decoration: BoxDecoration(
-        color: PgTokens.colorSurface,
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        border: Border.all(color: PgTokens.colorBorder),
-      ),
-      child: Text(
-        isThai
+  Widget build(BuildContext context) => _EmptyJobsCard(
+        icon: Icons.work_history_outlined,
+        text: isThai
             ? 'ยังไม่มีงานใหม่ — เปิดสถานะออนไลน์เพื่อรับงาน'
             : 'No new jobs — go online to receive offers',
-        style: const TextStyle(color: PgTokens.colorTextMuted, fontSize: 13),
+        minHeight: 120,
+        badge: true,
+      );
+}
+
+/// Design empty-state: a dashed "drop-zone" card — centered icon (a raised circular badge for the
+/// incoming feed) over a muted message. Mirrors the `.border-dashed` empty blocks in the mockup.
+class _EmptyJobsCard extends StatelessWidget {
+  const _EmptyJobsCard({
+    required this.icon,
+    required this.text,
+    required this.minHeight,
+    this.badge = false,
+  });
+
+  final IconData icon;
+  final String text;
+  final double minHeight;
+  final bool badge;
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget glyph = badge
+        ? Container(
+            padding: const EdgeInsets.all(14),
+            decoration: const BoxDecoration(
+              color: PgTokens.colorSurface,
+              shape: BoxShape.circle,
+              boxShadow: [
+                BoxShadow(
+                    color: Color(0x14000000), blurRadius: 8, offset: Offset(0, 2)),
+              ],
+            ),
+            child: Icon(icon, size: 30, color: PgTokens.colorGreen600),
+          )
+        : Icon(icon, size: 40, color: PgTokens.colorTextFaint);
+    return CustomPaint(
+      foregroundPainter:
+          _DashedRRectPainter(color: PgTokens.colorBorderStrong, radius: 12),
+      child: Container(
+        width: double.infinity,
+        constraints: BoxConstraints(minHeight: minHeight),
+        padding: const EdgeInsets.all(PgTokens.space5),
+        decoration: BoxDecoration(
+          color: PgTokens.colorBg,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            glyph,
+            const SizedBox(height: 10),
+            Text(
+              text,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: PgTokens.colorTextMuted, fontSize: 13.5),
+            ),
+          ],
+        ),
       ),
     );
   }
+}
+
+/// Paints a dashed rounded-rectangle border on the edge of its child (Flutter has no built-in
+/// dashed border). Used by the empty-state "drop-zone" cards.
+class _DashedRRectPainter extends CustomPainter {
+  _DashedRRectPainter({required this.color, required this.radius});
+
+  final Color color;
+  final double radius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.3;
+    final path = Path()
+      ..addRRect(RRect.fromRectAndRadius(
+          Offset.zero & size, Radius.circular(radius)));
+    const dash = 5.0;
+    const gap = 4.0;
+    for (final metric in path.computeMetrics()) {
+      var dist = 0.0;
+      while (dist < metric.length) {
+        final next = (dist + dash).clamp(0.0, metric.length);
+        canvas.drawPath(metric.extractPath(dist, next), paint);
+        dist = next + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(_DashedRRectPainter old) =>
+      old.color != color || old.radius != radius;
 }
 
 class _JobsError extends StatelessWidget {
