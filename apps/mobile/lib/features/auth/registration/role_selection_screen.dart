@@ -6,15 +6,16 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/models/registration.dart';
-import '../../../widgets/pg_auth_back_bar.dart';
+import '../../profile/widgets/lang_segmented.dart';
 
 /// Step 4 (after PIN): choose `guard` or `customer`. The tap registers the account
 /// (`POST /auth/register`, role-at-register) — on 202 we go to the matching profile form; a 409
 /// ("already registered") logs the returning user in and the router redirects to their dashboard.
 ///
-/// Hi-fi: Mobile - Auth.html screen 6 — a centered "คุณคือใคร?" hero, then two `.role-card`s
-/// (Guard FIRST with a green-900 shield tile, then Customer with an amber user tile), each a
-/// border-only card with a 56×56 colored icon tile and no trailing chevron.
+/// Design (stitch role-chooser): a top-right TH|EN toggle, a hero illustration (guard + protected
+/// home), the centered "คุณคือใคร?" headline + subtitle, then two `.role-card`s — Guard FIRST with
+/// a green-900 shield tile ("เจ้าหน้าที่ รปภ."), then "จ้าง รปภ" with an amber person-search tile —
+/// each a border-only card with a 56×56 icon tile + trailing chevron, and a copyright footer.
 class RoleSelectionScreen extends ConsumerWidget {
   const RoleSelectionScreen({super.key});
 
@@ -37,21 +38,32 @@ class RoleSelectionScreen extends ConsumerWidget {
     }
 
     return Scaffold(
-      // Registration has no green bar in the hi-fi (bare back chevron); the body carries the hero.
-      appBar: const PgAuthBackBar(),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: PgTokens.space6),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const SizedBox(height: PgTokens.space7),
-              // Centered hero (.auth-head).
+              const SizedBox(height: PgTokens.space3),
+              // Pre-login language choice, top-right (design `.seg-sm`).
+              Align(
+                alignment: Alignment.centerRight,
+                child: LangSegmented(
+                  value: ref.watch(localeControllerProvider),
+                  onChanged: (l) =>
+                      ref.read(localeControllerProvider.notifier).setLocale(l),
+                ),
+              ),
+              const SizedBox(height: PgTokens.space2),
+              // Hero illustration — a guard presenting the app over a protected home.
+              Image.asset('assets/images/role_hero.png',
+                  height: 200, fit: BoxFit.contain),
+              const SizedBox(height: PgTokens.space5),
               Text(
                 isThai ? 'คุณคือใคร?' : 'Who are you?',
                 textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 24,
+                  fontSize: 28,
                   fontWeight: FontWeight.w700,
                   color: PgTokens.colorTextStrong,
                 ),
@@ -70,20 +82,21 @@ class RoleSelectionScreen extends ConsumerWidget {
                 iconFg: Colors.white,
                 title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard',
                 desc: isThai
-                    ? 'รับงาน ส่งรายงาน ดูรายได้'
-                    : 'Accept jobs, report, earn',
+                    ? 'สำหรับเจ้าหน้าที่เพื่อเข้าใช้งานระบบ'
+                    : 'For guards to access the system',
                 enabled: !state.busy,
                 onTap: () => choose(RegistrationRole.guard),
               ),
               const SizedBox(height: 14),
-              // Customer second (amber user tile).
+              // Customer second — "hire a guard" (amber person-search tile).
               _RoleCard(
-                icon: Icons.person_outline,
+                icon: Icons.person_search_outlined,
                 iconBg: PgTokens.colorAmber100,
                 iconFg: PgTokens.colorAmber700,
-                title: isThai ? 'ลูกค้าจ้างงาน' : 'Hirer / Customer',
-                desc:
-                    isThai ? 'จองและติดตามเจ้าหน้าที่' : 'Book & track guards',
+                title: isThai ? 'จ้าง รปภ' : 'Hire a Guard',
+                desc: isThai
+                    ? 'จ้างเจ้าหน้าที่รักษาความปลอดภัยระดับมืออาชีพ'
+                    : 'Hire professional security guards',
                 enabled: !state.busy,
                 onTap: () => choose(RegistrationRole.customer),
               ),
@@ -102,6 +115,14 @@ class RoleSelectionScreen extends ConsumerWidget {
                   style: const TextStyle(color: PgTokens.colorDanger),
                   textAlign: TextAlign.center,
                 ),
+              const SizedBox(height: PgTokens.space7),
+              const Text(
+                '© 2023 Security Platform System',
+                textAlign: TextAlign.center,
+                style:
+                    TextStyle(fontSize: 12, color: PgTokens.colorTextFaint),
+              ),
+              const SizedBox(height: PgTokens.space5),
             ],
           ),
         ),
@@ -174,6 +195,9 @@ class _RoleCard extends StatelessWidget {
                   ],
                 ),
               ),
+              const SizedBox(width: 8),
+              const Icon(Icons.chevron_right,
+                  color: PgTokens.colorTextFaint, size: 22),
             ],
           ),
         ),
