@@ -28,6 +28,12 @@
          on API 31+ also requires the coarse declaration. -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <!-- Keep the GPS uplink streaming while the guard is online with the screen off / app
+         backgrounded: geolocator runs a foreground LOCATION service (its <service> with
+         foregroundServiceType="location" is merged from geolocator_android). FOREGROUND_SERVICE is
+         API 28+; FOREGROUND_SERVICE_LOCATION is required on API 34+ (Android 14). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
 
     <!-- Biometric unlock (local_auth) — optional fast path over the PIN gate. USE_BIOMETRIC
          covers API 28+; USE_FINGERPRINT is the legacy fallback for API ≤ 28. -->

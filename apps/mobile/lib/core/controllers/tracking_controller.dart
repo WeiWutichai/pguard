@@ -69,6 +69,11 @@ class TrackingController extends _$TrackingController {
   /// Go online: open the presence feed, reflect link state, and stream GPS fixes up.
   Future<void> goOnline() async {
     if (state.online) return;
+    // Request location permission on EVERY go-online path — the card toggle AND the duty FAB land
+    // here. Without it the OS allow dialog never shows (the FAB used to call this directly), the
+    // position stream is empty, and the GPS line spins forever. Idempotent: when already granted
+    // permission_handler returns immediately with no second dialog.
+    await ref.read(permissionGateProvider).requestLocation();
     final api = ref.read(pguardApiProvider);
     final feed = ref.read(presenceFeedBuilderProvider)(api.validAccessToken);
     _feed = feed;

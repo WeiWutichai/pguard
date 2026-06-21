@@ -46,9 +46,9 @@ dependencies:
   # Runtime mic/camera permission requests (Android + iOS) for the call media plane.
   permission_handler: ^11.3.1
 
-  # Real device GPS — foreground / while-in-use only (no background tracking in this slice).
-  # Consumes the location permission already granted via permission_handler (single OS prompt):
-  # this only CHECKS permission (never requests), so there is no second dialog.
+  # Real device GPS. While ONLINE the uplink runs inside an Android FOREGROUND SERVICE (persistent
+  # notification) so a guard stays trackable with the screen off / app backgrounded while waiting
+  # for jobs (AndroidSettings + ForegroundNotificationConfig are re-exported by geolocator).
   geolocator: ^11.1.0
 
   # i18n — bilingual TH/EN.
