@@ -5,7 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
-import '../../../widgets/pg_auth_back_bar.dart';
+import '../../../widgets/pguard_header.dart';
 import '../../../widgets/primary_button.dart';
 
 /// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. v1-parity
@@ -44,8 +44,12 @@ class _CustomerRegistrationScreenState
   bool get _addressValid => _address.text.trim().length >= _minAddress;
 
   /// Label with the design's faint "(ไม่บังคับ)/(optional)" suffix — for the non-required fields.
-  InputDecoration _optionalDecoration(String label, bool isThai) {
+  InputDecoration _optionalDecoration(String label, bool isThai,
+      {IconData? icon}) {
     return InputDecoration(
+      prefixIcon: icon == null
+          ? null
+          : Icon(icon, size: 20, color: PgTokens.colorTextMuted),
       label: Text.rich(
         TextSpan(
           text: label,
@@ -82,9 +86,14 @@ class _CustomerRegistrationScreenState
     final state = ref.watch(registrationControllerProvider);
 
     return Scaffold(
-      // No green bar (hi-fi uses a bare back chevron); the body already shows the
-      // "ตั้งค่าบัญชีลูกค้า" / "Set up your account" heading the design specifies.
-      appBar: const PgAuthBackBar(),
+      // Design: a green TopAppBar (title + subtitle) over a hero banner with the registration
+      // overlay, then the form.
+      appBar: PGuardHeader(
+        title: isThai ? 'ตั้งค่าบัญชีลูกค้า' : 'Customer account',
+        subtitle:
+            isThai ? 'เพื่อจองและรับใบเสร็จ' : 'To book guards & get receipts',
+        showBack: true,
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(PgTokens.space6),
@@ -94,24 +103,8 @@ class _CustomerRegistrationScreenState
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 const SizedBox(height: PgTokens.space2),
-                Text(
-                  isThai ? 'ตั้งค่าบัญชีลูกค้า' : 'Set up your account',
-                  style: const TextStyle(
-                    fontSize: 21,
-                    fontWeight: FontWeight.w600,
-                    color: PgTokens.colorText,
-                  ),
-                ),
-                const SizedBox(height: PgTokens.space1),
-                Text(
-                  isThai
-                      ? 'เพื่อจองและรับใบเสร็จ'
-                      : 'To book guards & get receipts',
-                  style: const TextStyle(
-                    fontSize: 13,
-                    color: PgTokens.colorTextMuted,
-                  ),
-                ),
+                // Hero banner — branded illustration with the "Registration" overlay.
+                _RegHeroBanner(isThai: isThai),
                 const SizedBox(height: PgTokens.space6),
                 TextFormField(
                   key: const Key('reg_address'),
@@ -190,8 +183,9 @@ class _CustomerRegistrationScreenState
                   controller: _email,
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.next,
-                  decoration:
-                      _optionalDecoration(isThai ? 'อีเมล ' : 'Email ', isThai),
+                  decoration: _optionalDecoration(
+                      isThai ? 'อีเมล ' : 'Email ', isThai,
+                      icon: Icons.mail_outline),
                   validator: (v) {
                     final t = (v ?? '').trim();
                     if (t.isEmpty) return null; // optional
@@ -207,7 +201,8 @@ class _CustomerRegistrationScreenState
                   keyboardType: TextInputType.phone,
                   textInputAction: TextInputAction.done,
                   decoration: _optionalDecoration(
-                      isThai ? 'เบอร์ติดต่อ ' : 'Contact phone ', isThai),
+                      isThai ? 'เบอร์ติดต่อ ' : 'Contact phone ', isThai,
+                      icon: Icons.phone_outlined),
                   validator: (v) {
                     final t = (v ?? '').trim();
                     if (t.isEmpty) return null; // optional
@@ -227,6 +222,38 @@ class _CustomerRegistrationScreenState
                     child: Text(state.error!,
                         style: const TextStyle(color: PgTokens.colorDanger)),
                   ),
+                // Terms-acceptance notice (design footer) — the two policy phrases read as links.
+                Padding(
+                  padding: const EdgeInsets.only(bottom: PgTokens.space3),
+                  child: Text.rich(
+                    TextSpan(
+                      text: isThai
+                          ? 'การสร้างบัญชีหมายความว่าคุณยอมรับ '
+                          : 'By creating an account you accept the ',
+                      children: [
+                        TextSpan(
+                            text: isThai ? 'ข้อตกลงการใช้งาน' : 'Terms of Use',
+                            style: const TextStyle(
+                                color: PgTokens.colorBrand,
+                                fontWeight: FontWeight.w600)),
+                        TextSpan(text: isThai ? ' และ ' : ' and '),
+                        TextSpan(
+                            text: isThai
+                                ? 'นโยบายความเป็นส่วนตัว'
+                                : 'Privacy Policy',
+                            style: const TextStyle(
+                                color: PgTokens.colorBrand,
+                                fontWeight: FontWeight.w600)),
+                        TextSpan(text: isThai ? ' ของ pguard' : ' of pguard'),
+                      ],
+                    ),
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                        fontSize: 11.5,
+                        height: 1.5,
+                        color: PgTokens.colorTextMuted),
+                  ),
+                ),
                 // `.cta-amber` — the amber CTA distinguishes the customer flow from the guard flow.
                 PgPrimaryButton(
                   label: isThai ? 'สร้างบัญชี' : 'Create account',
@@ -239,6 +266,76 @@ class _CustomerRegistrationScreenState
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Hero banner — the branded illustration (shield + protected home/building) with a
+/// "Registration / ข้อมูลความปลอดภัยของคุณ" overlay in the bottom-left, per the design.
+class _RegHeroBanner extends StatelessWidget {
+  const _RegHeroBanner({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: Stack(
+        children: [
+          Image.asset(
+            'assets/images/customer_reg_hero.png',
+            height: 132,
+            width: double.infinity,
+            fit: BoxFit.cover,
+          ),
+          // Bottom scrim so the overlay text stays legible over the illustration.
+          Positioned.fill(
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.bottomLeft,
+                  end: Alignment.topRight,
+                  colors: [
+                    PgTokens.colorBrand.withValues(alpha: 0.78),
+                    PgTokens.colorBrand.withValues(alpha: 0.0),
+                  ],
+                  stops: const [0.0, 0.7],
+                ),
+              ),
+            ),
+          ),
+          Positioned(
+            left: PgTokens.space4,
+            bottom: PgTokens.space3,
+            right: PgTokens.space4,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  isThai ? 'การลงทะเบียน' : 'REGISTRATION',
+                  style: const TextStyle(
+                    color: Colors.white70,
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isThai ? 'ข้อมูลความปลอดภัยของคุณ' : 'Your security details',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
