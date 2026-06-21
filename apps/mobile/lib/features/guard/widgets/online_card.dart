@@ -43,9 +43,16 @@ class OnlineCard extends ConsumerWidget {
       // Design hero `.online-card`: 20px padding + 20px corners.
       padding: const EdgeInsets.all(PgTokens.space5),
       decoration: BoxDecoration(
-        color: PgTokens.colorBrand,
+        // Deep-forest panel with a subtle atmospheric glow in the top-right corner (design
+        // `.online-card` — a lighter spot fading into the brand) via a radial gradient, plus a
+        // soft small elevation (--sh-sm).
+        gradient: const RadialGradient(
+          center: Alignment(0.95, -0.95),
+          radius: 1.2,
+          colors: [PgTokens.colorGreen700, PgTokens.colorBrand],
+          stops: [0.0, 0.65],
+        ),
         borderRadius: BorderRadius.circular(20),
-        // Design hero `.online-card` carries --sh-sm: a soft, small elevation.
         boxShadow: const [
           BoxShadow(
             color: Color(0x14000000),
@@ -108,9 +115,10 @@ class _StatusText extends StatelessWidget {
         Text(title,
             style: const TextStyle(
                 color: Colors.white,
-                fontSize: 18,
-                fontWeight: FontWeight.w600)),
-        const SizedBox(height: 2),
+                fontSize: 24,
+                height: 1.1,
+                fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
         Text(sub,
             style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.82), fontSize: 12.5)),
