@@ -143,8 +143,36 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "ข้อความใหม่",
             "คุณมีข้อความใหม่",
         )),
-        // No user notification: force-revoke is identity's concern; calling.* and any
-        // unmapped/under-specified topic are intentionally ignored (claimed, not pushed).
+        // Ring the CALLEE on an incoming call. The data carries everything the mobile needs to
+        // open the incoming-call screen and answer: `type=incoming_call` + the call_id (the call
+        // row's `id`) + call_type + caller_id. The OTHER calling.* events (accepted/rejected/ended)
+        // are still in-call signaling, not a push — left unmapped below.
+        topics::CALLING_INITIATED => {
+            let mut data = build_data(None, event_type, payload);
+            if let Value::Object(ref mut m) = data {
+                m.insert(
+                    "type".to_string(),
+                    Value::String("incoming_call".to_string()),
+                );
+                if let Some(v) = payload.get("id") {
+                    m.insert("call_id".to_string(), v.clone());
+                }
+                for k in ["call_type", "caller_id"] {
+                    if let Some(v) = payload.get(k) {
+                        m.insert(k.to_string(), v.clone());
+                    }
+                }
+            }
+            Some(NotificationPlan {
+                recipient_id: uuid_field(payload, "callee_id")?,
+                notification_type: NotificationType::System,
+                title: "สายเรียกเข้า".to_string(),
+                body: "คุณมีสายเรียกเข้า แตะเพื่อรับสาย".to_string(),
+                data,
+            })
+        }
+        // No user notification: force-revoke is identity's concern; the remaining calling.* events
+        // and any unmapped/under-specified topic are intentionally ignored (claimed, not pushed).
         _ => None,
     }
 }
@@ -240,6 +268,36 @@ mod tests {
 
     #[test]
     fn unknown_topic_yields_none() {
-        assert!(plan_for_event("pguard.events.calling.initiated", &json!({})).is_none());
+        assert!(plan_for_event("pguard.events.bogus.event", &json!({})).is_none());
+    }
+
+    #[test]
+    fn calling_initiated_rings_the_callee() {
+        let callee = Uuid::new_v4();
+        let call_id = Uuid::new_v4();
+        // The event payload IS the CallResponse (call_id is the row's `id`).
+        let payload = json!({
+            "id": call_id,
+            "caller_id": Uuid::new_v4(),
+            "callee_id": callee,
+            "booking_id": Uuid::new_v4(),
+            "call_type": "audio",
+            "status": "initiated",
+        });
+        let plan = plan_for_event(topics::CALLING_INITIATED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, callee, "the CALLEE is rung");
+        assert_eq!(plan.data["type"], "incoming_call");
+        assert_eq!(plan.data["call_id"], json!(call_id));
+        assert_eq!(plan.data["call_type"], "audio");
+    }
+
+    #[test]
+    fn calling_initiated_without_callee_is_ignored() {
+        // No callee_id to route to → None (not a panic), like the other recipient-less events.
+        assert!(plan_for_event(topics::CALLING_INITIATED, &json!({})).is_none());
+        // The non-initiated calling.* events stay unmapped (in-call signaling, not push).
+        let p = json!({ "callee_id": Uuid::new_v4(), "id": Uuid::new_v4() });
+        assert!(plan_for_event(topics::CALLING_ACCEPTED, &p).is_none());
+        assert!(plan_for_event(topics::CALLING_ENDED, &p).is_none());
     }
 }
