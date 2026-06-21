@@ -152,6 +152,53 @@ void main() {
   });
 
   test(
+      'submitCustomerProfile rejects a leftover GUARD-purpose token (never POSTs the wrong token; clears it)',
+      () async {
+    // Regression: a stale guard `profile_token` from earlier guard onboarding must NOT be presented
+    // to /profile/customer — the server rejects the wrong purpose and the access-token fallback then
+    // fails with a confusing "missing field `role`". The client now catches the mismatch first.
+    final store = InMemoryStore()
+      ..profileToken =
+          fakeJwt({'sub': 'u1', 'purpose': 'guard_profile', 'exp': 9999999999});
+    final prefs = FakePrefsStore();
+    var posted = false;
+    final api = FakeApi(onPost: (path, data) async {
+      posted = true;
+      throw StateError('must not POST a wrong-purpose token to $path');
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+
+    final ok =
+        await ctrl.submitCustomerProfile(address: '123 Sukhumvit Road Bangkok');
+
+    expect(ok, isFalse);
+    expect(posted, isFalse); // the guard token never hit /profile/customer
+    expect(await store.readProfileToken(), isNull); // dropped so the retry starts clean
+    expect(c.read(registrationControllerProvider).error, isNotNull);
+  });
+
+  test('submitCustomerProfile accepts a matching CUSTOMER-purpose token', () async {
+    final store = InMemoryStore()
+      ..profileToken = fakeJwt(
+          {'sub': 'u1', 'purpose': 'customer_profile', 'exp': 9999999999});
+    final prefs = FakePrefsStore();
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/profile/customer');
+      return <String, dynamic>{};
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+
+    final ok =
+        await ctrl.submitCustomerProfile(address: '123 Sukhumvit Road Bangkok');
+
+    expect(ok, isTrue);
+    expect(api.postBearer['/profile/customer'], store.profileToken ?? '');
+    expect(prefs.values[kRegPendingRoleKey], 'customer');
+  });
+
+  test(
       'submitGuardProfile folds per-document expiry dates into document_expiries (ISO date)',
       () async {
     final store = InMemoryStore();

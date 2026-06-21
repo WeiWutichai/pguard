@@ -486,6 +486,22 @@ class RegistrationController extends _$RegistrationController {
               : 'Session expired — register again');
       return null;
     }
+    // The token's purpose MUST match the role being submitted. A leftover token from the other
+    // role's registration (e.g. a stale guard token presented to /profile/customer) is rejected
+    // server-side as a wrong-purpose token → the access-token fallback then fails with a confusing
+    // "missing field `role`". Fail fast with a clear prompt and drop the stale token so the retry
+    // starts clean.
+    final tokenRole = _roleOfProfileToken(token);
+    if (tokenRole != null && tokenRole != summary.role) {
+      await ref.read(appStoreProvider).clearRegistrationTokens();
+      _profileToken = null;
+      state = state.copyWith(
+          busy: false,
+          error: isThai
+              ? 'เซสชันลงทะเบียนไม่ตรงกับบทบาท กรุณาลงทะเบียนใหม่'
+              : 'Registration session mismatch — please register again');
+      return null;
+    }
     try {
       // The single-use profile_token is the Bearer (no session exists yet).
       final resp =
@@ -578,10 +594,45 @@ class RegistrationController extends _$RegistrationController {
   /// backed out of the profile form): instead of dead-ending or bouncing to phone (losing the
   /// pending registration), resume the flow. Returns [RegisterOutcome.needsProfile] when it
   /// resumes (busy cleared, session re-flagged pending, spent phone-token dropped), else null.
+  /// The role a persisted `profile_token` was minted for, decoded from its JWT `purpose` claim
+  /// (`guard_profile` / `customer_profile`); null when malformed/unrecognised. Used to make sure a
+  /// token from one role's registration is never presented to the OTHER role's profile route — the
+  /// server rejects a wrong-purpose token and the access-token fallback then fails with a confusing
+  /// "missing field `role`".
+  RegistrationRole? _roleOfProfileToken(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return null;
+      final payload = jsonDecode(
+              utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))))
+          as Map<String, dynamic>;
+      switch (payload['purpose']) {
+        case 'guard_profile':
+          return RegistrationRole.guard;
+        case 'customer_profile':
+          return RegistrationRole.customer;
+        default:
+          return null;
+      }
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<RegisterOutcome?> _resumeIfAlreadyRegistered() async {
     final store = ref.read(appStoreProvider);
     final existing = _profileToken ?? await store.readProfileToken();
     if (existing == null) return null;
+    // Never resume ACROSS roles: a leftover token minted for a different role (e.g. a guard token
+    // from earlier when the user is now registering as a customer) must not be carried into this
+    // role's profile form — the server rejects a wrong-purpose token. Drop it so the caller starts
+    // a clean registration that mints the correct-purpose token.
+    final tokenRole = _roleOfProfileToken(existing);
+    if (state.role != null && tokenRole != null && tokenRole != state.role) {
+      await store.clearRegistrationTokens();
+      _profileToken = null;
+      return null;
+    }
     _profileToken = existing;
     // The phone-verified token (if any) is spent — never present it again.
     _phoneVerifiedToken = null;
