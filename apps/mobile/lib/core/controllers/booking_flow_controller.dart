@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/available_guard.dart';
 import '../models/booking.dart';
+import '../models/booking_options.dart';
 import '../models/geo.dart';
 import '../models/money.dart';
 import '../models/service_catalog.dart';
@@ -23,8 +24,11 @@ class BookingFlowState {
     this.service,
     this.place,
     this.address = '',
-    this.scheduledAt,
-    this.hours = 8,
+    this.startAt,
+    this.endAt,
+    this.extraDetails = '',
+    this.equipment = const {},
+    this.addOns = const {},
     this.guardCount = 1,
     this.tipSatang = 0,
     this.booking,
@@ -42,10 +46,31 @@ class BookingFlowState {
   /// Map-picked coordinate + place name (UX/draft only — only [address] is sent).
   final GeoPlace? place;
 
-  /// The free-text address actually sent to `POST /v1/bookings`.
+  /// The location address chosen on the form (the map pin's resolved name or the typed text). NOT
+  /// sent verbatim — [composedAddress] folds the extra details/equipment/add-ons into it before it
+  /// is sent as the booking's `address`.
   final String address;
-  final DateTime? scheduledAt;
-  final int hours;
+
+  /// The booking's start instant — the form's start date+time picker. Sent as `scheduled_at`
+  /// (RFC3339 UTC). Null until the customer picks a start.
+  final DateTime? startAt;
+
+  /// The booking's end instant — the form's end date+time picker (or a quick-preset `start +
+  /// preset hours`). The form COMPUTES `hours = (end − start)` from this; the end itself is not
+  /// sent. Null until set.
+  final DateTime? endAt;
+
+  /// Free-text "รายละเอียดเพิ่มเติม" note — folded into the sent `address` (no backend field).
+  final String extraDetails;
+
+  /// Selected security-equipment ids (subset of [kSecurityEquipment]) — folded into the address;
+  /// no price effect.
+  final Set<String> equipment;
+
+  /// Selected add-on-service ids (subset of [kAddOnServices]) — folded into the address; no price
+  /// effect.
+  final Set<String> addOns;
+
   final int guardCount;
 
   /// Optional flat tip (satang), chosen on the booking form and sent with the booking — the
@@ -63,6 +88,29 @@ class BookingFlowState {
   final String? error;
 
   // --- derived display values ---------------------------------------------------------------
+
+  /// The booking start instant sent as `scheduled_at` — an alias of [startAt] (the form's time
+  /// model is start/end; this keeps the rest of the flow speaking "scheduled_at").
+  DateTime? get scheduledAt => startAt;
+
+  /// Computed whole hours `(end − start)` — the value sent as the booking's `hours`. 0 until both
+  /// ends are set / when the range is non-positive (the form warns/blocks before send).
+  int get hours => hoursBetween(startAt, endAt);
+
+  /// Whether the chosen range meets the selected service's [minHours] (server-enforced too). The
+  /// form shows an inline "ขั้นต่ำ N ชม." warning and blocks the CTA when this is false.
+  bool get meetsMinHours => hours >= minHours;
+
+  /// The single `address` string actually sent to `POST /v1/bookings`: the chosen location address
+  /// with the extra-details note + selected equipment + selected add-ons folded in as labelled
+  /// lines (see [composeAddress]). The locale is resolved by the controller at send time.
+  String composedAddressFor(bool isThai) => composeAddress(
+        address: address,
+        extraDetails: extraDetails,
+        equipment: equipment,
+        addOns: addOns,
+        isThai: isThai,
+      );
 
   /// Indicative ฿/hr (satang) from the selected catalog service — an ESTIMATE shown before
   /// booking (the authoritative rate is the created booking's server-owned `base_fee`).
@@ -86,19 +134,25 @@ class BookingFlowState {
   }
 
   /// The booked end instant (start + booked hours; server values when present) — drives the
-  /// success screen's "14:00 – 22:00" time-range row. Display only; `null` until scheduled.
+  /// success screen's "14:00 – 22:00" time-range row. Display only; `null` until scheduled. Falls
+  /// back to the form's [endAt] when there is no server-confirmed booking yet.
   DateTime? get scheduledEndAt {
-    final start = booking?.scheduledAt ?? scheduledAt;
-    if (start == null) return null;
-    return start.add(Duration(hours: booking?.hours ?? hours));
+    final b = booking;
+    if (b?.scheduledAt != null) {
+      return b!.scheduledAt!.add(Duration(hours: b.hours ?? hours));
+    }
+    return endAt;
   }
 
   BookingFlowState copyWith({
     ServiceOption? service,
     GeoPlace? place,
     String? address,
-    DateTime? scheduledAt,
-    int? hours,
+    DateTime? startAt,
+    DateTime? endAt,
+    String? extraDetails,
+    Set<String>? equipment,
+    Set<String>? addOns,
     int? guardCount,
     int? tipSatang,
     Booking? booking,
@@ -111,8 +165,11 @@ class BookingFlowState {
       service: service ?? this.service,
       place: place ?? this.place,
       address: address ?? this.address,
-      scheduledAt: scheduledAt ?? this.scheduledAt,
-      hours: hours ?? this.hours,
+      startAt: startAt ?? this.startAt,
+      endAt: endAt ?? this.endAt,
+      extraDetails: extraDetails ?? this.extraDetails,
+      equipment: equipment ?? this.equipment,
+      addOns: addOns ?? this.addOns,
       guardCount: guardCount ?? this.guardCount,
       tipSatang: tipSatang ?? this.tipSatang,
       booking: booking ?? this.booking,
@@ -139,26 +196,60 @@ class BookingFlowController extends _$BookingFlowController {
   /// Start a fresh booking (called when the flow is entered).
   void reset() => state = const BookingFlowState();
 
-  /// Select a catalog service. Floors `hours` up to the service's `min_hours` so the form starts
-  /// at (and can't drop below) the admin-set minimum the server will enforce.
+  /// Select a catalog service. When a start is already chosen, extends the end up to the service's
+  /// `min_hours` floor (so the duration starts at — and the warning clears above — the admin-set
+  /// minimum the server enforces). Pure clamp; the form's preset chips do the same on tap.
   void selectService(ServiceOption service) {
-    final hours = state.hours < service.minHours ? service.minHours : state.hours;
-    state = state.copyWith(service: service, hours: hours, error: null);
+    final start = state.startAt;
+    DateTime? end = state.endAt;
+    if (start != null && (end == null || hoursBetween(start, end) < service.minHours)) {
+      end = start.add(Duration(hours: service.minHours));
+    }
+    state = state.copyWith(service: service, endAt: end, error: null);
   }
 
-  /// Set the location from the map picker — stores the coordinate AND fills the sent [address]
-  /// with the resolved place name.
+  /// Set the location from the map picker / place search — stores the coordinate AND fills the
+  /// editable [address] with the resolved place name (the extras are folded in at send time).
   void setLocation(GeoPlace place) => state =
       state.copyWith(place: place, address: place.placeName, error: null);
 
   void setAddress(String address) =>
       state = state.copyWith(address: address, error: null);
 
-  void setSchedule(DateTime when) =>
-      state = state.copyWith(scheduledAt: when, error: null);
+  void setExtraDetails(String details) =>
+      state = state.copyWith(extraDetails: details, error: null);
 
-  void setHours(int hours) =>
-      state = state.copyWith(hours: hours.clamp(state.minHours, 24), error: null);
+  /// Set the start instant. Keeps a chosen end consistent: if the end is now at/before the start,
+  /// it is re-anchored to `start + minHours` so the duration never goes non-positive.
+  void setStart(DateTime when) {
+    final end = state.endAt;
+    final fixedEnd = (end == null || !end.isAfter(when))
+        ? when.add(Duration(hours: state.minHours))
+        : end;
+    state = state.copyWith(startAt: when, endAt: fixedEnd, error: null);
+  }
+
+  /// Set the end instant directly (the end date+time picker). The form/server enforce min-hours;
+  /// this stores the raw pick so the live duration + warning update.
+  void setEnd(DateTime when) => state = state.copyWith(endAt: when, error: null);
+
+  /// Quick-preset: set the end to `start + hours` (a "12 ชม."/"8 ชม." chip). Anchors the start to
+  /// now when none is chosen yet so a preset alone produces a complete, valid range.
+  void setDurationPreset(int presetHours) {
+    final start = state.startAt ?? _defaultStart();
+    state = state.copyWith(
+        startAt: start,
+        endAt: start.add(Duration(hours: presetHours)),
+        error: null);
+  }
+
+  /// Toggle one security-equipment id in/out of the selection.
+  void toggleEquipment(String id) =>
+      state = state.copyWith(equipment: _toggled(state.equipment, id), error: null);
+
+  /// Toggle one add-on-service id in/out of the selection.
+  void toggleAddOn(String id) =>
+      state = state.copyWith(addOns: _toggled(state.addOns, id), error: null);
 
   void setGuardCount(int count) =>
       state = state.copyWith(guardCount: count.clamp(1, 20), error: null);
@@ -166,26 +257,55 @@ class BookingFlowController extends _$BookingFlowController {
   void setTipSatang(int satang) =>
       state = state.copyWith(tipSatang: satang < 0 ? 0 : satang, error: null);
 
+  /// Immutable toggle of [id] in/out of [set].
+  static Set<String> _toggled(Set<String> set, String id) {
+    final next = {...set};
+    if (!next.remove(id)) next.add(id);
+    return next;
+  }
+
+  /// A sensible default start when a preset is tapped before a start is picked: the next whole hour
+  /// from now (so the booking is in the future and minute-clean).
+  static DateTime _defaultStart() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day, now.hour)
+        .add(const Duration(hours: 1));
+  }
+
   void selectGuard(String guardId) =>
       state = state.copyWith(selectedGuardId: guardId, error: null);
 
   /// `POST /v1/bookings` — create the request, carrying the chosen flat `tip`. Stores the
   /// authoritative [Booking] (with the server-owned `base_fee`). No charge happens here (post-pay).
   Future<bool> createBooking() => _guard(() async {
-        final address = state.address.trim();
-        if (address.isEmpty) {
+        if (state.address.trim().isEmpty) {
           state = state.copyWith(
               error: _isThai ? 'กรุณาระบุสถานที่' : 'Enter a location');
           return false;
         }
-        final when = state.scheduledAt ??
+        // The form's time model is start + end → compute whole hours and map to the unchanged
+        // backend body (scheduled_at = start, hours = computed). Default to the next hour for a
+        // minimum-length window if the customer somehow reached create without a start.
+        final start = state.startAt ??
             DateTime.now().toUtc().add(const Duration(hours: 1));
+        final hours = state.startAt == null ? state.minHours : state.hours;
+        // Enforce the selected service's min_hours client-side (the server enforces it too).
+        if (hours < state.minHours) {
+          state = state.copyWith(
+              error: _isThai
+                  ? 'ระยะเวลาบริการขั้นต่ำ ${state.minHours} ชม.'
+                  : 'Minimum service time is ${state.minHours} hours');
+          return false;
+        }
+        // Fold the chosen location address + extra details + selected equipment/add-ons into the
+        // single free-text `address` the contract carries (no backend field for the extras).
+        final address = state.composedAddressFor(_isThai);
         final place = state.place;
         final service = state.service;
         final data = await ref.read(pguardApiProvider).post('/bookings', data: {
           'address': address,
-          'scheduled_at': when.toUtc().toIso8601String(),
-          'hours': state.hours,
+          'scheduled_at': start.toUtc().toIso8601String(),
+          'hours': hours,
           'guard_count': state.guardCount,
           // The chosen catalog service: send ONLY its id. The server prices the booking from that
           // service's base_fee and enforces its min_hours — the client never sends a price.
@@ -201,7 +321,9 @@ class BookingFlowController extends _$BookingFlowController {
           'tip': Money.amountString(state.tipSatang),
         });
         final booking = Booking.fromJson(data as Map<String, dynamic>);
-        state = state.copyWith(booking: booking, scheduledAt: when);
+        // Pin the form's start onto the state so any later read (success screen) has a start even
+        // when the customer relied on the create-time fallback above.
+        state = state.copyWith(booking: booking, startAt: start);
         return true;
       });
 

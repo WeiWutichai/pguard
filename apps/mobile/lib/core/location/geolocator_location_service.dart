@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 import '../models/geo.dart';
 import '../models/tracking.dart';
 import 'location_service.dart';
+import 'place_search_service.dart';
 
 /// Pure `Position` → [GpsSample] mapper (no platform channels → unit-testable).
 ///
@@ -31,10 +32,15 @@ GeoPoint pointFromPosition(Position p) => GeoPoint(p.latitude, p.longitude);
 /// [currentLocation] returns `null` and [positionStream] is empty — the map falls back to Bangkok
 /// and the guard shows "no signal" (honest degrade; never throws into the UI).
 ///
-/// `reverseGeocode` stays the coordinate-label stub — turning a coordinate into a place NAME needs
-/// a (deferred) backend geocode proxy, not a client geocoding package.
+/// `reverseGeocode` resolves the place NAME via OSM Nominatim ([PlaceSearchService.reverse]) and
+/// falls back to the coordinate label when that is unavailable/offline (best-effort, never throws).
 class GeolocatorLocationService implements LocationService {
-  const GeolocatorLocationService();
+  const GeolocatorLocationService({PlaceSearchService? places})
+      : _places = places;
+
+  /// Nominatim-backed reverse geocoder. Injectable (tests pass a fake); a `null` keeps the legacy
+  /// coordinate-label behaviour (no network) for any caller that wires it that way.
+  final PlaceSearchService? _places;
 
   /// Continuous uplink: high accuracy, emit only after ~15 m of movement so a STATIONARY guard
   /// does not flood the presence WebSocket (event-driven; no `Timer.periodic`). On Android the
@@ -94,5 +100,10 @@ class GeolocatorLocationService implements LocationService {
   }
 
   @override
-  Future<String> reverseGeocode(GeoPoint point) async => 'พิกัด ${point.label}';
+  Future<String> reverseGeocode(GeoPoint point) async {
+    // Best-effort place NAME via Nominatim; fall back to the coordinate label on failure/offline
+    // or when no geocoder is wired in.
+    final name = await _places?.reverse(point);
+    return (name != null && name.isNotEmpty) ? name : 'พิกัด ${point.label}';
+  }
 }

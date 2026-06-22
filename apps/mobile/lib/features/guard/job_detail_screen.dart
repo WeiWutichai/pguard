@@ -7,11 +7,12 @@ import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
-import '../booking/widgets/map_canvas.dart';
+import '../booking/widgets/pg_map.dart';
 
 /// Incoming-job detail (design `Mobile - Guard App.html` ③): a 160px map preview with a floating
 /// glass back button, then a rounded-top sheet — place title + service/hours, a customer row and a
@@ -128,13 +129,17 @@ class _Body extends StatelessWidget {
 
     return Stack(
       children: [
-        // 1) The painted map preview, bleeding to the very top.
+        // 1) The map preview, bleeding to the very top.
         Positioned(
           top: 0,
           left: 0,
           right: 0,
           height: mapBand,
-          child: const _MapPreview(),
+          child: _MapPreview(
+            point: (booking.lat != null && booking.lng != null)
+                ? GeoPoint(booking.lat!, booking.lng!)
+                : null,
+          ),
         ),
         // 2) The sheet, overlapping the map's bottom by 8px and filling the rest.
         Column(
@@ -163,16 +168,26 @@ class _Body extends StatelessWidget {
   }
 }
 
-/// Design `.map`: a stylised painted backdrop (no tiles/SDK) with a centred job-location pin.
+/// Design `.map`: a REAL OpenStreetMap preview ([PgMap], static/non-interactive) centred on the
+/// job location, with a job-location pin. Falls back to a Bangkok-centred preview when the booking
+/// has no pinned coordinate (older/address-only bookings).
 class _MapPreview extends StatelessWidget {
-  const _MapPreview();
+  const _MapPreview({this.point});
+
+  final GeoPoint? point;
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        const Positioned.fill(child: CustomPaint(painter: MapBackdropPainter())),
-        Center(
+    final at = point ?? GeoPoint.bangkok;
+    return PgMap(
+      center: at,
+      initialZoom: 15,
+      interactive: false,
+      markers: [
+        PgMarker(
+          point: at,
+          width: 38,
+          height: 38,
           child: Container(
             padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
