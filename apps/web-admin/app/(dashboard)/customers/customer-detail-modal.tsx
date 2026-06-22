@@ -1,11 +1,11 @@
 "use client";
 
 import { type ReactNode, useEffect, useState } from "react";
-import { CheckCircle2, Clock } from "lucide-react";
+import { CheckCircle2, Clock, XCircle } from "lucide-react";
 
 import type { components } from "@/api/generated/profile";
 import { Avatar, Badge, Button, Modal } from "@/components/ui";
-import { bookingApi, paymentApi } from "@/lib/api";
+import { bookingApi, paymentApi, profileApi } from "@/lib/api";
 import { ADMIN_LIST_CAP, fmtBaht, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
 
@@ -31,13 +31,34 @@ function StatMini({ label, value }: { label: ReactNode; value: ReactNode }) {
 export function CustomerDetailModal({
   customer,
   onClose,
+  onActioned,
 }: {
   customer: CustomerProfileAdmin;
   onClose: () => void;
+  /** Called after a successful approve/reject so the list can refresh. */
+  onActioned?: () => void;
 }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
+  const status = customer.approval_status;
+  const [acting, setActing] = useState(false);
+
+  // Admin approve/reject (customers are now vetted like guards). On success, refresh the list.
+  async function decide(kind: "approve" | "reject") {
+    if (acting) return;
+    setActing(true);
+    const res =
+      kind === "approve"
+        ? await profileApi.POST("/admin/customer-profiles/{user_id}/approve", {
+            params: { path: { user_id: customer.user_id } },
+          })
+        : await profileApi.POST("/admin/customer-profiles/{user_id}/reject", {
+            params: { path: { user_id: customer.user_id } },
+          });
+    setActing(false);
+    if (!res.error) (onActioned ?? onClose)();
+  }
 
   // Total bookings this customer has placed (the "การจอง" stat) — admin booking list filtered to
   // this customer. Null until loaded; cap-honest ("200+") since the admin list is repo-capped. A
@@ -107,16 +128,38 @@ export function CustomerDetailModal({
       onClose={onClose}
       title={c.detailTitle}
       footer={
-        <>
-          {/* Booking-history + suspend have no v2 endpoint — disabled behind an honest gap. */}
-          {gap}
-          <Button variant="secondary" size="sm" disabled>
-            {c.bookingHistory}
-          </Button>
-          <Button variant="danger-ghost" size="sm" disabled>
-            {c.suspend}
-          </Button>
-        </>
+        status === "pending" ? (
+          // Pending → the admin vets the customer (mirrors the guard review).
+          <>
+            <Button
+              variant="danger-ghost"
+              size="sm"
+              disabled={acting}
+              onClick={() => decide("reject")}
+            >
+              {c.reject}
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={acting}
+              onClick={() => decide("approve")}
+            >
+              {c.approve}
+            </Button>
+          </>
+        ) : (
+          <>
+            {/* Booking-history + suspend have no v2 endpoint — disabled behind an honest gap. */}
+            {gap}
+            <Button variant="secondary" size="sm" disabled>
+              {c.bookingHistory}
+            </Button>
+            <Button variant="danger-ghost" size="sm" disabled>
+              {c.suspend}
+            </Button>
+          </>
+        )
       }
     >
       {/* Head: avatar + name + full id. */}
@@ -199,9 +242,22 @@ export function CustomerDetailModal({
           {c.approvalStatus}
         </div>
         <div className="mt-2 flex items-center gap-3 py-1.5 text-sm">
-          <CheckCircle2 className="size-5 flex-none text-success" />
-          <span className="font-semibold text-text-strong">{c.approved}</span>
-          {gap}
+          {status === "approved" ? (
+            <CheckCircle2 className="size-5 flex-none text-success" />
+          ) : status === "rejected" ? (
+            <XCircle className="size-5 flex-none text-danger" />
+          ) : (
+            <Clock className="size-5 flex-none text-amber-600" />
+          )}
+          <Badge
+            tone={status === "approved" ? "green" : status === "rejected" ? "red" : "amber"}
+          >
+            {status === "approved"
+              ? c.stApproved
+              : status === "rejected"
+                ? c.stRejected
+                : c.stPending}
+          </Badge>
         </div>
         <div className="flex items-center gap-3 py-1.5 text-sm text-muted">
           <Clock className="size-5 flex-none" />
