@@ -135,9 +135,7 @@ pub async fn create_booking<S: BookingDeps>(
         Some(service_id) => {
             let service = repo::get_active_service(state.db(), service_id)
                 .await?
-                .ok_or_else(|| {
-                    AppError::NotFound("Service not found or inactive".to_string())
-                })?;
+                .ok_or_else(|| AppError::NotFound("Service not found or inactive".to_string()))?;
             if req.hours < service.min_hours {
                 return Err(AppError::BadRequest(format!(
                     "hours must be at least {} (below the service minimum)",
@@ -2300,7 +2298,9 @@ mod tests {
             "is_active is admin-only"
         );
         assert!(
-            !data.iter().any(|s| s["id"] == serde_json::json!(inactive.id)),
+            !data
+                .iter()
+                .any(|s| s["id"] == serde_json::json!(inactive.id)),
             "a deactivated service is not offered to customers"
         );
 
