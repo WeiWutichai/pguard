@@ -499,9 +499,10 @@ pub async fn admin_assign_guard<S: BookingDeps>(
 }
 
 /// GET /services — the customer-facing service picker: ACTIVE catalog services only,
-/// projected to the narrow [`PublicServiceItem`] (no `notes`/`is_active`/timestamps —
-/// those are admin-only). NOT admin-gated: any authenticated user (the customer booking
-/// app) may read it, like the other customer discovery endpoints. List read → replica.
+/// projected to the narrow [`PublicServiceItem`] — `notes` is surfaced as the customer-facing
+/// package description; `is_active`/timestamps stay admin-only. NOT admin-gated: any authenticated
+/// user (the customer booking app) may read it, like the other customer discovery endpoints.
+/// List read → replica.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn list_services<S: BookingDeps>(
     State(state): State<S>,
@@ -2236,7 +2237,7 @@ mod tests {
                 name_en: format!("en-{marker}"),
                 base_fee: "230.00".parse().unwrap(),
                 min_hours: 3,
-                notes: None,
+                notes: Some(format!("desc-{marker}")),
             },
         )
         .await
@@ -2291,8 +2292,13 @@ mod tests {
             .expect("active service is listed");
         assert_eq!(active_entry["base_fee"], serde_json::json!("230.00"));
         assert_eq!(active_entry["min_hours"], serde_json::json!(3));
-        // The customer-facing projection must NOT leak the admin-only fields.
-        assert!(active_entry.get("notes").is_none(), "notes is admin-only");
+        // notes is surfaced as the customer-facing package description (the picker shows it).
+        assert_eq!(
+            active_entry["notes"],
+            serde_json::json!(format!("desc-{marker}")),
+            "notes is the customer-facing description"
+        );
+        // is_active stays admin-only — never leaked to the customer projection.
         assert!(
             active_entry.get("is_active").is_none(),
             "is_active is admin-only"

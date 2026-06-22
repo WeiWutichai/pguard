@@ -283,8 +283,8 @@ pub async fn list_services(db: &sqlx::PgPool) -> Result<Vec<ServiceCatalogItem>,
 }
 
 /// Customer-facing list — ONLY active catalog services, newest first, projected to the narrow
-/// [`PublicServiceItem`] (no `notes`/`is_active`/timestamps). Mirrors [`list_services`] but
-/// filters `is_active = true`; covered by `idx_service_catalog_active`.
+/// [`PublicServiceItem`] (`notes` is the customer description; no `is_active`/timestamps). Mirrors
+/// [`list_services`] but filters `is_active = true`; covered by `idx_service_catalog_active`.
 pub async fn list_active_services(db: &sqlx::PgPool) -> Result<Vec<PublicServiceItem>, AppError> {
     let rows = sqlx::query_as::<_, PublicServiceItem>(
         "SELECT id, name_th, name_en, base_fee, min_hours, notes FROM booking.service_catalog \
