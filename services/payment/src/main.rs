@@ -110,6 +110,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/reports/revenue",
             get(api::admin_revenue_report::<AppState>),
         )
+        // Admin per-customer lifetime-spend report (web-admin customers page). Served under the
+        // same gateway `/admin/reports/` prefix rule → Payment.
+        .route(
+            "/admin/reports/customer-spend",
+            get(api::admin_customer_spend_report::<AppState>),
+        )
         .route(
             "/internal/users/{user_id}/export",
             get(api::internal_export_user::<AppState>),

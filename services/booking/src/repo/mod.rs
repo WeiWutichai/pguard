@@ -20,9 +20,9 @@ use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
 use crate::models::{
-    BookingResponse, CreateBookingRequest, CreateServiceRequest, DailyCount, InternalBooking,
-    NewProgressReport, ProgressReportRow, ServiceCatalogItem, UpdateServiceRequest,
-    UtilizationCell,
+    BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
+    InternalBooking, NewProgressReport, ProgressReportRow, ServiceCatalogItem,
+    UpdateServiceRequest, UtilizationCell,
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
@@ -242,6 +242,27 @@ pub async fn retention_counts(
     .fetch_one(db)
     .await?;
     Ok(row)
+}
+
+/// Per-customer lifetime booking aggregate for the web-admin customers page: `total`,
+/// `completed`, and `cancelled` (folding the terminal cancelled + declined states), grouped by
+/// customer. No window filter — this is the lifetime view. `COUNT(*)` returns `bigint` (i64).
+pub async fn customer_booking_stats(
+    db: &sqlx::PgPool,
+) -> Result<Vec<CustomerBookingStat>, AppError> {
+    let rows = sqlx::query_as::<_, CustomerBookingStat>(
+        r#"
+        SELECT customer_id,
+               COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE status = 'completed'::booking.booking_status) AS completed,
+               COUNT(*) FILTER (WHERE status IN ('cancelled'::booking.booking_status, 'declined'::booking.booking_status)) AS cancelled
+        FROM booking.bookings
+        GROUP BY customer_id
+        "#,
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 // ----- Service catalog (admin pricing; standalone — not read by the charge path) -----

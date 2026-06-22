@@ -18,7 +18,7 @@ use shared::error::AppError;
 use shared_events::topics;
 use shared_events::EventEnvelope;
 
-use crate::models::{PaymentResponse, RevenuePoint};
+use crate::models::{CustomerSpend, PaymentResponse, RevenuePoint};
 
 const PAYMENT_COLUMNS: &str = "id, booking_id, customer_id, guard_id, amount, expected_total, \
      payment_method, status::text AS status, final_amount, refund_amount, actual_hours, \
@@ -164,6 +164,26 @@ pub async fn revenue_total(
         .fetch_one(db)
         .await?;
     Ok(row.0)
+}
+
+// ----- Customer-spend report (admin analytics) -----
+
+/// Per-customer lifetime spend: the summed effective amount of each customer's actually-charged
+/// (completed) payments (prorated `final_amount` when set, else `amount`). Powers the web-admin
+/// customers page's spend column. Only `completed` rows count (pending/refunded excluded); the
+/// status enum cast mirrors `admin_list_payments`' `::payment.payment_status`. No owner filter —
+/// the admin-role gate is the API layer's job. Customers with no completed payment do not appear.
+pub async fn customer_spend(db: &sqlx::PgPool) -> Result<Vec<CustomerSpend>, AppError> {
+    let rows = sqlx::query_as::<_, CustomerSpend>(
+        "SELECT customer_id, \
+                COALESCE(SUM(COALESCE(final_amount, amount)), 0)::numeric AS total \
+         FROM payment.payments \
+         WHERE status = 'completed'::payment.payment_status \
+         GROUP BY customer_id",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// PDPA §19/§32 data export: ALL of the user's OWN payments (as the paying customer), no

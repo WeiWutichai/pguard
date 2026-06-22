@@ -212,6 +212,17 @@ pub struct BookingsReport {
     pub total: i64,
 }
 
+/// Per-customer booking aggregate for the web-admin customers page: lifetime booking counts
+/// keyed by customer. `cancelled` folds the terminal "did not happen" states (cancelled +
+/// declined). All counts are `i64` (Postgres `COUNT(*)` is `bigint`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CustomerBookingStat {
+    pub customer_id: Uuid,
+    pub total: i64,
+    pub completed: i64,
+    pub cancelled: i64,
+}
+
 // ----- Service catalog (admin-managed pricing; standalone, not wired to the charge path) -----
 
 /// A service-catalog row as returned to the admin. `base_fee` is a Decimal serialized as a

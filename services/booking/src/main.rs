@@ -162,6 +162,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/reports/bookings",
             get(api::admin_bookings_report::<AppState>),
         )
+        // Per-customer booking aggregates for the web-admin customers page. Routed by the same
+        // NEW `/admin/reports` prefix rule → Booking (no gateway change beyond that prefix).
+        .route(
+            "/admin/reports/customer-bookings",
+            get(api::admin_customer_bookings_report::<AppState>),
+        )
         // Admin service catalog (pricing) CRUD — standalone, not wired to the charge path.
         // Gateway needs a NEW `/admin/pricing` prefix rule → Booking (covers /{id} too).
         .route(

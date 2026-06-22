@@ -295,6 +295,21 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Per-customer booking counts (admin customers page aggregates). Booking owns it. A
+        // distinct prefix from `/admin/reports/bookings` (which it does NOT match).
+        prefix: "/admin/reports/customer-bookings",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Per-customer total spend (admin customers page aggregates). Payment owns the money.
+        prefix: "/admin/reports/customer-spend",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/auth/",
         suffix: None,
         upstream: Upstream::Identity,
@@ -890,6 +905,16 @@ mod tests {
         assert_eq!(up2, Upstream::Booking);
         assert_eq!(fwd2, "/admin/reports/bookings");
         assert!(!public2);
+
+        // Per-customer aggregates (admin customers page) — distinct prefixes, each to its owner.
+        let (up3, fwd3, public3, _) = proxy(resolve("/v1/admin/reports/customer-bookings"));
+        assert_eq!(up3, Upstream::Booking);
+        assert_eq!(fwd3, "/admin/reports/customer-bookings");
+        assert!(!public3);
+
+        let (up4, fwd4, _, _) = proxy(resolve("/v1/admin/reports/customer-spend"));
+        assert_eq!(up4, Upstream::Payment);
+        assert_eq!(fwd4, "/admin/reports/customer-spend");
     }
 
     #[test]
