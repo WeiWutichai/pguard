@@ -16,6 +16,7 @@ import 'package:pguard_booking_api/src/model/inline_object.dart';
 import 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
 import 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 import 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
+import 'package:pguard_booking_api/src/model/list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
 
 class BookingsApi {
@@ -1149,6 +1150,85 @@ class BookingsApi {
     }
 
     return Response<ListProgressReports200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// List ACTIVE catalog services (customer-facing picker)
+  /// The customer-facing service picker: the ACTIVE catalog services a customer can book against, projected to a narrow shape (&#x60;id&#x60;, &#x60;name_th&#x60;, &#x60;name_en&#x60;, &#x60;base_fee&#x60;, &#x60;min_hours&#x60;) — &#x60;notes&#x60;/&#x60;is_active&#x60;/timestamps are admin-only and NOT exposed here. Any authenticated user may read it (NOT admin-gated, unlike &#x60;/admin/pricing/services&#x60;). A customer passes the chosen &#x60;id&#x60; as &#x60;CreateBookingRequest.service_id&#x60;, which resolves the booking&#39;s server-owned &#x60;base_fee&#x60; and &#x60;min_hours&#x60; floor on the charge path. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ListServices200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ListServices200Response>> listServices({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/services';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ListServices200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ListServices200Response),
+      ) as ListServices200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ListServices200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

@@ -357,6 +357,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Customer-facing active service catalog (booking owns it) — the mobile booking flow lists
+        // these and sends the chosen service_id; admin pricing lives under /admin/pricing/services.
+        prefix: "/services",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         prefix: "/payments",
         suffix: None,
         upstream: Upstream::Payment,
@@ -832,6 +840,16 @@ mod tests {
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/customer-profiles");
         assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn customer_services_catalog_routes_to_booking() {
+        // Customer-facing catalog list (the mobile booking flow) → booking, edge-protected.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/services"));
+        assert_eq!(up, Upstream::Booking);
+        assert_eq!(fwd, "/services");
+        assert!(!public, "services list requires a token");
         assert_eq!(tier, Tier::Api);
     }
 

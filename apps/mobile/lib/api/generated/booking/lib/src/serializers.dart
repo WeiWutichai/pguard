@@ -38,7 +38,9 @@ import 'package:pguard_booking_api/src/model/internal_export_user200_response.da
 import 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
 import 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 import 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
+import 'package:pguard_booking_api/src/model/list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/progress_report.dart';
+import 'package:pguard_booking_api/src/model/public_service_item.dart';
 import 'package:pguard_booking_api/src/model/retention_point.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
 import 'package:pguard_booking_api/src/model/service_catalog_item.dart';
@@ -72,7 +74,9 @@ part 'serializers.g.dart';
   ListAvailableGuards200Response,
   ListBookings200Response,
   ListProgressReports200Response,
+  ListServices200Response,
   ProgressReport,
+  PublicServiceItem,
   RetentionPoint,
   ReviewCompletionRequest,
   ServiceCatalogItem,

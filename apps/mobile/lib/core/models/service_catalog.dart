@@ -1,72 +1,54 @@
 // The customer-facing security-service catalog (entry point of the booking flow).
 //
-// IMPORTANT — this is a PRESENTATION catalog, not a backend resource. v2's booking contract has
-// no `service_type` field and a single SERVER-OWNED `base_fee` (there is no `/v1/pricing/services`
-// endpoint). These categories frame the UX and choose copy/iconography; the selected service is
-// carried in the draft for display only. [indicativeHourlySatang] is an ESTIMATE shown
-// pre-booking — the AUTHORITATIVE rate is the created booking's `base_fee`.
+// This is the ADMIN-DEFINED catalog fetched from `GET /v1/services` (active services only) —
+// the source of truth for what a customer can book, replacing the old hardcoded categories.
+// Each option carries the admin's indicative `base_fee` (฿/hr) and `min_hours`. When the
+// customer picks one, the booking sends only its `service_id`; the server prices the booking
+// from that catalog service's `base_fee` and enforces its `min_hours`. The CLIENT NEVER SENDS A
+// PRICE — `baseFee` here is an ESTIMATE shown pre-booking; the authoritative rate is the created
+// booking's server-owned `base_fee`.
 //
-// Labels/estimates mirror the hi-fi design (`Mobile - Customer App.html` service-select screen).
+// Money crosses the wire as a decimal STRING ("230.00") and is parsed to integer **satang** via
+// [Money] (1 baht = 100 satang) to avoid float rounding drift (CLAUDE.md money rule).
 
-/// A security-service category shown on the selection screen.
-enum SecurityService {
-  village(
-    'village',
-    'หมู่บ้าน',
-    'Village',
-    'รปภ. ประจำจุด ตรวจรอบ',
-    'Posted guard, patrols',
-    23000,
-  ),
-  condo(
-    'condo',
-    'คอนโด',
-    'Condo',
-    'คัดกรองผู้เข้า-ออก',
-    'Entry screening',
-    25000,
-  ),
-  factory(
-    'factory',
-    'โรงงาน',
-    'Factory',
-    'พื้นที่กว้าง ตรวจยานพาหนะ',
-    'Large site, vehicles',
-    28000,
-  ),
-  other(
-    'other',
-    'อื่นๆ',
-    'Other',
-    'อีเวนต์ งานพิเศษ',
-    'Events, custom',
-    null,
-  );
+import 'money.dart';
 
-  const SecurityService(
-    this.id,
-    this.labelTh,
-    this.labelEn,
-    this.descTh,
-    this.descEn,
-    this.indicativeHourlySatang,
-  );
+/// One bookable security service from the admin catalog. Pure (no Flutter) → unit-testable.
+class ServiceOption {
+  const ServiceOption({
+    required this.id,
+    required this.nameTh,
+    required this.nameEn,
+    required this.baseFeeSatang,
+    required this.minHours,
+  });
 
-  /// Stable identifier (also the design's icon key).
+  /// Catalog service uuid — the ONLY thing sent on the booking (`service_id`).
   final String id;
-  final String labelTh;
-  final String labelEn;
-  final String descTh;
-  final String descEn;
+  final String nameTh;
+  final String nameEn;
 
-  /// Indicative ฿/hr estimate in satang for the pre-booking estimate; `null` = custom quote.
-  final int? indicativeHourlySatang;
+  /// Indicative ฿/hr in integer satang (parsed from the decimal `base_fee` string, full
+  /// precision). An ESTIMATE for the pre-booking figure — the server owns the real rate.
+  final int baseFeeSatang;
 
-  static SecurityService? tryParse(String? id) {
-    if (id == null) return null;
-    for (final s in SecurityService.values) {
-      if (s.id == id) return s;
-    }
-    return null;
+  /// Minimum bookable hours the admin set for this service (server-enforced on create).
+  final int minHours;
+
+  factory ServiceOption.fromJson(Map<String, dynamic> json) => ServiceOption(
+        id: json['id'] as String,
+        nameTh: (json['name_th'] as String?) ?? '',
+        nameEn: (json['name_en'] as String?) ?? '',
+        // Decimal string on the wire ("230.00") → exact satang (never a float).
+        baseFeeSatang: Money.satangFromString(json['base_fee'] as String?),
+        minHours: (json['min_hours'] as num?)?.toInt() ?? 1,
+      );
+
+  /// Locale-aware display name (falls back across languages so a card never renders blank).
+  String name(bool isThai) {
+    final th = nameTh.trim();
+    final en = nameEn.trim();
+    if (isThai) return th.isNotEmpty ? th : en;
+    return en.isNotEmpty ? en : th;
   }
 }

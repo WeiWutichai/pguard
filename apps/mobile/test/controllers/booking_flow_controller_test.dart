@@ -8,6 +8,15 @@ import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
 
+/// A catalog service stand-in (mirrors one `GET /v1/services` row parsed to satang).
+const _condo = ServiceOption(
+  id: 'svc-condo-0001',
+  nameTh: 'คอนโด',
+  nameEn: 'Condo',
+  baseFeeSatang: 25000, // ฿250.00/hr
+  minHours: 4,
+);
+
 void main() {
   ProviderContainer container({required FakeApi api}) {
     final c = ProviderContainer(overrides: [
@@ -64,6 +73,9 @@ void main() {
         expect(body['hours'], 8);
         expect(body['guard_count'], 2);
         expect(body['scheduled_at'], isA<String>());
+        // The chosen catalog service is sent by ID only — the client NEVER sends a price.
+        expect(body['service_id'], 'svc-condo-0001');
+        expect(body.containsKey('base_fee'), isFalse);
         // The flat tip rides the booking (sent as a decimal string), not a separate charge.
         expect(body['tip'], '50.00');
         bookingBody = body;
@@ -75,21 +87,23 @@ void main() {
     BookingFlowState state() => c.read(bookingFlowControllerProvider);
 
     // Form input — tip is chosen here (rides the booking under post-pay).
-    ctrl.selectService(SecurityService.condo);
+    ctrl.selectService(_condo);
     ctrl.setAddress('123 ลัดดารมย์ ซ.5');
     ctrl.setSchedule(DateTime.utc(2026, 6, 6, 14));
     ctrl.setHours(8);
     ctrl.setGuardCount(2);
     ctrl.setTipSatang(5000); // ฿50
-    expect(state().service, SecurityService.condo);
-    // ฿500/hr indicative est is service-derived; estimate-with-tip is display-only.
+    expect(state().service, _condo);
+    // The indicative est is service-derived (baseFeeSatang); est-with-tip is display-only.
+    expect(state().estimateHourlySatang, 25000);
     expect(state().estimateWithTipSatang, state().estimateTotalSatang + 5000);
 
-    // Create booking → authoritative base_fee captured; tip sent in the body.
+    // Create booking → authoritative base_fee captured; tip + service_id sent in the body.
     expect(await ctrl.createBooking(), isTrue);
     expect(state().booking?.id, 'bk1');
     expect(state().booking?.baseFee, '500.00');
     expect(bookingBody?['tip'], '50.00');
+    expect(bookingBody?['service_id'], 'svc-condo-0001');
 
     // Discover guards (single GET, no polling)
     expect(await ctrl.loadGuards(), isTrue);
@@ -112,11 +126,39 @@ void main() {
     );
     final c = container(api: api);
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
-    ctrl.selectService(SecurityService.village);
+    ctrl.selectService(_condo);
     ctrl.setAddress('   ');
     expect(await ctrl.createBooking(), isFalse);
     expect(c.read(bookingFlowControllerProvider).error, contains('สถานที่'));
     expect(api.calls, isEmpty);
+  });
+
+  test('selectService floors hours to the service min_hours and omits service_id when none',
+      () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (_, data) async {
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    // No service selected yet → default min is 1 hour and create sends no service_id.
+    ctrl.setHours(2);
+    ctrl.setAddress('123');
+    expect(state().minHours, 1);
+    expect(await ctrl.createBooking(), isTrue);
+    expect(sent!.containsKey('service_id'), isFalse);
+
+    // Selecting a min-4-hours service floors the (too-low) 2h selection up to 4.
+    ctrl.setHours(2);
+    ctrl.selectService(_condo);
+    expect(state().minHours, 4);
+    expect(state().hours, 4);
+    // And the hour field can no longer drop below the min.
+    ctrl.setHours(1);
+    expect(state().hours, 4);
   });
 
   test(

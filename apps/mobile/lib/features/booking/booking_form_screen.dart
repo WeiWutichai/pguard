@@ -5,12 +5,12 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/services_controller.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
-import 'service_selection_screen.dart' show serviceIcon;
 import 'widgets/map_picker.dart';
 import 'widgets/tip_selector.dart';
 
@@ -82,11 +82,9 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(light: true,
         title: isThai ? 'จองเจ้าหน้าที่' : 'Book a guard',
-        subtitle: service != null
-            ? (isThai ? service.labelTh : service.labelEn)
-            : 'Booking',
+        subtitle: service != null ? service.name(isThai) : 'Booking',
         showBack: true,
       ),
       body: SafeArea(
@@ -131,6 +129,7 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                   const SizedBox(height: PgTokens.space2),
                   _HourChips(
                     presets: _hourPresets,
+                    minHours: state.minHours,
                     selected: state.hours,
                     onSelect: _ctrl.setHours,
                   ),
@@ -178,28 +177,33 @@ class _Label extends StatelessWidget {
       );
 }
 
-class _ServiceChips extends StatelessWidget {
+/// Service switcher on the form — chips of the SAME admin catalog the selection screen renders
+/// (`GET /v1/services`). Quiet while loading / on error / when empty (the customer already picked
+/// a service to reach this screen; the chips are a convenience re-select, not a gate).
+class _ServiceChips extends ConsumerWidget {
   const _ServiceChips({
     required this.selected,
     required this.onSelect,
     required this.isThai,
   });
 
-  final SecurityService? selected;
-  final ValueChanged<SecurityService> onSelect;
+  final ServiceOption? selected;
+  final ValueChanged<ServiceOption> onSelect;
   final bool isThai;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final options = ref.watch(servicesProvider).valueOrNull ?? const [];
+    if (options.isEmpty) return const SizedBox.shrink();
     return Wrap(
       spacing: PgTokens.space2,
       runSpacing: PgTokens.space2,
       children: [
-        for (final service in SecurityService.values)
+        for (final service in options)
           _Chip(
-            label: isThai ? service.labelTh : service.labelEn,
-            icon: serviceIcon(service),
-            selected: service == selected,
+            label: service.name(isThai),
+            icon: Icons.shield_outlined,
+            selected: service.id == selected?.id,
             onTap: () => onSelect(service),
           ),
       ],
@@ -308,21 +312,32 @@ class _ScheduleRow extends StatelessWidget {
 class _HourChips extends StatelessWidget {
   const _HourChips({
     required this.presets,
+    required this.minHours,
     required this.selected,
     required this.onSelect,
   });
 
   final List<int> presets;
+
+  /// The selected service's `min_hours` — presets below it are dropped, and the minimum itself
+  /// is offered as a chip when it isn't already a preset (so the customer can sit on the floor).
+  final int minHours;
   final int selected;
   final ValueChanged<int> onSelect;
 
   @override
   Widget build(BuildContext context) {
+    final options = <int>{
+      for (final h in presets)
+        if (h >= minHours) h,
+      minHours,
+    }.toList()
+      ..sort();
     return Wrap(
       spacing: PgTokens.space2,
       runSpacing: PgTokens.space2,
       children: [
-        for (final h in presets)
+        for (final h in options)
           _Chip(
             label: '$h ชม.',
             selected: h == selected,

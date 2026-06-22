@@ -19,6 +19,12 @@ pub struct CreateBookingRequest {
     pub address: String,
     pub scheduled_at: DateTime<Utc>,
     pub hours: i32,
+    /// Optional catalog service the customer picked. When present, the booking's `base_fee`
+    /// is resolved SERVER-SIDE from that active catalog service (the client never sends a
+    /// fee) and the service's `min_hours` floor is enforced. When absent, behaviour is
+    /// unchanged: `base_fee` falls to the server-owned column DEFAULT (back-compat).
+    #[serde(default)]
+    pub service_id: Option<Uuid>,
     /// Number of guards requested (default 1; validated 1..=20).
     #[serde(default)]
     pub guard_count: Option<i32>,
@@ -239,6 +245,19 @@ pub struct ServiceCatalogItem {
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker). A
+/// deliberately narrow subset of [`ServiceCatalogItem`] — no `notes`/`is_active`/timestamps:
+/// customers see only what they need to choose + price (`base_fee × hours × guard_count`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicServiceItem {
+    pub id: Uuid,
+    pub name_th: String,
+    pub name_en: String,
+    /// ฿ per hour per guard (server-owned rate; Decimal serialized as a string on the wire).
+    pub base_fee: Decimal,
+    pub min_hours: i32,
 }
 
 /// Create a catalog service (admin). Validated in the handler (non-empty names, fee ≥ 0,

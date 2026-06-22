@@ -8,6 +8,7 @@ import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/customer_home_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
+import '../../core/controllers/services_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
@@ -15,7 +16,6 @@ import '../../core/models/service_catalog.dart';
 import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
-import '../booking/service_selection_screen.dart' show serviceIcon;
 import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_unread_badge.dart';
 import '../notifications/widgets/notification_bell.dart';
@@ -48,11 +48,18 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
     super.dispose();
   }
 
-  void _startBooking(SecurityService service) {
+  /// Preset the chosen catalog service then jump straight to the form (skips the picker).
+  void _startBooking(ServiceOption service) {
     ref.read(bookingFlowControllerProvider.notifier)
       ..reset()
       ..selectService(service);
     context.push('/book/form');
+  }
+
+  /// Fresh booking via the catalog picker (loading / error / empty fallback for the grid).
+  void _startBlankBooking() {
+    ref.read(bookingFlowControllerProvider.notifier).reset();
+    context.push('/book');
   }
 
   @override
@@ -135,19 +142,10 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
             children: [
               _SectionHeading(isThai ? 'บริการ' : 'Services'),
               const SizedBox(height: PgTokens.space3),
-              Row(
-                children: [
-                  for (final service in SecurityService.values) ...[
-                    Expanded(
-                      child: _ServiceTile(
-                        service: service,
-                        onTap: () => _startBooking(service),
-                      ),
-                    ),
-                    if (service != SecurityService.values.last)
-                      const SizedBox(width: PgTokens.space2),
-                  ],
-                ],
+              _ServicesGrid(
+                isThai: isThai,
+                onPick: _startBooking,
+                onBrowse: _startBlankBooking,
               ),
               if (ongoing != null) ...[
                 const SizedBox(height: PgTokens.space6),
@@ -240,11 +238,67 @@ class _ProfileAvatarButton extends ConsumerWidget {
   }
 }
 
-/// One tile of the "บริการ" grid: 36px icon box on green-50, 11.5px w600 label.
-class _ServiceTile extends StatelessWidget {
-  const _ServiceTile({required this.service, required this.onTap});
+/// The "บริการ" grid — tiles from the admin catalog (`GET /v1/services`). Each tile presets its
+/// service and jumps to the form. While loading / on error / when empty it degrades to a single
+/// "เรียก รปภ." tile that opens the picker (`/book`), so the dashboard always offers a way in.
+class _ServicesGrid extends ConsumerWidget {
+  const _ServicesGrid({
+    required this.isThai,
+    required this.onPick,
+    required this.onBrowse,
+  });
 
-  final SecurityService service;
+  final bool isThai;
+  final ValueChanged<ServiceOption> onPick;
+  final VoidCallback onBrowse;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final options = ref.watch(servicesProvider).valueOrNull ?? const [];
+    if (options.isEmpty) {
+      return _ServiceTile(
+        label: isThai ? 'เรียก รปภ.' : 'Book a guard',
+        onTap: onBrowse,
+      );
+    }
+    // Cap the grid to the first four so the fixed-width row stays legible (the full catalog is
+    // on the picker via the "Book" FAB / "+" tile).
+    final shown = options.take(4).toList();
+    final tiles = <Widget>[
+      for (final service in shown)
+        _ServiceTile(
+          label: service.name(isThai),
+          onTap: () => onPick(service),
+        ),
+      if (options.length > shown.length)
+        _ServiceTile(
+          label: isThai ? 'ทั้งหมด' : 'All',
+          icon: Icons.grid_view_outlined,
+          onTap: onBrowse,
+        ),
+    ];
+    return Row(
+      children: [
+        for (var i = 0; i < tiles.length; i++) ...[
+          Expanded(child: tiles[i]),
+          if (i != tiles.length - 1) const SizedBox(width: PgTokens.space2),
+        ],
+      ],
+    );
+  }
+}
+
+/// One tile of the "บริการ" grid: 36px icon box on green-50, 11.5px w600 label. The catalog is
+/// admin-defined (no per-service icon key), so every tile uses one shared shield icon.
+class _ServiceTile extends StatelessWidget {
+  const _ServiceTile({
+    required this.label,
+    required this.onTap,
+    this.icon = Icons.shield_outlined,
+  });
+
+  final String label;
+  final IconData icon;
   final VoidCallback onTap;
 
   @override
@@ -270,14 +324,14 @@ class _ServiceTile extends StatelessWidget {
                   color: PgTokens.colorGreen50,
                   borderRadius: BorderRadius.circular(PgTokens.radiusLg),
                 ),
-                child: Icon(serviceIcon(service),
-                    size: 18, color: PgTokens.colorGreen800),
+                child: Icon(icon, size: 18, color: PgTokens.colorGreen800),
               ),
               const SizedBox(height: PgTokens.space2),
               Text(
-                service.labelTh,
+                label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
                 style: const TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.w600,

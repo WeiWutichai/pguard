@@ -21,7 +21,7 @@ use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
 use crate::models::{
     BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
-    InternalBooking, NewProgressReport, ProgressReportRow, ServiceCatalogItem,
+    InternalBooking, NewProgressReport, ProgressReportRow, PublicServiceItem, ServiceCatalogItem,
     UpdateServiceRequest, UtilizationCell,
 };
 
@@ -282,6 +282,37 @@ pub async fn list_services(db: &sqlx::PgPool) -> Result<Vec<ServiceCatalogItem>,
     Ok(rows)
 }
 
+/// Customer-facing list — ONLY active catalog services, newest first, projected to the narrow
+/// [`PublicServiceItem`] (no `notes`/`is_active`/timestamps). Mirrors [`list_services`] but
+/// filters `is_active = true`; covered by `idx_service_catalog_active`.
+pub async fn list_active_services(db: &sqlx::PgPool) -> Result<Vec<PublicServiceItem>, AppError> {
+    let rows = sqlx::query_as::<_, PublicServiceItem>(
+        "SELECT id, name_th, name_en, base_fee, min_hours FROM booking.service_catalog \
+         WHERE is_active = true ORDER BY created_at DESC LIMIT 200",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Look up one ACTIVE catalog service by id (the charge-path resolution). Returns the full
+/// [`ServiceCatalogItem`] so the handler can read its authoritative `base_fee` + `min_hours`.
+/// `None` if the id does not exist OR the service has been deactivated — the handler maps that
+/// to 404 (a customer must not be able to book against an inactive/unknown rate).
+pub async fn get_active_service(
+    db: &sqlx::PgPool,
+    id: Uuid,
+) -> Result<Option<ServiceCatalogItem>, AppError> {
+    let row = sqlx::query_as::<_, ServiceCatalogItem>(&format!(
+        "SELECT {SERVICE_COLUMNS} FROM booking.service_catalog \
+         WHERE id = $1 AND is_active = true"
+    ))
+    .bind(id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
 /// Insert a new catalog service. Fields are validated by the handler before this call.
 pub async fn create_service(
     db: &sqlx::PgPool,
@@ -346,24 +377,39 @@ pub async fn deactivate_service(
 
 /// Insert a new booking in `requested` status. No event is emitted for a bare request.
 ///
-/// `guard_count`/`tip` come from the request (defaulted by the handler); `base_fee` is NOT
-/// set here — it falls to the server-owned column DEFAULT so the client can never set the
-/// rate (CLAUDE.md money rules: authoritative pricing inputs are server-owned).
+/// `guard_count`/`tip` come from the request (defaulted by the handler). `base_fee` is ALWAYS
+/// server-resolved (the client never sends it — CLAUDE.md money rules): `Some(fee)` when the
+/// handler picked a catalog service (the catalog's authoritative rate), or `None` to fall to
+/// the server-owned column DEFAULT (the back-compat path, no service chosen). Either way the
+/// rate is server-owned, so the customer can never undercut the price.
 pub async fn create_booking(
     db: &sqlx::PgPool,
     customer_id: Uuid,
     req: &CreateBookingRequest,
     guard_count: i32,
     tip: rust_decimal::Decimal,
+    base_fee: Option<rust_decimal::Decimal>,
 ) -> Result<BookingResponse, AppError> {
-    let sql = format!(
-        r#"
-        INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng)
-        VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8)
-        RETURNING {BOOKING_COLUMNS}
-        "#
-    );
-    sqlx::query_as::<_, BookingResponse>(&sql)
+    // `base_fee` is bound when a catalog service was picked; otherwise the column is omitted so
+    // its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid, so branch the SQL).
+    let sql = if base_fee.is_some() {
+        format!(
+            r#"
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, base_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9)
+            RETURNING {BOOKING_COLUMNS}
+            "#
+        )
+    } else {
+        format!(
+            r#"
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8)
+            RETURNING {BOOKING_COLUMNS}
+            "#
+        )
+    };
+    let mut query = sqlx::query_as::<_, BookingResponse>(&sql)
         .bind(customer_id)
         .bind(&req.address)
         .bind(req.scheduled_at)
@@ -371,10 +417,11 @@ pub async fn create_booking(
         .bind(guard_count)
         .bind(tip)
         .bind(req.lat)
-        .bind(req.lng)
-        .fetch_one(db)
-        .await
-        .map_err(AppError::from)
+        .bind(req.lng);
+    if let Some(fee) = base_fee {
+        query = query.bind(fee);
+    }
+    query.fetch_one(db).await.map_err(AppError::from)
 }
 
 /// A booking's authoritative decision inputs: status + participant ids + proration clock.
@@ -1085,6 +1132,7 @@ mod db_tests {
                 address: "123 Test Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 4,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1092,6 +1140,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1185,6 +1234,7 @@ mod db_tests {
                 address: "9 Admin Assign Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 3,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1192,6 +1242,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1285,6 +1336,7 @@ mod db_tests {
                 address: "1 IDOR Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 2,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1292,6 +1344,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1375,6 +1428,7 @@ mod db_tests {
                 address: "1 Worktime Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 4,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1382,6 +1436,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1525,6 +1580,7 @@ mod db_tests {
                 address: "9 Cancel Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 2,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1532,6 +1588,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1628,6 +1685,7 @@ mod db_tests {
                 address: "7 Reject Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 3,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1635,6 +1693,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1770,6 +1829,7 @@ mod db_tests {
                 address: "5 Leak Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 2,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1777,6 +1837,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1827,6 +1888,7 @@ mod db_tests {
             address: address.to_string(),
             scheduled_at: Utc::now(),
             hours,
+            service_id: None,
             guard_count: None,
             tip: None,
             lat: coords.map(|c| c.0),
@@ -1846,6 +1908,7 @@ mod db_tests {
             &booking_req("1 CheckIn Rd", 4, None),
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -2048,6 +2111,7 @@ mod db_tests {
             &booking_req("2 NotStarted Rd", 4, None),
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -2111,6 +2175,7 @@ mod db_tests {
             &booking_req("A Near Rd", 4, Some((ref_lat + 0.01, ref_lng))), // ~1.1km north
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create near");
@@ -2121,6 +2186,7 @@ mod db_tests {
             &booking_req("B NoCoords Rd", 4, None),
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create no-coords");
@@ -2131,6 +2197,7 @@ mod db_tests {
             &booking_req("C Taken Rd", 4, Some((ref_lat, ref_lng))),
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create taken");
@@ -2152,6 +2219,7 @@ mod db_tests {
             &booking_req("D Far Rd", 4, Some((ref_lat + 1.0, ref_lng))),
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create far");
@@ -2231,6 +2299,7 @@ mod db_tests {
                 address: "3 Start Rd".to_string(),
                 scheduled_at: Utc::now(),
                 hours: 4,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2238,6 +2307,7 @@ mod db_tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -2363,6 +2433,7 @@ mod db_tests {
                     address: format!("{hour}:30 Heatmap Rd"),
                     scheduled_at,
                     hours: 1,
+                    service_id: None,
                     guard_count: None,
                     tip: None,
                     lat: None,
@@ -2370,6 +2441,7 @@ mod db_tests {
                 },
                 1,
                 rust_decimal::Decimal::ZERO,
+                None,
             )
             .await
             .expect("create");
@@ -2404,5 +2476,147 @@ mod db_tests {
         for id in ids {
             cleanup_booking(&pool, id).await;
         }
+    }
+
+    // ----- Service catalog → charge-path wiring (real DB; hermetic SKIP otherwise) -----
+
+    /// Seed a catalog service with the given fee/min_hours; the name carries a unique marker so
+    /// the assertions can isolate this test's rows from any pre-existing catalog data.
+    async fn seed_service(
+        pool: &sqlx::PgPool,
+        marker: &str,
+        base_fee: &str,
+        min_hours: i32,
+    ) -> ServiceCatalogItem {
+        let req = CreateServiceRequest {
+            name_th: format!("th-{marker}"),
+            name_en: format!("en-{marker}"),
+            base_fee: base_fee.parse().expect("parse fee"),
+            min_hours,
+            notes: None,
+        };
+        create_service(pool, &req).await.expect("seed service")
+    }
+
+    async fn cleanup_service(pool: &sqlx::PgPool, id: Uuid) {
+        let _ = sqlx::query("DELETE FROM booking.service_catalog WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await;
+    }
+
+    /// `list_active_services` returns ACTIVE catalog services only (a deactivated one is
+    /// excluded) and `get_active_service` resolves an active id but returns `None` for an
+    /// inactive one. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn list_active_services_excludes_inactive() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let marker = Uuid::new_v4().to_string();
+        let active = seed_service(&pool, &marker, "230.00", 2).await;
+        let inactive = seed_service(&pool, &marker, "999.00", 1).await;
+        deactivate_service(&pool, inactive.id)
+            .await
+            .expect("deactivate");
+
+        let items = list_active_services(&pool)
+            .await
+            .expect("list active services");
+        // Only this test's rows (isolated by the unique marker).
+        let mine: Vec<_> = items
+            .iter()
+            .filter(|s| s.name_en == format!("en-{marker}"))
+            .collect();
+        assert_eq!(mine.len(), 1, "exactly one ACTIVE service for this marker");
+        assert_eq!(mine[0].id, active.id, "the active one, not the deactivated");
+        assert_eq!(mine[0].base_fee, active.base_fee);
+        assert_eq!(mine[0].min_hours, 2);
+
+        // get_active_service: active id resolves, inactive id is None.
+        assert_eq!(
+            get_active_service(&pool, active.id)
+                .await
+                .expect("lookup active")
+                .map(|s| s.id),
+            Some(active.id)
+        );
+        assert!(
+            get_active_service(&pool, inactive.id)
+                .await
+                .expect("lookup inactive")
+                .is_none(),
+            "a deactivated service must not resolve for the charge path"
+        );
+        // An unknown id is also None.
+        assert!(get_active_service(&pool, Uuid::new_v4())
+            .await
+            .expect("lookup unknown")
+            .is_none());
+
+        cleanup_service(&pool, active.id).await;
+        cleanup_service(&pool, inactive.id).await;
+    }
+
+    /// The charge-path wiring: `create_booking` with `Some(base_fee)` (the catalog rate)
+    /// persists THAT rate, while `None` falls to the server-owned column DEFAULT (back-compat).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn create_booking_uses_catalog_base_fee_else_default() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let catalog_fee: rust_decimal::Decimal = "230.00".parse().unwrap();
+
+        // With a catalog fee → the booking carries the catalog rate.
+        let priced = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("1 Catalog Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            Some(catalog_fee),
+        )
+        .await
+        .expect("create with catalog fee");
+        assert_eq!(
+            priced.base_fee, catalog_fee,
+            "the booking's base_fee is the catalog rate, not the column default"
+        );
+
+        // Without a fee → the server-owned column DEFAULT (migration 0002 = 500.00).
+        let defaulted = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("2 Default Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+        )
+        .await
+        .expect("create without fee");
+        assert_eq!(
+            defaulted.base_fee,
+            "500.00".parse::<rust_decimal::Decimal>().unwrap(),
+            "no service → the server-owned base_fee column DEFAULT (back-compat)"
+        );
+
+        cleanup_booking(&pool, priced.id).await;
+        cleanup_booking(&pool, defaulted.id).await;
     }
 }
