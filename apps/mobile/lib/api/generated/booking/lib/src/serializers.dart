@@ -15,6 +15,7 @@ import 'package:pguard_booking_api/src/date_serializer.dart';
 import 'package:pguard_booking_api/src/model/date.dart';
 
 import 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
+import 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/api_response_envelope.dart';
 import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
@@ -25,6 +26,7 @@ import 'package:pguard_booking_api/src/model/bookings_report.dart';
 import 'package:pguard_booking_api/src/model/create_booking_request.dart';
 import 'package:pguard_booking_api/src/model/create_progress_report200_response.dart';
 import 'package:pguard_booking_api/src/model/create_service_request.dart';
+import 'package:pguard_booking_api/src/model/customer_booking_stat.dart';
 import 'package:pguard_booking_api/src/model/daily_count.dart';
 import 'package:pguard_booking_api/src/model/error_body.dart';
 import 'package:pguard_booking_api/src/model/error_detail.dart';
@@ -47,6 +49,7 @@ part 'serializers.g.dart';
 
 @SerializersFor([
   AdminBookingsReport200Response,
+  AdminCustomerBookingsReport200Response,
   AdminListServices200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   AssignGuardRequest,
@@ -57,6 +60,7 @@ part 'serializers.g.dart';
   CreateBookingRequest,
   CreateProgressReport200Response,
   CreateServiceRequest,
+  CustomerBookingStat,
   DailyCount,
   ErrorBody,
   ErrorDetail,

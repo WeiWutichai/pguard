@@ -82,6 +82,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminAssignBooking**](doc/AdminApi.md#adminassignbooking) | **POST** /admin/bookings/{id}/assign | Admin assigns a guard to an unassigned booking (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminBookingsReport**](doc/AdminApi.md#adminbookingsreport) | **GET** /admin/reports/bookings | Booking analytics — volume + utilization + retention (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminCreateService**](doc/AdminApi.md#admincreateservice) | **POST** /admin/pricing/services | Create a catalog service (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminCustomerBookingsReport**](doc/AdminApi.md#admincustomerbookingsreport) | **GET** /admin/reports/customer-bookings | Per-customer booking aggregates (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminDeleteService**](doc/AdminApi.md#admindeleteservice) | **DELETE** /admin/pricing/services/{id} | Deactivate (soft-delete) a catalog service (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListBookings**](doc/AdminApi.md#adminlistbookings) | **GET** /admin/bookings | List ALL bookings cross-user (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListServices**](doc/AdminApi.md#adminlistservices) | **GET** /admin/pricing/services | List the service catalog (role&#x3D;admin)
@@ -108,6 +109,7 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [AdminBookingsReport200Response](doc/AdminBookingsReport200Response.md)
+ - [AdminCustomerBookingsReport200Response](doc/AdminCustomerBookingsReport200Response.md)
  - [AdminListServices200Response](doc/AdminListServices200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [AssignGuardRequest](doc/AssignGuardRequest.md)
@@ -118,6 +120,7 @@ Class | Method | HTTP request | Description
  - [CreateBookingRequest](doc/CreateBookingRequest.md)
  - [CreateProgressReport200Response](doc/CreateProgressReport200Response.md)
  - [CreateServiceRequest](doc/CreateServiceRequest.md)
+ - [CustomerBookingStat](doc/CustomerBookingStat.md)
  - [DailyCount](doc/DailyCount.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)

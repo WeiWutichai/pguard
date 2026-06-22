@@ -77,16 +77,12 @@ import 'package:pguard_payment_api/pguard_payment_api.dart';
 
 
 final api = PguardPaymentApi().getAdminApi();
-final PaymentStatus status = ; // PaymentStatus | Filter by payment status. An unrecognized value returns 400.
-final String customerId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | Restrict to payments placed by this customer (the customer's spend history).
-final int limit = 789; // int | 
-final int offset = 789; // int | 
 
 try {
-    final response = await api.adminListPayments(status, customerId, limit, offset);
+    final response = await api.adminCustomerSpendReport();
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AdminApi->adminListPayments: $e\n");
+    print("Exception when calling AdminApi->adminCustomerSpendReport: $e\n");
 }
 
 ```
@@ -97,6 +93,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminCustomerSpendReport**](doc/AdminApi.md#admincustomerspendreport) | **GET** /admin/reports/customer-spend | Per-customer lifetime-spend report (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
 [*AdminApi*](doc/AdminApi.md) | [**adminRevenueReport**](doc/AdminApi.md#adminrevenuereport) | **GET** /admin/reports/revenue | Revenue-trend analytics (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
@@ -106,8 +103,10 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminCustomerSpendReport200Response](doc/AdminCustomerSpendReport200Response.md)
  - [AdminRevenueReport200Response](doc/AdminRevenueReport200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [CustomerSpend](doc/CustomerSpend.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
