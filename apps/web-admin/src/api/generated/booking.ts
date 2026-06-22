@@ -194,6 +194,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/services": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List ACTIVE catalog services (customer-facing picker)
+         * @description The customer-facing service picker: the ACTIVE catalog services a customer can book
+         *     against, projected to a narrow shape (`id`, `name_th`, `name_en`, `base_fee`,
+         *     `min_hours`) — `notes`/`is_active`/timestamps are admin-only and NOT exposed here.
+         *     Any authenticated user may read it (NOT admin-gated, unlike `/admin/pricing/services`).
+         *     A customer passes the chosen `id` as `CreateBookingRequest.service_id`, which resolves
+         *     the booking's server-owned `base_fee` and `min_hours` floor on the charge path.
+         */
+        get: operations["listServices"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bookings/open": {
         parameters: {
             query?: never;
@@ -550,6 +575,20 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /** @description The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` with no admin-only fields (`notes`/`is_active`/timestamps). */
+        PublicServiceItem: {
+            /** Format: uuid */
+            id: string;
+            name_th: string;
+            name_en: string;
+            /**
+             * @description Server-owned ฿/hour/guard rate (exact decimal string).
+             * @example 230.00
+             */
+            base_fee: string;
+            /** Format: int32 */
+            min_hours: number;
+        };
         CreateServiceRequest: {
             name_th: string;
             name_en: string;
@@ -584,6 +623,11 @@ export interface components {
             scheduled_at: string;
             /** Format: int32 */
             hours: number;
+            /**
+             * Format: uuid
+             * @description Optional catalog service the customer picked. When present, the booking's `base_fee` is resolved SERVER-SIDE from that ACTIVE catalog service (the client never sends a fee) and the service's `min_hours` floor is enforced (`hours` below it → 400). A missing/inactive `service_id` → 404. When absent, `base_fee` falls to the server-owned column default (back-compat).
+             */
+            service_id?: string | null;
             /**
              * Format: int32
              * @description Number of guards requested. Authoritative once persisted (used by the money path).
@@ -1162,6 +1206,29 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["AvailableGuard"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listServices: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Active catalog services */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PublicServiceItem"][];
                     };
                 };
             };

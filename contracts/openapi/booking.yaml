@@ -326,6 +326,34 @@ paths:
                         items: { $ref: '#/components/schemas/AvailableGuard' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /services:
+    get:
+      tags: [Bookings]
+      summary: List ACTIVE catalog services (customer-facing picker)
+      description: |
+        The customer-facing service picker: the ACTIVE catalog services a customer can book
+        against, projected to a narrow shape (`id`, `name_th`, `name_en`, `base_fee`,
+        `min_hours`) — `notes`/`is_active`/timestamps are admin-only and NOT exposed here.
+        Any authenticated user may read it (NOT admin-gated, unlike `/admin/pricing/services`).
+        A customer passes the chosen `id` as `CreateBookingRequest.service_id`, which resolves
+        the booking's server-owned `base_fee` and `min_hours` floor on the charge path.
+      operationId: listServices
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Active catalog services
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/PublicServiceItem' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /bookings/open:
     get:
       tags: [Bookings]
@@ -831,6 +859,23 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 
+    PublicServiceItem:
+      type: object
+      description: >-
+        The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) —
+        a narrow subset of `ServiceCatalogItem` with no admin-only fields
+        (`notes`/`is_active`/timestamps).
+      required: [id, name_th, name_en, base_fee, min_hours]
+      properties:
+        id: { type: string, format: uuid }
+        name_th: { type: string }
+        name_en: { type: string }
+        base_fee:
+          type: string
+          description: Server-owned ฿/hour/guard rate (exact decimal string).
+          example: "230.00"
+        min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+
     CreateServiceRequest:
       type: object
       required: [name_th, name_en, base_fee, min_hours]
@@ -870,6 +915,16 @@ components:
         address: { type: string }
         scheduled_at: { type: string, format: date-time }
         hours: { type: integer, format: int32, minimum: 1 }
+        service_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Optional catalog service the customer picked. When present, the booking's
+            `base_fee` is resolved SERVER-SIDE from that ACTIVE catalog service (the client
+            never sends a fee) and the service's `min_hours` floor is enforced (`hours` below
+            it → 400). A missing/inactive `service_id` → 404. When absent, `base_fee` falls to
+            the server-owned column default (back-compat).
         guard_count:
           type: integer
           format: int32

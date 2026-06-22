@@ -100,6 +100,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**listBookings**](doc/BookingsApi.md#listbookings) | **GET** /bookings | List the caller&#39;s bookings
 [*BookingsApi*](doc/BookingsApi.md) | [**listOpenBookings**](doc/BookingsApi.md#listopenbookings) | **GET** /bookings/open | Open-job discovery — requested bookings with no guard yet (guard only)
 [*BookingsApi*](doc/BookingsApi.md) | [**listProgressReports**](doc/BookingsApi.md#listprogressreports) | **GET** /bookings/{id}/progress-reports | List a booking&#39;s check-in reports (participants only)
+[*BookingsApi*](doc/BookingsApi.md) | [**listServices**](doc/BookingsApi.md#listservices) | **GET** /services | List ACTIVE catalog services (customer-facing picker)
 [*BookingsApi*](doc/BookingsApi.md) | [**reviewCompletion**](doc/BookingsApi.md#reviewcompletion) | **PUT** /bookings/{id}/review-completion | Customer reviews the guard&#39;s completion request
 [*BookingsApi*](doc/BookingsApi.md) | [**startBooking**](doc/BookingsApi.md#startbooking) | **PUT** /bookings/{id}/start | Assigned guard starts the job
 [*InternalApi*](doc/InternalApi.md) | [**getInternalBooking**](doc/InternalApi.md#getinternalbooking) | **GET** /internal/bookings/{id} | Read authoritative booking fields (service-JWT only)
@@ -132,7 +133,9 @@ Class | Method | HTTP request | Description
  - [ListAvailableGuards200Response](doc/ListAvailableGuards200Response.md)
  - [ListBookings200Response](doc/ListBookings200Response.md)
  - [ListProgressReports200Response](doc/ListProgressReports200Response.md)
+ - [ListServices200Response](doc/ListServices200Response.md)
  - [ProgressReport](doc/ProgressReport.md)
+ - [PublicServiceItem](doc/PublicServiceItem.md)
  - [RetentionPoint](doc/RetentionPoint.md)
  - [ReviewCompletionRequest](doc/ReviewCompletionRequest.md)
  - [ServiceCatalogItem](doc/ServiceCatalogItem.md)

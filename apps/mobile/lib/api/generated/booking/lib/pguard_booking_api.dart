@@ -38,7 +38,9 @@ export 'package:pguard_booking_api/src/model/internal_export_user200_response.da
 export 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
 export 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 export 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
+export 'package:pguard_booking_api/src/model/list_services200_response.dart';
 export 'package:pguard_booking_api/src/model/progress_report.dart';
+export 'package:pguard_booking_api/src/model/public_service_item.dart';
 export 'package:pguard_booking_api/src/model/retention_point.dart';
 export 'package:pguard_booking_api/src/model/review_completion_request.dart';
 export 'package:pguard_booking_api/src/model/service_catalog_item.dart';

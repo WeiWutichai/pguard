@@ -14,6 +14,7 @@ part 'create_booking_request.g.dart';
 /// * [address] 
 /// * [scheduledAt] 
 /// * [hours] 
+/// * [serviceId] - Optional catalog service the customer picked. When present, the booking's `base_fee` is resolved SERVER-SIDE from that ACTIVE catalog service (the client never sends a fee) and the service's `min_hours` floor is enforced (`hours` below it → 400). A missing/inactive `service_id` → 404. When absent, `base_fee` falls to the server-owned column default (back-compat).
 /// * [guardCount] - Number of guards requested. Authoritative once persisted (used by the money path).
 /// * [tip] - Optional up-front tip (exact decimal string); folded into the expected total.
 /// * [lat] - Optional site latitude (must be paired with `lng`) — feeds open-job radius discovery.
@@ -28,6 +29,10 @@ abstract class CreateBookingRequest implements Built<CreateBookingRequest, Creat
 
   @BuiltValueField(wireName: r'hours')
   int get hours;
+
+  /// Optional catalog service the customer picked. When present, the booking's `base_fee` is resolved SERVER-SIDE from that ACTIVE catalog service (the client never sends a fee) and the service's `min_hours` floor is enforced (`hours` below it → 400). A missing/inactive `service_id` → 404. When absent, `base_fee` falls to the server-owned column default (back-compat).
+  @BuiltValueField(wireName: r'service_id')
+  String? get serviceId;
 
   /// Number of guards requested. Authoritative once persisted (used by the money path).
   @BuiltValueField(wireName: r'guard_count')
@@ -85,6 +90,13 @@ class _$CreateBookingRequestSerializer implements PrimitiveSerializer<CreateBook
       object.hours,
       specifiedType: const FullType(int),
     );
+    if (object.serviceId != null) {
+      yield r'service_id';
+      yield serializers.serialize(
+        object.serviceId,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.guardCount != null) {
       yield r'guard_count';
       yield serializers.serialize(
@@ -156,6 +168,13 @@ class _$CreateBookingRequestSerializer implements PrimitiveSerializer<CreateBook
             specifiedType: const FullType(int),
           ) as int;
           result.hours = valueDes;
+          break;
+        case r'service_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.serviceId = valueDes;
           break;
         case r'guard_count':
           final valueDes = serializers.deserialize(

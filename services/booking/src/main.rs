@@ -181,6 +181,10 @@ async fn main() -> anyhow::Result<()> {
         )
         // Discovery: approved guard catalog (profile) + rating summaries (rating).
         .route("/available-guards", get(api::available_guards::<AppState>))
+        // Customer-facing service picker — ACTIVE catalog services only (any authenticated
+        // user; NOT admin-gated, unlike `/admin/pricing/services`). The gateway needs a NEW
+        // `/services` prefix rule → Booking.
+        .route("/services", get(api::list_services::<AppState>))
         .route(
             "/bookings/{id}/accept",
             post(api::accept_booking::<AppState>),

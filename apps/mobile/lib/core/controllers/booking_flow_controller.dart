@@ -34,8 +34,10 @@ class BookingFlowState {
     this.error,
   });
 
-  /// Selected service category (presentation only — the contract has no service_type field).
-  final SecurityService? service;
+  /// Selected catalog service (from `GET /v1/services`). Its `id` is sent as the booking's
+  /// `service_id` (the server then prices from its `base_fee` and enforces its `min_hours`); its
+  /// `baseFeeSatang` drives the pre-booking ESTIMATE only — the client never sends a price.
+  final ServiceOption? service;
 
   /// Map-picked coordinate + place name (UX/draft only — only [address] is sent).
   final GeoPlace? place;
@@ -62,8 +64,9 @@ class BookingFlowState {
 
   // --- derived display values ---------------------------------------------------------------
 
-  /// Indicative ฿/hr (satang) from the selected service — an ESTIMATE shown before booking.
-  int get estimateHourlySatang => service?.indicativeHourlySatang ?? 0;
+  /// Indicative ฿/hr (satang) from the selected catalog service — an ESTIMATE shown before
+  /// booking (the authoritative rate is the created booking's server-owned `base_fee`).
+  int get estimateHourlySatang => service?.baseFeeSatang ?? 0;
 
   /// Pre-booking estimate total (satang) = indicative rate × hours × guards. Display only.
   int get estimateTotalSatang => estimateHourlySatang * hours * guardCount;
@@ -72,8 +75,15 @@ class BookingFlowState {
   /// ESTIMATE; the authoritative bill (actual hours + tip) is raised on completion.
   int get estimateWithTipSatang => estimateTotalSatang + tipSatang;
 
-  /// Whether the selected service has an indicative price (the "Other/custom" one does not).
-  bool get hasEstimate => service?.indicativeHourlySatang != null;
+  /// Whether the selected service has an indicative price to show (a positive base_fee).
+  bool get hasEstimate => (service?.baseFeeSatang ?? 0) > 0;
+
+  /// The minimum bookable hours for the current selection (the selected service's `min_hours`,
+  /// at least 1). Floors the form's hours field; the server enforces it authoritatively.
+  int get minHours {
+    final m = service?.minHours ?? 1;
+    return m < 1 ? 1 : m;
+  }
 
   /// The booked end instant (start + booked hours; server values when present) — drives the
   /// success screen's "14:00 – 22:00" time-range row. Display only; `null` until scheduled.
@@ -84,7 +94,7 @@ class BookingFlowState {
   }
 
   BookingFlowState copyWith({
-    SecurityService? service,
+    ServiceOption? service,
     GeoPlace? place,
     String? address,
     DateTime? scheduledAt,
@@ -129,8 +139,12 @@ class BookingFlowController extends _$BookingFlowController {
   /// Start a fresh booking (called when the flow is entered).
   void reset() => state = const BookingFlowState();
 
-  void selectService(SecurityService service) =>
-      state = state.copyWith(service: service, error: null);
+  /// Select a catalog service. Floors `hours` up to the service's `min_hours` so the form starts
+  /// at (and can't drop below) the admin-set minimum the server will enforce.
+  void selectService(ServiceOption service) {
+    final hours = state.hours < service.minHours ? service.minHours : state.hours;
+    state = state.copyWith(service: service, hours: hours, error: null);
+  }
 
   /// Set the location from the map picker — stores the coordinate AND fills the sent [address]
   /// with the resolved place name.
@@ -144,7 +158,7 @@ class BookingFlowController extends _$BookingFlowController {
       state = state.copyWith(scheduledAt: when, error: null);
 
   void setHours(int hours) =>
-      state = state.copyWith(hours: hours.clamp(1, 24), error: null);
+      state = state.copyWith(hours: hours.clamp(state.minHours, 24), error: null);
 
   void setGuardCount(int count) =>
       state = state.copyWith(guardCount: count.clamp(1, 20), error: null);
@@ -167,11 +181,15 @@ class BookingFlowController extends _$BookingFlowController {
         final when = state.scheduledAt ??
             DateTime.now().toUtc().add(const Duration(hours: 1));
         final place = state.place;
+        final service = state.service;
         final data = await ref.read(pguardApiProvider).post('/bookings', data: {
           'address': address,
           'scheduled_at': when.toUtc().toIso8601String(),
           'hours': state.hours,
           'guard_count': state.guardCount,
+          // The chosen catalog service: send ONLY its id. The server prices the booking from that
+          // service's base_fee and enforces its min_hours — the client never sends a price.
+          if (service != null) 'service_id': service.id,
           // Send the map-pinned site coordinate when the customer picked one (the contract's
           // optional lat/lng — both-or-neither). Lets the guard see the job location and feeds
           // open-job radius discovery server-side. Omitted when only a typed address was used.

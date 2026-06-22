@@ -24,8 +24,8 @@ use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
     CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, InternalBooking,
     ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, ProgressReportResponse,
-    ReportRangeQuery, RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem,
-    UpdateServiceRequest,
+    PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
+    ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -126,7 +126,27 @@ pub async fn create_booking<S: BookingDeps>(
     }
     // Optional site coordinates: both-or-neither, in range (feeds open-job radius discovery).
     progress::validate_coords(req.lat, req.lng)?;
-    let booking = repo::create_booking(state.db(), user.user_id, &req, guard_count, tip).await?;
+    // Optional catalog service: when picked, the booking's base_fee is resolved SERVER-SIDE
+    // from the active catalog entry (never the client body — never trust a client-sent fee),
+    // and the service's min_hours floor is enforced. Absent → base_fee falls to the column
+    // DEFAULT (back-compat, unchanged). A missing/inactive service id is 404.
+    let base_fee = match req.service_id {
+        None => None,
+        Some(service_id) => {
+            let service = repo::get_active_service(state.db(), service_id)
+                .await?
+                .ok_or_else(|| AppError::NotFound("Service not found or inactive".to_string()))?;
+            if req.hours < service.min_hours {
+                return Err(AppError::BadRequest(format!(
+                    "hours must be at least {} (below the service minimum)",
+                    service.min_hours
+                )));
+            }
+            Some(service.base_fee)
+        }
+    };
+    let booking =
+        repo::create_booking(state.db(), user.user_id, &req, guard_count, tip, base_fee).await?;
     Ok(Json(ApiResponse::success(booking)))
 }
 
@@ -476,6 +496,19 @@ pub async fn admin_assign_guard<S: BookingDeps>(
         Some(req.guard_id),
     )
     .await
+}
+
+/// GET /services — the customer-facing service picker: ACTIVE catalog services only,
+/// projected to the narrow [`PublicServiceItem`] (no `notes`/`is_active`/timestamps —
+/// those are admin-only). NOT admin-gated: any authenticated user (the customer booking
+/// app) may read it, like the other customer discovery endpoints. List read → replica.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn list_services<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<PublicServiceItem>>>, AppError> {
+    let items = repo::list_active_services(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(items)))
 }
 
 // ----- Service catalog (admin pricing CRUD; standalone — not wired to the charge path) -----
@@ -1027,6 +1060,7 @@ mod tests {
                 "/admin/pricing/services",
                 get(admin_list_services::<TestDeps>),
             )
+            .route("/services", get(list_services::<TestDeps>))
             .with_state(deps)
     }
 
@@ -1319,6 +1353,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn public_services_requires_auth() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // The customer-facing picker is authenticated (no anonymous reads) — a missing token
+        // is 401 at the AuthUser guard, before any DB access (the lazy pool is never touched).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/services")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn admin_assign_guard_rejects_non_admin() {
         let Some(app) = router().await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
@@ -1592,6 +1647,7 @@ mod tests {
                 address: "1 IDOR Matrix Rd".to_string(),
                 scheduled_at: chrono::Utc::now(),
                 hours: 4,
+                service_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1599,6 +1655,7 @@ mod tests {
             },
             1,
             rust_decimal::Decimal::ZERO,
+            None,
         )
         .await
         .expect("create");
@@ -1791,6 +1848,7 @@ mod tests {
                         address: addr.to_string(),
                         scheduled_at: chrono::Utc::now(),
                         hours: 4,
+                        service_id: None,
                         guard_count: None,
                         tip: None,
                         lat: None,
@@ -1798,6 +1856,7 @@ mod tests {
                     },
                     1,
                     rust_decimal::Decimal::ZERO,
+                    None,
                 )
                 .await
                 .expect("create")
@@ -2151,5 +2210,182 @@ mod tests {
             "no rating → null average"
         );
         assert_eq!(data[1]["review_count"], serde_json::json!(0));
+    }
+
+    // ----- Service catalog → charge-path wiring (full router; real DB + Redis) -----
+
+    /// End-to-end over the router: `GET /services` is reachable by a NON-admin customer (no
+    /// admin gate) and lists the seeded ACTIVE service; `POST /bookings` with that
+    /// `service_id` uses the catalog's `base_fee` (not the column default) and enforces its
+    /// `min_hours` floor (below-min → 400); an unknown/inactive `service_id` → 404; and a
+    /// booking WITHOUT a `service_id` still works (back-compat). Gated on DATABASE_URL +
+    /// Redis (hermetic SKIP otherwise).
+    #[tokio::test]
+    async fn services_list_and_booking_charge_wiring() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+
+        // Seed one active service (min 3h, ฿230/hr) and one deactivated service.
+        let marker = Uuid::new_v4().to_string();
+        let active = repo::create_service(
+            &db,
+            &CreateServiceRequest {
+                name_th: format!("th-{marker}"),
+                name_en: format!("en-{marker}"),
+                base_fee: "230.00".parse().unwrap(),
+                min_hours: 3,
+                notes: None,
+            },
+        )
+        .await
+        .expect("seed active");
+        let inactive = repo::create_service(
+            &db,
+            &CreateServiceRequest {
+                name_th: format!("th-x-{marker}"),
+                name_en: format!("en-x-{marker}"),
+                base_fee: "999.00".parse().unwrap(),
+                min_hours: 1,
+                notes: None,
+            },
+        )
+        .await
+        .expect("seed inactive");
+        repo::deactivate_service(&db, inactive.id)
+            .await
+            .expect("deactivate");
+
+        let customer = Uuid::new_v4();
+
+        // GET /services as a NON-admin customer → 200, lists the active (not the inactive) one.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/services")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token_for(customer, "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the customer-facing picker is NOT admin-gated"
+        );
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        let active_entry = data
+            .iter()
+            .find(|s| s["id"] == serde_json::json!(active.id))
+            .expect("active service is listed");
+        assert_eq!(active_entry["base_fee"], serde_json::json!("230.00"));
+        assert_eq!(active_entry["min_hours"], serde_json::json!(3));
+        // The customer-facing projection must NOT leak the admin-only fields.
+        assert!(active_entry.get("notes").is_none(), "notes is admin-only");
+        assert!(
+            active_entry.get("is_active").is_none(),
+            "is_active is admin-only"
+        );
+        assert!(
+            !data
+                .iter()
+                .any(|s| s["id"] == serde_json::json!(inactive.id)),
+            "a deactivated service is not offered to customers"
+        );
+
+        // POST /bookings: helper to create as the customer with an optional service_id + hours.
+        let create = |service_id: Option<Uuid>, hours: i32| {
+            let app = app.clone();
+            let token = user_token_for(customer, "customer");
+            async move {
+                let mut body = serde_json::json!({
+                    "address": "1 Charge Wiring Rd",
+                    "scheduled_at": "2026-07-01T10:00:00Z",
+                    "hours": hours,
+                });
+                if let Some(sid) = service_id {
+                    body["service_id"] = serde_json::json!(sid);
+                }
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/bookings")
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+
+        // (a) valid service_id, hours ≥ min_hours → 200; booking carries the CATALOG base_fee.
+        let res = create(Some(active.id), 4).await;
+        assert_eq!(res.status(), StatusCode::OK, "valid service booking");
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let booking_id: Uuid = serde_json::from_value(v["data"]["id"].clone()).unwrap();
+        assert_eq!(
+            v["data"]["base_fee"],
+            serde_json::json!("230.00"),
+            "the booking's base_fee is the catalog rate"
+        );
+
+        // (b) below the service minimum → 400 (and no booking is created).
+        let res = create(Some(active.id), 2).await;
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "hours below the service min_hours is rejected"
+        );
+
+        // (c) unknown/inactive service_id → 404.
+        assert_eq!(
+            create(Some(Uuid::new_v4()), 4).await.status(),
+            StatusCode::NOT_FOUND,
+            "unknown service_id is 404"
+        );
+        assert_eq!(
+            create(Some(inactive.id), 4).await.status(),
+            StatusCode::NOT_FOUND,
+            "an inactive service_id is 404"
+        );
+
+        // (d) back-compat: no service_id still works (200; server-owned default base_fee).
+        let res = create(None, 1).await;
+        assert_eq!(res.status(), StatusCode::OK, "no service_id still works");
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let plain_id: Uuid = serde_json::from_value(v["data"]["id"].clone()).unwrap();
+
+        // cleanup
+        for id in [booking_id, plain_id] {
+            let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+                .bind(id)
+                .execute(&db)
+                .await;
+        }
+        for id in [active.id, inactive.id] {
+            let _ = sqlx::query("DELETE FROM booking.service_catalog WHERE id = $1")
+                .bind(id)
+                .execute(&db)
+                .await;
+        }
     }
 }
