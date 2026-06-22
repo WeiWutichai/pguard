@@ -1,0 +1,26 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# FCM push enablement overlay — layer in ONLY when push is configured.
+#
+# Default deploys do NOT include this file, so the stack still boots with FCM DISABLED
+# (NoopPusher) until push is actually set up — no crash-loop from a missing service account.
+#
+# Enable (on the VPS):
+#   1. Place the Firebase service-account JSON at:
+#        infra/docker/secrets/fcm-service-account.json
+#      (the `secrets/` dir is gitignored — the key is never committed.)
+#   2. Redeploy notification WITH this overlay added:
+#        cd infra/docker
+#        docker compose -f docker-compose.prod.yml -f docker-compose.staging.yml \
+#          -f docker-compose.fcm.yml up -d notification
+#
+# The FCM project_id is read from the service-account JSON itself (no FCM_PROJECT_ID needed).
+# To roll back, redeploy notification WITHOUT this overlay.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  notification:
+    environment:
+      # Value-aware gate (notification fcm::fcm_disabled): "false" ENABLES real push; the pusher
+      # then fail-fasts at boot if the mounted service account is missing/invalid.
+      FCM_DISABLED: "false"
+    volumes:
+      - ${FCM_SERVICE_ACCOUNT_HOST_PATH:-./secrets/fcm-service-account.json}:/run/secrets/fcm-service-account.json:ro

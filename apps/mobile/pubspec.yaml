@@ -51,6 +51,12 @@ dependencies:
   # for jobs (AndroidSettings + ForegroundNotificationConfig are re-exported by geolocator).
   geolocator: ^11.1.0
 
+  # FCM push — wakes the callee on an incoming call (notification maps calling.initiated → a push
+  # with data{type:incoming_call,call_id,...}; the push controller routes it to the call screen).
+  # Requires android/app/google-services.json (app.pguard.mobile) to build.
+  firebase_core: ^3.15.0
+  firebase_messaging: ^15.2.0
+
   # i18n — bilingual TH/EN.
   intl: ^0.19.0
 

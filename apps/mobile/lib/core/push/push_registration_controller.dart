@@ -1,0 +1,83 @@
+import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../../features/call/call_routes.dart';
+import '../../routing/app_router.dart';
+import '../controllers/session_controller.dart';
+import '../providers.dart';
+import 'incoming_call_push.dart';
+import 'push_service.dart';
+
+part 'push_registration_controller.g.dart';
+
+/// The device-push port. Overridden with a fake in tests.
+@riverpod
+PushService pushService(PushServiceRef ref) =>
+    FirebasePushService(FirebaseMessaging.instance);
+
+/// How the push layer navigates (e.g. to an incoming call). Default pushes onto the app router;
+/// overridden in tests to capture the route without a real navigator.
+@riverpod
+void Function(String route) pushNavigate(PushNavigateRef ref) =>
+    (route) => ref.read(appRouterProvider).push(route);
+
+/// Registers this device's FCM token with the backend (`POST /tokens`) while the session is
+/// authenticated, and routes incoming-call pushes to the in-app call screen.
+///
+/// keepAlive so it survives screen changes; the token is (re)registered on every authenticated
+/// transition (the token is device-level but the backend binds it to the logged-in user, so a new
+/// login must rebind it). Best-effort throughout — a Firebase/network failure degrades to "no push"
+/// and never crashes the app. The message listeners are wired exactly once.
+@Riverpod(keepAlive: true)
+class PushRegistration extends _$PushRegistration {
+  bool _listening = false;
+
+  @override
+  bool build() {
+    ref.listen<SessionState>(
+      sessionProvider,
+      (_, next) {
+        if (next.status == SessionStatus.authenticated) {
+          _start();
+        }
+      },
+      fireImmediately: true,
+    );
+    return false; // state is unused — the side effects (registration + routing) are the point.
+  }
+
+  Future<void> _start() async {
+    final push = ref.read(pushServiceProvider);
+    try {
+      await push.requestPermission();
+      final token = await push.getToken();
+      if (token != null) await _register(token);
+      if (_listening) return; // wire the streams + initial message exactly once
+      _listening = true;
+      push.tokenRefreshes.listen(_register);
+      push.foregroundMessages.listen(_handle);
+      push.openedMessages.listen(_handle);
+      final initial = await push.initialMessageData();
+      if (initial != null) _handle(initial);
+    } catch (_) {
+      // Firebase not configured / permission denied / offline → no push (graceful degrade).
+    }
+  }
+
+  Future<void> _register(String token) async {
+    try {
+      await ref.read(pguardApiProvider).post(
+        '/tokens',
+        data: {'token': token, 'device_type': 'android'},
+      );
+    } catch (_) {
+      // Best-effort; an onTokenRefresh or the next authenticated start retries.
+    }
+  }
+
+  void _handle(Map<String, dynamic> data) {
+    final call = IncomingCallPush.tryParse(data);
+    if (call == null) return; // not an incoming-call push — ignore
+    ref.read(pushNavigateProvider)(CallRoutes.incoming(call.callId));
+  }
+}

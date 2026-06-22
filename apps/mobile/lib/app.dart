@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/push/push_registration_controller.dart';
 import 'core/theme/app_theme.dart';
 import 'routing/app_router.dart';
 
@@ -12,6 +13,9 @@ class PGuardApp extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(appRouterProvider);
+    // Instantiate the keepAlive push controller so it registers the FCM token + routes incoming
+    // calls once the session is authenticated. (Value unused; this just keeps it alive.)
+    ref.watch(pushRegistrationProvider);
     return MaterialApp.router(
       title: 'pguard',
       debugShowCheckedModeBanner: false,
