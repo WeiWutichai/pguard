@@ -56,7 +56,12 @@ export IMAGE_TAG="${1:-$(git rev-parse HEAD)}"
 echo "    REGISTRY=$REGISTRY  IMAGE_PREFIX=$IMAGE_PREFIX  IMAGE_TAG=$IMAGE_TAG"
 
 echo "==> [3/7] pull images (14 custom + pinned 3rd-party)"
-dc pull
+# --ignore-pull-failures: the pinned 3rd-party base images (nginx/postgres/redis/…) are already
+# cached on the host and rarely change, so a TRANSIENT Docker Hub hiccup (auth/token 404, anon
+# rate-limit) on one of them must NOT abort the deploy — compose falls back to the cached image and
+# still pulls the custom GHCR images (the ones that actually changed). A genuinely-missing custom
+# image surfaces at `up` (it won't start) rather than masking here.
+dc pull --ignore-pull-failures
 
 echo "==> [4/7] up -d --remove-orphans"
 dc up -d --remove-orphans
