@@ -814,8 +814,8 @@ class BookingsApi {
     );
   }
 
-  /// Discovery — approved guards enriched with their rating summary
-  /// booking owns discovery but neither the guard catalog (profile) nor reviews (rating). This lists the APPROVED guard catalog (read from profile&#39;s &#x60;/internal/guards&#x60; over a service-JWT) and enriches each with the guard&#39;s live rating summary (read from rating&#39;s &#x60;/internal/guards/{id}/rating-summary&#x60;). Best-effort on ratings: a guard whose rating lookup fails still appears with &#x60;average_rating: null&#x60; and &#x60;review_count: 0&#x60;. 
+  /// Discovery — ONLINE approved guards enriched with their rating summary
+  /// booking owns discovery but none of the guard catalog (profile), reviews (rating), or live presence (presence). This lists the APPROVED guard catalog (read from profile&#39;s &#x60;/internal/guards&#x60; over a service-JWT), RESTRICTED to guards who are currently ONLINE — live per presence&#39;s &#x60;/internal/online-guards&#x60; (&#x60;is_online&#x60; AND a fresh GPS fix, \&quot;พร้อมรับงาน\&quot;) — and enriches each with the guard&#39;s live rating summary (read from rating&#39;s &#x60;/internal/guards/{id}/rating-summary&#x60;).  Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on presence: if the presence consult errors/times out, the full approved list is returned UNFILTERED (a presence hiccup must never blank discovery and block all bookings).  Best-effort on ratings: a guard whose rating lookup fails still appears with &#x60;average_rating: null&#x60; and &#x60;review_count: 0&#x60;. 
   ///
   /// Parameters:
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation

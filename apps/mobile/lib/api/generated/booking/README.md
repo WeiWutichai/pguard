@@ -96,7 +96,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**declineBooking**](doc/BookingsApi.md#declinebooking) | **PUT** /bookings/{id}/decline | Assigned guard withdraws (after accepting)
 [*BookingsApi*](doc/BookingsApi.md) | [**enRouteBooking**](doc/BookingsApi.md#enroutebooking) | **PUT** /bookings/{id}/en-route | Assigned guard is en route
 [*BookingsApi*](doc/BookingsApi.md) | [**getBooking**](doc/BookingsApi.md#getbooking) | **GET** /bookings/{id} | Get one booking the caller participates in
-[*BookingsApi*](doc/BookingsApi.md) | [**listAvailableGuards**](doc/BookingsApi.md#listavailableguards) | **GET** /available-guards | Discovery — approved guards enriched with their rating summary
+[*BookingsApi*](doc/BookingsApi.md) | [**listAvailableGuards**](doc/BookingsApi.md#listavailableguards) | **GET** /available-guards | Discovery — ONLINE approved guards enriched with their rating summary
 [*BookingsApi*](doc/BookingsApi.md) | [**listBookings**](doc/BookingsApi.md#listbookings) | **GET** /bookings | List the caller&#39;s bookings
 [*BookingsApi*](doc/BookingsApi.md) | [**listOpenBookings**](doc/BookingsApi.md#listopenbookings) | **GET** /bookings/open | Open-job discovery — requested bookings with no guard yet (guard only)
 [*BookingsApi*](doc/BookingsApi.md) | [**listProgressReports**](doc/BookingsApi.md#listprogressreports) | **GET** /bookings/{id}/progress-reports | List a booking&#39;s check-in reports (participants only)

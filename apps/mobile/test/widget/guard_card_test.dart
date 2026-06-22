@@ -7,11 +7,21 @@ import 'package:pguard_mobile/features/booking/widgets/guard_card.dart';
 void main() {
   // No locale override → the LocaleController default (Thai) drives rendering,
   // so the card's rating line renders its Thai-only strings.
-  Future<void> pumpCard(WidgetTester tester, AvailableGuard guard) {
+  Future<void> pumpCard(
+    WidgetTester tester,
+    AvailableGuard guard, {
+    VoidCallback? onTap,
+    VoidCallback? onViewReviews,
+  }) {
     return tester.pumpWidget(ProviderScope(
       child: MaterialApp(
         home: Scaffold(
-          body: GuardCard(guard: guard, selected: false, onTap: () {}),
+          body: GuardCard(
+            guard: guard,
+            selected: false,
+            onTap: onTap ?? () {},
+            onViewReviews: onViewReviews ?? () {},
+          ),
         ),
       ),
     ));
@@ -46,5 +56,32 @@ void main() {
     );
 
     expect(find.textContaining('ยังไม่มีรีวิว'), findsOneWidget);
+  });
+
+  testWidgets(
+      'the "ดูรีวิว" affordance fires onViewReviews and does NOT radio-select the card',
+      (tester) async {
+    var selected = 0;
+    var viewed = 0;
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-cccc-3333',
+        averageRating: '4.20',
+        reviewCount: 9,
+      ),
+      onTap: () => selected++,
+      onViewReviews: () => viewed++,
+    );
+
+    // The distinct view-reviews affordance is present (Thai-default locale).
+    expect(find.text('ดูรีวิว'), findsOneWidget);
+
+    await tester.tap(find.text('ดูรีวิว'));
+    await tester.pump();
+
+    // Opens reviews WITHOUT selecting the guard (first-come radio untouched).
+    expect(viewed, 1);
+    expect(selected, 0);
   });
 }

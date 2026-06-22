@@ -104,6 +104,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /internal/online-guards:
+    get:
+      tags: [Locations]
+      summary: Live guard ids (service-to-service)
+      description: |
+        Internal read for booking's discovery (`/available-guards`) — the ids of guards who are
+        currently LIVE (`is_online` AND a fresh GPS fix within the 5-minute freshness window,
+        "พร้อมรับงาน"). Guarded by a **service-JWT** (`serviceAuth`, aud `pguard-internal`),
+        never reachable from the public edge (the gateway blocks `/internal/`). Returns ONLY ids
+        — no lat/lng/PII (unlike the admin `/locations` bulk read); least-privilege for the
+        cross-service consult. Documented here for the contract; not part of the user-facing
+        client.
+      operationId: internalOnlineGuards
+      security: [{ serviceAuth: [] }]
+      responses:
+        '200':
+          description: The currently-live guard ids
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OnlineGuards' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -111,6 +138,11 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: User access token (HS256). Also accepted as the `access_token` cookie for web; for WS, Bearer on the upgrade request only.
+    serviceAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Service-JWT (aud=pguard-internal); internal endpoints only.
 
   parameters:
     GuardId:
@@ -189,6 +221,15 @@ components:
         lng: { type: number, format: double }
         accuracy: { type: number, format: float, nullable: true }
         recorded_at: { type: string, format: date-time }
+
+    OnlineGuards:
+      type: object
+      required: [guard_ids]
+      properties:
+        guard_ids:
+          type: array
+          items: { type: string, format: uuid }
+          description: Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII.
 
     ApiResponseEnvelope:
       type: object

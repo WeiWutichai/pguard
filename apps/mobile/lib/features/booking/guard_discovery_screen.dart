@@ -9,6 +9,7 @@ import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import 'widgets/guard_card.dart';
+import 'widgets/guard_reviews_sheet.dart';
 
 /// Step 3 — guard discovery. Loads `GET /v1/available-guards` ONCE (no polling) and shows the
 /// approved guards with their rating summary. v2 is first-come-accept: choosing a guard here is
@@ -133,6 +134,11 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
             guard: guard,
             selected: guard.guardId == state.selectedGuardId,
             onTap: () => ctrl.selectGuard(guard.guardId),
+            // Distinct affordance: opens the read-only reviews sheet without selecting the guard.
+            onViewReviews: () => showGuardReviewsSheet(
+              context: context,
+              guardId: guard.guardId,
+            ),
           ),
           const SizedBox(height: PgTokens.space3),
         ],

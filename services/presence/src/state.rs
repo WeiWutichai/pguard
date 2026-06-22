@@ -1,8 +1,9 @@
 //! Shared application state + the capability seams the handlers are generic over.
 //!
-//! presence holds NO service-JWT (it exposes no `/internal` endpoint and makes no synchronous
-//! cross-service HTTP read); it consumes `pguard.events.booking.*` to derive its IDOR
-//! read-model instead. It needs the user-JWT decoding key + the cache Redis (for the `AuthUser`
+//! presence makes no synchronous cross-service HTTP read (it consumes `pguard.events.booking.*`
+//! to derive its IDOR read-model). It holds a service-JWT *decoding* key only — to VALIDATE the
+//! one inbound `/internal/online-guards` read booking's discovery calls (it never MINTS a
+//! service token). It also needs the user-JWT decoding key + the cache Redis (for the `AuthUser`
 //! revocation check + the WS re-auth tick) and a Redis pub/sub connection (to republish raw
 //! GPS to the admin live map).
 //!
@@ -15,8 +16,9 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use shared::auth::HasJwtSecret;
-use shared::config::JwtConfig;
+use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::error::AppError;
+use shared::service_jwt::HasServiceJwt;
 
 use crate::repo;
 
@@ -56,6 +58,10 @@ pub struct AppState {
     /// Pub/sub Redis — republish raw GPS to the admin live map (channel `presence:gps`).
     pub redis_pub: redis::aio::ConnectionManager,
     pub jwt_config: JwtConfig,
+    /// Separate secret for service-to-service JWTs — VALIDATES the inbound
+    /// `/internal/online-guards` read booking's discovery calls (presence only decodes; it
+    /// never mints a service token). CLAUDE.md "Service auth (internal)".
+    pub service_jwt_config: ServiceJwtConfig,
     pub booking_authz: DbBookingAuthz,
 }
 
@@ -68,6 +74,12 @@ impl HasJwtSecret for AppState {
     }
     fn redis_conn(&self) -> &redis::aio::ConnectionManager {
         &self.redis_cache
+    }
+}
+
+impl HasServiceJwt for AppState {
+    fn service_decoding_key(&self) -> &DecodingKey {
+        &self.service_jwt_config.decoding_key
     }
 }
 
@@ -103,5 +115,20 @@ impl PresenceDeps for AppState {
     }
     fn redis_pub(&self) -> &redis::aio::ConnectionManager {
         &self.redis_pub
+    }
+}
+
+/// Capability seam for the service-JWT'd internal read (`GET /internal/online-guards`). Generic
+/// over [`HasServiceJwt`] so the `ServiceCaller` guard is unit-testable with a lightweight state
+/// — the rejection path short-circuits before the DB is touched (mirrors profile's
+/// `ProfileInternalDeps`). The live-guard read is a small id-only list, so it stays on the
+/// primary pool (no replica seam needed).
+pub trait PresenceInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
+    fn db(&self) -> &PgPool;
+}
+
+impl PresenceInternalDeps for AppState {
+    fn db(&self) -> &PgPool {
+        &self.db
     }
 }

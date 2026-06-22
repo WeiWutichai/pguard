@@ -13,11 +13,14 @@ use uuid::Uuid;
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::ApiResponse;
+use shared::service_jwt::ServiceCaller;
 
 use crate::domain;
-use crate::models::{GuardLocation, GuardLocationRow, HistoryPoint, HistoryQuery, LocationsQuery};
+use crate::models::{
+    GuardLocation, GuardLocationRow, HistoryPoint, HistoryQuery, LocationsQuery, OnlineGuards,
+};
 use crate::repo;
-use crate::state::{BookingAuthz, PresenceDeps};
+use crate::state::{BookingAuthz, PresenceDeps, PresenceInternalDeps};
 
 /// GET /locations — bulk live guard locations. **Admin only** (a customer can NEVER pull bulk).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, role = %user.role))]
@@ -70,6 +73,24 @@ pub async fn guard_history<S: PresenceDeps>(
         .map(HistoryPoint::from)
         .collect();
     Ok(Json(ApiResponse::success(history)))
+}
+
+/// GET /internal/online-guards — the ids of guards who are currently LIVE (`is_online` AND a
+/// fresh fix; [`domain::is_live`]). Service-JWT'd ([`ServiceCaller`]) — never reachable from the
+/// public edge (the gateway blocks `/internal/`). Consumed by booking's `/available-guards`
+/// discovery to drop OFFLINE approved guards from the customer list ("พร้อมรับงาน" filter).
+///
+/// Returns ONLY ids — no lat/lng/PII (unlike the admin `/locations` bulk read), so the discovery
+/// consult is least-privilege. The freshness window is presence's own [`domain::FRESHNESS_MINUTES`]
+/// rule applied in SQL, so callers always see the same "live" definition as the admin map.
+#[tracing::instrument(skip(state), fields(caller = %caller.service))]
+pub async fn internal_online_guards<S: PresenceInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+) -> Result<Json<ApiResponse<OnlineGuards>>, AppError> {
+    let guard_ids =
+        repo::online_guard_ids(state.db(), Utc::now(), domain::FRESHNESS_MINUTES).await?;
+    Ok(Json(ApiResponse::success(OnlineGuards { guard_ids })))
 }
 
 /// The IDOR rule for a per-guard read: an admin may read any guard; a guard only its own; a
@@ -334,6 +355,91 @@ mod tests {
             status,
             StatusCode::FORBIDDEN,
             "a guard reading its OWN location must pass the gate"
+        );
+    }
+
+    // ----- /internal/online-guards: service-JWT guard (no Redis/DB needed for rejection) -----
+
+    use crate::state::PresenceInternalDeps;
+    use shared::service_jwt::HasServiceJwt;
+
+    const SERVICE_SECRET: &str =
+        "service-secret-at-least-64-characters-long-for-internal-hs256-test!!";
+
+    #[derive(Clone)]
+    struct InternalDeps {
+        dec: Arc<DecodingKey>,
+        db: sqlx::PgPool,
+    }
+    impl HasServiceJwt for InternalDeps {
+        fn service_decoding_key(&self) -> &DecodingKey {
+            &self.dec
+        }
+    }
+    impl PresenceInternalDeps for InternalDeps {
+        fn db(&self) -> &sqlx::PgPool {
+            &self.db
+        }
+    }
+
+    /// Internal router over a lightweight state. The `ServiceCaller` extractor only needs the
+    /// service decoding key — no Redis, no live DB. Rejected requests short-circuit at the guard
+    /// before any DB access (mirrors profile's `internal_router` test).
+    fn internal_router() -> Router {
+        let db = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let deps = InternalDeps {
+            dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
+            db,
+        };
+        Router::new()
+            .route(
+                "/internal/online-guards",
+                get(internal_online_guards::<InternalDeps>),
+            )
+            .with_state(deps)
+    }
+
+    async fn internal_status(tok: Option<&str>) -> StatusCode {
+        let mut b = Request::builder()
+            .method("GET")
+            .uri("/internal/online-guards");
+        if let Some(t) = tok {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        internal_router()
+            .oneshot(b.body(Body::empty()).unwrap())
+            .await
+            .unwrap()
+            .status()
+    }
+
+    #[tokio::test]
+    async fn online_guards_rejects_missing_token() {
+        assert_eq!(internal_status(None).await, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn online_guards_rejects_invalid_token() {
+        assert_eq!(
+            internal_status(Some("not.a.valid.jwt")).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn online_guards_accepts_valid_service_token() {
+        // A valid service-JWT (as minted by booking) must pass the guard; the handler then
+        // queries the (unreachable) DB, so the response is NOT 401 — proving auth passed.
+        use shared::service_jwt::encode_service_jwt;
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("booking", &ek, 60).unwrap();
+        assert_ne!(
+            internal_status(Some(&tok)).await,
+            StatusCode::UNAUTHORIZED,
+            "valid service token must pass the guard"
         );
     }
 }

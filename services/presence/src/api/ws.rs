@@ -561,7 +561,7 @@ mod tests {
     #[tokio::test]
     async fn ws_gps_e2e_ack_validate_and_offline_on_close() {
         use crate::state::{AppState, DbBookingAuthz};
-        use shared::config::JwtConfig;
+        use shared::config::{JwtConfig, ServiceJwtConfig};
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         use tokio_tungstenite::tungstenite::Message as TMessage;
 
@@ -588,12 +588,19 @@ mod tests {
             encoding_key: EncodingKey::from_secret(SECRET.as_bytes()),
             decoding_key: DecodingKey::from_secret(SECRET.as_bytes()),
         };
+        // The WS e2e path never validates a service-JWT; a throwaway key satisfies the field.
+        let service_jwt_config = ServiceJwtConfig {
+            encoding_key: EncodingKey::from_secret(SECRET.as_bytes()),
+            decoding_key: DecodingKey::from_secret(SECRET.as_bytes()),
+            ttl_secs: 60,
+        };
         let state = AppState {
             db: db.clone(),
             db_read: db.clone(),
             redis_cache: redis.clone(),
             redis_pub: redis,
             jwt_config,
+            service_jwt_config,
             booking_authz: DbBookingAuthz { db: db.clone() },
         };
         let app = Router::new()

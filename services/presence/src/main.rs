@@ -29,7 +29,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde_json::{json, Value};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_connection_manager;
 
@@ -54,6 +54,9 @@ async fn main() -> anyhow::Result<()> {
     let db_config = DatabaseConfig::from_env()?;
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
+    // Separate secret for service-to-service JWTs — VALIDATES the inbound `/internal/online-guards`
+    // read booking's discovery calls (presence only decodes; it never mints a service token).
+    let service_jwt_config = ServiceJwtConfig::from_env()?;
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
 
@@ -85,6 +88,7 @@ async fn main() -> anyhow::Result<()> {
         redis_cache,
         redis_pub,
         jwt_config,
+        service_jwt_config,
         booking_authz: DbBookingAuthz { db: db.clone() },
     };
 
@@ -118,6 +122,13 @@ async fn main() -> anyhow::Result<()> {
             get(api::guard_location::<AppState>),
         )
         .route("/guards/{id}/history", get(api::guard_history::<AppState>))
+        // Service-to-service read (service-JWT'd) — booking's discovery filters its
+        // approved-guard list down to who is currently LIVE here. Not exposed through the
+        // public gateway (the `/internal/` location is blocked at the edge).
+        .route(
+            "/internal/online-guards",
+            get(api::internal_online_guards::<AppState>),
+        )
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(
             observability::telemetry_middleware,

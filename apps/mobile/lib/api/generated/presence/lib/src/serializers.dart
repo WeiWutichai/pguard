@@ -22,6 +22,8 @@ import 'package:pguard_presence_api/src/model/history_point.dart';
 import 'package:pguard_presence_api/src/model/inline_object.dart';
 import 'package:pguard_presence_api/src/model/inline_object1.dart';
 import 'package:pguard_presence_api/src/model/inline_object2.dart';
+import 'package:pguard_presence_api/src/model/internal_online_guards200_response.dart';
+import 'package:pguard_presence_api/src/model/online_guards.dart';
 
 part 'serializers.g.dart';
 
@@ -34,6 +36,8 @@ part 'serializers.g.dart';
   InlineObject,
   InlineObject1,
   InlineObject2,
+  InternalOnlineGuards200Response,
+  OnlineGuards,
 ])
 Serializers serializers = (_$serializers.toBuilder()
       ..add(ApiResponseEnvelope.serializer)

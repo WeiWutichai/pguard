@@ -21,5 +21,7 @@ lib/src/model/history_point.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/inline_object2.dart
+lib/src/model/internal_online_guards200_response.dart
+lib/src/model/online_guards.dart
 lib/src/serializers.dart
 pubspec.yaml

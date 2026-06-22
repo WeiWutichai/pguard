@@ -89,6 +89,7 @@ Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardHistory**](doc/LocationsApi.md#getguardhistory) | **GET** /guards/{id}/history | Get a guard&#39;s location history (own / active-booking customer / admin)
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardLocation**](doc/LocationsApi.md#getguardlocation) | **GET** /guards/{id}/location | Get a guard&#39;s latest location (own / active-booking customer / admin)
+[*LocationsApi*](doc/LocationsApi.md) | [**internalOnlineGuards**](doc/LocationsApi.md#internalonlineguards) | **GET** /internal/online-guards | Live guard ids (service-to-service)
 [*LocationsApi*](doc/LocationsApi.md) | [**listLocations**](doc/LocationsApi.md#listlocations) | **GET** /locations | List live guard locations (admin only)
 
 
@@ -102,6 +103,8 @@ Class | Method | HTTP request | Description
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InlineObject2](doc/InlineObject2.md)
+ - [InternalOnlineGuards200Response](doc/InternalOnlineGuards200Response.md)
+ - [OnlineGuards](doc/OnlineGuards.md)
 
 
 ## Documentation For Authorization
@@ -109,6 +112,10 @@ Class | Method | HTTP request | Description
 
 Authentication schemes defined for the API:
 ### bearerAuth
+
+- **Type**: HTTP Bearer Token authentication (JWT)
+
+### serviceAuth
 
 - **Type**: HTTP Bearer Token authentication (JWT)
 
