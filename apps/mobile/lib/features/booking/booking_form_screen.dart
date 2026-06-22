@@ -5,19 +5,26 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/locale_controller.dart';
-import '../../core/controllers/services_controller.dart';
+import '../../core/location/place_search_service.dart';
+import '../../core/models/booking_options.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
-import '../../core/models/service_catalog.dart';
+import '../../core/permissions/permission_gate.dart';
+import '../../core/providers.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
-import 'widgets/map_picker.dart';
-import 'widgets/tip_selector.dart';
+import 'widgets/pg_map.dart';
+import 'widgets/place_search_field.dart';
 
-/// Step 2 — the booking form. Captures location (map picker → reverse-geocoded place name),
-/// schedule, hours, and guard count, then `POST /v1/bookings`. The price shown here is an
-/// ESTIMATE (`indicative rate × hours × guards`); the authoritative figure comes back on the
-/// created booking. UI per `Mobile Hirer Booking.html` (classic/map-forward).
+/// Step 2 — the rich booking form (mockup #65). Top-to-bottom: service-time (start/end + quick
+/// presets, computing whole hours), location (real OSM [PgMap] + Nominatim place search + use-my-
+/// location + editable address + an extra-details note), security-equipment and add-on-service
+/// checkbox groups, guard-count stepper, tip, a live price breakdown, then "ค้นหาเจ้าหน้าที่".
+///
+/// The backend `POST /v1/bookings` is UNCHANGED: the start maps to `scheduled_at`, the computed
+/// `(end − start)` whole hours map to `hours`, and the extra-detail fields are FOLDED INTO the
+/// free-text `address` (see [composeAddress]). The price shown is an ESTIMATE
+/// (`base_fee × hours × guards + tip`); the authoritative figure rides the created booking.
 class BookingFormScreen extends ConsumerStatefulWidget {
   const BookingFormScreen({super.key});
 
@@ -26,11 +33,19 @@ class BookingFormScreen extends ConsumerStatefulWidget {
 }
 
 class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
-  static const List<int> _hourPresets = [4, 6, 8, 12];
+  /// Quick-duration presets (whole hours). "กำหนดเอง" (custom) is a separate chip that opens the
+  /// end picker rather than setting a fixed length.
+  static const List<int> _durationPresets = [12, 8, 4];
 
   late final TextEditingController _address = TextEditingController(
     text: ref.read(bookingFlowControllerProvider).address,
   );
+  late final TextEditingController _search = TextEditingController();
+  late final TextEditingController _details = TextEditingController(
+    text: ref.read(bookingFlowControllerProvider).extraDetails,
+  );
+
+  bool _resolving = false; // reverse-geocoding the current-location fix
 
   BookingFlowController get _ctrl =>
       ref.read(bookingFlowControllerProvider.notifier);
@@ -38,35 +53,77 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   @override
   void dispose() {
     _address.dispose();
+    _search.dispose();
+    _details.dispose();
     super.dispose();
   }
 
-  void _onLocationPicked(GeoPlace place) {
-    _ctrl.setLocation(place);
-    // Keep the editable address field in sync with the picked place name.
+  /// A place-search hit (Nominatim): drop the pin, set lat/lng, fill the address.
+  void _onPlaceSelected(PlaceResult result) {
+    _ctrl.setLocation(result.toGeoPlace());
+    _syncAddress(result.displayName);
+  }
+
+  /// A tap on the map: move the pin, then reverse-geocode for the address (best-effort; falls back
+  /// to the coordinate label). Stale-guarded by re-checking the pin after the await.
+  Future<void> _onMapTap(GeoPoint point) async {
+    _ctrl.setLocation(GeoPlace(point: point, placeName: point.label));
+    _syncAddress(point.label);
+    await _reverseGeocode(point);
+  }
+
+  Future<void> _useCurrentLocation() async {
+    final status = await ref.read(permissionGateProvider).locationStatus();
+    if (status != PgPermissionState.granted && mounted) {
+      await context.push('/permissions/location');
+    }
+    if (!mounted) return;
+    final fix = await ref.read(locationServiceProvider).currentLocation() ??
+        GeoPoint.bangkok;
+    _ctrl.setLocation(GeoPlace(point: fix, placeName: fix.label));
+    _syncAddress(fix.label);
+    await _reverseGeocode(fix);
+  }
+
+  /// Reverse-geocode [point] to a human place name and fold it back into the address/pin — but
+  /// only if the pin hasn't moved on since (stale-guard).
+  Future<void> _reverseGeocode(GeoPoint point) async {
+    setState(() => _resolving = true);
+    final name = await ref.read(locationServiceProvider).reverseGeocode(point);
+    if (!mounted) return;
+    setState(() => _resolving = false);
+    final current = ref.read(bookingFlowControllerProvider).place?.point;
+    if (current != point) return; // pin moved while we awaited — discard
+    _ctrl.setLocation(GeoPlace(point: point, placeName: name));
+    _syncAddress(name);
+  }
+
+  void _syncAddress(String text) {
     _address.value = TextEditingValue(
-      text: place.placeName,
-      selection: TextSelection.collapsed(offset: place.placeName.length),
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
     );
   }
 
-  Future<void> _pickSchedule() async {
+  Future<void> _pickDateTime({
+    required DateTime initial,
+    required ValueChanged<DateTime> onPicked,
+  }) async {
     final now = DateTime.now();
     final date = await showDatePicker(
       context: context,
-      initialDate: ref.read(bookingFlowControllerProvider).scheduledAt ?? now,
-      firstDate: now,
+      initialDate: initial.isBefore(now) ? now : initial,
+      firstDate: now.subtract(const Duration(days: 1)),
       lastDate: now.add(const Duration(days: 365)),
     );
     if (date == null || !mounted) return;
     final time = await showTimePicker(
       context: context,
-      initialTime: const TimeOfDay(hour: 14, minute: 0),
+      initialTime: TimeOfDay(hour: initial.hour, minute: initial.minute),
     );
     if (!mounted) return;
-    final t = time ?? const TimeOfDay(hour: 14, minute: 0);
-    _ctrl.setSchedule(
-        DateTime(date.year, date.month, date.day, t.hour, t.minute));
+    final t = time ?? TimeOfDay(hour: initial.hour, minute: initial.minute);
+    onPicked(DateTime(date.year, date.month, date.day, t.hour, t.minute));
   }
 
   Future<void> _submit() async {
@@ -82,9 +139,12 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true,
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'จองเจ้าหน้าที่' : 'Book a guard',
-        subtitle: service != null ? service.name(isThai) : 'Booking',
+        subtitle: service != null
+            ? service.name(isThai)
+            : (isThai ? 'การจอง' : 'Booking'),
         showBack: true,
       ),
       body: SafeArea(
@@ -94,55 +154,87 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(PgTokens.space4),
                 children: [
-                  _ServiceChips(
-                    selected: service,
-                    onSelect: _ctrl.selectService,
-                    isThai: isThai,
-                  ),
-                  const SizedBox(height: PgTokens.space4),
-                  _Label(isThai ? 'สถานที่' : 'Location'),
-                  const SizedBox(height: PgTokens.space2),
-                  MapPicker(
-                    initial: state.place,
-                    onChanged: _onLocationPicked,
-                  ),
-                  const SizedBox(height: PgTokens.space2),
-                  TextField(
-                    controller: _address,
-                    onChanged: _ctrl.setAddress,
-                    minLines: 1,
-                    maxLines: 2,
-                    decoration: InputDecoration(
-                      labelText: isThai ? 'ที่อยู่' : 'Address',
-                      hintText: isThai
-                          ? 'บ้านเลขที่ ถนน แขวง เขต'
-                          : 'House no., street, sub-district, district',
-                      prefixIcon: const Icon(Icons.location_on_outlined),
+                  // 2 — ระยะเวลาบริการ / time
+                  _Section(
+                    title: isThai ? 'ระยะเวลาบริการ' : 'Service time',
+                    child: _TimeSection(
+                      state: state,
+                      isThai: isThai,
+                      presets: _durationPresets,
+                      onPreset: _ctrl.setDurationPreset,
+                      onPickStart: () => _pickDateTime(
+                        initial: state.startAt ??
+                            DateTime.now().add(const Duration(hours: 1)),
+                        onPicked: _ctrl.setStart,
+                      ),
+                      onPickEnd: () => _pickDateTime(
+                        initial: state.endAt ??
+                            (state.startAt ?? DateTime.now())
+                                .add(Duration(hours: state.minHours)),
+                        onPicked: _ctrl.setEnd,
+                      ),
                     ),
                   ),
-                  const SizedBox(height: PgTokens.space4),
-                  _Label(isThai ? 'วันและเวลา' : 'Date & time'),
-                  const SizedBox(height: PgTokens.space2),
-                  _ScheduleRow(when: state.scheduledAt, onTap: _pickSchedule),
-                  const SizedBox(height: PgTokens.space4),
-                  _Label(isThai ? 'ระยะเวลา' : 'Duration'),
-                  const SizedBox(height: PgTokens.space2),
-                  _HourChips(
-                    presets: _hourPresets,
-                    minHours: state.minHours,
-                    selected: state.hours,
-                    onSelect: _ctrl.setHours,
+                  // 3 — สถานที่ / location
+                  _Section(
+                    title: isThai ? 'สถานที่' : 'Location',
+                    child: _LocationSection(
+                      state: state,
+                      isThai: isThai,
+                      addressController: _address,
+                      searchController: _search,
+                      detailsController: _details,
+                      resolving: _resolving,
+                      onPlaceSelected: _onPlaceSelected,
+                      onMapTap: _onMapTap,
+                      onUseCurrent: _useCurrentLocation,
+                      onAddressChanged: _ctrl.setAddress,
+                      onDetailsChanged: _ctrl.setExtraDetails,
+                    ),
                   ),
-                  const SizedBox(height: PgTokens.space4),
-                  _Label(isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards'),
-                  const SizedBox(height: PgTokens.space2),
-                  _Stepper(
-                    value: state.guardCount,
-                    min: 1,
-                    max: 20,
-                    unit: isThai ? 'คน' : 'guards',
-                    onChanged: _ctrl.setGuardCount,
+                  // 4 — อุปกรณ์รักษาความปลอดภัย / security equipment
+                  _Section(
+                    title:
+                        isThai ? 'อุปกรณ์รักษาความปลอดภัย' : 'Security equipment',
+                    child: _CheckboxGroup(
+                      options: kSecurityEquipment,
+                      selected: state.equipment,
+                      isThai: isThai,
+                      onToggle: _ctrl.toggleEquipment,
+                    ),
                   ),
+                  // 5 — บริการเพิ่มเติม / add-on services
+                  _Section(
+                    title: isThai ? 'บริการเพิ่มเติม' : 'Add-on services',
+                    child: _CheckboxGroup(
+                      options: kAddOnServices,
+                      selected: state.addOns,
+                      isThai: isThai,
+                      onToggle: _ctrl.toggleAddOn,
+                    ),
+                  ),
+                  // 6 — จำนวนเจ้าหน้าที่ / guard count
+                  _Section(
+                    title: isThai ? 'จำนวนเจ้าหน้าที่' : 'Number of guards',
+                    child: _Stepper(
+                      value: state.guardCount,
+                      min: 1,
+                      max: 20,
+                      unit: isThai ? 'คน' : 'guards',
+                      onChanged: _ctrl.setGuardCount,
+                    ),
+                  ),
+                  // 7 — ทิป / tip
+                  _Section(
+                    title: isThai ? 'ทิป' : 'Tip',
+                    child: _TipSection(
+                      selected: state.tipSatang,
+                      isThai: isThai,
+                      onSelect: _ctrl.setTipSatang,
+                    ),
+                  ),
+                  // 8 — price breakdown
+                  _PriceBreakdown(state: state, isThai: isThai),
                   if (state.error != null) ...[
                     const SizedBox(height: PgTokens.space3),
                     Text(state.error!,
@@ -151,10 +243,21 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                 ],
               ),
             ),
-            _PriceBar(
-              state: state,
-              isThai: isThai,
-              onSubmit: state.busy ? null : _submit,
+            // 9 — CTA
+            Container(
+              padding: const EdgeInsets.all(PgTokens.space4),
+              decoration: const BoxDecoration(
+                color: PgTokens.colorSurface,
+                border: Border(top: BorderSide(color: PgTokens.colorBorder)),
+              ),
+              child: SafeArea(
+                top: false,
+                child: PgPrimaryButton(
+                  label: isThai ? 'ค้นหาเจ้าหน้าที่' : 'Find guards',
+                  busy: state.busy,
+                  onPressed: state.busy ? null : _submit,
+                ),
+              ),
             ),
           ],
         ),
@@ -163,111 +266,141 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
   }
 }
 
-class _Label extends StatelessWidget {
-  const _Label(this.text);
-  final String text;
+/// A titled form section card — the consistent block framing for every group on the form.
+class _Section extends StatelessWidget {
+  const _Section({required this.title, required this.child});
 
-  @override
-  Widget build(BuildContext context) => Text(
-        text,
-        style: const TextStyle(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: PgTokens.colorTextMuted),
-      );
-}
-
-/// Service switcher on the form — chips of the SAME admin catalog the selection screen renders
-/// (`GET /v1/services`). Quiet while loading / on error / when empty (the customer already picked
-/// a service to reach this screen; the chips are a convenience re-select, not a gate).
-class _ServiceChips extends ConsumerWidget {
-  const _ServiceChips({
-    required this.selected,
-    required this.onSelect,
-    required this.isThai,
-  });
-
-  final ServiceOption? selected;
-  final ValueChanged<ServiceOption> onSelect;
-  final bool isThai;
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final options = ref.watch(servicesProvider).valueOrNull ?? const [];
-    if (options.isEmpty) return const SizedBox.shrink();
-    return Wrap(
-      spacing: PgTokens.space2,
-      runSpacing: PgTokens.space2,
-      children: [
-        for (final service in options)
-          _Chip(
-            label: service.name(isThai),
-            icon: Icons.shield_outlined,
-            selected: service.id == selected?.id,
-            onTap: () => onSelect(service),
-          ),
-      ],
-    );
-  }
-}
-
-class _Chip extends StatelessWidget {
-  const _Chip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-    this.icon,
-  });
-
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-  final IconData? icon;
+  final String title;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    final fg = selected ? PgTokens.colorGreen800 : PgTokens.colorText;
-    return Material(
-      color: selected ? PgTokens.colorGreen50 : PgTokens.colorSurface,
-      borderRadius: BorderRadius.circular(PgTokens.radiusFull),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
-        child: Container(
-          padding: const EdgeInsets.symmetric(
-              horizontal: PgTokens.space3, vertical: PgTokens.space2),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(PgTokens.radiusFull),
-            border: Border.all(
-                color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (icon != null) ...[
-                Icon(icon, size: 16, color: fg),
-                const SizedBox(width: PgTokens.space1),
-              ],
-              Text(label,
-                  style: TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600, color: fg)),
-            ],
-          ),
-        ),
+    return Container(
+      margin: const EdgeInsets.only(bottom: PgTokens.space4),
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSurface,
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        border: Border.all(color: PgTokens.colorBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(title,
+              style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: PgTokens.colorText)),
+          const SizedBox(height: PgTokens.space3),
+          child,
+        ],
       ),
     );
   }
 }
 
-class _ScheduleRow extends StatelessWidget {
-  const _ScheduleRow({required this.when, required this.onTap});
+// ── 2 — Service-time section ────────────────────────────────────────────────────────────────
 
+class _TimeSection extends StatelessWidget {
+  const _TimeSection({
+    required this.state,
+    required this.isThai,
+    required this.presets,
+    required this.onPreset,
+    required this.onPickStart,
+    required this.onPickEnd,
+  });
+
+  final BookingFlowState state;
+  final bool isThai;
+  final List<int> presets;
+  final ValueChanged<int> onPreset;
+  final VoidCallback onPickStart;
+  final VoidCallback onPickEnd;
+
+  @override
+  Widget build(BuildContext context) {
+    final hours = state.hours;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Wrap(
+          spacing: PgTokens.space2,
+          runSpacing: PgTokens.space2,
+          children: [
+            for (final p in presets)
+              _PillChip(
+                label: '$p ${isThai ? 'ชม.' : 'hrs'}',
+                selected: hours == p && state.startAt != null,
+                onTap: () => onPreset(p),
+              ),
+            _PillChip(
+              label: isThai ? 'กำหนดเอง' : 'Custom',
+              selected: state.startAt != null && !presets.contains(hours),
+              onTap: onPickEnd,
+            ),
+          ],
+        ),
+        const SizedBox(height: PgTokens.space3),
+        _DateTimeRow(
+          label: isThai ? 'เริ่ม' : 'Start',
+          when: state.startAt,
+          onTap: onPickStart,
+          isThai: isThai,
+        ),
+        const SizedBox(height: PgTokens.space2),
+        _DateTimeRow(
+          label: isThai ? 'สิ้นสุด' : 'End',
+          when: state.endAt,
+          onTap: onPickEnd,
+          isThai: isThai,
+        ),
+        const SizedBox(height: PgTokens.space3),
+        Row(
+          children: [
+            const Icon(Icons.schedule, size: 16, color: PgTokens.colorPrimary),
+            const SizedBox(width: PgTokens.space2),
+            Text(
+              isThai
+                  ? 'ระยะเวลาบริการ: $hours ชั่วโมง'
+                  : 'Service time: $hours hours',
+              style: const TextStyle(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorText),
+            ),
+          ],
+        ),
+        if (state.startAt != null && state.endAt != null && !state.meetsMinHours) ...[
+          const SizedBox(height: PgTokens.space2),
+          _InlineWarning(
+            text: isThai
+                ? 'ขั้นต่ำ ${state.minHours} ชม.'
+                : 'Minimum ${state.minHours} hrs',
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _DateTimeRow extends StatelessWidget {
+  const _DateTimeRow({
+    required this.label,
+    required this.when,
+    required this.onTap,
+    required this.isThai,
+  });
+
+  final String label;
   final DateTime? when;
   final VoidCallback onTap;
+  final bool isThai;
 
   String _format(DateTime d) {
     String two(int n) => n.toString().padLeft(2, '0');
-    return '${two(d.day)}/${two(d.month)}/${d.year}  ${two(d.hour)}:${two(d.minute)} น.';
+    final suffix = isThai ? ' น.' : '';
+    return '${two(d.day)}/${two(d.month)}/${d.year}  ${two(d.hour)}:${two(d.minute)}$suffix';
   }
 
   @override
@@ -287,11 +420,21 @@ class _ScheduleRow extends StatelessWidget {
           child: Row(
             children: [
               const Icon(Icons.calendar_today_outlined,
-                  size: 18, color: PgTokens.colorPrimary),
+                  size: 16, color: PgTokens.colorPrimary),
               const SizedBox(width: PgTokens.space3),
+              SizedBox(
+                width: 48,
+                child: Text(label,
+                    style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: PgTokens.colorTextMuted)),
+              ),
               Expanded(
                 child: Text(
-                  when != null ? _format(when!) : 'เลือกวันและเวลา',
+                  when != null
+                      ? _format(when!)
+                      : (isThai ? 'เลือกวันและเวลา' : 'Pick date & time'),
                   style: TextStyle(
                     fontSize: 14,
                     color: when != null
@@ -309,44 +452,190 @@ class _ScheduleRow extends StatelessWidget {
   }
 }
 
-class _HourChips extends StatelessWidget {
-  const _HourChips({
-    required this.presets,
-    required this.minHours,
-    required this.selected,
-    required this.onSelect,
+// ── 3 — Location section ────────────────────────────────────────────────────────────────────
+
+class _LocationSection extends StatelessWidget {
+  const _LocationSection({
+    required this.state,
+    required this.isThai,
+    required this.addressController,
+    required this.searchController,
+    required this.detailsController,
+    required this.resolving,
+    required this.onPlaceSelected,
+    required this.onMapTap,
+    required this.onUseCurrent,
+    required this.onAddressChanged,
+    required this.onDetailsChanged,
   });
 
-  final List<int> presets;
-
-  /// The selected service's `min_hours` — presets below it are dropped, and the minimum itself
-  /// is offered as a chip when it isn't already a preset (so the customer can sit on the floor).
-  final int minHours;
-  final int selected;
-  final ValueChanged<int> onSelect;
+  final BookingFlowState state;
+  final bool isThai;
+  final TextEditingController addressController;
+  final TextEditingController searchController;
+  final TextEditingController detailsController;
+  final bool resolving;
+  final ValueChanged<PlaceResult> onPlaceSelected;
+  final ValueChanged<GeoPoint> onMapTap;
+  final VoidCallback onUseCurrent;
+  final ValueChanged<String> onAddressChanged;
+  final ValueChanged<String> onDetailsChanged;
 
   @override
   Widget build(BuildContext context) {
-    final options = <int>{
-      for (final h in presets)
-        if (h >= minHours) h,
-      minHours,
-    }.toList()
-      ..sort();
-    return Wrap(
-      spacing: PgTokens.space2,
-      runSpacing: PgTokens.space2,
+    final point = state.place?.point ?? GeoPoint.bangkok;
+    final hasPin = state.place != null;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        for (final h in options)
-          _Chip(
-            label: '$h ชม.',
-            selected: h == selected,
-            onTap: () => onSelect(h),
+        PlaceSearchField(
+          controller: searchController,
+          isThai: isThai,
+          onSelected: onPlaceSelected,
+        ),
+        const SizedBox(height: PgTokens.space3),
+        AspectRatio(
+          aspectRatio: 16 / 9,
+          child: PgMap(
+            // Re-key on the pin so PgMap re-centres on the picked coordinate.
+            key: ValueKey(point),
+            center: point,
+            initialZoom: 15,
+            borderRadius: PgTokens.radiusXl,
+            onTap: onMapTap,
+            markers: hasPin
+                ? [
+                    PgMarker(
+                      point: point,
+                      width: 36,
+                      height: 48,
+                      alignment: Alignment.topCenter,
+                      child: const _Pin(),
+                    ),
+                  ]
+                : const [],
+          ),
+        ),
+        const SizedBox(height: PgTokens.space2),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: TextButton.icon(
+            onPressed: resolving ? null : onUseCurrent,
+            icon: const Icon(Icons.my_location, size: 16),
+            label: Text(isThai ? 'ใช้ตำแหน่งปัจจุบัน' : 'Use current location'),
+            style: TextButton.styleFrom(foregroundColor: PgTokens.colorPrimary),
+          ),
+        ),
+        const SizedBox(height: PgTokens.space2),
+        TextField(
+          controller: addressController,
+          onChanged: onAddressChanged,
+          minLines: 1,
+          maxLines: 2,
+          decoration: InputDecoration(
+            labelText: isThai ? 'ที่อยู่' : 'Address',
+            hintText: isThai
+                ? 'บ้านเลขที่ ถนน แขวง เขต'
+                : 'House no., street, sub-district, district',
+            prefixIcon: const Icon(Icons.location_on_outlined),
+          ),
+        ),
+        const SizedBox(height: PgTokens.space3),
+        TextField(
+          controller: detailsController,
+          onChanged: onDetailsChanged,
+          minLines: 2,
+          maxLines: 4,
+          decoration: InputDecoration(
+            labelText: isThai ? 'รายละเอียดเพิ่มเติม' : 'Extra details',
+            hintText: isThai
+                ? 'จุดสังเกต ทางเข้า ข้อกำหนดพิเศษ ฯลฯ'
+                : 'Landmarks, entrance, special instructions, etc.',
+            alignLabelWithHint: true,
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Pin extends StatelessWidget {
+  const _Pin();
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 36,
+          height: 36,
+          decoration: const BoxDecoration(
+            color: PgTokens.colorPrimary,
+            shape: BoxShape.circle,
+          ),
+          child: const Icon(Icons.shield, color: Colors.white, size: 18),
+        ),
+        Container(width: 2, height: 10, color: PgTokens.colorPrimary),
+      ],
+    );
+  }
+}
+
+// ── 4 & 5 — Checkbox groups ─────────────────────────────────────────────────────────────────
+
+class _CheckboxGroup extends StatelessWidget {
+  const _CheckboxGroup({
+    required this.options,
+    required this.selected,
+    required this.isThai,
+    required this.onToggle,
+  });
+
+  final List<BookingExtra> options;
+  final Set<String> selected;
+  final bool isThai;
+  final ValueChanged<String> onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        for (final o in options)
+          InkWell(
+            onTap: () => onToggle(o.id),
+            borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+            child: Padding(
+              padding:
+                  const EdgeInsets.symmetric(vertical: PgTokens.space1),
+              child: Row(
+                children: [
+                  Checkbox(
+                    value: selected.contains(o.id),
+                    onChanged: (_) => onToggle(o.id),
+                    activeColor: PgTokens.colorPrimary,
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  const SizedBox(width: PgTokens.space2),
+                  Expanded(
+                    child: Text(o.label(isThai),
+                        style: const TextStyle(
+                            fontSize: 14, color: PgTokens.colorText)),
+                  ),
+                ],
+              ),
+            ),
           ),
       ],
     );
   }
 }
+
+// ── 6 — Guard-count stepper ─────────────────────────────────────────────────────────────────
 
 class _Stepper extends StatelessWidget {
   const _Stepper({
@@ -414,70 +703,251 @@ class _RoundButton extends StatelessWidget {
   }
 }
 
-class _PriceBar extends StatelessWidget {
-  const _PriceBar({
-    required this.state,
+// ── 7 — Tip ─────────────────────────────────────────────────────────────────────────────────
+
+class _TipSection extends StatelessWidget {
+  const _TipSection({
+    required this.selected,
     required this.isThai,
-    required this.onSubmit,
+    required this.onSelect,
   });
 
-  final BookingFlowState state;
+  static const List<int> _presets = [0, 5000, 10000]; // satang: ฿0 / ฿50 / ฿100
+
+  final int selected;
   final bool isThai;
-  final VoidCallback? onSubmit;
+  final ValueChanged<int> onSelect;
+
+  Future<void> _promptCustom(BuildContext context) async {
+    final input = TextEditingController();
+    final satang = await showDialog<int>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(isThai ? 'ระบุทิป' : 'Custom tip'),
+        content: TextField(
+          controller: input,
+          autofocus: true,
+          keyboardType: TextInputType.number,
+          decoration: InputDecoration(
+            prefixText: '฿ ',
+            labelText: isThai ? 'จำนวนเงิน (บาท)' : 'Amount (THB)',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(isThai ? 'ยกเลิก' : 'Cancel'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(ctx, Money.satangFromString(input.text)),
+            child: Text(isThai ? 'ตกลง' : 'OK'),
+          ),
+        ],
+      ),
+    );
+    input.dispose();
+    if (satang != null) onSelect(satang);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final customActive = !_presets.contains(selected);
+    return Wrap(
+      spacing: PgTokens.space2,
+      runSpacing: PgTokens.space2,
+      children: [
+        for (final tip in _presets)
+          _PillChip(
+            label: Money.format(tip),
+            selected: tip == selected,
+            onTap: () => onSelect(tip),
+          ),
+        _PillChip(
+          label: customActive
+              ? Money.format(selected)
+              : (isThai ? 'ระบุ' : 'Custom'),
+          selected: customActive,
+          onTap: () => _promptCustom(context),
+        ),
+      ],
+    );
+  }
+}
+
+// ── 8 — Price breakdown ─────────────────────────────────────────────────────────────────────
+
+class _PriceBreakdown extends StatelessWidget {
+  const _PriceBreakdown({required this.state, required this.isThai});
+
+  final BookingFlowState state;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    final hourly = state.estimateHourlySatang;
+    final hours = state.hours;
+    final guards = state.guardCount;
+    final base = hourly * hours; // per-guard line
+    final tip = state.tipSatang;
+    final total = base * guards + tip;
+
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
-      decoration: const BoxDecoration(
+      decoration: BoxDecoration(
         color: PgTokens.colorSurface,
-        border: Border(top: BorderSide(color: PgTokens.colorBorder)),
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        border: Border.all(color: PgTokens.colorBorder),
       ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Flat tip rides the booking (post-pay bills it in full on completion).
-            const TipSelector(),
-            const SizedBox(height: PgTokens.space3),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (!state.hasEstimate)
+            Text(
+              isThai
+                  ? 'คิดเงินเมื่องานเสร็จตามเวลาจริง'
+                  : 'Charged on completion (actual hours)',
+              style: const TextStyle(
+                  fontSize: 12, color: PgTokens.colorTextMuted),
+            )
+          else ...[
+            _PriceRow(
+              label: isThai
+                  ? 'ค่าบริการรายชั่วโมง ($hours ชม.)'
+                  : 'Hourly fee ($hours hrs)',
+              value: Money.format(base),
+            ),
+            const SizedBox(height: PgTokens.space2),
+            _PriceRow(
+              label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Number of guards',
+              value: '× $guards',
+            ),
+            if (tip > 0) ...[
+              const SizedBox(height: PgTokens.space2),
+              _PriceRow(
+                label: isThai ? 'ทิป' : 'Tip',
+                value: Money.format(tip),
+              ),
+            ],
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+              child: Divider(height: 1, color: PgTokens.colorBorder),
+            ),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(isThai ? 'ราคาประเมิน' : 'Est. price',
-                          style: const TextStyle(
-                              fontSize: 12, color: PgTokens.colorTextMuted)),
-                      Text(
-                        state.hasEstimate
-                            ? '${Money.format(state.estimateHourlySatang)}/ชม. × ${state.hours} ชม. × ${state.guardCount}${state.tipSatang > 0 ? (isThai ? ' + ทิป' : ' + tip') : ''}'
-                            : (isThai ? 'คิดเงินเมื่องานเสร็จตามเวลาจริง' : 'Charged on completion (actual hours)'),
-                        style: const TextStyle(
-                            fontSize: 11, color: PgTokens.colorTextFaint),
-                      ),
-                    ],
-                  ),
+                  child: Text(isThai ? 'รวมทั้งหมด' : 'Total',
+                      style: const TextStyle(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          color: PgTokens.colorText)),
                 ),
                 Text(
-                  state.hasEstimate
-                      ? Money.format(state.estimateWithTipSatang)
-                      : '—',
+                  Money.format(total),
                   style: const TextStyle(
                       fontSize: 22, fontWeight: FontWeight.w700),
                 ),
               ],
             ),
-            const SizedBox(height: PgTokens.space3),
-            PgPrimaryButton(
-              label: isThai ? 'ค้นหาเจ้าหน้าที่' : 'Find guards',
-              busy: state.busy,
-              onPressed: onSubmit,
-            ),
           ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PriceRow extends StatelessWidget {
+  const _PriceRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(label,
+              style: const TextStyle(
+                  fontSize: 13.5, color: PgTokens.colorTextMuted)),
         ),
+        Text(value,
+            style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorText)),
+      ],
+    );
+  }
+}
+
+// ── Shared bits ─────────────────────────────────────────────────────────────────────────────
+
+class _PillChip extends StatelessWidget {
+  const _PillChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = selected ? PgTokens.colorGreen800 : PgTokens.colorText;
+    return Material(
+      color: selected ? PgTokens.colorGreen50 : PgTokens.colorSurface,
+      borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+        child: Container(
+          padding: const EdgeInsets.symmetric(
+              horizontal: PgTokens.space3, vertical: PgTokens.space2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+            border: Border.all(
+                color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
+          ),
+          child: Text(label,
+              style: TextStyle(
+                  fontSize: 13, fontWeight: FontWeight.w600, color: fg)),
+        ),
+      ),
+    );
+  }
+}
+
+class _InlineWarning extends StatelessWidget {
+  const _InlineWarning({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: PgTokens.space3, vertical: PgTokens.space2),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.info_outline,
+              size: 15, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Flexible(
+            child: Text(text,
+                style: const TextStyle(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: PgTokens.colorWarning)),
+          ),
+        ],
       ),
     );
   }

@@ -80,11 +80,12 @@ void main() {
     await tester.tap(find.text('เลือกแพ็กเกจนี้'));
     await tester.pumpAndSettle();
 
-    // The chosen service is now committed to the booking flow (and hours floored to its minimum),
-    // and we advanced to the booking form.
+    // The chosen service is now committed to the booking flow (carrying its min-hours floor —
+    // the form's start/end time model computes the actual hours and enforces this minimum), and
+    // we advanced to the booking form.
     final state = c.read(bookingFlowControllerProvider);
     expect(state.service?.id, 'svc-2');
-    expect(state.hours, greaterThanOrEqualTo(6)); // floored to min_hours
+    expect(state.minHours, 6); // the service's min_hours, enforced on the form + server
     expect(find.text('FORM'), findsOneWidget);
   });
 }

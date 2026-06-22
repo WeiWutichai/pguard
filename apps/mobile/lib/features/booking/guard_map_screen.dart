@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
@@ -19,14 +17,15 @@ import '../../widgets/pguard_header.dart';
 import '../../widgets/star_rating.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
-import 'widgets/map_canvas.dart';
+import 'widgets/pg_map.dart';
 
 /// The customer live-map: where is my guard right now? Watches ONLY
 /// [GuardLocationController] — the snapshot re-pull is driven by booking-status WebSocket
 /// events (and the refresh gesture), never a `Timer.periodic` (the v2 contract has no
-/// customer-readable location stream; see the controller doc). The "map" is the same
-/// no-SDK painted canvas the booking picker uses; ALL projection math lives in the pure
-/// [MapViewport] (no business logic in this widget).
+/// customer-readable location stream; see the controller doc). The map is a REAL
+/// OpenStreetMap surface ([PgMap], flutter_map + OSM tiles), the same widget the booking
+/// picker uses; the guard + destination markers and the straight route ride on top (the
+/// distance/ETA readouts stay straight-line via geo.dart — no business logic in this widget).
 class GuardMapScreen extends ConsumerWidget {
   const GuardMapScreen({super.key, required this.bookingId});
 
@@ -93,63 +92,46 @@ class _MapBody extends StatelessWidget {
     // Where the guard is heading: the booking's pinned destination when present, else the
     // customer's device fix as a fallback (see GuardTrack.target).
     final target = track.target;
-    final viewport = MapViewport.fit([
-      if (guard != null) guard.point,
-      if (target != null) target,
-    ]);
 
     return Column(
       children: [
         Expanded(
           child: Stack(
             children: [
+              // Real OSM map: re-key on the plotted coordinates so PgMap re-fits when the guard
+              // moves / the snapshot changes. The dashed brand route + the markers ride on top.
               Positioned.fill(
-                child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final size = constraints.biggest;
-                    return Stack(
-                      children: [
-                        const Positioned.fill(
-                          child:
-                              CustomPaint(painter: MapBackdropPainter()),
+                child: PgMap(
+                  key: ValueKey('${guard?.point.label}|${target?.label}'),
+                  interactive: true,
+                  polyline: (guard != null && target != null)
+                      ? PgPolyline(points: [guard.point, target])
+                      : null,
+                  markers: [
+                    if (target != null)
+                      PgMarker(
+                        point: target,
+                        width: 90,
+                        height: 44,
+                        alignment: Alignment.center,
+                        child: _ReferenceMarker(
+                          isThai: isThai,
+                          isDestination: track.targetIsDestination,
                         ),
-                        // The design's dashed brand route between the guard pin and the
-                        // destination (pure paint — projection stays in MapViewport).
-                        if (guard != null && target != null)
-                          Positioned.fill(
-                            child: CustomPaint(
-                              painter: _RoutePathPainter(
-                                from: viewport.fractionFor(guard.point),
-                                to: viewport.fractionFor(target),
-                              ),
-                            ),
-                          ),
-                        if (target != null)
-                          _placed(
-                            viewport.fractionFor(target),
-                            size,
-                            width: 90,
-                            height: 44,
-                            child: _ReferenceMarker(
-                              isThai: isThai,
-                              isDestination: track.targetIsDestination,
-                            ),
-                          ),
-                        if (guard != null)
-                          _placed(
-                            viewport.fractionFor(guard.point),
-                            size,
-                            width: 44,
-                            height: 56,
-                            child: _GuardMarker(heading: guard.heading),
-                          ),
-                        if (guard == null)
-                          Center(child: _NoFixCard(track: track, isThai: isThai)),
-                      ],
-                    );
-                  },
+                      ),
+                    if (guard != null)
+                      PgMarker(
+                        point: guard.point,
+                        width: 44,
+                        height: 56,
+                        alignment: Alignment.center,
+                        child: _GuardMarker(heading: guard.heading),
+                      ),
+                  ],
                 ),
               ),
+              if (guard == null)
+                Center(child: _NoFixCard(track: track, isThai: isThai)),
               Positioned(
                 top: PgTokens.space3,
                 left: PgTokens.space3,
@@ -160,23 +142,6 @@ class _MapBody extends StatelessWidget {
         ),
         _InfoPanel(track: track, isThai: isThai, onRefresh: onRefresh),
       ],
-    );
-  }
-
-  /// Position [child] so its visual anchor sits on the viewport fraction.
-  static Widget _placed(
-    ({double x, double y}) frac,
-    Size size, {
-    required double width,
-    required double height,
-    required Widget child,
-  }) {
-    return Positioned(
-      left: frac.x * size.width - width / 2,
-      top: frac.y * size.height - height / 2,
-      width: width,
-      height: height,
-      child: child,
     );
   }
 }
@@ -319,41 +284,6 @@ class _StatusChip extends StatelessWidget {
       ),
     );
   }
-}
-
-/// The design's dashed route between the guard pin and the destination marker: brand
-/// interactive at 70% opacity, 5px stroke, round caps, dash pattern "2 12". Inputs are
-/// viewport FRACTIONS — all geo→canvas math stays in [MapViewport].
-class _RoutePathPainter extends CustomPainter {
-  const _RoutePathPainter({required this.from, required this.to});
-
-  final ({double x, double y}) from;
-  final ({double x, double y}) to;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final a = Offset(from.x * size.width, from.y * size.height);
-    final b = Offset(to.x * size.width, to.y * size.height);
-    final total = (b - a).distance;
-    if (total <= 0) return;
-
-    final paint = Paint()
-      ..color = PgTokens.colorPrimary.withValues(alpha: 0.7)
-      ..strokeWidth = 5
-      ..strokeCap = StrokeCap.round;
-
-    final dir = (b - a) / total;
-    // 2px dash + 12px gap stepped along the segment (round caps render the short
-    // dashes as the design's dotted path).
-    for (var d = 0.0; d < total; d += 14) {
-      final end = math.min(d + 2, total);
-      canvas.drawLine(a + dir * d, a + dir * end, paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _RoutePathPainter oldDelegate) =>
-      oldDelegate.from != from || oldDelegate.to != to;
 }
 
 /// Centre overlay when there is no guard fix to draw (unassigned / no signal / job ended).

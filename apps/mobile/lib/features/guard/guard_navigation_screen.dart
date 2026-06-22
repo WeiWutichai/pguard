@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -13,7 +11,7 @@ import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
-import '../booking/widgets/map_canvas.dart';
+import '../booking/widgets/pg_map.dart';
 
 part 'guard_navigation_screen.g.dart';
 
@@ -23,10 +21,10 @@ part 'guard_navigation_screen.g.dart';
 Future<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) =>
     ref.read(locationServiceProvider).currentLocation();
 
-/// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed painted map
-/// with the guard pin, the destination ring and a straight dashed route, an amber-dot status pill,
-/// a glass back button, and a sheet showing the approximate distance·ETA + the site address with a
-/// single combined "arrived — start" CTA.
+/// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed REAL
+/// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard pin, the destination ring
+/// and a straight dashed route, an amber-dot status pill, a glass back button, and a sheet showing
+/// the approximate distance·ETA + the site address with a single combined "arrived — start" CTA.
 ///
 /// HONEST LIMITS: there is no directions API, so the route is a straight line and the distance·ETA
 /// are straight-line approximations (labelled `~`). The destination comes from the booking's
@@ -163,8 +161,8 @@ class _NavBody extends StatelessWidget {
   }
 }
 
-/// The painted map + dashed route + guard/destination markers. Uses [MapViewport] to project
-/// WGS84 onto canvas fractions (no map-tile SDK), the same approach as the customer live-map.
+/// The real OSM map + straight dashed route + guard/destination markers ([PgMap]). Degrades to a
+/// plain (Bangkok-centred) tiled backdrop when there are no coordinates to plot.
 class _MapLayer extends StatelessWidget {
   const _MapLayer({required this.dest, required this.self});
 
@@ -173,47 +171,20 @@ class _MapLayer extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final points = <GeoPoint>[
-      if (self != null) self!,
-      if (dest != null) dest!,
-    ];
-    final viewport = MapViewport.fit(points);
-
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final size = constraints.biggest;
-        return Stack(
-          children: [
-            const Positioned.fill(child: CustomPaint(painter: MapBackdropPainter())),
-            if (self != null && dest != null)
-              Positioned.fill(
-                child: CustomPaint(
-                  painter: _RoutePainter(
-                    from: viewport.fractionFor(self!),
-                    to: viewport.fractionFor(dest!),
-                  ),
-                ),
-              ),
-            if (dest != null)
-              _placed(viewport.fractionFor(dest!), size,
-                  width: 44, height: 44, child: const _DestMarker()),
-            if (self != null)
-              _placed(viewport.fractionFor(self!), size,
-                  width: 40, height: 40, child: const _GuardMarker()),
-          ],
-        );
-      },
-    );
-  }
-
-  static Widget _placed(({double x, double y}) frac, Size size,
-      {required double width, required double height, required Widget child}) {
-    return Positioned(
-      left: frac.x * size.width - width / 2,
-      top: frac.y * size.height - height / 2,
-      width: width,
-      height: height,
-      child: child,
+    return PgMap(
+      // Re-fit when either coordinate changes.
+      key: ValueKey('${self?.label}|${dest?.label}'),
+      polyline: (self != null && dest != null)
+          ? PgPolyline(points: [self!, dest!])
+          : null,
+      markers: [
+        if (dest != null)
+          PgMarker(
+              point: dest!, width: 44, height: 44, child: const _DestMarker()),
+        if (self != null)
+          PgMarker(
+              point: self!, width: 40, height: 40, child: const _GuardMarker()),
+      ],
     );
   }
 }
@@ -266,35 +237,6 @@ class _DestMarker extends StatelessWidget {
       ),
     );
   }
-}
-
-/// Straight dashed route between two viewport fractions (brand, 5px, round caps, "2/14" dashes) —
-/// the honest straight line, since there is no directions API.
-class _RoutePainter extends CustomPainter {
-  const _RoutePainter({required this.from, required this.to});
-
-  final ({double x, double y}) from;
-  final ({double x, double y}) to;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final a = Offset(from.x * size.width, from.y * size.height);
-    final b = Offset(to.x * size.width, to.y * size.height);
-    final total = (b - a).distance;
-    if (total <= 0) return;
-    final paint = Paint()
-      ..color = PgTokens.colorPrimary.withValues(alpha: 0.75)
-      ..strokeWidth = 5
-      ..strokeCap = StrokeCap.round;
-    final dir = (b - a) / total;
-    for (var d = 0.0; d < total; d += 14) {
-      canvas.drawLine(a + dir * d, a + dir * math.min(d + 2, total), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant _RoutePainter old) =>
-      old.from != from || old.to != to;
 }
 
 /// Design `.statuspill`: an amber-400 live dot + a short status label, over the map.

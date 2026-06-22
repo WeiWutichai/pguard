@@ -51,6 +51,14 @@ dependencies:
   # for jobs (AndroidSettings + ForegroundNotificationConfig are re-exported by geolocator).
   geolocator: ^11.1.0
 
+  # Real OpenStreetMap map — replaces the hand-painted backdrop. Pure-Dart tile renderer (no
+  # native SDK, no API key): OSM raster tiles via a TileLayer + lightweight Marker/Polyline layers.
+  # `latlong2` is its coordinate type (we convert GeoPoint↔LatLng in PgMap). Place search +
+  # reverse-geocode use OSM Nominatim (free, UA-header required) via a plain dio client (NOT the
+  # gateway PguardApi — Nominatim is an external host). Distances stay straight-line (geo.dart).
+  flutter_map: ^8.1.0
+  latlong2: ^0.9.1
+
   # FCM push — wakes the callee on an incoming call (notification maps calling.initiated → a push
   # with data{type:incoming_call,call_id,...}; the push controller routes it to the call screen).
   # Requires android/app/google-services.json (app.pguard.mobile) to build.
@@ -68,6 +76,10 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+  # Deterministic time control for debounce/timer unit tests (PlaceSearchController). Already in the
+  # lock as a transitive dep of flutter_test/test; declared here so tests may import it directly.
+  fake_async: ^1.3.1
 
   # Codegen — `dart run build_runner build` generates Riverpod providers (*.g.dart).
   build_runner: ^2.4.11

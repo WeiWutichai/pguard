@@ -240,8 +240,14 @@ class _ProfileAvatarButton extends ConsumerWidget {
 
 /// The "บริการ" grid — tiles from the admin catalog (`GET /v1/services`). Each tile presets its
 /// service and jumps to the form. While loading / on error / when empty it degrades to a single
-/// "เรียก รปภ." tile that opens the picker (`/book`), so the dashboard always offers a way in.
-class _ServicesGrid extends ConsumerWidget {
+/// "บริการ" grid. Reflects the catalog-fetch state HONESTLY instead of collapsing loading +
+/// error + empty all into the book fallback: a spinner while `/services` loads, the admin
+/// packages once loaded (capped to four + an "All" tile), and — crucially — an AUTO-RETRY when
+/// the fetch errors. The cold-start `/services` call can lose the token/network race and error;
+/// previously `valueOrNull ?? []` left the home stuck on the "เรียก รปภ." fallback forever even
+/// though the picker (a fresh autoDispose watch) loaded the catalog fine. We retry a few times,
+/// then offer a manual "ลองใหม่" tile; the genuine-empty case still shows the book fallback.
+class _ServicesGrid extends ConsumerStatefulWidget {
   const _ServicesGrid({
     required this.isThai,
     required this.onPick,
@@ -253,37 +259,124 @@ class _ServicesGrid extends ConsumerWidget {
   final VoidCallback onBrowse;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final options = ref.watch(servicesProvider).valueOrNull ?? const [];
-    if (options.isEmpty) {
-      return _ServiceTile(
-        label: isThai ? 'เรียก รปภ.' : 'Book a guard',
-        onTap: onBrowse,
+  ConsumerState<_ServicesGrid> createState() => _ServicesGridState();
+}
+
+class _ServicesGridState extends ConsumerState<_ServicesGrid> {
+  static const _maxRetries = 3;
+  int _retries = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final isThai = widget.isThai;
+    final async = ref.watch(servicesProvider);
+    final options = async.valueOrNull ?? const <ServiceOption>[];
+
+    // Loaded with packages → the grid. `valueOrNull` retains the last data through a background
+    // refresh, so once the catalog shows it never flickers back to a fallback.
+    if (options.isNotEmpty) {
+      // Cap the grid to the first four so the fixed-width row stays legible (the full catalog is
+      // on the picker via the "Book" FAB / "All" tile).
+      final shown = options.take(4).toList();
+      final tiles = <Widget>[
+        for (final service in shown)
+          _ServiceTile(
+            label: service.name(isThai),
+            onTap: () => widget.onPick(service),
+          ),
+        if (options.length > shown.length)
+          _ServiceTile(
+            label: isThai ? 'ทั้งหมด' : 'All',
+            icon: Icons.grid_view_outlined,
+            onTap: widget.onBrowse,
+          ),
+      ];
+      return Row(
+        children: [
+          for (var i = 0; i < tiles.length; i++) ...[
+            Expanded(child: tiles[i]),
+            if (i != tiles.length - 1) const SizedBox(width: PgTokens.space2),
+          ],
+        ],
       );
     }
-    // Cap the grid to the first four so the fixed-width row stays legible (the full catalog is
-    // on the picker via the "Book" FAB / "+" tile).
-    final shown = options.take(4).toList();
-    final tiles = <Widget>[
-      for (final service in shown)
-        _ServiceTile(
-          label: service.name(isThai),
-          onTap: () => onPick(service),
-        ),
-      if (options.length > shown.length)
-        _ServiceTile(
-          label: isThai ? 'ทั้งหมด' : 'All',
-          icon: Icons.grid_view_outlined,
-          onTap: onBrowse,
-        ),
-    ];
-    return Row(
-      children: [
-        for (var i = 0; i < tiles.length; i++) ...[
-          Expanded(child: tiles[i]),
-          if (i != tiles.length - 1) const SizedBox(width: PgTokens.space2),
+
+    // No data yet, still in flight → spinner (not the "empty" fallback).
+    if (async.isLoading) {
+      return _ServiceSpinnerTile(isThai: isThai);
+    }
+
+    // Errored with no data → auto-retry a few times (a transient cold-start race), showing a
+    // spinner meanwhile; after the cap, a tappable "ลองใหม่" tile.
+    if (async.hasError) {
+      if (_retries < _maxRetries) {
+        WidgetsBinding.instance.addPostFrameCallback((_) async {
+          if (!mounted) return;
+          _retries += 1;
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+          if (!mounted) return;
+          ref.invalidate(servicesProvider);
+        });
+        return _ServiceSpinnerTile(isThai: isThai);
+      }
+      return _ServiceTile(
+        label: isThai ? 'ลองใหม่' : 'Retry',
+        icon: Icons.refresh,
+        onTap: () {
+          setState(() => _retries = 0);
+          ref.invalidate(servicesProvider);
+        },
+      );
+    }
+
+    // Loaded, genuinely no active services → the book fallback (still a way into the picker).
+    return _ServiceTile(
+      label: isThai ? 'เรียก รปภ.' : 'Book a guard',
+      onTap: widget.onBrowse,
+    );
+  }
+}
+
+/// A "บริการ" grid tile showing a small spinner while the catalog loads / retries — same box as
+/// [_ServiceTile] so the row height doesn't jump.
+class _ServiceSpinnerTile extends StatelessWidget {
+  const _ServiceSpinnerTile({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 6),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSurface,
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        border: Border.all(color: PgTokens.colorBorder),
+      ),
+      child: Column(
+        children: [
+          const SizedBox(
+            width: 36,
+            height: 36,
+            child: Padding(
+              padding: EdgeInsets.all(9),
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: PgTokens.colorGreen800,
+              ),
+            ),
+          ),
+          const SizedBox(height: PgTokens.space2),
+          Text(
+            isThai ? 'กำลังโหลด…' : 'Loading…',
+            style: const TextStyle(
+              fontSize: 11.5,
+              fontWeight: FontWeight.w600,
+              color: PgTokens.colorTextMuted,
+            ),
+          ),
         ],
-      ],
+      ),
     );
   }
 }

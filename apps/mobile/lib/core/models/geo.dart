@@ -64,62 +64,6 @@ class TravelEstimate {
       isThai ? '~$minutes นาที' : '~$minutes min';
 }
 
-/// A pure equirectangular viewport: maps WGS84 coordinates onto canvas fractions, the same
-/// local projection the booking map picker uses (no map-tile SDK — see `MapPicker`). The
-/// live-map widget only positions markers; ALL the projection math lives here, unit-tested.
-///
-/// Known inaccuracy (accepted): no cos(lat) correction is applied to the longitude axis, so
-/// markers skew slightly at high latitudes. At Bangkok (~14°N) and street-scale spans the
-/// distortion is < 3% — revisit only if the market ever leaves the tropics.
-class MapViewport {
-  const MapViewport({required this.center, required this.span});
-
-  /// The coordinate at the centre of the canvas.
-  final GeoPoint center;
-
-  /// Degrees of latitude/longitude spanned across the canvas (the "zoom").
-  final double span;
-
-  /// Span used when there is nothing to fit (matches the picker's city-scale feel).
-  static const double defaultSpan = 0.02;
-
-  /// Fit a viewport around [points]: centred on their bounding box, spanning the larger axis
-  /// padded by [paddingFactor], floored at [minSpan] so two near-identical points (or a single
-  /// point) still get a sensible street-scale view. Empty input → Bangkok at [defaultSpan].
-  factory MapViewport.fit(
-    Iterable<GeoPoint> points, {
-    double minSpan = 0.012,
-    double paddingFactor = 1.6,
-  }) {
-    final list = points.toList();
-    if (list.isEmpty) {
-      return const MapViewport(center: GeoPoint.bangkok, span: defaultSpan);
-    }
-    var minLat = list.first.lat, maxLat = list.first.lat;
-    var minLng = list.first.lng, maxLng = list.first.lng;
-    for (final p in list.skip(1)) {
-      minLat = math.min(minLat, p.lat);
-      maxLat = math.max(maxLat, p.lat);
-      minLng = math.min(minLng, p.lng);
-      maxLng = math.max(maxLng, p.lng);
-    }
-    final extent =
-        math.max(maxLat - minLat, maxLng - minLng) * paddingFactor;
-    return MapViewport(
-      center: GeoPoint((minLat + maxLat) / 2, (minLng + maxLng) / 2),
-      span: math.max(extent, minSpan),
-    );
-  }
-
-  /// [p] as a fraction of the canvas — `(x: 0, y: 0)` top-left, `(x: 1, y: 1)` bottom-right —
-  /// clamped into `[inset, 1-inset]` so a marker never renders half off-canvas.
-  ({double x, double y}) fractionFor(GeoPoint p, {double inset = 0.07}) {
-    final x = ((p.lng - center.lng) / span + 0.5).clamp(inset, 1 - inset);
-    final y = (0.5 - (p.lat - center.lat) / span).clamp(inset, 1 - inset);
-    return (x: x.toDouble(), y: y.toDouble());
-  }
-}
-
 /// Great-circle (haversine) distance between two coordinates, in metres. Pure.
 double distanceMeters(GeoPoint a, GeoPoint b) {
   const earthRadius = 6371000.0;

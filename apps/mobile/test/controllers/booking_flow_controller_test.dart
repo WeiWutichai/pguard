@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/booking_flow_controller.dart';
+import 'package:pguard_mobile/core/models/booking_options.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/core/models/service_catalog.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
@@ -45,7 +46,7 @@ void main() {
       };
 
   test(
-      'happy path (POST-PAY): form (with tip) → create booking → discover guards → select; NO charge',
+      'happy path (POST-PAY): form (start/end + tip) → create booking → discover guards → select; NO charge',
       () async {
     Map<String, dynamic>? bookingBody;
     final api = FakeApi(
@@ -69,8 +70,10 @@ void main() {
       onPost: (path, data) async {
         final body = data as Map<String, dynamic>;
         expect(path, '/bookings'); // post-pay: there is NO /payments call
-        expect(body['address'], '123 ลัดดารมย์ ซ.5');
-        expect(body['hours'], 8);
+        // The chosen location address is the leading line of the composed address.
+        expect((body['address'] as String).startsWith('123 ลัดดารมย์ ซ.5'),
+            isTrue);
+        expect(body['hours'], 8); // computed (end − start)
         expect(body['guard_count'], 2);
         expect(body['scheduled_at'], isA<String>());
         // The chosen catalog service is sent by ID only — the client NEVER sends a price.
@@ -86,14 +89,16 @@ void main() {
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     BookingFlowState state() => c.read(bookingFlowControllerProvider);
 
-    // Form input — tip is chosen here (rides the booking under post-pay).
+    // Form input — start + end define the duration; the tip rides the booking under post-pay.
     ctrl.selectService(_condo);
     ctrl.setAddress('123 ลัดดารมย์ ซ.5');
-    ctrl.setSchedule(DateTime.utc(2026, 6, 6, 14));
-    ctrl.setHours(8);
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22)); // 8h
     ctrl.setGuardCount(2);
     ctrl.setTipSatang(5000); // ฿50
     expect(state().service, _condo);
+    expect(state().hours, 8); // computed
+    expect(state().scheduledAt, DateTime.utc(2026, 6, 6, 14)); // = start
     // The indicative est is service-derived (baseFeeSatang); est-with-tip is display-only.
     expect(state().estimateHourlySatang, 25000);
     expect(state().estimateWithTipSatang, state().estimateTotalSatang + 5000);
@@ -120,21 +125,43 @@ void main() {
     expect(api.getCount, 1);
   });
 
-  test('createBooking rejects an empty address before any network call', () async {
-    final api = FakeApi(
-      onPost: (_, __) async => throw StateError('should not be called'),
-    );
-    final c = container(api: api);
+  test('hours are computed from start/end (whole hours, truncated)', () {
+    // pure helper coverage
+    expect(hoursBetween(null, null), 0);
+    expect(
+        hoursBetween(DateTime.utc(2026, 1, 1, 9), DateTime.utc(2026, 1, 1, 8)),
+        0); // non-positive
+    expect(
+        hoursBetween(
+            DateTime.utc(2026, 1, 1, 9), DateTime.utc(2026, 1, 1, 17, 30)),
+        8); // 8h30m → 8
+
+    final c = container(api: FakeApi());
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
-    ctrl.selectService(_condo);
-    ctrl.setAddress('   ');
-    expect(await ctrl.createBooking(), isFalse);
-    expect(c.read(bookingFlowControllerProvider).error, contains('สถานที่'));
-    expect(api.calls, isEmpty);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 23, 45)); // 9h45m
+    expect(state().hours, 9);
+    expect(state().scheduledAt, DateTime.utc(2026, 6, 6, 14)); // = start
   });
 
-  test('selectService floors hours to the service min_hours and omits service_id when none',
-      () async {
+  test('a duration preset sets end = start + preset hours', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 9));
+    ctrl.setDurationPreset(12);
+    expect(state().hours, 12);
+    expect(state().endAt, DateTime.utc(2026, 6, 6, 21));
+    // A preset with no start chosen still yields a complete 8h range (anchored to a default start).
+    final c2 = container(api: FakeApi());
+    final ctrl2 = c2.read(bookingFlowControllerProvider.notifier);
+    ctrl2.setDurationPreset(8);
+    expect(c2.read(bookingFlowControllerProvider).startAt, isNotNull);
+    expect(c2.read(bookingFlowControllerProvider).hours, 8);
+  });
+
+  test('min_hours is enforced: below-min flags meetsMinHours and blocks create', () async {
     Map<String, dynamic>? sent;
     final api = FakeApi(onPost: (_, data) async {
       sent = data as Map<String, dynamic>;
@@ -144,21 +171,163 @@ void main() {
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     BookingFlowState state() => c.read(bookingFlowControllerProvider);
 
-    // No service selected yet → default min is 1 hour and create sends no service_id.
-    ctrl.setHours(2);
+    ctrl.selectService(_condo); // min 4h
     ctrl.setAddress('123');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 16)); // only 2h → below min
+    expect(state().hours, 2);
+    expect(state().meetsMinHours, isFalse);
+
+    // Create is blocked client-side (no network call) with a min-hours error.
+    expect(await ctrl.createBooking(), isFalse);
+    expect(state().error, contains('4'));
+    expect(api.calls, isEmpty);
+
+    // Bumping the end to meet the floor clears the warning and lets create through.
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 18)); // 4h
+    expect(state().meetsMinHours, isTrue);
+    expect(await ctrl.createBooking(), isTrue);
+    expect(sent!['hours'], 4);
+  });
+
+  test('selectService extends the end up to the service min_hours when too short', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+    // A short 1h range, then selecting a min-4 service stretches the end to start + 4h.
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 9));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 10)); // 1h
+    ctrl.selectService(_condo);
+    expect(state().hours, 4);
+    expect(state().endAt, DateTime.utc(2026, 6, 6, 13));
+  });
+
+  test('setStart re-anchors a now-invalid end to start + minHours', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+    ctrl.selectService(_condo); // min 4
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 9));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 15)); // 6h, valid
+    // Moving the start past the end re-anchors the end to start + minHours (no negative range).
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 20));
+    expect(state().endAt, DateTime.utc(2026, 6, 7, 0)); // 20:00 + 4h
+    expect(state().hours, 4);
+  });
+
+  test('the composed address folds in the extra details, equipment and add-ons', () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (_, data) async {
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+
+    ctrl.setAddress('123 หมู่บ้านลัดดารมย์');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    ctrl.setExtraDetails('โทรหาเมื่อถึงประตูหน้า');
+    ctrl.toggleEquipment('flashlight');
+    ctrl.toggleEquipment('handcuffs');
+    ctrl.toggleAddOn('extra_patrol');
+
+    expect(await ctrl.createBooking(), isTrue);
+    final addr = sent!['address'] as String;
+    // Address is the leading line.
+    expect(addr.startsWith('123 หมู่บ้านลัดดารมย์'), isTrue);
+    // The note + selected equipment + selected add-ons are appended as labelled lines.
+    expect(addr, contains('โทรหาเมื่อถึงประตูหน้า'));
+    expect(addr, contains('ไฟฉาย'));
+    expect(addr, contains('กุญแจมือ'));
+    expect(addr, contains('สายตรวจพิเศษ'));
+    // Unselected items are NOT folded in.
+    expect(addr.contains('เสื้อเกราะ'), isFalse);
+    expect(addr.contains('รายงานสรุปประจำวัน'), isFalse);
+  });
+
+  test('toggleEquipment/toggleAddOn add then remove an id', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+    ctrl.toggleEquipment('uniform');
+    expect(state().equipment, {'uniform'});
+    ctrl.toggleEquipment('uniform'); // off again
+    expect(state().equipment, isEmpty);
+    ctrl.toggleAddOn('liaison');
+    expect(state().addOns, {'liaison'});
+  });
+
+  test('composeAddress (pure) omits empty lines and is order-stable', () {
+    // No extras → just the trimmed address, no trailing lines.
+    expect(
+      composeAddress(
+        address: '  123 ถนนสุขุมวิท  ',
+        extraDetails: '',
+        equipment: const {},
+        addOns: const {},
+        isThai: true,
+      ),
+      '123 ถนนสุขุมวิท',
+    );
+    // Equipment order follows the catalog, not the selection (tap) order.
+    final out = composeAddress(
+      address: 'site',
+      extraDetails: '',
+      equipment: {'handcuffs', 'flashlight'}, // reversed vs catalog
+      addOns: const {},
+      isThai: true,
+    );
+    expect(out.indexOf('ไฟฉาย') < out.indexOf('กุญแจมือ'), isTrue);
+  });
+
+  test('price = base × hours × guards + tip (display estimate, exact satang)', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.selectService(_condo); // ฿250/hr
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22)); // 8h
+    ctrl.setGuardCount(3);
+    ctrl.setTipSatang(5000); // ฿50
+    final s = c.read(bookingFlowControllerProvider);
+    expect(s.estimateHourlySatang, 25000);
+    expect(s.estimateTotalSatang, 25000 * 8 * 3); // 6,000.00
+    expect(s.estimateWithTipSatang, 25000 * 8 * 3 + 5000); // + ฿50
+  });
+
+  test('createBooking rejects an empty address before any network call', () async {
+    final api = FakeApi(
+      onPost: (_, __) async => throw StateError('should not be called'),
+    );
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.selectService(_condo);
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    ctrl.setAddress('   ');
+    expect(await ctrl.createBooking(), isFalse);
+    expect(c.read(bookingFlowControllerProvider).error, contains('สถานที่'));
+    expect(api.calls, isEmpty);
+  });
+
+  test('omits service_id when no service is selected (default min 1h)', () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (_, data) async {
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    // No service selected → default min is 1 hour and create sends no service_id.
+    ctrl.setAddress('123');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 16)); // 2h ≥ default min 1
     expect(state().minHours, 1);
     expect(await ctrl.createBooking(), isTrue);
     expect(sent!.containsKey('service_id'), isFalse);
-
-    // Selecting a min-4-hours service floors the (too-low) 2h selection up to 4.
-    ctrl.setHours(2);
-    ctrl.selectService(_condo);
-    expect(state().minHours, 4);
-    expect(state().hours, 4);
-    // And the hour field can no longer drop below the min.
-    ctrl.setHours(1);
-    expect(state().hours, 4);
+    expect(sent!['hours'], 2);
   });
 
   test(
@@ -176,11 +345,13 @@ void main() {
     // Picking on the map captures the coordinate AND fills the sent address.
     ctrl.setLocation(const GeoPlace(
         point: GeoPoint(13.7401, 100.5331), placeName: 'หมู่บ้านลัดดารมย์'));
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
     expect(await ctrl.createBooking(), isTrue);
 
     expect(sent!['lat'], 13.7401);
     expect(sent!['lng'], 100.5331);
-    expect(sent!['address'], 'หมู่บ้านลัดดารมย์');
+    expect((sent!['address'] as String).startsWith('หมู่บ้านลัดดารมย์'), isTrue);
     // Round-trips onto the created booking (so the guard can read the site location).
     final booking = c.read(bookingFlowControllerProvider).booking;
     expect(booking?.lat, 13.7401);
@@ -197,6 +368,8 @@ void main() {
     final c = container(api: api);
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     ctrl.setAddress('123 ลัดดารมย์ ซ.5');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
     expect(await ctrl.createBooking(), isTrue);
 
     expect(sent!.containsKey('lat'), isFalse);
@@ -215,7 +388,8 @@ void main() {
     final c = container(api: api);
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     ctrl.setAddress('123');
-    ctrl.setHours(8);
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
     ctrl.setGuardCount(1);
     expect(await ctrl.createBooking(), isFalse);
     expect(c.read(bookingFlowControllerProvider).error, 'Booking failed');

@@ -7,6 +7,7 @@ import 'controllers/pin_service.dart';
 import 'controllers/session_controller.dart';
 import 'location/geolocator_location_service.dart';
 import 'location/location_service.dart';
+import 'location/place_search_service.dart';
 import 'media/chat_attachment_service.dart';
 import 'media/chat_media_picker.dart';
 import 'media/document_picker.dart';
@@ -58,13 +59,20 @@ BiometricService biometricService(BiometricServiceRef ref) => BiometricService(
 /// null/empty when not granted or GPS is off. Tests override this provider with an in-memory fake.
 @Riverpod(keepAlive: true)
 LocationService locationService(LocationServiceRef ref) =>
-    const GeolocatorLocationService();
+    GeolocatorLocationService(places: ref.watch(placeSearchServiceProvider));
 
 /// OS LOCATION-permission gate (`permission_handler`). Governs only the permission, not the GPS
 /// source. Tests override with a fake (no platform channels).
 @Riverpod(keepAlive: true)
 PermissionGate permissionGate(PermissionGateRef ref) =>
     const DefaultPermissionGate();
+
+/// Forward + reverse geocoding via OpenStreetMap Nominatim (free, no API key) — powers the
+/// place-name search field and a map-pinned point's reverse-geocode. External host (NOT the `/v1`
+/// gateway), so it uses its own Dio with the mandatory User-Agent. Tests override with a fake.
+@Riverpod(keepAlive: true)
+PlaceSearchService placeSearchService(PlaceSearchServiceRef ref) =>
+    NominatimPlaceSearchService();
 
 /// Builds a live booking-status feed for a booking id. Production returns a real
 /// [BookingStatusSocket]; tests override this provider to inject a fake feed.
