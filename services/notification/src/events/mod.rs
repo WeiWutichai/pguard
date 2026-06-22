@@ -361,7 +361,7 @@ mod tests {
     }
 
     /// In-memory test double for the DB `dispatch_recipients` claim (PK on (event_id, recipient))
-    /// + the FCM pusher: records which guards were pushed and the data each got. The claim is the
+    /// plus the FCM pusher: records which guards were pushed and the data each got. The claim is the
     /// `HashSet::insert` semantics of `INSERT ... ON CONFLICT DO NOTHING` — exactly like `SeenSet`
     /// models `processed_events` for the single-recipient path.
     #[derive(Default)]
