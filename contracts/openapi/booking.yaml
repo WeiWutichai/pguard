@@ -863,8 +863,8 @@ components:
       type: object
       description: >-
         The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) —
-        a narrow subset of `ServiceCatalogItem` with no admin-only fields
-        (`notes`/`is_active`/timestamps).
+        a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced
+        as the customer-facing package description.
       required: [id, name_th, name_en, base_fee, min_hours]
       properties:
         id: { type: string, format: uuid }
@@ -875,6 +875,10 @@ components:
           description: Server-owned ฿/hour/guard rate (exact decimal string).
           example: "230.00"
         min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        notes:
+          type: string
+          nullable: true
+          description: Short customer-facing package description (the admin notes).
 
     CreateServiceRequest:
       type: object

@@ -8,7 +8,7 @@ import 'package:built_value/serializer.dart';
 
 part 'public_service_item.g.dart';
 
-/// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` with no admin-only fields (`notes`/`is_active`/timestamps).
+/// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description.
 ///
 /// Properties:
 /// * [id] 
@@ -16,6 +16,7 @@ part 'public_service_item.g.dart';
 /// * [nameEn] 
 /// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal string).
 /// * [minHours] 
+/// * [notes] - Short customer-facing package description (the admin notes).
 @BuiltValue()
 abstract class PublicServiceItem implements Built<PublicServiceItem, PublicServiceItemBuilder> {
   @BuiltValueField(wireName: r'id')
@@ -33,6 +34,10 @@ abstract class PublicServiceItem implements Built<PublicServiceItem, PublicServi
 
   @BuiltValueField(wireName: r'min_hours')
   int get minHours;
+
+  /// Short customer-facing package description (the admin notes).
+  @BuiltValueField(wireName: r'notes')
+  String? get notes;
 
   PublicServiceItem._();
 
@@ -82,6 +87,13 @@ class _$PublicServiceItemSerializer implements PrimitiveSerializer<PublicService
       object.minHours,
       specifiedType: const FullType(int),
     );
+    if (object.notes != null) {
+      yield r'notes';
+      yield serializers.serialize(
+        object.notes,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
@@ -139,6 +151,13 @@ class _$PublicServiceItemSerializer implements PrimitiveSerializer<PublicService
             specifiedType: const FullType(int),
           ) as int;
           result.minHours = valueDes;
+          break;
+        case r'notes':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.notes = valueDes;
           break;
         default:
           unhandled.add(key);
