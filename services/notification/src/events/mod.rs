@@ -5,9 +5,10 @@
 use futures::StreamExt;
 use serde_json::Value;
 use tracing::Instrument;
+use uuid::Uuid;
 
 use shared::error::AppError;
-use shared_events::EventEnvelope;
+use shared_events::{topics, EventEnvelope};
 
 use crate::domain;
 use crate::fcm::PushMessage;
@@ -119,6 +120,12 @@ async fn handle_event(state: &AppState, payload: &[u8]) -> Result<(), AppError> 
 
 /// Dedupe + persist atomically, then push (best-effort). Runs inside the event span.
 async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(), AppError> {
+    // A new booking is a FAN-OUT (one event → every online guard), not the single-recipient
+    // `plan_for_event` path. Route it to its own dispatcher (presence consult + per-guard claim).
+    if envelope.event_type == topics::BOOKING_REQUESTED {
+        return fan_out_dispatch(state, &envelope).await;
+    }
+
     let plan = domain::plan_for_event(&envelope.event_type, &envelope.payload);
 
     match repo::process_event(
@@ -149,12 +156,141 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     Ok(())
 }
 
+/// FAN-OUT path for `booking.requested`: consult presence for the set of ONLINE guards, then
+/// dispatch the "new job nearby" alert to each — a `notification_logs` row + an FCM data push
+/// `{ type: "new_job", booking_id }`. IDEMPOTENT per-(booking, guard): each guard is claimed once
+/// in `dispatch_recipients`, so a JetStream redelivery of the same event re-claims nothing and
+/// double-pushes no one.
+///
+/// Resilience: if presence is UNREACHABLE we log + skip the fan-out and return `Ok(())` so the
+/// message is ACKED — never crash the consumer / nack-storm on a presence hiccup (a missed dispatch
+/// is recoverable; a wedged consumer is not). Per-guard push failures are best-effort (logged, not
+/// fatal): the in-app log row is already committed, and one bad device token must not abort the
+/// whole fan-out.
+async fn fan_out_dispatch(
+    state: &AppState,
+    envelope: &EventEnvelope<Value>,
+) -> Result<(), AppError> {
+    let Some(booking_id) = uuid_field(&envelope.payload, "booking_id") else {
+        // No booking_id to dispatch for → nothing to do. Ack (no recipient is routable, so a
+        // redelivery would behave identically — not a transient error).
+        tracing::warn!("booking.requested missing booking_id; skipping dispatch");
+        return Ok(());
+    };
+
+    // Consult presence (service-JWT'd). FAIL-SOFT: on error, log + skip the fan-out (ack), never
+    // nack-storm. Geo radius is intentionally NOT applied — broadcasting to ALL online guards
+    // matches the radius-less open-jobs query (geo-filtering by the event's lat/lng is a follow-up).
+    let online = match state.presence_client.online_guard_ids().await {
+        Ok(ids) => ids,
+        Err(e) => {
+            tracing::warn!(booking = %booking_id, "presence unreachable; skipping new-job fan-out: {e}");
+            return Ok(());
+        }
+    };
+
+    if online.is_empty() {
+        tracing::info!(booking = %booking_id, "no online guards; new-job dispatch is a no-op");
+        return Ok(());
+    }
+
+    let pushed = dispatch_to_guards(
+        online,
+        booking_id,
+        // Per-guard atomic claim + log (DB). `false` → already dispatched to this guard for this
+        // event (idempotent). Returns `Err` only on a real DB fault.
+        |guard_id, plan: domain::NotificationPlan| async move {
+            repo::claim_dispatch_recipient(
+                &state.db,
+                envelope.event_id,
+                booking_id,
+                guard_id,
+                &plan,
+            )
+            .await
+        },
+        // Per-guard push (FCM). Best-effort: a push failure must not fail the batch.
+        |guard_id, plan: domain::NotificationPlan| async move {
+            let tokens = repo::user_tokens(&state.db, guard_id)
+                .await
+                .unwrap_or_default();
+            state
+                .pusher
+                .push(&PushMessage {
+                    tokens,
+                    title: plan.title,
+                    body: plan.body,
+                    data: plan.data,
+                })
+                .await
+        },
+    )
+    .await;
+    tracing::info!(booking = %booking_id, dispatched = pushed, "new-job dispatch fan-out complete");
+    Ok(())
+}
+
+/// Pure-ish fan-out core: for each online guard, build the dispatch plan, CLAIM it (per-(event,
+/// guard) idempotency), and on a won claim PUSH it. Returns the number of guards newly dispatched.
+/// Decoupled from `AppState` via the two closures so the consumer's fan-out decision (dedupe +
+/// best-effort push, one bad guard never aborts the batch) is unit-testable with in-memory doubles
+/// — the same philosophy as the `SeenSet`-backed `consume` test double for the single-recipient path.
+async fn dispatch_to_guards<C, CF, P, PF>(
+    online: Vec<Uuid>,
+    booking_id: Uuid,
+    claim: C,
+    push: P,
+) -> usize
+where
+    C: Fn(Uuid, domain::NotificationPlan) -> CF,
+    CF: std::future::Future<Output = Result<bool, AppError>>,
+    P: Fn(Uuid, domain::NotificationPlan) -> PF,
+    PF: std::future::Future<Output = Result<(), AppError>>,
+{
+    let mut pushed = 0usize;
+    for guard_id in online {
+        let plan = domain::dispatch_plan_for_guard(guard_id, booking_id);
+        let won = match claim(guard_id, plan.clone()).await {
+            Ok(won) => won,
+            Err(e) => {
+                // A DB error claiming ONE guard must not abort the fan-out; log + continue. The
+                // unclaimed guards stay unrecorded, so a redelivery can fill them in later.
+                tracing::warn!(guard = %guard_id, booking = %booking_id, "dispatch claim failed: {e}");
+                continue;
+            }
+        };
+        if !won {
+            continue; // already dispatched to this guard for this event (idempotent)
+        }
+        if let Err(e) = push(guard_id, plan).await {
+            // Best-effort: the in-app log row is committed; a push failure must not fail the batch.
+            tracing::warn!(guard = %guard_id, booking = %booking_id, "new-job push failed: {e}");
+        }
+        pushed += 1;
+    }
+    pushed
+}
+
+/// Parse a UUID string field out of an event payload (consumer-side helper, mirrors the pure
+/// `mapping::uuid_field`).
+fn uuid_field(payload: &Value, key: &str) -> Option<Uuid> {
+    payload
+        .get(key)?
+        .as_str()
+        .and_then(|s| Uuid::parse_str(s).ok())
+}
+
 #[cfg(test)]
 mod tests {
+    use super::dispatch_to_guards;
     use crate::domain::idempotency::SeenSet;
     use crate::domain::plan_for_event;
+    use crate::presence_client::OnlineGuardsReader;
     use serde_json::{json, Value};
+    use shared::error::AppError;
     use shared_events::topics;
+    use std::collections::{HashMap, HashSet};
+    use std::sync::Mutex;
     use uuid::Uuid;
 
     /// Models the consumer's per-event decision (claim THEN map) — the same two steps
@@ -203,5 +339,132 @@ mod tests {
         )
         .is_some());
         assert!(consume(&mut seen, topics::BOOKING_ARRIVED, Uuid::new_v4(), &payload).is_some());
+    }
+
+    // ----- FAN-OUT (booking.requested → all online guards) -----
+
+    /// Stub presence reader: returns a fixed online set, or simulates "presence unreachable".
+    struct StubPresence {
+        guards: Vec<Uuid>,
+        reachable: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl OnlineGuardsReader for StubPresence {
+        async fn online_guard_ids(&self) -> Result<Vec<Uuid>, AppError> {
+            if self.reachable {
+                Ok(self.guards.clone())
+            } else {
+                Err(AppError::Internal("presence down".to_string()))
+            }
+        }
+    }
+
+    /// In-memory test double for the DB `dispatch_recipients` claim (PK on (event_id, recipient))
+    /// + the FCM pusher: records which guards were pushed and the data each got. The claim is the
+    /// `HashSet::insert` semantics of `INSERT ... ON CONFLICT DO NOTHING` — exactly like `SeenSet`
+    /// models `processed_events` for the single-recipient path.
+    #[derive(Default)]
+    struct Fanout {
+        claimed: Mutex<HashSet<(Uuid, Uuid)>>, // (event_id, guard_id) already dispatched
+        pushed: Mutex<Vec<(Uuid, Value)>>,     // (guard_id, push data) actually delivered
+    }
+
+    /// Run the real fan-out engine against the doubles for one (event, booking) delivery. Mirrors
+    /// `fan_out_dispatch`'s presence-consult → per-guard claim → push, minus the live AppState.
+    async fn deliver(
+        fanout: &Fanout,
+        presence: &StubPresence,
+        event_id: Uuid,
+        booking_id: Uuid,
+    ) -> usize {
+        // presence-consult with the same FAIL-SOFT contract as fan_out_dispatch.
+        let online = match presence.online_guard_ids().await {
+            Ok(ids) => ids,
+            Err(_) => return 0, // presence unreachable → skip fan-out, no crash, no push
+        };
+        dispatch_to_guards(
+            online,
+            booking_id,
+            |guard_id, _plan| async move {
+                // Won the claim iff this (event, guard) was not already recorded.
+                Ok(fanout.claimed.lock().unwrap().insert((event_id, guard_id)))
+            },
+            |guard_id, plan| async move {
+                fanout.pushed.lock().unwrap().push((guard_id, plan.data));
+                Ok(())
+            },
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn booking_requested_pushes_new_job_to_each_online_guard() {
+        let g1 = Uuid::new_v4();
+        let g2 = Uuid::new_v4();
+        let g3 = Uuid::new_v4();
+        let presence = StubPresence {
+            guards: vec![g1, g2, g3],
+            reachable: true,
+        };
+        let fanout = Fanout::default();
+        let booking = Uuid::new_v4();
+
+        let pushed = deliver(&fanout, &presence, Uuid::new_v4(), booking).await;
+        assert_eq!(pushed, 3, "every online guard is dispatched");
+
+        // Each guard got exactly one new_job push carrying the booking_id.
+        let by_guard: HashMap<Uuid, Value> =
+            fanout.pushed.lock().unwrap().iter().cloned().collect();
+        for g in [g1, g2, g3] {
+            let data = by_guard.get(&g).expect("guard must be pushed");
+            assert_eq!(data["type"], "new_job");
+            assert_eq!(data["booking_id"], json!(booking.to_string()));
+            assert_eq!(data["target_role"], "guard");
+        }
+    }
+
+    #[tokio::test]
+    async fn presence_down_skips_fan_out_without_crashing() {
+        let presence = StubPresence {
+            guards: vec![Uuid::new_v4(), Uuid::new_v4()],
+            reachable: false, // presence unreachable
+        };
+        let fanout = Fanout::default();
+
+        // Must NOT panic; returns 0 dispatched and pushes nobody (the message would still be acked).
+        let pushed = deliver(&fanout, &presence, Uuid::new_v4(), Uuid::new_v4()).await;
+        assert_eq!(pushed, 0, "presence-down → no fan-out");
+        assert!(
+            fanout.pushed.lock().unwrap().is_empty(),
+            "no push when presence is unreachable"
+        );
+    }
+
+    #[tokio::test]
+    async fn redelivery_does_not_double_push_any_guard() {
+        let g1 = Uuid::new_v4();
+        let g2 = Uuid::new_v4();
+        let presence = StubPresence {
+            guards: vec![g1, g2],
+            reachable: true,
+        };
+        let fanout = Fanout::default();
+        let event_id = Uuid::new_v4(); // SAME event_id on redelivery
+        let booking = Uuid::new_v4();
+
+        let first = deliver(&fanout, &presence, event_id, booking).await;
+        assert_eq!(first, 2, "first delivery dispatches both guards");
+
+        // JetStream redelivers the SAME event_id → every (event, guard) is already claimed → 0 new.
+        let second = deliver(&fanout, &presence, event_id, booking).await;
+        assert_eq!(second, 0, "redelivery dispatches no one (idempotent)");
+
+        // Exactly two pushes total despite two deliveries — no guard double-notified.
+        assert_eq!(
+            fanout.pushed.lock().unwrap().len(),
+            2,
+            "each guard pushed exactly once across redelivery"
+        );
     }
 }

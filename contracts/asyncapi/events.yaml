@@ -30,6 +30,16 @@ servers:
     description: Local dev NATS with JetStream (infra/docker/docker-compose.yml).
 
 channels:
+  bookingRequested:
+    address: pguard.events.booking.requested
+    description: >-
+      Customer created a booking request (status = requested, no guard yet). Producer =
+      booking (transactional outbox, atomic with the bookings insert). Consumer =
+      notification → data-push every ONLINE guard a "งานใหม่ใกล้คุณ"/"New job nearby" so they
+      can open the job and accept it. NOT a lifecycle status change for the customer's
+      booking-status WS — the gateway's `status_from_topic` returns None for it (the customer
+      already knows they just created the booking).
+    messages: { requested: { $ref: '#/components/messages/BookingRequested' } }
   bookingJobAccepted:
     address: pguard.events.booking.job_accepted
     messages: { jobAccepted: { $ref: '#/components/messages/BookingJobAccepted' } }
@@ -95,6 +105,10 @@ channels:
   # yet — login already blocks non-approved accounts. Documented here when a consumer is added.
 
 operations:
+  onBookingRequested:
+    action: receive
+    channel: { $ref: '#/channels/bookingRequested' }
+    summary: notification consumes this → data-push every online guard "งานใหม่ใกล้คุณ" (new job nearby).
   onBookingJobAccepted:
     action: receive
     channel: { $ref: '#/channels/bookingJobAccepted' }
@@ -122,6 +136,10 @@ operations:
 
 components:
   messages:
+    BookingRequested:
+      name: BookingRequested
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_BookingRequested' }
     BookingJobAccepted:
       name: BookingJobAccepted
       contentType: application/json
@@ -177,6 +195,34 @@ components:
         occurred_at: { type: string, format: date-time }
         correlation_id: { type: string, format: uuid }
         payload: { type: object }
+
+    EnvelopeOf_BookingRequested:
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id, customer_id, address, scheduled_at, hours, guard_count]
+              properties:
+                booking_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid, description: The requesting customer. }
+                address: { type: string, description: Free-text site address (for the guard's job card). }
+                lat:
+                  type: number
+                  format: double
+                  nullable: true
+                  description: >-
+                    Site latitude (customer-supplied; null when not provided). Carried so a
+                    consumer can radius-rank online guards without reading back into booking.
+                lng:
+                  type: number
+                  format: double
+                  nullable: true
+                  description: Site longitude (customer-supplied; null when not provided).
+                scheduled_at: { type: string, format: date-time, description: When the job is scheduled (RFC3339). }
+                hours: { type: integer, format: int32, minimum: 1, description: Booked duration in hours. }
+                guard_count: { type: integer, format: int32, minimum: 1, description: Guards requested. }
 
     EnvelopeOf_JobAccepted:
       allOf:

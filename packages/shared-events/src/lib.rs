@@ -70,6 +70,11 @@ impl<T> EventEnvelope<T> {
 /// Canonical topic strings. Mirror of `contracts/asyncapi/events.yaml`.
 pub mod topics {
     // booking context
+    /// Customer created a booking request (no guard yet). Producer = booking (transactional
+    /// outbox, atomic with the bookings insert); consumer = notification → data-push every
+    /// ONLINE guard "งานใหม่ใกล้คุณ" (new job nearby) so they can accept it. NOT a lifecycle
+    /// status change — the gateway's booking-status WS ignores it (`status_from_topic` → None).
+    pub const BOOKING_REQUESTED: &str = "pguard.events.booking.requested";
     pub const BOOKING_JOB_ACCEPTED: &str = "pguard.events.booking.job_accepted";
     pub const BOOKING_DECLINED: &str = "pguard.events.booking.declined";
     pub const BOOKING_CANCELLED: &str = "pguard.events.booking.cancelled";

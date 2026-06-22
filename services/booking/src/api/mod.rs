@@ -145,8 +145,18 @@ pub async fn create_booking<S: BookingDeps>(
             Some(service.base_fee)
         }
     };
-    let booking =
-        repo::create_booking(state.db(), user.user_id, &req, guard_count, tip, base_fee).await?;
+    // A fresh correlation id threads the booking.requested event (atomic with the insert via
+    // the outbox) through the relay → NATS → notification (data-push to online guards).
+    let booking = repo::create_booking(
+        state.db(),
+        user.user_id,
+        &req,
+        guard_count,
+        tip,
+        base_fee,
+        Uuid::new_v4(),
+    )
+    .await?;
     Ok(Json(ApiResponse::success(booking)))
 }
 
@@ -1688,6 +1698,7 @@ mod tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            Uuid::new_v4(),
         )
         .await
         .expect("create");
@@ -1889,6 +1900,7 @@ mod tests {
                     1,
                     rust_decimal::Decimal::ZERO,
                     None,
+                    Uuid::new_v4(),
                 )
                 .await
                 .expect("create")

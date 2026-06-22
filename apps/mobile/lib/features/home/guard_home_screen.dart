@@ -32,7 +32,30 @@ class GuardHomeScreen extends ConsumerStatefulWidget {
   ConsumerState<GuardHomeScreen> createState() => _GuardHomeScreenState();
 }
 
-class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen> {
+class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Cheap safety net: re-fetch the guard's jobs when the app comes back to the foreground, so a
+    // "new_job" push that was missed while backgrounded still surfaces the offer. invalidate (not
+    // refresh()) so it only refetches while this dashboard is mounted/listening.
+    if (state == AppLifecycleState.resumed) {
+      ref.invalidate(guardJobsControllerProvider);
+    }
+  }
+
   Future<void> _accept(String id) async {
     final err = await ref.read(guardJobsControllerProvider.notifier).accept(id);
     if (!mounted) return;

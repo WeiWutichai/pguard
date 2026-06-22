@@ -10,6 +10,7 @@ mod domain;
 mod events;
 mod fcm;
 mod models;
+mod presence_client;
 mod profile_client;
 mod repo;
 mod state;
@@ -86,6 +87,19 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config.ttl_secs,
     );
 
+    // Service-JWT'd client for presence's online-guard roster — the new-booking (booking.requested)
+    // dispatch fan-out target. PRESENCE_INTERNAL_URL points at presence DIRECTLY (service-to-service,
+    // never through the public gateway); mints from the SAME service secret presence verifies with.
+    let presence_internal_url = std::env::var("PRESENCE_INTERNAL_URL")
+        .unwrap_or_else(|_| "http://presence:3009".to_string());
+    let presence_client: Arc<dyn crate::presence_client::OnlineGuardsReader> =
+        Arc::new(crate::presence_client::HttpPresenceClient::new(
+            http_client.clone(),
+            presence_internal_url,
+            service_jwt_config.encoding_key.clone(),
+            service_jwt_config.ttl_secs,
+        ));
+
     let state = AppState {
         db,
         redis_conn,
@@ -93,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config,
         pusher,
         profile_client,
+        presence_client,
     };
 
     // --- background JetStream consumer (the event → notification path) ---

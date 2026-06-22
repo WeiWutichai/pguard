@@ -452,6 +452,8 @@ services:
       NATS_USER: notification
       NATS_PASSWORD: ${NATS_NOTIFICATION_PASSWORD:?NATS_NOTIFICATION_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      # New-job dispatch fan-out consults presence (service-to-service) for the online guards.
+      PRESENCE_INTERNAL_URL: http://presence:3009
       # FCM_DISABLED is now VALUE-AWARE (notification fcm::fcm_disabled): only a TRUTHY value
       # (true/1/yes/on) disables push; false/0/empty keep it ENABLED — and an enabled pusher
       # FAIL-FASTS at boot without real FCM creds (FCM_SERVICE_ACCOUNT_PATH). Default = "true"

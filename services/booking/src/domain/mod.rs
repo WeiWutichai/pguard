@@ -10,4 +10,7 @@ pub mod events;
 pub mod progress;
 pub mod state;
 
-pub use events::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
+pub use events::{
+    event_for_booking_requested, event_for_progress_report, event_for_status, CompletionInfo,
+    EventMapping,
+};

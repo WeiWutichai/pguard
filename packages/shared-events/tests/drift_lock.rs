@@ -43,6 +43,44 @@ fn parse<T: serde::de::DeserializeOwned>(env: &Value) -> EventEnvelope<T> {
 // Ref: services/booking/src/domain/events.rs — payload()/event_for_status()/event_for_progress_report().
 
 #[test]
+fn booking_requested_with_coords_locks_to_producer_shape() {
+    // Producer = booking's event_for_booking_requested(): new-job signal carrying the full job
+    // card (ids, address, scheduled_at, hours, guard_count) + the site coordinates. lat/lng are
+    // present numbers here, so the generated Option<f64> round-trips byte-for-byte.
+    let payload = json!({
+        "booking_id": B, "customer_id": C, "address": "1 Sukhumvit Rd",
+        "lat": 13.7563, "lng": 100.5018,
+        "scheduled_at": "2026-06-22T10:00:00Z", "hours": 4, "guard_count": 2
+    });
+    let env: EventEnvelope<BookingRequested> =
+        parse(&envelope(topics::BOOKING_REQUESTED, payload.clone()));
+    assert_eq!(env.payload.booking_id.to_string(), B);
+    assert_eq!(env.payload.customer_id.to_string(), C);
+    assert_eq!(env.payload.address, "1 Sukhumvit Rd");
+    assert_eq!(env.payload.lat, Some(13.7563));
+    assert_eq!(env.payload.lng, Some(100.5018));
+    assert_eq!(env.payload.hours, 4);
+    assert_eq!(env.payload.guard_count, 2);
+    assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
+}
+
+#[test]
+fn booking_requested_with_null_coords_accepts_present_null() {
+    // Producer CARRIES lat/lng EVEN WHEN ABSENT → emits them as JSON null (key present), the
+    // actual_seconds precedent. The generated type must accept present-null → None. Re-serialize
+    // omits them (skip None), semantically equivalent, so we lock the DESERIALIZE behavior here.
+    let payload = json!({
+        "booking_id": B, "customer_id": C, "address": "no-coords site",
+        "lat": null, "lng": null,
+        "scheduled_at": "2026-06-22T10:00:00Z", "hours": 3, "guard_count": 1
+    });
+    let env: EventEnvelope<BookingRequested> = parse(&envelope(topics::BOOKING_REQUESTED, payload));
+    assert!(env.payload.lat.is_none());
+    assert!(env.payload.lng.is_none());
+    assert_eq!(env.payload.guard_count, 1);
+}
+
+#[test]
 fn job_accepted_locks_to_producer_shape() {
     let payload = json!({ "booking_id": B, "guard_id": G, "customer_id": C });
     let env: EventEnvelope<JobAccepted> =

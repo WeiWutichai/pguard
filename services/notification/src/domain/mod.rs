@@ -10,4 +10,4 @@ pub mod mapping;
 #[cfg(test)]
 pub mod idempotency;
 
-pub use mapping::{plan_for_event, NotificationPlan};
+pub use mapping::{dispatch_plan_for_guard, plan_for_event, NotificationPlan};

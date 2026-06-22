@@ -52,6 +52,40 @@ fn build_data(target_role: Option<&str>, event_type: &str, payload: &Value) -> V
     Value::Object(m)
 }
 
+/// Build the per-guard dispatch plan for a `booking.requested` fan-out: one online guard gets the
+/// "new job nearby" alert. PURE (no DB/HTTP) so the fan-out copy + push `data` shape is
+/// unit-testable. This is the FAN-OUT counterpart to [`plan_for_event`] (which maps a single
+/// recipient): the consumer calls this once per online guard, mirroring the `incoming_call` push
+/// shape — `data` carries `type: "new_job"` + the `booking_id` so the mobile can deep-link to the
+/// open job. `target_role: "guard"` so the read API filters it to guards.
+//
+// NOTE: broadcasting to ALL online guards (no geo radius) is intentional for now — it matches the
+// radius-less open-jobs query. Geo-filtering by the booking's lat/lng (carried on the event) is a
+// documented follow-up; the consumer would rank/filter the online set before calling this.
+pub fn dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> NotificationPlan {
+    let mut data = serde_json::Map::new();
+    data.insert("type".to_string(), Value::String("new_job".to_string()));
+    data.insert(
+        "target_role".to_string(),
+        Value::String("guard".to_string()),
+    );
+    data.insert(
+        "event_type".to_string(),
+        Value::String(topics::BOOKING_REQUESTED.to_string()),
+    );
+    data.insert(
+        "booking_id".to_string(),
+        Value::String(booking_id.to_string()),
+    );
+    NotificationPlan {
+        recipient_id: guard_id,
+        notification_type: NotificationType::BookingCreated,
+        title: "งานใหม่ใกล้คุณ".to_string(),
+        body: "New job nearby".to_string(),
+        data: Value::Object(data),
+    }
+}
+
 /// Map an event to a [`NotificationPlan`], or `None` if it should not notify anyone.
 pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationPlan> {
     let make = |recipient: Uuid,
@@ -289,6 +323,23 @@ mod tests {
         assert_eq!(plan.data["type"], "incoming_call");
         assert_eq!(plan.data["call_id"], json!(call_id));
         assert_eq!(plan.data["call_type"], "audio");
+    }
+
+    #[test]
+    fn dispatch_plan_carries_new_job_and_booking() {
+        // The fan-out per-guard alert: data { type: "new_job", booking_id } + the localized copy,
+        // mirroring the incoming_call push shape. target_role=guard so the read API filters it.
+        let guard = Uuid::new_v4();
+        let booking = Uuid::new_v4();
+        let plan = dispatch_plan_for_guard(guard, booking);
+        assert_eq!(plan.recipient_id, guard);
+        assert_eq!(plan.notification_type, NotificationType::BookingCreated);
+        assert_eq!(plan.data["type"], "new_job");
+        assert_eq!(plan.data["booking_id"], json!(booking.to_string()));
+        assert_eq!(plan.data["target_role"], "guard");
+        assert_eq!(plan.data["event_type"], topics::BOOKING_REQUESTED);
+        assert_eq!(plan.title, "งานใหม่ใกล้คุณ");
+        assert_eq!(plan.body, "New job nearby");
     }
 
     #[test]

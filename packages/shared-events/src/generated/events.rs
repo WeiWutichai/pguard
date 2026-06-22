@@ -14,6 +14,20 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookingRequested {
+    pub booking_id: Uuid,
+    pub customer_id: Uuid,
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lat: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lng: Option<f64>,
+    pub scheduled_at: DateTime<Utc>,
+    pub hours: i32,
+    pub guard_count: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct JobAccepted {
     pub booking_id: Uuid,
     pub guard_id: Uuid,

@@ -555,6 +555,62 @@ pub async fn process_event(
     Ok(outcome)
 }
 
+// ----- Dispatch fan-out (booking.requested → all online guards) -----
+
+/// Atomically claim ONE (event_id, recipient) dispatch and, if newly claimed, insert the guard's
+/// `notification_logs` row — both in one transaction. Returns `true` if THIS call won the claim
+/// (caller should push the FCM dispatch alert), `false` if this guard was already notified for this
+/// event (a JetStream redelivery, or a retry that already covered this guard) — so the fan-out is
+/// IDEMPOTENT per-(booking, guard): no double-push, no double-log.
+///
+/// Distinct from [`process_event`] (which claims the event_id ALONE for single-recipient events):
+/// one booking.requested fans out to MANY guards, so the dedupe granularity is per recipient here.
+#[tracing::instrument(skip(db, plan), fields(event_id = %event_id, recipient = %recipient_id))]
+pub async fn claim_dispatch_recipient(
+    db: &PgPool,
+    event_id: Uuid,
+    booking_id: Uuid,
+    recipient_id: Uuid,
+    plan: &NotificationPlan,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    let claim = sqlx::query(
+        r#"
+        INSERT INTO notification.dispatch_recipients (event_id, recipient_id, booking_id)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (event_id, recipient_id) DO NOTHING
+        "#,
+    )
+    .bind(event_id)
+    .bind(recipient_id)
+    .bind(booking_id)
+    .execute(&mut *tx)
+    .await?;
+
+    if claim.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(false); // already notified this guard for this event → skip (idempotent)
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO notification.notification_logs (user_id, title, body, notification_type, payload)
+        VALUES ($1, $2, $3, $4::notification.notification_type, $5)
+        "#,
+    )
+    .bind(plan.recipient_id)
+    .bind(&plan.title)
+    .bind(&plan.body)
+    .bind(plan.notification_type.as_db_str())
+    .bind(&plan.data)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
+}
+
 #[cfg(test)]
 mod db_tests {
     use super::*;
@@ -634,6 +690,70 @@ mod db_tests {
             .execute(&pool)
             .await;
         let _ = sqlx::query("DELETE FROM notification.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres integration test for the fan-out dedupe: the SAME (event_id, guard) claim
+    /// wins once and is a no-op on redelivery, and exactly one notification row is logged. No-op
+    /// unless `DATABASE_URL` is set (hermetic default). Run against a migrated DB:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-notification -- claim_dispatch_recipient_is_idempotent_against_real_db --nocapture
+    #[tokio::test]
+    async fn claim_dispatch_recipient_is_idempotent_against_real_db() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let event_id = Uuid::new_v4();
+        let booking_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let plan = domain::dispatch_plan_for_guard(guard_id, booking_id);
+
+        // First delivery → won the claim.
+        let first = claim_dispatch_recipient(&pool, event_id, booking_id, guard_id, &plan)
+            .await
+            .expect("claim #1");
+        assert!(first, "first dispatch claims the guard");
+
+        // Redelivery (same event_id + guard) → claim is a no-op (idempotent).
+        let second = claim_dispatch_recipient(&pool, event_id, booking_id, guard_id, &plan)
+            .await
+            .expect("claim #2");
+        assert!(!second, "redelivery does not re-claim the guard");
+
+        // Exactly one log row + one claim row despite two deliveries.
+        let (logs,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM notification.notification_logs WHERE user_id = $1",
+        )
+        .bind(guard_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count logs");
+        let (claims,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM notification.dispatch_recipients WHERE event_id = $1 AND recipient_id = $2",
+        )
+        .bind(event_id)
+        .bind(guard_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count claims");
+        assert_eq!(logs, 1, "exactly one dispatch logged for two deliveries");
+        assert_eq!(claims, 1, "guard claimed exactly once");
+
+        // Dev-DB hygiene.
+        let _ = sqlx::query("DELETE FROM notification.notification_logs WHERE user_id = $1")
+            .bind(guard_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM notification.dispatch_recipients WHERE event_id = $1")
             .bind(event_id)
             .execute(&pool)
             .await;

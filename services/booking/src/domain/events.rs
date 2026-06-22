@@ -8,6 +8,7 @@
 //! Not every status change emits — e.g. `declined`/`cancelled` do, `requested` does not
 //! (no cross-service consumer cares about a bare request yet).
 
+use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
 use serde_json::{json, Value};
 use uuid::Uuid;
@@ -114,6 +115,43 @@ pub fn event_for_status(
         }
     }
     Some(EventMapping { topic, payload })
+}
+
+/// Build the `pguard.events.booking.requested` event for a freshly-created booking (status
+/// `requested`, no guard yet). Pure: the repo enqueues this into the outbox in the SAME
+/// transaction as the `bookings` insert, so a committed request always has its event durably
+/// queued. The notification consumer fans this out as a data-push to every ONLINE guard
+/// ("งานใหม่ใกล้คุณ" / "New job nearby") so a guard can open the job and accept it.
+///
+/// `lat`/`lng` are CARRIED EVEN WHEN ABSENT (emitted as JSON `null`, key present — the
+/// `actual_seconds` precedent) so a radius-ranking consumer reads the site coordinates without
+/// a round-trip back into booking. NOT a customer-facing lifecycle status change: the gateway's
+/// booking-status WS ignores this topic (`status_from_topic` → None).
+#[allow(clippy::too_many_arguments)]
+pub fn event_for_booking_requested(
+    booking_id: Uuid,
+    customer_id: Uuid,
+    address: &str,
+    lat: Option<f64>,
+    lng: Option<f64>,
+    scheduled_at: DateTime<Utc>,
+    hours: i32,
+    guard_count: i32,
+) -> EventMapping {
+    EventMapping {
+        topic: topics::BOOKING_REQUESTED,
+        payload: json!({
+            "booking_id": booking_id,
+            "customer_id": customer_id,
+            "address": address,
+            // Carried even when None → JSON null (key present), like completion's actual_seconds.
+            "lat": lat,
+            "lng": lng,
+            "scheduled_at": scheduled_at,
+            "hours": hours,
+            "guard_count": guard_count,
+        }),
+    }
 }
 
 /// Map a persisted hourly check-in to its `pguard.events.booking.progress_reported` event.
@@ -339,6 +377,53 @@ mod tests {
         .expect("cancelled must emit");
         assert_eq!(m.topic, topics::BOOKING_CANCELLED);
         assert_eq!(m.payload["guard_id"], json!(g));
+    }
+
+    #[test]
+    fn booking_requested_carries_full_job_payload() {
+        let booking = Uuid::new_v4();
+        let customer = Uuid::new_v4();
+        let scheduled_at: DateTime<Utc> = "2026-06-22T10:00:00Z".parse().unwrap();
+        let m = event_for_booking_requested(
+            booking,
+            customer,
+            "1 Sukhumvit Rd",
+            Some(13.7563),
+            Some(100.5018),
+            scheduled_at,
+            4,
+            2,
+        );
+        assert_eq!(m.topic, topics::BOOKING_REQUESTED);
+        assert_eq!(m.topic, "pguard.events.booking.requested");
+        assert_eq!(m.payload["booking_id"], json!(booking));
+        assert_eq!(m.payload["customer_id"], json!(customer));
+        assert_eq!(m.payload["address"], json!("1 Sukhumvit Rd"));
+        assert_eq!(m.payload["lat"], json!(13.7563));
+        assert_eq!(m.payload["lng"], json!(100.5018));
+        assert_eq!(m.payload["scheduled_at"], json!(scheduled_at));
+        assert_eq!(m.payload["hours"], json!(4));
+        assert_eq!(m.payload["guard_count"], json!(2));
+    }
+
+    #[test]
+    fn booking_requested_carries_null_coords_as_present_keys() {
+        // "carry lat/lng even when null": the keys are PRESENT with a JSON null (not omitted),
+        // so a consumer can distinguish "no coordinates" from a truncated payload.
+        let m = event_for_booking_requested(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "no-coords site",
+            None,
+            None,
+            Utc::now(),
+            3,
+            1,
+        );
+        assert!(m.payload.get("lat").is_some(), "lat key must be present");
+        assert!(m.payload.get("lng").is_some(), "lng key must be present");
+        assert!(m.payload["lat"].is_null(), "absent lat → JSON null");
+        assert!(m.payload["lng"].is_null(), "absent lng → JSON null");
     }
 
     #[test]

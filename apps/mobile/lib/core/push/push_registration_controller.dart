@@ -3,9 +3,13 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../features/call/call_routes.dart';
 import '../../routing/app_router.dart';
+import '../controllers/guard_jobs_controller.dart';
+import '../controllers/locale_controller.dart';
 import '../controllers/session_controller.dart';
 import '../providers.dart';
+import 'in_app_banner.dart';
 import 'incoming_call_push.dart';
+import 'new_job_push.dart';
 import 'push_service.dart';
 
 part 'push_registration_controller.g.dart';
@@ -20,6 +24,12 @@ PushService pushService(PushServiceRef ref) =>
 @riverpod
 void Function(String route) pushNavigate(PushNavigateRef ref) =>
     (route) => ref.read(appRouterProvider).push(route);
+
+/// How the push layer surfaces an in-app banner (e.g. "New job nearby"). Default shows a SnackBar
+/// over the current screen via the app-wide messenger; overridden in tests to capture the message
+/// without a real widget tree.
+@riverpod
+void Function(String message) pushNotify(PushNotifyRef ref) => showInAppBanner;
 
 /// Registers this device's FCM token with the backend (`POST /tokens`) while the session is
 /// authenticated, and routes incoming-call pushes to the in-app call screen.
@@ -77,7 +87,28 @@ class PushRegistration extends _$PushRegistration {
 
   void _handle(Map<String, dynamic> data) {
     final call = IncomingCallPush.tryParse(data);
-    if (call == null) return; // not an incoming-call push — ignore
-    ref.read(pushNavigateProvider)(CallRoutes.incoming(call.callId));
+    if (call != null) {
+      ref.read(pushNavigateProvider)(CallRoutes.incoming(call.callId));
+      return;
+    }
+    final job = NewJobPush.tryParse(data);
+    if (job != null) {
+      _onNewJob();
+      return;
+    }
+    // Not a push this layer handles — ignore.
+  }
+
+  /// A "new_job" push landed: refetch the open-jobs feed so the offer appears in the guard's
+  /// "งานรอตอบรับ" list, and surface an in-app banner. Invalidating the (autoDispose) provider is
+  /// safe whether or not the dashboard is currently mounted — when listened it refetches, when not
+  /// it disposes and the next read rebuilds fresh. A notification TAP (background→foreground) also
+  /// routes here: the dashboard is the guard's landing screen, so refresh + banner is the right
+  /// surface there too.
+  void _onNewJob() {
+    ref.invalidate(guardJobsControllerProvider);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    ref.read(pushNotifyProvider)(
+        isThai ? 'งานใหม่ใกล้คุณ' : 'New job nearby');
   }
 }
