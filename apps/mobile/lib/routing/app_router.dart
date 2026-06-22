@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
 import '../core/models/chat.dart';
+import '../core/models/service_catalog.dart';
 import '../features/auth/biometric_enroll_screen.dart';
 import '../features/auth/captcha_screen.dart';
 import '../features/auth/otp_screen.dart';
@@ -24,6 +25,7 @@ import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
 import '../features/booking/review_screen.dart';
+import '../features/booking/service_detail_screen.dart';
 import '../features/booking/service_selection_screen.dart';
 import '../features/call/call_screen.dart';
 import '../features/guard/active_job_screen.dart';
@@ -202,8 +204,22 @@ GoRouter appRouter(AppRouterRef ref) {
             WithdrawScreen(bookingId: state.pathParameters['id']!),
       ),
       // Customer book-a-guard flow (shared keepAlive BookingFlowController carries state).
+      // Two-screen package picker: selection (radio) → detail → form.
       GoRoute(
           path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
+      // Package detail. Normally the selected ServiceOption rides in `extra`; for a deep link
+      // (no extra) it falls back to a `?id=` lookup against the live catalog (servicesProvider).
+      GoRoute(
+        path: '/book/detail',
+        builder: (context, state) {
+          final extra = state.extra;
+          if (extra is ServiceOption) {
+            return ServiceDetailScreen(service: extra);
+          }
+          return ServiceDetailResolver(
+              serviceId: state.uri.queryParameters['id']);
+        },
+      ),
       GoRoute(
           path: '/book/form', builder: (_, __) => const BookingFormScreen()),
       GoRoute(

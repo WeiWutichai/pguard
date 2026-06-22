@@ -248,8 +248,9 @@ pub struct ServiceCatalogItem {
 }
 
 /// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker). A
-/// deliberately narrow subset of [`ServiceCatalogItem`] — no `notes`/`is_active`/timestamps:
-/// customers see only what they need to choose + price (`base_fee × hours × guard_count`).
+/// deliberately narrow subset of [`ServiceCatalogItem`] — no `is_active`/timestamps. `notes` is
+/// surfaced as the customer-facing package description (card + detail screen); everything else the
+/// customer needs to choose + price (`base_fee × hours × guard_count`).
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct PublicServiceItem {
     pub id: Uuid,
@@ -258,6 +259,8 @@ pub struct PublicServiceItem {
     /// ฿ per hour per guard (server-owned rate; Decimal serialized as a string on the wire).
     pub base_fee: Decimal,
     pub min_hours: i32,
+    /// Short customer-facing description (the admin `notes`), shown on the package card + detail.
+    pub notes: Option<String>,
 }
 
 /// Create a catalog service (admin). Validated in the handler (non-empty names, fee ≥ 0,

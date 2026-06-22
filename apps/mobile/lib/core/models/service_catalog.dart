@@ -21,12 +21,18 @@ class ServiceOption {
     required this.nameEn,
     required this.baseFeeSatang,
     required this.minHours,
+    this.description,
   });
 
   /// Catalog service uuid — the ONLY thing sent on the booking (`service_id`).
   final String id;
   final String nameTh;
   final String nameEn;
+
+  /// Short customer-facing blurb from the catalog's `notes` field — describes the place type the
+  /// service covers (e.g. "เหมาะกับหมู่บ้าน/คอนโด"). Optional: `null`/blank when the admin left it
+  /// empty, in which case the UI omits the line. Display only.
+  final String? description;
 
   /// Indicative ฿/hr in integer satang (parsed from the decimal `base_fee` string, full
   /// precision). An ESTIMATE for the pre-booking figure — the server owns the real rate.
@@ -42,7 +48,16 @@ class ServiceOption {
         // Decimal string on the wire ("230.00") → exact satang (never a float).
         baseFeeSatang: Money.satangFromString(json['base_fee'] as String?),
         minHours: (json['min_hours'] as num?)?.toInt() ?? 1,
+        // Customer-facing blurb (`notes`); normalize a blank string to null so the UI can simply
+        // null-check whether to render the description line.
+        description: _trimToNull(json['notes'] as String?),
       );
+
+  /// Trim a wire string, returning null for null/blank so optional text simply disappears.
+  static String? _trimToNull(String? s) {
+    final t = s?.trim();
+    return (t == null || t.isEmpty) ? null : t;
+  }
 
   /// Locale-aware display name (falls back across languages so a card never renders blank).
   String name(bool isThai) {

@@ -575,7 +575,7 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        /** @description The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` with no admin-only fields (`notes`/`is_active`/timestamps). */
+        /** @description The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description. */
         PublicServiceItem: {
             /** Format: uuid */
             id: string;
@@ -588,6 +588,8 @@ export interface components {
             base_fee: string;
             /** Format: int32 */
             min_hours: number;
+            /** @description Short customer-facing package description (the admin notes). */
+            notes?: string | null;
         };
         CreateServiceRequest: {
             name_th: string;
