@@ -16,6 +16,7 @@ import '../../core/models/service_catalog.dart';
 import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../booking/widgets/service_package_card.dart';
 import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_unread_badge.dart';
 import '../notifications/widgets/notification_bell.dart';
@@ -46,14 +47,6 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
   void dispose() {
     _bookingId.dispose();
     super.dispose();
-  }
-
-  /// Preset the chosen catalog service then jump straight to the form (skips the picker).
-  void _startBooking(ServiceOption service) {
-    ref.read(bookingFlowControllerProvider.notifier)
-      ..reset()
-      ..selectService(service);
-    context.push('/book/form');
   }
 
   /// Fresh booking via the catalog picker (loading / error / empty fallback for the grid).
@@ -144,7 +137,6 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
               const SizedBox(height: PgTokens.space3),
               _ServicesGrid(
                 isThai: isThai,
-                onPick: _startBooking,
                 onBrowse: _startBlankBooking,
               ),
               if (ongoing != null) ...[
@@ -238,24 +230,24 @@ class _ProfileAvatarButton extends ConsumerWidget {
   }
 }
 
-/// The "บริการ" grid — tiles from the admin catalog (`GET /v1/services`). Each tile presets its
-/// service and jumps to the form. While loading / on error / when empty it degrades to a single
-/// "บริการ" grid. Reflects the catalog-fetch state HONESTLY instead of collapsing loading +
-/// error + empty all into the book fallback: a spinner while `/services` loads, the admin
-/// packages once loaded (capped to four + an "All" tile), and — crucially — an AUTO-RETRY when
-/// the fetch errors. The cold-start `/services` call can lose the token/network race and error;
-/// previously `valueOrNull ?? []` left the home stuck on the "เรียก รปภ." fallback forever even
-/// though the picker (a fresh autoDispose watch) loaded the catalog fine. We retry a few times,
-/// then offer a manual "ลองใหม่" tile; the genuine-empty case still shows the book fallback.
+/// The "บริการ" list — the FULL admin catalog (`GET /v1/services`) rendered as a vertical list of
+/// [ServicePackageCard]s, so the customer PICKS A PACKAGE FIRST (design #67: "ยกรายการนี้มาหน้าแรก
+/// แทน รปภ"). Tapping a card opens the package detail (`/book/detail`) — the same destination as the
+/// two-screen picker — which then advances to the form → guard. While loading / on error / when
+/// empty it degrades to a single tile. Reflects the catalog-fetch state HONESTLY instead of
+/// collapsing loading + error + empty all into the book fallback: a spinner while `/services`
+/// loads, the package cards once loaded, and — crucially — an AUTO-RETRY when the fetch errors.
+/// The cold-start `/services` call can lose the token/network race and error; previously
+/// `valueOrNull ?? []` left the home stuck on the "เรียก รปภ." fallback forever even though the
+/// picker (a fresh autoDispose watch) loaded the catalog fine. We retry a few times, then offer a
+/// manual "ลองใหม่" tile; the genuine-empty case still shows the book fallback.
 class _ServicesGrid extends ConsumerStatefulWidget {
   const _ServicesGrid({
     required this.isThai,
-    required this.onPick,
     required this.onBrowse,
   });
 
   final bool isThai;
-  final ValueChanged<ServiceOption> onPick;
   final VoidCallback onBrowse;
 
   @override
@@ -272,30 +264,21 @@ class _ServicesGridState extends ConsumerState<_ServicesGrid> {
     final async = ref.watch(servicesProvider);
     final options = async.valueOrNull ?? const <ServiceOption>[];
 
-    // Loaded with packages → the grid. `valueOrNull` retains the last data through a background
-    // refresh, so once the catalog shows it never flickers back to a fallback.
+    // Loaded with packages → the full-catalog package list. `valueOrNull` retains the last data
+    // through a background refresh, so once the catalog shows it never flickers back to a fallback.
     if (options.isNotEmpty) {
-      // Cap the grid to the first four so the fixed-width row stays legible (the full catalog is
-      // on the picker via the "Book" FAB / "All" tile).
-      final shown = options.take(4).toList();
-      final tiles = <Widget>[
-        for (final service in shown)
-          _ServiceTile(
-            label: service.name(isThai),
-            onTap: () => widget.onPick(service),
-          ),
-        if (options.length > shown.length)
-          _ServiceTile(
-            label: isThai ? 'ทั้งหมด' : 'All',
-            icon: Icons.grid_view_outlined,
-            onTap: widget.onBrowse,
-          ),
-      ];
-      return Row(
+      return Column(
         children: [
-          for (var i = 0; i < tiles.length; i++) ...[
-            Expanded(child: tiles[i]),
-            if (i != tiles.length - 1) const SizedBox(width: PgTokens.space2),
+          for (var i = 0; i < options.length; i++) ...[
+            if (i != 0) const SizedBox(height: PgTokens.space3),
+            ServicePackageCard(
+              service: options[i],
+              isThai: isThai,
+              // Same destination as the picker — the detail screen advances to the form → guard.
+              onTap: () => context.push('/book/detail', extra: options[i]),
+              trailing: const Icon(Icons.chevron_right,
+                  color: PgTokens.colorTextMuted),
+            ),
           ],
         ],
       );

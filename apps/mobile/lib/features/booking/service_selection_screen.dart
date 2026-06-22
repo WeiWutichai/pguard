@@ -5,10 +5,10 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/services_controller.dart';
-import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import 'widgets/service_package_card.dart';
 
 /// Step 1 of the booking flow — pick a package from the ADMIN-DEFINED catalog
 /// (`GET /v1/services`). This is the first of a two-screen "package picker": here the customer
@@ -80,12 +80,13 @@ class _ServiceSelectionScreenState
                         ),
                       ),
                       for (final service in options) ...[
-                        _ServiceCard(
+                        ServicePackageCard(
                           service: service,
                           isThai: isThai,
                           selected: service.id == selected,
                           onTap: () =>
                               setState(() => _selectedId = service.id),
+                          trailing: _RadioDot(selected: service.id == selected),
                         ),
                         const SizedBox(height: PgTokens.space3),
                       ],
@@ -109,119 +110,8 @@ class _ServiceSelectionScreenState
   }
 }
 
-/// One bookable-package card with a RADIO control. The per-category iconography is gone (the
-/// catalog is admin-defined, so there is no fixed icon key) — every card uses the shared brand
-/// shield on a tinted tile. Tapping selects it; the SELECTED card gets a brand border + tint and a
-/// filled radio with a white check.
-class _ServiceCard extends StatelessWidget {
-  const _ServiceCard({
-    required this.service,
-    required this.isThai,
-    required this.selected,
-    required this.onTap,
-  });
-
-  final ServiceOption service;
-  final bool isThai;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final hasEstimate = service.baseFeeSatang > 0;
-    final description = service.description;
-    return Material(
-      color: selected ? PgTokens.colorGreen50 : PgTokens.colorSurface,
-      borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 18),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-            border: Border.all(
-              color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder,
-              width: selected ? 2 : 1.5,
-            ),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Left rounded-square icon on a tinted tile (shared shield — no per-service icon).
-              Container(
-                width: 52,
-                height: 52,
-                decoration: BoxDecoration(
-                  color: PgTokens.colorGreen50,
-                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-                ),
-                child: const Icon(Icons.shield_outlined,
-                    color: PgTokens.colorBrand, size: 24),
-              ),
-              const SizedBox(width: PgTokens.space3),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // The design shows a "ยอดนิยม"/Popular badge here — OMITTED: there's no
-                    // popularity data and we won't fabricate one. Restore once the backend
-                    // catalog carries a popularity flag.
-                    Text(
-                      service.name(isThai),
-                      style: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                          color: PgTokens.colorText),
-                    ),
-                    // Customer-facing blurb (muted). Omitted entirely when the catalog has none.
-                    if (description != null) ...[
-                      const SizedBox(height: 3),
-                      Text(
-                        description,
-                        style: const TextStyle(
-                            fontSize: 12.5,
-                            height: 1.35,
-                            color: PgTokens.colorTextMuted),
-                      ),
-                    ],
-                    const SizedBox(height: 6),
-                    // "฿230 /ชม." indicative rate (shown only when the catalog gives a fee)…
-                    if (hasEstimate)
-                      Text(
-                        isThai
-                            ? '${Money.format(service.baseFeeSatang)} /ชม.'
-                            : '${Money.format(service.baseFeeSatang)} /hr',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: PgTokens.colorText,
-                          fontFeatures: [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                    // …with a faint min-hours line under it.
-                    Text(
-                      isThai
-                          ? 'ขั้นต่ำ ${service.minHours} ชม.'
-                          : 'Min. ${service.minHours} hr',
-                      style: const TextStyle(
-                          fontSize: 12, color: PgTokens.colorTextFaint),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(width: PgTokens.space2),
-              _RadioDot(selected: selected),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The right-side radio circle: an outline ring when unselected, a filled brand circle with a
-/// white check when selected.
+/// The right-side radio circle (the picker's [ServicePackageCard] trailing): an outline ring when
+/// unselected, a filled brand circle with a white check when selected.
 class _RadioDot extends StatelessWidget {
   const _RadioDot({required this.selected});
 
