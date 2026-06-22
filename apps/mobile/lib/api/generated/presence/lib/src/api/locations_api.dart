@@ -13,6 +13,7 @@ import 'package:pguard_presence_api/src/model/error_body.dart';
 import 'package:pguard_presence_api/src/model/inline_object.dart';
 import 'package:pguard_presence_api/src/model/inline_object1.dart';
 import 'package:pguard_presence_api/src/model/inline_object2.dart';
+import 'package:pguard_presence_api/src/model/internal_online_guards200_response.dart';
 
 class LocationsApi {
 
@@ -183,6 +184,85 @@ class LocationsApi {
     }
 
     return Response<InlineObject1>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Live guard ids (service-to-service)
+  /// Internal read for booking&#39;s discovery (&#x60;/available-guards&#x60;) — the ids of guards who are currently LIVE (&#x60;is_online&#x60; AND a fresh GPS fix within the 5-minute freshness window, \&quot;พร้อมรับงาน\&quot;). Guarded by a **service-JWT** (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). Returns ONLY ids — no lat/lng/PII (unlike the admin &#x60;/locations&#x60; bulk read); least-privilege for the cross-service consult. Documented here for the contract; not part of the user-facing client. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InternalOnlineGuards200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InternalOnlineGuards200Response>> internalOnlineGuards({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/online-guards';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InternalOnlineGuards200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InternalOnlineGuards200Response),
+      ) as InternalOnlineGuards200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InternalOnlineGuards200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

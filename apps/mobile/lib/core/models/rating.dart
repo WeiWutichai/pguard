@@ -15,6 +15,7 @@ class Review {
     this.communication,
     this.appearance,
     this.reviewText,
+    this.reviewerName,
     required this.createdAt,
   });
 
@@ -26,6 +27,11 @@ class Review {
   final int? communication;
   final int? appearance;
   final String? reviewText;
+
+  /// The reviewer's display name when the payload carries one. The PUBLIC discovery projection
+  /// deliberately omits reviewer identity (PDPA), so this is normally `null`; parsed defensively
+  /// for forward-compatibility (and used only to derive an initial — never the full name).
+  final String? reviewerName;
   final DateTime createdAt;
 
   factory Review.fromJson(Map<String, dynamic> json) => Review(
@@ -37,8 +43,17 @@ class Review {
         communication: (json['communication'] as num?)?.toInt(),
         appearance: (json['appearance'] as num?)?.toInt(),
         reviewText: json['review_text'] as String?,
+        reviewerName: json['reviewer_name'] as String?,
         createdAt: DateTime.parse(json['created_at'] as String),
       );
+
+  /// The reviewer's first letter (uppercased) when a name is present — never the full name. `null`
+  /// for the public projection, where the UI shows a generic avatar instead.
+  String? get reviewerInitial {
+    final name = reviewerName?.trim();
+    if (name == null || name.isEmpty) return null;
+    return name.substring(0, 1).toUpperCase();
+  }
 }
 
 /// A guard's visible ratings + aggregate (`GuardRatings`). `average` is a decimal STRING on the

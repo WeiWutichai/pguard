@@ -1,10 +1,14 @@
 //! Discovery clients — the service-JWT'd cross-service reads that `/available-guards`
-//! aggregates: the APPROVED guard catalog (profile) + each guard's rating summary (rating).
+//! aggregates: the APPROVED guard catalog (profile), each guard's rating summary (rating), and
+//! the set of guards currently LIVE (presence — the "พร้อมรับงาน" filter).
 //!
-//! booking owns "discovery" (CLAUDE.md service map) but NOT the guard catalog (profile) or
-//! reviews (rating). It MINTS a short-lived service-JWT (`encode_service_jwt("booking", ...)`)
-//! and GETs each owner's `/internal/*` read — never a cross-schema query. Two ports decouple
-//! the handler from `reqwest` so the aggregation is unit-testable with stubs (no live services).
+//! booking owns "discovery" (CLAUDE.md service map) but NOT the guard catalog (profile), reviews
+//! (rating), or live presence (presence). It MINTS a short-lived service-JWT
+//! (`encode_service_jwt("booking", ...)`) and GETs each owner's `/internal/*` read — never a
+//! cross-schema query. The ports decouple the handler from `reqwest` so the aggregation is
+//! unit-testable with stubs (no live services).
+
+use std::collections::HashSet;
 
 use jsonwebtoken::EncodingKey;
 use rust_decimal::Decimal;
@@ -33,6 +37,13 @@ pub struct GuardRatingSummary {
     pub count: i64,
 }
 
+/// The live-guard ids from presence's `/internal/online-guards`.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OnlineGuards {
+    #[serde(default)]
+    pub guard_ids: Vec<Uuid>,
+}
+
 #[derive(Debug, Deserialize)]
 struct Envelope<T> {
     data: Option<T>,
@@ -52,6 +63,15 @@ pub trait RatingReader: Send + Sync {
     async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError>;
 }
 
+/// Read the set of guards currently LIVE per presence (the "พร้อมรับงาน" filter). A `HashSet`
+/// because the only use is membership filtering of the catalog. An `Err` here is the FAIL-OPEN
+/// signal: the discovery handler logs a warning and shows the unfiltered list rather than
+/// blocking every booking on a presence hiccup.
+#[allow(async_fn_in_trait)]
+pub trait PresenceReader: Send + Sync {
+    async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError>;
+}
+
 // ----- Real HTTP impls (one reqwest client + service-JWT minting, shared config) -----
 
 /// Mints service-JWTs and GETs the `/internal/*` reads of profile + rating. Cloneable
@@ -63,6 +83,8 @@ pub struct HttpDiscoveryClient {
     profile_url: String,
     /// Base URL of the rating service (no trailing slash).
     rating_url: String,
+    /// Base URL of the presence service (no trailing slash).
+    presence_url: String,
     /// Service-JWT signing key (shared `SERVICE_JWT_SECRET`).
     service_encoding_key: EncodingKey,
     /// Service-token TTL (seconds) — short-lived, per call.
@@ -74,6 +96,7 @@ impl HttpDiscoveryClient {
         http: reqwest::Client,
         profile_url: String,
         rating_url: String,
+        presence_url: String,
         service_encoding_key: EncodingKey,
         service_ttl_secs: i64,
     ) -> Self {
@@ -81,6 +104,7 @@ impl HttpDiscoveryClient {
             http,
             profile_url: profile_url.trim_end_matches('/').to_string(),
             rating_url: rating_url.trim_end_matches('/').to_string(),
+            presence_url: presence_url.trim_end_matches('/').to_string(),
             service_encoding_key,
             service_ttl_secs,
         }
@@ -149,5 +173,39 @@ impl RatingReader for HttpDiscoveryClient {
             AppError::Internal("Rating summary lookup failed".to_string())
         })?;
         Ok(envelope.data.unwrap_or_default())
+    }
+}
+
+impl PresenceReader for HttpDiscoveryClient {
+    async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+        let token = self.mint()?;
+        let url = format!("{}/internal/online-guards", self.presence_url);
+        let resp = self
+            .http
+            .get(&url)
+            .headers(observability::trace_headers())
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+            .map_err(|e| {
+                tracing::warn!("presence online-guards transport error: {e}");
+                AppError::Internal("Online-guards lookup failed".to_string())
+            })?;
+        if !resp.status().is_success() {
+            tracing::warn!("presence online-guards returned {}", resp.status());
+            return Err(AppError::Internal(
+                "Online-guards lookup failed".to_string(),
+            ));
+        }
+        let envelope: Envelope<OnlineGuards> = resp.json().await.map_err(|e| {
+            tracing::warn!("presence online-guards decode error: {e}");
+            AppError::Internal("Online-guards lookup failed".to_string())
+        })?;
+        Ok(envelope
+            .data
+            .unwrap_or_default()
+            .guard_ids
+            .into_iter()
+            .collect())
     }
 }

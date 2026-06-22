@@ -14,11 +14,18 @@ class GuardCard extends StatelessWidget {
     required this.guard,
     required this.selected,
     required this.onTap,
+    required this.onViewReviews,
   });
 
   final AvailableGuard guard;
   final bool selected;
+
+  /// Tapping the card body radio-SELECTS this guard (first-come preference highlight).
   final VoidCallback onTap;
+
+  /// Opens this guard's reviews — a DISTINCT affordance (the "ดูรีวิว / View reviews" button) so
+  /// viewing reviews never radio-selects the guard.
+  final VoidCallback onViewReviews;
 
   @override
   Widget build(BuildContext context) {
@@ -76,6 +83,11 @@ class GuardCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     _RatingLine(guard: guard),
+                    const SizedBox(height: 4),
+                    // Distinct, compact "ดูรีวิว / View reviews" affordance. Its own InkWell
+                    // stops the tap from bubbling to the card body (which radio-selects), so
+                    // viewing reviews never changes the first-come selection.
+                    _ViewReviewsButton(onTap: onViewReviews),
                   ],
                 ),
               ),
@@ -120,6 +132,42 @@ class _RatingLine extends ConsumerWidget {
       TextSpan(
         style: const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
         children: parts,
+      ),
+    );
+  }
+}
+
+/// The "ดูรีวิว / View reviews" link-button — a small primary-tinted text affordance with its own
+/// tap target so it opens the reviews sheet WITHOUT triggering the card's radio-select.
+class _ViewReviewsButton extends ConsumerWidget {
+  const _ViewReviewsButton({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(PgTokens.radiusMd),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              isThai ? 'ดูรีวิว' : 'View reviews',
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorPrimary,
+              ),
+            ),
+            const SizedBox(width: 2),
+            const Icon(Icons.chevron_right,
+                size: 15, color: PgTokens.colorPrimary),
+          ],
+        ),
       ),
     );
   }

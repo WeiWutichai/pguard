@@ -51,6 +51,8 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("PROFILE_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
     let rating_url =
         std::env::var("RATING_URL").unwrap_or_else(|_| "http://localhost:3007".to_string());
+    let presence_url =
+        std::env::var("PRESENCE_URL").unwrap_or_else(|_| "http://localhost:3009".to_string());
     // S3/MinIO for check-in photos (fail-fast: S3_ENDPOINT/S3_ACCESS_KEY/S3_SECRET_KEY/
     // S3_BUCKET required). Region + public URL are read ad-hoc exactly like chat's main.rs:
     // an empty `${S3_PUBLIC_URL:-}` from compose is treated as absent (single-host dev
@@ -82,6 +84,7 @@ async fn main() -> anyhow::Result<()> {
         discovery_http,
         profile_url,
         rating_url,
+        presence_url,
         service_jwt_config.encoding_key.clone(),
         service_jwt_config.ttl_secs,
     );

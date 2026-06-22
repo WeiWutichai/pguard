@@ -171,6 +171,33 @@ pub async fn list_locations(
     Ok(rows)
 }
 
+/// The ids of guards who are currently LIVE — `is_online` AND the last fix is fresh (within
+/// `freshness_minutes`): the discovery "พร้อมรับงาน" rule ([`crate::domain::is_live`]), applied
+/// in SQL so booking's `/available-guards` filter is one cheap round-trip (not a bulk PII pull).
+///
+/// Stricter than the `online_only` bulk read, which checks `is_online` alone: a guard who holds
+/// the socket but lost GPS (stale `recorded_at`) is online-but-not-live and is excluded here, so
+/// discovery never offers a guard whose position has gone cold. Served by the partial
+/// `idx_guard_locations_online`; the `recorded_at` recency predicate is the freshness half.
+/// Returns ONLY ids (no lat/lng/PII) — least-privilege for the cross-service consult.
+pub async fn online_guard_ids(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    freshness_minutes: i64,
+) -> Result<Vec<Uuid>, AppError> {
+    let cutoff = now - chrono::Duration::minutes(freshness_minutes);
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        // Strict `>` to match domain::is_fresh (`now - recorded_at < freshness`): a fix exactly
+        // `freshness_minutes` old is NOT live, so the SQL cutoff and the read-time rule agree.
+        "SELECT guard_id FROM presence.guard_locations \
+         WHERE is_online AND recorded_at > $1",
+    )
+    .bind(cutoff)
+    .fetch_all(db)
+    .await?;
+    Ok(ids)
+}
+
 /// Paginated GPS history for a guard, newest first. `limit` is clamped to [1, 1000].
 pub async fn history(
     db: &PgPool,
@@ -374,6 +401,58 @@ mod tests {
             .await;
         let _ = sqlx::query("DELETE FROM presence.location_history WHERE user_id = $1")
             .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    /// `online_guard_ids` is the discovery "live" set: a guard with a FRESH online fix is
+    /// included; a guard whose only fix is STALE (older than the freshness window) is excluded
+    /// even while `is_online` — so booking's discovery never offers a guard whose GPS went cold.
+    #[tokio::test]
+    async fn online_guard_ids_includes_fresh_excludes_stale() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the online-guards freshness test");
+            return;
+        };
+        let fresh_guard = Uuid::new_v4();
+        let stale_guard = Uuid::new_v4();
+        let session = Uuid::new_v4();
+        let now = Utc::now();
+
+        // Fresh guard: a fix at `now` → online + fresh.
+        upsert_location(&pool, fresh_guard, session, now, &fix(13.75, 100.50))
+            .await
+            .expect("fresh upsert");
+        // Stale guard: an online fix, but recorded 10 minutes ago (> the 5-minute window).
+        upsert_location(
+            &pool,
+            stale_guard,
+            session,
+            now - Duration::minutes(10),
+            &fix(13.76, 100.51),
+        )
+        .await
+        .expect("stale upsert");
+
+        let ids = online_guard_ids(&pool, now, 5).await.expect("online ids");
+        assert!(ids.contains(&fresh_guard), "a fresh online guard is live");
+        assert!(
+            !ids.contains(&stale_guard),
+            "an online-but-stale guard is NOT live (lost-GPS guard excluded from discovery)"
+        );
+
+        // Disconnect the fresh guard → no longer in the live set even though the fix is recent.
+        set_offline(&pool, fresh_guard, session)
+            .await
+            .expect("offline");
+        let ids2 = online_guard_ids(&pool, now, 5).await.expect("online ids 2");
+        assert!(
+            !ids2.contains(&fresh_guard),
+            "an offline guard is never live, even with a fresh last fix"
+        );
+
+        let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = ANY($1)")
+            .bind(vec![fresh_guard, stale_guard])
             .execute(&pool)
             .await;
     }

@@ -17,7 +17,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
-use crate::discovery_client::{GuardCatalog, RatingReader};
+use crate::discovery_client::{GuardCatalog, PresenceReader, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
@@ -849,13 +849,21 @@ pub async fn list_progress_reports<S: BookingDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
-/// GET /available-guards — discovery: the approved guard catalog (from profile) enriched
-/// with each guard's live rating summary (from rating). booking owns discovery but neither
-/// the catalog nor reviews, so it reads both owners over service-JWT and aggregates here.
+/// GET /available-guards — discovery: the approved guard catalog (from profile) restricted to
+/// guards who are currently ONLINE (live per presence — "พร้อมรับงาน"), enriched with each
+/// guard's live rating summary (from rating). booking owns discovery but none of the catalog,
+/// reviews, or live presence, so it reads all three owners over service-JWT and aggregates here.
 ///
-/// Best-effort on ratings: a guard whose rating lookup fails still appears (with no
-/// average / zero count) — one slow dependency never blanks the whole list. Rating lookups
-/// run concurrently (bounded) and preserve the catalog's order.
+/// ONLINE filter (the fix): an approved guard is only offered when presence reports them LIVE
+/// (`is_online` AND a fresh GPS fix). An offline-but-approved guard is dropped.
+///
+/// FAIL-OPEN on presence: if the presence consult errors/times out, the whole approved list is
+/// returned UNFILTERED (with a warning) — a presence hiccup must never blank discovery and block
+/// every booking. The happy path filters by online.
+///
+/// Best-effort on ratings: a guard whose rating lookup fails still appears (with no average /
+/// zero count) — one slow dependency never blanks the whole list. Rating lookups run
+/// concurrently (bounded) and preserve the catalog's order.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn available_guards<S: DiscoveryDeps>(
     State(state): State<S>,
@@ -864,9 +872,32 @@ pub async fn available_guards<S: DiscoveryDeps>(
     let guards = state.guard_catalog().list_approved_guards().await?;
     let rater = state.rating_reader();
 
+    // Consult presence for who is currently LIVE. `None` => FAIL-OPEN: presence was unreachable,
+    // so we do NOT filter (showing the full approved list beats blocking all bookings).
+    let online: Option<std::collections::HashSet<Uuid>> = match state
+        .presence_reader()
+        .online_guard_ids()
+        .await
+    {
+        Ok(set) => Some(set),
+        Err(e) => {
+            tracing::warn!(
+                    "presence online-guards lookup failed: {e}; FAIL-OPEN (returning unfiltered approved list)"
+                );
+            None
+        }
+    };
+
+    // Drop offline guards when presence answered; keep all on fail-open. Filtering BEFORE the
+    // rating fan-out also means we never spend rating lookups on guards we're about to hide.
+    let filtered: Vec<_> = guards
+        .into_iter()
+        .filter(|g| online.as_ref().is_none_or(|set| set.contains(&g.user_id)))
+        .collect();
+
     // Each entry carries whether its rating lookup fell back (best-effort), so we can emit a
     // single aggregate signal for a degraded list rather than only per-guard warns.
-    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(guards)
+    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(filtered)
         .map(|g| async move {
             let (summary, ok) = match rater.guard_summary(g.user_id).await {
                 Ok(s) => (s, true),
@@ -2040,7 +2071,10 @@ mod tests {
 
     // ----- /available-guards discovery aggregation (stub readers; Redis-gated for AuthUser) -----
 
-    use crate::discovery_client::{CatalogGuard, GuardCatalog, GuardRatingSummary, RatingReader};
+    use crate::discovery_client::{
+        CatalogGuard, GuardCatalog, GuardRatingSummary, PresenceReader, RatingReader,
+    };
+    use std::collections::HashSet;
 
     /// Catalog stub — returns a canned approved-guard list, no HTTP.
     #[derive(Clone)]
@@ -2050,6 +2084,23 @@ mod tests {
     impl GuardCatalog for StubCatalog {
         async fn list_approved_guards(&self) -> Result<Vec<CatalogGuard>, AppError> {
             Ok(self.guards.clone())
+        }
+    }
+
+    /// Presence stub — `online` is the LIVE id set returned by the consult; `down=true` makes
+    /// the consult ERROR so the handler's FAIL-OPEN path (unfiltered list) is exercised.
+    #[derive(Clone)]
+    struct StubPresence {
+        online: HashSet<Uuid>,
+        down: bool,
+    }
+    impl PresenceReader for StubPresence {
+        async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+            if self.down {
+                Err(AppError::Internal("presence unreachable".to_string()))
+            } else {
+                Ok(self.online.clone())
+            }
         }
     }
 
@@ -2078,6 +2129,7 @@ mod tests {
         redis: redis::aio::ConnectionManager,
         catalog: StubCatalog,
         rater: StubRater,
+        presence: StubPresence,
     }
     impl HasJwtSecret for DiscoveryTestDeps {
         fn jwt_secret(&self) -> &str {
@@ -2093,15 +2145,23 @@ mod tests {
     impl crate::state::DiscoveryDeps for DiscoveryTestDeps {
         type Catalog = StubCatalog;
         type Rating = StubRater;
+        type Presence = StubPresence;
         fn guard_catalog(&self) -> &StubCatalog {
             &self.catalog
         }
         fn rating_reader(&self) -> &StubRater {
             &self.rater
         }
+        fn presence_reader(&self) -> &StubPresence {
+            &self.presence
+        }
     }
 
-    async fn discovery_router(catalog: StubCatalog, rater: StubRater) -> Option<Router> {
+    async fn discovery_router(
+        catalog: StubCatalog,
+        rater: StubRater,
+        presence: StubPresence,
+    ) -> Option<Router> {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
@@ -2114,6 +2174,7 @@ mod tests {
             redis,
             catalog,
             rater,
+            presence,
         };
         Some(
             Router::new()
@@ -2138,6 +2199,10 @@ mod tests {
             StubCatalog { guards: vec![] },
             StubRater {
                 good: Uuid::new_v4(),
+            },
+            StubPresence {
+                online: HashSet::new(),
+                down: false,
             },
         )
         .await;
@@ -2174,7 +2239,18 @@ mod tests {
                 },
             ],
         };
-        let Some(app) = discovery_router(catalog, StubRater { good }).await else {
+        // Both guards are online so this test stays focused on the catalog+rating merge.
+        let online = HashSet::from([good, bad]);
+        let Some(app) = discovery_router(
+            catalog,
+            StubRater { good },
+            StubPresence {
+                online,
+                down: false,
+            },
+        )
+        .await
+        else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
@@ -2211,6 +2287,115 @@ mod tests {
             "no rating → null average"
         );
         assert_eq!(data[1]["review_count"], serde_json::json!(0));
+    }
+
+    /// Issue the discovery request and return the `data` guard_ids as a `Vec<String>`, or `None`
+    /// if the hermetic Redis dependency is absent (caller SKIPs).
+    async fn discovery_guard_ids(
+        catalog: StubCatalog,
+        rater: StubRater,
+        presence: StubPresence,
+    ) -> Option<Vec<String>> {
+        let app = discovery_router(catalog, rater, presence).await?;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        Some(
+            v["data"]
+                .as_array()
+                .expect("data array")
+                .iter()
+                .map(|g| g["guard_id"].as_str().expect("guard_id").to_string())
+                .collect(),
+        )
+    }
+
+    /// The fix: an OFFLINE approved guard (not in presence's live set) is excluded; an ONLINE
+    /// one is included.
+    #[tokio::test]
+    async fn available_guards_excludes_offline_includes_online() {
+        let online_guard = Uuid::new_v4();
+        let offline_guard = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![
+                CatalogGuard {
+                    user_id: online_guard,
+                    years_of_experience: Some(3),
+                },
+                CatalogGuard {
+                    user_id: offline_guard,
+                    years_of_experience: Some(7),
+                },
+            ],
+        };
+        let Some(ids) = discovery_guard_ids(
+            catalog,
+            StubRater { good: online_guard },
+            StubPresence {
+                online: HashSet::from([online_guard]), // only the online guard is live
+                down: false,
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(ids, vec![online_guard.to_string()], "offline guard dropped");
+    }
+
+    /// FAIL-OPEN: when the presence consult errors, the FULL approved list is returned
+    /// (unfiltered) — a presence hiccup must never block all bookings.
+    #[tokio::test]
+    async fn available_guards_fails_open_when_presence_down() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![
+                CatalogGuard {
+                    user_id: a,
+                    years_of_experience: Some(1),
+                },
+                CatalogGuard {
+                    user_id: b,
+                    years_of_experience: Some(2),
+                },
+            ],
+        };
+        let Some(ids) = discovery_guard_ids(
+            catalog,
+            StubRater { good: a },
+            StubPresence {
+                online: HashSet::new(), // would exclude EVERYONE if it were consulted...
+                down: true,             // ...but presence is down → fail-open → show all
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(
+            ids,
+            vec![a.to_string(), b.to_string()],
+            "presence down → fail-open: all approved guards shown unfiltered"
+        );
     }
 
     // ----- Service catalog → charge-path wiring (full router; real DB + Redis) -----

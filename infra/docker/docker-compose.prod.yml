@@ -481,6 +481,8 @@ services:
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       PROFILE_URL: http://profile:3002
       RATING_URL: http://rating:3007
+      # Guard discovery consults presence to show only ONLINE guards (fail-open if unreachable).
+      PRESENCE_URL: http://presence:3009
       # Check-in photo object store (MinIO/R2). booking signs its own SigV4 presigned URLs
       # (ported chat pattern) — required at startup (S3Config::from_env fail-fast).
       S3_ENDPOINT: http://minio:9000

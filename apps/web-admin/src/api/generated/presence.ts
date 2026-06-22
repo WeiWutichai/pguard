@@ -69,6 +69,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/online-guards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Live guard ids (service-to-service)
+         * @description Internal read for booking's discovery (`/available-guards`) — the ids of guards who are
+         *     currently LIVE (`is_online` AND a fresh GPS fix within the 5-minute freshness window,
+         *     "พร้อมรับงาน"). Guarded by a **service-JWT** (`serviceAuth`, aud `pguard-internal`),
+         *     never reachable from the public edge (the gateway blocks `/internal/`). Returns ONLY ids
+         *     — no lat/lng/PII (unlike the admin `/locations` bulk read); least-privilege for the
+         *     cross-service consult. Documented here for the contract; not part of the user-facing
+         *     client.
+         */
+        get: operations["internalOnlineGuards"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -111,6 +137,10 @@ export interface components {
             accuracy?: number | null;
             /** Format: date-time */
             recorded_at: string;
+        };
+        OnlineGuards: {
+            /** @description Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII. */
+            guard_ids: string[];
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -250,6 +280,29 @@ export interface operations {
             200: components["responses"]["HistoryOk"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    internalOnlineGuards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The currently-live guard ids */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["OnlineGuards"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
 }

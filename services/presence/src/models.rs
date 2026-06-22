@@ -48,6 +48,14 @@ pub struct HistoryPoint {
     pub recorded_at: DateTime<Utc>,
 }
 
+/// `GET /internal/online-guards` — the live guard ids only (service-JWT'd; consumed by
+/// booking's discovery). Deliberately NO position/PII, unlike [`GuardLocation`]: least-privilege
+/// for the cross-service "who is พร้อมรับงาน" consult.
+#[derive(Debug, Serialize)]
+pub struct OnlineGuards {
+    pub guard_ids: Vec<Uuid>,
+}
+
 // ----- sqlx row types (DB I/O shapes) -----
 
 /// A `presence.guard_locations` row. `is_live` is NOT a column — the handler computes it via

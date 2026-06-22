@@ -7,7 +7,7 @@ use shared::auth::HasJwtSecret;
 use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
-use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, RatingReader};
+use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, PresenceReader, RatingReader};
 use crate::s3::S3Client;
 
 #[derive(Clone)]
@@ -23,7 +23,8 @@ pub struct AppState {
     /// the payment/rating services call, and signs the discovery reads booking MINTS
     /// (CLAUDE.md "Service auth (internal)").
     pub service_jwt_config: ServiceJwtConfig,
-    /// Discovery reads: the service-JWT'd profile catalog + rating summary clients.
+    /// Discovery reads: the service-JWT'd profile catalog + rating summary + presence
+    /// online-guards clients (one `HttpDiscoveryClient` implements all three ports).
     pub discovery: HttpDiscoveryClient,
     /// S3/MinIO presigner for check-in photos (upload + fresh signed download URLs).
     pub s3: S3Client,
@@ -102,19 +103,25 @@ impl BookingInternalDeps for AppState {
 pub trait DiscoveryDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Catalog: GuardCatalog;
     type Rating: RatingReader;
+    type Presence: PresenceReader;
 
     fn guard_catalog(&self) -> &Self::Catalog;
     fn rating_reader(&self) -> &Self::Rating;
+    fn presence_reader(&self) -> &Self::Presence;
 }
 
 impl DiscoveryDeps for AppState {
     type Catalog = HttpDiscoveryClient;
     type Rating = HttpDiscoveryClient;
+    type Presence = HttpDiscoveryClient;
 
     fn guard_catalog(&self) -> &HttpDiscoveryClient {
         &self.discovery
     }
     fn rating_reader(&self) -> &HttpDiscoveryClient {
+        &self.discovery
+    }
+    fn presence_reader(&self) -> &HttpDiscoveryClient {
         &self.discovery
     }
 }

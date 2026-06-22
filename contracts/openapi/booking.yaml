@@ -302,13 +302,21 @@ paths:
   /available-guards:
     get:
       tags: [Bookings]
-      summary: Discovery — approved guards enriched with their rating summary
+      summary: Discovery — ONLINE approved guards enriched with their rating summary
       description: |
-        booking owns discovery but neither the guard catalog (profile) nor reviews (rating).
-        This lists the APPROVED guard catalog (read from profile's `/internal/guards` over a
-        service-JWT) and enriches each with the guard's live rating summary (read from rating's
-        `/internal/guards/{id}/rating-summary`). Best-effort on ratings: a guard whose rating
-        lookup fails still appears with `average_rating: null` and `review_count: 0`.
+        booking owns discovery but none of the guard catalog (profile), reviews (rating), or
+        live presence (presence). This lists the APPROVED guard catalog (read from profile's
+        `/internal/guards` over a service-JWT), RESTRICTED to guards who are currently ONLINE —
+        live per presence's `/internal/online-guards` (`is_online` AND a fresh GPS fix,
+        "พร้อมรับงาน") — and enriches each with the guard's live rating summary (read from
+        rating's `/internal/guards/{id}/rating-summary`).
+
+        Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on
+        presence: if the presence consult errors/times out, the full approved list is returned
+        UNFILTERED (a presence hiccup must never blank discovery and block all bookings).
+
+        Best-effort on ratings: a guard whose rating lookup fails still appears with
+        `average_rating: null` and `review_count: 0`.
       operationId: listAvailableGuards
       security: [{ bearerAuth: [] }]
       responses:
