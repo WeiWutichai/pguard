@@ -28,11 +28,14 @@ export interface PricingCopy {
   // modal
   createTitle: string;
   editTitle: string;
-  fieldNameTh: string;
-  fieldNameEn: string;
+  fieldName: string;
+  namePlaceholder: string;
   fieldBaseFee: string;
+  feeHint: string;
   fieldMinHours: string;
+  hoursHint: string;
   fieldNotes: string;
+  notesPlaceholder: string;
   save: string;
   saving: string;
   cancel: string;
@@ -64,11 +67,14 @@ export const COPY: Record<Lang, PricingCopy> = {
     perHour: "฿/ชม.",
     createTitle: "เพิ่มบริการ",
     editTitle: "แก้ไขบริการ",
-    fieldNameTh: "ชื่อ (ไทย)",
-    fieldNameEn: "ชื่อ (อังกฤษ)",
-    fieldBaseFee: "ค่าบริการ (฿/ชม.)",
+    fieldName: "ชื่อบริการ",
+    namePlaceholder: "เช่น รปภ. ประจำหมู่บ้าน",
+    fieldBaseFee: "ค่าบริการพื้นฐาน (฿/ชม.)",
+    feeHint: "0 ≤ ค่าบริการ ≤ 1,000,000",
     fieldMinHours: "ชั่วโมงขั้นต่ำ",
+    hoursHint: "1 ≤ ชม. ≤ 24",
     fieldNotes: "หมายเหตุ",
+    notesPlaceholder: "รายละเอียดบริการ…",
     save: "บันทึก",
     saving: "กำลังบันทึก…",
     cancel: "ยกเลิก",
@@ -98,11 +104,14 @@ export const COPY: Record<Lang, PricingCopy> = {
     perHour: "฿/h",
     createTitle: "Add service",
     editTitle: "Edit service",
-    fieldNameTh: "Name (Thai)",
-    fieldNameEn: "Name (English)",
+    fieldName: "Service name",
+    namePlaceholder: "e.g. Neighbourhood guard",
     fieldBaseFee: "Base fee (฿/h)",
+    feeHint: "0 ≤ fee ≤ 1,000,000",
     fieldMinHours: "Min hours",
+    hoursHint: "1 ≤ hours ≤ 24",
     fieldNotes: "Notes",
+    notesPlaceholder: "Service details…",
     save: "Save",
     saving: "Saving…",
     cancel: "Cancel",

@@ -27,10 +27,10 @@ export function ServiceModal({
   const { lang } = useLanguage();
   const c = COPY[lang];
 
-  const [nameTh, setNameTh] = useState(service?.name_th ?? "");
-  const [nameEn, setNameEn] = useState(service?.name_en ?? "");
-  const [baseFee, setBaseFee] = useState(service?.base_fee ?? "");
-  const [minHours, setMinHours] = useState(String(service?.min_hours ?? 1));
+  // Single service name (the redesign dropped the TH/EN split) — sent as both name_th + name_en.
+  const [name, setName] = useState(service?.name_th ?? "");
+  const [baseFee, setBaseFee] = useState(service?.base_fee ?? "230");
+  const [minHours, setMinHours] = useState(String(service?.min_hours ?? 4));
   const [notes, setNotes] = useState(service?.notes ?? "");
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
@@ -38,8 +38,7 @@ export function ServiceModal({
   const fee = Number(baseFee);
   const hrs = Number(minHours);
   const valid =
-    nameTh.trim() !== "" &&
-    nameEn.trim() !== "" &&
+    name.trim() !== "" &&
     Number.isFinite(fee) &&
     fee >= 0 &&
     fee <= 1_000_000 &&
@@ -55,8 +54,8 @@ export function ServiceModal({
     setSaving(true);
     setFailed(false);
     const body = {
-      name_th: nameTh.trim(),
-      name_en: nameEn.trim(),
+      name_th: name.trim(),
+      name_en: name.trim(),
       // exact decimal string on the wire (money rule); normalize to 2dp.
       base_fee: fee.toFixed(2),
       min_hours: hrs,
@@ -93,14 +92,16 @@ export function ServiceModal({
         </>
       }
     >
-      <Field label={c.fieldNameTh} required>
-        <Input value={nameTh} onChange={(e) => setNameTh(e.target.value)} maxLength={120} />
-      </Field>
-      <Field label={c.fieldNameEn} required>
-        <Input value={nameEn} onChange={(e) => setNameEn(e.target.value)} maxLength={120} />
+      <Field label={c.fieldName} required>
+        <Input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={c.namePlaceholder}
+          maxLength={120}
+        />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label={c.fieldBaseFee} required>
+        <Field label={c.fieldBaseFee} hint={c.feeHint}>
           <Input
             type="number"
             min={0}
@@ -110,7 +111,7 @@ export function ServiceModal({
             onChange={(e) => setBaseFee(e.target.value)}
           />
         </Field>
-        <Field label={c.fieldMinHours} required>
+        <Field label={c.fieldMinHours} hint={c.hoursHint}>
           <Input
             type="number"
             min={1}
@@ -122,7 +123,12 @@ export function ServiceModal({
         </Field>
       </div>
       <Field label={c.fieldNotes}>
-        <Textarea value={notes} onChange={(e) => setNotes(e.target.value)} maxLength={2000} />
+        <Textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          placeholder={c.notesPlaceholder}
+          maxLength={2000}
+        />
       </Field>
 
       {failed && (
