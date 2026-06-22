@@ -279,6 +279,39 @@ void main() {
       isThai: true,
     );
     expect(out.indexOf('ไฟฉาย') < out.indexOf('กุญแจมือ'), isTrue);
+    // Place type folds in as a labelled line, after the address and before the equipment.
+    final pt = composeAddress(
+      address: 'site',
+      placeTypeId: 'village',
+      extraDetails: '',
+      equipment: {'flashlight'},
+      addOns: const {},
+      isThai: true,
+    );
+    expect(pt.contains('ประเภทสถานที่: หมู่บ้าน'), isTrue);
+    expect(pt.indexOf('ประเภทสถานที่') < pt.indexOf('อุปกรณ์'), isTrue);
+    // An unknown place-type id is dropped (no line), never throws.
+    expect(
+      composeAddress(
+        address: 'site',
+        placeTypeId: 'bogus',
+        extraDetails: '',
+        equipment: const {},
+        addOns: const {},
+        isThai: true,
+      ),
+      'site',
+    );
+  });
+
+  test('setPlaceType selects the place type and folds it into the sent address', () {
+    final c = container(api: FakeApi());
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.setAddress('โรงงาน ABC');
+    ctrl.setPlaceType('factory');
+    final s = c.read(bookingFlowControllerProvider);
+    expect(s.placeTypeId, 'factory');
+    expect(s.composedAddressFor(true).contains('ประเภทสถานที่: โรงงาน'), isTrue);
   });
 
   test('price = base × hours × guards + tip (display estimate, exact satang)', () {

@@ -29,6 +29,7 @@ class BookingFlowState {
     this.extraDetails = '',
     this.equipment = const {},
     this.addOns = const {},
+    this.placeTypeId,
     this.guardCount = 1,
     this.tipSatang = 0,
     this.booking,
@@ -71,6 +72,10 @@ class BookingFlowState {
   /// effect.
   final Set<String> addOns;
 
+  /// ประเภทสถานที่ — selected place-type id (one of [kPlaceTypes]: village/condo/factory/event/
+  /// other); null until chosen. Folded into the address; no price effect.
+  final String? placeTypeId;
+
   final int guardCount;
 
   /// Optional flat tip (satang), chosen on the booking form and sent with the booking — the
@@ -106,6 +111,7 @@ class BookingFlowState {
   /// lines (see [composeAddress]). The locale is resolved by the controller at send time.
   String composedAddressFor(bool isThai) => composeAddress(
         address: address,
+        placeTypeId: placeTypeId,
         extraDetails: extraDetails,
         equipment: equipment,
         addOns: addOns,
@@ -153,6 +159,7 @@ class BookingFlowState {
     String? extraDetails,
     Set<String>? equipment,
     Set<String>? addOns,
+    String? placeTypeId,
     int? guardCount,
     int? tipSatang,
     Booking? booking,
@@ -170,6 +177,7 @@ class BookingFlowState {
       extraDetails: extraDetails ?? this.extraDetails,
       equipment: equipment ?? this.equipment,
       addOns: addOns ?? this.addOns,
+      placeTypeId: placeTypeId ?? this.placeTypeId,
       guardCount: guardCount ?? this.guardCount,
       tipSatang: tipSatang ?? this.tipSatang,
       booking: booking ?? this.booking,
@@ -250,6 +258,11 @@ class BookingFlowController extends _$BookingFlowController {
   /// Toggle one add-on-service id in/out of the selection.
   void toggleAddOn(String id) =>
       state = state.copyWith(addOns: _toggled(state.addOns, id), error: null);
+
+  /// Select the place type (ประเภทสถานที่) — single-select chip row at the top of the form; folded
+  /// into the address.
+  void setPlaceType(String id) =>
+      state = state.copyWith(placeTypeId: id, error: null);
 
   void setGuardCount(int count) =>
       state = state.copyWith(guardCount: count.clamp(1, 20), error: null);

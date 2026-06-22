@@ -154,6 +154,23 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
               child: ListView(
                 padding: const EdgeInsets.all(PgTokens.space4),
                 children: [
+                  // 1 — ประเภทสถานที่ / place type (the kind of site → folded into the address)
+                  _Section(
+                    title: isThai ? 'ประเภทสถานที่' : 'Place type',
+                    child: Wrap(
+                      spacing: PgTokens.space2,
+                      runSpacing: PgTokens.space2,
+                      children: [
+                        for (final pt in kPlaceTypes)
+                          _PlaceTypeChip(
+                            label: pt.label(isThai),
+                            icon: _placeTypeIcon(pt.id),
+                            selected: state.placeTypeId == pt.id,
+                            onTap: () => _ctrl.setPlaceType(pt.id),
+                          ),
+                      ],
+                    ),
+                  ),
                   // 2 — ระยะเวลาบริการ / time
                   _Section(
                     title: isThai ? 'ระยะเวลาบริการ' : 'Service time',
@@ -914,6 +931,75 @@ class _PillChip extends StatelessWidget {
           child: Text(label,
               style: TextStyle(
                   fontSize: 13, fontWeight: FontWeight.w600, color: fg)),
+        ),
+      ),
+    );
+  }
+}
+
+/// Icon for a place-type chip (no per-type icon key in the model — mapped here in the widget layer).
+IconData _placeTypeIcon(String id) {
+  switch (id) {
+    case 'village':
+      return Icons.home_outlined;
+    case 'condo':
+      return Icons.apartment;
+    case 'factory':
+      return Icons.factory_outlined;
+    case 'event':
+      return Icons.celebration_outlined;
+    default:
+      return Icons.more_horiz;
+  }
+}
+
+/// ประเภทสถานที่ chip — icon over label box (the row at the top of the form, per design #66).
+/// Selected = brand border + green-50 fill + green icon/text, matching [_PillChip]'s selected look.
+class _PlaceTypeChip extends StatelessWidget {
+  const _PlaceTypeChip({
+    required this.label,
+    required this.icon,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final String label;
+  final IconData icon;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = selected ? PgTokens.colorGreen800 : PgTokens.colorText;
+    return Material(
+      color: selected ? PgTokens.colorGreen50 : PgTokens.colorSurface,
+      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+        child: Container(
+          width: 72,
+          padding: const EdgeInsets.symmetric(
+              vertical: PgTokens.space3, horizontal: PgTokens.space2),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+            border: Border.all(
+                color: selected ? PgTokens.colorPrimary : PgTokens.colorBorder),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(icon, size: 20, color: fg),
+              const SizedBox(height: PgTokens.space2),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600, color: fg),
+              ),
+            ],
+          ),
         ),
       ),
     );
