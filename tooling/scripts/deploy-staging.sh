@@ -25,9 +25,19 @@ cd "$ROOT"
 ENV_FILE="${ENV_FILE:-infra/.env.staging}"
 PROD="infra/docker/docker-compose.prod.yml"
 STAGING="infra/docker/docker-compose.staging.yml"
+FCM_OVERLAY="infra/docker/docker-compose.fcm.yml"
+# Firebase service-account JSON (gitignored). When present, FCM push is auto-enabled by layering the
+# fcm overlay (mounts the key + flips FCM_DISABLED=false). Absent → push stays off (NoopPusher).
+FCM_SECRET="infra/docker/secrets/fcm-service-account.json"
 HEALTHZ_URL="${HEALTHZ_URL:-https://pguard.innoveraappcenter.com/healthz}"
 
-dc() { docker compose -f "$PROD" -f "$STAGING" "$@"; }
+if [ -f "$FCM_SECRET" ]; then
+  echo "==> FCM service account found → enabling push (overlay $FCM_OVERLAY)"
+  dc() { docker compose -f "$PROD" -f "$STAGING" -f "$FCM_OVERLAY" "$@"; }
+else
+  echo "==> no FCM service account at $FCM_SECRET → push stays DISABLED"
+  dc() { docker compose -f "$PROD" -f "$STAGING" "$@"; }
+fi
 
 [ -f "$ENV_FILE" ] || { echo "!! secrets file not found: $ENV_FILE" >&2; exit 1; }
 
