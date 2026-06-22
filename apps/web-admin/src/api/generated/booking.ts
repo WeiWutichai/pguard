@@ -77,6 +77,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reports/customer-bookings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-customer booking aggregates (role=admin)
+         * @description Lifetime booking counts per customer for the web-admin customers page: `total`,
+         *     `completed`, and `cancelled` (folding the terminal cancelled + declined states),
+         *     grouped by `customer_id`. No date window — this is the lifetime-per-customer view.
+         *     Admin only (else 403).
+         */
+        get: operations["adminCustomerBookingsReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/bookings/{id}/assign": {
         parameters: {
             query?: never;
@@ -768,6 +791,26 @@ export interface components {
              */
             total: number;
         };
+        /** @description Lifetime booking aggregate for one customer (web-admin customers page). */
+        CustomerBookingStat: {
+            /** Format: uuid */
+            customer_id: string;
+            /**
+             * Format: int64
+             * @description All bookings ever placed by this customer.
+             */
+            total: number;
+            /**
+             * Format: int64
+             * @description Bookings that reached the completed state.
+             */
+            completed: number;
+            /**
+             * Format: int64
+             * @description Terminal not-done states (cancelled + declined).
+             */
+            cancelled: number;
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -966,6 +1009,30 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["BookingsReport"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminCustomerBookingsReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-customer booking aggregates */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerBookingStat"][];
                     };
                 };
             };

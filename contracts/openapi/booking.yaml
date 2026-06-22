@@ -163,6 +163,33 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/reports/customer-bookings:
+    get:
+      tags: [Admin]
+      summary: Per-customer booking aggregates (role=admin)
+      description: |
+        Lifetime booking counts per customer for the web-admin customers page: `total`,
+        `completed`, and `cancelled` (folding the terminal cancelled + declined states),
+        grouped by `customer_id`. No date window — this is the lifetime-per-customer view.
+        Admin only (else 403).
+      operationId: adminCustomerBookingsReport
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Per-customer booking aggregates
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/CustomerBookingStat' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/bookings/{id}/assign:
     post:
       tags: [Admin]
@@ -999,6 +1026,16 @@ components:
           type: array
           items: { $ref: '#/components/schemas/RetentionPoint' }
         total: { type: integer, format: int64, description: Total bookings in the window. }
+
+    CustomerBookingStat:
+      type: object
+      description: Lifetime booking aggregate for one customer (web-admin customers page).
+      required: [customer_id, total, completed, cancelled]
+      properties:
+        customer_id: { type: string, format: uuid }
+        total: { type: integer, format: int64, description: All bookings ever placed by this customer. }
+        completed: { type: integer, format: int64, description: Bookings that reached the completed state. }
+        cancelled: { type: integer, format: int64, description: "Terminal not-done states (cancelled + declined)." }
 
     ApiResponseEnvelope:
       type: object

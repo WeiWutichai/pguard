@@ -75,6 +75,18 @@ pub struct RevenueReport {
     pub mom_pct: Option<f64>,
 }
 
+// ----- Customer-spend report (admin analytics) -----
+
+/// One customer's lifetime spend — the sum of their actually-charged (completed) payments'
+/// effective amount (prorated `final_amount` when set, else `amount`). Powers the web-admin
+/// customers page's spend column. `total` is exact-decimal → JSON string (money rule), mirroring
+/// `RevenuePoint.revenue`.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CustomerSpend {
+    pub customer_id: Uuid,
+    pub total: Decimal,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

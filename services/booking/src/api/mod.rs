@@ -22,9 +22,10 @@ use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
-    CreateBookingRequest, CreateServiceRequest, InternalBooking, ListProgressReportsQuery,
-    NewProgressReport, OpenJobsQuery, ProgressReportResponse, ReportRangeQuery, RetentionPoint,
-    ReviewCompletionRequest, ServiceCatalogItem, UpdateServiceRequest,
+    CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, InternalBooking,
+    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, ProgressReportResponse,
+    ReportRangeQuery, RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem,
+    UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -431,6 +432,19 @@ pub async fn admin_bookings_report<S: BookingDeps>(
         retention,
         total,
     })))
+}
+
+/// GET /admin/reports/customer-bookings — per-customer lifetime booking aggregates (total /
+/// completed / cancelled) for the web-admin customers page. Admin only; replica read (pure
+/// aggregation). No window param — this is the lifetime-per-customer view.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_customer_bookings_report<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<CustomerBookingStat>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let stats = repo::customer_booking_stats(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(stats)))
 }
 
 /// POST /admin/bookings/{id}/assign — an admin assigns a guard to an UNASSIGNED `requested`
@@ -1006,6 +1020,10 @@ mod tests {
                 get(admin_bookings_report::<TestDeps>),
             )
             .route(
+                "/admin/reports/customer-bookings",
+                get(admin_customer_bookings_report::<TestDeps>),
+            )
+            .route(
                 "/admin/pricing/services",
                 get(admin_list_services::<TestDeps>),
             )
@@ -1242,6 +1260,31 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/reports/bookings")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_customer_bookings_report_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read cross-user per-customer booking aggregates. The 403 here
+        // also proves the lazy pool (closed port) was never touched.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/reports/customer-bookings")
                     .header(
                         "authorization",
                         format!("Bearer {}", user_token("customer")),

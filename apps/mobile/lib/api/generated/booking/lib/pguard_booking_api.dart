@@ -15,6 +15,7 @@ export 'package:pguard_booking_api/src/api/bookings_api.dart';
 export 'package:pguard_booking_api/src/api/internal_api.dart';
 
 export 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
+export 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 export 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
 export 'package:pguard_booking_api/src/model/api_response_envelope.dart';
 export 'package:pguard_booking_api/src/model/assign_guard_request.dart';
@@ -25,6 +26,7 @@ export 'package:pguard_booking_api/src/model/bookings_report.dart';
 export 'package:pguard_booking_api/src/model/create_booking_request.dart';
 export 'package:pguard_booking_api/src/model/create_progress_report200_response.dart';
 export 'package:pguard_booking_api/src/model/create_service_request.dart';
+export 'package:pguard_booking_api/src/model/customer_booking_stat.dart';
 export 'package:pguard_booking_api/src/model/daily_count.dart';
 export 'package:pguard_booking_api/src/model/error_body.dart';
 export 'package:pguard_booking_api/src/model/error_detail.dart';

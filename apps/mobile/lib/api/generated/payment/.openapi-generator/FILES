@@ -13,8 +13,10 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/admin_customer_spend_report200_response.dart
 lib/src/model/admin_revenue_report200_response.dart
 lib/src/model/api_response_envelope.dart
+lib/src/model/customer_spend.dart
 lib/src/model/date.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart

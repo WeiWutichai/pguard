@@ -13,8 +13,10 @@ export 'package:pguard_payment_api/src/model/date.dart';
 export 'package:pguard_payment_api/src/api/admin_api.dart';
 export 'package:pguard_payment_api/src/api/payments_api.dart';
 
+export 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
 export 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 export 'package:pguard_payment_api/src/model/api_response_envelope.dart';
+export 'package:pguard_payment_api/src/model/customer_spend.dart';
 export 'package:pguard_payment_api/src/model/error_body.dart';
 export 'package:pguard_payment_api/src/model/error_detail.dart';
 export 'package:pguard_payment_api/src/model/inline_object.dart';

@@ -18,7 +18,9 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
-use crate::models::{AdminListPaymentsQuery, PaymentResponse, ReportRangeQuery, RevenueReport};
+use crate::models::{
+    AdminListPaymentsQuery, CustomerSpend, PaymentResponse, ReportRangeQuery, RevenueReport,
+};
 use crate::repo;
 use crate::state::PaymentDeps;
 use crate::state::PaymentInternalDeps;
@@ -126,6 +128,23 @@ pub async fn admin_revenue_report<S: PaymentDeps>(
     })))
 }
 
+/// GET /admin/reports/customer-spend — per-customer lifetime spend (summed completed-payment
+/// effective amount), for the web-admin customers page. Admin only. Read from the replica (pure
+/// analytics, no read-after-write). Each customer's `total` is exact-decimal → JSON string.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_customer_spend_report<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<CustomerSpend>>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let rows = repo::customer_spend(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
 // ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
 
 /// Export a user's OWN payments for a cross-service data export. `ServiceCaller`-gated (only
@@ -209,6 +228,10 @@ mod tests {
                     "/admin/reports/revenue",
                     get(admin_revenue_report::<TestDeps>),
                 )
+                .route(
+                    "/admin/reports/customer-spend",
+                    get(admin_customer_spend_report::<TestDeps>),
+                )
                 .with_state(deps),
         )
     }
@@ -255,6 +278,30 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/reports/revenue")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_customer_spend_report_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read cross-user per-customer spend analytics.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/reports/customer-spend")
                     .header(
                         "authorization",
                         format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),

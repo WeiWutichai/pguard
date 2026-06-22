@@ -25,6 +25,10 @@ export interface CustomersCopy {
   colBookings: string;
   colSpend: string;
   colQuality: string;
+  qNew: string;
+  qNormal: string;
+  qGood: string;
+  qWatch: string;
   detailTitle: string;
   bookings: string;
   spend: string;
@@ -57,6 +61,10 @@ export const COPY: Record<Lang, CustomersCopy> = {
     colBookings: "การจอง",
     colSpend: "ใช้จ่ายรวม",
     colQuality: "คุณภาพบัญชี",
+    qNew: "ใหม่",
+    qNormal: "ปกติ",
+    qGood: "ดีเยี่ยม",
+    qWatch: "ต้องระวัง",
     detailTitle: "รายละเอียดลูกค้า",
     bookings: "การจอง",
     spend: "ใช้จ่ายรวม",
@@ -87,6 +95,10 @@ export const COPY: Record<Lang, CustomersCopy> = {
     colBookings: "Bookings",
     colSpend: "Total spend",
     colQuality: "Quality",
+    qNew: "New",
+    qNormal: "Normal",
+    qGood: "Excellent",
+    qWatch: "At risk",
     detailTitle: "Customer detail",
     bookings: "Bookings",
     spend: "Total spend",

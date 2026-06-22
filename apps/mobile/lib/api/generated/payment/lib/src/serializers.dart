@@ -14,8 +14,10 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_payment_api/src/date_serializer.dart';
 import 'package:pguard_payment_api/src/model/date.dart';
 
+import 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 import 'package:pguard_payment_api/src/model/api_response_envelope.dart';
+import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
 import 'package:pguard_payment_api/src/model/inline_object.dart';
@@ -29,8 +31,10 @@ import 'package:pguard_payment_api/src/model/revenue_report.dart';
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminCustomerSpendReport200Response,
   AdminRevenueReport200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
+  CustomerSpend,
   ErrorBody,
   ErrorDetail,
   InlineObject,

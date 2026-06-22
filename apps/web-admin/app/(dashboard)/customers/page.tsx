@@ -51,6 +51,13 @@ export default function CustomersPage() {
   // all-time customer roll-ups (labels say "(30 วัน)/(30d)").
   const [monthlySpend, setMonthlySpend] = useState<string | null>(null);
   const [monthlyBookings, setMonthlyBookings] = useState<number | null>(null);
+  // Per-customer lifetime aggregates (customer_id → stats), null until loaded / on failure → gap
+  // chip. A customer absent from a loaded map genuinely has 0 (no booking/payment rows), not a gap.
+  const [bookingStats, setBookingStats] = useState<Map<
+    string,
+    { total: number; completed: number; cancelled: number }
+  > | null>(null);
+  const [spendByCustomer, setSpendByCustomer] = useState<Map<string, string> | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -66,12 +73,31 @@ export default function CustomersPage() {
       // customer list still renders (only a profiles failure raises the page error banner).
       paymentApi.GET("/admin/reports/revenue"),
       bookingApi.GET("/admin/reports/bookings"),
-    ]).then(([profiles, revenue, bookings]) => {
+      // Per-customer lifetime roll-ups (bookings count + total spend) → the per-row columns +
+      // repeat-rate. Each fails independently to its own gap chip.
+      bookingApi.GET("/admin/reports/customer-bookings"),
+      paymentApi.GET("/admin/reports/customer-spend"),
+    ]).then(([profiles, revenue, bookings, custBookings, custSpend]) => {
       if (!alive()) return;
       setHasError(Boolean(profiles.error));
       setCustomers(profiles.error ? [] : (profiles.data?.data ?? []));
       setMonthlySpend(revenue.error ? null : (revenue.data?.data?.total ?? null));
       setMonthlyBookings(bookings.error ? null : (bookings.data?.data?.total ?? null));
+      setBookingStats(
+        custBookings.error
+          ? null
+          : new Map(
+              (custBookings.data?.data ?? []).map((r) => [
+                r.customer_id,
+                { total: r.total, completed: r.completed, cancelled: r.cancelled },
+              ]),
+            ),
+      );
+      setSpendByCustomer(
+        custSpend.error
+          ? null
+          : new Map((custSpend.data?.data ?? []).map((r) => [r.customer_id, r.total])),
+      );
       setLoading(false);
     });
   }, []);
@@ -111,6 +137,31 @@ export default function CustomersPage() {
   // has no scalar endpoint and the per-row spend/bookings columns would need per-customer
   // aggregates (or N per-row calls) — those stay honest gap chips, never invented.
   const gap = <Badge tone="gray">{c.awaitingApi}</Badge>;
+
+  // Repeat rate = % of customers with ≥1 booking who booked ≥2 times. null (gap) until the
+  // per-customer booking aggregate loads (or on its failure).
+  const repeatRate = useMemo(() => {
+    if (!bookingStats) return null;
+    let withBooking = 0;
+    let repeat = 0;
+    for (const s of bookingStats.values()) {
+      if (s.total >= 1) withBooking += 1;
+      if (s.total >= 2) repeat += 1;
+    }
+    return withBooking === 0 ? 0 : Math.round((repeat / withBooking) * 100);
+  }, [bookingStats]);
+
+  // Account quality derived from lifetime booking outcomes (no dedicated score endpoint): a
+  // cancel-heavy customer is flagged, a repeat-completer is highlighted, the rest are new/normal.
+  const qualityBadge = (id: string) => {
+    if (!bookingStats) return gap;
+    const s = bookingStats.get(id);
+    if (!s || s.total === 0) return <Badge tone="gray">{c.qNew}</Badge>;
+    if (s.cancelled >= 2 && s.cancelled > s.completed)
+      return <Badge tone="red">{c.qWatch}</Badge>;
+    if (s.completed >= 3) return <Badge tone="green">{c.qGood}</Badge>;
+    return <Badge tone="blue">{c.qNormal}</Badge>;
+  };
 
   return (
     <div>
@@ -154,7 +205,11 @@ export default function CustomersPage() {
           label={c.kpiBookings}
           value={monthlyBookings == null ? gap : monthlyBookings.toLocaleString("en-US")}
         />
-        <KpiCard icon={<Repeat />} label={c.kpiRepeat} value={gap} />
+        <KpiCard
+          icon={<Repeat />}
+          label={c.kpiRepeat}
+          value={repeatRate == null ? gap : `${repeatRate}%`}
+        />
       </KpiGrid>
 
       {/* Type chips (individual/company) need a customer_type field profile doesn't store —
@@ -219,10 +274,20 @@ export default function CustomersPage() {
                     <Td className="max-w-[220px] truncate text-muted">
                       {cust.address ?? t("common.none")}
                     </Td>
-                    {/* per-customer aggregates have no v2 endpoint */}
-                    <Td>{gap}</Td>
-                    <Td>{gap}</Td>
-                    <Td>{gap}</Td>
+                    {/* per-customer lifetime aggregates (gap only if the endpoint failed). */}
+                    <Td>
+                      {bookingStats == null
+                        ? gap
+                        : (bookingStats.get(cust.user_id)?.total ?? 0).toLocaleString(
+                            "en-US",
+                          )}
+                    </Td>
+                    <Td>
+                      {spendByCustomer == null
+                        ? gap
+                        : fmtBaht(spendByCustomer.get(cust.user_id) ?? "0")}
+                    </Td>
+                    <Td>{qualityBadge(cust.user_id)}</Td>
                   </Tr>
                 ))}
               </tbody>

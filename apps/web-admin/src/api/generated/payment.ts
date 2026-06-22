@@ -73,6 +73,29 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reports/customer-spend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Per-customer lifetime-spend report (role=admin)
+         * @description Per-customer lifetime spend — for each customer, the summed effective amount of their
+         *     actually-charged (`completed`) payments (prorated `final_amount` when set, else `amount`).
+         *     Powers the web-admin customers page's spend column. Customers with no completed payment
+         *     are omitted. Admin only (else 403).
+         */
+        get: operations["adminCustomerSpendReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/payments/{id}": {
         parameters: {
             query?: never;
@@ -186,6 +209,15 @@ export interface components {
              * @description Month-over-month % vs the prior window (null when it had zero revenue).
              */
             mom_pct?: number | null;
+        };
+        CustomerSpend: {
+            /** Format: uuid */
+            customer_id: string;
+            /**
+             * @description Lifetime spend — summed effective amount of the customer's completed payments (exact decimal as a string; money rule).
+             * @example 12400.00
+             */
+            total: string;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -343,6 +375,30 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["RevenueReport"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminCustomerSpendReport: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Per-customer total spend */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerSpend"][];
                     };
                 };
             };

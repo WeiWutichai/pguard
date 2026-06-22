@@ -9,6 +9,7 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_payment_api/src/api_util.dart';
+import 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
@@ -22,6 +23,85 @@ class AdminApi {
   final Serializers _serializers;
 
   const AdminApi(this._dio, this._serializers);
+
+  /// Per-customer lifetime-spend report (role&#x3D;admin)
+  /// Per-customer lifetime spend — for each customer, the summed effective amount of their actually-charged (&#x60;completed&#x60;) payments (prorated &#x60;final_amount&#x60; when set, else &#x60;amount&#x60;). Powers the web-admin customers page&#39;s spend column. Customers with no completed payment are omitted. Admin only (else 403). 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminCustomerSpendReport200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminCustomerSpendReport200Response>> adminCustomerSpendReport({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/reports/customer-spend';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminCustomerSpendReport200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminCustomerSpendReport200Response),
+      ) as AdminCustomerSpendReport200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminCustomerSpendReport200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// List ALL payments cross-user (role&#x3D;admin, read-only ledger)
   /// The admin payment ledger — every payment (NOT owner-scoped, unlike &#x60;GET /payments&#x60;), newest first, with optional &#x60;status&#x60; and &#x60;customer_id&#x60; filters + limit/offset. Admin only (else 403). READ ONLY: there is no manual refund-process action here (v2 refunds are event-driven). 
