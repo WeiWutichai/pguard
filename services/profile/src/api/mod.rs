@@ -403,10 +403,11 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     validate::validate_email(req.email.as_deref()).map_err(AppError::BadRequest)?;
     validate::validate_thai_phone(req.contact_phone.as_deref(), "contact_phone")
         .map_err(AppError::BadRequest)?;
-    // Writes ONLY the customer profile schema — never identity's. The FIRST creation also
-    // emits `user.approved` (outbox, same tx in repo): customers are auto-approved on their
-    // first profile submission and identity flips its own approval_status on consume. Guards
-    // keep the admin-review path (`/admin/guard-profiles/{id}/approve`).
+    // Writes ONLY the customer profile schema — never identity's. The new row defaults to
+    // `pending` (no event emitted): customers are now admin-approved exactly like guards (no
+    // longer auto-approved on first submission). An admin finalizes them via
+    // `/admin/customer-profiles/{id}/approve|reject`, which emits `user.approved` so identity
+    // unblocks login. A self-edit re-upsert leaves the approval decision untouched.
     let profile = repo::upsert_customer_profile(state.db(), writer.user_id, &req).await?;
     Ok(Json(ApiResponse::success(profile)))
 }
@@ -1090,6 +1091,41 @@ pub async fn admin_reject_guard<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(profile)))
 }
 
+// ----- POST /admin/customer-profiles/{user_id}/approve | /reject -----
+
+#[tracing::instrument(skip(state), fields(admin = %user.user_id, target_user = %user_id))]
+pub async fn admin_approve_customer<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<CustomerProfileResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    // The approve emits `user.approved` atomically (outbox) → identity flips its own
+    // `users.approval_status` so the customer can finally log in. `role = customer` (this route).
+    let profile =
+        repo::set_customer_approval(state.db(), user_id, ApprovalStatus::Approved, ROLE_CUSTOMER)
+            .await?;
+    Ok(Json(ApiResponse::success(profile)))
+}
+
+#[tracing::instrument(skip(state, body), fields(admin = %user.user_id, target_user = %user_id))]
+pub async fn admin_reject_customer<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    body: Option<Json<RejectRequest>>,
+) -> Result<Json<ApiResponse<CustomerProfileResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    if let Some(Json(RejectRequest { reason: Some(r) })) = &body {
+        // Reason is contextual metadata, not PII — safe to log; persisting it is a follow-up.
+        tracing::info!(reason = %r, "customer profile rejected with reason");
+    }
+    let profile =
+        repo::set_customer_approval(state.db(), user_id, ApprovalStatus::Rejected, ROLE_CUSTOMER)
+            .await?;
+    Ok(Json(ApiResponse::success(profile)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1253,6 +1289,14 @@ mod tests {
                 .route(
                     "/admin/guard-profiles/{user_id}/reject",
                     post(admin_reject_guard::<TestDeps>),
+                )
+                .route(
+                    "/admin/customer-profiles/{user_id}/approve",
+                    post(admin_approve_customer::<TestDeps>),
+                )
+                .route(
+                    "/admin/customer-profiles/{user_id}/reject",
+                    post(admin_reject_customer::<TestDeps>),
                 )
                 .with_state(deps),
         )
@@ -1540,6 +1584,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_approve_customer_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not approve their OWN (or any) customer profile — only an admin gates
+        // the customer login. The role gate rejects before any DB access.
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/admin/customer-profiles/{id}/approve"))
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer must not approve a customer profile"
+        );
     }
 
     // ----- GET /guards/{id}/public — IDOR gate (customer needs an active booking) -----

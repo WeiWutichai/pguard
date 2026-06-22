@@ -186,6 +186,14 @@ async fn main() -> anyhow::Result<()> {
             post(api::admin_reject_guard::<AppState>),
         )
         .route(
+            "/admin/customer-profiles/{user_id}/approve",
+            post(api::admin_approve_customer::<AppState>),
+        )
+        .route(
+            "/admin/customer-profiles/{user_id}/reject",
+            post(api::admin_reject_customer::<AppState>),
+        )
+        .route(
             "/internal/guards",
             get(api::internal_list_guards::<AppState>),
         )

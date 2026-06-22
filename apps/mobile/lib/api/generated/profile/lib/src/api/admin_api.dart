@@ -18,6 +18,7 @@ import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_respon
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
+import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
@@ -30,6 +31,87 @@ class AdminApi {
   final Serializers _serializers;
 
   const AdminApi(this._dio, this._serializers);
+
+  /// Approve a pending customer profile (role&#x3D;admin)
+  /// Moves the customer profile &#x60;pending → approved&#x60; via the pure approval transition (the customer mirror of the guard approve). Emits &#x60;user.approved&#x60; (transactional outbox) so identity unblocks the customer&#39;s login. Approved is terminal: re-approving or moving an already-finalized profile returns 409. Admin only (else 403). Returns the updated customer profile. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InlineObject2>> adminApproveCustomer({ 
+    required String userId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/customer-profiles/{user_id}/approve'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InlineObject2? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InlineObject2),
+      ) as InlineObject2;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InlineObject2>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// Approve a pending guard profile (role&#x3D;admin)
   /// Moves the guard profile &#x60;pending → approved&#x60; via the pure approval transition. Approved is terminal: re-approving or moving an already-finalized profile returns 409. Admin only (else 403). Returns the updated profile (FULL account number). 
@@ -284,7 +366,7 @@ class AdminApi {
   }
 
   /// List customer profiles (role&#x3D;admin)
-  /// Lists every customer profile, newest first (capped at 200, not paginated). Admin only (else 403). No filter param: customer approval is not stored here (it lives in identity; customers auto-approve on first profile insert), so every customer with a profile row is approved by construction. Records a PDPA §30 read-audit row. 
+  /// Lists every customer profile, newest first (capped at 200, not paginated). Admin only (else 403). Each row carries &#x60;approval_status&#x60; (pending/approved/rejected) so the admin can see who is still awaiting review — customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert). Records a PDPA §30 read-audit row. 
   ///
   /// Parameters:
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
@@ -516,6 +598,109 @@ class AdminApi {
     }
 
     return Response<AdminListGuardProfiles200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Reject a pending customer profile (role&#x3D;admin)
+  /// Moves the customer profile &#x60;pending → rejected&#x60; via the pure approval transition (the customer mirror of the guard reject). May carry an optional &#x60;reason&#x60;. Rejected is terminal (409 on a finalized profile). Admin only (else 403). Returns the updated customer profile. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [rejectRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InlineObject2>> adminRejectCustomer({ 
+    required String userId,
+    RejectRequest? rejectRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/customer-profiles/{user_id}/reject'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(RejectRequest);
+      _bodyData = rejectRequest == null ? null : _serializers.serialize(rejectRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InlineObject2? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InlineObject2),
+      ) as InlineObject2;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InlineObject2>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

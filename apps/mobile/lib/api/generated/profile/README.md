@@ -82,10 +82,10 @@ final api = PguardProfileApi().getAdminApi();
 final String userId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
 
 try {
-    final response = await api.adminApproveGuard(userId);
+    final response = await api.adminApproveCustomer(userId);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AdminApi->adminApproveGuard: $e\n");
+    print("Exception when calling AdminApi->adminApproveCustomer: $e\n");
 }
 
 ```
@@ -96,12 +96,14 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminApproveCustomer**](doc/AdminApi.md#adminapprovecustomer) | **POST** /admin/customer-profiles/{user_id}/approve | Approve a pending customer profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminApproveGuard**](doc/AdminApi.md#adminapproveguard) | **POST** /admin/guard-profiles/{user_id}/approve | Approve a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListAccessAudit**](doc/AdminApi.md#adminlistaccessaudit) | **GET** /admin/access-audit | List the PDPA §30 data-access audit trail (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListCandidates**](doc/AdminApi.md#adminlistcandidates) | **GET** /admin/recruitment/candidates | List guards as recruitment-pipeline candidates (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListCustomerProfiles**](doc/AdminApi.md#adminlistcustomerprofiles) | **GET** /admin/customer-profiles | List customer profiles (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListExpiringDocuments**](doc/AdminApi.md#adminlistexpiringdocuments) | **GET** /admin/documents/expiring | List guard documents needing renewal (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListGuardProfiles**](doc/AdminApi.md#adminlistguardprofiles) | **GET** /admin/guard-profiles | List guard profiles for onboarding review (role&#x3D;admin; FULL bank details)
+[*AdminApi*](doc/AdminApi.md) | [**adminRejectCustomer**](doc/AdminApi.md#adminrejectcustomer) | **POST** /admin/customer-profiles/{user_id}/reject | Reject a pending customer profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminRejectGuard**](doc/AdminApi.md#adminrejectguard) | **POST** /admin/guard-profiles/{user_id}/reject | Reject a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminSetCandidateStage**](doc/AdminApi.md#adminsetcandidatestage) | **PUT** /admin/recruitment/candidates/{user_id}/stage | Move a pending candidate to a pipeline stage (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)

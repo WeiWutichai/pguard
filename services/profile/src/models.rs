@@ -235,9 +235,10 @@ pub struct CustomerProfileResponse {
 /// A customer profile row as returned to an ADMIN list (`GET /admin/customer-profiles`).
 /// A SEPARATE shape from [`CustomerProfileResponse`] so the owner-facing read stays
 /// additive-only — this one adds `created_at` (the signup time the admin UI shows + the
-/// list's order-by key). No `approval_status`: customer approval lives in identity, not
-/// profile (customers auto-approve on first profile insert), and profile must not read
-/// across the service boundary — every customer with a profile row is approved by construction.
+/// list's order-by key) and `approval_status` (the customer review queue's pending/approved
+/// filter). Customers are now admin-approved exactly like guards (no longer auto-approved on
+/// first profile insert); `approval_status` is owned on `profile.customer_profiles` and read
+/// as `::text` (mirrors the guard list), so the admin can see who is still pending.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct CustomerProfileAdminResponse {
     pub user_id: Uuid,
@@ -247,6 +248,8 @@ pub struct CustomerProfileAdminResponse {
     pub email: Option<String>,
     pub contact_phone: Option<String>,
     pub created_at: DateTime<Utc>,
+    /// `pending` | `approved` | `rejected` (read as text from the schema-qualified enum).
+    pub approval_status: String,
 }
 
 /// One PDPA §30 data-access audit row (`GET /admin/access-audit`). Records WHO (an admin)

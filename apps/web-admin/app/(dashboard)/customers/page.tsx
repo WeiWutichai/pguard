@@ -262,8 +262,16 @@ export default function CustomersPage() {
                       <div className="flex items-center gap-3">
                         <Avatar>{customerInitials(cust.full_name, cust.user_id)}</Avatar>
                         <div className="min-w-0">
-                          <div className="truncate font-semibold text-text-strong">
-                            {cust.full_name ?? t("common.none")}
+                          <div className="flex items-center gap-2">
+                            <span className="truncate font-semibold text-text-strong">
+                              {cust.full_name ?? t("common.none")}
+                            </span>
+                            {cust.approval_status === "pending" && (
+                              <Badge tone="amber">{c.stPending}</Badge>
+                            )}
+                            {cust.approval_status === "rejected" && (
+                              <Badge tone="red">{c.stRejected}</Badge>
+                            )}
                           </div>
                           <div className="font-mono text-xs text-muted">
                             ID #{cust.user_id.slice(0, 8)}
@@ -302,7 +310,16 @@ export default function CustomersPage() {
         )}
       </Panel>
 
-      {selected && <CustomerDetailModal customer={selected} onClose={() => setSelected(null)} />}
+      {selected && (
+        <CustomerDetailModal
+          customer={selected}
+          onClose={() => setSelected(null)}
+          onActioned={() => {
+            setSelected(null);
+            reload();
+          }}
+        />
+      )}
     </div>
   );
 }

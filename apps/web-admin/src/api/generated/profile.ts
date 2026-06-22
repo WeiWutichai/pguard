@@ -58,13 +58,12 @@ export interface paths {
          *       - a logged-in customer's `bearerAuth` access token (a later self-edit), role-gated.
          *
          *     Writes ONLY the customer profile schema; identity's approval state is never written
-         *     directly. The FIRST creation additionally emits `user.approved` (transactional
-         *     outbox): **customers are auto-approved on their first profile submission** — there is
-         *     no human review step for hirers (guards keep the admin approve/reject flow). The
-         *     fields in this minimal slice are optional, so "submission" — not field completeness —
-         *     is the gate (the official client makes `address` required). identity consumes the
-         *     event and flips its own `approval_status`, so the account becomes loginable moments
-         *     after this call returns. A later self-edit re-upsert emits nothing.
+         *     directly. The new row starts `pending` and emits NO event: **customers are now
+         *     admin-approved exactly like guards** — a reviewer approves/rejects them via
+         *     `POST /admin/customer-profiles/{user_id}/{approve,reject}`, which emits `user.approved`
+         *     so identity unblocks login. The fields in this minimal slice are optional, so
+         *     "submission" — not field completeness — is the gate (the official client makes
+         *     `address` required). A later self-edit re-upsert leaves the approval decision untouched.
          */
         post: operations["upsertCustomerProfile"];
         delete?: never;
@@ -261,9 +260,10 @@ export interface paths {
         /**
          * List customer profiles (role=admin)
          * @description Lists every customer profile, newest first (capped at 200, not paginated). Admin
-         *     only (else 403). No filter param: customer approval is not stored here (it lives in
-         *     identity; customers auto-approve on first profile insert), so every customer with a
-         *     profile row is approved by construction. Records a PDPA §30 read-audit row.
+         *     only (else 403). Each row carries `approval_status` (pending/approved/rejected) so the
+         *     admin can see who is still awaiting review — customers are now admin-approved exactly
+         *     like guards (no longer auto-approved on first profile insert). Records a PDPA §30
+         *     read-audit row.
          */
         get: operations["adminListCustomerProfiles"];
         put?: never;
@@ -402,6 +402,53 @@ export interface paths {
          *     only (else 403). Returns the updated profile (FULL account number).
          */
         post: operations["adminRejectGuard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/customer-profiles/{user_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Approve a pending customer profile (role=admin)
+         * @description Moves the customer profile `pending → approved` via the pure approval transition
+         *     (the customer mirror of the guard approve). Emits `user.approved` (transactional
+         *     outbox) so identity unblocks the customer's login. Approved is terminal: re-approving
+         *     or moving an already-finalized profile returns 409. Admin only (else 403). Returns the
+         *     updated customer profile.
+         */
+        post: operations["adminApproveCustomer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/customer-profiles/{user_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reject a pending customer profile (role=admin)
+         * @description Moves the customer profile `pending → rejected` via the pure approval transition (the
+         *     customer mirror of the guard reject). May carry an optional `reason`. Rejected is
+         *     terminal (409 on a finalized profile). Admin only (else 403). Returns the updated
+         *     customer profile.
+         */
+        post: operations["adminRejectCustomer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -598,8 +645,10 @@ export interface components {
         };
         /**
          * @description A customer profile row in the admin directory. Adds `created_at` (signup time / the
-         *     list's order key) to the owner-facing shape. No `approval_status` — customer approval
-         *     is owned by identity, not profile.
+         *     list's order key) and `approval_status` (the customer review queue's pending/approved
+         *     filter) to the owner-facing shape. Customers are now admin-approved exactly like guards
+         *     (no longer auto-approved on first profile insert); `approval_status` is owned on
+         *     `profile.customer_profiles`.
          */
         CustomerProfileAdmin: {
             /** Format: uuid */
@@ -611,6 +660,7 @@ export interface components {
             contact_phone?: string | null;
             /** Format: date-time */
             created_at: string;
+            approval_status: components["schemas"]["ApprovalStatus"];
         };
         /** @description One PDPA §30 data-access audit row (who accessed what PII, and when). */
         AccessAuditEntry: {
@@ -1323,6 +1373,46 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["GuardProfileFullOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminApproveCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CustomerProfileOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    adminRejectCustomer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RejectRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["CustomerProfileOk"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

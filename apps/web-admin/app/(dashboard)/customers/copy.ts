@@ -39,6 +39,12 @@ export interface CustomersCopy {
   approvalStatus: string;
   signedUp: string;
   approved: string;
+  /** Approval status labels + actions (customers now go through admin review like guards). */
+  stPending: string;
+  stApproved: string;
+  stRejected: string;
+  approve: string;
+  reject: string;
   bookingHistory: string;
   suspend: string;
   of: string;
@@ -75,6 +81,11 @@ export const COPY: Record<Lang, CustomersCopy> = {
     approvalStatus: "สถานะการอนุมัติ",
     signedUp: "สมัครสมาชิก",
     approved: "อนุมัติแล้ว",
+    stPending: "รออนุมัติ",
+    stApproved: "อนุมัติแล้ว",
+    stRejected: "ถูกปฏิเสธ",
+    approve: "อนุมัติ",
+    reject: "ปฏิเสธ",
     bookingHistory: "ดูประวัติการจอง",
     suspend: "ระงับบัญชี",
     of: "จาก",
@@ -109,6 +120,11 @@ export const COPY: Record<Lang, CustomersCopy> = {
     approvalStatus: "Approval",
     signedUp: "Signed up",
     approved: "Approved",
+    stPending: "Pending",
+    stApproved: "Approved",
+    stRejected: "Rejected",
+    approve: "Approve",
+    reject: "Reject",
     bookingHistory: "Booking history",
     suspend: "Suspend",
     of: "of",

@@ -3,12 +3,13 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
 part 'customer_profile_admin.g.dart';
 
-/// A customer profile row in the admin directory. Adds `created_at` (signup time / the list's order key) to the owner-facing shape. No `approval_status` — customer approval is owned by identity, not profile. 
+/// A customer profile row in the admin directory. Adds `created_at` (signup time / the list's order key) and `approval_status` (the customer review queue's pending/approved filter) to the owner-facing shape. Customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert); `approval_status` is owned on `profile.customer_profiles`. 
 ///
 /// Properties:
 /// * [userId] 
@@ -18,6 +19,7 @@ part 'customer_profile_admin.g.dart';
 /// * [email] 
 /// * [contactPhone] 
 /// * [createdAt] 
+/// * [approvalStatus] 
 @BuiltValue()
 abstract class CustomerProfileAdmin implements Built<CustomerProfileAdmin, CustomerProfileAdminBuilder> {
   @BuiltValueField(wireName: r'user_id')
@@ -40,6 +42,10 @@ abstract class CustomerProfileAdmin implements Built<CustomerProfileAdmin, Custo
 
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
+
+  @BuiltValueField(wireName: r'approval_status')
+  ApprovalStatus get approvalStatus;
+  // enum approvalStatusEnum {  pending,  approved,  rejected,  };
 
   CustomerProfileAdmin._();
 
@@ -108,6 +114,11 @@ class _$CustomerProfileAdminSerializer implements PrimitiveSerializer<CustomerPr
     yield serializers.serialize(
       object.createdAt,
       specifiedType: const FullType(DateTime),
+    );
+    yield r'approval_status';
+    yield serializers.serialize(
+      object.approvalStatus,
+      specifiedType: const FullType(ApprovalStatus),
     );
   }
 
@@ -180,6 +191,13 @@ class _$CustomerProfileAdminSerializer implements PrimitiveSerializer<CustomerPr
             specifiedType: const FullType(DateTime),
           ) as DateTime;
           result.createdAt = valueDes;
+          break;
+        case r'approval_status':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(ApprovalStatus),
+          ) as ApprovalStatus;
+          result.approvalStatus = valueDes;
           break;
         default:
           unhandled.add(key);

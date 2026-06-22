@@ -637,6 +637,100 @@ fn approval_event_topic(target: &ApprovalStatus) -> Option<&'static str> {
     }
 }
 
+/// Admin: set a CUSTOMER profile's approval status (row-locked + transition-checked) AND emit
+/// the matching account event into the outbox — IN ONE TRANSACTION. The customer mirror of
+/// [`set_approval_status`]: customers are now vetted exactly like guards (no longer
+/// auto-approved on first profile insert).
+///
+/// Reads the current status under `FOR UPDATE`, applies the same pure
+/// [`crate::domain::approval::can_transition`] gate, and writes only if legal — so two
+/// concurrent admins cannot both finalize the same pending customer into conflicting states.
+///
+/// The status flip and the outbox row are **atomic** (shared [`approval_event_topic`] helper):
+/// an `Approved` transition writes a `user.approved` event in the same tx (and `Rejected` →
+/// none, since login already blocks every non-`approved` account), so the event is emitted iff
+/// the flip commits. identity's `user.approved` consumer is role-agnostic (flips ITS OWN
+/// `users.approval_status` by `user_id`), so the existing approval→login loop closes unchanged;
+/// `role = "customer"` is informational metadata for the consumer (the route determines it). No
+/// cross-schema write here — profile only ever touches `profile.*` + its outbox. Returns the
+/// updated customer profile.
+#[allow(clippy::type_complexity)]
+#[tracing::instrument(skip(db), fields(user_id = %user_id, target = %target, role = %role))]
+pub async fn set_customer_approval(
+    db: &PgPool,
+    user_id: Uuid,
+    target: ApprovalStatus,
+    role: &str,
+) -> Result<CustomerProfileResponse, AppError> {
+    let mut tx = db.begin().await?;
+
+    let current: Option<(String,)> = sqlx::query_as(
+        "SELECT approval_status::text FROM profile.customer_profiles WHERE user_id = $1 FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+
+    let current = match current {
+        Some((s,)) => ApprovalStatus::from_str(&s)
+            .map_err(|e| AppError::Internal(format!("unknown approval_status in db: {e}")))?,
+        None => {
+            tx.rollback().await?;
+            return Err(AppError::NotFound("Customer profile not found".to_string()));
+        }
+    };
+
+    if !crate::domain::approval::can_transition(current.clone(), target.clone()) {
+        tx.rollback().await?;
+        return Err(AppError::Conflict(format!(
+            "illegal approval transition {current} → {target}"
+        )));
+    }
+
+    let row: (
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
+        "UPDATE profile.customer_profiles \
+         SET approval_status = $2::profile.approval_status, updated_at = now() \
+         WHERE user_id = $1 \
+         RETURNING user_id, full_name, address, company_name, email, contact_phone",
+    )
+    .bind(user_id)
+    .bind(target.to_string())
+    .fetch_one(&mut *tx)
+    .await?;
+
+    // Atomic with the flip: enqueue the account event for identity to consume. Only an
+    // APPROVAL needs an event — it's the login UNBLOCKER identity must react to (a rejection
+    // needs none: login already blocks every non-`approved` account). Shares the guard helper.
+    if let Some(topic) = approval_event_topic(&target) {
+        let now = Utc::now();
+        let envelope = EventEnvelope::new(
+            topic,
+            Uuid::new_v4(),
+            serde_json::json!({ "user_id": user_id, "role": role, "approved_at": now }),
+        );
+        let payload = serde_json::to_value(&envelope)
+            .map_err(|e| AppError::Internal(format!("serialize outbox envelope: {e}")))?;
+        enqueue_outbox(&mut tx, topic, &payload).await?;
+    }
+
+    tx.commit().await?;
+    Ok(CustomerProfileResponse {
+        user_id: row.0,
+        full_name: row.1,
+        address: row.2,
+        company_name: row.3,
+        email: row.4,
+        contact_phone: row.5,
+    })
+}
+
 // ----- Transactional outbox (producer + relay support) -----
 
 /// One unpublished outbox row, as the relay reads it.
@@ -687,21 +781,27 @@ pub async fn mark_published(db: &PgPool, id: Uuid) -> Result<(), AppError> {
 
 /// Upsert the caller's customer profile (minimal in this slice).
 ///
-/// The FIRST creation also enqueues `user.approved` (same tx, transactional outbox):
-/// customers are **auto-approved on first profile submission**. Guards are vetted by an admin
-/// (`set_approval_status`), but v2 has no admin customer-review surface at all — without
-/// this event a registered customer stays `pending` in identity forever and can never log
-/// in. identity's `user.approved` consumer is role-agnostic (flips by `user_id`), so the
-/// existing approval→login loop closes unchanged. A re-upsert (self-edit) is detected via
-/// `xmax = 0` and emits nothing — "approved" happens at most once per account here.
+/// First insert sets `approval_status = 'pending'` (the column default): customers are now
+/// **admin-approved**, NOT auto-approved — they are vetted by an admin via
+/// [`set_customer_approval`] exactly like guards (`set_approval_status`), and stay `pending`
+/// (login-blocked in identity) until that approval emits `user.approved`. This upsert therefore
+/// emits NO event — the INSERT relies on the column default and the `ON CONFLICT` (self-edit)
+/// path deliberately leaves `approval_status` untouched (only an admin moves it), so a customer
+/// re-saving their profile can never silently re-approve themselves.
 #[allow(clippy::type_complexity)]
 pub async fn upsert_customer_profile(
     db: &PgPool,
     user_id: Uuid,
     req: &UpsertCustomerProfileRequest,
 ) -> Result<CustomerProfileResponse, AppError> {
-    let mut tx = db.begin().await?;
-    let row: (Uuid, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>, bool) = sqlx::query_as(
+    let row: (
+        Uuid,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = sqlx::query_as(
         r#"
         INSERT INTO profile.customer_profiles
             (user_id, full_name, address, company_name, email, contact_phone)
@@ -713,7 +813,7 @@ pub async fn upsert_customer_profile(
             email         = EXCLUDED.email,
             contact_phone = EXCLUDED.contact_phone,
             updated_at    = now()
-        RETURNING user_id, full_name, address, company_name, email, contact_phone, (xmax = 0) AS inserted
+        RETURNING user_id, full_name, address, company_name, email, contact_phone
         "#,
     )
     .bind(user_id)
@@ -722,23 +822,8 @@ pub async fn upsert_customer_profile(
     .bind(&req.company_name)
     .bind(&req.email)
     .bind(&req.contact_phone)
-    .fetch_one(&mut *tx)
+    .fetch_one(db)
     .await?;
-    if row.6 {
-        let envelope = EventEnvelope::new(
-            topics::USER_APPROVED,
-            Uuid::new_v4(),
-            serde_json::json!({
-                "user_id": user_id,
-                "role": "customer",
-                "approved_at": Utc::now(),
-            }),
-        );
-        let payload = serde_json::to_value(&envelope)
-            .map_err(|e| AppError::Internal(format!("serialize outbox envelope: {e}")))?;
-        enqueue_outbox(&mut tx, topics::USER_APPROVED, &payload).await?;
-    }
-    tx.commit().await?;
     Ok(CustomerProfileResponse {
         user_id: row.0,
         full_name: row.1,
@@ -785,16 +870,19 @@ pub async fn get_customer_profile(
 
 /// List ALL customer profiles for the admin surface (`GET /admin/customer-profiles`).
 /// Cross-user (no owner filter) — the admin-role gate is the API layer's job. Newest first,
-/// capped at 200 (NOT paginated — same documented limitation as the guard admin list). No
-/// `approval_status` filter: that column does not exist on `profile.customer_profiles`
-/// (customer approval lives in identity), and profile must not read across the boundary.
+/// capped at 200 (NOT paginated — same documented limitation as the guard admin list).
+/// Carries `approval_status` (read as `::text`, like the guard list) so the admin can see
+/// pending vs approved/rejected customers in the review queue — customers are now
+/// admin-approved (`set_customer_approval`), no longer auto-approved.
 pub async fn list_customer_profiles(
     db: &PgPool,
 ) -> Result<Vec<CustomerProfileAdminResponse>, AppError> {
     // Columns match `CustomerProfileAdminResponse` field-for-field → decode via `FromRow`
-    // (no intermediate tuple). No transformation (unlike the guard list's mask step).
+    // (no intermediate tuple). `approval_status` is cast to text + aliased so FromRow binds it
+    // by name. No transformation (unlike the guard list's mask step).
     let rows = sqlx::query_as::<_, CustomerProfileAdminResponse>(
-        "SELECT user_id, full_name, address, company_name, email, contact_phone, created_at \
+        "SELECT user_id, full_name, address, company_name, email, contact_phone, created_at, \
+                approval_status::text AS approval_status \
          FROM profile.customer_profiles ORDER BY created_at DESC LIMIT 200",
     )
     .fetch_all(db)
@@ -1146,12 +1234,12 @@ mod db_tests {
             .await;
     }
 
-    /// Customer auto-approval: the FIRST profile insert enqueues exactly one `user.approved`
-    /// outbox row (atomic with the insert); a re-upsert (self-edit) emits nothing. Without
-    /// this event a customer account stays `pending` forever (v2 has no admin
-    /// customer-approval surface) and could never log in. DATABASE_URL-gated.
+    /// Customers are now ADMIN-approved (NOT auto-approved): the FIRST profile insert emits NO
+    /// `user.approved` outbox row (the inverse of the old auto-approve behavior) and the new row
+    /// starts `pending`; a re-upsert (self-edit) likewise emits nothing AND must not flip the
+    /// approval decision. Only an admin's `set_customer_approval` unblocks login. DATABASE_URL-gated.
     #[tokio::test]
-    async fn customer_first_insert_emits_user_approved_once() {
+    async fn customer_first_insert_does_not_emit_user_approved() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
             eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
             return;
@@ -1175,8 +1263,18 @@ mod db_tests {
             .expect("count outbox");
             n
         };
+        let approval_status = |pool: PgPool, user_id: Uuid| async move {
+            let (s,): (String,) = sqlx::query_as(
+                "SELECT approval_status::text FROM profile.customer_profiles WHERE user_id = $1",
+            )
+            .bind(user_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read approval_status");
+            s
+        };
 
-        // 1) FIRST insert → exactly one user.approved row, carrying role=customer.
+        // 1) FIRST insert → NO user.approved row, and the row starts pending (admin must approve).
         let req = UpsertCustomerProfileRequest {
             full_name: Some("สมหญิง ใจดี".to_string()),
             address: Some("กรุงเทพฯ".to_string()),
@@ -1187,8 +1285,92 @@ mod db_tests {
             .expect("first upsert");
         assert_eq!(
             outbox_count(pool.clone(), user_id).await,
-            1,
-            "first customer-profile insert emits exactly one user.approved"
+            0,
+            "first customer-profile insert must NOT auto-approve (no user.approved)"
+        );
+        assert_eq!(
+            approval_status(pool.clone(), user_id).await,
+            "pending",
+            "a new customer starts pending (admin-approval gate)"
+        );
+
+        // 2) Re-upsert (self-edit) → still no event; the edit applies; approval_status untouched.
+        let edited = UpsertCustomerProfileRequest {
+            full_name: Some("สมหญิง ใจดีมาก".to_string()),
+            address: None,
+            ..Default::default()
+        };
+        let profile = upsert_customer_profile(&pool, user_id, &edited)
+            .await
+            .expect("re-upsert");
+        assert_eq!(profile.full_name.as_deref(), Some("สมหญิง ใจดีมาก"));
+        assert_eq!(
+            outbox_count(pool.clone(), user_id).await,
+            0,
+            "a re-upsert must NOT emit user.approved"
+        );
+        assert_eq!(
+            approval_status(pool.clone(), user_id).await,
+            "pending",
+            "a self-edit must NOT change the approval decision"
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
+            .bind(user_id.to_string())
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Admin customer approval, end-to-end: a pending customer is approved → `approval_status`
+    /// moves to approved AND exactly one `user.approved` outbox row is written in the SAME tx
+    /// (role=customer), the login UNBLOCKER identity consumes. Re-rejecting an approved customer
+    /// is illegal (terminal) → Conflict, status unchanged. Mirrors the guard
+    /// `upsert_get_approve_roundtrip`. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn customer_admin_approve_emits_user_approved_once() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+
+        // 1) Create (pending) — no event yet.
+        let req = UpsertCustomerProfileRequest {
+            full_name: Some("สมชาย มั่นคง".to_string()),
+            ..Default::default()
+        };
+        upsert_customer_profile(&pool, user_id, &req)
+            .await
+            .expect("create pending customer");
+
+        // 2) Admin approves → status approved, exactly one user.approved row (role=customer).
+        let approved = set_customer_approval(&pool, user_id, ApprovalStatus::Approved, "customer")
+            .await
+            .expect("approve customer");
+        assert_eq!(approved.user_id, user_id);
+
+        let (evt_count,): (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM profile.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'user_id' = $2",
+        )
+        .bind(topics::USER_APPROVED)
+        .bind(user_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count outbox");
+        assert_eq!(
+            evt_count, 1,
+            "approve emits exactly one user.approved outbox row"
         );
         let (role,): (String,) = sqlx::query_as(
             "SELECT payload->'payload'->>'role' FROM profile.outbox \
@@ -1201,28 +1383,27 @@ mod db_tests {
         .expect("read role");
         assert_eq!(role, "customer");
 
-        // 2) Re-upsert (self-edit) → no second event; the edit itself still applies.
-        let edited = UpsertCustomerProfileRequest {
-            full_name: Some("สมหญิง ใจดีมาก".to_string()),
-            address: None,
-            ..Default::default()
-        };
-        let profile = upsert_customer_profile(&pool, user_id, &edited)
-            .await
-            .expect("re-upsert");
-        assert_eq!(profile.full_name.as_deref(), Some("สมหญิง ใจดีมาก"));
-        assert_eq!(
-            outbox_count(pool.clone(), user_id).await,
-            1,
-            "a re-upsert must NOT re-emit user.approved"
-        );
+        // 2a) The status flip is visible to the admin list (now carries approval_status).
+        let listed = list_customer_profiles(&pool).await.expect("list");
+        let row = listed
+            .iter()
+            .find(|c| c.user_id == user_id)
+            .expect("approved customer appears in the admin list");
+        assert_eq!(row.approval_status, "approved");
 
-        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
-            .bind(user_id.to_string())
-            .execute(&pool)
-            .await;
+        // 3) Re-reject after approve is illegal (terminal) → Conflict, no second event.
+        let err = set_customer_approval(&pool, user_id, ApprovalStatus::Rejected, "customer")
+            .await
+            .expect_err("approved is terminal");
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+
+        // cleanup
         let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
+            .bind(user_id.to_string())
             .execute(&pool)
             .await;
     }
