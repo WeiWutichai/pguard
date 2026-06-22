@@ -42,6 +42,17 @@ const List<BookingExtra> kSecurityEquipment = [
   BookingExtra(id: 'other', labelTh: 'อื่นๆ', labelEn: 'Other'),
 ];
 
+/// ประเภทสถานที่ / place type — the KIND of site the guard will cover (the chip row at the top of
+/// the form). Single-select; folded into the booking address. The catalog currently has one generic
+/// package, so this is the job-kind descriptor the guard/admin reads on the booking.
+const List<BookingExtra> kPlaceTypes = [
+  BookingExtra(id: 'village', labelTh: 'หมู่บ้าน', labelEn: 'Village'),
+  BookingExtra(id: 'condo', labelTh: 'คอนโด', labelEn: 'Condo'),
+  BookingExtra(id: 'factory', labelTh: 'โรงงาน', labelEn: 'Factory'),
+  BookingExtra(id: 'event', labelTh: 'อีเวนต์', labelEn: 'Event'),
+  BookingExtra(id: 'other', labelTh: 'อื่นๆ', labelEn: 'Other'),
+];
+
 /// บริการเพิ่มเติม / add-on services. Folded into the booking address; no price effect.
 const List<BookingExtra> kAddOnServices = [
   BookingExtra(
@@ -78,12 +89,14 @@ List<String> labelsForIds(
 /// Output shape (lines omitted when their input is empty):
 /// ```
 /// <address>
+/// ประเภทสถานที่: หมู่บ้าน
 /// รายละเอียดเพิ่มเติม: <extra details>
 /// อุปกรณ์: ไฟฉาย, กุญแจมือ
 /// บริการเพิ่มเติม: สายตรวจพิเศษ
 /// ```
 String composeAddress({
   required String address,
+  String? placeTypeId,
   required String extraDetails,
   required Set<String> equipment,
   required Set<String> addOns,
@@ -92,6 +105,14 @@ String composeAddress({
   final lines = <String>[];
   final base = address.trim();
   if (base.isNotEmpty) lines.add(base);
+
+  if (placeTypeId != null) {
+    final pt = kPlaceTypes.where((e) => e.id == placeTypeId);
+    if (pt.isNotEmpty) {
+      lines.add(
+          '${isThai ? 'ประเภทสถานที่' : 'Place type'}: ${pt.first.label(isThai)}');
+    }
+  }
 
   final details = extraDetails.trim();
   if (details.isNotEmpty) {
