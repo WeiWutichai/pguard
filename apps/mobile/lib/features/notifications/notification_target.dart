@@ -1,0 +1,47 @@
+import '../../core/models/auth_models.dart';
+import '../../core/models/chat.dart';
+import '../../core/models/notification.dart';
+import '../../features/call/call_routes.dart';
+import '../../features/chat/chat_routes.dart';
+
+/// Resolve a notification to the in-app location its tile should open, or `null` when there is no
+/// useful destination (it still marks read on tap). PURE — no Flutter / Riverpod — so the routing
+/// table is unit-testable without a navigator. The acting user's [role] picks the right side of a
+/// chat conversation (the same user is a guard in one thread, a customer in another) and decides
+/// where a booking notification lands: the guard sees their working screen, the customer sees the
+/// live-status screen.
+///
+/// The reference ids come from the notification `payload` (see
+/// `services/notification/src/domain/mapping.rs`): `booking_id`, `conversation_id`, `call_id`.
+String? notificationTarget(AppNotification n, {required AuthUser? user}) {
+  final isGuard = user?.isGuard == true;
+
+  switch (n.type) {
+    case NotificationType.chatMessage:
+      final cid = n.conversationId;
+      if (cid == null) return null;
+      return ChatRoutes.conversation(
+        cid,
+        acting: isGuard ? ChatRole.guard : ChatRole.customer,
+        readOnly: false,
+      );
+
+    case NotificationType.bookingCreated:
+    case NotificationType.guardAssigned:
+    case NotificationType.guardEnRoute:
+    case NotificationType.guardArrived:
+    case NotificationType.bookingCompleted:
+    case NotificationType.bookingCancelled:
+      final bid = n.bookingId;
+      if (bid == null) return null;
+      // Guard → their active-job working screen; customer → the booking live-status screen.
+      return isGuard ? '/guard/active/$bid' : '/booking/$bid/live';
+
+    case NotificationType.system:
+      // `system` covers incoming-call notifications (a call_id rides in the payload) and
+      // payment/rating/decline notices. Only the call has a screen to open.
+      final callId = n.callId;
+      if (callId != null) return CallRoutes.incoming(callId);
+      return null;
+  }
+}

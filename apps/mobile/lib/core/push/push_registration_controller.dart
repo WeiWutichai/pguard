@@ -10,6 +10,7 @@ import '../providers.dart';
 import 'in_app_banner.dart';
 import 'incoming_call_push.dart';
 import 'new_job_push.dart';
+import 'push_banner.dart';
 import 'push_service.dart';
 
 part 'push_registration_controller.g.dart';
@@ -88,15 +89,26 @@ class PushRegistration extends _$PushRegistration {
   void _handle(Map<String, dynamic> data) {
     final call = IncomingCallPush.tryParse(data);
     if (call != null) {
+      _banner(data);
       ref.read(pushNavigateProvider)(CallRoutes.incoming(call.callId));
       return;
     }
     final job = NewJobPush.tryParse(data);
     if (job != null) {
-      _onNewJob();
+      _onNewJob(); // new_job surfaces its own banner + refetches the open feed
       return;
     }
-    // Not a push this layer handles — ignore.
+    // Every other foreground push (booking-status / chat / call) surfaces an in-app banner so the
+    // user sees it without leaving the current screen. No `type` field on these — classified by
+    // `event_type`. A push we don't recognise yields a null banner and is silently ignored.
+    _banner(data);
+  }
+
+  /// Surface the in-app banner for a foreground push, if it maps to one (locale-aware).
+  void _banner(Map<String, dynamic> data) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final message = pushBanner(data, isThai: isThai);
+    if (message != null) ref.read(pushNotifyProvider)(message);
   }
 
   /// A "new_job" push landed: refetch the open-jobs feed so the offer appears in the guard's

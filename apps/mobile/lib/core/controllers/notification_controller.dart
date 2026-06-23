@@ -47,6 +47,10 @@ class NotificationController extends _$NotificationController {
 
     try {
       await ref.read(pguardApiProvider).put('/notifications/$id/read');
+      // The server count is now lower → refresh the bell badge source so it clears (the list and
+      // the count are separate providers/endpoints; the optimistic list update alone never touches
+      // the badge). Skip when disposed — the read survives, but there's no live count to refresh.
+      if (!_disposed) ref.invalidate(unreadCountProvider);
     } catch (_) {
       if (!_disposed) state = AsyncData(original); // rollback
     }
@@ -66,6 +70,7 @@ class NotificationController extends _$NotificationController {
 
     try {
       await ref.read(pguardApiProvider).put('/notifications/read-all');
+      if (!_disposed) ref.invalidate(unreadCountProvider); // clear the bell badge (→ 0)
     } catch (_) {
       if (!_disposed) state = AsyncData(original); // rollback
     }

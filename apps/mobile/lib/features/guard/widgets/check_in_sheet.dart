@@ -4,6 +4,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/active_job_controller.dart';
 import '../../../core/controllers/locale_controller.dart';
+import '../../../core/controllers/progress_reports_controller.dart';
 import '../../../core/controllers/tracking_controller.dart';
 import '../../../core/media/photo_capture.dart';
 import '../../../core/models/tracking.dart';
@@ -89,6 +90,11 @@ class _CheckInSheetState extends ConsumerState<_CheckInSheet> {
         );
     if (!mounted) return;
     if (ok) {
+      // Refresh the participants-only report list so the just-submitted photo becomes openable
+      // from the timeline ("Reported" row → viewer) on this guard screen AND on the customer's
+      // live screen (both watch this provider). Done here (in the widget tree) — not in the
+      // controller — so the controller stays free of the WS-backed provider chain.
+      ref.invalidate(progressReportsControllerProvider(widget.bookingId));
       Navigator.of(context).pop(true);
     } else {
       setState(() {

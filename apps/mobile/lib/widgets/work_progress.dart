@@ -120,6 +120,7 @@ class CheckInTimelineRow extends StatelessWidget {
     required this.isLast,
     this.time,
     this.statusLabel,
+    this.onTap,
   });
 
   /// 1-based node number shown when not done.
@@ -130,6 +131,10 @@ class CheckInTimelineRow extends StatelessWidget {
   final bool isLast;
   final String? time;
   final String? statusLabel;
+
+  /// When non-null the whole row is tappable (e.g. a reported check-in opens its photo); the
+  /// status pill then carries a small photo glyph so it reads as actionable.
+  final VoidCallback? onTap;
 
   Widget _node() {
     if (done) {
@@ -168,7 +173,7 @@ class CheckInTimelineRow extends StatelessWidget {
         : isCurrent
             ? (PgTokens.colorWarningBg, PgTokens.colorWarning)
             : (PgTokens.colorSunken, PgTokens.colorTextMuted);
-    return Row(
+    final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Column(
@@ -209,17 +214,32 @@ class CheckInTimelineRow extends StatelessWidget {
                         color: bg,
                         borderRadius:
                             BorderRadius.circular(PgTokens.radiusFull)),
-                    child: Text(statusLabel!,
-                        style: TextStyle(
-                            fontSize: 11.5,
-                            fontWeight: FontWeight.w600,
-                            color: fg)),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (onTap != null) ...[
+                          Icon(Icons.photo_outlined, size: 13, color: fg),
+                          const SizedBox(width: 5),
+                        ],
+                        Text(statusLabel!,
+                            style: TextStyle(
+                                fontSize: 11.5,
+                                fontWeight: FontWeight.w600,
+                                color: fg)),
+                      ],
+                    ),
                   ),
               ],
             ),
           ),
         ),
       ],
+    );
+    if (onTap == null) return row;
+    return InkWell(
+      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      onTap: onTap,
+      child: row,
     );
   }
 }

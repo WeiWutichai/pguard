@@ -61,6 +61,32 @@ void main() {
     expect(api.calls, contains('PUT /notifications/n1/read'));
   });
 
+  test('markRead refreshes the bell badge (unread count) after the server write',
+      () async {
+    var counts = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/notifications/unread-count') {
+          counts++;
+          return {'count': counts == 1 ? 2 : 1};
+        }
+        return [notifJson('n1', false), notifJson('n2', true)];
+      },
+      onPut: (_, __) async => notifJson('n1', true),
+    );
+    final c = container(api);
+    // Keep the count provider listened so an invalidation REFETCHES (badge actually clears).
+    final sub = c.listen(unreadCountProvider, (_, __) {});
+    addTearDown(sub.close);
+    expect(await c.read(unreadCountProvider.future), 2);
+
+    await c.read(notificationControllerProvider.future);
+    await c.read(notificationControllerProvider.notifier).markRead('n1');
+    await c.read(unreadCountProvider.future); // settle the refetch
+    expect(counts, 2); // the count endpoint was re-hit
+    expect(c.read(unreadCountProvider).value, 1);
+  });
+
   test('markRead ROLLS BACK on failure', () async {
     final api = FakeApi(
       onGet: (_, __) async => [notifJson('n1', false)],
@@ -104,6 +130,30 @@ void main() {
 
     expect(c.read(notificationControllerProvider).value!.every((n) => !n.isRead),
         isTrue);
+  });
+
+  test('markAllRead refreshes the bell badge (unread count) to zero', () async {
+    var counts = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/notifications/unread-count') {
+          counts++;
+          return {'count': counts == 1 ? 2 : 0};
+        }
+        return [notifJson('n1', false), notifJson('n2', false)];
+      },
+      onPut: (_, __) async => {'count': 2},
+    );
+    final c = container(api);
+    final sub = c.listen(unreadCountProvider, (_, __) {});
+    addTearDown(sub.close);
+    expect(await c.read(unreadCountProvider.future), 2);
+
+    await c.read(notificationControllerProvider.future);
+    await c.read(notificationControllerProvider.notifier).markAllRead();
+    await c.read(unreadCountProvider.future);
+    expect(counts, 2);
+    expect(c.read(unreadCountProvider).value, 0);
   });
 
   test('unread count parses {count}', () async {

@@ -163,6 +163,10 @@ GoRouter appRouter(AppRouterRef ref) {
               ChatRole.customer,
           readOnly: state.uri.queryParameters['readonly'] == '1',
           title: state.extra is String ? state.extra as String : null,
+          // The linked booking + whether it is callable now drive the in-thread call action
+          // (absent on a deep link / chat-list open with no booking context → action hidden).
+          bookingId: state.uri.queryParameters['booking'],
+          callable: state.uri.queryParameters['callable'] == '1',
         ),
       ),
       // Guard-side flow: incoming-job detail + active-job working screen.

@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/chat_launcher.dart';
 import '../../../core/controllers/chat_list_controller.dart';
 import '../../../core/controllers/locale_controller.dart';
+import '../../../core/models/booking.dart';
 import '../../../core/models/chat.dart';
 import '../../../core/network/api_exception.dart';
 import '../chat_routes.dart';
@@ -76,11 +77,18 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
         ],
       );
       if (!mounted) return;
+      // Thread the booking + whether it is callable RIGHT NOW so the chat header's call action
+      // gates exactly like the calling service (no routing into a guaranteed 409).
+      final status = BookingStatus.tryParse(widget.requestStatus);
       await router.push(
         ChatRoutes.conversation(
           conversationId,
           acting: widget.acting,
           readOnly: ChatReadOnly.fromStatus(widget.requestStatus),
+          bookingId: widget.requestId,
+          callable: widget.counterpartUserId != null &&
+              status != null &&
+              BookingLifecycle.isCallable(status),
         ),
         extra: widget.counterpartName,
       );

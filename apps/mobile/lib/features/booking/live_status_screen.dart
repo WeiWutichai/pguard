@@ -18,6 +18,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
@@ -27,15 +28,55 @@ import 'cancellation_screen.dart';
 /// controller, whose state advances from WebSocket PUSH frames — there is NO `Timer.periodic`
 /// polling anywhere in this path (v1 polled every 3–5s; that anti-pattern is gone). UI per
 /// `Mobile - Customer App.html` / `Mobile - Active Standby.html`.
-class LiveStatusScreen extends ConsumerWidget {
+class LiveStatusScreen extends ConsumerStatefulWidget {
   const LiveStatusScreen({super.key, required this.bookingId});
 
   final String bookingId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<LiveStatusScreen> createState() => _LiveStatusScreenState();
+}
+
+class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    // The live feed is server-PUSH (the WS owned by BookingStatusController). But the
+    // api-gateway does not yet proxy WS upgrades (see booking_status_socket.dart — a BACKEND
+    // gap), so today the screen would otherwise sit on its one initial snapshot and appear
+    // stuck on "finding a guard". Re-pull a fresh snapshot on resume so a status that advanced
+    // while backgrounded (accepted → en_route → …) shows; harmless once the WS lands (the push
+    // frame is idempotent with the refetched snapshot). Event-driven, NOT a timer.
+    if (lifecycle == AppLifecycleState.resumed) {
+      ref.invalidate(bookingStatusControllerProvider(widget.bookingId));
+    }
+  }
+
+  Future<void> _refresh() async {
+    ref.invalidate(bookingStatusControllerProvider(widget.bookingId));
+    // Await the next snapshot so the spinner holds until the new status lands; the provider
+    // state carries any error for the error view, so swallow here.
+    try {
+      await ref.read(bookingStatusControllerProvider(widget.bookingId).future);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    final async = ref.watch(bookingStatusControllerProvider(bookingId));
+    final async = ref.watch(bookingStatusControllerProvider(widget.bookingId));
 
     return Scaffold(
       appBar: PGuardHeader(
@@ -59,10 +100,10 @@ class LiveStatusScreen extends ConsumerWidget {
                 : (isThai
                     ? 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้'
                     : 'Live status is unavailable right now'),
-            onRetry: () =>
-                ref.invalidate(bookingStatusControllerProvider(bookingId)),
+            onRetry: () => ref
+                .invalidate(bookingStatusControllerProvider(widget.bookingId)),
           ),
-          data: (booking) => _LiveBody(booking: booking),
+          data: (booking) => _LiveBody(booking: booking, onRefresh: _refresh),
         ),
       ),
     );
@@ -70,9 +111,10 @@ class LiveStatusScreen extends ConsumerWidget {
 }
 
 class _LiveBody extends StatelessWidget {
-  const _LiveBody({required this.booking});
+  const _LiveBody({required this.booking, required this.onRefresh});
 
   final Booking booking;
+  final Future<void> Function() onRefresh;
 
   /// The hourly-report section applies once the guard is on site (arrived →
   /// pending_completion → completed) and the booked hours are known.
@@ -83,11 +125,17 @@ class _LiveBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(PgTokens.space4),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
+    // Pull-to-refresh re-pulls the booking snapshot — the customer's manual way to advance
+    // status while the live WS push channel is not yet wired at the gateway (see the screen's
+    // lifecycle note). Status still flows by push the moment that backend lands.
+    return RefreshIndicator(
+      onRefresh: onRefresh,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(PgTokens.space4),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
           Container(
             decoration: BoxDecoration(
               color: PgTokens.colorSurface,
@@ -113,11 +161,12 @@ class _LiveBody extends StatelessWidget {
               ],
             ),
           ),
-          if (_showHourlyReports) ...[
-            const SizedBox(height: PgTokens.space4),
-            _HourlyReportsCard(booking: booking),
+            if (_showHourlyReports) ...[
+              const SizedBox(height: PgTokens.space4),
+              _HourlyReportsCard(booking: booking),
+            ],
           ],
-        ],
+        ),
       ),
     );
   }
@@ -133,6 +182,7 @@ class _HourlyReportsCard extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(progressReportsControllerProvider(booking.id));
     final progress = async.valueOrNull;
     // Loading/error degrade to nothing — the section appears once reports are readable.
@@ -178,6 +228,7 @@ class _HourlyReportsCard extends ConsumerWidget {
               report: progress.reportFor(hour),
               isCurrent: hour == progress.currentHour,
               isLast: hour == progress.bookedHours,
+              isThai: isThai,
             ),
         ],
       ),
@@ -327,12 +378,14 @@ class _TimelineItem extends StatelessWidget {
     required this.report,
     required this.isCurrent,
     required this.isLast,
+    required this.isThai,
   });
 
   final int hour;
   final ProgressReport? report;
   final bool isCurrent;
   final bool isLast;
+  final bool isThai;
 
   bool get _done => report != null;
 
@@ -383,7 +436,8 @@ class _TimelineItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final time = _time;
-    return Row(
+    final report = this.report;
+    final row = Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Column(
@@ -420,6 +474,8 @@ class _TimelineItem extends StatelessWidget {
                         fontSize: 14, fontWeight: FontWeight.w600),
                   ),
                 ),
+                // A reported hour opens the submitted photo + GPS + note. The pill carries a
+                // small photo glyph so it reads as tappable.
                 if (_done)
                   Container(
                     padding:
@@ -428,13 +484,21 @@ class _TimelineItem extends StatelessWidget {
                       color: PgTokens.colorSuccessBg,
                       borderRadius: BorderRadius.circular(PgTokens.radiusFull),
                     ),
-                    child: const Text(
-                      'รายงานแล้ว',
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        fontWeight: FontWeight.w600,
-                        color: PgTokens.colorSuccess,
-                      ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.photo_outlined,
+                            size: 13, color: PgTokens.colorSuccess),
+                        const SizedBox(width: 5),
+                        Text(
+                          isThai ? 'ดูรูป' : 'View',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w600,
+                            color: PgTokens.colorSuccess,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
               ],
@@ -442,6 +506,13 @@ class _TimelineItem extends StatelessWidget {
           ),
         ),
       ],
+    );
+    if (report == null) return row;
+    return InkWell(
+      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      onTap: () => showProgressReportViewer(context,
+          report: report, isThai: isThai),
+      child: row,
     );
   }
 }
@@ -535,11 +606,13 @@ class _Actions extends ConsumerWidget {
           counterpartUserId: booking.guardId,
         ),
         const SizedBox(width: PgTokens.space2),
-        // Customer → assigned guard call (audio/video). Enabled once a guard is on an active job.
+        // Customer → assigned guard call (audio/video). Enabled ONLY while the booking is callable
+        // (accepted/en_route/arrived + guard assigned) — matching the calling service, so the
+        // button is never live for a status the server would 409 (e.g. pendingCompletion).
         CallEntryButton(
           bookingId: booking.id,
           enabled: booking.guardId != null &&
-              BookingLifecycle.isActive(booking.status),
+              BookingLifecycle.isCallable(booking.status),
         ),
         const SizedBox(width: PgTokens.space2),
         Expanded(
