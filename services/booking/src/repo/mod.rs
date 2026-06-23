@@ -1204,7 +1204,11 @@ mod db_tests {
         .fetch_all(&pool)
         .await
         .expect("query outbox");
-        assert_eq!(rows.len(), 1, "exactly one job_accepted event enqueued for accept");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one job_accepted event enqueued for accept"
+        );
         assert_eq!(rows[0].topic, topics::BOOKING_JOB_ACCEPTED);
         let envelope: EventEnvelope<Value> =
             serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
