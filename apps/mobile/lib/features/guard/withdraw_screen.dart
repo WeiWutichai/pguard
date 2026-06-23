@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../booking/widgets/reason_tile.dart';
@@ -58,6 +59,19 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
 
   Future<void> _submit() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    // Confirm before the REAL server decline (PUT /decline) — unlike skipping an open offer, this
+    // gives up a job the guard accepted, so the backend notifies the customer.
+    final yes = await showConfirmDialog(
+      context,
+      isThai: isThai,
+      title: isThai ? 'ยืนยันถอนตัวจากงานนี้?' : 'Withdraw from this job?',
+      message: isThai
+          ? 'ลูกค้าจะได้รับแจ้ง และเรื่องนี้จะถูกส่งให้แอดมินตรวจสอบ'
+          : "The customer will be notified, and this is escalated to admin.",
+      confirmLabel: isThai ? 'ถอนตัว' : 'Withdraw',
+      destructive: true,
+    );
+    if (!yes || !mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     final ok = await ref
         .read(activeJobControllerProvider(widget.bookingId).notifier)
