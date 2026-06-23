@@ -33,7 +33,16 @@ Future<void> _pump(WidgetTester tester, FakeApi api, GeoPoint? self) async {
     ],
     child: const MaterialApp(home: GuardNavigationScreen(bookingId: 'b1')),
   ));
-  await tester.pumpAndSettle();
+  await _settle(tester);
+}
+
+/// flutter_map's TileLayer keeps requesting network tiles, so `pumpAndSettle` never settles and
+/// times out under full-suite load (a flake). Pump a bounded set of frames instead — enough to
+/// resolve the booking/location futures + render, without waiting on tiles.
+Future<void> _settle(WidgetTester tester) async {
+  for (var i = 0; i < 5; i++) {
+    await tester.pump(const Duration(milliseconds: 200));
+  }
 }
 
 void main() {
@@ -95,12 +104,12 @@ void main() {
       ],
       child: MaterialApp.router(routerConfig: router),
     ));
-    await tester.pumpAndSettle();
+    await _settle(tester);
 
     await tester.tap(find.text('go'));
-    await tester.pumpAndSettle();
+    await _settle(tester);
     await tester.tap(find.text('ถึงจุดนัดแล้ว — เริ่มงาน'));
-    await tester.pumpAndSettle();
+    await _settle(tester);
 
     expect(api.calls, contains('PUT /bookings/b1/arrived'));
     expect(api.calls, contains('PUT /bookings/b1/start'));
