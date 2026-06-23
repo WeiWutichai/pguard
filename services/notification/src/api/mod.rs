@@ -739,6 +739,12 @@ mod tests {
             service_jwt_config.encoding_key.clone(),
             service_jwt_config.ttl_secs,
         );
+        let presence_client = Arc::new(crate::presence_client::HttpPresenceClient::new(
+            reqwest::Client::new(),
+            "http://127.0.0.1:1".to_string(),
+            service_jwt_config.encoding_key.clone(),
+            service_jwt_config.ttl_secs,
+        ));
         let state = AppState {
             db,
             redis_conn,
@@ -746,6 +752,7 @@ mod tests {
             service_jwt_config,
             pusher: Arc::new(NoopPusher),
             profile_client,
+            presence_client,
         };
         Some(
             Router::new()

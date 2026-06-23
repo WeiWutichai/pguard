@@ -10,6 +10,7 @@ use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
 use crate::fcm::Pusher;
+use crate::presence_client::OnlineGuardsReader;
 use crate::profile_client::ProfileClient;
 
 #[derive(Clone)]
@@ -22,6 +23,9 @@ pub struct AppState {
     pub pusher: Arc<dyn Pusher>,
     /// Service-JWT'd client for profile's broadcast-recipient roster (admin bulk-send).
     pub profile_client: ProfileClient,
+    /// Service-JWT'd client for presence's online-guard roster — the `booking.requested`
+    /// dispatch fan-out target (push every online guard the "new job nearby" alert).
+    pub presence_client: Arc<dyn OnlineGuardsReader>,
 }
 
 impl HasJwtSecret for AppState {

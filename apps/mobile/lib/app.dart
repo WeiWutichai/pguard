@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import 'core/push/in_app_banner.dart';
 import 'core/push/push_registration_controller.dart';
 import 'core/theme/app_theme.dart';
 import 'routing/app_router.dart';
@@ -21,6 +22,9 @@ class PGuardApp extends ConsumerWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       routerConfig: router,
+      // App-wide messenger so the context-free push layer can surface an in-app banner
+      // (e.g. "New job nearby") over any screen — see core/push/in_app_banner.dart.
+      scaffoldMessengerKey: rootMessengerKey,
     );
   }
 }

@@ -18,7 +18,10 @@ use shared_events::EventEnvelope;
 
 use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
-use crate::domain::{event_for_progress_report, event_for_status, CompletionInfo, EventMapping};
+use crate::domain::{
+    event_for_booking_requested, event_for_progress_report, event_for_status, CompletionInfo,
+    EventMapping,
+};
 use crate::models::{
     BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
     InternalBooking, NewProgressReport, ProgressReportRow, PublicServiceItem, ServiceCatalogItem,
@@ -375,13 +378,18 @@ pub async fn deactivate_service(
 
 // ----- Writes -----
 
-/// Insert a new booking in `requested` status. No event is emitted for a bare request.
+/// Insert a new booking in `requested` status AND enqueue its
+/// `pguard.events.booking.requested` event — both in ONE transaction (transactional outbox,
+/// CLAUDE.md "Cross-tx consistency"). So a committed request always has its event durably
+/// queued for the relay (notification fans it out as a data-push to every online guard), and a
+/// rolled-back insert emits nothing. `correlation_id` threads the envelope for distributed tracing.
 ///
 /// `guard_count`/`tip` come from the request (defaulted by the handler). `base_fee` is ALWAYS
 /// server-resolved (the client never sends it — CLAUDE.md money rules): `Some(fee)` when the
 /// handler picked a catalog service (the catalog's authoritative rate), or `None` to fall to
 /// the server-owned column DEFAULT (the back-compat path, no service chosen). Either way the
 /// rate is server-owned, so the customer can never undercut the price.
+#[tracing::instrument(skip(db, req), fields(customer_id = %customer_id))]
 pub async fn create_booking(
     db: &sqlx::PgPool,
     customer_id: Uuid,
@@ -389,9 +397,13 @@ pub async fn create_booking(
     guard_count: i32,
     tip: rust_decimal::Decimal,
     base_fee: Option<rust_decimal::Decimal>,
+    correlation_id: Uuid,
 ) -> Result<BookingResponse, AppError> {
-    // `base_fee` is bound when a catalog service was picked; otherwise the column is omitted so
-    // its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid, so branch the SQL).
+    let mut tx = db.begin().await?;
+
+    // 1) the business row. `base_fee` is bound when a catalog service was picked; otherwise the
+    // column is omitted so its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid,
+    // so branch the SQL).
     let sql = if base_fee.is_some() {
         format!(
             r#"
@@ -421,7 +433,27 @@ pub async fn create_booking(
     if let Some(fee) = base_fee {
         query = query.bind(fee);
     }
-    query.fetch_one(db).await.map_err(AppError::from)
+    let created = query.fetch_one(&mut *tx).await.map_err(AppError::from)?;
+
+    // 2) the event — same transaction (transactional outbox). Carries the booking's site
+    // coordinates EVEN WHEN NULL so a radius-ranking consumer never reads back into booking.
+    let EventMapping { topic, payload } = event_for_booking_requested(
+        created.id,
+        created.customer_id,
+        &created.address,
+        created.lat,
+        created.lng,
+        created.scheduled_at,
+        created.hours,
+        created.guard_count,
+    );
+    let envelope = EventEnvelope::new(topic, correlation_id, payload);
+    let envelope_json = serde_json::to_value(&envelope)
+        .map_err(|e| AppError::Internal(format!("serialize event envelope: {e}")))?;
+    enqueue_outbox(&mut tx, topic, &envelope_json).await?;
+
+    tx.commit().await?;
+    Ok(created)
 }
 
 /// A booking's authoritative decision inputs: status + participant ids + proration clock.
@@ -1141,6 +1173,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1160,15 +1193,22 @@ mod db_tests {
         assert_eq!(accepted.status, "accepted");
         assert_eq!(accepted.guard_id, Some(guard_id));
 
-        // exactly one outbox row for this booking, carrying a valid envelope
+        // exactly one job_accepted outbox row for this booking, carrying a valid envelope.
+        // (create_booking also enqueues a booking.requested row, so filter by topic.)
         let rows: Vec<OutboxRow> = sqlx::query_as(
-            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
         )
         .bind(created.id.to_string())
+        .bind(topics::BOOKING_JOB_ACCEPTED)
         .fetch_all(&pool)
         .await
         .expect("query outbox");
-        assert_eq!(rows.len(), 1, "exactly one event enqueued for accept");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one job_accepted event enqueued for accept"
+        );
         assert_eq!(rows[0].topic, topics::BOOKING_JOB_ACCEPTED);
         let envelope: EventEnvelope<Value> =
             serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
@@ -1192,6 +1232,165 @@ mod db_tests {
         assert!(matches!(err, AppError::Conflict(_)));
 
         // cleanup
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// `create_booking` enqueues EXACTLY ONE `pguard.events.booking.requested` outbox row in the
+    /// SAME transaction as the bookings insert (transactional outbox) — the new-job signal the
+    /// notification consumer fans out to online guards. Asserts the subject + the full payload
+    /// (ids, address, scheduled_at, hours, guard_count) AND that the booking's site coordinates
+    /// are CARRIED EVEN WHEN PRESENT. DATABASE_URL-gated (hermetic SKIP otherwise). Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-booking -- create_enqueues_booking_requested --nocapture
+    #[tokio::test]
+    async fn create_enqueues_booking_requested_outbox_event() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let scheduled_at = "2026-06-22T10:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let (lat, lng) = (13.7563, 100.5018);
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "1 Requested Rd".to_string(),
+                scheduled_at,
+                hours: 4,
+                service_id: None,
+                guard_count: Some(2),
+                tip: None,
+                lat: Some(lat),
+                lng: Some(lng),
+            },
+            2,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+        assert_eq!(created.status, "requested");
+
+        // EXACTLY ONE outbox row for this booking, carrying the booking.requested envelope.
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+        )
+        .bind(created.id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(rows.len(), 1, "exactly one event enqueued on create");
+        assert_eq!(rows[0].topic, topics::BOOKING_REQUESTED);
+        assert_eq!(rows[0].topic, "pguard.events.booking.requested");
+
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(envelope.event_type, topics::BOOKING_REQUESTED);
+        assert_eq!(envelope.correlation_id, correlation);
+        let p = &envelope.payload;
+        assert_eq!(p["booking_id"], serde_json::json!(created.id));
+        assert_eq!(p["customer_id"], serde_json::json!(customer_id));
+        assert_eq!(p["address"], serde_json::json!("1 Requested Rd"));
+        assert_eq!(p["lat"], serde_json::json!(lat));
+        assert_eq!(p["lng"], serde_json::json!(lng));
+        assert_eq!(p["hours"], serde_json::json!(4));
+        assert_eq!(p["guard_count"], serde_json::json!(2));
+        // scheduled_at round-trips as the same instant.
+        assert_eq!(
+            p["scheduled_at"]
+                .as_str()
+                .and_then(|s| s.parse::<DateTime<Utc>>().ok()),
+            Some(scheduled_at)
+        );
+
+        // cleanup
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// A booking created WITHOUT coordinates still enqueues exactly one booking.requested row,
+    /// and the payload CARRIES lat/lng AS PRESENT JSON NULL (key present, value null) — so a
+    /// radius-ranking consumer can distinguish "no coordinates" from a truncated payload.
+    #[tokio::test]
+    async fn create_enqueues_booking_requested_with_null_coords_present() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "no-coords site".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 3,
+                service_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+        )
+        .bind(created.id.to_string())
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(rows.len(), 1, "exactly one event enqueued on create");
+        assert_eq!(rows[0].topic, topics::BOOKING_REQUESTED);
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        let p = &envelope.payload;
+        // "carry lat/lng even when null": the keys are PRESENT, the values are JSON null.
+        assert!(p.get("lat").is_some(), "lat key present");
+        assert!(p.get("lng").is_some(), "lng key present");
+        assert!(p["lat"].is_null(), "absent lat → JSON null");
+        assert!(p["lng"].is_null(), "absent lng → JSON null");
+        assert_eq!(p["guard_count"], serde_json::json!(1));
+
         let _ =
             sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
                 .bind(created.id.to_string())
@@ -1243,6 +1442,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1266,10 +1466,13 @@ mod db_tests {
             "the ASSIGNED guard is the request target, not the admin actor"
         );
 
+        // Filter to job_accepted — create_booking also enqueues a booking.requested row.
         let rows: Vec<OutboxRow> = sqlx::query_as(
-            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
         )
         .bind(created.id.to_string())
+        .bind(topics::BOOKING_JOB_ACCEPTED)
         .fetch_all(&pool)
         .await
         .expect("query outbox");
@@ -1345,6 +1548,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1437,6 +1641,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1589,6 +1794,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1694,6 +1900,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1838,6 +2045,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -1909,6 +2117,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -2112,6 +2321,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -2164,6 +2374,7 @@ mod db_tests {
 
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
         // An isolated reference point in the Gulf of Thailand — far from anything other
         // concurrent tests might create (they create coordinate-less bookings anyway).
         let (ref_lat, ref_lng) = (10.123456, 101.654321);
@@ -2176,6 +2387,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create near");
@@ -2187,6 +2399,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create no-coords");
@@ -2198,6 +2411,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create taken");
@@ -2220,6 +2434,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create far");
@@ -2308,6 +2523,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create");
@@ -2418,6 +2634,7 @@ mod db_tests {
             .expect("connect real Postgres");
 
         let customer_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
         // A far-future Monday (2099-01-05 is a Monday), one row per boundary hour.
         let day = "2099-01-05T00:00:00Z"
             .parse::<DateTime<Utc>>()
@@ -2442,6 +2659,7 @@ mod db_tests {
                 1,
                 rust_decimal::Decimal::ZERO,
                 None,
+                correlation,
             )
             .await
             .expect("create");
@@ -2581,6 +2799,7 @@ mod db_tests {
             .expect("connect real Postgres");
 
         let customer_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
         let catalog_fee: rust_decimal::Decimal = "230.00".parse().unwrap();
 
         // With a catalog fee → the booking carries the catalog rate.
@@ -2591,6 +2810,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             Some(catalog_fee),
+            correlation,
         )
         .await
         .expect("create with catalog fee");
@@ -2607,6 +2827,7 @@ mod db_tests {
             1,
             rust_decimal::Decimal::ZERO,
             None,
+            correlation,
         )
         .await
         .expect("create without fee");

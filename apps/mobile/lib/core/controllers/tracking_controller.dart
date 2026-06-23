@@ -5,6 +5,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/tracking.dart';
 import '../network/sockets/presence_socket.dart';
 import '../providers.dart';
+import 'guard_jobs_controller.dart';
 import 'session_controller.dart';
 
 part 'tracking_controller.g.dart';
@@ -94,6 +95,11 @@ class TrackingController extends _$TrackingController {
       feed.sendLocation(s);
       state = state.copyWith(lastSample: s);
     });
+
+    // Cheap safety net: refetch open jobs the moment the guard comes online, so any offer that
+    // landed while they were offline (and whose push was therefore not delivered) shows up without
+    // waiting for the next push or a manual pull-to-refresh. autoDispose-safe (see _onNewJob).
+    ref.invalidate(guardJobsControllerProvider);
   }
 
   /// Go offline (standby): stop streaming + close the feed.
