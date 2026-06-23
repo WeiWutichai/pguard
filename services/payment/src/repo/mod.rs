@@ -175,8 +175,11 @@ pub async fn revenue_total(
 /// the admin-role gate is the API layer's job. Customers with no completed payment do not appear.
 pub async fn customer_spend(db: &sqlx::PgPool) -> Result<Vec<CustomerSpend>, AppError> {
     let rows = sqlx::query_as::<_, CustomerSpend>(
+        // Net of refunds, mirroring NET_REVENUE_EXPR: a PARTIAL refund stays `completed` with
+        // refund_amount set, so subtract it; a FULL refund flips the row to `refunded` (excluded).
         "SELECT customer_id, \
-                COALESCE(SUM(COALESCE(final_amount, amount)), 0)::numeric AS total \
+                (COALESCE(SUM(COALESCE(final_amount, amount)), 0) \
+                 - COALESCE(SUM(COALESCE(refund_amount, 0)), 0))::numeric AS total \
          FROM payment.payments \
          WHERE status = 'completed'::payment.payment_status \
          GROUP BY customer_id",

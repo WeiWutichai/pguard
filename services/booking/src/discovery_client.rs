@@ -201,11 +201,13 @@ impl PresenceReader for HttpDiscoveryClient {
             tracing::warn!("presence online-guards decode error: {e}");
             AppError::Internal("Online-guards lookup failed".to_string())
         })?;
-        Ok(envelope
-            .data
-            .unwrap_or_default()
-            .guard_ids
-            .into_iter()
-            .collect())
+        // A 200 with NO `data` field is malformed, not "zero guards online" — return Err so the
+        // caller FAILS OPEN (shows the full approved list) instead of fail-closed (hides everyone).
+        // A present `data` with an empty `guard_ids` is a legitimate zero-online result and is kept.
+        let online = envelope.data.ok_or_else(|| {
+            tracing::warn!("presence online-guards 200 but missing data field");
+            AppError::Internal("Online-guards lookup failed".to_string())
+        })?;
+        Ok(online.guard_ids.into_iter().collect())
     }
 }

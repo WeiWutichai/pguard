@@ -258,6 +258,12 @@ class _ServicesGridState extends ConsumerState<_ServicesGrid> {
   static const _maxRetries = 3;
   int _retries = 0;
 
+  /// True while a retry's postFrame invalidate is queued/in flight. The enclosing
+  /// CustomerHomeScreen rebuilds on unrelated watches (locale, home controller); without this
+  /// guard EVERY such rebuild during the error window would schedule ANOTHER postFrame retry,
+  /// burning the retry budget in a burst. Only one retry is ever in flight.
+  bool _retryScheduled = false;
+
   @override
   Widget build(BuildContext context) {
     final isThai = widget.isThai;
@@ -292,14 +298,23 @@ class _ServicesGridState extends ConsumerState<_ServicesGrid> {
     // Errored with no data → auto-retry a few times (a transient cold-start race), showing a
     // spinner meanwhile; after the cap, a tappable "ลองใหม่" tile.
     if (async.hasError) {
-      if (_retries < _maxRetries) {
+      // Guard with `!_retryScheduled` so only ONE retry is in flight at a time — unrelated parent
+      // rebuilds during the error window must not each queue another invalidate.
+      if (_retries < _maxRetries && !_retryScheduled) {
+        _retryScheduled = true;
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
           _retries += 1;
           await Future<void>.delayed(const Duration(milliseconds: 500));
           if (!mounted) return;
+          _retryScheduled = false;
           ref.invalidate(servicesProvider);
         });
+        return _ServiceSpinnerTile(isThai: isThai);
+      }
+      // Still showing the spinner while the queued retry runs; only fall through to the manual
+      // tile once the budget is spent AND nothing is in flight.
+      if (_retryScheduled) {
         return _ServiceSpinnerTile(isThai: isThai);
       }
       return _ServiceTile(

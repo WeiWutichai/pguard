@@ -172,8 +172,8 @@ class _MapLayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return PgMap(
-      // Re-fit when either coordinate changes.
-      key: ValueKey('${self?.label}|${dest?.label}'),
+      // PgMap re-fits the camera imperatively (didUpdateWidget) when either coordinate changes —
+      // not re-keyed, so the map + TileLayer persist as the guard's own fix updates (no flicker).
       polyline: (self != null && dest != null)
           ? PgPolyline(points: [self!, dest!])
           : null,

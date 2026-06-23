@@ -9,9 +9,11 @@
 --
 -- WHY a separate table (not processed_events): processed_events is keyed by event_id ALONE (it's
 -- the global "this event was handled" ledger). The dispatch path intentionally does NOT claim the
--- event_id there — it claims per recipient here — so a partial first delivery (presence returned a
--- subset, or some pushes failed and the message nacked) can be RETRIED and fill in the guards it
--- has not yet recorded, while never re-notifying the ones it has.
+-- event_id there — it claims per recipient here — so IF the event is ever redelivered, the retry
+-- fills in only the guards not yet recorded and never re-notifies the ones it has. NB: the current
+-- consumer (fan_out_dispatch) ACKs even when presence is unreachable or some pushes fail (it does
+-- NOT nack), so today this table's job is dedupe-across-redelivery, not a guaranteed fill-in of a
+-- dropped push — a missed proactive alert is covered by pull discovery (GET /bookings/open).
 
 CREATE TABLE notification.dispatch_recipients (
     event_id     UUID        NOT NULL,           -- EventEnvelope.event_id (the booking.requested event)
