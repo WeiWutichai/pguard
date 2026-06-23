@@ -37,6 +37,7 @@ class AppNotification {
     required this.isRead,
     required this.sentAt,
     this.readAt,
+    this.payload = const {},
   });
 
   final String id;
@@ -46,6 +47,23 @@ class AppNotification {
   final bool isRead;
   final DateTime sentAt;
   final DateTime? readAt;
+
+  /// The free-form `payload` the notification service stores alongside each notification (see
+  /// `services/notification/src/domain/mapping.rs` `build_data`). Carries the reference ids that
+  /// drive tap-through navigation: `booking_id`, `conversation_id`, `call_id`, plus `event_type`
+  /// / `target_role`. Always present (defaults to empty) so the resolver is null-safe.
+  final Map<String, dynamic> payload;
+
+  /// A reference id from [payload], as a non-empty string, or null. FCM `data` values are always
+  /// strings on the wire and the persisted payload mirrors that, so this just trims to non-empty.
+  String? _id(String key) {
+    final v = payload[key];
+    return (v is String && v.isNotEmpty) ? v : null;
+  }
+
+  String? get bookingId => _id('booking_id');
+  String? get conversationId => _id('conversation_id');
+  String? get callId => _id('call_id');
 
   factory AppNotification.fromJson(Map<String, dynamic> json) => AppNotification(
         id: json['id'] as String,
@@ -58,6 +76,9 @@ class AppNotification {
         readAt: json['read_at'] != null
             ? DateTime.tryParse(json['read_at'] as String)?.toUtc()
             : null,
+        payload: json['payload'] is Map<String, dynamic>
+            ? json['payload'] as Map<String, dynamic>
+            : const {},
       );
 
   AppNotification copyWith({bool? isRead, DateTime? readAt}) => AppNotification(
@@ -68,5 +89,6 @@ class AppNotification {
         isRead: isRead ?? this.isRead,
         sentAt: sentAt,
         readAt: readAt ?? this.readAt,
+        payload: payload,
       );
 }

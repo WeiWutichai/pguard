@@ -440,8 +440,10 @@ class _InfoPanel extends ConsumerWidget {
               const SizedBox(width: PgTokens.space4),
               CallEntryButton(
                 bookingId: booking.id,
+                // Callable window matches the calling service (accepted/en_route/arrived + guard
+                // assigned); pendingCompletion is active but NOT callable → would 409.
                 enabled: booking.guardId != null &&
-                    BookingLifecycle.isActive(booking.status),
+                    BookingLifecycle.isCallable(booking.status),
               ),
               const SizedBox(width: PgTokens.space2),
               Text(

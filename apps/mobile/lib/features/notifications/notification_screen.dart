@@ -1,12 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/notification_controller.dart';
+import '../../core/controllers/session_controller.dart';
+import '../../core/models/notification.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
+import 'notification_target.dart';
 import 'widgets/notification_tile.dart';
 
 /// The notification centre: the caller's notifications with mark-read (tap) + mark-all-read.
@@ -55,9 +61,11 @@ class NotificationScreen extends ConsumerWidget {
                     itemCount: list.length,
                     itemBuilder: (_, i) {
                       final n = list[i];
+                      // Every tile is tappable: mark read (no-op if already read) THEN open the
+                      // notification's target screen, if any (booking / chat / call).
                       return NotificationTile(
                         notification: n,
-                        onTap: n.isRead ? null : () => ctrl.markRead(n.id),
+                        onTap: () => _open(context, ref, n),
                       );
                     },
                   ),
@@ -65,6 +73,20 @@ class NotificationScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  /// Mark the notification read (optimistic, no-op if already read) and navigate to its target
+  /// screen, if it resolves to one. Read-first so the badge/dot clears even when there is no
+  /// destination (e.g. a payment/rating notice).
+  Future<void> _open(
+      BuildContext context, WidgetRef ref, AppNotification n) async {
+    if (!n.isRead) {
+      // Fire-and-forget the server write; the optimistic update + count refresh happen inside.
+      unawaited(ref.read(notificationControllerProvider.notifier).markRead(n.id));
+    }
+    final user = ref.read(sessionProvider).user;
+    final target = notificationTarget(n, user: user);
+    if (target != null && context.mounted) context.push(target);
   }
 }
 

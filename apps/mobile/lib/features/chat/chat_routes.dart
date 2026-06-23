@@ -10,11 +10,24 @@ class ChatRoutes {
   /// The conversation list for an acting role.
   static String list(ChatRole acting) => '/chat?role=${acting.wire}';
 
-  /// A single conversation. `readonly` is encoded `1`/`0`.
+  /// A single conversation. `readonly` is encoded `1`/`0`. [bookingId] (the linked
+  /// `request_id`) + [callable] power the in-thread call action; both are optional so a deep
+  /// link / chat-list open (no booking context) still works — the call action simply hides.
   static String conversation(
     String conversationId, {
     required ChatRole acting,
     required bool readOnly,
-  }) =>
-      '/chat/c/$conversationId?role=${acting.wire}&readonly=${readOnly ? 1 : 0}';
+    String? bookingId,
+    bool callable = false,
+  }) {
+    final params = <String, String>{
+      'role': acting.wire,
+      'readonly': readOnly ? '1' : '0',
+      if (bookingId != null) 'booking': bookingId,
+      if (callable) 'callable': '1',
+    };
+    final query =
+        params.entries.map((e) => '${e.key}=${Uri.encodeComponent(e.value)}').join('&');
+    return '/chat/c/$conversationId?$query';
+  }
 }

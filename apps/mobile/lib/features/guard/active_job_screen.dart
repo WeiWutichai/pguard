@@ -9,13 +9,16 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/chat_launcher.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
+import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
 import '../call/widgets/call_entry_button.dart';
@@ -59,7 +62,9 @@ class ActiveJobScreen extends ConsumerWidget {
                 children: [
                   CallEntryButton(
                     bookingId: booking.id,
-                    enabled: BookingLifecycle.isActive(booking.status),
+                    // Callable window matches the calling service (accepted/en_route/arrived);
+                    // pendingCompletion is active but NOT callable → would 409.
+                    enabled: BookingLifecycle.isCallable(booking.status),
                   ),
                   const SizedBox(width: PgTokens.space2),
                   ChatEntryButton(
@@ -350,6 +355,19 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     final dueIndex = schedule.dueIndex(now);
     final startedAt = clock.startedAt; // clock != null ⟹ startedAt was set
 
+    // The guard's own submitted reports (participants-only `GET …/progress-reports`, the same
+    // source the customer live screen reads), keyed by the server's 1-based hour_number, so a
+    // "Reported" row opens its photo + GPS + note. Slot i ↔ hour i+1. A failed/empty read just
+    // leaves the rows non-tappable (no regression). Watched: re-pulls when status changes.
+    final reportsByHour = <int, ProgressReport>{
+      for (final r in ref
+              .watch(progressReportsControllerProvider(widget.bookingId))
+              .valueOrNull
+              ?.reports ??
+          const <ProgressReport>[])
+        r.hourNumber: r,
+    };
+
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
       decoration: BoxDecoration(
@@ -396,6 +414,14 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
                       : i < dueIndex
                           ? (isThai ? 'พลาด' : 'Missed')
                           : (isThai ? 'รอเช็คอิน' : 'Pending'),
+              // Slot i is server hour i+1; a submitted report opens its photo+GPS+note.
+              onTap: reportsByHour[i + 1] == null
+                  ? null
+                  : () => showProgressReportViewer(
+                        context,
+                        report: reportsByHour[i + 1]!,
+                        isThai: isThai,
+                      ),
             ),
           const SizedBox(height: PgTokens.space4),
           if (dueNow)

@@ -1,16 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/call_controller.dart';
 import '../../core/controllers/chat_controller.dart';
 import '../../core/controllers/chat_format.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/media/chat_media_picker.dart';
+import '../../core/models/call.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
+import '../call/call_routes.dart';
 import 'widgets/chat_bubble.dart';
 
 /// The real-time conversation. History + live pushes are owned by [ChatController] (the WebSocket
@@ -25,12 +29,23 @@ class ChatScreen extends ConsumerStatefulWidget {
     required this.acting,
     required this.readOnly,
     this.title,
+    this.bookingId,
+    this.callable = false,
   });
 
   final String conversationId;
   final ChatRole acting;
   final bool readOnly;
   final String? title;
+
+  /// The linked booking (`request_id`) the in-thread call action calls within. Null when the
+  /// thread was opened without booking context (deep link / chat list) → no call action.
+  final String? bookingId;
+
+  /// Whether a voice call is allowed RIGHT NOW (booking in `accepted`/`en_route`/`arrived` with a
+  /// guard assigned — see [BookingLifecycle.isCallable]). When false the call action is shown but
+  /// DISABLED with a hint, never routing the user into a guaranteed "not active for calling" error.
+  final bool callable;
 
   @override
   ConsumerState<ChatScreen> createState() => _ChatScreenState();
@@ -58,6 +73,20 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
   ChatController get _ctrl => ref.read(
       chatControllerProvider(widget.conversationId, widget.acting).notifier);
+
+  /// Start a voice call to the counterpart for this booking and open the call screen. Only
+  /// reachable when [ChatScreen.callable] (the calling service would otherwise 409); the disabled
+  /// state is handled in [_CallAction], so this is the happy-path-only handler.
+  void _startCall() {
+    final bookingId = widget.bookingId;
+    if (bookingId == null) return;
+    final router = GoRouter.of(context);
+    ref.read(callControllerProvider.notifier).startOutgoing(
+          bookingId: bookingId,
+          type: CallType.audio,
+        );
+    router.push(CallRoutes.outgoing());
+  }
 
   void _send() {
     final text = _input.text;
@@ -109,31 +138,56 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (after > before) _scrollToBottom();
     });
 
+    // The counterpart label: the name when known, else a generic role-aware fallback (the v2
+    // Booking model carries no counterpart name, so a booking-launched thread has none until the
+    // chat-list resupplies it — display-only gap, never a blank "?" header).
+    final hasName = (widget.title ?? '').trim().isNotEmpty;
+    final counterpartLabel = hasName
+        ? widget.title!
+        : (widget.acting == ChatRole.guard
+            ? (isThai ? 'ลูกค้า' : 'Customer')
+            : (isThai ? 'เจ้าหน้าที่' : 'Security guard'));
+
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
-        title: widget.title ?? 'แชท',
+      appBar: PGuardHeader(light: true,
+        title: counterpartLabel,
         // Design state 3: read-only thread swaps the status line to "job completed".
         subtitle: widget.readOnly
             ? (isThai ? 'งานเสร็จสิ้นแล้ว' : 'Job completed')
             : (isThai ? 'แชท' : 'Chat'),
         showBack: true,
-        // Design: 38px counterpart initials avatar in the thread header. PGuardHeader has no
-        // leading slot (shared widget — off-limits to extend), so it rides the trailing slot.
-        trailing: widget.title == null
-            ? null
-            : CircleAvatar(
-                radius: 19,
-                backgroundColor: PgTokens.colorGreen100,
-                child: Text(
-                  ChatFormat.initials(widget.title),
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: PgTokens.colorGreen800,
-                  ),
-                ),
+        // Design: 38px counterpart initials avatar in the thread header + (when a call is
+        // possible) a call action. PGuardHeader has no leading slot (shared widget — off-limits to
+        // extend), so both ride the single trailing slot.
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (widget.bookingId != null) ...[
+              _CallAction(
+                enabled: widget.callable && !widget.readOnly,
+                isThai: isThai,
+                onCall: _startCall,
               ),
+              const SizedBox(width: PgTokens.space2),
+            ],
+            CircleAvatar(
+              radius: 19,
+              backgroundColor: PgTokens.colorGreen100,
+              child: hasName
+                  ? Text(
+                      ChatFormat.initials(widget.title),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: PgTokens.colorGreen800,
+                      ),
+                    )
+                  : const Icon(Icons.person,
+                      size: 20, color: PgTokens.colorGreen800),
+            ),
+          ],
+        ),
       ),
       body: SafeArea(
         child: Column(
@@ -161,7 +215,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             message: m,
                             acting: widget.acting,
                             isThai: isThai,
-                            counterpartName: widget.title,
+                            counterpartName: counterpartLabel,
                           );
                           // Day separator before the first message of each local day
                           // (design: centered 11px text-faint "วันนี้"/"เมื่อวาน"/short date).
@@ -362,6 +416,51 @@ class _LockedBanner extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The in-thread voice-call action (header trailing). Enabled only when the booking is callable
+/// (guard accepted + job in flight); otherwise it stays visible but disabled with a tap-to-hint
+/// snackbar so the user learns WHEN calling becomes available instead of hitting a 409 error.
+class _CallAction extends StatelessWidget {
+  const _CallAction({
+    required this.enabled,
+    required this.isThai,
+    required this.onCall,
+  });
+
+  final bool enabled;
+  final bool isThai;
+  final VoidCallback onCall;
+
+  void _hint(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(isThai
+          ? 'โทรได้หลังเจ้าหน้าที่รับงาน'
+          : 'Available after a guard accepts'),
+    ));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.transparent,
+      shape: const CircleBorder(),
+      child: IconButton(
+        // Always tappable: disabled → explain why (don't route into a guaranteed error).
+        onPressed: enabled ? onCall : () => _hint(context),
+        tooltip: enabled
+            ? (isThai ? 'โทร' : 'Call')
+            : (isThai
+                ? 'โทรได้หลังเจ้าหน้าที่รับงาน'
+                : 'Available after a guard accepts'),
+        icon: Icon(
+          Icons.call_outlined,
+          size: 22,
+          color: enabled ? PgTokens.colorPrimary : PgTokens.colorTextFaint,
         ),
       ),
     );

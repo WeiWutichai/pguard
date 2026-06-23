@@ -90,6 +90,7 @@ void main() {
   test('registers the FCM token on auth and routes an incoming-call push', () async {
     final push = FakePushService();
     final routes = <String>[];
+    final banners = <String>[];
     final posts = <String, Object?>{};
     final api = FakeApi(onPost: (path, data) async {
       posts[path] = data;
@@ -99,6 +100,7 @@ void main() {
       pushServiceProvider.overrideWithValue(push),
       pguardApiProvider.overrideWithValue(api),
       pushNavigateProvider.overrideWithValue(routes.add),
+      pushNotifyProvider.overrideWithValue(banners.add),
       appStoreProvider
           .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
@@ -113,15 +115,52 @@ void main() {
     expect(posts['/tokens'], {'token': 'fcm-tok', 'device_type': 'android'});
     expect(push.permissionRequests, 1);
 
-    // An incoming-call push routes to the call screen.
+    // An incoming-call push routes to the call screen AND shows the in-app banner.
     push.emitForeground({'type': 'incoming_call', 'call_id': 'call-123'});
     await Future<void>.delayed(Duration.zero);
     expect(routes, contains('/call?incoming=call-123'));
+    expect(banners, contains('สายเรียกเข้า')); // Thai default
+  });
 
-    // A non-call push is ignored (no navigation).
-    push.emitForeground({'type': 'chat', 'conversation_id': 'x'});
+  test('foreground chat + booking pushes surface an in-app banner (no nav)',
+      () async {
+    final push = FakePushService();
+    final routes = <String>[];
+    final banners = <String>[];
+    final api = FakeApi(
+      onGet: (_, __) async => <dynamic>[],
+      onPost: (_, __) async => <String, dynamic>{},
+    );
+    final c = ProviderContainer(overrides: [
+      pushServiceProvider.overrideWithValue(push),
+      pguardApiProvider.overrideWithValue(api),
+      pushNavigateProvider.overrideWithValue(routes.add),
+      pushNotifyProvider.overrideWithValue(banners.add),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+    ]);
+    addTearDown(c.dispose);
+
+    c.read(pushRegistrationProvider);
+    c.read(sessionProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    // A chat push (no `type`, classified by event_type) → banner, no navigation.
+    push.emitForeground({
+      'event_type': 'pguard.events.chat.message_sent',
+      'conversation_id': 'conv-1',
+    });
     await Future<void>.delayed(Duration.zero);
-    expect(routes.where((r) => r.contains('chat')), isEmpty);
+
+    // A booking-status push → banner, no navigation.
+    push.emitForeground({
+      'event_type': 'pguard.events.booking.guard_en_route',
+      'booking_id': 'b-1',
+    });
+    await Future<void>.delayed(Duration.zero);
+
+    expect(banners, ['ข้อความใหม่', 'อัปเดตงานของคุณ']);
+    expect(routes, isEmpty); // foreground status/chat pushes don't navigate
   });
 
   test('a new_job push refetches the guard jobs feed and surfaces a banner',
