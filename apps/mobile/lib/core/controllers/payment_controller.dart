@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/payment.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'booking_status_controller.dart';
 import 'locale_controller.dart';
 
 part 'payment_controller.g.dart';
@@ -76,6 +77,15 @@ class PaymentController extends _$PaymentController {
           .post('/payments', data: {'booking_id': bookingId});
       final payment = Payment.fromJson(data as Map<String, dynamic>);
       state = state.copyWith(busy: false, payment: payment, error: null);
+      // OPTIMISTICALLY mark the LIVE booking paid now, so the pay banner (PaymentScreen + the
+      // live-status screen's _PayNowBanner) disappears immediately — and, because that paid flag
+      // is MONOTONIC (carried forward across snapshots/WS frames), it never flickers back when a
+      // stale snapshot arrives before the booking service sets `paid_at` (~1s async). This is what
+      // breaks the reported pay-loop. Only touch the live controller when it is already alive (the
+      // PaymentScreen watches it), so we never spin one up just to mutate it.
+      if (ref.exists(bookingStatusControllerProvider(bookingId))) {
+        ref.read(bookingStatusControllerProvider(bookingId).notifier).markPaid();
+      }
       return true;
     } on ApiException catch (e) {
       state = state.copyWith(busy: false, error: e.message);

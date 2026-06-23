@@ -127,6 +127,89 @@ void main() {
         BookingStatus.cancelled);
   });
 
+  test('markPaid marks the booking paid optimistically', () async {
+    final api = FakeApi(onGet: (_, __) async => {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'accepted',
+          'guard_id': 'g1',
+          // No paid_at — the booking service sets it ASYNC after the charge.
+        });
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final initial = await c.read(bookingStatusControllerProvider('b1').future);
+    expect(initial.isPaid, isFalse, reason: 'snapshot has no paid_at yet');
+
+    c.read(bookingStatusControllerProvider('b1').notifier).markPaid();
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.isPaid, isTrue,
+        reason: 'pay banner disappears immediately, no async wait');
+  });
+
+  test(
+      'paid is MONOTONIC — a stale unpaid snapshot after a re-fetch does NOT '
+      'un-pay an already-paid booking (no pay-loop)', () async {
+    // The snapshot the server returns STAYS unpaid (simulates `paid_at` lagging the charge).
+    final api = FakeApi(onGet: (_, __) async => {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'accepted',
+          'guard_id': 'g1',
+        });
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    await c.read(bookingStatusControllerProvider('b1').future);
+    // Pay optimistically.
+    c.read(bookingStatusControllerProvider('b1').notifier).markPaid();
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.isPaid, isTrue);
+
+    // Re-pull a FRESH snapshot (e.g. live-status resume) — it still lacks paid_at.
+    c.invalidate(bookingStatusControllerProvider('b1'));
+    final reloaded =
+        await c.read(bookingStatusControllerProvider('b1').future);
+    expect(reloaded.isPaid, isTrue,
+        reason: 'a stale unpaid snapshot must NOT downgrade paid → unpaid');
+  });
+
+  test(
+      'a fresh snapshot that DOES carry paid_at stays paid (real server '
+      'paid_at also honoured)', () async {
+    final api = FakeApi(onGet: (_, __) async => {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'en_route',
+          'guard_id': 'g1',
+          'paid_at': '2026-06-05T10:05:00Z',
+        });
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+
+    final booking = await c.read(bookingStatusControllerProvider('b1').future);
+    expect(booking.isPaid, isTrue);
+  });
+
   test('cancel surfaces the server error message and keeps the booking',
       () async {
     final api = FakeApi(

@@ -1,5 +1,6 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/controllers/booking_status_controller.dart';
 import 'package:pguard_mobile/core/controllers/payment_controller.dart';
 import 'package:pguard_mobile/core/models/payment.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
@@ -97,6 +98,39 @@ void main() {
     // A second tap after success must not re-charge.
     expect(await notifier.createPayment(), isTrue);
     expect(posts, 1, reason: 'paid → guarded against a double charge');
+  });
+
+  test(
+      'a successful payment OPTIMISTICALLY marks the LIVE booking paid (the pay '
+      'banner disappears without waiting for the async paid_at)', () async {
+    final api = FakeApi(
+      onGet: (_, __) async => {
+        'id': 'b1',
+        'customer_id': 'c1',
+        'status': 'accepted',
+        'guard_id': 'g1',
+        // No paid_at yet — the booking service sets it ASYNC.
+      },
+      onPost: (_, __) async => paymentJson('completed'),
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+
+    // The PaymentScreen watches the live booking — keep it alive.
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    final booking = await c.read(bookingStatusControllerProvider('b1').future);
+    expect(booking.isPaid, isFalse);
+
+    await c.read(paymentControllerProvider('b1').notifier).createPayment();
+
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.isPaid, isTrue,
+        reason: 'payment success marks the live booking paid → banner clears');
   });
 
   test('per-booking instances do not share pay state', () async {
