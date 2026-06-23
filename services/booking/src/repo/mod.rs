@@ -1193,15 +1193,18 @@ mod db_tests {
         assert_eq!(accepted.status, "accepted");
         assert_eq!(accepted.guard_id, Some(guard_id));
 
-        // exactly one outbox row for this booking, carrying a valid envelope
+        // exactly one job_accepted outbox row for this booking, carrying a valid envelope.
+        // (create_booking also enqueues a booking.requested row, so filter by topic.)
         let rows: Vec<OutboxRow> = sqlx::query_as(
-            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
         )
         .bind(created.id.to_string())
+        .bind(topics::BOOKING_JOB_ACCEPTED)
         .fetch_all(&pool)
         .await
         .expect("query outbox");
-        assert_eq!(rows.len(), 1, "exactly one event enqueued for accept");
+        assert_eq!(rows.len(), 1, "exactly one job_accepted event enqueued for accept");
         assert_eq!(rows[0].topic, topics::BOOKING_JOB_ACCEPTED);
         let envelope: EventEnvelope<Value> =
             serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
@@ -1459,10 +1462,13 @@ mod db_tests {
             "the ASSIGNED guard is the request target, not the admin actor"
         );
 
+        // Filter to job_accepted — create_booking also enqueues a booking.requested row.
         let rows: Vec<OutboxRow> = sqlx::query_as(
-            "SELECT id, topic, payload FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1",
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
         )
         .bind(created.id.to_string())
+        .bind(topics::BOOKING_JOB_ACCEPTED)
         .fetch_all(&pool)
         .await
         .expect("query outbox");
