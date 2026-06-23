@@ -320,7 +320,15 @@ pub async fn get_booking<S: BookingDeps>(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let booking = repo::get_booking(state.db(), id).await?;
-    if booking.customer_id != user.user_id && booking.guard_id != Some(user.user_id) {
+    let is_participant =
+        booking.customer_id == user.user_id || booking.guard_id == Some(user.user_id);
+    // An OPEN job (unassigned + still `requested`) is already guard-discoverable via
+    // `GET /bookings/open`, so any guard may read its detail to decide whether to accept — without
+    // this, tapping an incoming job before accepting 403s ("Not a participant"). Once a guard claims
+    // it (guard_id set) or it leaves `requested`, only the participants can read it.
+    let is_open_for_guard =
+        user.role == ROLE_GUARD && booking.guard_id.is_none() && booking.status == "requested";
+    if !is_participant && !is_open_for_guard {
         return Err(AppError::Forbidden(
             "Not a participant in this booking".to_string(),
         ));
@@ -1675,6 +1683,98 @@ mod tests {
         let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
         let (tok, _jti) = encode_jwt_with_key(user_id, role, 0, &ek, 15).unwrap();
         tok
+    }
+
+    /// GET /bookings/{id} authz: a guard may read an OPEN (unassigned + `requested`) job (it's
+    /// already in their discovery feed) so tapping an incoming card doesn't 403; once it's claimed
+    /// or a stranger customer asks, only the participants can read it. DB-gated (SKIPs hermetically).
+    #[tokio::test]
+    async fn get_booking_lets_a_guard_read_an_open_job() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + Redis (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let open = repo::create_booking(
+            &db,
+            customer,
+            &CreateBookingRequest {
+                address: "9 Open Job Rd".to_string(),
+                scheduled_at: chrono::Utc::now(),
+                hours: 4,
+                service_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create open");
+
+        let get = |token: String, id: Uuid| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/bookings/{id}"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        // A non-participant GUARD reads the OPEN job → 200 (discoverable + claimable).
+        assert_eq!(
+            get(user_token_for(Uuid::new_v4(), "guard"), open.id).await,
+            StatusCode::OK,
+            "a guard can read an open job before accepting"
+        );
+        // A non-participant CUSTOMER still cannot → 403.
+        assert_eq!(
+            get(user_token_for(Uuid::new_v4(), "customer"), open.id).await,
+            StatusCode::FORBIDDEN,
+            "a stranger customer cannot read someone's open job"
+        );
+        // The owner customer → 200.
+        assert_eq!(
+            get(user_token_for(customer, "customer"), open.id).await,
+            StatusCode::OK,
+            "the owner reads their booking"
+        );
+
+        // Once a guard CLAIMS it, another guard can no longer read it (no longer open).
+        let claimer = Uuid::new_v4();
+        repo::transition(
+            &db,
+            open.id,
+            claimer,
+            false,
+            BookingStatus::Accepted,
+            Some(claimer),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("accept");
+        assert_eq!(
+            get(user_token_for(Uuid::new_v4(), "guard"), open.id).await,
+            StatusCode::FORBIDDEN,
+            "a stranger guard cannot read a CLAIMED job"
+        );
+        assert_eq!(
+            get(user_token_for(claimer, "guard"), open.id).await,
+            StatusCode::OK,
+            "the assigned guard reads their job"
+        );
     }
 
     /// Full-router IDOR matrix for the progress-report endpoints (chat-style). Needs a
