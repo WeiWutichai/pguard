@@ -24,6 +24,7 @@ part 'booking.g.dart';
 /// * [tip] - Up-front tip (exact decimal)
 /// * [lat] - Site latitude (null when not provided at create).
 /// * [lng] - Site longitude (null when not provided at create).
+/// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
 /// * [createdAt] 
 /// * [updatedAt] 
 @BuiltValue()
@@ -68,6 +69,10 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// Site longitude (null when not provided at create).
   @BuiltValueField(wireName: r'lng')
   double? get lng;
+
+  /// When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
+  @BuiltValueField(wireName: r'paid_at')
+  DateTime? get paidAt;
 
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
@@ -162,6 +167,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       yield serializers.serialize(
         object.lng,
         specifiedType: const FullType(double),
+      );
+    }
+    if (object.paidAt != null) {
+      yield r'paid_at';
+      yield serializers.serialize(
+        object.paidAt,
+        specifiedType: const FullType(DateTime),
       );
     }
     yield r'created_at';
@@ -280,6 +292,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(double),
           ) as double;
           result.lng = valueDes;
+          break;
+        case r'paid_at':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(DateTime),
+          ) as DateTime;
+          result.paidAt = valueDes;
           break;
         case r'created_at':
           final valueDes = serializers.deserialize(

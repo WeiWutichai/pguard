@@ -16,6 +16,7 @@ lib/src/date_serializer.dart
 lib/src/model/admin_customer_spend_report200_response.dart
 lib/src/model/admin_revenue_report200_response.dart
 lib/src/model/api_response_envelope.dart
+lib/src/model/create_payment_request.dart
 lib/src/model/customer_spend.dart
 lib/src/model/date.dart
 lib/src/model/error_body.dart

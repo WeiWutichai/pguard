@@ -29,7 +29,7 @@ use crate::models::{
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
-     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, created_at, updated_at";
+     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, paid_at, created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -466,17 +466,29 @@ pub struct BookingCore {
     pub hours: i32,
     /// When the guard STARTED work (set by `start_job`); the proration basis. `None` until then.
     pub work_started_at: Option<DateTime<Utc>>,
+    /// When the booking was PAID (stamped by the `payment.completed` consumer). `None` = unpaid;
+    /// the `accepted → en_route` transition is gated on this being set (PRE-PAY).
+    pub paid_at: Option<DateTime<Utc>>,
 }
 
 /// Raw row shape returned by the core queries: status text, customer, guard, booked hours,
-/// work-start clock. Aliased to keep the query type readable (clippy `type_complexity`).
-type CoreRow = (String, Uuid, Option<Uuid>, i32, Option<DateTime<Utc>>);
+/// work-start clock, paid-at clock. Aliased to keep the query type readable (clippy
+/// `type_complexity`).
+type CoreRow = (
+    String,
+    Uuid,
+    Option<Uuid>,
+    i32,
+    Option<DateTime<Utc>>,
+    Option<DateTime<Utc>>,
+);
 
-const CORE_QUERY: &str = "SELECT status::text, customer_id, guard_id, hours, work_started_at \
+const CORE_QUERY: &str =
+    "SELECT status::text, customer_id, guard_id, hours, work_started_at, paid_at \
      FROM booking.bookings WHERE id = $1";
 
 fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
-    let (status_str, customer_id, guard_id, hours, work_started_at) =
+    let (status_str, customer_id, guard_id, hours, work_started_at, paid_at) =
         row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
@@ -487,6 +499,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         guard_id,
         hours,
         work_started_at,
+        paid_at,
     })
 }
 
@@ -540,6 +553,7 @@ pub async fn transition(
         guard_id: existing_guard,
         hours,
         work_started_at,
+        paid_at,
     } = locked_current(&mut tx, id).await?;
 
     let actor_class = required_actor(current, new_status);
@@ -600,6 +614,23 @@ pub async fn transition(
                 ));
             }
         }
+    }
+
+    // PRE-PAY gate (inside the lock → no TOCTOU). The `accepted → en_route` transition REQUIRES
+    // the booking to have been PAID — `paid_at` is stamped by the `payment.completed` consumer
+    // (the customer pays the server-computed estimate after a guard accepts). Until then en_route
+    // is a 409 with the machine-readable `PAYMENT_REQUIRED` sub-code so the mobile pay-step can
+    // branch on it (vs. the English message). Everything AFTER en_route is naturally gated — the
+    // state machine forbids skipping en_route, so arrived/complete can never be reached unpaid.
+    if current == BookingStatus::Accepted
+        && new_status == BookingStatus::EnRoute
+        && paid_at.is_none()
+    {
+        tx.rollback().await?;
+        return Err(AppError::ConflictCode {
+            code: crate::domain::state::PAYMENT_REQUIRED_CODE,
+            message: "Payment required before the guard can go en route".to_string(),
+        });
     }
 
     // Completing (the guard's request) requires the job to have been STARTED — otherwise there
@@ -898,7 +929,7 @@ pub async fn list_open_bookings(
             let sql = format!(
                 r#"
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
-                       base_fee, guard_count, tip, lat, lng, created_at, updated_at
+                       base_fee, guard_count, tip, lat, lng, paid_at, created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
                            2 * 6371 * asin(least(1, sqrt(
@@ -927,6 +958,78 @@ pub async fn list_open_bookings(
         }
     };
     Ok(rows)
+}
+
+/// The set of guards who currently hold an ACTIVE assignment — a booking assigned to them in
+/// `accepted | en_route | arrived | pending_completion`. These guards are BUSY and must be
+/// EXCLUDED from `/available-guards` discovery (the fix: a guard already working a job must not
+/// be offered for another). booking owns its own schema, so this is a local read (no cross-
+/// service round-trip); backed by the partial `idx_bookings_active_assignment` index. `declined`,
+/// `cancelled`, `completed`, and unassigned `requested` rows are NOT active and never count.
+pub async fn busy_guard_ids(
+    db: &sqlx::PgPool,
+) -> Result<std::collections::HashSet<Uuid>, AppError> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT DISTINCT guard_id FROM booking.bookings \
+         WHERE guard_id IS NOT NULL \
+           AND status IN ('accepted'::booking.booking_status, \
+                          'en_route'::booking.booking_status, \
+                          'arrived'::booking.booking_status, \
+                          'pending_completion'::booking.booking_status)",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(g,)| g).collect())
+}
+
+/// PRE-PAY: react to a `pguard.events.payment.completed` event by stamping the booking's
+/// `paid_at` (which un-gates the `accepted → en_route` transition) — IDEMPOTENTLY, in ONE
+/// transaction:
+///   1. claim the envelope's `event_id` in `processed_events` (`ON CONFLICT DO NOTHING`); a
+///      JetStream redelivery loses the claim and the whole call is a no-op.
+///   2. on a won claim, `UPDATE ... SET paid_at = now() WHERE id = $1 AND paid_at IS NULL` — the
+///      `paid_at IS NULL` guard makes a (theoretical) duplicate event_id-free re-pay a no-op too,
+///      so the first payment's timestamp is never overwritten.
+/// Returns `true` if this delivery newly claimed the event (regardless of whether the booking row
+/// existed / was already paid — the claim is the dedupe boundary), `false` on a redelivery.
+#[tracing::instrument(skip(db), fields(event_id = %event_id, booking_id = %booking_id))]
+pub async fn mark_paid_idempotent(
+    db: &sqlx::PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    booking_id: Uuid,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) dedupe claim — a redelivered event_id inserts nothing.
+    let claimed = sqlx::query(
+        "INSERT INTO booking.processed_events (event_id, event_type) VALUES ($1, $2) \
+         ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+
+    if !claimed {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    // 2) stamp paid_at once (first-write-wins). A missing booking row updates nothing — the claim
+    // still holds, so a redelivery won't reprocess; an operator reconciles via the booking id.
+    sqlx::query(
+        "UPDATE booking.bookings SET paid_at = now(), updated_at = now() \
+         WHERE id = $1 AND paid_at IS NULL",
+    )
+    .bind(booking_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// Insert one outbox row inside the caller's transaction.
@@ -1581,7 +1684,9 @@ mod db_tests {
             "expected Forbidden, got {err:?}"
         );
 
-        // The owner can.
+        // The owner can — once the booking is PAID (the PRE-PAY gate). The payment is stamped by
+        // the payment.completed consumer in prod; here the test shortcut stands in for it.
+        mark_paid_now(&pool, created.id).await;
         transition(
             &pool,
             created.id,
@@ -1646,7 +1751,9 @@ mod db_tests {
         .await
         .expect("create");
 
-        // Guard drives accept → en_route → arrived (work_started_at NOT set yet).
+        // PRE-PAY: the booking must be paid before en_route (the payment.completed consumer
+        // stamps this in prod). Guard drives accept → en_route → arrived (work_started_at NOT set yet).
+        mark_paid_now(&pool, created.id).await;
         for (status, assign) in [
             (BookingStatus::Accepted, Some(guard_id)),
             (BookingStatus::EnRoute, None),
@@ -1905,7 +2012,9 @@ mod db_tests {
         .await
         .expect("create");
 
-        // Drive to pending_completion: accept → en_route → arrived → start → complete.
+        // PRE-PAY gate: paid before en_route. Drive to pending_completion: accept → en_route →
+        // arrived → start → complete.
+        mark_paid_now(&pool, created.id).await;
         for (status, assign) in [
             (BookingStatus::Accepted, Some(guard_id)),
             (BookingStatus::EnRoute, None),
@@ -2121,6 +2230,8 @@ mod db_tests {
         )
         .await
         .expect("create");
+        // PRE-PAY gate: paid before en_route (the payment.completed consumer does this in prod).
+        mark_paid_now(pool, created.id).await;
         for (status, assign) in [
             (BookingStatus::Accepted, Some(guard_id)),
             (BookingStatus::EnRoute, None),
@@ -2166,6 +2277,17 @@ mod db_tests {
             .bind(id)
             .execute(pool)
             .await;
+    }
+
+    /// Stamp `paid_at` directly (test shortcut for "the payment.completed consumer ran"), so a
+    /// test that needs to drive the PRE-PAY-gated `accepted → en_route` transition can. The
+    /// consumer's own idempotent stamp is exercised by `mark_paid_idempotent_*`.
+    async fn mark_paid_now(pool: &sqlx::PgPool, id: Uuid) {
+        sqlx::query("UPDATE booking.bookings SET paid_at = now() WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .expect("mark paid");
     }
 
     /// The check-in's transactional outbox, end-to-end: a valid hour-1 check-in writes the
@@ -2548,7 +2670,8 @@ mod db_tests {
             "expected Conflict, got {too_early:?}"
         );
 
-        // advance to arrived
+        // PRE-PAY gate: paid before en_route. advance to arrived
+        mark_paid_now(&pool, created.id).await;
         for status in [BookingStatus::EnRoute, BookingStatus::Arrived] {
             transition(
                 &pool,
@@ -2605,6 +2728,277 @@ mod db_tests {
             .bind(created.id)
             .execute(&pool)
             .await;
+    }
+
+    /// PRE-PAY gate: `accepted → en_route` is BLOCKED with a 409 `PAYMENT_REQUIRED` sub-code until
+    /// the booking is paid (`paid_at` set); once paid, it succeeds. Everything after en_route is
+    /// naturally gated (the state machine forbids skipping it), so this single point covers the
+    /// gate. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn en_route_requires_paid_at_else_payment_required_409() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("1 PrePay Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            correlation,
+        )
+        .await
+        .expect("accept");
+
+        // UNPAID en_route → 409 with the PAYMENT_REQUIRED sub-code (machine-readable for the
+        // mobile pay-step). The actor is the assigned guard, so this is NOT a 403 — the gate fires
+        // after the ownership check, specifically for the missing payment.
+        let blocked = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::EnRoute,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("en_route on an unpaid booking must be blocked");
+        assert!(
+            matches!(
+                &blocked,
+                AppError::ConflictCode { code, .. }
+                    if *code == crate::domain::state::PAYMENT_REQUIRED_CODE
+            ),
+            "unpaid en_route must carry PAYMENT_REQUIRED, got {blocked:?}"
+        );
+
+        // No booking.guard_en_route event was enqueued for the blocked attempt (atomic rollback).
+        let en_route_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_GUARD_EN_ROUTE)
+        .bind(created.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count en_route events");
+        assert_eq!(en_route_events, 0, "blocked en_route must enqueue no event");
+
+        // Pay (the payment.completed consumer stamps paid_at in prod), then en_route succeeds.
+        mark_paid_now(&pool, created.id).await;
+        let en_route = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::EnRoute,
+            None,
+            correlation,
+        )
+        .await
+        .expect("en_route after payment");
+        assert_eq!(en_route.status, "en_route");
+
+        cleanup_booking(&pool, created.id).await;
+    }
+
+    /// The `payment.completed` consumer's repo half: `mark_paid_idempotent` stamps `paid_at` on
+    /// the first delivery (claiming the event_id) and is a NO-OP on a redelivery (same event_id)
+    /// AND on a different event for the same already-paid booking (the `paid_at IS NULL` guard
+    /// preserves the first timestamp). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn mark_paid_idempotent_stamps_once_and_dedupes() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("1 Paid Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create");
+        let pre: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT paid_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read paid_at");
+        assert!(pre.is_none(), "sanity: a fresh booking starts unpaid");
+
+        let event_id = Uuid::new_v4();
+        // First delivery: claims the event + stamps paid_at.
+        assert!(
+            mark_paid_idempotent(&pool, event_id, topics::PAYMENT_COMPLETED, created.id)
+                .await
+                .expect("first mark_paid"),
+            "first delivery newly claims the event"
+        );
+        let first_paid: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT paid_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read paid_at");
+        let first_paid = first_paid.expect("paid_at stamped on first delivery");
+
+        // Redelivery of the SAME event_id → no new claim, paid_at unchanged.
+        assert!(
+            !mark_paid_idempotent(&pool, event_id, topics::PAYMENT_COMPLETED, created.id)
+                .await
+                .expect("redelivery mark_paid"),
+            "redelivery of the same event_id is a no-op"
+        );
+
+        // A DIFFERENT event_id for the already-paid booking still claims the new id, but the
+        // `paid_at IS NULL` guard preserves the FIRST timestamp (first-write-wins).
+        assert!(
+            mark_paid_idempotent(&pool, Uuid::new_v4(), topics::PAYMENT_COMPLETED, created.id)
+                .await
+                .expect("second event mark_paid"),
+        );
+        let still_paid: Option<DateTime<Utc>> =
+            sqlx::query_scalar("SELECT paid_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read paid_at again");
+        assert_eq!(
+            Some(first_paid),
+            still_paid,
+            "paid_at must not be overwritten by a later payment.completed"
+        );
+
+        cleanup_booking(&pool, created.id).await;
+    }
+
+    /// The discovery active-assignment exclusion: `busy_guard_ids` returns exactly the guards
+    /// holding a booking in accepted/en_route/arrived/pending_completion, and NEVER a guard whose
+    /// only bookings are terminal (declined/cancelled/completed) or unassigned. Membership-only
+    /// assertions (the shared DB runs other suites concurrently). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn busy_guard_ids_returns_only_active_assignment_holders() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer = Uuid::new_v4();
+        let busy_guard = Uuid::new_v4(); // holds an ACCEPTED booking → busy
+        let free_guard = Uuid::new_v4(); // only a DECLINED booking → free
+        let correlation = Uuid::new_v4();
+
+        // busy_guard: accept (active assignment).
+        let active = create_booking(
+            &pool,
+            customer,
+            &booking_req("1 Busy Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create active");
+        transition(
+            &pool,
+            active.id,
+            busy_guard,
+            false,
+            BookingStatus::Accepted,
+            Some(busy_guard),
+            correlation,
+        )
+        .await
+        .expect("busy_guard accepts");
+
+        // free_guard: accept then DECLINE (withdraw) → terminal, not an active assignment.
+        let withdrawn = create_booking(
+            &pool,
+            customer,
+            &booking_req("2 Free Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create withdrawn");
+        transition(
+            &pool,
+            withdrawn.id,
+            free_guard,
+            false,
+            BookingStatus::Accepted,
+            Some(free_guard),
+            correlation,
+        )
+        .await
+        .expect("free_guard accepts");
+        transition(
+            &pool,
+            withdrawn.id,
+            free_guard,
+            false,
+            BookingStatus::Declined,
+            None,
+            correlation,
+        )
+        .await
+        .expect("free_guard declines");
+
+        let busy = busy_guard_ids(&pool).await.expect("busy_guard_ids");
+        assert!(
+            busy.contains(&busy_guard),
+            "a guard with an accepted booking is busy"
+        );
+        assert!(
+            !busy.contains(&free_guard),
+            "a guard whose only booking is declined is NOT busy"
+        );
+
+        cleanup_booking(&pool, active.id).await;
+        cleanup_booking(&pool, withdrawn.id).await;
     }
 
     /// Regression for the heatmap-bucket rounding bug: `bucket = floor(hour / 2)` must use

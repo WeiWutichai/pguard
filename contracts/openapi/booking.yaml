@@ -979,6 +979,13 @@ components:
         tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
         lat: { type: number, format: double, nullable: true, description: Site latitude (null when not provided at create). }
         lng: { type: number, format: double, nullable: true, description: Site longitude (null when not provided at create). }
+        paid_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid;
+            the client uses this to know the accepted→en_route transition is gated (show the pay-step).
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
 

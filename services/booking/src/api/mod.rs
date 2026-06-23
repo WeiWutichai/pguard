@@ -17,7 +17,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
-use crate::discovery_client::{GuardCatalog, PresenceReader, RatingReader};
+use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
@@ -867,9 +867,16 @@ pub async fn list_progress_reports<S: BookingDeps>(
 /// ONLINE filter (the fix): an approved guard is only offered when presence reports them LIVE
 /// (`is_online` AND a fresh GPS fix). An offline-but-approved guard is dropped.
 ///
-/// FAIL-OPEN on presence: if the presence consult errors/times out, the whole approved list is
-/// returned UNFILTERED (with a warning) — a presence hiccup must never blank discovery and block
-/// every booking. The happy path filters by online.
+/// BUSY filter (the fix): a guard who already holds an ACTIVE assignment (a booking in
+/// accepted/en_route/arrived/pending_completion assigned to them) is dropped too — a guard
+/// working a job must never be offered for another. This reads booking's OWN schema
+/// (`repo::busy_guard_ids`), so it FAILS-CLOSED: an error there means booking's own DB is down
+/// (the rest of the service is failing anyway), so we propagate rather than risk offering a busy
+/// guard.
+///
+/// FAIL-OPEN on presence: if the presence consult errors/times out, the ONLINE filter is skipped
+/// (with a warning) — a presence hiccup must never blank discovery and block every booking. The
+/// BUSY filter still applies. The happy path filters by both.
 ///
 /// Best-effort on ratings: a guard whose rating lookup fails still appears (with no average /
 /// zero count) — one slow dependency never blanks the whole list. Rating lookups run
@@ -882,26 +889,30 @@ pub async fn available_guards<S: DiscoveryDeps>(
     let guards = state.guard_catalog().list_approved_guards().await?;
     let rater = state.rating_reader();
 
-    // Consult presence for who is currently LIVE. `None` => FAIL-OPEN: presence was unreachable,
-    // so we do NOT filter (showing the full approved list beats blocking all bookings).
-    let online: Option<std::collections::HashSet<Uuid>> = match state
-        .presence_reader()
-        .online_guard_ids()
-        .await
-    {
-        Ok(set) => Some(set),
-        Err(e) => {
-            tracing::warn!(
-                    "presence online-guards lookup failed: {e}; FAIL-OPEN (returning unfiltered approved list)"
-                );
-            None
-        }
-    };
+    // The set of guards already working an active assignment (booking's own schema). FAIL-CLOSED:
+    // propagate the error — this is a local DB read, so a failure is a service-wide DB problem,
+    // and silently offering a busy guard would let two customers book the same guard.
+    let busy = state.busy_guards().busy_guard_ids().await?;
 
-    // Drop offline guards when presence answered; keep all on fail-open. Filtering BEFORE the
-    // rating fan-out also means we never spend rating lookups on guards we're about to hide.
+    // Consult presence for who is currently LIVE. `None` => FAIL-OPEN: presence was unreachable,
+    // so we do NOT apply the online filter (showing the approved list beats blocking all bookings).
+    let online: Option<std::collections::HashSet<Uuid>> =
+        match state.presence_reader().online_guard_ids().await {
+            Ok(set) => Some(set),
+            Err(e) => {
+                tracing::warn!(
+                "presence online-guards lookup failed: {e}; FAIL-OPEN (skipping the online filter)"
+            );
+                None
+            }
+        };
+
+    // Drop BUSY guards always; drop offline guards when presence answered (keep all online on
+    // fail-open). Filtering BEFORE the rating fan-out also means we never spend rating lookups on
+    // guards we're about to hide.
     let filtered: Vec<_> = guards
         .into_iter()
+        .filter(|g| !busy.contains(&g.user_id))
         .filter(|g| online.as_ref().is_none_or(|set| set.contains(&g.user_id)))
         .collect();
 
@@ -1787,6 +1798,13 @@ mod tests {
         // upload was attempted for the spec's idempotent guard-retry path. Drive the
         // booking to in-progress, file hour 1 via the repo, then retry hour 1 over HTTP
         // with a real multipart body (valid tiny JPEG).
+        // PRE-PAY gate: the booking must be paid before en_route (the payment.completed
+        // consumer stamps this in prod).
+        sqlx::query("UPDATE booking.bookings SET paid_at = now() WHERE id = $1")
+            .bind(created.id)
+            .execute(&db)
+            .await
+            .expect("mark paid");
         for status in [BookingStatus::EnRoute, BookingStatus::Arrived] {
             repo::transition(&db, created.id, guard, false, status, None, Uuid::new_v4())
                 .await
@@ -2084,7 +2102,8 @@ mod tests {
     // ----- /available-guards discovery aggregation (stub readers; Redis-gated for AuthUser) -----
 
     use crate::discovery_client::{
-        CatalogGuard, GuardCatalog, GuardRatingSummary, PresenceReader, RatingReader,
+        BusyGuardsReader, CatalogGuard, GuardCatalog, GuardRatingSummary, PresenceReader,
+        RatingReader,
     };
     use std::collections::HashSet;
 
@@ -2116,6 +2135,24 @@ mod tests {
         }
     }
 
+    /// Busy-guards stub — `busy` is the set of guards holding an active assignment (excluded
+    /// from discovery); `down=true` makes the lookup ERROR so the handler's FAIL-CLOSED path
+    /// (propagate the error) is exercised.
+    #[derive(Clone)]
+    struct StubBusy {
+        busy: HashSet<Uuid>,
+        down: bool,
+    }
+    impl BusyGuardsReader for StubBusy {
+        async fn busy_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+            if self.down {
+                Err(AppError::Internal("booking DB unreachable".to_string()))
+            } else {
+                Ok(self.busy.clone())
+            }
+        }
+    }
+
     /// Rating stub — returns avg 4.50/count 2 for `good`, and ERRORS for any other guard so
     /// the handler's best-effort default (None/0) path is exercised.
     #[derive(Clone)]
@@ -2142,6 +2179,7 @@ mod tests {
         catalog: StubCatalog,
         rater: StubRater,
         presence: StubPresence,
+        busy: StubBusy,
     }
     impl HasJwtSecret for DiscoveryTestDeps {
         fn jwt_secret(&self) -> &str {
@@ -2158,6 +2196,7 @@ mod tests {
         type Catalog = StubCatalog;
         type Rating = StubRater;
         type Presence = StubPresence;
+        type Busy = StubBusy;
         fn guard_catalog(&self) -> &StubCatalog {
             &self.catalog
         }
@@ -2167,6 +2206,18 @@ mod tests {
         fn presence_reader(&self) -> &StubPresence {
             &self.presence
         }
+        fn busy_guards(&self) -> &StubBusy {
+            &self.busy
+        }
+    }
+
+    /// No guard is busy (the common case for the catalog+rating+online tests). The
+    /// active-assignment exclusion is exercised by its own tests via [`discovery_router_with`].
+    fn no_busy() -> StubBusy {
+        StubBusy {
+            busy: HashSet::new(),
+            down: false,
+        }
     }
 
     async fn discovery_router(
@@ -2174,19 +2225,29 @@ mod tests {
         rater: StubRater,
         presence: StubPresence,
     ) -> Option<Router> {
+        discovery_router_with(catalog, rater, presence, no_busy()).await
+    }
+
+    async fn discovery_router_with(
+        catalog: StubCatalog,
+        rater: StubRater,
+        presence: StubPresence,
+        busy: StubBusy,
+    ) -> Option<Router> {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
         let redis = shared::redis_client::create_connection_manager(&redis_url)
             .await
             .ok()?;
-        // available_guards never touches the DB (only the readers) — no pool needed.
+        // available_guards reads only the (stubbed) ports — no live pool needed.
         let deps = DiscoveryTestDeps {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             redis,
             catalog,
             rater,
             presence,
+            busy,
         };
         Some(
             Router::new()
@@ -2407,6 +2468,138 @@ mod tests {
             ids,
             vec![a.to_string(), b.to_string()],
             "presence down → fail-open: all approved guards shown unfiltered"
+        );
+    }
+
+    /// Like [`discovery_guard_ids`] but with an explicit busy-guards stub (the active-assignment
+    /// exclusion). Returns the `data` guard_ids, or `None` if Redis is absent (caller SKIPs).
+    async fn discovery_guard_ids_with(
+        catalog: StubCatalog,
+        rater: StubRater,
+        presence: StubPresence,
+        busy: StubBusy,
+    ) -> Option<Vec<String>> {
+        let app = discovery_router_with(catalog, rater, presence, busy).await?;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        Some(
+            v["data"]
+                .as_array()
+                .expect("data array")
+                .iter()
+                .map(|g| g["guard_id"].as_str().expect("guard_id").to_string())
+                .collect(),
+        )
+    }
+
+    /// The discovery fix: a BUSY guard (one holding an active assignment) is EXCLUDED even though
+    /// they are approved AND online — a guard already working a job must never be offered. The
+    /// FREE online guard is still listed.
+    #[tokio::test]
+    async fn available_guards_excludes_busy_with_active_assignment() {
+        let free = Uuid::new_v4();
+        let busy_guard = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![
+                CatalogGuard {
+                    user_id: free,
+                    years_of_experience: Some(2),
+                },
+                CatalogGuard {
+                    user_id: busy_guard,
+                    years_of_experience: Some(9),
+                },
+            ],
+        };
+        let Some(ids) = discovery_guard_ids_with(
+            catalog,
+            StubRater { good: free },
+            // Both online — so the ONLY reason busy_guard is hidden is the active-assignment filter.
+            StubPresence {
+                online: HashSet::from([free, busy_guard]),
+                down: false,
+            },
+            StubBusy {
+                busy: HashSet::from([busy_guard]),
+                down: false,
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(
+            ids,
+            vec![free.to_string()],
+            "the guard with an active assignment is excluded; only the free guard is offered"
+        );
+    }
+
+    /// FAIL-CLOSED on the busy lookup: unlike presence (fail-open), an error reading booking's own
+    /// schema for active assignments propagates as 500 — a local-DB outage must not silently offer
+    /// a possibly-busy guard (which would let two customers book the same guard).
+    #[tokio::test]
+    async fn available_guards_fails_closed_when_busy_lookup_errors() {
+        let a = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![CatalogGuard {
+                user_id: a,
+                years_of_experience: Some(1),
+            }],
+        };
+        let Some(app) = discovery_router_with(
+            catalog,
+            StubRater { good: a },
+            StubPresence {
+                online: HashSet::from([a]),
+                down: false,
+            },
+            StubBusy {
+                busy: HashSet::new(),
+                down: true, // booking DB unreachable
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "a busy-lookup error must fail closed (never offer a possibly-busy guard)"
         );
     }
 

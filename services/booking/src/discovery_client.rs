@@ -72,6 +72,19 @@ pub trait PresenceReader: Send + Sync {
     async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError>;
 }
 
+/// Read the set of guards who currently hold an ACTIVE assignment (a booking in
+/// accepted/en_route/arrived/pending_completion assigned to them) — the BUSY guards that
+/// `/available-guards` must hide so a guard already working a job is never offered for another.
+/// Unlike the other readers this is a LOCAL read of booking's OWN schema (booking owns its
+/// bookings), not a cross-service call — but it is modelled as a port so the discovery handler
+/// stays unit-testable with stubs. FAIL-CLOSED on error (unlike presence's fail-open): a DB
+/// hiccup means we cannot prove a guard is free, so the handler hides nobody EXTRA but propagates
+/// the error — see the handler for the exact policy.
+#[allow(async_fn_in_trait)]
+pub trait BusyGuardsReader: Send + Sync {
+    async fn busy_guard_ids(&self) -> Result<HashSet<Uuid>, AppError>;
+}
+
 // ----- Real HTTP impls (one reqwest client + service-JWT minting, shared config) -----
 
 /// Mints service-JWTs and GETs the `/internal/*` reads of profile + rating. Cloneable
@@ -173,6 +186,15 @@ impl RatingReader for HttpDiscoveryClient {
             AppError::Internal("Rating summary lookup failed".to_string())
         })?;
         Ok(envelope.data.unwrap_or_default())
+    }
+}
+
+/// The active-assignment exclusion reads booking's OWN schema, so the port is implemented
+/// directly on the pool (a local trait on a foreign type — no orphan violation). `AppState`
+/// hands its read-replica pool to the discovery handler as the `BusyGuardsReader`.
+impl BusyGuardsReader for sqlx::PgPool {
+    async fn busy_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+        crate::repo::busy_guard_ids(self).await
     }
 }
 

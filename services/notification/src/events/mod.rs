@@ -126,6 +126,13 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
         return fan_out_dispatch(state, &envelope).await;
     }
 
+    // A successful PRE-PAY notifies BOTH parties (the customer "ชำระเงินสำเร็จ" + the guard
+    // "ลูกค้าชำระเงินแล้ว"), so it is DUAL-recipient, not the single-recipient `plan_for_event`
+    // path. Route it to its own dispatcher (per-(event, recipient) idempotent claims).
+    if envelope.event_type == topics::PAYMENT_COMPLETED {
+        return payment_completed_dispatch(state, &envelope).await;
+    }
+
     let plan = domain::plan_for_event(&envelope.event_type, &envelope.payload);
 
     match repo::process_event(
@@ -244,6 +251,68 @@ async fn fan_out_dispatch(
     )
     .await;
     tracing::info!(booking = %booking_id, dispatched = pushed, "new-job dispatch fan-out complete");
+    Ok(())
+}
+
+/// DUAL-recipient path for `payment.completed` (PRE-PAY): notify the customer ("ชำระเงินสำเร็จ")
+/// AND the guard ("ลูกค้าชำระเงินแล้ว"). Each recipient is claimed with a per-(event, recipient)
+/// idempotent claim (same primitive as the fan-out), so a JetStream redelivery double-pushes
+/// neither party. A push failure is best-effort (logged, not fatal): the in-app log row is already
+/// committed and one bad device token must not abort the other recipient.
+///
+/// Resilience: a missing `booking_id`/`customer_id` (unroutable) is ACKED — a redelivery would
+/// behave identically (not a transient error). Per-recipient DB-claim faults log + continue.
+async fn payment_completed_dispatch(
+    state: &AppState,
+    envelope: &EventEnvelope<Value>,
+) -> Result<(), AppError> {
+    let Some(booking_id) = uuid_field(&envelope.payload, "booking_id") else {
+        tracing::warn!("payment.completed missing booking_id; skipping dispatch");
+        return Ok(());
+    };
+    let plans = domain::payment_completed_plans(&envelope.payload);
+    if plans.is_empty() {
+        tracing::warn!("payment.completed missing customer_id; nothing to dispatch");
+        return Ok(());
+    }
+
+    for plan in plans {
+        let recipient = plan.recipient_id;
+        // Per-(event, recipient) claim → idempotent across redeliveries.
+        let won = match repo::claim_dispatch_recipient(
+            &state.db,
+            envelope.event_id,
+            booking_id,
+            recipient,
+            &plan,
+        )
+        .await
+        {
+            Ok(won) => won,
+            Err(e) => {
+                tracing::warn!(recipient = %recipient, booking = %booking_id, "payment.completed claim failed: {e}");
+                continue;
+            }
+        };
+        if !won {
+            continue; // already notified this recipient for this event (idempotent)
+        }
+        let tokens = repo::user_tokens(&state.db, recipient)
+            .await
+            .unwrap_or_default();
+        if let Err(e) = state
+            .pusher
+            .push(&PushMessage {
+                tokens,
+                title: plan.title,
+                body: plan.body,
+                data: plan.data,
+            })
+            .await
+        {
+            tracing::warn!(recipient = %recipient, booking = %booking_id, "payment.completed push failed: {e}");
+        }
+    }
     Ok(())
 }
 

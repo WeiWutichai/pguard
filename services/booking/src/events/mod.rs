@@ -10,6 +10,11 @@
 //! a row is only marked published *after* a successful publish, delivery is at-least-once
 //! (the consumer dedupes on `event_id`), which is exactly the JetStream contract.
 
+//! The CONSUMER half (subscribe to `payment.completed` → stamp `paid_at` idempotently, which
+//! un-gates the PRE-PAY `accepted → en_route` transition) lives in [`consumer`].
+
+pub mod consumer;
+
 use std::time::Duration;
 
 use crate::repo::{self, OutboxRow};

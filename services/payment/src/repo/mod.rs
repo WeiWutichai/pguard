@@ -3,11 +3,15 @@
 //! Uses runtime `sqlx::query`/`query_as` (not the compile-time `query!` macro): the
 //! scaffold has no DATABASE_URL / offline `.sqlx` cache at build time (mirrors booking).
 //!
-//! One atomic write anchors this slice (v2 is POST-PAY — charge on completion, no refund):
-//!  - [`charge_idempotent`] — insert a completed payment AND its `payment.completed` outbox
-//!    event in ONE transaction, idempotently (the UNIQUE partial index + ON CONFLICT means
-//!    a retried/redelivered charge returns the existing row and emits nothing — no double-charge).
-//!    Called by the `booking.completed` consumer with the post-pay bill (`domain::post_pay_charge`).
+//! Two atomic writes anchor this slice (v2 is PRE-PAY then SETTLE):
+//!  - [`prepay_idempotent`] — insert a completed payment AND its `payment.completed` outbox event
+//!    in ONE transaction, idempotently (the UNIQUE partial index + ON CONFLICT means a repeat
+//!    pre-pay returns the existing row and emits nothing — no double-charge). Called by the
+//!    `createPayment` endpoint with the server-computed estimate.
+//!  - [`reconcile_on_completion`] — on `booking.completed`, diff the actual-hours bill
+//!    (`domain::reconcile`) against the pre-paid amount in ONE transaction and refund the overpay
+//!    (`payment.refund_processed`) / record the shortfall. Idempotent via the `processed_events`
+//!    event-id claim; the base is never double-charged.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -222,17 +226,29 @@ async fn completed_for_booking(
 
 // ----- Writes -----
 
-/// Idempotently charge a booking: insert a `completed` payment AND its
+/// Outcome of an idempotent PRE-PAY: a freshly-inserted payment (we emitted `payment.completed`)
+/// or the already-existing one (a repeat pre-pay — a no-op, nothing emitted).
+pub enum PrePayOutcome {
+    /// First pre-pay for this booking — the row was inserted and `payment.completed` enqueued.
+    Created(PaymentResponse),
+    /// A pre-pay already exists — repeat request, no second charge and no second event.
+    AlreadyPaid(PaymentResponse),
+}
+
+/// Idempotently PRE-PAY a booking: insert a `completed` payment AND its
 /// `pguard.events.payment.completed` outbox event in ONE transaction. At most one completed
 /// payment per booking — enforced by the UNIQUE partial index + `ON CONFLICT DO NOTHING`.
 ///
-/// Called by the `booking.completed` consumer with the post-pay bill. A redelivered completion
-/// event cannot double-charge: on conflict the INSERT returns no row, we roll the (empty) tx back,
-/// and return the EXISTING completed payment (no second event emitted). `guard_id`/`customer_id`/
-/// the pricing come from booking's server-owned columns carried on the signed event, never a client.
+/// v2 is PRE-PAY: the customer pays the ESTIMATE (`base_fee × hours × guard_count + tip`) once a
+/// guard has accepted; that payment GATES the booking's `en_route` transition (booking learns it
+/// is paid by consuming `payment.completed`). A repeat POST cannot double-charge: on conflict the
+/// INSERT returns no row, we roll the (empty) tx back, and return [`PrePayOutcome::AlreadyPaid`]
+/// (no second event emitted). `amount == expected_total ==` the estimate — both server-computed
+/// from booking's authoritative read, never a client value. The completion-time SETTLE
+/// ([`reconcile_on_completion`]) later refunds/charges the difference vs the actual hours.
 #[tracing::instrument(skip(db), fields(booking_id = %booking_id, customer_id = %customer_id))]
 #[allow(clippy::too_many_arguments)]
-pub async fn charge_idempotent(
+pub async fn prepay_idempotent(
     db: &sqlx::PgPool,
     booking_id: Uuid,
     customer_id: Uuid,
@@ -241,13 +257,12 @@ pub async fn charge_idempotent(
     expected_total: Decimal,
     payment_method: &str,
     correlation_id: Uuid,
-) -> Result<PaymentResponse, AppError> {
+) -> Result<PrePayOutcome, AppError> {
     let mut tx = db.begin().await?;
 
     // 1) the business change — idempotent insert. ON CONFLICT (the UNIQUE partial index)
-    //    DO NOTHING means a concurrent/redelivered completion inserts nothing. Under post-pay
-    //    `expected_total` == `amount` == the final bill (post_pay_charge: base prorated to worked
-    //    hours + flat tip) — persisted alongside `amount`; there is no separate downstream proration.
+    //    DO NOTHING means a concurrent/repeat pre-pay inserts nothing. `amount` == `expected_total`
+    //    == the PRE-PAY estimate; the actual-hours SETTLE happens later in reconcile_on_completion.
     let sql = format!(
         "INSERT INTO payment.payments \
            (booking_id, customer_id, guard_id, amount, expected_total, payment_method, status, paid_at) \
@@ -266,24 +281,195 @@ pub async fn charge_idempotent(
         .await?;
 
     let Some(payment) = inserted else {
-        // Already charged — no row inserted, nothing to emit. Return the existing payment.
+        // Already paid — no row inserted, nothing to emit. Return the existing payment.
         tx.rollback().await?;
-        return completed_for_booking(db, booking_id).await?.ok_or_else(|| {
-            AppError::Conflict("Payment already exists for this booking".to_string())
-        });
+        return completed_for_booking(db, booking_id)
+            .await?
+            .map(PrePayOutcome::AlreadyPaid)
+            .ok_or_else(|| {
+                AppError::Conflict("Payment already exists for this booking".to_string())
+            });
     };
 
-    // 2) the event — SAME transaction (transactional outbox). Carries the authoritative ids.
+    // 2) the event — SAME transaction (transactional outbox). Carries the authoritative ids so
+    //    booking can un-gate (set paid_at → allow en_route) and notification can push BOTH the
+    //    customer ("ชำระเงินสำเร็จ") and the guard ("ลูกค้าชำระเงินแล้ว").
     let payload = serde_json::json!({
         "payment_id": payment.id,
         "booking_id": booking_id,
+        "customer_id": customer_id,
         "guard_id": guard_id,
         "amount": amount,
     });
     enqueue_outbox(&mut tx, topics::PAYMENT_COMPLETED, payload, correlation_id).await?;
 
     tx.commit().await?;
-    Ok(payment)
+    Ok(PrePayOutcome::Created(payment))
+}
+
+/// The outcome of the completion-time SETTLE against the PRE-PAID amount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettleOutcome {
+    /// Nothing to do (no pre-pay found, the event was already processed, or actual == paid).
+    NoOp,
+    /// A refund of `refund` was owed (we set final_amount/refund_amount/refund_status='pending'
+    /// and emitted `payment.refund_processed`).
+    Refunded {
+        final_amount: Decimal,
+        refund: Decimal,
+    },
+    /// The customer owed `extra` above the pre-paid amount (recorded as `final_amount`, no event).
+    ExtraCharged {
+        final_amount: Decimal,
+        extra: Decimal,
+    },
+}
+
+/// RECONCILE the actual-hours bill against the PRE-PAID amount on `booking.completed`, in ONE
+/// transaction (idempotent via the `processed_events` ledger — JetStream is at-least-once).
+///
+/// v2 PRE-PAY then SETTLE: the customer already paid the estimate up front. On completion we diff
+/// the actual-hours bill ([`crate::domain::reconcile`]) against the pre-paid `amount`:
+///  - `actual < paid` → REFUND the difference: set `final_amount`/`refund_amount` +
+///    `refund_status='pending'` and emit `pguard.events.payment.refund_processed`.
+///  - `actual > paid` → record the shortfall: set `final_amount` (the extra charge owed). The base
+///    is NEVER re-charged — only the delta is recorded.
+///  - equal → record `final_amount` only.
+///
+/// Dedup: the event_id is claimed in `processed_events` inside the same tx; a redelivery finds it
+/// claimed and is a NoOp (the refund is never double-applied). If no pre-pay row exists (defensive
+/// — the en_route gate means a completed booking was paid), this is a NoOp: there is nothing to
+/// settle against, and we never raise a base charge here (that would risk a double-charge).
+#[tracing::instrument(skip(db), fields(booking_id = %booking_id, event_id = %event_id))]
+#[allow(clippy::too_many_arguments)]
+pub async fn reconcile_on_completion(
+    db: &sqlx::PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    booking_id: Uuid,
+    base_fee: Decimal,
+    booked_hours: i32,
+    guard_count: i32,
+    tip: Decimal,
+    actual_seconds: Option<i64>,
+    correlation_id: Uuid,
+) -> Result<SettleOutcome, AppError> {
+    use crate::domain::Reconciliation;
+
+    let mut tx = db.begin().await?;
+
+    // 1) claim the event_id (at-least-once dedup). A redelivery inserts nothing → NoOp.
+    let claimed = sqlx::query(
+        "INSERT INTO payment.processed_events (event_id, event_type) VALUES ($1, $2) \
+         ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        tracing::debug!("booking.completed already reconciled (idempotent NoOp)");
+        return Ok(SettleOutcome::NoOp);
+    }
+
+    // 2) read the PRE-PAID amount (the settle basis). FOR UPDATE locks the row for the diff write.
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE"
+    );
+    let Some(payment) = sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(booking_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        // No pre-pay on file — nothing to settle against. Commit the claim (so a replay stays a
+        // NoOp) and return. We do NOT raise a base charge here (avoids any double-charge risk).
+        tx.commit().await?;
+        tracing::warn!("booking.completed with no pre-pay on file; nothing to reconcile");
+        return Ok(SettleOutcome::NoOp);
+    };
+
+    let outcome = crate::domain::reconcile(
+        payment.amount,
+        base_fee,
+        booked_hours,
+        guard_count,
+        tip,
+        actual_seconds,
+    );
+
+    let settle = match outcome {
+        Reconciliation::Even => {
+            // Record the (matching) final bill for the ledger; no money moves, no event.
+            sqlx::query(
+                "UPDATE payment.payments SET final_amount = amount, updated_at = now() WHERE id = $1",
+            )
+            .bind(payment.id)
+            .execute(&mut *tx)
+            .await?;
+            SettleOutcome::NoOp
+        }
+        Reconciliation::Refund {
+            final_amount,
+            refund,
+        } => {
+            // The base is NOT re-charged — only the overpay is returned. refund_status='pending'
+            // (an admin/real-gateway marks 'processed'); the row stays 'completed' (a PARTIAL
+            // refund) so the revenue report nets it out.
+            sqlx::query(
+                "UPDATE payment.payments \
+                   SET final_amount = $2, refund_amount = $3, refund_status = 'pending', \
+                       updated_at = now() \
+                 WHERE id = $1",
+            )
+            .bind(payment.id)
+            .bind(final_amount)
+            .bind(refund)
+            .execute(&mut *tx)
+            .await?;
+
+            // emit refund_processed (booking un-gates on payment.completed, NOT this).
+            let payload = serde_json::json!({
+                "payment_id": payment.id,
+                "booking_id": booking_id,
+                "refund_amount": refund,
+                "final_amount": final_amount,
+            });
+            enqueue_outbox(
+                &mut tx,
+                topics::PAYMENT_REFUND_PROCESSED,
+                payload,
+                correlation_id,
+            )
+            .await?;
+            SettleOutcome::Refunded {
+                final_amount,
+                refund,
+            }
+        }
+        Reconciliation::Extra {
+            final_amount,
+            extra,
+        } => {
+            // Customer owes more than pre-paid (e.g. a tip bump). Record the higher final_amount;
+            // the delta is owed. No refund event. (A real gateway would capture the extra here.)
+            sqlx::query(
+                "UPDATE payment.payments SET final_amount = $2, updated_at = now() WHERE id = $1",
+            )
+            .bind(payment.id)
+            .bind(final_amount)
+            .execute(&mut *tx)
+            .await?;
+            SettleOutcome::ExtraCharged {
+                final_amount,
+                extra,
+            }
+        }
+    };
+
+    tx.commit().await?;
+    Ok(settle)
 }
 
 /// Insert one outbox row (a fully-formed EventEnvelope) inside the caller's transaction.
@@ -337,6 +523,13 @@ mod db_tests {
         s.parse().unwrap()
     }
 
+    /// Unwrap the payment out of a [`PrePayOutcome`] (tests don't care which arm here).
+    fn payment_of(o: PrePayOutcome) -> PaymentResponse {
+        match o {
+            PrePayOutcome::Created(p) | PrePayOutcome::AlreadyPaid(p) => p,
+        }
+    }
+
     async fn pool() -> Option<sqlx::PgPool> {
         let url = std::env::var("DATABASE_URL").ok()?;
         PgPoolOptions::new()
@@ -346,14 +539,14 @@ mod db_tests {
             .ok()
     }
 
-    /// Real-Postgres integration test: a retried charge does NOT double-charge — two POSTs
-    /// for the same booking yield exactly ONE completed payment row and ONE outbox event,
-    /// and the second call returns the same payment id. DATABASE_URL-gated (hermetic when
-    /// unset). Run against a migrated DB:
+    /// Real-Postgres integration test: a retried PRE-PAY does NOT double-charge — two POSTs
+    /// for the same booking yield exactly ONE completed payment row and ONE outbox event, the
+    /// first is `Created` and the second is `AlreadyPaid` with the same id. DATABASE_URL-gated
+    /// (hermetic when unset). Run against a migrated DB:
     ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
-    ///     cargo test -p pguard-payment -- charge_is_idempotent --nocapture
+    ///     cargo test -p pguard-payment -- prepay_is_idempotent --nocapture
     #[tokio::test]
-    async fn charge_is_idempotent() {
+    async fn prepay_is_idempotent() {
         let Some(pool) = pool().await else {
             eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
             return;
@@ -363,7 +556,7 @@ mod db_tests {
         let guard_id = Some(Uuid::new_v4());
         let correlation = Uuid::new_v4();
 
-        let first = charge_idempotent(
+        let first_out = prepay_idempotent(
             &pool,
             booking_id,
             customer_id,
@@ -374,14 +567,19 @@ mod db_tests {
             correlation,
         )
         .await
-        .expect("first charge");
+        .expect("first pre-pay");
+        assert!(
+            matches!(first_out, PrePayOutcome::Created(_)),
+            "first pre-pay is Created"
+        );
+        let first = payment_of(first_out);
         assert_eq!(first.status, "completed");
         assert_eq!(first.amount, dec("400.00"));
         assert_eq!(first.expected_total, Some(dec("400.00")));
         assert_eq!(first.guard_id, guard_id);
 
-        // Retry — must return the SAME payment, not a new one.
-        let second = charge_idempotent(
+        // Retry — must be AlreadyPaid with the SAME payment, not a new one.
+        let second_out = prepay_idempotent(
             &pool,
             booking_id,
             customer_id,
@@ -392,7 +590,12 @@ mod db_tests {
             Uuid::new_v4(),
         )
         .await
-        .expect("retry charge");
+        .expect("retry pre-pay");
+        assert!(
+            matches!(second_out, PrePayOutcome::AlreadyPaid(_)),
+            "repeat pre-pay is AlreadyPaid (no-op)"
+        );
+        let second = payment_of(second_out);
         assert_eq!(
             second.id, first.id,
             "retry must return the existing payment"
@@ -446,30 +649,34 @@ mod db_tests {
         let customer_b = Uuid::new_v4();
         let booking_a = Uuid::new_v4();
         let booking_b = Uuid::new_v4();
-        let pay_a = charge_idempotent(
-            &pool,
-            booking_a,
-            customer_a,
-            Some(Uuid::new_v4()),
-            dec("400.00"),
-            dec("400.00"),
-            "promptpay",
-            Uuid::new_v4(),
-        )
-        .await
-        .expect("charge A");
-        let pay_b = charge_idempotent(
-            &pool,
-            booking_b,
-            customer_b,
-            Some(Uuid::new_v4()),
-            dec("250.00"),
-            dec("250.00"),
-            "promptpay",
-            Uuid::new_v4(),
-        )
-        .await
-        .expect("charge B");
+        let pay_a = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_a,
+                customer_a,
+                Some(Uuid::new_v4()),
+                dec("400.00"),
+                dec("400.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("charge A"),
+        );
+        let pay_b = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_b,
+                customer_b,
+                Some(Uuid::new_v4()),
+                dec("250.00"),
+                dec("250.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("charge B"),
+        );
 
         // customer_id=A → exactly A's payment (fresh UUID → no other rows match).
         let only_a = admin_list_payments(&pool, None, Some(customer_a), 200, 0)
@@ -517,6 +724,224 @@ mod db_tests {
         .await;
         let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
             .bind(vec![booking_a, booking_b])
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: PRE-PAY the full estimate, then RECONCILE on completion. Worked < booked →
+    /// the overpay is REFUNDED (final_amount + refund_amount set, refund_status='pending', a
+    /// `payment.refund_processed` event emitted) and the base is NOT re-charged. A redelivered
+    /// completion is idempotent (the event is claimed once → second call is a NoOp, no second
+    /// refund). DATABASE_URL-gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- reconcile_refunds_overpay --nocapture
+    #[tokio::test]
+    async fn reconcile_refunds_overpay_and_is_idempotent() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // Pre-pay the estimate 500×4×1 + 0 = 2000.00.
+        let paid = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                customer_id,
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        // Complete after working only 2h of 4h → actual 1000.00 → refund 1000.00.
+        let out = reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(7200),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile");
+        assert_eq!(
+            out,
+            SettleOutcome::Refunded {
+                final_amount: dec("1000.00"),
+                refund: dec("1000.00"),
+            }
+        );
+
+        // The row reflects the refund; the base was never re-charged (amount unchanged).
+        let row: (Decimal, Option<Decimal>, Option<Decimal>, Option<String>) = sqlx::query_as(
+            "SELECT amount, final_amount, refund_amount, refund_status \
+             FROM payment.payments WHERE id = $1",
+        )
+        .bind(paid.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read row");
+        assert_eq!(row.0, dec("2000.00"), "amount (pre-paid) unchanged");
+        assert_eq!(row.1, Some(dec("1000.00")), "final_amount = actual bill");
+        assert_eq!(row.2, Some(dec("1000.00")), "refund_amount = overpay");
+        assert_eq!(row.3.as_deref(), Some("pending"));
+
+        // exactly ONE refund_processed event.
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds");
+        assert_eq!(refunds, 1, "exactly one refund event");
+
+        // Replay the SAME completion event → idempotent NoOp (no second refund).
+        let replay = reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(7200),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("replay reconcile");
+        assert_eq!(replay, SettleOutcome::NoOp, "replay is a NoOp");
+        let refunds2: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds after replay");
+        assert_eq!(refunds2, 1, "still exactly one refund (idempotent)");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: PRE-PAY without a tip, then complete WITH a tip bump → actual > paid, so the
+    /// shortfall is recorded as the higher final_amount (no refund event), and the base is never
+    /// re-charged. DATABASE_URL-gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- reconcile_records_extra --nocapture
+    #[tokio::test]
+    async fn reconcile_records_extra_when_actual_exceeds_paid() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // Pre-pay 500×4×1 + 0 = 2000.00 (no tip).
+        let paid = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                customer_id,
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        // Complete the full 4h WITH a 300 tip → actual 2300.00, extra 300.00 owed.
+        let out = reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            dec("300"),
+            Some(14400),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile");
+        assert_eq!(
+            out,
+            SettleOutcome::ExtraCharged {
+                final_amount: dec("2300.00"),
+                extra: dec("300.00"),
+            }
+        );
+
+        let row: (Decimal, Option<Decimal>, Option<Decimal>) = sqlx::query_as(
+            "SELECT amount, final_amount, refund_amount FROM payment.payments WHERE id = $1",
+        )
+        .bind(paid.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read row");
+        assert_eq!(row.0, dec("2000.00"), "amount (pre-paid base) unchanged");
+        assert_eq!(row.1, Some(dec("2300.00")), "final_amount = actual + tip");
+        assert!(row.2.is_none(), "no refund on an under-payment");
+
+        // No refund event emitted.
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds");
+        assert_eq!(refunds, 0, "an extra charge emits no refund event");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
             .execute(&pool)
             .await;
     }

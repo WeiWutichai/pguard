@@ -6,28 +6,32 @@ info:
     v2 OpenAPI contract for the payment service (the source of truth — codegen produces the
     Rust handler stubs/types, the Dart client, and the TS client). THE MONEY PATH.
 
-    Split from the v1 `../guard-dispatch/services/booking` god-service. v2 is **POST-PAY** —
-    money rules baked into the contract:
-      1. **No client-initiated charge.** There is no "pay" endpoint. The customer is billed on
-         job completion, not up front — so this service exposes only READS (a customer's own
-         payment + ledger, the admin cross-user ledger + revenue report, the PDPA export).
-      2. **Bill raised on completion, for actual hours.** On `pguard.events.booking.completed`
-         the payment service raises the bill = the base (`base_fee × booked_hours × guard_count`)
-         prorated to the hours actually worked, PLUS the full flat tip. Booking's server-owned
-         pricing rides the (HMAC-signed) event, so payment never reads booking and never trusts
-         a client value.
-      3. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
-         index + ON CONFLICT). A redelivered completion event returns the existing payment and
-         emits no second `payment.completed` — it never double-charges.
-      4. **No refund flow.** Billing for actual usage means there is nothing to refund;
-         `payment.refund_processed` is reserved for a future real-gateway dispute/refund path
-         and is not emitted under post-pay.
-      5. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
+    Split from the v1 `../guard-dispatch/services/booking` god-service. v2 is **PRE-PAY then
+    SETTLE** — money rules baked into the contract:
+      1. **PRE-PAY (createPayment).** After a guard ACCEPTS, the customer pays the ESTIMATE up
+         front via `POST /payments { booking_id }`. The amount is computed SERVER-SIDE from the
+         authoritative booking (`base_fee × hours × guard_count + tip`, read via the service-JWT'd
+         `GET /internal/bookings/{id}`) — the client NEVER sends the amount. This payment GATES
+         the booking's en_route transition (booking learns it is paid by consuming
+         `pguard.events.payment.completed` → sets `paid_at`; en_route on an unpaid booking is a
+         409 PAYMENT_REQUIRED).
+      2. **Idempotent pre-pay.** At most ONE completed payment per booking (DB UNIQUE partial
+         index + ON CONFLICT). A repeat `POST /payments` returns the existing payment and emits no
+         second `payment.completed` — it never double-charges.
+      3. **SETTLE on completion, for actual hours.** On `pguard.events.booking.completed` the
+         payment service RECONCILES the actual-hours bill = the base
+         (`base_fee × booked_hours × guard_count`) prorated to the hours actually worked PLUS the
+         full flat tip, against the PRE-PAID amount: refund the overpay (emit
+         `payment.refund_processed`) or record the shortfall. The base is NEVER double-charged.
+         Booking's server-owned pricing rides the (HMAC-signed) completion event, so the settle is
+         self-contained and never trusts a client value.
+      4. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
          never float (serialized as JSON strings on the wire).
-      6. **Transactional outbox.** The charge writes the business row AND the `payment.completed`
-         event row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
-         NATS JetStream (see `contracts/asyncapi/events.yaml`).
-      7. **Generic errors.** No enumeration / no internal leak.
+      5. **Transactional outbox.** The pre-pay writes the business row AND the `payment.completed`
+         event row in ONE transaction (the settle writes the diff AND `payment.refund_processed`);
+         a background relay publishes `pguard.events.payment.*` to NATS JetStream (see
+         `contracts/asyncapi/events.yaml`).
+      6. **Generic errors.** No enumeration / no internal leak.
 
     All client-facing paths are served behind the gateway under the `/v1` prefix
     (CLAUDE.md "API versioning"). Success responses use the standard `{ success, data }`
@@ -45,10 +49,37 @@ servers:
 
 tags:
   - name: Payments
-    description: Customer payment reads (post-pay — the bill is raised on completion, not via an endpoint)
+    description: Customer payments (pre-pay the estimate up front; the bill is settled on completion)
 
 paths:
   /payments:
+    post:
+      tags: [Payments]
+      summary: PRE-PAY a booking's estimate (createPayment)
+      description: |
+        After a guard ACCEPTS, the customer pays the ESTIMATE up front. The client sends ONLY the
+        `booking_id`; the amount is computed SERVER-SIDE from the authoritative booking
+        (`base_fee × hours × guard_count + tip`, read via the service-JWT'd internal booking read)
+        — the client NEVER sends the amount. Authz: the caller must be the booking's customer and
+        the booking must be in a payable state (post-accept, pre-complete) → else 403/409.
+
+        This payment GATES the booking's en_route (booking consumes `payment.completed` → sets
+        `paid_at`). Idempotent per booking: a repeat returns the existing payment (200), never a
+        second charge.
+      operationId: createPayment
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreatePaymentRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/PaymentOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
     get:
       tags: [Payments]
       summary: List the caller's payments
@@ -256,7 +287,7 @@ components:
                 properties:
                   data: { $ref: '#/components/schemas/Payment' }
     BadRequest:
-      description: Invalid request body (e.g. bad method, non-positive or over-cap amount)
+      description: Invalid request body (e.g. malformed/missing booking_id)
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -282,6 +313,15 @@ components:
           schema: { $ref: '#/components/schemas/ErrorBody' }
 
   schemas:
+    CreatePaymentRequest:
+      type: object
+      required: [booking_id]
+      description: |
+        PRE-PAY request body. Carries ONLY the booking id — the amount is computed SERVER-SIDE from
+        the authoritative booking (never sent by the client).
+      properties:
+        booking_id: { type: string, format: uuid }
+
     PaymentStatus:
       type: string
       description: Payment lifecycle status.
@@ -298,22 +338,22 @@ components:
         booking_id: { type: string, format: uuid }
         customer_id: { type: string, format: uuid }
         guard_id: { type: string, format: uuid, nullable: true }
-        amount: { type: string, description: Exact decimal charged, example: "2000.00" }
+        amount: { type: string, description: 'Exact decimal PRE-PAID (the estimate). Never re-charged on settle.', example: "2000.00" }
         expected_total:
           type: string
           nullable: true
-          description: Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
+          description: Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
           example: "2000.00"
         payment_method: { type: string, nullable: true }
         status: { $ref: '#/components/schemas/PaymentStatus' }
-        final_amount: { type: string, nullable: true, description: 'Legacy proration field; null under post-pay (the charged `amount` is already the final bill).' }
-        refund_amount: { type: string, nullable: true, description: 'Legacy refund field; null under post-pay (no refunds — billed for actual hours).' }
-        actual_hours: { type: string, nullable: true, description: 'Legacy proration field; null under post-pay.' }
+        final_amount: { type: string, nullable: true, description: 'The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).' }
+        refund_amount: { type: string, nullable: true, description: 'The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed).' }
+        actual_hours: { type: string, nullable: true, description: 'Clamped hours actually worked, recorded on the settle.' }
         refund_status:
           type: string
           nullable: true
           enum: [pending, processed]
-          description: 'Legacy refund-tracking field; null under post-pay (no refunds emitted).'
+          description: '`pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.'
         paid_at: { type: string, format: date-time, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }

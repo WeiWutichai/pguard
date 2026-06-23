@@ -157,6 +157,15 @@ class _LiveBody extends StatelessWidget {
                 ],
                 BookingStatusStepper(status: booking.status),
                 const SizedBox(height: PgTokens.space4),
+                // PRE-PAY: the instant a guard ACCEPTS, the customer pays the server-computed
+                // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
+                // accepted-and-unpaid (the booking-status WS drives `status`/`paid_at`, no polling)
+                // — once paid, the booking un-gates the guard and this disappears.
+                if (booking.status == BookingStatus.accepted &&
+                    !booking.isPaid) ...[
+                  _PayNowBanner(bookingId: booking.id),
+                  const SizedBox(height: PgTokens.space4),
+                ],
                 _Actions(booking: booking),
               ],
             ),
@@ -663,6 +672,57 @@ class _Actions extends ConsumerWidget {
                     ),
         ),
       ],
+    );
+  }
+}
+
+/// PRE-PAY CTA: shown on the live screen while the booking is accepted-but-unpaid. Routes to the
+/// PaymentScreen where the customer pays the server-computed estimate ("ชำระเงินเพื่อให้เจ้าหน้าที่
+/// เริ่มงาน" — pay so the guard can set off). Display-only; the amount is computed + charged by the
+/// payment service (the client posts only the booking id).
+class _PayNowBanner extends ConsumerWidget {
+  const _PayNowBanner({required this.bookingId});
+
+  final String bookingId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorAmber50,
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        border: Border.all(color: PgTokens.colorAmber200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.payments_outlined,
+                  size: 18, color: PgTokens.colorAmber700),
+              const SizedBox(width: PgTokens.space2),
+              Expanded(
+                child: Text(
+                  isThai
+                      ? 'เจ้าหน้าที่รับงานแล้ว — ชำระเงินเพื่อเริ่มงาน'
+                      : 'Guard accepted — pay to get started',
+                  style: const TextStyle(
+                      fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: PgTokens.space3),
+          PgPrimaryButton(
+            label: isThai ? 'ชำระเงิน' : 'Pay now',
+            color: PgTokens.colorAmber500,
+            foreground: PgTokens.colorOnAmber,
+            onPressed: () => context.push('/booking/$bookingId/pay'),
+          ),
+        ],
+      ),
     );
   }
 }

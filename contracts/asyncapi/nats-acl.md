@@ -23,7 +23,7 @@ event at all. (Subjects resolved from `packages/shared-events/src/lib.rs::topics
 
 | Service        | NATS user      | Publishes (data)              | Consumes (data)                         | Notes |
 |----------------|----------------|-------------------------------|-----------------------------------------|-------|
-| booking        | `booking`      | `pguard.events.booking.>`     | —                                       | outbox relay |
+| booking        | `booking`      | `pguard.events.booking.>`     | `pguard.events.payment.completed`       | outbox relay + JS consumer (PRE-PAY gate: stamps `paid_at` → un-gates en_route) |
 | payment        | `payment`      | `pguard.events.payment.>`     | `pguard.events.booking.completed`       | also a JS consumer |
 | rating         | `rating`       | `pguard.events.rating.>`      | —                                       | outbox relay |
 | calling        | `calling`      | `pguard.events.calling.>`     | —                                       | outbox relay |

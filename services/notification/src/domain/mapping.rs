@@ -86,6 +86,36 @@ pub fn dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> Notification
     }
 }
 
+/// Build the DUAL-recipient plans for `payment.completed` (PRE-PAY): the customer is told the
+/// payment succeeded ("ชำระเงินสำเร็จ") and the guard is told the customer paid
+/// ("ลูกค้าชำระเงินแล้ว"). PURE (no DB/HTTP) so the copy + per-recipient `data` shape is
+/// unit-testable, mirroring [`dispatch_plan_for_guard`]. The consumer dispatches each plan with a
+/// per-(event, recipient) idempotent claim. The guard plan is omitted when the event carries no
+/// `guard_id` (defensive — a pre-paid booking always has an accepted guard). Returns `[]` when the
+/// `customer_id` is missing (nothing routable).
+pub fn payment_completed_plans(payload: &Value) -> Vec<NotificationPlan> {
+    let Some(customer_id) = uuid_field(payload, "customer_id") else {
+        return Vec::new();
+    };
+    let mut plans = vec![NotificationPlan {
+        recipient_id: customer_id,
+        notification_type: NotificationType::System,
+        title: "ชำระเงินสำเร็จ".to_string(),
+        body: "ชำระเงินสำเร็จ".to_string(),
+        data: build_data(Some("customer"), topics::PAYMENT_COMPLETED, payload),
+    }];
+    if let Some(guard_id) = uuid_field(payload, "guard_id") {
+        plans.push(NotificationPlan {
+            recipient_id: guard_id,
+            notification_type: NotificationType::System,
+            title: "ลูกค้าชำระเงินแล้ว".to_string(),
+            body: "ลูกค้าชำระเงินแล้ว".to_string(),
+            data: build_data(Some("guard"), topics::PAYMENT_COMPLETED, payload),
+        });
+    }
+    plans
+}
+
 /// Map an event to a [`NotificationPlan`], or `None` if it should not notify anyone.
 pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationPlan> {
     let make = |recipient: Uuid,
@@ -156,13 +186,10 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
                 ))
             }
         }
-        topics::PAYMENT_COMPLETED => Some(make(
-            uuid_field(payload, "guard_id")?,
-            Some("guard"),
-            NotificationType::System,
-            "ได้รับการชำระเงิน",
-            "คุณได้รับการชำระเงินสำหรับงานแล้ว",
-        )),
+        // payment.completed is DUAL-recipient (PRE-PAY: tell the customer AND the guard), so it is
+        // NOT a single-recipient `plan_for_event` mapping — the consumer routes it to
+        // `payment_completed_plans` (per-recipient idempotent claims, like the fan-out path).
+        topics::PAYMENT_COMPLETED => None,
         topics::RATING_SUBMITTED => Some(make(
             uuid_field(payload, "guard_id")?,
             Some("guard"),
@@ -238,15 +265,8 @@ mod tests {
     }
 
     #[test]
-    fn payment_and_rating_notify_guard() {
+    fn rating_notifies_guard() {
         let guard = Uuid::new_v4();
-        let pay = json!({ "guard_id": guard, "booking_id": Uuid::new_v4(), "payment_id": Uuid::new_v4(), "amount": "500.00" });
-        assert_eq!(
-            plan_for_event(topics::PAYMENT_COMPLETED, &pay)
-                .unwrap()
-                .recipient_id,
-            guard
-        );
         let rate = json!({ "guard_id": guard, "booking_id": Uuid::new_v4(), "rating_id": Uuid::new_v4(), "score": 5 });
         assert_eq!(
             plan_for_event(topics::RATING_SUBMITTED, &rate)
@@ -254,6 +274,49 @@ mod tests {
                 .recipient_id,
             guard
         );
+    }
+
+    #[test]
+    fn payment_completed_is_not_single_recipient() {
+        // PRE-PAY: payment.completed is DUAL-recipient; `plan_for_event` deliberately returns None
+        // (the consumer routes it to `payment_completed_plans`).
+        let pay = json!({ "customer_id": Uuid::new_v4(), "guard_id": Uuid::new_v4(), "booking_id": Uuid::new_v4(), "payment_id": Uuid::new_v4(), "amount": "500.00" });
+        assert!(plan_for_event(topics::PAYMENT_COMPLETED, &pay).is_none());
+    }
+
+    #[test]
+    fn payment_completed_plans_notify_both_customer_and_guard() {
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let pay = json!({ "customer_id": customer, "guard_id": guard, "booking_id": Uuid::new_v4(), "payment_id": Uuid::new_v4(), "amount": "500.00" });
+        let plans = payment_completed_plans(&pay);
+        assert_eq!(plans.len(), 2, "PRE-PAY notifies BOTH parties");
+        // Customer first: "ชำระเงินสำเร็จ".
+        assert_eq!(plans[0].recipient_id, customer);
+        assert_eq!(plans[0].title, "ชำระเงินสำเร็จ");
+        assert_eq!(plans[0].data["target_role"], "customer");
+        // Guard second: "ลูกค้าชำระเงินแล้ว".
+        assert_eq!(plans[1].recipient_id, guard);
+        assert_eq!(plans[1].title, "ลูกค้าชำระเงินแล้ว");
+        assert_eq!(plans[1].data["target_role"], "guard");
+    }
+
+    #[test]
+    fn payment_completed_plans_omit_guard_when_absent() {
+        // Defensive: no guard_id → only the customer is notified (no panic, no empty guard push).
+        let customer = Uuid::new_v4();
+        let pay =
+            json!({ "customer_id": customer, "booking_id": Uuid::new_v4(), "amount": "500.00" });
+        let plans = payment_completed_plans(&pay);
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].recipient_id, customer);
+    }
+
+    #[test]
+    fn payment_completed_plans_empty_without_customer() {
+        // No customer_id → nothing routable.
+        let pay = json!({ "guard_id": Uuid::new_v4(), "booking_id": Uuid::new_v4() });
+        assert!(payment_completed_plans(&pay).is_empty());
     }
 
     #[test]

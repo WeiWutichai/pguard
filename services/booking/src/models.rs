@@ -66,6 +66,10 @@ pub struct BookingResponse {
     /// Site coordinates — `None` when the customer did not provide them at create.
     pub lat: Option<f64>,
     pub lng: Option<f64>,
+    /// When the booking was PAID (PRE-PAY: stamped by the `payment.completed` consumer). `None`
+    /// = unpaid — the client uses this to know the `accepted → en_route` transition is gated
+    /// (show the pay-step) vs. already paid.
+    pub paid_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

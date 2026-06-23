@@ -69,13 +69,17 @@ channels:
     messages: { progressReported: { $ref: '#/components/messages/BookingProgressReported' } }
   paymentCompleted:
     address: pguard.events.payment.completed
+    description: >-
+      Emitted by payment on a successful PRE-PAY (the customer paid the estimate up front). Booking
+      consumes it to un-gate — set paid_at, which allows the en_route transition; notification
+      consumes it to push the customer "ชำระเงินสำเร็จ" and the guard "ลูกค้าชำระเงินแล้ว".
     messages: { paymentCompleted: { $ref: '#/components/messages/PaymentCompleted' } }
   paymentRefundProcessed:
     address: pguard.events.payment.refund_processed
     description: >-
-      RESERVED — not emitted under v2 POST-PAY (the customer is billed for actual hours on
-      completion, so there is no over-payment to refund). Kept for a future real-gateway
-      refund/dispute flow; the schema + topic remain stable.
+      Emitted by payment on a RECONCILE refund: on booking.completed the actual-hours bill is
+      diffed against the PRE-PAID amount, and when the customer worked fewer hours than booked the
+      overpay is refunded (the base is never double-charged). Not emitted when actual ≥ paid.
     messages: { refundProcessed: { $ref: '#/components/messages/PaymentRefundProcessed' } }
   ratingSubmitted:
     address: pguard.events.rating.submitted
@@ -116,11 +120,23 @@ operations:
   onBookingCompleted:
     action: receive
     channel: { $ref: '#/channels/bookingCompleted' }
-    summary: payment consumes this → finalize proration/refund (idempotent by event_id).
+    summary: >-
+      payment consumes this → RECONCILE the actual-hours bill against the PRE-PAID amount (refund
+      the overpay via refund_processed / record the shortfall; idempotent by event_id).
+  onPaymentRefundProcessed:
+    action: receive
+    channel: { $ref: '#/channels/paymentRefundProcessed' }
+    summary: >-
+      Emitted by payment on a reconcile refund (actual hours < pre-paid). A future notification
+      consumer tells the customer their overpay was refunded.
   onPaymentCompleted:
     action: receive
     channel: { $ref: '#/channels/paymentCompleted' }
-    summary: booking + notification consume this.
+    summary: >-
+      booking + notification consume this. booking (durable `booking-payment-completed`,
+      idempotent by event_id) stamps `bookings.paid_at`, which UN-GATES the PRE-PAY
+      `accepted → en_route` transition (en_route on an unpaid booking is a 409
+      PAYMENT_REQUIRED). notification pushes "ชำระเงินสำเร็จ" / "ลูกค้าชำระเงินแล้ว".
   onUserCompromised:
     action: receive
     channel: { $ref: '#/channels/userCompromised' }
@@ -270,12 +286,12 @@ components:
                   description: >-
                     Seconds actually worked (now − work_started_at). Null if the guard never
                     started (defensive — completion requires a start). The payment service
-                    consumes this to raise the POST-PAY bill for the hours actually worked.
+                    consumes this to RECONCILE the actual-hours bill against the PRE-PAID amount.
                 base_fee:
                   type: string
                   description: >-
                     Booking's server-owned per-guard-hour fee (decimal string). Carried so the
-                    post-pay consumer bills self-contained, never recomputing from a client.
+                    reconcile consumer recomputes the bill self-contained, never from a client.
                   example: "500.00"
                 guard_count: { type: integer, description: Guards booked. }
                 tip:
@@ -305,12 +321,24 @@ components:
           properties:
             payload:
               type: object
-              required: [payment_id, booking_id, guard_id, amount]
+              required: [payment_id, booking_id, customer_id, amount]
               properties:
                 payment_id: { type: string, format: uuid }
                 booking_id: { type: string, format: uuid }
-                guard_id: { type: string, format: uuid, description: Recipient (the paid guard). }
-                amount: { type: string, description: Decimal string (THB). }
+                customer_id:
+                  type: string
+                  format: uuid
+                  description: >-
+                    The paying customer. Carried so booking can un-gate (set paid_at → allow
+                    en_route) and notification can push the customer "ชำระเงินสำเร็จ".
+                guard_id:
+                  type: string
+                  format: uuid
+                  nullable: true
+                  description: >-
+                    The accepted guard (set in a payable state). Carried so notification can push
+                    the guard "ลูกค้าชำระเงินแล้ว".
+                amount: { type: string, description: Decimal string (THB) — the PRE-PAID estimate. }
 
     EnvelopeOf_RefundRef:
       allOf:

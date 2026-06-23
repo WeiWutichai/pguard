@@ -24,6 +24,13 @@
 use std::fmt;
 use std::str::FromStr;
 
+/// Machine-readable `error.code` for the PRE-PAY gate 409: an `accepted → en_route` attempted
+/// on a booking that has not been paid (`paid_at` is NULL). Clients (the mobile pay-step) branch
+/// on this sub-code — see `AppError::ConflictCode` — to route the customer to payment instead of
+/// surfacing the English message. A booking learns it is paid by consuming
+/// `pguard.events.payment.completed` (which stamps `paid_at`).
+pub const PAYMENT_REQUIRED_CODE: &str = "PAYMENT_REQUIRED";
+
 /// The booking lifecycle status. Serialized snake_case to match the Postgres enum
 /// `booking.booking_status` (NOT `sqlx::Type` — the repo binds [`BookingStatus::as_db_str`]
 /// with a `::booking.booking_status` cast and reads the column back as text).

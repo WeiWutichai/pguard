@@ -9,6 +9,14 @@ use uuid::Uuid;
 
 // ----- Requests -----
 
+/// Body of `POST /payments` (createPayment — PRE-PAY). The client sends ONLY the booking id;
+/// the amount is computed SERVER-SIDE from the authoritative booking (`base_fee × hours ×
+/// guard_count + tip`), never trusted from the client (CLAUDE.md money rules).
+#[derive(Debug, Deserialize)]
+pub struct CreatePaymentRequest {
+    pub booking_id: Uuid,
+}
+
 /// Inclusive-from / exclusive-to date window for the analytics reports (RFC3339). Both
 /// optional — the handler defaults to the last 30 days ending now.
 #[derive(Debug, Deserialize)]
@@ -73,6 +81,28 @@ pub struct RevenueReport {
     pub total: Decimal,
     pub prev_total: Decimal,
     pub mom_pct: Option<f64>,
+}
+
+// ----- booking internal read (deserialized from booking's /internal/bookings/{id}) -----
+
+/// The authoritative booking fields the PRE-PAY charge verifies + prices against. Mirrors the
+/// relevant subset of booking's `InternalBooking`; serde ignores the extra fields (id/guard_id)
+/// the charge does not need. The PRE-PAY estimate is `base_fee × hours × guard_count + tip`
+/// computed from THESE server-owned values — never a client body. Money fields deserialize from
+/// a JSON string (rust_decimal serde-str, workspace-wide).
+#[derive(Debug, Clone, Deserialize)]
+pub struct InternalBooking {
+    pub customer_id: Uuid,
+    /// The accepted guard (`Some` once a guard claimed the booking — always set in a payable
+    /// state). Carried onto `payment.completed` so notification can push the guard
+    /// "ลูกค้าชำระเงินแล้ว".
+    pub guard_id: Option<Uuid>,
+    pub status: String,
+    pub hours: i32,
+    /// ฿ per hour per guard (server-owned; the client never sets this).
+    pub base_fee: Decimal,
+    pub guard_count: i32,
+    pub tip: Decimal,
 }
 
 // ----- Customer-spend report (admin analytics) -----

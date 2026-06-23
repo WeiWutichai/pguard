@@ -1,10 +1,11 @@
-//! API layer — thin Axum transport handlers. POST-PAY: there is NO customer-initiated charge
-//! endpoint (the bill is raised by the `booking.completed` consumer). This layer serves the
-//! READ surface — a customer's own payment + ledger, the admin cross-user ledger + revenue
-//! report, and the service-JWT'd PDPA data export. THE MONEY PATH (reads).
+//! API layer — thin Axum transport handlers. PRE-PAY: the customer-facing `POST /payments`
+//! (createPayment) charges the server-computed ESTIMATE once a guard has accepted; that payment
+//! gates the booking's en_route. This layer also serves the READ surface — a customer's own
+//! payment + ledger, the admin cross-user ledger + revenue report, and the service-JWT'd PDPA
+//! data export. THE MONEY PATH.
 //!
-//! Handlers are generic over [`PaymentDeps`] so the `AuthUser` guard + role gates are
-//! unit-testable with a lightweight state, mirroring booking's seam.
+//! Handlers are generic over [`PaymentDeps`] so the `AuthUser` guard + role/authz gates are
+//! unit-testable with a lightweight state, mirroring rating's seam.
 
 use axum::extract::{Path, Query, State};
 use axum::Json;
@@ -18,12 +19,97 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
+use crate::booking_client::BookingReader;
+use crate::domain;
 use crate::models::{
-    AdminListPaymentsQuery, CustomerSpend, PaymentResponse, ReportRangeQuery, RevenueReport,
+    AdminListPaymentsQuery, CreatePaymentRequest, CustomerSpend, PaymentResponse, ReportRangeQuery,
+    RevenueReport,
 };
 use crate::repo;
+use crate::repo::PrePayOutcome;
 use crate::state::PaymentDeps;
 use crate::state::PaymentInternalDeps;
+
+/// The recorded `payment_method` for a PRE-PAY charge. v2's gateway is simulated and there is no
+/// real card-on-file step yet, so a successful pre-pay is tagged `prepaid`; a real gateway
+/// integration would replace this with the captured method (PromptPay/card/…).
+const PREPAID_METHOD: &str = "prepaid";
+
+/// POST /payments — PRE-PAY a booking's estimate (createPayment). THE MONEY PATH (write).
+///
+/// v2 is PRE-PAY: after a guard ACCEPTS, the customer pays the estimate up front, which GATES the
+/// booking's en_route (booking learns it is paid by consuming `payment.completed`). Discipline
+/// (CLAUDE.md — never trust the client; money is server-computed):
+///  1. role=customer.
+///  2. VERIFY against the authoritative booking (service-JWT'd internal read): the caller must be
+///     the booking's customer AND the booking must be in a payable state (post-accept,
+///     pre-complete).
+///  3. The amount is the SERVER-computed estimate `base_fee × hours × guard_count + tip` from the
+///     booking's own pricing — exact `Decimal`, NEVER an f64, NEVER the client body.
+///  4. Idempotent per booking (DB UNIQUE partial index): a repeat is a no-op returning the
+///     existing payment (no second charge, no second `payment.completed`).
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+pub async fn create_payment<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<CreatePaymentRequest>,
+) -> Result<Json<ApiResponse<PaymentResponse>>, AppError> {
+    if user.role != "customer" {
+        return Err(AppError::Forbidden(
+            "Only customers can pay for a booking".to_string(),
+        ));
+    }
+
+    // (1) authoritative verification — the charge trusts the booking, not the body.
+    let booking = state.booking_reader().get_booking(req.booking_id).await?;
+
+    if booking.customer_id != user.user_id {
+        // Generic 403 — never reveal whether the booking exists / belongs to someone else.
+        return Err(AppError::Forbidden(
+            "You can only pay for your own booking".to_string(),
+        ));
+    }
+    if !domain::is_payable_status(&booking.status) {
+        return Err(AppError::Conflict(
+            "This booking is not awaiting payment".to_string(),
+        ));
+    }
+
+    // (2) SERVER-computed estimate from the booking's own pricing (never the client body).
+    let estimate = domain::expected_total(
+        booking.base_fee,
+        booking.hours,
+        booking.guard_count,
+        booking.tip,
+    );
+
+    // (3) idempotent pre-pay + payment.completed outbox event, in ONE tx. A repeat is a no-op.
+    let outcome = repo::prepay_idempotent(
+        state.db(),
+        req.booking_id,
+        user.user_id,
+        booking.guard_id,
+        estimate,
+        estimate,
+        PREPAID_METHOD,
+        Uuid::new_v4(),
+    )
+    .await?;
+
+    let payment = match outcome {
+        PrePayOutcome::Created(p) => {
+            tracing::info!(payment_id = %p.id, amount = %estimate, "pre-pay charged (estimate)");
+            p
+        }
+        PrePayOutcome::AlreadyPaid(p) => {
+            // Idempotent: the booking was already pre-paid. Return the existing payment (200).
+            tracing::info!(payment_id = %p.id, "pre-pay no-op (already paid)");
+            p
+        }
+    };
+
+    Ok(Json(ApiResponse::success(payment)))
+}
 
 /// GET /payments/{id} — fetch one payment the caller owns (or admin).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, payment_id = %id))]
@@ -162,9 +248,11 @@ pub async fn internal_export_user<S: PaymentInternalDeps>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::booking_client::BookingReader;
+    use crate::models::InternalBooking;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::get;
+    use axum::routing::{get, post};
     use axum::Router;
     use jsonwebtoken::{DecodingKey, EncodingKey};
     use shared::auth::{encode_jwt_with_key, HasJwtSecret};
@@ -175,11 +263,26 @@ mod tests {
 
     const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-payment-test!!!";
 
+    /// Stub booking reader — canned booking (or NotFound), no HTTP. Lets the createPayment
+    /// role/authz gates be tested hermetically (mirrors rating's `StubReader`).
+    #[derive(Clone)]
+    struct StubReader {
+        booking: Option<InternalBooking>,
+    }
+    impl BookingReader for StubReader {
+        async fn get_booking(&self, _booking_id: Uuid) -> Result<InternalBooking, AppError> {
+            self.booking
+                .clone()
+                .ok_or_else(|| AppError::NotFound("Booking not found".to_string()))
+        }
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
         redis: redis::aio::ConnectionManager,
+        reader: StubReader,
     }
 
     impl HasJwtSecret for TestDeps {
@@ -194,18 +297,22 @@ mod tests {
         }
     }
     impl PaymentDeps for TestDeps {
+        type Reader = StubReader;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
+        fn booking_reader(&self) -> &StubReader {
+            &self.reader
+        }
     }
 
-    /// Build the payment READ router over a lightweight test state. The `AuthUser` extractor
-    /// requires a real `redis::aio::ConnectionManager` (the jti blocklist), which can't be
-    /// constructed without connecting. So these router tests are hermetic by default and only
-    /// run when a test Redis is provided via `TEST_REDIS_URL` (falling back to `REDIS_CACHE_URL`);
-    /// `None` → the caller SKIPs. The role-reject paths fail at the role gate before any DB read,
-    /// so the (invalid) lazy pool is never touched.
-    async fn router() -> Option<Router> {
+    /// Build the payment router over a lightweight test state. The `AuthUser` extractor requires
+    /// a real `redis::aio::ConnectionManager` (the jti blocklist), which can't be constructed
+    /// without connecting. So these router tests are hermetic by default and only run when a test
+    /// Redis is provided via `TEST_REDIS_URL` (falling back to `REDIS_CACHE_URL`); `None` → the
+    /// caller SKIPs. The role/authz reject paths fail at the gate before any DB read, so the
+    /// (invalid) lazy pool is never touched.
+    async fn router(booking: Option<InternalBooking>) -> Option<Router> {
         let redis_url = std::env::var("TEST_REDIS_URL")
             .or_else(|_| std::env::var("REDIS_CACHE_URL"))
             .ok()?;
@@ -220,9 +327,11 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db,
             redis,
+            reader: StubReader { booking },
         };
         Some(
             Router::new()
+                .route("/payments", post(create_payment::<TestDeps>))
                 .route("/admin/payments", get(admin_list_payments::<TestDeps>))
                 .route(
                     "/admin/reports/revenue",
@@ -242,9 +351,126 @@ mod tests {
         tok
     }
 
+    /// A payable booking (guard accepted) owned by `customer_id`, priced 500×4×1 + 0 = 2000.00.
+    fn payable_booking(customer_id: Uuid) -> InternalBooking {
+        InternalBooking {
+            customer_id,
+            guard_id: Some(Uuid::new_v4()),
+            status: "accepted".to_string(),
+            hours: 4,
+            base_fee: "500".parse().unwrap(),
+            guard_count: 1,
+            tip: rust_decimal::Decimal::ZERO,
+        }
+    }
+
+    fn create_payment_req(booking_id: Uuid) -> Body {
+        Body::from(serde_json::json!({ "booking_id": booking_id }).to_string())
+    }
+
+    async fn post_payment(app: Router, tok: Option<&str>, body: Body) -> StatusCode {
+        let mut b = Request::builder()
+            .method("POST")
+            .uri("/payments")
+            .header("content-type", "application/json");
+        if let Some(t) = tok {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        app.oneshot(b.body(body).unwrap()).await.unwrap().status()
+    }
+
+    // ----- POST /payments (createPayment — PRE-PAY): role + authz gates -----
+
+    #[tokio::test]
+    async fn create_payment_rejects_missing_token() {
+        let Some(app) = router(Some(payable_booking(Uuid::new_v4()))).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // No bearer → 401 (the service validates, not just the gateway edge).
+        assert_eq!(
+            post_payment(app, None, create_payment_req(Uuid::new_v4())).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn create_payment_rejects_non_customer() {
+        // A guard must not pay for a booking (role gate, before any booking read).
+        let Some(app) = router(Some(payable_booking(Uuid::new_v4()))).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = customer_token(Uuid::new_v4(), "guard");
+        assert_eq!(
+            post_payment(app, Some(&tok), create_payment_req(Uuid::new_v4())).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn create_payment_rejects_paying_someone_elses_booking() {
+        // Caller is a customer, but the authoritative booking belongs to a DIFFERENT customer →
+        // 403, decided against the booking read (never the body), before any DB write.
+        let Some(app) = router(Some(payable_booking(Uuid::new_v4()))).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = customer_token(Uuid::new_v4(), "customer");
+        assert_eq!(
+            post_payment(app, Some(&tok), create_payment_req(Uuid::new_v4())).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn create_payment_rejects_non_payable_status() {
+        // Owner matches, but the booking is not in a payable state (no guard yet) → 409, before
+        // any DB write. Proves the estimate path is GATED on an accepted booking.
+        let me = Uuid::new_v4();
+        let mut booking = payable_booking(me);
+        booking.status = "requested".to_string();
+        booking.guard_id = None;
+        let Some(app) = router(Some(booking)).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = customer_token(me, "customer");
+        assert_eq!(
+            post_payment(app, Some(&tok), create_payment_req(Uuid::new_v4())).await,
+            StatusCode::CONFLICT
+        );
+    }
+
+    #[tokio::test]
+    async fn create_payment_estimate_ignores_client_amount() {
+        // The request body has NO amount field — the estimate is computed SERVER-SIDE from the
+        // booking (proved by the pure `domain::expected_total` tests). Here we assert a body that
+        // tries to smuggle an `amount` is simply ignored (still parses to the same request).
+        let me = Uuid::new_v4();
+        let Some(app) = router(Some(payable_booking(me))).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = customer_token(me, "customer");
+        // Owner matches + booking payable → the handler proceeds past authz to the DB write. The
+        // lazy pool is invalid, so the write errors (500), NOT a 4xx — i.e. the client `amount`
+        // was never validated/honored; the flow reached the server-priced charge. (The actual
+        // charge + estimate value are covered by the repo DB test + the domain unit tests.)
+        let body = Body::from(
+            serde_json::json!({ "booking_id": Uuid::new_v4(), "amount": "1.00" }).to_string(),
+        );
+        let status = post_payment(app, Some(&tok), body).await;
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "authz passed and the client amount was ignored; the flow reached the server-priced DB write"
+        );
+    }
+
     #[tokio::test]
     async fn admin_list_payments_rejects_non_admin() {
-        let Some(app) = router().await else {
+        let Some(app) = router(None).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
@@ -268,7 +494,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_revenue_report_rejects_non_admin() {
-        let Some(app) = router().await else {
+        let Some(app) = router(None).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
@@ -292,7 +518,7 @@ mod tests {
 
     #[tokio::test]
     async fn admin_customer_spend_report_rejects_non_admin() {
-        let Some(app) = router().await else {
+        let Some(app) = router(None).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };

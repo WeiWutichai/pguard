@@ -2,28 +2,32 @@
 v2 OpenAPI contract for the payment service (the source of truth — codegen produces the
 Rust handler stubs/types, the Dart client, and the TS client). THE MONEY PATH.
 
-Split from the v1 `../guard-dispatch/services/booking` god-service. v2 is **POST-PAY** —
-money rules baked into the contract:
-  1. **No client-initiated charge.** There is no \"pay\" endpoint. The customer is billed on
-     job completion, not up front — so this service exposes only READS (a customer's own
-     payment + ledger, the admin cross-user ledger + revenue report, the PDPA export).
-  2. **Bill raised on completion, for actual hours.** On `pguard.events.booking.completed`
-     the payment service raises the bill = the base (`base_fee × booked_hours × guard_count`)
-     prorated to the hours actually worked, PLUS the full flat tip. Booking's server-owned
-     pricing rides the (HMAC-signed) event, so payment never reads booking and never trusts
-     a client value.
-  3. **Idempotent charge.** At most ONE completed payment per booking (DB UNIQUE partial
-     index + ON CONFLICT). A redelivered completion event returns the existing payment and
-     emits no second `payment.completed` — it never double-charges.
-  4. **No refund flow.** Billing for actual usage means there is nothing to refund;
-     `payment.refund_processed` is reserved for a future real-gateway dispute/refund path
-     and is not emitted under post-pay.
-  5. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
+Split from the v1 `../guard-dispatch/services/booking` god-service. v2 is **PRE-PAY then
+SETTLE** — money rules baked into the contract:
+  1. **PRE-PAY (createPayment).** After a guard ACCEPTS, the customer pays the ESTIMATE up
+     front via `POST /payments { booking_id }`. The amount is computed SERVER-SIDE from the
+     authoritative booking (`base_fee × hours × guard_count + tip`, read via the service-JWT'd
+     `GET /internal/bookings/{id}`) — the client NEVER sends the amount. This payment GATES
+     the booking's en_route transition (booking learns it is paid by consuming
+     `pguard.events.payment.completed` → sets `paid_at`; en_route on an unpaid booking is a
+     409 PAYMENT_REQUIRED).
+  2. **Idempotent pre-pay.** At most ONE completed payment per booking (DB UNIQUE partial
+     index + ON CONFLICT). A repeat `POST /payments` returns the existing payment and emits no
+     second `payment.completed` — it never double-charges.
+  3. **SETTLE on completion, for actual hours.** On `pguard.events.booking.completed` the
+     payment service RECONCILES the actual-hours bill = the base
+     (`base_fee × booked_hours × guard_count`) prorated to the hours actually worked PLUS the
+     full flat tip, against the PRE-PAID amount: refund the overpay (emit
+     `payment.refund_processed`) or record the shortfall. The base is NEVER double-charged.
+     Booking's server-owned pricing rides the (HMAC-signed) completion event, so the settle is
+     self-contained and never trusts a client value.
+  4. **Exact money.** All amounts are decimal (`rust_decimal::Decimal` server-side),
      never float (serialized as JSON strings on the wire).
-  6. **Transactional outbox.** The charge writes the business row AND the `payment.completed`
-     event row in ONE transaction; a background relay publishes `pguard.events.payment.*` to
-     NATS JetStream (see `contracts/asyncapi/events.yaml`).
-  7. **Generic errors.** No enumeration / no internal leak.
+  5. **Transactional outbox.** The pre-pay writes the business row AND the `payment.completed`
+     event row in ONE transaction (the settle writes the diff AND `payment.refund_processed`);
+     a background relay publishes `pguard.events.payment.*` to NATS JetStream (see
+     `contracts/asyncapi/events.yaml`).
+  6. **Generic errors.** No enumeration / no internal leak.
 
 All client-facing paths are served behind the gateway under the `/v1` prefix
 (CLAUDE.md \"API versioning\"). Success responses use the standard `{ success, data }`
@@ -97,6 +101,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
 [*AdminApi*](doc/AdminApi.md) | [**adminRevenueReport**](doc/AdminApi.md#adminrevenuereport) | **GET** /admin/reports/revenue | Revenue-trend analytics (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
+[*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | PRE-PAY a booking&#39;s estimate (createPayment)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**listPayments**](doc/PaymentsApi.md#listpayments) | **GET** /payments | List the caller&#39;s payments
 
@@ -106,6 +111,7 @@ Class | Method | HTTP request | Description
  - [AdminCustomerSpendReport200Response](doc/AdminCustomerSpendReport200Response.md)
  - [AdminRevenueReport200Response](doc/AdminRevenueReport200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [CreatePaymentRequest](doc/CreatePaymentRequest.md)
  - [CustomerSpend](doc/CustomerSpend.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)

@@ -17,14 +17,14 @@ part 'payment.g.dart';
 /// * [bookingId] 
 /// * [customerId] 
 /// * [guardId] 
-/// * [amount] - Exact decimal charged
-/// * [expectedTotal] - Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
+/// * [amount] - Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
+/// * [expectedTotal] - Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
 /// * [paymentMethod] 
 /// * [status] 
-/// * [finalAmount] - Legacy proration field; null under post-pay (the charged `amount` is already the final bill).
-/// * [refundAmount] - Legacy refund field; null under post-pay (no refunds — billed for actual hours).
-/// * [actualHours] - Legacy proration field; null under post-pay.
-/// * [refundStatus] - Legacy refund-tracking field; null under post-pay (no refunds emitted).
+/// * [finalAmount] - The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).
+/// * [refundAmount] - The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed).
+/// * [actualHours] - Clamped hours actually worked, recorded on the settle.
+/// * [refundStatus] - `pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.
 /// * [paidAt] 
 /// * [createdAt] 
 /// * [updatedAt] 
@@ -42,11 +42,11 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   @BuiltValueField(wireName: r'guard_id')
   String? get guardId;
 
-  /// Exact decimal charged
+  /// Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
   @BuiltValueField(wireName: r'amount')
   String get amount;
 
-  /// Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
+  /// Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
   @BuiltValueField(wireName: r'expected_total')
   String? get expectedTotal;
 
@@ -57,19 +57,19 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   PaymentStatus get status;
   // enum statusEnum {  pending,  completed,  refunded,  };
 
-  /// Legacy proration field; null under post-pay (the charged `amount` is already the final bill).
+  /// The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).
   @BuiltValueField(wireName: r'final_amount')
   String? get finalAmount;
 
-  /// Legacy refund field; null under post-pay (no refunds — billed for actual hours).
+  /// The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed).
   @BuiltValueField(wireName: r'refund_amount')
   String? get refundAmount;
 
-  /// Legacy proration field; null under post-pay.
+  /// Clamped hours actually worked, recorded on the settle.
   @BuiltValueField(wireName: r'actual_hours')
   String? get actualHours;
 
-  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
+  /// `pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.
   @BuiltValueField(wireName: r'refund_status')
   PaymentRefundStatusEnum? get refundStatus;
   // enum refundStatusEnum {  pending,  processed,  };
@@ -356,10 +356,10 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
 
 class PaymentRefundStatusEnum extends EnumClass {
 
-  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
+  /// `pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.
   @BuiltValueEnumConst(wireName: r'pending')
   static const PaymentRefundStatusEnum pending = _$paymentRefundStatusEnum_pending;
-  /// Legacy refund-tracking field; null under post-pay (no refunds emitted).
+  /// `pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.
   @BuiltValueEnumConst(wireName: r'processed')
   static const PaymentRefundStatusEnum processed = _$paymentRefundStatusEnum_processed;
 
