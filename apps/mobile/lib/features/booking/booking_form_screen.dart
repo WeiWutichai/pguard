@@ -514,8 +514,8 @@ class _LocationSection extends StatelessWidget {
         AspectRatio(
           aspectRatio: 16 / 9,
           child: PgMap(
-            // Re-key on the pin so PgMap re-centres on the picked coordinate.
-            key: ValueKey(point),
+            // PgMap re-centres on the picked coordinate imperatively (didUpdateWidget) — not
+            // re-keyed, so the map + TileLayer persist across taps (no tile re-fetch / flicker).
             center: point,
             initialZoom: 15,
             borderRadius: PgTokens.radiusXl,

@@ -109,10 +109,21 @@ class PgMap extends StatefulWidget {
 class _PgMapState extends State<PgMap> {
   final MapController _controller = MapController();
 
-  List<GeoPoint> get _allPoints => [
-        for (final m in widget.markers) m.point,
-        ...?widget.polyline?.points,
+  List<GeoPoint> _pointsOf(PgMap w) => [
+        for (final m in w.markers) m.point,
+        ...?w.polyline?.points,
       ];
+
+  List<GeoPoint> get _allPoints => _pointsOf(widget);
+
+  /// The init-only [CameraFit] for a ≥2-coordinate set (the same fit [didUpdateWidget] applies
+  /// imperatively). Kept identical between init and update so the camera frames the markers the
+  /// same way whether the map first mounts or the coordinates change underneath it.
+  static CameraFit _coordinatesFit(List<GeoPoint> points) => CameraFit.coordinates(
+        coordinates: points.map(toLatLng).toList(),
+        padding: const EdgeInsets.all(48),
+        maxZoom: 16,
+      );
 
   @override
   void dispose() {
@@ -121,17 +132,39 @@ class _PgMapState extends State<PgMap> {
   }
 
   @override
+  void didUpdateWidget(covariant PgMap old) {
+    super.didUpdateWidget(old);
+    // Re-fit IMPERATIVELY (no remount/TileLayer re-fetch/flicker) when the plotted coordinate set
+    // changed — this replaces re-keying the whole widget on moving coordinates (the live customer
+    // map + guard navigation push fresh guard fixes every WebSocket update). The single FlutterMap
+    // + TileLayer persists; only the camera moves.
+    final points = _allPoints;
+    final oldPoints = _pointsOf(old);
+    if (_pointsEqual(points, oldPoints)) return;
+    if (points.length >= 2) {
+      _controller.fitCamera(_coordinatesFit(points));
+    } else if (points.length == 1) {
+      // One coordinate (the picker's tap-to-place pin, or a lone fix) → recentre, keep the zoom.
+      _controller.move(toLatLng(points.first), _controller.camera.zoom);
+    }
+  }
+
+  /// Two coordinate sets are equal iff same length and same lat/lng in order — drives the
+  /// "did anything move?" check in [didUpdateWidget] (a no-op rebuild must not re-fit the camera).
+  static bool _pointsEqual(List<GeoPoint> a, List<GeoPoint> b) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (a[i].lat != b[i].lat || a[i].lng != b[i].lng) return false;
+    }
+    return true;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final points = _allPoints;
     // Fit all coordinates when there are at least two; otherwise centre on the single point /
     // the provided center / Bangkok at the requested zoom.
-    final fit = points.length >= 2
-        ? CameraFit.coordinates(
-            coordinates: points.map(toLatLng).toList(),
-            padding: const EdgeInsets.all(48),
-            maxZoom: 16,
-          )
-        : null;
+    final fit = points.length >= 2 ? _coordinatesFit(points) : null;
     final center = points.length == 1
         ? points.first
         : (widget.center ?? GeoPoint.bangkok);

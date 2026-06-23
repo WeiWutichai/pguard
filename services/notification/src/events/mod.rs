@@ -163,10 +163,13 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
 /// double-pushes no one.
 ///
 /// Resilience: if presence is UNREACHABLE we log + skip the fan-out and return `Ok(())` so the
-/// message is ACKED — never crash the consumer / nack-storm on a presence hiccup (a missed dispatch
-/// is recoverable; a wedged consumer is not). Per-guard push failures are best-effort (logged, not
-/// fatal): the in-app log row is already committed, and one bad device token must not abort the
-/// whole fan-out.
+/// message is ACKED — never crash the consumer / nack-storm on a presence hiccup. NOTE: this means
+/// the proactive PUSH for that booking is DROPPED, not retried — the per-(event,guard) ledger only
+/// fills in guards across redeliveries when the message NACKs, which this fail-soft path does not.
+/// That is acceptable: the booking stays discoverable via the pull-based `GET /bookings/open` (the
+/// guard app also refetches on resume / go-online), so the guard still finds the job — only the
+/// push alert is missed. Per-guard push failures are likewise best-effort (logged, not fatal): the
+/// in-app log row is already committed, and one bad device token must not abort the whole fan-out.
 async fn fan_out_dispatch(
     state: &AppState,
     envelope: &EventEnvelope<Value>,
@@ -193,6 +196,20 @@ async fn fan_out_dispatch(
         tracing::info!(booking = %booking_id, "no online guards; new-job dispatch is a no-op");
         return Ok(());
     }
+
+    // Bound the broadcast: with no geo radius this fans out to EVERY online guard, so cap the batch
+    // (geo-filtering by the event's lat/lng is the real fix — a follow-up). Beyond the cap, log +
+    // truncate rather than run an unbounded per-guard DB+FCM loop.
+    const MAX_FANOUT_GUARDS: usize = 1000;
+    let online: Vec<Uuid> = if online.len() > MAX_FANOUT_GUARDS {
+        tracing::warn!(
+            booking = %booking_id, total = online.len(), cap = MAX_FANOUT_GUARDS,
+            "online-guard fan-out exceeds cap; truncating (add geo-filtering)"
+        );
+        online.into_iter().take(MAX_FANOUT_GUARDS).collect()
+    } else {
+        online
+    };
 
     let pushed = dispatch_to_guards(
         online,

@@ -98,11 +98,11 @@ class _MapBody extends StatelessWidget {
         Expanded(
           child: Stack(
             children: [
-              // Real OSM map: re-key on the plotted coordinates so PgMap re-fits when the guard
-              // moves / the snapshot changes. The dashed brand route + the markers ride on top.
+              // Real OSM map: PgMap re-fits the camera IMPERATIVELY (didUpdateWidget) as the guard
+              // moves / the snapshot changes — NOT re-keyed, so the single map + TileLayer persists
+              // across WebSocket updates (no tile re-fetch / flicker). Route + markers ride on top.
               Positioned.fill(
                 child: PgMap(
-                  key: ValueKey('${guard?.point.label}|${target?.label}'),
                   interactive: true,
                   polyline: (guard != null && target != null)
                       ? PgPolyline(points: [guard.point, target])
