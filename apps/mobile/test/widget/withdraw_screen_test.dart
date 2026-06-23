@@ -119,6 +119,13 @@ void main() {
     await tester.tap(find.text('ส่งคำขอถอนงาน'));
     await tester.pumpAndSettle();
 
+    // A confirm dialog gates the REAL decline (the customer is notified) — no PUT until confirmed.
+    expect(find.text('ยืนยันถอนตัวจากงานนี้?'), findsOneWidget);
+    expect(api.calls.where((c) => c.startsWith('PUT')), isEmpty);
+    expect(find.textContaining('ลูกค้าจะได้รับแจ้ง'), findsOneWidget);
+    await tester.tap(find.text('ถอนตัว'));
+    await tester.pumpAndSettle();
+
     expect(api.calls, contains('PUT /bookings/b1/decline'));
     expect(find.text('GUARD HOME STUB'), findsOneWidget);
     expect(find.text('ส่งคำขอถอนงานแล้ว'), findsOneWidget);

@@ -10,6 +10,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
 import '../booking/widgets/pg_map.dart';
@@ -24,19 +25,52 @@ class JobDetailScreen extends ConsumerWidget {
   final String bookingId;
 
   Future<void> _accept(BuildContext context, WidgetRef ref) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    // Confirm before committing to the job (POST /accept is a first-come claim).
+    final yes = await showConfirmDialog(
+      context,
+      isThai: isThai,
+      title: isThai ? 'ยืนยันรับงานนี้?' : 'Accept this job?',
+      message: isThai
+          ? 'คุณจะรับผิดชอบงานนี้และเริ่มเดินทางไปหาลูกค้า'
+          : "You'll take this job and head to the customer.",
+      confirmLabel: isThai ? 'รับงาน' : 'Accept',
+    );
+    if (!yes || !context.mounted) return;
+
     final err =
         await ref.read(guardJobsControllerProvider.notifier).accept(bookingId);
     if (!context.mounted) return;
     if (err != null) {
       _snack(context, err);
     } else {
+      _snack(context, isThai ? 'รับงานสำเร็จ' : 'Job accepted');
       context.go('/guard/active/$bookingId');
     }
   }
 
-  // First-come-accept: declining an unaccepted offer is a local dismiss, not a server call.
-  void _dismiss(BuildContext context, WidgetRef ref) {
+  // First-come-accept: SKIPPING an unaccepted offer is a LOCAL dismiss, not a server call — the
+  // booking stays open for other guards, so the customer is NOT cancelled/notified. Confirm so the
+  // guard understands skipping ≠ cancelling, then clarify with the result snackbar.
+  Future<void> _skip(BuildContext context, WidgetRef ref) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final yes = await showConfirmDialog(
+      context,
+      isThai: isThai,
+      title: isThai ? 'ข้ามงานนี้?' : 'Skip this job?',
+      message: isThai
+          ? 'งานจะยังเปิดให้เจ้าหน้าที่คนอื่นรับ — ไม่ใช่การยกเลิก'
+          : "The job stays open to other guards — this isn't a cancellation.",
+      confirmLabel: isThai ? 'ข้าม' : 'Skip',
+    );
+    if (!yes || !context.mounted) return;
     ref.read(guardJobsControllerProvider.notifier).dismiss(bookingId);
+    _snack(
+      context,
+      isThai
+          ? 'ข้ามงานนี้แล้ว — งานยังเปิดให้เจ้าหน้าที่อื่น'
+          : 'Skipped — still open to other guards',
+    );
     context.pop();
   }
 
@@ -66,7 +100,7 @@ class JobDetailScreen extends ConsumerWidget {
           isThai: isThai,
           booking: state.booking,
           onAccept: () => _accept(context, ref),
-          onDismiss: () => _dismiss(context, ref),
+          onSkip: () => _skip(context, ref),
         ),
       ),
     );
@@ -104,13 +138,13 @@ class _Body extends StatelessWidget {
     required this.isThai,
     required this.booking,
     required this.onAccept,
-    required this.onDismiss,
+    required this.onSkip,
   });
 
   final bool isThai;
   final Booking booking;
   final VoidCallback onAccept;
-  final VoidCallback onDismiss;
+  final VoidCallback onSkip;
 
   /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
   int get _feeSatang => Money.total(
@@ -152,7 +186,7 @@ class _Body extends StatelessWidget {
                 feeSatang: _feeSatang,
                 canAccept: canAccept,
                 onAccept: onAccept,
-                onDismiss: onDismiss,
+                onSkip: onSkip,
               ),
             ),
           ],
@@ -241,7 +275,7 @@ class _Sheet extends StatelessWidget {
     required this.feeSatang,
     required this.canAccept,
     required this.onAccept,
-    required this.onDismiss,
+    required this.onSkip,
   });
 
   final bool isThai;
@@ -249,7 +283,7 @@ class _Sheet extends StatelessWidget {
   final int feeSatang;
   final bool canAccept;
   final VoidCallback onAccept;
-  final VoidCallback onDismiss;
+  final VoidCallback onSkip;
 
   @override
   Widget build(BuildContext context) {
@@ -383,15 +417,18 @@ class _Sheet extends StatelessWidget {
                   20, 8, 20, 16 + MediaQuery.of(context).padding.bottom),
               child: Row(
                 children: [
-                  // ~90px in the mockup; widened so the Thai "ปฏิเสธ" label clears Flutter's
-                  // default button padding without wrapping.
+                  // The local-skip affordance: NOT a cancel — it hides this offer locally and the
+                  // job stays open to other guards. Labelled "ข้าม/Skip" (was the misleading
+                  // "ปฏิเสธ/Decline") so the guard doesn't read it as cancelling on the customer.
+                  // ~90px in the mockup; widened so the Thai label clears Flutter's default
+                  // button padding without wrapping.
                   SizedBox(
                     width: 116,
                     child: PgPrimaryButton(
-                      label: isThai ? 'ปฏิเสธ' : 'Decline',
+                      label: isThai ? 'ข้าม' : 'Skip',
                       color: PgTokens.colorSunken,
                       foreground: PgTokens.colorTextStrong,
-                      onPressed: onDismiss,
+                      onPressed: onSkip,
                     ),
                   ),
                   const SizedBox(width: 9),
