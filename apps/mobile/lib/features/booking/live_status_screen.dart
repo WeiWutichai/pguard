@@ -813,9 +813,88 @@ class _CompletionReviewPanelState
   }
 }
 
-/// The booking-details bottom sheet behind the live screen's "ดูรายละเอียด/Details" action:
-/// the address, schedule, booked hours, guard count and the display total. Read-only; the
-/// figures come from the live booking snapshot. Fixes the Build #80 no-op (`onPressed: () {}`).
+/// One parsed line of the composed booking `address`: an icon, a bilingual label and the value.
+/// The first address line carries [isPrimary] = true (rendered as the "ที่อยู่/Address" row);
+/// each folded "label: value" line becomes its own row with a fitting icon.
+class AddressDetail {
+  const AddressDetail({
+    required this.icon,
+    required this.label,
+    required this.value,
+    this.isPrimary = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool isPrimary;
+}
+
+/// Parse the composed booking `address` (as built by `composeAddress`) back into discrete detail
+/// rows. The address is a `\n`-joined string: the FIRST non-empty line is the real site address;
+/// each subsequent line is a "label: value" pair the booking form folded in (place type / extra
+/// details / equipment / add-ons). Both TH and EN label prefixes are matched. Any line that does
+/// NOT match a known prefix is kept under a generic "เพิ่มเติม/More" row so nothing is dropped.
+/// Pure → unit-testable; [isThai] only chooses which label text the rows carry.
+///
+/// Returns an empty list for a null/blank address (the sheet then shows the "Not set" fallback).
+List<AddressDetail> parseComposedAddress(String? address, {required bool isThai}) {
+  if (address == null) return const [];
+  final lines = address
+      .split('\n')
+      .map((l) => l.trim())
+      .where((l) => l.isNotEmpty)
+      .toList();
+  if (lines.isEmpty) return const [];
+
+  // (icon, TH prefix, EN prefix, TH row label, EN row label) for each folded line kind.
+  const folded = <(IconData, String, String, String, String)>[
+    (Icons.home_outlined, 'ประเภทสถานที่', 'Place type', 'ประเภทสถานที่', 'Place type'),
+    (Icons.notes_outlined, 'รายละเอียดเพิ่มเติม', 'Details', 'รายละเอียดเพิ่มเติม', 'Details'),
+    (Icons.security_outlined, 'อุปกรณ์', 'Equipment', 'อุปกรณ์', 'Equipment'),
+    (Icons.add_circle_outline, 'บริการเพิ่มเติม', 'Add-ons', 'บริการเพิ่มเติม', 'Add-ons'),
+  ];
+
+  final out = <AddressDetail>[
+    AddressDetail(
+      icon: Icons.place_outlined,
+      label: isThai ? 'ที่อยู่' : 'Address',
+      value: lines.first,
+      isPrimary: true,
+    ),
+  ];
+
+  for (final line in lines.skip(1)) {
+    final colon = line.indexOf(':');
+    final prefix = colon < 0 ? line : line.substring(0, colon).trim();
+    final value = colon < 0 ? line : line.substring(colon + 1).trim();
+    final match = folded
+        .where((f) => f.$2 == prefix || f.$3 == prefix)
+        .toList();
+    if (colon >= 0 && match.isNotEmpty) {
+      final f = match.first;
+      out.add(AddressDetail(
+        icon: f.$1,
+        label: isThai ? f.$4 : f.$5,
+        value: value.isEmpty ? '—' : value,
+      ));
+    } else {
+      // Unknown folded line — keep it so the sheet stays COMPLETE.
+      out.add(AddressDetail(
+        icon: Icons.info_outline,
+        label: isThai ? 'เพิ่มเติม' : 'More',
+        value: line,
+      ));
+    }
+  }
+  return out;
+}
+
+/// The booking-details bottom sheet behind the live screen's "ดูรายละเอียด/Details" action.
+/// The composed `address` is PARSED back into discrete rows (real address + place type / extra
+/// details / equipment / add-ons), then schedule, hours, guards, the assigned-guard ref, tip,
+/// payment state, status and the display total. Read-only; the figures come from the live booking
+/// snapshot. The body scrolls so a long, fully-detailed sheet never overflows.
 Future<void> showBookingDetailsSheet(
   BuildContext context, {
   required Booking booking,
@@ -831,91 +910,133 @@ Future<void> showBookingDetailsSheet(
   }
   final hours = booking.hours;
   final guards = booking.guardCount;
+  final addressRows = parseComposedAddress(booking.address, isThai: isThai);
+  final tipSatang = Money.satangFromString(booking.tip);
 
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: PgTokens.colorSurface,
     showDragHandle: true,
+    // Allow the sheet to grow + scroll for a fully-detailed booking.
+    isScrollControlled: true,
     shape: const RoundedRectangleBorder(
       borderRadius:
           BorderRadius.vertical(top: Radius.circular(PgTokens.radius2xl)),
     ),
     builder: (context) {
       return SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(
-              PgTokens.space5, 0, PgTokens.space5, PgTokens.space5),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                isThai ? 'รายละเอียดการจอง' : 'Booking details',
-                style:
-                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
-              ),
-              const SizedBox(height: PgTokens.space4),
-              _DetailRow(
-                icon: Icons.place_outlined,
-                label: isThai ? 'สถานที่' : 'Location',
-                value: booking.address ?? (isThai ? 'ไม่ระบุ' : 'Not set'),
-              ),
-              if (schedule != null)
+        child: ConstrainedBox(
+          // Cap at most of the screen; the inner scroll view handles overflow.
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.of(context).size.height * 0.85,
+          ),
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(
+                PgTokens.space5, 0, PgTokens.space5, PgTokens.space5),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(
+                  isThai ? 'รายละเอียดการจอง' : 'Booking details',
+                  style: const TextStyle(
+                      fontSize: 17, fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: PgTokens.space4),
+                // The address rows: the real site address first, then each folded line
+                // (place type / details / equipment / add-ons) as its own row.
+                if (addressRows.isEmpty)
+                  _DetailRow(
+                    icon: Icons.place_outlined,
+                    label: isThai ? 'ที่อยู่' : 'Address',
+                    value: isThai ? 'ไม่ระบุ' : 'Not set',
+                  )
+                else
+                  for (final d in addressRows)
+                    _DetailRow(icon: d.icon, label: d.label, value: d.value),
+                if (schedule != null)
+                  _DetailRow(
+                    icon: Icons.event_outlined,
+                    label: isThai ? 'นัดหมาย' : 'Scheduled',
+                    value: schedule,
+                  ),
+                if (hours != null)
+                  _DetailRow(
+                    icon: Icons.schedule_outlined,
+                    label: isThai ? 'จำนวนชั่วโมง' : 'Hours',
+                    value: '$hours',
+                  ),
+                if (guards != null)
+                  _DetailRow(
+                    icon: Icons.groups_outlined,
+                    label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
+                    value: '$guards',
+                  ),
+                // The name is not on the booking snapshot — show a short id ref so the customer
+                // can quote the assigned guard (e.g. in support / chat).
+                if (booking.guardId != null)
+                  _DetailRow(
+                    icon: Icons.shield_outlined,
+                    label: isThai ? 'เจ้าหน้าที่' : 'Guard',
+                    value: '#${_shortRef(booking.guardId!)}',
+                  ),
+                if (tipSatang > 0)
+                  _DetailRow(
+                    icon: Icons.volunteer_activism_outlined,
+                    label: isThai ? 'ทิป' : 'Tip',
+                    value: Money.format(tipSatang, decimals: true),
+                  ),
                 _DetailRow(
-                  icon: Icons.event_outlined,
-                  label: isThai ? 'นัดหมาย' : 'Scheduled',
-                  value: schedule,
+                  icon: booking.isPaid
+                      ? Icons.check_circle_outline
+                      : Icons.payments_outlined,
+                  label: isThai ? 'การชำระเงิน' : 'Payment',
+                  value: booking.isPaid
+                      ? (isThai ? 'ชำระแล้ว' : 'Paid')
+                      : (isThai ? 'รอชำระเงิน' : 'Awaiting payment'),
                 ),
-              if (hours != null)
                 _DetailRow(
-                  icon: Icons.schedule_outlined,
-                  label: isThai ? 'จำนวนชั่วโมง' : 'Hours',
-                  value: '$hours',
+                  icon: Icons.flag_outlined,
+                  label: isThai ? 'สถานะ' : 'Status',
+                  value: isThai
+                      ? BookingLifecycle.labelTh(booking.status)
+                      : BookingLifecycle.labelEn(booking.status),
                 ),
-              if (guards != null)
-                _DetailRow(
-                  icon: Icons.groups_outlined,
-                  label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
-                  value: '$guards',
-                ),
-              _DetailRow(
-                icon: Icons.flag_outlined,
-                label: isThai ? 'สถานะ' : 'Status',
-                value: isThai
-                    ? BookingLifecycle.labelTh(booking.status)
-                    : BookingLifecycle.labelEn(booking.status),
-              ),
-              if (totalSatang != null) ...[
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
-                  child: Divider(height: 1, color: PgTokens.colorBorder),
-                ),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      isThai ? 'ยอดรวม (ประมาณ)' : 'Total (estimate)',
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w700),
-                    ),
-                    Text(
-                      Money.format(totalSatang, decimals: true),
-                      style: const TextStyle(
-                        fontSize: 16,
-                        fontWeight: FontWeight.w700,
-                        color: PgTokens.colorGreen800,
+                if (totalSatang != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+                    child: Divider(height: 1, color: PgTokens.colorBorder),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        isThai ? 'ยอดรวม (ประมาณ)' : 'Total (estimate)',
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w700),
                       ),
-                    ),
-                  ],
-                ),
+                      Text(
+                        Money.format(totalSatang, decimals: true),
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: PgTokens.colorGreen800,
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
               ],
-            ],
+            ),
           ),
         ),
       );
     },
   );
 }
+
+/// First 8 chars of an id (or the whole id if shorter) — a short human-quotable reference.
+String _shortRef(String id) => id.length <= 8 ? id : id.substring(0, 8);
 
 class _DetailRow extends StatelessWidget {
   const _DetailRow({

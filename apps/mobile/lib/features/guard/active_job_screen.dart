@@ -300,12 +300,19 @@ class _WorkingPanel extends ConsumerStatefulWidget {
 class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   Timer? _ticker;
 
+  /// Fired-once guard for the auto-complete: the 1s ticker re-evaluates "time up" every second,
+  /// so without this it would re-PUT /complete repeatedly. Set the instant we kick off the auto
+  /// completion (BEFORE the await) so a re-entrant tick can never double-fire it.
+  bool _autoCompleted = false;
+
   @override
   void initState() {
     super.initState();
     // Display-only 1s tick to refresh the countdown + due state. NOT status polling.
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (!mounted) return;
+      setState(() {});
+      _maybeAutoComplete();
     });
   }
 
@@ -313,6 +320,52 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   void dispose() {
     _ticker?.cancel();
     super.dispose();
+  }
+
+  /// Auto-close the job once the booked duration has fully ELAPSED while the guard app sits on
+  /// the active-job screen — so the guard no longer has to remember to tap "จบงาน" at the end.
+  /// Fires the SAME completion path the manual button uses (PUT /complete → pending_completion),
+  /// exactly ONCE, and only while the job is still genuinely working (arrived + started, NOT
+  /// already pending_completion/completed). The customer then approves via the existing flow.
+  ///
+  /// NOTE: this only fires while the guard app is open on THIS screen. A server-side scheduled
+  /// auto-complete (for when the app is backgrounded/closed) is a backend follow-up — not built here.
+  Future<void> _maybeAutoComplete() async {
+    if (_autoCompleted) return;
+
+    // Read the LIVE controller state (not the captured widget.state) so the status/busy checks
+    // reflect any transition that landed since this panel was built.
+    final live = ref.read(activeJobControllerProvider(widget.bookingId)).valueOrNull;
+    if (live == null || live.busy) return;
+
+    // Only auto-fire while still working: arrived + started, with the countdown known. The instant
+    // the status advances (pending_completion/completed) this is no longer JobStage.working and we
+    // must not fire (the guard may have closed early, or the customer already approved).
+    if (live.booking.status != BookingStatus.arrived) return;
+    final clock = live.clock;
+    if (clock == null) return;
+    if (!clock.isTimeUp(DateTime.now().toUtc())) return;
+
+    // Claim the single shot BEFORE awaiting the network so re-entrant ticks bail at the top.
+    _autoCompleted = true;
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final ok = await ref
+        .read(activeJobControllerProvider(widget.bookingId).notifier)
+        .complete();
+    if (!mounted) return;
+    if (ok) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isThai
+              ? 'ครบเวลาทำงาน — ส่งจบงานให้ลูกค้าตรวจสอบ'
+              : "Time's up — sent to the customer for review"),
+        ),
+      );
+    } else {
+      // The PUT failed (e.g. transient/409 because the status already advanced). Release the flag
+      // so a later tick can retry; the controller already surfaced the error in state.error.
+      _autoCompleted = false;
+    }
   }
 
   /// The scheduled clock time of check-in slot [i] (startedAt + i hours), local "HH:MM".

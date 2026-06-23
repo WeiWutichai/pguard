@@ -347,7 +347,8 @@ void main() {
     // the address also shows in the guard card above, so assert on the sheet-unique labels).
     expect(find.text('รายละเอียดการจอง'), findsOneWidget);
     expect(find.text('จำนวนชั่วโมง'), findsOneWidget);
-    expect(find.text('สถานที่'), findsOneWidget);
+    // The composed address is now split into clean rows; the first line is the 'ที่อยู่' row.
+    expect(find.text('ที่อยู่'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });
