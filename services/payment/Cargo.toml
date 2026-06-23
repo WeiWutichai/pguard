@@ -20,6 +20,7 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }     # money — Decimal everywhere, never f64
 jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + inbound service-JWT verify
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
+reqwest = { workspace = true }          # PRE-PAY reads booking's /internal/bookings/{id} (service-JWT'd)
 futures = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

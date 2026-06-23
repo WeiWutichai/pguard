@@ -7,7 +7,9 @@ use shared::auth::HasJwtSecret;
 use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::service_jwt::HasServiceJwt;
 
-use crate::discovery_client::{GuardCatalog, HttpDiscoveryClient, PresenceReader, RatingReader};
+use crate::discovery_client::{
+    BusyGuardsReader, GuardCatalog, HttpDiscoveryClient, PresenceReader, RatingReader,
+};
 use crate::s3::S3Client;
 
 #[derive(Clone)]
@@ -104,16 +106,21 @@ pub trait DiscoveryDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Catalog: GuardCatalog;
     type Rating: RatingReader;
     type Presence: PresenceReader;
+    /// The active-assignment exclusion reader (booking's OWN schema): the BUSY guards
+    /// `/available-guards` must hide so a guard already on a job is never offered for another.
+    type Busy: BusyGuardsReader;
 
     fn guard_catalog(&self) -> &Self::Catalog;
     fn rating_reader(&self) -> &Self::Rating;
     fn presence_reader(&self) -> &Self::Presence;
+    fn busy_guards(&self) -> &Self::Busy;
 }
 
 impl DiscoveryDeps for AppState {
     type Catalog = HttpDiscoveryClient;
     type Rating = HttpDiscoveryClient;
     type Presence = HttpDiscoveryClient;
+    type Busy = PgPool;
 
     fn guard_catalog(&self) -> &HttpDiscoveryClient {
         &self.discovery
@@ -123,5 +130,10 @@ impl DiscoveryDeps for AppState {
     }
     fn presence_reader(&self) -> &HttpDiscoveryClient {
         &self.discovery
+    }
+    /// Busy-guard lookup reads booking's own schema → the read-replica pool (C5.3), like the
+    /// other list reads.
+    fn busy_guards(&self) -> &PgPool {
+        &self.db_read
     }
 }

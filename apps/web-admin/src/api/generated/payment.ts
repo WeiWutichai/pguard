@@ -21,7 +21,19 @@ export interface paths {
          */
         get: operations["listPayments"];
         put?: never;
-        post?: never;
+        /**
+         * PRE-PAY a booking's estimate (createPayment)
+         * @description After a guard ACCEPTS, the customer pays the ESTIMATE up front. The client sends ONLY the
+         *     `booking_id`; the amount is computed SERVER-SIDE from the authoritative booking
+         *     (`base_fee × hours × guard_count + tip`, read via the service-JWT'd internal booking read)
+         *     — the client NEVER sends the amount. Authz: the caller must be the booking's customer and
+         *     the booking must be in a payable state (post-accept, pre-complete) → else 403/409.
+         *
+         *     This payment GATES the booking's en_route (booking consumes `payment.completed` → sets
+         *     `paid_at`). Idempotent per booking: a repeat returns the existing payment (200), never a
+         *     second charge.
+         */
+        post: operations["createPayment"];
         delete?: never;
         options?: never;
         head?: never;
@@ -141,6 +153,14 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * @description PRE-PAY request body. Carries ONLY the booking id — the amount is computed SERVER-SIDE from
+         *     the authoritative booking (never sent by the client).
+         */
+        CreatePaymentRequest: {
+            /** Format: uuid */
+            booking_id: string;
+        };
+        /**
          * @description Payment lifecycle status.
          * @enum {string}
          */
@@ -155,25 +175,25 @@ export interface components {
             /** Format: uuid */
             guard_id?: string | null;
             /**
-             * @description Exact decimal charged
+             * @description Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
              * @example 2000.00
              */
             amount: string;
             /**
-             * @description Server-computed authoritative total at charge time (base_fee × hours × guards + tip).
+             * @description Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
              * @example 2000.00
              */
             expected_total?: string | null;
             payment_method?: string | null;
             status: components["schemas"]["PaymentStatus"];
-            /** @description Legacy proration field; null under post-pay (the charged `amount` is already the final bill). */
+            /** @description The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded). */
             final_amount?: string | null;
-            /** @description Legacy refund field; null under post-pay (no refunds — billed for actual hours). */
+            /** @description The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed). */
             refund_amount?: string | null;
-            /** @description Legacy proration field; null under post-pay. */
+            /** @description Clamped hours actually worked, recorded on the settle. */
             actual_hours?: string | null;
             /**
-             * @description Legacy refund-tracking field; null under post-pay (no refunds emitted).
+             * @description `pending` once a settle refund is owed (an admin/real-gateway marks `processed`); null when no refund.
              * @enum {string|null}
              */
             refund_status?: "pending" | "processed" | null;
@@ -245,7 +265,7 @@ export interface components {
                 };
             };
         };
-        /** @description Invalid request body (e.g. bad method, non-positive or over-cap amount) */
+        /** @description Invalid request body (e.g. malformed/missing booking_id) */
         BadRequest: {
             headers: {
                 [name: string]: unknown;
@@ -319,6 +339,27 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    createPayment: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreatePaymentRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["PaymentOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     adminListPayments: {

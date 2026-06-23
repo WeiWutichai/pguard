@@ -1,18 +1,20 @@
 //! Event CONSUMER — the money path's reactive half: subscribe to
-//! `pguard.events.booking.completed` and raise the POST-PAY charge when a job completes.
+//! `pguard.events.booking.completed` and RECONCILE the actual-hours bill against the PRE-PAID
+//! amount when a job completes.
 //!
-//! v2 is POST-PAY: the customer is NOT charged up front. The bill is raised here, on completion,
-//! for the hours actually worked (base prorated + flat tip) — there is no up-front charge and no
-//! refund flow. booking emits the completion event carrying its server-owned pricing; payment
-//! reacts and charges — no cross-service write, no god-service.
+//! v2 is PRE-PAY then SETTLE: the customer already paid the ESTIMATE up front (see the
+//! `createPayment` endpoint), which gated the booking's en_route. On completion we recompute the
+//! bill for the hours ACTUALLY worked (base prorated + flat tip) and diff it against the pre-paid
+//! amount — refund the overpay (`payment.refund_processed`) or record the shortfall. The base is
+//! NEVER double-charged. booking emits the completion event carrying its server-owned pricing;
+//! payment reacts and settles — no cross-service write, no god-service.
 //!
 //! Resilience + correctness:
 //!  - A durable pull consumer filtered to `booking.completed` (JetStream at-least-once).
-//!  - The charge is **idempotent via the one-completed-per-booking unique index**
-//!    (`repo::charge_idempotent`): a redelivery inserts nothing and emits no second event, so a
-//!    job can never be billed twice.
-//!  - A message is acked only after a successful charge; a failure leaves it for redelivery
-//!    (safe — the unique index absorbs the replay).
+//!  - The settle is **idempotent via the `processed_events` ledger** (`repo::reconcile_on_completion`
+//!    claims the event_id in the same tx): a redelivery is a NoOp, so a refund is never applied twice.
+//!  - A message is acked only after a successful settle; a failure leaves it for redelivery
+//!    (safe — the event-id claim absorbs the replay).
 
 use std::time::Duration;
 
@@ -27,12 +29,6 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::repo;
 
-/// The recorded `payment_method` for a POST-PAY charge raised by this consumer. v2's gateway is
-/// simulated and there is no customer card-on-file step yet, so the bill is auto-raised on
-/// completion and tagged `post_paid`; a real gateway integration would replace this with the
-/// captured method.
-const POST_PAID_METHOD: &str = "post_paid";
-
 const STREAM: &str = "PGUARD_EVENTS";
 const SUBJECTS: &str = "pguard.events.>";
 /// Intent-scoped durable name (this consumer only ever processes booking completions).
@@ -40,19 +36,24 @@ const DURABLE: &str = "payment-booking-completed";
 /// Backoff between reconnect attempts when NATS is down or the stream ends.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The `booking.completed` payload fields the POST-PAY charge needs (booking emits these; see
+/// The `booking.completed` payload fields the RECONCILE settle needs (booking emits these; see
 /// booking `domain::events::CompletionInfo`). `booked_hours` + the pricing inputs
 /// (`base_fee`/`guard_count`/`tip`) are REQUIRED (AsyncAPI contract): a missing field fails the
-/// parse → the message is treated as poison (dropped + logged), never silently billed at zero.
+/// parse → the message is treated as poison (dropped + logged), never silently settled at zero.
 /// `actual_seconds` is genuinely optional: `None` when the guard never started (defensive — a
-/// completion requires a start; the full booked base is billed). Money fields deserialize from a
-/// JSON string (rust_decimal serde-str, workspace-wide).
+/// completion requires a start; the full booked base is the settle target). Money fields
+/// deserialize from a JSON string (rust_decimal serde-str, workspace-wide).
+///
+/// `customer_id`/`guard_id` are parsed (contract validation + future use) but the SETTLE reads
+/// the customer/guard off the PRE-PAID payment row, not the event — the reconcile diffs against
+/// what was actually paid, so the event only supplies the pricing inputs to recompute the bill.
 ///
 /// A local type (not the codegen'd `shared_events::BookingCompleted`, which models money as
 /// `String`) — deliberately, so the bill math gets `Decimal` directly. This matches the project
 /// convention that services build/parse payloads inline today; the contract is drift-locked by
 /// the generated type + `shared-events` tests.
 #[derive(Debug, Deserialize)]
+#[allow(dead_code)] // customer_id/guard_id validate the contract; the settle reads them off the row.
 struct CompletedPayload {
     booking_id: Uuid,
     customer_id: Uuid,
@@ -207,38 +208,33 @@ async fn process(
     finalize(db, envelope).instrument(span).await
 }
 
-/// Raise the POST-PAY charge for a completed booking, logging the outcome. Runs inside the event
-/// span. The bill is the base prorated to the hours actually worked + the flat tip
-/// ([`crate::domain::post_pay_charge`]), computed entirely from the booking's server-owned pricing
-/// carried on the event (never a client). The charge is idempotent via the one-completed-per-
-/// booking unique index ([`repo::charge_idempotent`]): a redelivery returns the existing payment
-/// and emits no second `payment.completed`.
+/// RECONCILE the actual-hours bill against the PRE-PAID amount for a completed booking, logging
+/// the outcome. Runs inside the event span. The settle target is the base prorated to the hours
+/// actually worked + the flat tip, diffed against what the customer pre-paid
+/// ([`repo::reconcile_on_completion`] → [`crate::domain::reconcile`]) — computed entirely from
+/// the booking's server-owned pricing carried on the event (never a client). The base is never
+/// double-charged: an overpay is REFUNDED (emits `payment.refund_processed`) and an under-payment
+/// records the shortfall. Idempotent via the `processed_events` event-id claim: a redelivery is a
+/// NoOp (no second refund).
 async fn finalize(
     db: &sqlx::PgPool,
     envelope: EventEnvelope<CompletedPayload>,
 ) -> Result<(), AppError> {
     let p = &envelope.payload;
-    let amount = crate::domain::post_pay_charge(
+    let outcome = repo::reconcile_on_completion(
+        db,
+        envelope.event_id,
+        &envelope.event_type,
+        p.booking_id,
         p.base_fee,
         p.booked_hours,
         p.guard_count,
         p.tip,
         p.actual_seconds,
-    );
-    // expected_total == the post-pay charge (the bill is already final — there is no separate
-    // refund basis in post-pay).
-    let payment = repo::charge_idempotent(
-        db,
-        p.booking_id,
-        p.customer_id,
-        p.guard_id,
-        amount,
-        amount,
-        POST_PAID_METHOD,
         envelope.correlation_id,
     )
     .await?;
-    tracing::info!(payment_id = %payment.id, %amount, "post-pay charge raised on booking completion");
+    tracing::info!(booking_id = %p.booking_id, ?outcome, "reconciled pre-pay on booking completion");
     Ok(())
 }
 
@@ -305,19 +301,19 @@ mod tests {
     }
 }
 
-/// END-TO-END smoke against REAL infra (Postgres + NATS JetStream): the POST-PAY money path's
-/// full vertical — publish a SIGNED `booking.completed` (booked 4h, worked 2h, base 500, 1 guard,
-/// no tip) to NATS → the payment consumer drains it → RAISES the bill for the actual hours
-/// (1000.00) as a completed payment → emits `payment.completed` to the outbox — AND a replay of
-/// the same event is idempotent (no double charge, one event). No booking read is needed: the
-/// consumer bills entirely from the event's pricing. The payment-events → notification leg is
+/// END-TO-END smoke against REAL infra (Postgres + NATS JetStream): the PRE-PAY → SETTLE money
+/// path's full vertical — PRE-PAY the estimate (500×4×1 = 2000.00) up front, then publish a
+/// SIGNED `booking.completed` (booked 4h, worked 2h, base 500, 1 guard, no tip → actual 1000.00)
+/// to NATS → the payment consumer drains it → RECONCILES: refunds the 1000.00 overpay (the base
+/// is NOT re-charged) → emits `payment.refund_processed` to the outbox — AND a replay of the same
+/// event is idempotent (no second refund, one event). The payment-events → notification leg is
 /// proven separately by the notification slice's e2e.
 ///
 /// Gated on BOTH `DATABASE_URL` (a migrated DB: payment 0001/0002) and `NATS_URL`; hermetic
 /// (SKIP) when either is absent, so `cargo test` stays offline-safe. Run:
 ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
 ///   NATS_URL=nats://localhost:4222 \
-///     cargo test -p pguard-payment -- e2e_post_pay --nocapture
+///     cargo test -p pguard-payment -- e2e_reconcile --nocapture
 #[cfg(test)]
 mod e2e_tests {
     use super::*;
@@ -332,7 +328,7 @@ mod e2e_tests {
     }
 
     #[tokio::test]
-    async fn e2e_post_pay_charges_actual_hours_on_completion_and_is_idempotent() {
+    async fn e2e_reconcile_refunds_overpay_on_completion_and_is_idempotent() {
         let (Ok(db_url), Ok(nats_url)) = (std::env::var("DATABASE_URL"), std::env::var("NATS_URL"))
         else {
             eprintln!(
@@ -349,10 +345,24 @@ mod e2e_tests {
         let booking_id = Uuid::new_v4();
         let customer_id = Uuid::new_v4();
         let guard_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
         let correlation = Uuid::new_v4();
 
-        // 1) ensure the stream, then start the consumer. (No booking fixture + NO up-front charge:
-        //    post-pay raises the bill purely from the completion event.)
+        // 0) PRE-PAY the estimate up front (500×4×1 + 0 = 2000.00) — the settle basis.
+        let _ = crate::repo::prepay_idempotent(
+            &pool,
+            booking_id,
+            customer_id,
+            Some(guard_id),
+            dec("2000.00"),
+            dec("2000.00"),
+            "promptpay",
+            correlation,
+        )
+        .await
+        .expect("pre-pay");
+
+        // 1) ensure the stream, then start the consumer.
         let client = shared_events::connect(&nats_url)
             .await
             .expect("nats connect");
@@ -379,9 +389,10 @@ mod e2e_tests {
         // Let the durable consumer bind before publishing.
         tokio::time::sleep(Duration::from_millis(500)).await;
 
-        // 2) publish booking.completed: 500/hr × 4h × 1, worked 2h (7200s), no tip → bill 1000.00.
+        // 2) publish booking.completed with a FIXED event_id (so the replay dedupes): 500/hr × 4h
+        //    × 1, worked 2h (7200s), no tip → actual 1000.00, refund 1000.00 of the 2000.00 paid.
         //    Money fields are JSON STRINGS (rust_decimal serde-str, matching booking's emission).
-        let envelope = EventEnvelope::new(
+        let mut envelope = EventEnvelope::new(
             topics::BOOKING_COMPLETED,
             correlation,
             json!({
@@ -395,61 +406,66 @@ mod e2e_tests {
                 "tip": "0",
             }),
         );
+        envelope.event_id = event_id;
         let bytes = serde_json::to_vec(&envelope).expect("serialize envelope");
         shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)
             .await
             .expect("signed publish");
 
-        // 3) poll until the consumer raises the bill (bounded; ~10s).
-        let mut charged: Option<(Decimal, String)> = None;
+        // 3) poll until the consumer records the refund (bounded; ~10s).
+        let mut settled: Option<(Decimal, Option<Decimal>, Option<Decimal>)> = None;
         for _ in 0..50 {
-            let row: Option<(Decimal, String)> = sqlx::query_as(
-                "SELECT amount, status::text FROM payment.payments WHERE booking_id = $1",
+            let row: Option<(Decimal, Option<Decimal>, Option<Decimal>)> = sqlx::query_as(
+                "SELECT amount, final_amount, refund_amount FROM payment.payments WHERE booking_id = $1",
             )
             .bind(booking_id)
             .fetch_optional(&pool)
             .await
             .expect("read payment");
-            if row.is_some() {
-                charged = row;
-                break;
+            if let Some(r) = row {
+                if r.2.is_some() {
+                    settled = Some(r);
+                    break;
+                }
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        let (amount, status) = charged.expect("post-pay charge raised via NATS within timeout");
-        assert_eq!(amount, dec("1000.00"), "2h of 4h × 500 → bill 1000.00");
-        assert_eq!(status, "completed");
+        let (amount, final_amount, refund_amount) =
+            settled.expect("reconcile refund recorded via NATS within timeout");
+        assert_eq!(
+            amount,
+            dec("2000.00"),
+            "pre-paid base unchanged (never re-charged)"
+        );
+        assert_eq!(final_amount, Some(dec("1000.00")), "final = 2h of 4h × 500");
+        assert_eq!(refund_amount, Some(dec("1000.00")), "overpay refunded");
 
-        // 4) replay the SAME event → idempotent: still ONE payment, ONE payment.completed event.
+        // 4) replay the SAME event → idempotent: still ONE refund_processed event.
         shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)
             .await
             .expect("signed replay");
         tokio::time::sleep(Duration::from_millis(1500)).await;
 
-        let payment_rows: i64 =
-            sqlx::query_scalar("SELECT count(*) FROM payment.payments WHERE booking_id = $1")
-                .bind(booking_id)
-                .fetch_one(&pool)
-                .await
-                .expect("count payments");
-        assert_eq!(payment_rows, 1, "exactly one payment despite the replay");
-
-        let completed_events: i64 = sqlx::query_scalar(
+        let refund_events: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM payment.outbox \
              WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
         )
-        .bind(topics::PAYMENT_COMPLETED)
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
         .bind(booking_id.to_string())
         .fetch_one(&pool)
         .await
-        .expect("count completed events");
+        .expect("count refund events");
         assert_eq!(
-            completed_events, 1,
-            "exactly one payment.completed event despite the replay (idempotent)"
+            refund_events, 1,
+            "exactly one payment.refund_processed despite the replay (idempotent)"
         );
 
         // teardown
         consumer.abort();
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
         let _ =
             sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
                 .bind(booking_id.to_string())

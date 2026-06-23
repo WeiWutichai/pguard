@@ -24,6 +24,7 @@ import '../features/booking/cancellation_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
 import '../features/booking/live_status_screen.dart';
+import '../features/booking/payment_screen.dart';
 import '../features/booking/review_screen.dart';
 import '../features/booking/service_detail_screen.dart';
 import '../features/booking/service_selection_screen.dart';
@@ -229,7 +230,14 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(
           path: '/book/guards',
           builder: (_, __) => const GuardDiscoveryScreen()),
-      // (post-pay: no up-front payment screen — discovery confirms straight to live status)
+      // PRE-PAY: the instant a guard accepts, live status routes the customer here to pay the
+      // server-computed estimate. The screen posts only `{ booking_id }`; it un-gates the guard's
+      // en_route once the payment.completed event sets the booking's `paid_at`.
+      GoRoute(
+        path: '/booking/:id/pay',
+        builder: (context, state) =>
+            PaymentScreen(bookingId: state.pathParameters['id']!),
+      ),
       GoRoute(
         path: '/booking/:id/live',
         builder: (context, state) =>

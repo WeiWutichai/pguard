@@ -82,6 +82,7 @@ class Booking {
     this.tip,
     this.lat,
     this.lng,
+    this.paidAt,
   });
 
   final String id;
@@ -106,6 +107,20 @@ class Booking {
   final double? lat;
   final double? lng;
 
+  /// When the booking's PRE-PAY charge cleared — set server-side once the booking service
+  /// consumes `pguard.events.payment.completed`. `null` until paid. THE payment gate: the
+  /// guard's `en_route` (and everything after) requires this to be non-null — the backend 409s
+  /// the transition while it is null, and the UI mirrors that by disabling the action. Both the
+  /// customer (route to PaymentScreen on `accepted` while unpaid) and the guard ("รอลูกค้าชำระเงิน"
+  /// until paid) read it from the GET `/bookings/{id}` snapshot (the WS frame carries only the
+  /// status, so a freshly-paid booking surfaces this on the next snapshot — and it is carried
+  /// forward across WS frames by [applyEvent]).
+  final DateTime? paidAt;
+
+  /// Whether the PRE-PAY charge has cleared — `true` once [paidAt] is set. Gates the guard's
+  /// start action and the customer's "waiting for the guard" state.
+  bool get isPaid => paidAt != null;
+
   factory Booking.fromJson(Map<String, dynamic> json) => Booking(
         id: json['id'] as String,
         customerId: json['customer_id'] as String,
@@ -123,9 +138,14 @@ class Booking {
         tip: (json['tip'] as Object?)?.toString(),
         lat: (json['lat'] as num?)?.toDouble(),
         lng: (json['lng'] as num?)?.toDouble(),
+        paidAt: json['paid_at'] != null
+            ? DateTime.tryParse(json['paid_at'] as String)
+            : null,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
+  /// [paidAt] is CARRIED FORWARD (the WS frame has no payment field) so a booking already known
+  /// to be paid stays paid as later status frames arrive.
   Booking applyEvent(BookingStatusEvent event) => Booking(
         id: id,
         customerId: customerId,
@@ -139,6 +159,7 @@ class Booking {
         tip: tip,
         lat: lat,
         lng: lng,
+        paidAt: paidAt,
       );
 }
 

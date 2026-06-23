@@ -17,6 +17,7 @@ import 'package:pguard_payment_api/src/model/date.dart';
 import 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 import 'package:pguard_payment_api/src/model/api_response_envelope.dart';
+import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
@@ -34,6 +35,7 @@ part 'serializers.g.dart';
   AdminCustomerSpendReport200Response,
   AdminRevenueReport200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
+  CreatePaymentRequest,
   CustomerSpend,
   ErrorBody,
   ErrorDetail,

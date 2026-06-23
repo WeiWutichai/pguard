@@ -1,0 +1,91 @@
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+
+import '../models/payment.dart';
+import '../network/api_exception.dart';
+import '../providers.dart';
+import 'locale_controller.dart';
+
+part 'payment_controller.g.dart';
+
+const Object _unset = Object();
+
+/// The customer PRE-PAY step. v2 charges the ESTIMATE (`base_fee × booked-hours × guard_count +
+/// tip`) up front, the instant a guard ACCEPTS — and the bill is RECONCILED on completion (actual
+/// hours → settle, refunding any over-charge). The amount is computed SERVER-SIDE from the
+/// authoritative booking (`GET /internal/bookings/{id}`); the client NEVER sends it — it posts
+/// only `{ booking_id }`. On success the payment service emits `pguard.events.payment.completed`,
+/// which the booking service consumes to set `paid_at` and UN-GATE the guard's `en_route`.
+///
+/// This is the network + state for the [PaymentScreen]: the screen renders [PaymentState] and
+/// calls [createPayment]; the (estimate) figure shown is read from the booking, not from here.
+class PaymentState {
+  const PaymentState({
+    this.busy = false,
+    this.payment,
+    this.error,
+  });
+
+  /// In-flight `POST /payments`.
+  final bool busy;
+
+  /// The created payment once the charge has cleared (status `completed`). `null` before the
+  /// customer pays. Its presence is the "PaymentSuccess" signal the screen waits on.
+  final Payment? payment;
+
+  /// Localized failure message for the last attempt, else `null`.
+  final String? error;
+
+  /// Whether the pre-pay charge has cleared (the screen flips to "waiting for the guard").
+  bool get isPaid => payment != null;
+
+  PaymentState copyWith({
+    bool? busy,
+    Payment? payment,
+    Object? error = _unset,
+  }) =>
+      PaymentState(
+        busy: busy ?? this.busy,
+        payment: payment ?? this.payment,
+        error: identical(error, _unset) ? this.error : error as String?,
+      );
+}
+
+/// Drives the PRE-PAY charge for one booking. Per-booking instance (the `bookingId` family arg)
+/// so two bookings never share pay state. Mutating method returns `bool` so the screen knows
+/// whether the charge succeeded (mirrors [BookingFlowController]).
+@riverpod
+class PaymentController extends _$PaymentController {
+  @override
+  PaymentState build(String bookingId) => const PaymentState();
+
+  bool get _isThai => ref.read(localeControllerProvider) == AppLocale.th;
+
+  /// `POST /v1/payments { booking_id }` — pay the server-computed estimate. The client sends
+  /// ONLY the booking id; the payment service reads the authoritative booking, computes the
+  /// amount, charges it, and returns the (completed) [Payment]. On success the customer moves to
+  /// the success state and waits (over the booking-status WS) for the guard to proceed.
+  ///
+  /// Returns `true` on success. Idempotent-friendly: if a prior attempt already paid (a 409 /
+  /// already-paid response, or a returned `completed` payment), the screen still lands on success.
+  Future<bool> createPayment() async {
+    if (state.isPaid) return true;
+    state = state.copyWith(busy: true, error: null);
+    try {
+      final data = await ref
+          .read(pguardApiProvider)
+          .post('/payments', data: {'booking_id': bookingId});
+      final payment = Payment.fromJson(data as Map<String, dynamic>);
+      state = state.copyWith(busy: false, payment: payment, error: null);
+      return true;
+    } on ApiException catch (e) {
+      state = state.copyWith(busy: false, error: e.message);
+      return false;
+    } catch (_) {
+      state = state.copyWith(
+        busy: false,
+        error: _isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong',
+      );
+      return false;
+    }
+  }
+}

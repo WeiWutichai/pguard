@@ -122,8 +122,19 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
     {
         let relay_db = db.clone();
+        let relay_nats = nats_url.clone();
         tokio::spawn(async move {
-            events::run_relay(relay_db, nats_url).await;
+            events::run_relay(relay_db, relay_nats).await;
+        });
+    }
+    // --- background inbound consumer (PRE-PAY gate): payment.completed → stamp paid_at ---
+    // booking's FIRST inbound consumer. It un-gates the `accepted → en_route` transition when the
+    // customer has paid (it stamps `bookings.paid_at` idempotently via the processed_events
+    // ledger). Owns its own reconnect/retry; a NATS outage never crashes booking.
+    {
+        let consumer_db = db.clone();
+        tokio::spawn(async move {
+            events::consumer::run_consumer(consumer_db, nats_url).await;
         });
     }
 

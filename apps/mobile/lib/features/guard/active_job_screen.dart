@@ -530,13 +530,22 @@ class _TransitionBar extends ConsumerWidget {
 
     switch (stage) {
       case JobStage.enRoute:
+        // PRE-PAY gate: `en_route` requires the customer to have PAID (booking.paid_at set, via
+        // the payment.completed event). Until then the backend 409s the transition, so the CTA is
+        // disabled and we show "รอลูกค้าชำระเงิน". paid_at arrives on the GET snapshot (the WS
+        // frame carries only the status), so the screen re-pulls / re-enters reflect it.
+        final paid = state.booking.isPaid;
         return bar(Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (!paid) ...[
+              _AwaitingPaymentNotice(isThai: isThai),
+              const SizedBox(height: PgTokens.space2),
+            ],
             PgPrimaryButton(
               label: isThai ? 'เริ่มเดินทาง' : 'Go en route',
               busy: busy,
-              onPressed: busy ? null : () => ctrl.enRoute(),
+              onPressed: (busy || !paid) ? null : () => ctrl.enRoute(),
             ),
             const SizedBox(height: PgTokens.space1),
             // Opens the full withdraw flow (warning banner + reason + admin notes) —
@@ -608,6 +617,42 @@ class _TransitionBar extends ConsumerWidget {
           onPressed: () => context.push('/booking/$bookingId/live'),
         ));
     }
+  }
+}
+
+/// The guard-side PRE-PAY gate notice shown above the disabled "Go en route" CTA while the
+/// customer has not paid yet ("รอลูกค้าชำระเงิน" / "Awaiting customer payment").
+class _AwaitingPaymentNotice extends StatelessWidget {
+  const _AwaitingPaymentNotice({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.hourglass_empty,
+              size: 16, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Expanded(
+            child: Text(
+              isThai ? 'รอลูกค้าชำระเงิน' : 'Awaiting customer payment',
+              style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorWarning),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

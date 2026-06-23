@@ -70,7 +70,9 @@ pub struct ProgressReported {
 pub struct PaymentRef {
     pub payment_id: Uuid,
     pub booking_id: Uuid,
-    pub guard_id: Uuid,
+    pub customer_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_id: Option<Uuid>,
     pub amount: String,
 }
 

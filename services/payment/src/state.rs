@@ -7,6 +7,8 @@ use shared::auth::HasJwtSecret;
 use shared::config::JwtConfig;
 use shared::service_jwt::HasServiceJwt;
 
+use crate::booking_client::{BookingReader, HttpBookingReader};
+
 #[derive(Clone)]
 pub struct AppState {
     pub db: PgPool,
@@ -18,6 +20,9 @@ pub struct AppState {
     pub jwt_config: JwtConfig,
     /// Verifies inbound service-JWTs on the internal data-export read.
     pub service_decoding_key: DecodingKey,
+    /// The booking-reader (MINTS a service-JWT + GETs booking's `/internal/bookings/{id}`) —
+    /// the authoritative source for the PRE-PAY estimate + ownership/payability authz.
+    pub booking_reader: HttpBookingReader,
 }
 
 impl HasJwtSecret for AppState {
@@ -56,27 +61,37 @@ impl PaymentInternalDeps for AppState {
     }
 }
 
-/// Capability seam for the customer-facing payment READ endpoints (get/list/admin-ledger/
-/// reports). Mounting the handlers over a trait (rather than the concrete [`AppState`]) lets
-/// tests exercise the `AuthUser` guard + role gates with a lightweight state — the auth/role
-/// rejection paths short-circuit before the DB is touched (mirrors booking's `BookingDeps`).
+/// Capability seam for the customer-facing payment endpoints (createPayment + get/list/
+/// admin-ledger/reports). Mounting the handlers over a trait (rather than the concrete
+/// [`AppState`]) lets tests exercise the `AuthUser` guard + role/authz gates with a lightweight
+/// state — the auth/role rejection paths short-circuit before the DB is touched (mirrors
+/// rating's `RatingDeps`).
 ///
-/// v2 is POST-PAY: there is no customer-initiated charge endpoint (the bill is raised by the
-/// `booking.completed` consumer), so this seam no longer needs a booking reader.
+/// v2 is PRE-PAY: `createPayment` reads the authoritative booking through the booking reader (an
+/// associated type → static dispatch, native `async fn`, no `async-trait`) to compute the estimate
+/// + verify ownership/payability, so this seam carries a `BookingReader`.
 pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
+    type Reader: BookingReader;
+
     fn db(&self) -> &PgPool;
     /// Read-replica pool for the payment list read (C5.3). Defaults to primary; the single
     /// `get_payment` stays on `db` (money read-after-write).
     fn db_read(&self) -> &PgPool {
         self.db()
     }
+    fn booking_reader(&self) -> &Self::Reader;
 }
 
 impl PaymentDeps for AppState {
+    type Reader = HttpBookingReader;
+
     fn db(&self) -> &PgPool {
         &self.db
     }
     fn db_read(&self) -> &PgPool {
         &self.db_read
+    }
+    fn booking_reader(&self) -> &Self::Reader {
+        &self.booking_reader
     }
 }

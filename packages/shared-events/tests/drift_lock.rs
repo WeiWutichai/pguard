@@ -168,11 +168,16 @@ fn progress_reported_locks_routing_ids() {
 
 #[test]
 fn payment_completed_locks_decimal_amount_as_string() {
+    // PRE-PAY: payment.completed carries customer_id (booking un-gates / notification pushes the
+    // customer) + guard_id (notification pushes the guard) + the pre-paid amount as a decimal STRING.
     let pid = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
-    let payload = json!({ "payment_id": pid, "booking_id": B, "guard_id": G, "amount": "500.00" });
+    let payload = json!({
+        "payment_id": pid, "booking_id": B, "customer_id": C, "guard_id": G, "amount": "500.00"
+    });
     let env: EventEnvelope<PaymentRef> =
         parse(&envelope(topics::PAYMENT_COMPLETED, payload.clone()));
     assert_eq!(env.payload.amount, "500.00"); // money is a decimal STRING, never a float
+    assert_eq!(env.payload.customer_id.to_string(), C);
     assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
 }
 

@@ -695,6 +695,11 @@ export interface components {
              * @description Site longitude (null when not provided at create).
              */
             lng?: number | null;
+            /**
+             * Format: date-time
+             * @description When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
+             */
+            paid_at?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
