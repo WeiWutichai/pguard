@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/guard_map_screen.dart';
+import 'package:pguard_mobile/features/booking/job_completion_summary_screen.dart';
 import 'package:pguard_mobile/features/booking/live_status_screen.dart';
 
 import '../support/fakes.dart';
@@ -156,6 +157,197 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
 
     expect(find.text('ดูตำแหน่งเจ้าหน้าที่'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'pending_completion → approve calls review-completion {approve} and routes to summary',
+      (tester) async {
+    Object? putBody;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          return {
+            'id': 'b1',
+            'customer_id': 'c1',
+            'status': 'pending_completion',
+            'guard_id': 'g1',
+            'hours': 2,
+            'base_fee': '500.00',
+          };
+        }
+        if (path == '/payments') {
+          return <Map<String, dynamic>>[
+            {
+              'id': 'p1',
+              'booking_id': 'b1',
+              'customer_id': 'c1',
+              'amount': '1000.00',
+              'final_amount': '500.00',
+              'refund_amount': '500.00',
+              'actual_hours': '1',
+              'refund_status': 'pending',
+              'status': 'completed',
+            }
+          ];
+        }
+        return <Map<String, dynamic>>[]; // conversations / progress-reports
+      },
+      onPut: (path, data) async {
+        putBody = data;
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'completed',
+          'guard_id': 'g1',
+          'hours': 2,
+          'base_fee': '500.00',
+        };
+      },
+    );
+
+    final router = GoRouter(
+      initialLocation: '/booking/b1/live',
+      routes: [
+        GoRoute(
+          path: '/booking/:id/live',
+          builder: (_, s) =>
+              LiveStatusScreen(bookingId: s.pathParameters['id']!),
+        ),
+        GoRoute(
+          path: '/booking/:id/summary',
+          builder: (_, s) =>
+              JobCompletionSummaryScreen(bookingId: s.pathParameters['id']!),
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The completion-review panel is shown (default locale = Thai).
+    expect(find.text('รอยืนยันจบงาน'), findsOneWidget);
+    final approve = find.text('ยืนยันจบงาน');
+    expect(approve, findsOneWidget);
+    expect(find.text('ให้ทำต่อ'), findsOneWidget);
+
+    await tester.tap(approve);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // It PUT the approve action and landed on the completion summary.
+    expect(putBody, {'action': 'approve'});
+    expect(api.calls.where((c) => c == 'PUT /bookings/b1/review-completion').length, 1);
+    expect(find.byType(JobCompletionSummaryScreen), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'pending_completion → reject calls review-completion {reject} and stays',
+      (tester) async {
+    Object? putBody;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          return {
+            'id': 'b1',
+            'customer_id': 'c1',
+            'status': 'pending_completion',
+            'guard_id': 'g1',
+            'hours': 2,
+          };
+        }
+        return <Map<String, dynamic>>[];
+      },
+      onPut: (path, data) async {
+        putBody = data;
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'arrived',
+          'guard_id': 'g1',
+          'hours': 2,
+        };
+      },
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('ให้ทำต่อ'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // It PUT the reject action; the booking folds back to `arrived` (panel gone) and a
+    // confirmation snackbar appears.
+    expect(putBody, {'action': 'reject'});
+    expect(find.text('รอยืนยันจบงาน'), findsNothing);
+    expect(find.text('แจ้งให้เจ้าหน้าที่ทำงานต่อแล้ว'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Details action opens the booking-details sheet (no longer a no-op)',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'arrived',
+          'guard_id': 'g1',
+          'address': 'หมู่บ้านลัดดารมย์',
+          'hours': 3,
+          'base_fee': '500.00',
+        };
+      }
+      return <Map<String, dynamic>>[];
+    });
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    await tester.tap(find.text('ดูรายละเอียด'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The bottom sheet opened with the booking details (the title + detail rows are sheet-only;
+    // the address also shows in the guard card above, so assert on the sheet-unique labels).
+    expect(find.text('รายละเอียดการจอง'), findsOneWidget);
+    expect(find.text('จำนวนชั่วโมง'), findsOneWidget);
+    expect(find.text('สถานที่'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

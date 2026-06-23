@@ -22,9 +22,9 @@ class PGuardApp extends ConsumerWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light(),
       routerConfig: router,
-      // App-wide messenger so the context-free push layer can surface an in-app banner
-      // (e.g. "New job nearby") over any screen — see core/push/in_app_banner.dart.
-      scaffoldMessengerKey: rootMessengerKey,
+      // App-wide overlay so the context-free push layer can drop an in-app banner down from the
+      // top (e.g. "New job nearby") over any screen — see core/push/in_app_banner.dart.
+      builder: inAppBannerBuilder,
     );
   }
 }

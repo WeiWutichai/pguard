@@ -166,6 +166,14 @@ class _LiveBody extends StatelessWidget {
                   _PayNowBanner(bookingId: booking.id),
                   const SizedBox(height: PgTokens.space4),
                 ],
+                // The guard has REQUESTED completion (arrived → pending_completion). The
+                // customer must rule on it: APPROVE → completed (triggers the settle) or
+                // REJECT → back to arrived (the guard keeps working). Driven by the WS status
+                // frame, no polling.
+                if (booking.status == BookingStatus.pendingCompletion) ...[
+                  _CompletionReviewPanel(bookingId: booking.id),
+                  const SizedBox(height: PgTokens.space4),
+                ],
                 _Actions(booking: booking),
               ],
             ),
@@ -666,12 +674,284 @@ class _Actions extends ConsumerWidget {
                       onPressed: () =>
                           context.push('/booking/${booking.id}/review'),
                     )
+                  // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
+                  // trailing action opens the booking-details sheet (address / schedule /
+                  // hours / guards / price). Was a dead `onPressed: () {}` no-op (Build #80).
                   : PgPrimaryButton(
                       label: isThai ? 'ดูรายละเอียด' : 'Details',
-                      onPressed: () {},
+                      onPressed: () => showBookingDetailsSheet(
+                        context,
+                        booking: booking,
+                        totalSatang: _totalSatang,
+                        isThai: isThai,
+                      ),
                     ),
         ),
       ],
+    );
+  }
+}
+
+/// The completion-review panel — shown while the booking is `pending_completion` (the guard has
+/// requested completion). The customer APPROVES ("ยืนยันจบงาน" → `completed`, which triggers the
+/// server-side settle/reconcile and routes to the job-completion summary) or REJECTS ("ให้ทำต่อ"
+/// → back to `arrived`, the guard keeps working; a snackbar confirms and the screen stays). Both
+/// hit `PUT /v1/bookings/{id}/review-completion { action }` via [BookingStatusController].
+class _CompletionReviewPanel extends ConsumerStatefulWidget {
+  const _CompletionReviewPanel({required this.bookingId});
+
+  final String bookingId;
+
+  @override
+  ConsumerState<_CompletionReviewPanel> createState() =>
+      _CompletionReviewPanelState();
+}
+
+class _CompletionReviewPanelState
+    extends ConsumerState<_CompletionReviewPanel> {
+  bool _busy = false;
+
+  Future<void> _review({required bool approve}) async {
+    if (_busy) return;
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    setState(() => _busy = true);
+    final error = await ref
+        .read(bookingStatusControllerProvider(widget.bookingId).notifier)
+        .reviewCompletion(approve: approve);
+    if (!mounted) return;
+    setState(() => _busy = false);
+    if (error != null) {
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(error)));
+      return;
+    }
+    if (approve) {
+      // Settle is in flight (booking.completed → payment reconcile). Move to the summary; it
+      // reads the reconciled payment and forces the customer on to rate the guard.
+      context.pushReplacement('/booking/${widget.bookingId}/summary');
+    } else {
+      // Rejected → back to `arrived`; the guard continues. Stay on the live screen (the WS
+      // `arrived` frame the server emits is idempotent with the folded state).
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(isThai
+              ? 'แจ้งให้เจ้าหน้าที่ทำงานต่อแล้ว'
+              : 'Asked the guard to continue'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorAmber50,
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+        border: Border.all(color: PgTokens.colorAmber200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.flag_outlined,
+                  size: 18, color: PgTokens.colorAmber700),
+              const SizedBox(width: PgTokens.space2),
+              Expanded(
+                child: Text(
+                  isThai
+                      ? 'รอยืนยันจบงาน'
+                      : 'Awaiting your confirmation',
+                  style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: PgTokens.space2),
+          Text(
+            isThai
+                ? 'เจ้าหน้าที่แจ้งว่างานเสร็จแล้ว — กรุณายืนยันเพื่อจบงาน หรือให้ทำงานต่อ'
+                : 'The guard has marked the job done. Confirm to finish, or ask them to '
+                    'keep working.',
+            style:
+                const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
+          ),
+          const SizedBox(height: PgTokens.space4),
+          PgPrimaryButton(
+            label: isThai ? 'ยืนยันจบงาน' : 'Confirm completion',
+            color: PgTokens.colorAmber500,
+            foreground: PgTokens.colorOnAmber,
+            busy: _busy,
+            onPressed: _busy ? null : () => _review(approve: true),
+          ),
+          const SizedBox(height: PgTokens.space2),
+          SizedBox(
+            height: 52,
+            child: TextButton(
+              onPressed: _busy ? null : () => _review(approve: false),
+              style: TextButton.styleFrom(
+                foregroundColor: PgTokens.colorText,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+                  side: const BorderSide(color: PgTokens.colorBorder),
+                ),
+              ),
+              child: Text(
+                isThai ? 'ให้ทำต่อ' : 'Keep working',
+                style: const TextStyle(
+                    fontSize: 14.5, fontWeight: FontWeight.w600),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The booking-details bottom sheet behind the live screen's "ดูรายละเอียด/Details" action:
+/// the address, schedule, booked hours, guard count and the display total. Read-only; the
+/// figures come from the live booking snapshot. Fixes the Build #80 no-op (`onPressed: () {}`).
+Future<void> showBookingDetailsSheet(
+  BuildContext context, {
+  required Booking booking,
+  required int? totalSatang,
+  required bool isThai,
+}) {
+  String two(int n) => n.toString().padLeft(2, '0');
+  String? schedule;
+  final s = booking.scheduledAt?.toLocal();
+  if (s != null) {
+    schedule =
+        '${s.day}/${two(s.month)}/${s.year}  ${two(s.hour)}:${two(s.minute)} น.';
+  }
+  final hours = booking.hours;
+  final guards = booking.guardCount;
+
+  return showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: PgTokens.colorSurface,
+    showDragHandle: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius:
+          BorderRadius.vertical(top: Radius.circular(PgTokens.radius2xl)),
+    ),
+    builder: (context) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(
+              PgTokens.space5, 0, PgTokens.space5, PgTokens.space5),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                isThai ? 'รายละเอียดการจอง' : 'Booking details',
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: PgTokens.space4),
+              _DetailRow(
+                icon: Icons.place_outlined,
+                label: isThai ? 'สถานที่' : 'Location',
+                value: booking.address ?? (isThai ? 'ไม่ระบุ' : 'Not set'),
+              ),
+              if (schedule != null)
+                _DetailRow(
+                  icon: Icons.event_outlined,
+                  label: isThai ? 'นัดหมาย' : 'Scheduled',
+                  value: schedule,
+                ),
+              if (hours != null)
+                _DetailRow(
+                  icon: Icons.schedule_outlined,
+                  label: isThai ? 'จำนวนชั่วโมง' : 'Hours',
+                  value: '$hours',
+                ),
+              if (guards != null)
+                _DetailRow(
+                  icon: Icons.groups_outlined,
+                  label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
+                  value: '$guards',
+                ),
+              _DetailRow(
+                icon: Icons.flag_outlined,
+                label: isThai ? 'สถานะ' : 'Status',
+                value: isThai
+                    ? BookingLifecycle.labelTh(booking.status)
+                    : BookingLifecycle.labelEn(booking.status),
+              ),
+              if (totalSatang != null) ...[
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+                  child: Divider(height: 1, color: PgTokens.colorBorder),
+                ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      isThai ? 'ยอดรวม (ประมาณ)' : 'Total (estimate)',
+                      style: const TextStyle(
+                          fontSize: 14, fontWeight: FontWeight.w700),
+                    ),
+                    Text(
+                      Money.format(totalSatang, decimals: true),
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.w700,
+                        color: PgTokens.colorGreen800,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+class _DetailRow extends StatelessWidget {
+  const _DetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: PgTokens.space2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: PgTokens.colorTextMuted),
+          const SizedBox(width: PgTokens.space3),
+          Expanded(
+            child: Text(label,
+                style: const TextStyle(
+                    fontSize: 13, color: PgTokens.colorTextMuted)),
+          ),
+          const SizedBox(width: PgTokens.space3),
+          Flexible(
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

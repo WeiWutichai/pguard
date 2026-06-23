@@ -36,6 +36,17 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     }
   }
 
+  /// "ยืนยันการจอง" / Confirm — this is where the booking is CREATED (fixes #79: guards only see
+  /// the open job AFTER the customer confirms, not at the form step). The radio-selected guard is a
+  /// non-binding PREVIEW; v2 stays first-come, so we send no `guard_id`. On success, route to live
+  /// status; `createBooking` records its own error into the flow state for [PgErrorState] / inline.
+  Future<void> _confirm() async {
+    final ok = await ref.read(bookingFlowControllerProvider.notifier).createBooking();
+    if (!ok || !mounted) return;
+    final id = ref.read(bookingFlowControllerProvider).booking?.id;
+    if (id != null) context.go('/booking/$id/live');
+  }
+
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
@@ -44,7 +55,7 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(light: true,
         title: isThai ? 'เลือกเจ้าหน้าที่' : 'Choose a guard',
         subtitle: state.guards.isNotEmpty
             ? (isThai
@@ -57,19 +68,25 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
         child: Column(
           children: [
             Expanded(child: _body(state, ctrl, isThai)),
+            // A create error from confirm (state.error with guards already loaded) shows inline
+            // above the bar — the list/empty/error _body handles only the load phase.
+            if (state.error != null && state.guards.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                    PgTokens.space4, 0, PgTokens.space4, PgTokens.space2),
+                child: Text(
+                  state.error!,
+                  style: const TextStyle(color: PgTokens.colorDanger),
+                ),
+              ),
             _ContinueBar(
-              // Require the (already-created) booking too, so the button is never an enabled
-              // dead-end if discovery is somehow reached with no booking (e.g. a mid-flow deep link).
-              enabled: !state.busy &&
-                  state.guards.isNotEmpty &&
-                  state.booking != null,
-              // Post-pay: the booking is already created (form step) — confirm goes straight to
-              // live status (no up-front payment). A guard accepts first-come; billing is on
-              // completion.
-              onContinue: () {
-                final id = state.booking?.id;
-                if (id != null) context.go('/booking/$id/live');
-              },
+              // Enabled once guards are loaded and we are not mid-request. Confirm CREATES the
+              // booking; no pre-existing booking is required (it doesn't exist yet by design).
+              enabled: !state.busy && state.guards.isNotEmpty,
+              busy: state.busy,
+              // Post-pay: confirm creates the booking then goes straight to live status (no up-front
+              // payment). A guard accepts first-come; billing is on completion.
+              onContinue: _confirm,
               isThai: isThai,
             ),
           ],
@@ -230,11 +247,13 @@ class _SearchingStateState extends State<_SearchingState>
 class _ContinueBar extends StatelessWidget {
   const _ContinueBar({
     required this.enabled,
+    required this.busy,
     required this.onContinue,
     required this.isThai,
   });
 
   final bool enabled;
+  final bool busy;
   final VoidCallback onContinue;
   final bool isThai;
 
@@ -249,7 +268,9 @@ class _ContinueBar extends StatelessWidget {
       child: SafeArea(
         top: false,
         child: PgPrimaryButton(
+          // Confirm CREATES the booking (fixes #79) — show the spinner while the POST is in flight.
           label: isThai ? 'ยืนยันการจอง' : 'Confirm booking',
+          busy: busy,
           onPressed: enabled ? onContinue : null,
         ),
       ),
