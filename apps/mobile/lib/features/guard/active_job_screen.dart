@@ -30,13 +30,44 @@ import 'widgets/check_in_sheet.dart';
 /// → complete), shows a DISPLAY-only countdown (from the client-recorded start time, since the
 /// API doesn't expose work_started_at), and prompts the hourly photo+GPS check-in. Status flows
 /// to the customer over the existing WS — nothing is polled here. Per `Mobile Guard.html`.
-class ActiveJobScreen extends ConsumerWidget {
+class ActiveJobScreen extends ConsumerStatefulWidget {
   const ActiveJobScreen({super.key, required this.bookingId});
 
   final String bookingId;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<ActiveJobScreen> createState() => _ActiveJobScreenState();
+}
+
+class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
+    // Belt-and-suspenders for a MISSED payment push (foreground push handling can be skipped while
+    // backgrounded): re-fetch the guard's active job on resume so a `paid_at` that landed while the
+    // app was away un-gates "Go en route". This is a one-shot fetch on an event (resume), NOT a
+    // Timer.periodic — the active-job controller has no live WS, so a manual re-pull is the only way
+    // it reflects an async server change.
+    if (lifecycle == AppLifecycleState.resumed) {
+      ref.invalidate(activeJobControllerProvider(widget.bookingId));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bookingId = widget.bookingId;
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(activeJobControllerProvider(bookingId));
     final state = async.valueOrNull;

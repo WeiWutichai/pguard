@@ -1,13 +1,18 @@
+import 'dart:async';
+
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/widgets.dart' show VoidCallback;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../features/call/call_routes.dart';
 import '../../routing/app_router.dart';
+import '../controllers/active_job_controller.dart';
+import '../controllers/booking_status_controller.dart';
 import '../controllers/guard_jobs_controller.dart';
 import '../controllers/locale_controller.dart';
 import '../controllers/session_controller.dart';
 import '../providers.dart';
+import 'booking_push.dart';
 import 'in_app_banner.dart';
 import 'incoming_call_push.dart';
 import 'new_job_push.dart';
@@ -50,6 +55,14 @@ InAppNotify pushNotify(PushNotifyRef ref) => showInAppBanner;
 @Riverpod(keepAlive: true)
 class PushRegistration extends _$PushRegistration {
   bool _listening = false;
+
+  /// Delay before the single retry re-fetch of the guard's active job after a PAYMENT push — gives
+  /// the booking service time to set `paid_at` (set ASYNC off the same event, ~1s later). Settable
+  /// so tests can shrink it; production keeps ~1.5s.
+  Duration _payRefetchDelay = const Duration(milliseconds: 1500);
+
+  // @visibleForTesting — shrink the post-payment retry delay so tests don't wait ~1.5s.
+  set payRefetchDelayForTest(Duration value) => _payRefetchDelay = value;
 
   @override
   bool build() {
@@ -108,10 +121,51 @@ class PushRegistration extends _$PushRegistration {
       _onNewJob(); // new_job surfaces its own banner + refetches the open feed
       return;
     }
+    // A payment.completed / booking.* push: re-pull THIS booking's live state so a push received
+    // while the screen sits on its one initial snapshot picks up the transition (the WS upgrade is
+    // not yet proxied at the gateway). For payment in particular this UN-GATES the guard's
+    // "Go en route" once `paid_at` lands. Falls through to the banner so the user still sees it.
+    final booking = BookingPush.tryParse(data);
+    if (booking != null && booking.bookingId.isNotEmpty) {
+      _onBookingPush(booking);
+    }
     // Every other foreground push (booking-status / chat / call) surfaces an in-app banner so the
     // user sees it without leaving the current screen. No `type` field on these — classified by
     // `event_type`. A push we don't recognise yields a null banner and is silently ignored.
     _banner(data);
+  }
+
+  /// A payment/booking push landed for [push].bookingId: invalidate that booking's live controllers
+  /// so a mounted screen re-fetches and reflects the new server truth.
+  ///   - [bookingStatusControllerProvider] — the customer's live screen (status + `paid_at`);
+  ///   - [activeJobControllerProvider] — the guard's active-job screen (its `isPaid` gate on
+  ///     "Go en route"). It is a one-shot REST fetch, so without this it would stay stuck on
+  ///     "รอลูกค้าชำระเงิน".
+  /// Invalidating an autoDispose provider is safe whether or not it is mounted (mounted → refetch;
+  /// unmounted → dispose, the next read rebuilds fresh).
+  ///
+  /// `paid_at` is set ASYNC (the booking service consumes `payment.completed` ~1s after the push
+  /// fires), so for a PAYMENT push, if the re-fetched active job is still NOT paid we retry the
+  /// fetch ONCE after a short delay ([_payRefetchDelay]). NOT a `Timer.periodic` — a single,
+  /// bounded retry.
+  void _onBookingPush(BookingPush push) {
+    final id = push.bookingId;
+    ref.invalidate(bookingStatusControllerProvider(id));
+    ref.invalidate(activeJobControllerProvider(id));
+    if (push.isPayment) {
+      unawaited(_retryActiveJobIfUnpaid(id));
+    }
+  }
+
+  /// One bounded re-fetch of the guard's active job after a payment push, to cover the async lag
+  /// before `paid_at` is set. Only re-invalidates when the (still-mounted) active job re-read came
+  /// back UNPAID — if it is already paid, or the screen has gone (unmounted), there is nothing to do.
+  Future<void> _retryActiveJobIfUnpaid(String bookingId) async {
+    await Future<void>.delayed(_payRefetchDelay);
+    final provider = activeJobControllerProvider(bookingId);
+    if (!ref.exists(provider)) return; // screen gone — nothing to refresh
+    final paid = ref.read(provider).valueOrNull?.booking.isPaid ?? false;
+    if (!paid) ref.invalidate(provider);
   }
 
   /// Surface the in-app top toast for a foreground push, if it maps to one (locale-aware). The

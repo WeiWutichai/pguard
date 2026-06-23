@@ -2,9 +2,12 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/controllers/active_job_controller.dart';
+import 'package:pguard_mobile/core/controllers/booking_status_controller.dart';
 import 'package:pguard_mobile/core/controllers/guard_jobs_controller.dart';
 import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/core/push/booking_push.dart';
 import 'package:pguard_mobile/core/push/in_app_banner_type.dart';
 import 'package:pguard_mobile/core/push/incoming_call_push.dart';
 import 'package:pguard_mobile/core/push/new_job_push.dart';
@@ -219,5 +222,128 @@ void main() {
 
     // It did NOT navigate (new_job surfaces in-place; it never opens the call screen).
     expect(routes, isEmpty);
+  });
+
+  group('BookingPush.tryParse', () {
+    test('parses a payment.completed push (isPayment) + its booking_id', () {
+      final p = BookingPush.tryParse({
+        'event_type': 'pguard.events.payment.completed',
+        'booking_id': 'b-9',
+        'payment_id': 'p-1',
+      });
+      expect(p, isNotNull);
+      expect(p!.bookingId, 'b-9');
+      expect(p.isPayment, isTrue);
+    });
+
+    test('parses a booking.* status push (not isPayment)', () {
+      final p = BookingPush.tryParse({
+        'event_type': 'pguard.events.booking.guard_en_route',
+        'booking_id': 'b-9',
+      });
+      expect(p, isNotNull);
+      expect(p!.isPayment, isFalse);
+      expect(p.bookingId, 'b-9');
+    });
+
+    test('returns null for new_job / incoming_call / chat / unknown', () {
+      // new_job & incoming_call carry `type` → owned by their own handlers.
+      expect(BookingPush.tryParse({'type': 'new_job', 'booking_id': 'b'}),
+          isNull);
+      expect(BookingPush.tryParse({'type': 'incoming_call', 'call_id': 'c'}),
+          isNull);
+      expect(
+          BookingPush.tryParse(
+              {'event_type': 'pguard.events.chat.message_sent'}),
+          isNull);
+      expect(BookingPush.tryParse(const {}), isNull);
+    });
+  });
+
+  test(
+      'a payment.completed push invalidates the booking-status AND active-job '
+      'controllers for that booking (guard un-gates, customer banner clears)',
+      () async {
+    final push = FakePushService();
+    // Count re-fetches of THIS booking. `paid_at` is set ASYNC by the booking service AFTER the
+    // push, so it only becomes visible once [paidVisible] flips (the test flips it only once the
+    // push has fired AND the retry lag has elapsed — proving the single bounded retry is what
+    // finally picks up `paid_at`).
+    var bookingFetches = 0;
+    var paidVisible = false;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          bookingFetches++;
+          return {
+            'id': 'b1',
+            'customer_id': 'c1',
+            'guard_id': 'g1',
+            'status': 'accepted',
+            'hours': 4,
+            'base_fee': '500.00',
+            'guard_count': 1,
+            'tip': '0',
+            if (paidVisible) 'paid_at': '2026-06-05T10:05:00Z',
+          };
+        }
+        return <dynamic>[]; // progress-reports trail
+      },
+      onPost: (_, __) async => <String, dynamic>{},
+    );
+    final c = ProviderContainer(overrides: [
+      pushServiceProvider.overrideWithValue(push),
+      pguardApiProvider.overrideWithValue(api),
+      pushNavigateProvider.overrideWithValue((_) {}),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) {},
+      ),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+
+    // Keep both of the booking's controllers actively listened so an invalidate REFETCHES.
+    final bSub =
+        c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(bSub.close);
+    final aSub = c.listen(activeJobControllerProvider('b1'), (_, __) {});
+    addTearDown(aSub.close);
+
+    // Shrink the post-payment retry delay so the test doesn't wait ~1.5s.
+    final reg = c.read(pushRegistrationProvider.notifier);
+    reg.payRefetchDelayForTest = const Duration(milliseconds: 20);
+
+    c.read(pushRegistrationProvider);
+    c.read(sessionProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    // Both controllers loaded; the guard is NOT yet paid (gate closed — paid_at still lagging).
+    final job0 = await c.read(activeJobControllerProvider('b1').future);
+    expect(job0.booking.isPaid, isFalse);
+    final fetchesBefore = bookingFetches;
+
+    // `paid_at` lands ~12ms later (just after the 10ms retry delay) — the immediate post-push
+    // refetch still sees it absent, only the bounded retry picks it up.
+    Future<void>.delayed(const Duration(milliseconds: 12), () => paidVisible = true);
+
+    // The payment push fires: invalidate both controllers, and (paid_at still lagging) retry the
+    // active job once after the (shrunk) delay.
+    push.emitForeground({
+      'event_type': 'pguard.events.payment.completed',
+      'booking_id': 'b1',
+      'payment_id': 'p1',
+    });
+    // Let the invalidations refetch + the bounded retry elapse.
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+
+    expect(bookingFetches, greaterThan(fetchesBefore),
+        reason: 'the booking-status + active-job controllers re-fetched on the push');
+    // The retry re-fetch picked up the now-present paid_at → the guard un-gates.
+    final jobAfter = c.read(activeJobControllerProvider('b1')).valueOrNull;
+    expect(jobAfter?.booking.isPaid, isTrue,
+        reason: 'active-job re-fetch (with one retry) saw paid_at → en_route enabled');
   });
 }

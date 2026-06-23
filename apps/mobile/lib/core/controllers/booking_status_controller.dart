@@ -37,6 +37,12 @@ class BookingStatusController extends _$BookingStatusController {
       booking = current.applyEvent(event);
       state = AsyncData(booking);
     });
+    // Carry forward a `paidAt` already known to the live state (e.g. an optimistic [markPaid]
+    // from the payment success) onto this fresh snapshot — `paid` is MONOTONIC, so a re-build /
+    // re-pull whose snapshot lacks `paid_at` (the booking service sets it ASYNC, ~1s after the
+    // charge) must never DOWNGRADE a paid booking back to unpaid (that flicker is the reported
+    // pay-loop). [_mergePaid] keeps whichever side is paid.
+    booking = _mergePaid(booking, state.valueOrNull);
     ref.onDispose(() {
       sub.cancel();
       feed.close();
@@ -44,6 +50,27 @@ class BookingStatusController extends _$BookingStatusController {
     await feed.connect();
 
     return booking;
+  }
+
+  /// Optimistically mark this booking PAID the instant the customer's `POST /payments` succeeds,
+  /// so the live-status pay banner (and the PaymentScreen's pay panel) disappear IMMEDIATELY —
+  /// without waiting for the booking service to consume `payment.completed` and set `paid_at`
+  /// (it does that ASYNC, ~1s later). Stamps `paidAt = now` only if not already set, and is a
+  /// no-op once the booking is already paid (idempotent). Because [build] and [applyEvent] both
+  /// carry `paidAt` forward, this paid state then SURVIVES every later snapshot/WS frame — a stale
+  /// unpaid snapshot can never un-pay it (the monotonic guarantee that kills the pay-loop).
+  void markPaid() {
+    final current = state.valueOrNull;
+    if (current == null || current.isPaid) return;
+    state = AsyncData(current.withPaidAt(DateTime.now().toUtc()));
+  }
+
+  /// Keep whichever of [snapshot]/[previous] is PAID — `paid` never downgrades. Returns [snapshot]
+  /// with its `paidAt` filled from [previous] when the fresh snapshot lacks one but a prior state
+  /// already knew the booking was paid.
+  static Booking _mergePaid(Booking snapshot, Booking? previous) {
+    if (snapshot.paidAt != null || previous?.paidAt == null) return snapshot;
+    return snapshot.withPaidAt(previous!.paidAt!);
   }
 
   /// `PUT /v1/bookings/{id}/cancel` — the customer cancels PRE-ARRIVAL

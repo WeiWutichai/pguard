@@ -143,6 +143,26 @@ class Booking {
             : null,
       );
 
+  /// A copy with [paidAt] set (everything else unchanged). Used to OPTIMISTICALLY mark a booking
+  /// paid the instant the customer's charge clears, before the booking service's async `paid_at`
+  /// lands — and to CARRY a known `paidAt` forward onto a fresh snapshot that lacks one. Keeps
+  /// `paid` monotonic (the live controller never passes a null here).
+  Booking withPaidAt(DateTime paidAt) => Booking(
+        id: id,
+        customerId: customerId,
+        guardId: guardId,
+        status: status,
+        address: address,
+        scheduledAt: scheduledAt,
+        hours: hours,
+        guardCount: guardCount,
+        baseFee: baseFee,
+        tip: tip,
+        lat: lat,
+        lng: lng,
+        paidAt: paidAt,
+      );
+
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
   /// [paidAt] is CARRIED FORWARD (the WS frame has no payment field) so a booking already known
   /// to be paid stays paid as later status frames arrive.
