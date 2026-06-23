@@ -126,10 +126,12 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
     onPicked(DateTime(date.year, date.month, date.day, t.hour, t.minute));
   }
 
-  Future<void> _submit() async {
-    final ok = await _ctrl.createBooking();
-    if (ok && mounted) context.push('/book/guards');
-  }
+  /// "ค้นหาเจ้าหน้าที่" / Find guards — does NOT create the booking. Discovery's
+  /// `GET /v1/available-guards` lists approved+online guards without a created booking, so the
+  /// job (and its broadcast to guards) is held back until the customer taps "ยืนยันการจอง" on the
+  /// discovery screen (fixes #79: guards no longer see the job at the form step). The booking_flow
+  /// state (service/place/time/etc.) lives in the keepAlive controller and carries across.
+  void _submit() => context.push('/book/guards');
 
   @override
   Widget build(BuildContext context) {
@@ -270,9 +272,10 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
               child: SafeArea(
                 top: false,
                 child: PgPrimaryButton(
+                  // Navigation only — the booking is created later, on "ยืนยันการจอง" at
+                  // discovery (fixes #79), so there is no network call / busy state here.
                   label: isThai ? 'ค้นหาเจ้าหน้าที่' : 'Find guards',
-                  busy: state.busy,
-                  onPressed: state.busy ? null : _submit,
+                  onPressed: _submit,
                 ),
               ),
             ),

@@ -23,6 +23,7 @@ import '../features/booking/bookings_list_screen.dart';
 import '../features/booking/cancellation_screen.dart';
 import '../features/booking/guard_discovery_screen.dart';
 import '../features/booking/guard_map_screen.dart';
+import '../features/booking/job_completion_summary_screen.dart';
 import '../features/booking/live_status_screen.dart';
 import '../features/booking/payment_screen.dart';
 import '../features/booking/review_screen.dart';
@@ -260,7 +261,16 @@ GoRouter appRouter(AppRouterRef ref) {
         builder: (context, state) =>
             GuardMapScreen(bookingId: state.pathParameters['id']!),
       ),
-      // Customer review of a completed booking (entered from live-status when completed).
+      // Job-completion summary — reached when the customer APPROVES the guard's completion
+      // request (pending_completion → completed). Shows the reconciled cost breakdown, then
+      // FORCES the customer on to rate the guard (PopScope blocks skipping it).
+      GoRoute(
+        path: '/booking/:id/summary',
+        builder: (context, state) =>
+            JobCompletionSummaryScreen(bookingId: state.pathParameters['id']!),
+      ),
+      // Customer review of a completed booking (entered from the completion summary, or from
+      // live-status when already completed).
       GoRoute(
         path: '/booking/:id/review',
         builder: (context, state) =>

@@ -67,4 +67,30 @@ class BookingStatusController extends _$BookingStatusController {
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
     }
   }
+
+  /// `PUT /v1/bookings/{id}/review-completion { action }` — the customer (request owner)
+  /// rules on the guard's completion request (`reviewCompletion` in `booking.yaml`). Allowed
+  /// only while the booking is `pending_completion`:
+  ///  - `approve` → `completed` (emits `pguard.events.booking.completed`, which drives the
+  ///    payment RECONCILE: the pre-pay charge is settled to the hours actually worked, any
+  ///    overpay refunded);
+  ///  - `reject` → back to `arrived` (the guard keeps working).
+  ///
+  /// On success the returned booking is folded into state immediately (the WS frame that
+  /// follows is idempotent). Returns `null` on success, else a human-readable error message.
+  Future<String?> reviewCompletion({required bool approve}) async {
+    try {
+      final data = await ref.read(pguardApiProvider).put(
+        '/bookings/$bookingId/review-completion',
+        data: {'action': approve ? 'approve' : 'reject'},
+      );
+      state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
+      return null;
+    } on ApiException catch (e) {
+      return e.message;
+    } catch (_) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
+    }
+  }
 }

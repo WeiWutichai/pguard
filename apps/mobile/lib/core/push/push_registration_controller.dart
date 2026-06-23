@@ -1,4 +1,5 @@
 import 'package:firebase_messaging/firebase_messaging.dart';
+import 'package:flutter/widgets.dart' show VoidCallback;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../features/call/call_routes.dart';
@@ -26,11 +27,18 @@ PushService pushService(PushServiceRef ref) =>
 void Function(String route) pushNavigate(PushNavigateRef ref) =>
     (route) => ref.read(appRouterProvider).push(route);
 
-/// How the push layer surfaces an in-app banner (e.g. "New job nearby"). Default shows a SnackBar
-/// over the current screen via the app-wide messenger; overridden in tests to capture the message
-/// without a real widget tree.
+/// How the push layer surfaces an in-app banner (e.g. "New job nearby"). Default drops a top toast
+/// over the current screen via the app-wide overlay; overridden in tests to capture the message
+/// (and optional title/type/onTap) without a real widget tree.
+typedef InAppNotify = void Function(
+  String message, {
+  String? title,
+  InAppBannerType type,
+  VoidCallback? onTap,
+});
+
 @riverpod
-void Function(String message) pushNotify(PushNotifyRef ref) => showInAppBanner;
+InAppNotify pushNotify(PushNotifyRef ref) => showInAppBanner;
 
 /// Registers this device's FCM token with the backend (`POST /tokens`) while the session is
 /// authenticated, and routes incoming-call pushes to the in-app call screen.
@@ -89,8 +97,10 @@ class PushRegistration extends _$PushRegistration {
   void _handle(Map<String, dynamic> data) {
     final call = IncomingCallPush.tryParse(data);
     if (call != null) {
-      _banner(data);
-      ref.read(pushNavigateProvider)(CallRoutes.incoming(call.callId));
+      final route = CallRoutes.incoming(call.callId);
+      // Drop the call banner with a tap-to-(re)open-the-call-screen action, then route now.
+      _banner(data, onTap: () => ref.read(pushNavigateProvider)(route));
+      ref.read(pushNavigateProvider)(route);
       return;
     }
     final job = NewJobPush.tryParse(data);
@@ -104,11 +114,19 @@ class PushRegistration extends _$PushRegistration {
     _banner(data);
   }
 
-  /// Surface the in-app banner for a foreground push, if it maps to one (locale-aware).
-  void _banner(Map<String, dynamic> data) {
+  /// Surface the in-app top toast for a foreground push, if it maps to one (locale-aware). The
+  /// body copy + bold title + severity colour/icon all derive from the push payload (design #82).
+  /// [onTap] lets a banner re-open its target (e.g. an incoming call) when the user taps the card.
+  void _banner(Map<String, dynamic> data, {VoidCallback? onTap}) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final message = pushBanner(data, isThai: isThai);
-    if (message != null) ref.read(pushNotifyProvider)(message);
+    if (message == null) return;
+    ref.read(pushNotifyProvider)(
+      message,
+      title: pushBannerTitle(data, isThai: isThai),
+      type: pushBannerType(data),
+      onTap: onTap,
+    );
   }
 
   /// A "new_job" push landed: refetch the open-jobs feed so the offer appears in the guard's
@@ -121,6 +139,9 @@ class PushRegistration extends _$PushRegistration {
     ref.invalidate(guardJobsControllerProvider);
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     ref.read(pushNotifyProvider)(
-        isThai ? 'งานใหม่ใกล้คุณ' : 'New job nearby');
+      isThai ? 'มีงานใหม่ใกล้คุณ แตะเพื่อดู' : 'A new job is nearby — tap to view',
+      title: isThai ? 'งานใหม่' : 'New job',
+      type: InAppBannerType.success,
+    );
   }
 }

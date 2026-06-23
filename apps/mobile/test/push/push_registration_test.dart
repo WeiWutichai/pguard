@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/guard_jobs_controller.dart';
 import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/core/push/in_app_banner_type.dart';
 import 'package:pguard_mobile/core/push/incoming_call_push.dart';
 import 'package:pguard_mobile/core/push/new_job_push.dart';
 import 'package:pguard_mobile/core/push/push_registration_controller.dart';
@@ -100,7 +101,10 @@ void main() {
       pushServiceProvider.overrideWithValue(push),
       pguardApiProvider.overrideWithValue(api),
       pushNavigateProvider.overrideWithValue(routes.add),
-      pushNotifyProvider.overrideWithValue(banners.add),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) =>
+            banners.add(message),
+      ),
       appStoreProvider
           .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
@@ -135,7 +139,10 @@ void main() {
       pushServiceProvider.overrideWithValue(push),
       pguardApiProvider.overrideWithValue(api),
       pushNavigateProvider.overrideWithValue(routes.add),
-      pushNotifyProvider.overrideWithValue(banners.add),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) =>
+            banners.add(message),
+      ),
       appStoreProvider
           .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
@@ -182,7 +189,10 @@ void main() {
       pushServiceProvider.overrideWithValue(push),
       pguardApiProvider.overrideWithValue(api),
       pushNavigateProvider.overrideWithValue(routes.add),
-      pushNotifyProvider.overrideWithValue(banners.add),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) =>
+            banners.add(message),
+      ),
       appStoreProvider
           .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
     ]);
@@ -205,7 +215,7 @@ void main() {
     push.emitForeground({'type': 'new_job', 'booking_id': 'b-7'});
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(openFetches, 2);
-    expect(banners, ['งานใหม่ใกล้คุณ']); // default locale is Thai
+    expect(banners, ['มีงานใหม่ใกล้คุณ แตะเพื่อดู']); // default locale is Thai
 
     // It did NOT navigate (new_job surfaces in-place; it never opens the call screen).
     expect(routes, isEmpty);

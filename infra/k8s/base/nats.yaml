@@ -21,6 +21,9 @@ data:
     http: 8222
     authorization {
       users: [
+        # booking also CONSUMES payment.completed (JS pull) to stamp paid_at / un-gate en_route;
+        # the JS control subjects (already granted for its relay) cover it — a pull consumer
+        # delivers over `_INBOX.>`, so no data-subject subscribe permission is needed.
         { user: "booking", password: $NATS_BOOKING_PASSWORD, permissions: {
             publish:   { allow: ["pguard.events.booking.>", "$JS.API.>", "$JS.ACK.>"] }
             subscribe: { allow: ["_INBOX.>"] } } }
