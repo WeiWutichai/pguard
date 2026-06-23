@@ -10,6 +10,16 @@ import 'package:pguard_mobile/features/booking/live_status_screen.dart';
 
 import '../support/fakes.dart';
 
+/// A valid access JWT whose `sub` becomes the acting user id the session resolves (#87 pay-gate
+/// ownership is `viewerUserId == booking.customerId`).
+String _jwt(String sub, {String role = 'customer'}) => fakeJwt({
+      'sub': sub,
+      'role': role,
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
+              1000,
+    });
+
 void main() {
   testWidgets(
       'live-status screen renders the snapshot then updates from a WS push',
@@ -349,6 +359,91 @@ void main() {
     expect(find.text('จำนวนชั่วโมง'), findsOneWidget);
     // The composed address is now split into clean rows; the first line is the 'ที่อยู่' row.
     expect(find.text('ที่อยู่'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '#87 OWNER (customer) sees the Pay banner when accepted + unpaid',
+      (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'accepted',
+              'guard_id': 'g1',
+            }
+          : const <Map<String, dynamic>>[],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        // The acting user IS the booking owner (sub == customer_id 'c1'). A refresh token (+ no
+        // PIN) makes the session resolve `authenticated` so sessionProvider.user is populated.
+        appStoreProvider.overrideWithValue(
+            InMemoryStore()
+              ..refresh = 'r'
+              ..access = _jwt('c1')),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The customer sees the prominent Pay CTA + banner (default locale = Thai).
+    expect(find.text('ชำระเงิน'), findsOneWidget,
+        reason: 'the owner customer sees the Pay button');
+    expect(find.text('เจ้าหน้าที่รับงานแล้ว — ชำระเงินเพื่อเริ่มงาน'),
+        findsOneWidget);
+    // The read-only non-owner notice is NOT shown to the owner.
+    expect(find.text('รอลูกค้าชำระเงิน'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '#87 NON-owner (guard) sees the await notice and NEVER the Pay button',
+      (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'accepted',
+              'guard_id': 'g1',
+            }
+          : const <Map<String, dynamic>>[],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        // The acting user is the GUARD (sub 'g1', role guard) — NOT the booking owner 'c1'.
+        appStoreProvider.overrideWithValue(
+            InMemoryStore()
+              ..refresh = 'r'
+              ..access = _jwt('g1', role: 'guard')),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The guard NEVER sees a pay button/banner here — only the read-only await notice.
+    expect(find.text('รอลูกค้าชำระเงิน'), findsOneWidget,
+        reason: 'a non-owner viewer sees the read-only await-payment notice');
+    expect(find.text('ชำระเงิน'), findsNothing,
+        reason: 'a guard must NEVER see the Pay button (#87)');
+    expect(find.text('เจ้าหน้าที่รับงานแล้ว — ชำระเงินเพื่อเริ่มงาน'),
+        findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });

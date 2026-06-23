@@ -110,7 +110,7 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
   }
 }
 
-class _LiveBody extends StatelessWidget {
+class _LiveBody extends ConsumerWidget {
   const _LiveBody({required this.booking, required this.onRefresh});
 
   final Booking booking;
@@ -124,7 +124,14 @@ class _LiveBody extends StatelessWidget {
           BookingLifecycle.stepIndex(BookingStatus.arrived);
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    // PAY GATE OWNERSHIP (#87): this is the CUSTOMER's live screen, but a guard can also reach it
+    // (e.g. the active-job screen's "ดูสถานะสด/View live status" ghost button deep-links here).
+    // ONLY the booking's owner (the customer) may ever see the "ชำระเงิน/Pay" CTA — a guard must
+    // NEVER see a pay button. Compare the acting user (from the session) to the booking's
+    // customer_id; everything pay-related below is gated on this.
+    final viewerUserId = ref.watch(sessionProvider).user?.userId;
+    final isOwner = viewerUserId != null && viewerUserId == booking.customerId;
     // Pull-to-refresh re-pulls the booking snapshot — the customer's manual way to advance
     // status while the live WS push channel is not yet wired at the gateway (see the screen's
     // lifecycle note). Status still flows by push the moment that backend lands.
@@ -157,13 +164,19 @@ class _LiveBody extends StatelessWidget {
                 ],
                 BookingStatusStepper(status: booking.status),
                 const SizedBox(height: PgTokens.space4),
-                // PRE-PAY: the instant a guard ACCEPTS, the customer pays the server-computed
+                // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
                 // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
                 // accepted-and-unpaid (the booking-status WS drives `status`/`paid_at`, no polling)
                 // — once paid, the booking un-gates the guard and this disappears.
+                // OWNER-ONLY (#87): only the booking's customer ever sees the Pay button. A guard
+                // who reaches this screen sees a READ-ONLY "รอลูกค้าชำระเงิน" notice instead —
+                // never a pay action.
                 if (booking.status == BookingStatus.accepted &&
                     !booking.isPaid) ...[
-                  _PayNowBanner(bookingId: booking.id),
+                  if (isOwner)
+                    _PayNowBanner(bookingId: booking.id)
+                  else
+                    const _AwaitingCustomerPaymentNotice(),
                   const SizedBox(height: PgTokens.space4),
                 ],
                 // The guard has REQUESTED completion (arrived → pending_completion). The
@@ -1077,10 +1090,49 @@ class _DetailRow extends StatelessWidget {
   }
 }
 
+/// READ-ONLY counterpart of [_PayNowBanner] for a NON-owner viewer (#87): a guard who reaches
+/// the customer's live screen while the booking is accepted-but-unpaid must NEVER see the pay
+/// button — only this passive "รอลูกค้าชำระเงิน / Awaiting customer payment" notice. Mirrors the
+/// guard active-job screen's `_AwaitingPaymentNotice` (same warning tokens + copy) so the guard
+/// sees a consistent message wherever they land.
+class _AwaitingCustomerPaymentNotice extends ConsumerWidget {
+  const _AwaitingCustomerPaymentNotice();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.hourglass_empty,
+              size: 16, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Expanded(
+            child: Text(
+              isThai ? 'รอลูกค้าชำระเงิน' : 'Awaiting customer payment',
+              style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorWarning),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// PRE-PAY CTA: shown on the live screen while the booking is accepted-but-unpaid. Routes to the
 /// PaymentScreen where the customer pays the server-computed estimate ("ชำระเงินเพื่อให้เจ้าหน้าที่
 /// เริ่มงาน" — pay so the guard can set off). Display-only; the amount is computed + charged by the
-/// payment service (the client posts only the booking id).
+/// payment service (the client posts only the booking id). OWNER-ONLY — gated by the caller so a
+/// guard never sees the pay button (#87).
 class _PayNowBanner extends ConsumerWidget {
   const _PayNowBanner({required this.bookingId});
 
