@@ -101,6 +101,13 @@ class CallController extends _$CallController {
       // send + a spurious "peer is offline" error frame on the happy path, and means the caller
       // emits exactly one offer per `ready`.
       _localOffer = await _engine!.createOffer();
+      // If the callee already announced `ready` WHILE we were setting up media + creating the offer,
+      // send it now. This is the common case on a VIDEO call: getUserMedia + the camera-permission
+      // prompt make the caller's setup slow, so the push → callee `ready` can BEAT `_localOffer`.
+      // `ready` is one-shot, so `_onPeerReady` already ran with a null offer and sent nothing —
+      // without this the offer is never delivered, the callee accepts but can never answer, and the
+      // caller hangs on "calling". Idempotent: the callee dedupes a duplicate offer (_maybeAnswering).
+      if (_peerReady) _resendOffer();
     } on ApiException catch (e) {
       _fail(e.message);
     } on CallException catch (e) {
