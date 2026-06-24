@@ -339,6 +339,14 @@ async fn apply_transition(
 /// notification mapper can route incoming/missed-call pushes to the right recipient, and
 /// `call_type` so the rung CALLEE's app opens the call as audio vs video (the mobile defaults to
 /// audio only when this is absent — a video call would mis-init without it).
+///
+/// On the TERMINAL events (`calling.ended` / `.rejected`) the payload also carries
+/// `duration_seconds`, `answered_at` and `end_reason` so the chat call-summary consumer can build
+/// the pinned summary JSON: it derives the outcome (`completed` when answered — `answered_at`
+/// present / `duration_seconds > 0`; `rejected` when status/end_reason indicate a decline;
+/// otherwise `missed`) and the duration WITHOUT a follow-up read of calling's schema (v2 forbids
+/// cross-schema reads). These are `null` on the non-terminal events (initiated/accepted), which is
+/// correct — the consumer only summarizes terminal calls.
 async fn enqueue_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     topic: &str,
@@ -352,6 +360,9 @@ async fn enqueue_event(
         "callee_id": call.callee_id,
         "call_type": call.call_type,
         "status": call.status,
+        "duration_seconds": call.duration_seconds,
+        "answered_at": call.answered_at,
+        "end_reason": call.end_reason,
     });
     let envelope = EventEnvelope::new(topic, correlation_id, payload);
     let envelope_json = serde_json::to_value(&envelope)

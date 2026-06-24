@@ -5,14 +5,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../calling/call_engine.dart';
 import '../models/call.dart';
-import '../models/chat.dart';
 import '../network/api_exception.dart';
 import '../network/sockets/call_socket.dart';
-import '../network/sockets/chat_socket.dart';
 import '../providers.dart';
-import 'chat_launcher.dart';
-import 'locale_controller.dart';
-import 'session_controller.dart';
 
 part 'call_controller.g.dart';
 
@@ -55,18 +50,6 @@ class CallController extends _$CallController {
   String? _callId;
   bool _tornDown = false;
 
-  /// Call-summary bookkeeping (CALLER only) — the data the chat-thread line is built from when the
-  /// call ends. [_wentActive] flips once media connects; [_connectedAt] anchors the duration. The
-  /// caller posts a `system` chat line on end (WhatsApp-style "📞 สายเสียง · 2:34"); the callee
-  /// never posts (one row per call). See [_postCallSummary].
-  bool _wentActive = false;
-  DateTime? _connectedAt;
-  bool _summaryPosted = false; // idempotent: at most one summary per call
-
-  /// Set once the provider is disposed (the call screen + its scope went away). The fire-and-forget
-  /// [_postCallSummary] checks this around its `await` so it can never touch a dead `ref`.
-  bool _disposed = false;
-
   /// One-shot connect timeout (a single Timer is fine — NOT `Timer.periodic`): ends a call that
   /// never reaches `active` (callee never answers / media never connects) so it can't hang.
   Timer? _connectTimeout;
@@ -74,10 +57,7 @@ class CallController extends _$CallController {
 
   @override
   CallState build() {
-    ref.onDispose(() {
-      _disposed = true;
-      _teardown();
-    });
+    ref.onDispose(_teardown);
     return CallState.idle;
   }
 
@@ -449,9 +429,6 @@ class CallController extends _$CallController {
               await ref.read(pguardApiProvider).put('/calls/$id/connected');
             } catch (_) {}
           }
-          // Mark the call as having connected (drives the chat-summary outcome + duration anchor).
-          _wentActive = true;
-          _connectedAt ??= DateTime.now();
           state = state.copyWith(phase: CallPhase.active);
         }
       case CallMediaEvent.failed:
@@ -479,9 +456,6 @@ class CallController extends _$CallController {
   void _fail(String message) {
     state = state.copyWith(
         phase: CallPhase.ended, error: message, endReason: 'error');
-    // No chat summary on a SETUP failure (ICE fetch, permission denied, initiate rejected): the
-    // call never rang the callee, so there is nothing to record — and posting would spuriously
-    // create the pair's conversation. Summaries come from `_end` (a call that actually dialed).
     _teardown();
   }
 
@@ -489,87 +463,10 @@ class CallController extends _$CallController {
     if (state.phase != CallPhase.ended) {
       state = state.copyWith(phase: CallPhase.ended, endReason: reason);
     }
-    unawaited(_postCallSummary());
+    // The chat call-summary line is emitted SERVER-SIDE now (chat consumes `calling.ended`), so the
+    // mobile no longer posts a `system` chat frame on end — it only renders the server's line (see
+    // [CallSummary.tryParseContent] + ChatBubble). One row per call, with the server-derived outcome.
     _teardown();
-  }
-
-  /// Leave a WhatsApp-style trace of this call in the booking's chat thread — a `system` message
-  /// like "📞 สายเสียง · 2:34" / "📹 วิดีโอคอล · ไม่ได้รับสาย", rendered centred by `ChatBubble`.
-  ///
-  /// CALLER-ONLY + once per call: the caller alone reliably knows the outcome + duration, and
-  /// posting from both parties would double the row. Best-effort fire-and-forget — a failure (no
-  /// thread yet, offline, socket down, disposed mid-flight) must NEVER affect call teardown, so all
-  /// the `ref` reads are captured SYNCHRONOUSLY up front (this can outlive the call screen, and a
-  /// `ref.read` after the first `await` would hit a disposed ref) and every error is swallowed. No
-  /// backend change: chat send is the existing `/ws/chat` `system` frame; the server derives
-  /// `sender_role`, and a `system` bubble renders centred regardless.
-  Future<void> _postCallSummary() async {
-    if (_summaryPosted || _disposed || !state.isCaller) return;
-    _summaryPosted = true;
-
-    final bookingId = state.call?.bookingId;
-    if (bookingId == null || bookingId.isEmpty) return;
-
-    ChatFeed? feed;
-    try {
-      // Capture every provider BEFORE the first await — see the doc comment.
-      final acting = ChatRole.tryParse(ref.read(sessionProvider).user?.role);
-      if (acting == null) return; // admins don't place booking calls; no acting chat role
-      final thai = ref.read(localeControllerProvider) == AppLocale.th;
-      final launcher = ref.read(chatLauncherProvider);
-      final api = ref.read(pguardApiProvider);
-      final feedBuilder = ref.read(chatFeedBuilderProvider);
-
-      final outcome = CallSummary.outcomeFrom(
-        wentActive: _wentActive,
-        endReason: state.endReason,
-      );
-      final durationSeconds = _wentActive && _connectedAt != null
-          ? DateTime.now().difference(_connectedAt!).inSeconds
-          : null;
-      final content = CallSummary.line(
-        type: state.callType,
-        outcome: outcome,
-        thai: thai,
-        durationSeconds: durationSeconds,
-      );
-
-      // Find-OR-CREATE the matched pair's conversation so the call ALWAYS lands in their chat thread
-      // — even if they never opened a chat before. A call belongs IN the conversation between the two
-      // matched parties, not only as a transient call notification. Participants are the call's two
-      // parties (the callee's chat role is the opposite of the caller's), mirroring the chat entry
-      // button's create. callerId is the acting user (this is the caller's device).
-      final call = state.call;
-      if (call == null) return;
-      final counterRole =
-          acting == ChatRole.guard ? ChatRole.customer : ChatRole.guard;
-      final conversationId = await launcher.resolveConversationId(
-        requestId: bookingId,
-        acting: acting,
-        participants: [
-          ParticipantInput(userId: call.callerId, role: acting),
-          ParticipantInput(userId: call.calleeId, role: counterRole),
-        ],
-      );
-      if (_disposed) return; // disposed mid-flight
-
-      // Chat send is WS-only (no REST POST messages endpoint) — open a short-lived feed, send the
-      // one `system` frame, then close. Mirrors how ChatController builds its feed. The send is a
-      // synchronous enqueue on the WS sink; a single microtask hop lets it flush before close.
-      feed = feedBuilder(() => api.validAccessToken());
-      await feed.connect();
-      feed.sendMessage(
-        conversationId: conversationId,
-        content: content,
-        type: ChatMessageType.system,
-        senderRole: acting,
-      );
-      await Future<void>.value();
-    } catch (e) {
-      debugPrint('call summary post failed: $e');
-    } finally {
-      await feed?.close();
-    }
   }
 
   /// Close the socket + peer connection and release all tracks (idempotent).
@@ -595,9 +492,6 @@ class CallController extends _$CallController {
     _remoteSet = false;
     _maybeAnswering = false;
     _accepted = false;
-    _wentActive = false;
-    _connectedAt = null;
-    _summaryPosted = false;
     _pendingOffer = null;
     _localOffer = null;
     _callId = null;

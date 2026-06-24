@@ -265,7 +265,6 @@ class _RingingView extends StatelessWidget {
         const SizedBox(height: PgTokens.space3),
         if (call.callType.isVideo) ...[
           CallTypeBadge(
-            isThai: isThai,
             label: isThai ? 'วิดีโอคอล' : 'Video call',
           ),
           const SizedBox(height: PgTokens.space2),
@@ -348,7 +347,6 @@ class _IncomingView extends StatelessWidget {
         const SizedBox(height: PgTokens.space3),
         if (call.callType.isVideo) ...[
           CallTypeBadge(
-            isThai: isThai,
             label: isThai ? 'สายวิดีโอ' : 'Video',
           ),
           const SizedBox(height: PgTokens.space2),

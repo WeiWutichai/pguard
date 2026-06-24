@@ -308,6 +308,22 @@ pub async fn participant_conversation_ids(
     Ok(ids)
 }
 
+/// The conversation id for a booking `request_id`, or `None` if none exists yet. Used by the
+/// call-summary consumer to FIND the conversation before falling back to CREATE (so a summary
+/// can be posted even if the parties never opened the chat thread). `request_id` is UNIQUE
+/// (migration 0002), so this is at most one row.
+pub async fn find_conversation_id_by_request(
+    db: &sqlx::PgPool,
+    request_id: Uuid,
+) -> Result<Option<Uuid>, AppError> {
+    let id =
+        sqlx::query_scalar::<_, Uuid>("SELECT id FROM chat.conversations WHERE request_id = $1")
+            .bind(request_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(id)
+}
+
 // ----- Writes -----
 
 /// Persist a message AND enqueue its `chat.message_sent` outbox event in ONE transaction.
@@ -370,7 +386,19 @@ pub async fn send_message(
         ));
     }
 
+    // SERVER-ONLY system messages (the security fix). `system` is the ONLY kind notification
+    // suppresses the "new message" push for (a call-summary line is recorded in the thread but must
+    // not raise a redundant push). Since `message_type` is CLIENT-controlled on the user send path,
+    // a participant could mark a REAL text as `system` to silence the victim's push — so reject it
+    // here. The user WS/REST send may only produce text/image/video; `system` rows are inserted
+    // exclusively by the server-side call-summary consumer (see `insert_call_summary`).
     let message_type = msg.message_type.unwrap_or(MessageType::Text);
+    if message_type == MessageType::System {
+        tx.rollback().await?;
+        return Err(AppError::BadRequest(
+            "system messages are server-generated".to_string(),
+        ));
+    }
     let sql = format!(
         "INSERT INTO chat.messages (conversation_id, sender_id, sender_role, content, message_type) \
          VALUES ($1, $2, $3, $4, $5::chat.message_type) \
@@ -402,7 +430,14 @@ pub async fn send_message(
 
 /// Build + insert the `chat.message_sent` event into the outbox (same tx). Payload matches the
 /// AsyncAPI `EnvelopeOf_ChatRef` contract: `{ message_id, conversation_id, sender_id,
-/// recipient_id }`.
+/// recipient_id, message_type }`.
+///
+/// `message_type` is the persisted message kind (`text` | `image` | `video` | `system`), carried
+/// on the event so the notification consumer can SUPPRESS the "new message" push for `system` rows
+/// (e.g. a call-summary line): those are recorded in the thread but must NOT raise a redundant
+/// notification. A `text`/`image`/`video` message still pushes normally. The suppression is
+/// structural — both the user send path and the call-summary consumer emit through here, so a
+/// `system` row is never pushed regardless of which path created it.
 async fn enqueue_message_sent(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     message: &OutgoingChatMessage,
@@ -427,6 +462,100 @@ async fn enqueue_message_sent(
         .execute(&mut **tx)
         .await?;
     Ok(())
+}
+
+/// Insert a SERVER-GENERATED call-summary `system` message into `conversation_id`, IDEMPOTENTLY,
+/// in ONE transaction (the inbound half of the call-summary consumer; mirrors booking's
+/// `mark_paid_idempotent`):
+///   1. claim the envelope's `event_id` in `chat.processed_events` (`ON CONFLICT DO NOTHING`); a
+///      JetStream redelivery loses the claim and the whole call is a no-op (NO double-post).
+///   2. on a won claim, derive the `sender_role` AUTHORITATIVELY from the caller's membership row
+///      (never client-supplied — this is a server path, but we keep the same invariant the user
+///      send path enforces), INSERT the `system` message with `content` = the pinned summary JSON,
+///      then enqueue the `chat.message_sent` outbox row addressed to the OTHER participant — so
+///      the relay still publishes it and notification (correctly) SKIPS the push for the `system`
+///      row. Same outbox path as a normal message, so the suppression is structural, not bespoke.
+///
+/// `caller_id` is the call's caller; the summary is attributed to them (the system line's
+/// `sender_id`). If the caller isn't a participant of this conversation (shouldn't happen — the
+/// conversation is the booking's and the caller is a booking party), fall back to the first
+/// participant's role so the NOT NULL `sender_role` is always satisfied.
+///
+/// Returns `true` if this delivery newly claimed the event (posted the summary), `false` on a
+/// redelivery (already posted).
+#[tracing::instrument(skip(db, summary_json), fields(event_id = %event_id, conversation_id = %conversation_id))]
+pub async fn insert_call_summary_idempotent(
+    db: &sqlx::PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    conversation_id: Uuid,
+    caller_id: Uuid,
+    summary_json: &str,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) dedupe claim — a redelivered event_id inserts nothing → whole op is a no-op.
+    let claimed = sqlx::query(
+        "INSERT INTO chat.processed_events (event_id, event_type) VALUES ($1, $2) \
+         ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+    if !claimed {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    // Load participants → derive the caller's role (authoritative) + the recipient (the OTHER
+    // party, for the outbox payload). A conversation with no participants is degenerate; bail.
+    let participants: Vec<(Uuid, String)> = sqlx::query_as(
+        "SELECT user_id, user_role FROM chat.participants WHERE conversation_id = $1",
+    )
+    .bind(conversation_id)
+    .fetch_all(&mut *tx)
+    .await?;
+    let Some(sender_role) = participants
+        .iter()
+        .find(|(uid, _)| *uid == caller_id)
+        .map(|(_, role)| role.clone())
+        .or_else(|| participants.first().map(|(_, role)| role.clone()))
+    else {
+        tx.rollback().await?;
+        return Err(AppError::Internal(
+            "call-summary target conversation has no participants".to_string(),
+        ));
+    };
+
+    let sql = format!(
+        "INSERT INTO chat.messages (conversation_id, sender_id, sender_role, content, message_type) \
+         VALUES ($1, $2, $3, $4, 'system'::chat.message_type) \
+         RETURNING {MESSAGE_COLUMNS}"
+    );
+    let message = sqlx::query_as::<_, OutgoingChatMessage>(&sql)
+        .bind(conversation_id)
+        .bind(caller_id)
+        .bind(&sender_role)
+        .bind(summary_json)
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // Enqueue the cross-service event addressed to the other participant. notification SKIPS the
+    // push because `message_type == "system"` — exactly the suppression the security fix relies on.
+    if let Some((recipient_id, _)) = participants.into_iter().find(|(u, _)| *u != caller_id) {
+        enqueue_message_sent(&mut tx, &message, recipient_id, Uuid::new_v4()).await?;
+    } else {
+        tracing::warn!(
+            conversation = %conversation_id,
+            "call summary posted with no other participant; no message_sent event emitted"
+        );
+    }
+
+    tx.commit().await?;
+    Ok(true)
 }
 
 /// UPSERT the caller's per-role read receipt (`read_at = now`, `last_read_message_id` = the
@@ -880,6 +1009,193 @@ mod tests {
             .await
             .unwrap());
 
+        cleanup(&db, conv.id).await;
+    }
+
+    /// SECURITY FIX: a client-supplied `system` message_type is REJECTED on the user send path
+    /// (no `system` row is written, no outbox event) — `system` is server-only. text/image/video
+    /// still succeed.
+    #[tokio::test]
+    async fn send_message_rejects_client_system_type() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let req = convo_req(
+            Uuid::new_v4(),
+            Some("accepted"),
+            vec![(customer, "customer", "C"), (guard, "guard", "G")],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+
+        // A participant tries to forge a `system` message to silence the victim's push → BadRequest,
+        // nothing persisted.
+        let res = send_message(
+            &db,
+            customer,
+            &IncomingChatMessage {
+                conversation_id: conv.id,
+                content: Some("ssh".to_string()),
+                message_type: Some(MessageType::System),
+                sender_role: None,
+            },
+        )
+        .await;
+        assert!(
+            matches!(res, Err(AppError::BadRequest(_))),
+            "client system message_type must be rejected"
+        );
+
+        // No message and no outbox row resulted from the rejected send.
+        let msg_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat.messages WHERE conversation_id = $1")
+                .bind(conv.id)
+                .fetch_one(&db)
+                .await
+                .expect("count messages");
+        assert_eq!(msg_count, 0, "no row from a rejected system send");
+
+        // A normal text send still works (and is NOT system).
+        let ok = send_message(
+            &db,
+            customer,
+            &IncomingChatMessage {
+                conversation_id: conv.id,
+                content: Some("hi".to_string()),
+                message_type: Some(MessageType::Text),
+                sender_role: None,
+            },
+        )
+        .await
+        .expect("text send ok");
+        assert_eq!(ok.message_type, "text");
+
+        cleanup(&db, conv.id).await;
+    }
+
+    /// The call-summary consumer's repo half: `insert_call_summary_idempotent` posts exactly ONE
+    /// `system` message carrying the pinned JSON, emits a `chat.message_sent` outbox row addressed
+    /// to the OTHER participant (so notification suppresses the push), and a redelivery (same
+    /// event_id) is a no-op — no double-post.
+    #[tokio::test]
+    async fn insert_call_summary_is_idempotent_and_system() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4(); // the call's caller
+        let guard = Uuid::new_v4();
+        let req = convo_req(
+            Uuid::new_v4(),
+            Some("accepted"),
+            vec![(customer, "customer", "C"), (guard, "guard", "G")],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+
+        let event_id = Uuid::new_v4();
+        let summary = crate::domain::CallSummary::from_call("video", "ended", None, true, Some(90));
+        let content = summary.to_content();
+
+        // First delivery posts the summary.
+        let posted = insert_call_summary_idempotent(
+            &db,
+            event_id,
+            topics::CALLING_ENDED,
+            conv.id,
+            customer,
+            &content,
+        )
+        .await
+        .expect("post summary");
+        assert!(posted, "first delivery posts the summary");
+
+        // Exactly one system message with the pinned content.
+        let (count, mtype, stored): (i64, String, String) = sqlx::query_as(
+            "SELECT count(*)::bigint, max(message_type::text), max(content) \
+             FROM chat.messages WHERE conversation_id = $1",
+        )
+        .bind(conv.id)
+        .fetch_one(&db)
+        .await
+        .expect("count messages");
+        assert_eq!(count, 1, "exactly one summary message");
+        assert_eq!(mtype, "system", "the summary is a system message");
+        assert_eq!(stored, content, "content is the pinned summary JSON");
+
+        // The outbox event is addressed to the OTHER participant (the guard) and tagged system so
+        // notification SKIPS the push.
+        let (ob_count, recipient, msg_type): (i64, String, String) = sqlx::query_as(
+            "SELECT count(*)::bigint, max(payload->'payload'->>'recipient_id'), \
+                    max(payload->'payload'->>'message_type') \
+             FROM chat.outbox WHERE payload->'payload'->>'conversation_id' = $1",
+        )
+        .bind(conv.id.to_string())
+        .fetch_one(&db)
+        .await
+        .expect("count outbox");
+        assert_eq!(ob_count, 1, "one message_sent event for the summary");
+        assert_eq!(recipient, guard.to_string(), "addressed to the other party");
+        assert_eq!(
+            msg_type, "system",
+            "tagged system so notification suppresses the push"
+        );
+
+        // REDELIVERY (same event_id) is a no-op — no double-post.
+        let again = insert_call_summary_idempotent(
+            &db,
+            event_id,
+            topics::CALLING_ENDED,
+            conv.id,
+            customer,
+            &content,
+        )
+        .await
+        .expect("redelivery");
+        assert!(!again, "a redelivered event_id posts nothing");
+        let count2: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM chat.messages WHERE conversation_id = $1")
+                .bind(conv.id)
+                .fetch_one(&db)
+                .await
+                .expect("recount");
+        assert_eq!(count2, 1, "still exactly one summary after redelivery");
+
+        // cleanup also clears the ledger row.
+        let _ = sqlx::query("DELETE FROM chat.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&db)
+            .await;
+        cleanup(&db, conv.id).await;
+    }
+
+    /// `find_conversation_id_by_request` returns the conversation for a known booking and `None`
+    /// for an unknown one (the consumer's FIND step before falling back to CREATE).
+    #[tokio::test]
+    async fn find_conversation_id_by_request_resolves() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let request_id = Uuid::new_v4();
+        let req = convo_req(
+            request_id,
+            Some("accepted"),
+            vec![
+                (Uuid::new_v4(), "customer", "C"),
+                (Uuid::new_v4(), "guard", "G"),
+            ],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+        let found = find_conversation_id_by_request(&db, request_id)
+            .await
+            .expect("find");
+        assert_eq!(found, Some(conv.id));
+        let missing = find_conversation_id_by_request(&db, Uuid::new_v4())
+            .await
+            .expect("find missing");
+        assert_eq!(missing, None, "unknown booking → None");
         cleanup(&db, conv.id).await;
     }
 }

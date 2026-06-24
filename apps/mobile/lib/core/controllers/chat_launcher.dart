@@ -24,9 +24,10 @@ class ChatLauncher {
   final PguardApi _api;
 
   /// Find the EXISTING conversation for a booking in the acting role's list, or `null` if none has
-  /// been created yet — NEVER creates one (unlike [resolveConversationId]). Used by the call
-  /// controller to post a call-summary line into a thread the parties already opened: if no thread
-  /// exists there is nothing to summarise into, so we skip silently rather than spawn an empty one.
+  /// been created yet — a pure FIND-ONLY helper that NEVER creates one (unlike
+  /// [resolveConversationId], which find-or-creates). Used as the find step of
+  /// [resolveConversationId], and by any caller that wants to open an already-created thread without
+  /// spawning an empty one on a miss.
   Future<String?> findConversationId({
     required String requestId,
     required ChatRole acting,
