@@ -126,6 +126,47 @@ void main() {
     h.c.dispose(); // cancels the controller's connect-timeout within the test body
   });
 
+  testWidgets('incoming → reject → dispose resets the singleton (no framework assertion); a fresh call renders',
+      (tester) async {
+    // The reject pops the screen; its dispose() defers `CallController.reset()` to a microtask
+    // (resetting the keepAlive singleton synchronously in dispose would `markNeedsBuild during
+    // dispose`). This asserts that path raises NO framework error AND that the singleton is clean
+    // afterwards — a NEW call started on the same container renders fresh from idle.
+    final h = harness();
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: h.c,
+      child: MaterialApp.router(routerConfig: router('call1')),
+    ));
+    await tester.tap(find.text('GO'));
+    await settle(tester);
+    expect(find.textContaining('สายเรียกเข้า'), findsOneWidget);
+
+    await tester.tap(find.byIcon(Icons.call_end)); // reject → ended → auto-pop
+    await settle(tester);
+    // Let the auto-pop transition finish so the screen is fully unmounted + disposed; dispose()
+    // then schedules `Future.microtask(reset)`. A final settle turns the event loop so the deferred
+    // reset fires before we assert.
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull,
+        reason: 'the deferred reset on dispose raises no framework assertion');
+    expect(find.text('GO'), findsOneWidget, reason: 'popped back to home');
+    // The singleton was returned to idle by the deferred reset (not stuck in `ended`).
+    expect(h.c.read(callControllerProvider).phase, CallPhase.idle);
+
+    // A SUBSEQUENT call renders fresh on the same (reset) singleton: start an outgoing call, push
+    // the screen again, and confirm the ringing UI shows (not a stale call-ended summary).
+    await h.c
+        .read(callControllerProvider.notifier)
+        .startOutgoing(bookingId: 'bk2', type: CallType.audio);
+    await tester.tap(find.text('GO'));
+    await settle(tester);
+    expect(find.textContaining('กำลังเรียก'), findsOneWidget,
+        reason: 'the next call renders fresh from dialing');
+
+    await tester.pumpWidget(const SizedBox());
+    h.c.dispose(); // cancels the controller's connect-timeout within the test body
+  });
+
   testWidgets('outgoing: a started call shows the ringing UI + a cancel control',
       (tester) async {
     final h = harness();

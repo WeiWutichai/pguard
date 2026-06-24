@@ -62,6 +62,94 @@ impl FromStr for MessageType {
 }
 
 // =============================================================================
+// Call summary (server-generated system message)
+// =============================================================================
+
+/// The PINNED shared-contract shape for a call-summary `system` message's `content` (a JSON
+/// string). Field names are intentionally terse + STABLE (`k`/`ct`/`oc`/`ds`) — the mobile client
+/// parses this exact shape. Built server-side from a terminated call's
+/// `pguard.events.calling.ended` / `.rejected` event; clients can no longer forge a `system`
+/// message (the security fix), so this is the ONLY producer of the shape.
+///
+///   `{"k":"call","ct":"audio"|"video","oc":"completed"|"missed"|"rejected","ds":<secs|null>}`
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CallSummary {
+    /// Kind discriminator — always `"call"` (lets the client tell a call line from future
+    /// system kinds without sniffing other fields).
+    pub k: &'static str,
+    /// Call media: `"audio"` or `"video"`.
+    pub ct: String,
+    /// Outcome: `"completed"` | `"missed"` | `"rejected"`.
+    pub oc: &'static str,
+    /// Duration in whole seconds, or `null` if the call was never answered.
+    pub ds: Option<i32>,
+}
+
+impl CallSummary {
+    /// Derive the summary from a terminated call's event fields (PURE — no I/O, unit-tested):
+    ///   * `oc = "completed"` when the call was ANSWERED — `answered_at` present OR
+    ///     `duration_seconds > 0` (a connected/ended call).
+    ///   * `oc = "rejected"` when the callee declined — terminal `status == "rejected"` OR
+    ///     `end_reason` carries a reject marker — and it was NOT answered.
+    ///   * `oc = "missed"` otherwise (never answered, not a reject — e.g. caller cancelled / timeout).
+    ///
+    /// `ds` is the duration when answered, else `null`. `ct` is normalized to a known media kind
+    /// (`audio`/`video`); an unknown value falls back to `audio` (the mobile default).
+    pub fn from_call(
+        call_type: &str,
+        status: &str,
+        end_reason: Option<&str>,
+        answered_at_present: bool,
+        duration_seconds: Option<i32>,
+    ) -> Self {
+        let answered = answered_at_present || duration_seconds.is_some_and(|d| d > 0);
+        let rejected = !answered
+            && (status == "rejected"
+                || end_reason.is_some_and(|r| r.contains("reject") || r.contains("declin")));
+        let oc = if answered {
+            "completed"
+        } else if rejected {
+            "rejected"
+        } else {
+            "missed"
+        };
+        let ct = if is_valid_call_type(call_type) {
+            call_type.to_string()
+        } else {
+            "audio".to_string()
+        };
+        CallSummary {
+            k: "call",
+            ct,
+            oc,
+            // Duration only carries meaning for an answered call.
+            ds: if answered { duration_seconds } else { None },
+        }
+    }
+
+    /// Serialize to the pinned JSON STRING stored as the `system` message's `content`. Infallible
+    /// in practice (a fixed, small struct of primitives); on the (unreachable) serde error we fall
+    /// back to a minimal valid shape so the request path NEVER panics (no `.expect()` / `.unwrap()`).
+    pub fn to_content(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            format!(
+                r#"{{"k":"call","ct":"audio","oc":"{}","ds":null}}"#,
+                self.oc
+            )
+        })
+    }
+}
+
+/// Accepted call media types (mirrors calling's `call_type` enum). The summary normalizes an
+/// unknown value to `audio`.
+const VALID_CALL_TYPES: [&str; 2] = ["audio", "video"];
+
+/// `true` iff `t` is a known call type.
+fn is_valid_call_type(t: &str) -> bool {
+    VALID_CALL_TYPES.contains(&t)
+}
+
+// =============================================================================
 // Roles, alignment, unread
 // =============================================================================
 
@@ -253,6 +341,77 @@ mod tests {
         );
         let t: MessageType = serde_json::from_str("\"video\"").unwrap();
         assert_eq!(t, MessageType::Video);
+    }
+
+    // ----- call summary -----
+
+    #[test]
+    fn summary_completed_when_answered() {
+        // answered_at present → completed, ds carried.
+        let s = CallSummary::from_call("video", "ended", Some("hangup"), true, Some(125));
+        assert_eq!(s.oc, "completed");
+        assert_eq!(s.ct, "video");
+        assert_eq!(s.ds, Some(125));
+        // duration > 0 also counts as answered even if answered_at flag is false (defensive).
+        let s2 = CallSummary::from_call("audio", "ended", None, false, Some(3));
+        assert_eq!(s2.oc, "completed");
+        assert_eq!(s2.ds, Some(3));
+    }
+
+    #[test]
+    fn summary_rejected_when_declined_and_unanswered() {
+        // terminal status rejected → rejected, ds null.
+        let s =
+            CallSummary::from_call("audio", "rejected", Some("rejected_by_callee"), false, None);
+        assert_eq!(s.oc, "rejected");
+        assert_eq!(s.ds, None);
+        // end_reason marker also classifies as rejected even if status text differs.
+        let s2 = CallSummary::from_call("audio", "ended", Some("declined"), false, None);
+        assert_eq!(s2.oc, "rejected");
+    }
+
+    #[test]
+    fn summary_missed_when_never_answered_not_rejected() {
+        // initiated → ended without answer, caller cancelled → missed, ds null.
+        let s = CallSummary::from_call("audio", "missed", Some("cancelled"), false, None);
+        assert_eq!(s.oc, "missed");
+        assert_eq!(s.ds, None);
+    }
+
+    #[test]
+    fn summary_answered_wins_over_reject_markers() {
+        // An ANSWERED call is completed even if end_reason mentions reject (answered dominates).
+        let s = CallSummary::from_call("video", "rejected", Some("rejected"), true, Some(10));
+        assert_eq!(
+            s.oc, "completed",
+            "answered call is never classified rejected"
+        );
+    }
+
+    #[test]
+    fn summary_unknown_call_type_falls_back_to_audio() {
+        let s = CallSummary::from_call("screen", "ended", None, true, Some(5));
+        assert_eq!(
+            s.ct, "audio",
+            "unknown media normalizes to audio (mobile default)"
+        );
+    }
+
+    #[test]
+    fn summary_to_content_matches_pinned_shape() {
+        let s = CallSummary::from_call("video", "ended", None, true, Some(90));
+        let json = s.to_content();
+        // Round-trips to the exact contract keys + values.
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(v["k"], "call");
+        assert_eq!(v["ct"], "video");
+        assert_eq!(v["oc"], "completed");
+        assert_eq!(v["ds"], 90);
+        // A never-answered call serializes ds as null (not omitted).
+        let missed = CallSummary::from_call("audio", "missed", None, false, None).to_content();
+        let mv: serde_json::Value = serde_json::from_str(&missed).unwrap();
+        assert!(mv["ds"].is_null(), "ds is null for an unanswered call");
+        assert_eq!(mv["oc"], "missed");
     }
 
     // ----- roles + alignment -----

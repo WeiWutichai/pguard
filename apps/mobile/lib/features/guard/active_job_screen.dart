@@ -82,12 +82,15 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
     super.dispose();
   }
 
-  /// Take or release the GPS streaming lease so the guard streams LIVE position to presence for
-  /// the whole active-job window (accepted/en_route/arrived/pending_completion) regardless of the
-  /// manual "พร้อมรับงาน" toggle — this is what keeps the customer's live map fresh. The instant
-  /// the job reaches a terminal status (completed/cancelled/declined) we release it.
+  /// Take or release the GPS streaming lease so the guard streams LIVE position to presence for the
+  /// JOURNEY window (en_route/arrived/pending_completion) regardless of the manual "พร้อมรับงาน"
+  /// toggle — this is what keeps the customer's live map fresh. DEFERRED until the guard is actually
+  /// on the way: a merely-`accepted` job does NOT take the lease, so a standby guard who only opens
+  /// the job to view it is not hit with the OS location-permission dialog (taking the lease is what
+  /// requests location). The instant the job leaves the streaming window (completed/cancelled/
+  /// declined, or back before en_route) we release it.
   void _syncStreamingLease(BookingStatus? status) {
-    final wantLease = status != null && BookingLifecycle.isActive(status);
+    final wantLease = status != null && BookingLifecycle.isStreaming(status);
     if (wantLease == _leaseHeld) return;
     if (wantLease) {
       _tracking.startJobStreaming(widget.bookingId);

@@ -123,6 +123,11 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config.ttl_secs,
     );
 
+    // Clone the booking reader for the call-summary consumer BEFORE `booking` moves into state
+    // (it find-or-creates the conversation from the authoritative booking when neither party ever
+    // opened the chat). Cheap clone — reqwest::Client is ref-counted, the key/url are small.
+    let consumer_booking = booking.clone();
+
     let state = AppState {
         db: db.clone(),
         db_read,
@@ -140,8 +145,19 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
     {
         let relay_db = db.clone();
+        let relay_nats = nats_url.clone();
         tokio::spawn(async move {
-            events::run_relay(relay_db, nats_url).await;
+            events::run_relay(relay_db, relay_nats).await;
+        });
+    }
+
+    // --- background call-summary consumer (subscribes to terminal calling.* → posts a
+    // server-generated `system` summary message; the SECURITY FIX: clients can no longer forge a
+    // `system` message to silence the victim's push, and the summary is emitted server-side). ---
+    {
+        let consumer_db = db.clone();
+        tokio::spawn(async move {
+            events::consumer::run_consumer(consumer_db, nats_url, consumer_booking).await;
         });
     }
 

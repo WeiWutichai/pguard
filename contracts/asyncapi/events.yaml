@@ -95,7 +95,14 @@ channels:
     messages: { rejected: { $ref: '#/components/messages/GenericCallEvent' } }
   callingEnded:
     address: pguard.events.calling.ended
-    messages: { ended: { $ref: '#/components/messages/GenericCallEvent' } }
+    description: >-
+      A call reached a terminal state. Producer = calling. Consumers = chat (records a `system`
+      call-summary line in the matched pair's thread — see `chat-ws.yaml`) + notification (a
+      "missed call" push when the call was never answered). The payload carries everything a
+      consumer needs to render the summary WITHOUT a read-back into calling: `call_type`,
+      `status`/`end_reason` (→ outcome completed|missed|rejected), `duration_seconds` + `answered_at`
+      (→ the duration; null/absent ⟹ never answered), and `caller_id`/`callee_id`.
+    messages: { ended: { $ref: '#/components/messages/CallEnded' } }
   chatMessageSent:
     address: pguard.events.chat.message_sent
     messages: { messageSent: { $ref: '#/components/messages/ChatMessageSent' } }
@@ -149,6 +156,16 @@ operations:
       guard_profiles approval flip). Consumer = identity → flips its OWN
       users.approval_status to 'approved' so the account can log in (idempotent by event_id).
       Closes the approval→login loop with no cross-schema write.
+  onCallingEnded:
+    action: receive
+    channel: { $ref: '#/channels/callingEnded' }
+    summary: >-
+      chat consumes this → records a `system` call-summary line in the matched pair's thread
+      (find-or-create the conversation, idempotent by event_id); notification consumes it → a
+      "missed call" push when the call was never answered. The chat summary content is a JSON
+      string `{"k":"call","ct":<audio|video>,"oc":<completed|missed|rejected>,"ds":<seconds|null>}`
+      derived ENTIRELY from this payload (outcome from status/end_reason + answered_at, ds from
+      duration_seconds).
 
 components:
   messages:
@@ -188,6 +205,10 @@ components:
       name: GenericCallEvent
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_CallRef' }
+    CallEnded:
+      name: CallEnded
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_CallEnded' }
     ChatMessageSent:
       name: ChatMessageSent
       contentType: application/json
@@ -379,6 +400,55 @@ components:
               properties:
                 call_id: { type: string, format: uuid }
                 booking_id: { type: string, format: uuid }
+                call_type:
+                  type: string
+                  enum: [audio, video]
+                  description: >-
+                    The media kind. Additive/optional — older producers may omit it; consumers
+                    that need it (the chat call-summary line) default to `audio` when absent.
+
+    EnvelopeOf_CallEnded:
+      description: >-
+        The `pguard.events.calling.ended` payload. Extends [EnvelopeOf_CallRef] (`call_id`,
+        `booking_id`, `call_type`) with everything a consumer needs to render the call-summary
+        line self-contained — no read-back into calling. ALL the added fields are
+        additive/optional so an older producer that only emits `{call_id, booking_id}` still
+        validates; a consumer derives the OUTCOME from `status`/`end_reason` (reject vs hangup) and
+        whether the call was answered (`answered_at`/`duration_seconds > 0` ⟹ completed, else
+        missed), and the DURATION from `duration_seconds` (null/absent ⟹ never answered).
+      allOf:
+        - $ref: '#/components/schemas/EnvelopeOf_CallRef'
+        - type: object
+          properties:
+            payload:
+              type: object
+              properties:
+                caller_id: { type: string, format: uuid, description: The party who placed the call. }
+                callee_id: { type: string, format: uuid, description: The party who received the call. }
+                status:
+                  type: string
+                  enum: [initiated, accepted, connected, completed, rejected, missed, ended]
+                  description: The call's terminal status (the chat outcome maps reject→rejected; answered→completed).
+                end_reason:
+                  type: string
+                  nullable: true
+                  description: >-
+                    Why the call ended (e.g. `rejected`, `hangup`, `no_answer`, `remote_hangup`).
+                    A reject-flavoured reason/status ⟹ outcome `rejected`.
+                answered_at:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  description: >-
+                    When the callee answered (null ⟹ never answered ⟹ outcome `missed`,
+                    `duration_seconds` = null).
+                duration_seconds:
+                  type: integer
+                  format: int64
+                  nullable: true
+                  description: >-
+                    Seconds the call was connected (the chat summary's `ds`). Null/absent when the
+                    call was never answered.
 
     EnvelopeOf_ChatRef:
       allOf:
@@ -393,6 +463,14 @@ components:
                 conversation_id: { type: string, format: uuid }
                 sender_id: { type: string, format: uuid }
                 recipient_id: { type: string, format: uuid, description: The other participant (notification target). }
+                message_type:
+                  type: string
+                  enum: [text, image, video, system]
+                  description: >-
+                    The message kind (mirrors `chat-ws.yaml`'s `EnvelopeOf_ChatRef`). Carried so the
+                    notification consumer can SUPPRESS the "new message" push for `system` rows (e.g.
+                    a call-summary line) — those are recorded in the thread but must not raise a
+                    redundant notification. Additive/optional: older producers may omit it.
 
     EnvelopeOf_UserRef:
       allOf:

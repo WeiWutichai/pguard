@@ -97,27 +97,44 @@ void main() {
     });
   });
 
-  group('CallSummary (chat-thread line)', () {
-    test('outcomeFrom: connected → completed regardless of reason', () {
-      expect(CallSummary.outcomeFrom(wentActive: true, endReason: 'hangup'),
-          CallOutcome.completed);
-      expect(CallSummary.outcomeFrom(wentActive: true, endReason: 'remote_hangup'),
-          CallOutcome.completed);
+  group('CallSummary (SERVER-emitted call-summary system message)', () {
+    // The pinned shared contract: a `system` chat message whose content is this JSON, emitted by
+    // the chat service from the `calling.ended` event. The mobile only parses + renders it.
+    String summaryJson(String ct, String oc, Object? ds) =>
+        '{"k":"call","ct":"$ct","oc":"$oc","ds":$ds}';
+
+    test('tryParseContent: parses type + outcome + duration from the pinned JSON', () {
+      final parsed =
+          CallSummary.tryParseContent(summaryJson('audio', 'completed', 154));
+      expect(parsed, isNotNull);
+      expect(parsed!.type, CallType.audio);
+      expect(parsed.outcome, CallOutcome.completed);
+      expect(parsed.durationSeconds, 154);
     });
 
-    test('outcomeFrom: never-connected maps reason → rejected/failed/missed', () {
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'rejected'),
+    test('tryParseContent: a null duration (never answered) → null ds', () {
+      final parsed =
+          CallSummary.tryParseContent(summaryJson('video', 'missed', null));
+      expect(parsed!.type, CallType.video);
+      expect(parsed.outcome, CallOutcome.missed);
+      expect(parsed.durationSeconds, isNull);
+    });
+
+    test('tryParseContent: rejected outcome (the server can send it)', () {
+      expect(CallSummary.tryParseContent(summaryJson('audio', 'rejected', null))!.outcome,
           CallOutcome.rejected);
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'error'),
-          CallOutcome.failed);
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'media_failed'),
-          CallOutcome.failed);
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'no_answer'),
-          CallOutcome.missed);
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'hangup'),
-          CallOutcome.missed);
-      expect(CallSummary.outcomeFrom(wentActive: false, endReason: null),
-          CallOutcome.missed);
+    });
+
+    test('tryParseContent: non-call / non-JSON / unknown → null (renders verbatim)', () {
+      expect(CallSummary.tryParseContent('Booking confirmed'), isNull);
+      expect(CallSummary.tryParseContent('{not json'), isNull);
+      expect(CallSummary.tryParseContent('{"k":"other"}'), isNull);
+      expect(
+          CallSummary.tryParseContent('{"k":"call","ct":"audio","oc":"bogus"}'),
+          isNull,
+          reason: 'unknown outcome → render verbatim, never throw');
+      expect(CallSummary.tryParseContent(null), isNull);
+      expect(CallSummary.tryParseContent(''), isNull);
     });
 
     test('formatDuration: M:SS with zero-padded seconds; clamps negative/null', () {
@@ -161,7 +178,7 @@ void main() {
       );
     });
 
-    test('line: rejected + failed details', () {
+    test('line: rejected detail (TH + EN) — the server can send rejected', () {
       expect(
         CallSummary.line(
             type: CallType.audio, outcome: CallOutcome.rejected, thai: true),
@@ -169,8 +186,21 @@ void main() {
       );
       expect(
         CallSummary.line(
-            type: CallType.audio, outcome: CallOutcome.failed, thai: false),
-        '📞 Voice call · Call failed',
+            type: CallType.audio, outcome: CallOutcome.rejected, thai: false),
+        '📞 Voice call · Declined',
+      );
+    });
+
+    test('round-trip: parse the pinned JSON then render the localized line', () {
+      final parsed =
+          CallSummary.tryParseContent(summaryJson('video', 'completed', 9))!;
+      expect(
+        CallSummary.line(
+            type: parsed.type,
+            outcome: parsed.outcome,
+            thai: false,
+            durationSeconds: parsed.durationSeconds),
+        '📹 Video call · 0:09',
       );
     });
   });

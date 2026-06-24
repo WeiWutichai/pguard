@@ -96,6 +96,24 @@ pub struct RatingRef {
 pub struct CallRef {
     pub call_id: Uuid,
     pub booking_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CallEnded {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub callee_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_seconds: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -104,6 +122,8 @@ pub struct ChatRef {
     pub conversation_id: Uuid,
     pub sender_id: Uuid,
     pub recipient_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

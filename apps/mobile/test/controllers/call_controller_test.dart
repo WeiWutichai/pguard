@@ -1,34 +1,25 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/call_controller.dart';
-import 'package:pguard_mobile/core/controllers/chat_launcher.dart';
-import 'package:pguard_mobile/core/controllers/locale_controller.dart';
-import 'package:pguard_mobile/core/controllers/session_controller.dart';
-import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/models/call.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
 
-/// Stub [Session] whose [build] returns a fixed authenticated user — so [CallController] can read
-/// the acting role (drives the call-summary `sender_role`) without the real async secure-storage
-/// load. Override [sessionProvider] with `overrideWith(() => _StubSession(role))`.
-class _StubSession extends Session {
-  _StubSession(this._role);
-  final String _role;
+/// A [FakeCallEngine] whose [createOffer] BLOCKS on a [Completer] — lets a test interleave a callee
+/// `ready` signal WHILE the offer is still being created (the PR #170 offer-on-ready race).
+class _BlockingOfferEngine extends FakeCallEngine {
+  _BlockingOfferEngine(this._gate);
+  final Completer<SignalDescription> _gate;
   @override
-  SessionState build() => SessionState(SessionStatus.authenticated,
-      user: AuthUser(userId: 'me', role: _role));
-}
-
-/// Stub [LocaleController] pinned to a language (default Thai) — avoids the real async prefs load.
-class _StubLocale extends LocaleController {
-  _StubLocale(this._locale);
-  final AppLocale _locale;
-  @override
-  AppLocale build() => _locale;
+  Future<SignalDescription> createOffer() async {
+    createOfferCount++;
+    return _gate.future; // resolves only when the test completes the gate
+  }
 }
 
 Map<String, dynamic> callJson(
@@ -96,13 +87,6 @@ void main() {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       callEngineFactoryProvider.overrideWithValue(() => eng),
       callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
-      // The caller posts an end-of-call chat summary, which reads session (acting role) + locale and
-      // (now) find-or-CREATEs the thread + opens a chat feed. Stub session/locale so the real async
-      // secure-storage/prefs loads never fire, and stub the chat feed so it never dials a real WS.
-      sessionProvider.overrideWith(() => _StubSession('customer')),
-      localeControllerProvider.overrideWith(() => _StubLocale(AppLocale.th)),
-      chatLauncherProvider.overrideWithValue(ChatLauncher(api)),
-      chatFeedBuilderProvider.overrideWithValue((_) => FakeChatFeed()),
     ]);
     if (autoDispose) addTearDown(c.dispose);
     // Keep the keepAlive provider alive + built.
@@ -133,6 +117,62 @@ void main() {
     expect(t.feed.connected, isTrue);
     expect(kinds(t.feed), isEmpty,
         reason: '…but NOT sent until the callee signals `ready` (no wasted send)');
+  });
+
+  test('offer-on-ready RACE: callee `ready` beats a still-pending createOffer → exactly ONE offer (PR #170)',
+      () async {
+    // PR #170. On a VIDEO call the caller's media setup + camera-permission prompt make
+    // `createOffer()` slow, so the push → callee `ready` can BEAT the offer being created. While
+    // `createOffer()` is suspended, `_onPeerReady` runs with a null `_localOffer` (the one-shot
+    // `ready` already consumed) and sends nothing. The offer must NOT be lost: once createOffer
+    // completes, `startOutgoing`'s `if (_peerReady) _resendOffer()` sends it — exactly once.
+    final gate = Completer<SignalDescription>();
+    final eng = _BlockingOfferEngine(gate);
+    final feed = FakeCallSignalFeed();
+    final api = FakeApi(
+      onPost: (_, __) async => callJson('call1'),
+      onGet: (path, __) async =>
+          path == '/calls/ice' ? iceJson() : callJson('call1'),
+      onPut: (_, __) async => {'success': true},
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      callEngineFactoryProvider.overrideWithValue(() => eng),
+      callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(callControllerProvider, (_, __) {});
+    addTearDown(sub.close);
+
+    // Start the call but do NOT await — createOffer is blocked on the gate, so startOutgoing is
+    // suspended at `_localOffer = await _engine!.createOffer()`.
+    final pending =
+        ctrl(c).startOutgoing(bookingId: 'bk1', type: CallType.video);
+    await tick(); // let setup run up to the blocked createOffer
+    expect(eng.createOfferCount, 1, reason: 'createOffer is in-flight (blocked)');
+    expect(kinds(feed), isEmpty, reason: 'no offer can be sent before it exists');
+
+    // The callee opens its socket and announces `ready` WHILE createOffer is still pending. The
+    // one-shot `ready` is consumed now with a null offer — it sends nothing.
+    feed.emitSignal('call1', CallSignal.ready());
+    await tick();
+    expect(
+      feed.sent.where((s) => s.signal.kind == CallSignalKind.offer),
+      isEmpty,
+      reason: '`ready` beat the offer → nothing to (re)send yet',
+    );
+
+    // Now the offer is created → startOutgoing resumes and, seeing `_peerReady`, sends it.
+    gate.complete(const SignalDescription(type: 'offer', sdp: 'OFFER_SDP'));
+    await pending;
+    await tick();
+
+    final offers =
+        feed.sent.where((s) => s.signal.kind == CallSignalKind.offer).toList();
+    expect(offers, hasLength(1),
+        reason: 'exactly ONE offer — not lost when `ready` beat createOffer, not doubled');
+    expect(offers.single.signal.sdp, 'OFFER_SDP');
   });
 
   test('ICE config applied: served STUN+TURN list is fetched and passed to the engine (not hard-coded)',
@@ -170,8 +210,6 @@ void main() {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       callEngineFactoryProvider.overrideWithValue(() => eng),
       callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
-      sessionProvider.overrideWith(() => _StubSession('customer')),
-      localeControllerProvider.overrideWith(() => _StubLocale(AppLocale.th)),
     ]);
     addTearDown(c.dispose);
     final sub = c.listen(callControllerProvider, (_, __) {});
@@ -505,136 +543,70 @@ void main() {
     expect(t.feed.closed, isTrue);
   });
 
-  // ---- call-summary line posted into the booking chat thread (#93) ----
+  // ---- call summary is now SERVER-SIDE (chat consumes `calling.ended`) ----
 
-  group('call summary → chat thread', () {
-    /// A container that also wires the chat side (feed + launcher + session/locale) so the caller's
-    /// end-of-call `system` chat post is observable. The `/conversations` list (read by the launcher
-    /// to map booking → conversation) is canned by [conversations].
-    ({
-      ProviderContainer c,
-      FakeCallEngine engine,
-      FakeCallSignalFeed callFeed,
-      FakeChatFeed chatFeed,
-      FakeApi api,
-    }) makeWithChat({
-      List<Map<String, dynamic>> conversations = const [
-        {'id': 'conv1', 'request_id': 'bk1', 'created_at': '2026-06-05T10:00:00Z'}
-      ],
-      String role = 'customer',
-      AppLocale locale = AppLocale.th,
-    }) {
+  group('call summary is no longer posted by the client', () {
+    /// Wire a [FakeChatFeed] (via [chatFeedBuilderProvider]) so we can ASSERT the controller never
+    /// opens a chat feed / sends a `system` frame on end — the call summary is emitted server-side
+    /// now, so the mobile must NOT send a chat frame anymore. A short settle window lets any stray
+    /// fire-and-forget post (there should be none) run before we assert.
+    ({ProviderContainer c, FakeCallEngine engine, FakeChatFeed chatFeed})
+        makeWithChatSpy() {
       final eng = FakeCallEngine();
-      final callFeed = FakeCallSignalFeed();
+      final feed = FakeCallSignalFeed();
       final chatFeed = FakeChatFeed();
       final api = FakeApi(
-        // /calls/initiate → a call; /conversations (create, on a find miss) → a new conversation.
-        onPost: (path, __) async => path == '/conversations'
-            ? {
-                'id': 'convNew',
-                'request_id': 'bk1',
-                'created_at': '2026-06-05T10:00:00Z',
-              }
-            : callJson('call1'),
-        onGet: (path, __) async => switch (path) {
-          '/calls/ice' => iceJson(),
-          '/conversations' => conversations,
-          _ => callJson('call1'),
-        },
+        onPost: (_, __) async => callJson('call1'),
+        onGet: (path, __) async =>
+            path == '/calls/ice' ? iceJson() : callJson('call1'),
         onPut: (_, __) async => {'success': true},
       );
       final c = ProviderContainer(overrides: [
         pguardApiProvider.overrideWithValue(api),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         callEngineFactoryProvider.overrideWithValue(() => eng),
-        callSignalFeedBuilderProvider.overrideWithValue((_) => callFeed),
+        callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
         chatFeedBuilderProvider.overrideWithValue((_) => chatFeed),
-        chatLauncherProvider.overrideWithValue(ChatLauncher(api)),
-        sessionProvider.overrideWith(() => _StubSession(role)),
-        localeControllerProvider.overrideWith(() => _StubLocale(locale)),
       ]);
       addTearDown(c.dispose);
       final sub = c.listen(callControllerProvider, (_, __) {});
       addTearDown(sub.close);
-      return (c: c, engine: eng, callFeed: callFeed, chatFeed: chatFeed, api: api);
+      return (c: c, engine: eng, chatFeed: chatFeed);
     }
 
-    /// `_postCallSummary` awaits a launcher GET + a chat connect + a 250ms flush delay; let it run.
-    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 400));
+    Future<void> settle() =>
+        Future<void>.delayed(const Duration(milliseconds: 400));
 
-    test('completed call: caller posts a `system` line with the duration (TH)', () async {
-      final t = makeWithChat();
+    test('caller end(): does NOT open a chat feed or send a `system` frame', () async {
+      final t = makeWithChatSpy();
       await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
-      // Media connects → active (anchors the duration), then the caller ends.
       t.engine.emitMediaEvent(CallMediaEvent.connected);
       await tick();
       await ctrl(t.c).end();
       await settle();
 
-      final frame = t.chatFeed.sent.single;
-      expect(frame['message_type'], 'system');
-      expect(frame['conversation_id'], 'conv1');
-      expect(frame['sender_role'], 'customer');
-      // Duration ~0s for an instant test; assert the audio kind + the M:SS shape, not the value.
-      expect(frame['content'], startsWith('📞 สายเสียง · '));
-      expect(frame['content'], matches(RegExp(r'· \d+:\d{2}$')));
-      expect(t.chatFeed.closed, isTrue, reason: 'the short-lived feed is closed after sending');
+      expect(t.chatFeed.connected, isFalse,
+          reason: 'the call summary is server-side now — no chat feed is opened');
+      expect(t.chatFeed.sent, isEmpty,
+          reason: 'the mobile no longer posts the call-summary chat frame');
     });
 
-    test('missed video call (never connected): line shows the video kind + missed outcome (EN)',
-        () async {
-      final t = makeWithChat(locale: AppLocale.en);
+    test('missed caller end(): still no client chat frame', () async {
+      final t = makeWithChatSpy();
       await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.video);
-      await ctrl(t.c).end(); // caller hangs up before the callee answers → missed
+      await ctrl(t.c).end(); // never connected
       await settle();
 
-      expect(t.chatFeed.sent.single['content'], '📹 Video call · Missed call');
+      expect(t.chatFeed.sent, isEmpty);
     });
 
-    test('rejected call: caller posts a declined line (the callee never posts)', () async {
-      final t = makeWithChat();
-      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
-      // The callee's reject arrives as a remote `bye` on the caller, BUT the caller's reason for a
-      // pre-connect remote hangup is `remote_hangup` → "missed". A true reject outcome is the
-      // callee's own path; here we assert the CALLER still leaves exactly one row.
-      t.callFeed.emitSignal('call1', CallSignal.bye());
-      await tick();
-      await settle();
-
-      expect(t.chatFeed.sent, hasLength(1));
-      expect(t.chatFeed.sent.single['message_type'], 'system');
-    });
-
-    test('the CALLEE never posts a summary (avoids a duplicate row)', () async {
-      final t = makeWithChat();
+    test('callee end(): no client chat frame', () async {
+      final t = makeWithChatSpy();
       await ctrl(t.c).startIncoming(callId: 'call1');
       await ctrl(t.c).end();
       await settle();
 
-      expect(t.chatFeed.sent, isEmpty,
-          reason: 'only the caller posts; the callee would double the row');
-    });
-
-    test('no conversation yet → find-or-create then post into the new thread', () async {
-      // A call belongs in the matched pair's chat thread even if they never chatted before: the
-      // summary now find-OR-CREATEs the conversation and posts the system line into it (was: drop).
-      final t = makeWithChat(conversations: const []);
-      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
-      await ctrl(t.c).end();
-      await settle();
-
-      expect(t.chatFeed.sent.single['message_type'], 'system');
-      expect(t.chatFeed.sent.single['conversation_id'], 'convNew');
-    });
-
-    test('exactly one summary even if end() is reached twice', () async {
-      final t = makeWithChat();
-      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
-      await ctrl(t.c).end();
-      await ctrl(t.c).end(); // idempotent — a second end must not post again
-      await settle();
-
-      expect(t.chatFeed.sent, hasLength(1));
+      expect(t.chatFeed.sent, isEmpty);
     });
   });
 }

@@ -193,9 +193,8 @@ class CallRolePill extends StatelessWidget {
 /// icon + label on a translucent-white pill, so the callee knows it is a video call BEFORE
 /// answering. Shown only for video calls; audio calls render no badge (the plain status line).
 class CallTypeBadge extends StatelessWidget {
-  const CallTypeBadge({super.key, required this.isThai, required this.label});
+  const CallTypeBadge({super.key, required this.label});
 
-  final bool isThai;
   final String label;
 
   @override

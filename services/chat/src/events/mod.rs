@@ -9,6 +9,11 @@
 //!   * **Redis pub/sub fan-out** (real-time): a persisted message is published to
 //!     `chat:{conversation_id}` so EVERY chat replica's WS sessions can deliver it — cross-
 //!     instance broadcast (the spec's requirement; unlike calling's in-process registry).
+//!
+//! The CONSUMER half (subscribe to terminal `calling.*` → post a server-generated call-summary
+//! `system` message idempotently) lives in [`consumer`].
+
+pub mod consumer;
 
 use std::time::Duration;
 

@@ -215,6 +215,16 @@ class BookingLifecycle {
   static bool isActive(BookingStatus status) =>
       stepIndex(status) >= 0 && status != BookingStatus.completed;
 
+  /// Whether the guard is in the GPS-streaming window: en route → arrived → awaiting completion.
+  /// Deliberately NARROWER than [isActive]: a merely-`accepted` job is NOT streaming yet (a standby
+  /// guard may just be viewing the offer), so we DON'T take the location lease / prompt for the OS
+  /// location permission until the guard has actually started the journey (`en_route`) or later.
+  /// The customer's live map only needs the guard's position once the guard is on the way.
+  static bool isStreaming(BookingStatus status) =>
+      status == BookingStatus.enRoute ||
+      status == BookingStatus.arrived ||
+      status == BookingStatus.pendingCompletion;
+
   /// Whether a live voice/video call is allowed for this booking. Mirrors the calling service's
   /// `is_callable_status` EXACTLY (`accepted | en_route | arrived`) — a guard has accepted and the
   /// job is in flight. Deliberately NARROWER than [isActive]: `pendingCompletion` is active but the

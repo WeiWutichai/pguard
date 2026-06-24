@@ -6,6 +6,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/geo.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
@@ -15,13 +16,32 @@ import '../booking/widgets/pg_map.dart';
 
 part 'guard_navigation_screen.g.dart';
 
-/// The guard's own position as a LIVE stream (the same device GPS the guard streams to presence,
-/// not a single stale one-shot) so the navigation map shows the guard moving + keeps the route
-/// fresh. Seeds with a one-shot fix, then tracks every subsequent fix (no `Timer.periodic` — it is
-/// the OS position stream). `null` (no permission/fix yet) ⟹ the map shows "กำลังหาตำแหน่ง".
+/// The guard's own position for the navigation / inline-travel maps, as a LIVE `GeoPoint?` so the
+/// map shows the guard moving + keeps the route fresh. `null` (no permission/fix yet) ⟹ the map
+/// shows "กำลังหาตำแหน่ง".
+///
+/// ONE GPS SUBSCRIPTION during the job: when a presence lease is active (the guard is en_route /
+/// arrived and [TrackingController] is already streaming device GPS to presence) this REUSES that
+/// lease's latest fix ([TrackingState.lastSample]) instead of opening a SECOND geolocator stream —
+/// the active-job screen runs in exactly that window, so the self-map rides the existing stream.
+/// Only when NO lease is held (no streaming) does it fall back to a dedicated one-shot+stream self
+/// feed, so the map still works outside the lease window.
 @riverpod
-Stream<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) =>
-    ref.read(locationServiceProvider).selfLocationStream();
+Stream<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) {
+  // When a presence lease is active, REUSE its single OS subscription: watch the controller's last
+  // fix directly (no second geolocator stream). The fixes are movement-gated (~15 m), so rebuilding
+  // on each one is cheap; the map just re-emits the newest point. `null` until the first fix lands.
+  final leaseActive =
+      ref.watch(trackingControllerProvider.select((s) => s.streaming));
+  if (leaseActive) {
+    final sample =
+        ref.watch(trackingControllerProvider.select((s) => s.lastSample));
+    return Stream<GeoPoint?>.value(
+        sample == null ? null : GeoPoint(sample.lat, sample.lng));
+  }
+  // No lease → a dedicated self feed (one-shot seed + the OS stream) for maps shown outside the job.
+  return ref.read(locationServiceProvider).selfLocationStream();
+}
 
 /// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed REAL
 /// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard pin, the destination ring

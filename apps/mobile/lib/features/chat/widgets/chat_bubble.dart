@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/chat_attachment_resolver.dart';
 import '../../../core/controllers/chat_format.dart';
 import '../../../core/media/media_host.dart';
+import '../../../core/models/call.dart';
 import '../../../core/models/chat.dart';
 
 /// One message bubble. Side is decided by `sender_role == acting` ([ChatMessage.isFromRole]) —
@@ -36,14 +37,26 @@ class ChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // System messages render centred, not as a left/right bubble.
+    // System messages render centred, not as a left/right bubble. A SERVER-emitted call summary
+    // arrives as a `system` message whose content is the pinned call JSON — render it as the
+    // localized WhatsApp-style line ("📞 สายเสียง · 2:34" / "📹 Video call · Missed call"); any
+    // other system content renders verbatim.
     if (message.type == ChatMessageType.system) {
+      final call = CallSummary.tryParseContent(message.content);
+      final text = call == null
+          ? (message.content ?? '')
+          : CallSummary.line(
+              type: call.type,
+              outcome: call.outcome,
+              thai: isThai,
+              durationSeconds: call.durationSeconds,
+            );
       return Padding(
         padding: const EdgeInsets.symmetric(
             vertical: PgTokens.space2, horizontal: PgTokens.space4),
         child: Center(
           child: Text(
-            message.content ?? '',
+            text,
             textAlign: TextAlign.center,
             style:
                 const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),

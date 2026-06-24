@@ -2,6 +2,8 @@
 // frames in its description). PURE (no Flutter / no flutter_webrtc) so the call-state machine,
 // the signal envelope, and parsing are unit-testable without the platform plugin.
 
+import 'dart:convert';
+
 /// Audio or video call (the media kind requested at initiate).
 enum CallType {
   audio('audio'),
@@ -87,44 +89,65 @@ class Call {
       );
 }
 
-/// How a call finished, for the chat-thread summary line (WhatsApp-style). Derived from the
-/// caller's local end flow: whether media ever connected + the `endReason` the controller set.
-///  - [completed]: the call connected and then ended → show a duration ("2:34").
-///  - [missed]: never connected because the callee didn't answer (timeout / cancelled dial).
+/// How a call finished, for the chat-thread summary line (WhatsApp-style). DERIVED SERVER-SIDE now
+/// (chat consumes the `calling.ended` event) and shipped to the client inside the pinned `system`
+/// chat-message JSON — the mobile only RENDERS it (it no longer decides the outcome).
+///  - [completed]: the call was answered → show a duration ("2:34").
+///  - [missed]: never answered (callee didn't pick up / dial cancelled).
 ///  - [rejected]: the callee actively declined.
-///  - [failed]: a media/setup error ended it before it connected.
-enum CallOutcome { completed, missed, rejected, failed }
+enum CallOutcome {
+  completed('completed'),
+  missed('missed'),
+  rejected('rejected');
 
-/// PURE builder for the one-line call summary posted into the booking chat thread when a call
-/// ends (a `system` chat message — rendered centred). No Flutter / no IO so it is unit-testable.
+  const CallOutcome(this.wire);
+
+  /// The `oc` value on the pinned call-summary JSON.
+  final String wire;
+
+  static CallOutcome? tryParse(String? value) {
+    for (final o in CallOutcome.values) {
+      if (o.wire == value) return o;
+    }
+    return null;
+  }
+}
+
+/// PURE renderer for the SERVER-EMITTED call-summary `system` chat message. No Flutter / no IO so
+/// parsing + localisation are unit-testable.
 ///
-/// The line is `<emoji> <call-kind> · <detail>`, mirroring the design's WhatsApp-style row, e.g.
-/// "📞 สายเสียง · 2:34" (completed audio) or "📹 วิดีโอคอล · ไม่ได้รับสาย" (missed video). Only the
-/// CALLER posts (it alone knows the outcome+duration reliably and posting from both parties would
-/// double the row); the chat backend renders the resulting `system` message centred regardless of
-/// the server-derived `sender_role`.
+/// The chat service emits the call summary as a `system` message whose `content` is the pinned JSON
+/// `{"k":"call","ct":"audio"|"video","oc":"completed"|"missed"|"rejected","ds":<int|null>}`. The
+/// mobile [tryParseContent]s that and renders the localized WhatsApp-style line `<emoji> <kind> ·
+/// <detail>`, e.g. "📞 สายเสียง · 2:34" (completed audio) or "📹 Video call · Missed call". A
+/// `content` that is NOT this JSON renders verbatim (a plain system notice).
 class CallSummary {
   const CallSummary._();
 
-  /// Map the controller's local end bookkeeping to a [CallOutcome]. [wentActive] is true once the
-  /// call reached `active` (media connected). [endReason] is the controller's reason string
-  /// (`rejected`, `no_answer`, `media_failed`, `error`, `hangup`, `remote_hangup`, …).
-  static CallOutcome outcomeFrom({
-    required bool wentActive,
-    required String? endReason,
-  }) {
-    if (wentActive) return CallOutcome.completed;
-    switch (endReason) {
-      case 'rejected':
-        return CallOutcome.rejected;
-      case 'error':
-      case 'media_failed':
-      case 'media_closed':
-        return CallOutcome.failed;
-      default:
-        // no_answer / hangup (caller cancelled the dial) / remote_hangup before connect → missed.
-        return CallOutcome.missed;
+  /// The pinned content marker for a call-summary `system` message.
+  static const String kind = 'call';
+
+  /// Parse a `system` message's [content] as the pinned call-summary JSON, returning the call type,
+  /// outcome and duration (seconds, `null` if never answered) — or `null` when [content] is not a
+  /// call summary (a plain system notice / any non-JSON / a different `k`). Defensive: a malformed
+  /// payload returns `null` (rendered verbatim) rather than throwing.
+  static ({CallType type, CallOutcome outcome, int? durationSeconds})?
+      tryParseContent(String? content) {
+    if (content == null || content.isEmpty || content[0] != '{') return null;
+    Object? decoded;
+    try {
+      decoded = jsonDecode(content);
+    } catch (_) {
+      return null; // not JSON → a plain system line
     }
+    if (decoded is! Map || decoded['k'] != kind) return null;
+    final outcome = CallOutcome.tryParse(decoded['oc'] as String?);
+    if (outcome == null) return null; // unknown outcome → render verbatim
+    return (
+      type: CallType.parse(decoded['ct'] as String?),
+      outcome: outcome,
+      durationSeconds: (decoded['ds'] as num?)?.toInt(),
+    );
   }
 
   /// `M:SS` (e.g. `2:34`, `0:09`) for a completed call's duration. Negative/absent → `0:00`.
@@ -135,7 +158,9 @@ class CallSummary {
     return '$m:${r.toString().padLeft(2, '0')}';
   }
 
-  /// The chat-thread line for a finished call. [durationSeconds] is used only for [CallOutcome.completed].
+  /// The localized chat-thread line for a finished call. [durationSeconds] is used only for
+  /// [CallOutcome.completed]. The server can send any of the three outcomes (it decides), so all
+  /// three render.
   static String line({
     required CallType type,
     required CallOutcome outcome,
@@ -143,16 +168,15 @@ class CallSummary {
     int? durationSeconds,
   }) {
     final emoji = type.isVideo ? '📹' : '📞';
-    final kind = type.isVideo
+    final kindLabel = type.isVideo
         ? (thai ? 'วิดีโอคอล' : 'Video call')
         : (thai ? 'สายเสียง' : 'Voice call');
     final detail = switch (outcome) {
       CallOutcome.completed => formatDuration(durationSeconds),
       CallOutcome.missed => thai ? 'ไม่ได้รับสาย' : 'Missed call',
       CallOutcome.rejected => thai ? 'ปฏิเสธสาย' : 'Declined',
-      CallOutcome.failed => thai ? 'สายขัดข้อง' : 'Call failed',
     };
-    return '$emoji $kind · $detail';
+    return '$emoji $kindLabel · $detail';
   }
 }
 

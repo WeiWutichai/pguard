@@ -1,12 +1,25 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/controllers/tracking_controller.dart';
+import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/models/tracking.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
 import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
+
+/// Stub [Session] that starts AUTHENTICATED (so the controller's logout-teardown listener is
+/// dormant) and exposes [signOut] to flip it to `unauthenticated` mid-test — driving the
+/// follow-the-guard-out-of-the-session teardown without the real async secure-storage load.
+class _StubSession extends Session {
+  @override
+  SessionState build() => const SessionState(SessionStatus.authenticated,
+      user: AuthUser(userId: 'guard1', role: 'guard'));
+
+  void signOut() => state = const SessionState(SessionStatus.unauthenticated);
+}
 
 void main() {
   Future<void> flush() => Future<void>.delayed(Duration.zero);
@@ -194,5 +207,51 @@ void main() {
     await flush();
     expect(built, 1, reason: 'a single presence feed serves the toggle + all leases');
     expect(c.read(trackingControllerProvider).jobIds, {'b1'});
+  });
+
+  test('logging out while a job lease is held tears it down (feed closed, state reset, late fix dropped)',
+      () async {
+    // Going offline must follow the guard out of the session: if the guard logs out (or is
+    // force-revoked) WHILE on an active job — holding a streaming lease — the keepAlive controller
+    // would otherwise keep streaming GPS after logout. The session listener in build() must shut it
+    // all down: drop the lease, close the feed, reset state, and stop forwarding any late fix.
+    final feed = FakePresenceFeed();
+    final loc = FakeLocationService();
+    late final _StubSession session;
+    final c = ProviderContainer(overrides: [
+      presenceFeedBuilderProvider.overrideWithValue((_) => feed),
+      locationServiceProvider.overrideWithValue(loc),
+      pguardApiProvider.overrideWithValue(FakeApi()),
+      permissionGateProvider
+          .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      sessionProvider.overrideWith(() => session = _StubSession()),
+    ]);
+    addTearDown(c.dispose);
+    final ctrl = c.read(trackingControllerProvider.notifier);
+
+    // Take a job lease (no manual toggle) → streaming over the active-job lease alone.
+    await ctrl.startJobStreaming('b1');
+    await flush();
+    expect(c.read(trackingControllerProvider).streaming, isTrue);
+    expect(feed.connected, isTrue);
+
+    // Log out: the session flips to unauthenticated → the controller's listener tears everything
+    // down even though the lease is still nominally held.
+    session.signOut();
+    await flush();
+
+    expect(feed.closed, isTrue, reason: 'the presence feed is closed on logout');
+    final s = c.read(trackingControllerProvider);
+    expect(s.streaming, isFalse, reason: 'the job lease is dropped on logout');
+    expect(s.jobIds, isEmpty);
+    expect(s.online, isFalse);
+    expect(s.link, PresenceLink.offline);
+
+    // A GPS fix that arrives AFTER logout is NOT forwarded (the subscription is gone + the guard).
+    loc.emit(GpsSample(lat: 13.7, lng: 100.5, recordedAt: DateTime.utc(2026)));
+    await flush();
+    expect(feed.sent, isEmpty, reason: 'no GPS leaks to presence after logout');
   });
 }
