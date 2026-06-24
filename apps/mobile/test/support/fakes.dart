@@ -336,6 +336,12 @@ class FakeLocationService implements LocationService {
   Future<GeoPoint?> currentLocation() async => current;
 
   @override
+  Stream<GeoPoint?> selfLocationStream() async* {
+    yield current;
+    yield* _positions.stream.map((s) => GeoPoint(s.lat, s.lng));
+  }
+
+  @override
   Future<String> reverseGeocode(GeoPoint point) async => 'fake place';
 }
 

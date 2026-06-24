@@ -23,6 +23,23 @@ class ChatLauncher {
 
   final PguardApi _api;
 
+  /// Find the EXISTING conversation for a booking in the acting role's list, or `null` if none has
+  /// been created yet — NEVER creates one (unlike [resolveConversationId]). Used by the call
+  /// controller to post a call-summary line into a thread the parties already opened: if no thread
+  /// exists there is nothing to summarise into, so we skip silently rather than spawn an empty one.
+  Future<String?> findConversationId({
+    required String requestId,
+    required ChatRole acting,
+  }) async {
+    final data = await _api.get('/conversations', query: {'role': acting.wire});
+    final raw = data is List ? data : const [];
+    for (final item in raw.whereType<Map<String, dynamic>>()) {
+      final conv = Conversation.fromJson(item);
+      if (conv.requestId == requestId) return conv.id;
+    }
+    return null;
+  }
+
   Future<String> resolveConversationId({
     required String requestId,
     required ChatRole acting,
@@ -30,12 +47,9 @@ class ChatLauncher {
     String? requestStatus,
   }) async {
     // 1) Find an existing conversation for this booking in the acting role's list.
-    final data = await _api.get('/conversations', query: {'role': acting.wire});
-    final raw = data is List ? data : const [];
-    for (final item in raw.whereType<Map<String, dynamic>>()) {
-      final conv = Conversation.fromJson(item);
-      if (conv.requestId == requestId) return conv.id;
-    }
+    final existing =
+        await findConversationId(requestId: requestId, acting: acting);
+    if (existing != null) return existing;
 
     // 2) None found → create (only now, since POST is not idempotent).
     final created = await _api.post('/conversations', data: {

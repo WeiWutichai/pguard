@@ -17,12 +17,16 @@ import 'widgets/call_visuals.dart';
 /// engine streams and forwards control taps. No `Timer.periodic` (the duration readout is a
 /// frame `Ticker` that only repaints when the displayed second changes — [CallElapsedClock]).
 class CallScreen extends ConsumerStatefulWidget {
-  const CallScreen({super.key, this.incomingCallId});
+  const CallScreen({super.key, this.incomingCallId, this.incomingCallType});
 
   /// When set, this is an INCOMING call (the id arrived via a notification/push) — the screen
   /// drives [CallController.startIncoming] on first frame. For OUTGOING the entry button has
   /// already called [CallController.startOutgoing] before navigating here.
   final String? incomingCallId;
+
+  /// The push's `call_type` (when it carried one): a HINT so the ring UI shows the video indicator
+  /// immediately, before `GET /calls/{id}` resolves the authoritative type. `null` → no hint.
+  final CallType? incomingCallType;
 
   @override
   ConsumerState<CallScreen> createState() => _CallScreenState();
@@ -39,13 +43,20 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   bool _wasActive = false;
   Duration? _finalElapsed;
 
+  /// The keepAlive call singleton's notifier, captured in [initState] so [dispose] can reset it
+  /// WITHOUT touching `ref` (Riverpod forbids using `ref` after the element is disposed). Same
+  /// pattern the guard screens use to call their controllers from dispose.
+  late final CallController _callController;
+
   @override
   void initState() {
     super.initState();
+    _callController = ref.read(callControllerProvider.notifier);
     final incoming = widget.incomingCallId;
     if (incoming != null) {
+      final typeHint = widget.incomingCallType;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        ref.read(callControllerProvider.notifier).startIncoming(callId: incoming);
+        _callController.startIncoming(callId: incoming, typeHint: typeHint);
       });
     }
   }
@@ -54,6 +65,17 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   void dispose() {
     _localRenderer?.dispose();
     _remoteRenderer?.dispose();
+    // Return the keepAlive call singleton to `idle` once this (terminal) call screen goes away, so
+    // the NEXT call starts from a clean slate — without this the singleton lingers in `ended` and
+    // the user "can't call again immediately" (the next /call route renders the stale call-ended
+    // summary / a pending auto-dismiss pop can swallow it). `reset()` is a no-op for a LIVE call,
+    // so this never tears down an in-progress call (e.g. a transient widget rebuild). DEFER to a
+    // microtask: changing the keepAlive provider's state synchronously here notifies listeners
+    // while THIS element is mid-dispose (a `markNeedsBuild during dispose` assertion on the reject
+    // path). By the time the microtask runs the screen is fully unmounted, so the reset is safe.
+    // `reset()` is captured (no `ref`) + a no-op unless the call is terminal, so a brand-new call
+    // started before it runs is left untouched.
+    Future.microtask(_callController.reset);
     super.dispose();
   }
 
@@ -121,7 +143,13 @@ class _CallScreenState extends ConsumerState<CallScreen> {
       // keeps the summary so the user can read the reason.
       if (!_wasActive && next.error == null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) context.pop();
+          // Re-check the controller is STILL on this ended call before popping: a fresh call may
+          // have started in the same frame (the keepAlive singleton is reused), in which case this
+          // pop would wrongly dismiss the NEW call's screen.
+          if (mounted &&
+              ref.read(callControllerProvider).phase == CallPhase.ended) {
+            context.pop();
+          }
         });
       }
     }
@@ -235,6 +263,13 @@ class _RingingView extends StatelessWidget {
         const SizedBox(height: PgTokens.space2),
         CallRolePill(isThai: isThai, customer: peerIsCustomer),
         const SizedBox(height: PgTokens.space3),
+        if (call.callType.isVideo) ...[
+          CallTypeBadge(
+            isThai: isThai,
+            label: isThai ? 'วิดีโอคอล' : 'Video call',
+          ),
+          const SizedBox(height: PgTokens.space2),
+        ],
         Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -245,8 +280,12 @@ class _RingingView extends StatelessWidget {
                   color: Colors.white, shape: BoxShape.circle),
             ),
             const SizedBox(width: PgTokens.space2),
-            Text(isThai ? 'กำลังเรียก…' : 'Calling…',
-                style: callStatusStyle()),
+            Text(
+              call.callType.isVideo
+                  ? (isThai ? 'วิดีโอคอล…' : 'Video call…')
+                  : (isThai ? 'กำลังเรียก…' : 'Calling…'),
+              style: callStatusStyle(),
+            ),
           ],
         ),
         const Spacer(),
@@ -307,8 +346,17 @@ class _IncomingView extends StatelessWidget {
         const SizedBox(height: PgTokens.space2),
         CallRolePill(isThai: isThai, customer: peerIsCustomer),
         const SizedBox(height: PgTokens.space3),
+        if (call.callType.isVideo) ...[
+          CallTypeBadge(
+            isThai: isThai,
+            label: isThai ? 'สายวิดีโอ' : 'Video',
+          ),
+          const SizedBox(height: PgTokens.space2),
+        ],
         Text(
-          isThai ? 'สายเรียกเข้า · pguard' : 'Incoming call · pguard',
+          call.callType.isVideo
+              ? (isThai ? 'สายวิดีโอเรียกเข้า · pguard' : 'Incoming video call · pguard')
+              : (isThai ? 'สายเรียกเข้า · pguard' : 'Incoming call · pguard'),
           style: callStatusStyle(),
         ),
         const Spacer(),

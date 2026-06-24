@@ -8,6 +8,11 @@ class CallRoutes {
   /// The active (already-started) outgoing call.
   static String outgoing() => '/call';
 
-  /// An incoming call to answer.
-  static String incoming(String callId) => '/call?incoming=$callId';
+  /// An incoming call to answer. [callType] (when the push carried it) is passed as a HINT so the
+  /// ring UI can show the video indicator BEFORE `GET /calls/{id}` resolves — the callee must know
+  /// it is a video call before answering. Omitted when the push has no `call_type`.
+  static String incoming(String callId, {String? callType}) {
+    final type = callType == null ? '' : '&type=$callType';
+    return '/call?incoming=$callId$type';
+  }
 }

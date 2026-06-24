@@ -1,10 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/guard/active_job_screen.dart';
 
 import '../support/fakes.dart';
+
+/// An active booking takes a presence GPS-streaming lease on mount — keep that off platform
+/// channels (real permission_handler / WebSocket) in widget tests with fakes.
+List<Override> _trackingFakes() => [
+      permissionGateProvider
+          .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
+      presenceFeedBuilderProvider.overrideWithValue((_) => FakePresenceFeed()),
+      locationServiceProvider.overrideWithValue(FakeLocationService()),
+    ];
 
 Map<String, dynamic> bookingJson({required bool paid}) => {
       'id': 'b1',
@@ -48,6 +58,7 @@ void main() {
       overrides: [
         pguardApiProvider.overrideWithValue(api),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        ..._trackingFakes(),
       ],
       child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
     ));
@@ -72,6 +83,7 @@ void main() {
       overrides: [
         pguardApiProvider.overrideWithValue(api),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        ..._trackingFakes(),
       ],
       child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
     ));

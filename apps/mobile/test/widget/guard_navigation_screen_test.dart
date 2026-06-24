@@ -29,7 +29,7 @@ Future<void> _pump(WidgetTester tester, FakeApi api, GeoPoint? self) async {
     overrides: [
       pguardApiProvider.overrideWithValue(api),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
-      guardSelfLocationProvider.overrideWith((ref) async => self),
+      guardSelfLocationProvider.overrideWith((ref) => Stream.value(self)),
     ],
     child: const MaterialApp(home: GuardNavigationScreen(bookingId: 'b1')),
   ));
@@ -100,7 +100,7 @@ void main() {
         pguardApiProvider.overrideWithValue(api),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         guardSelfLocationProvider
-            .overrideWith((ref) async => const GeoPoint(13.76, 100.50)),
+            .overrideWith((ref) => Stream.value(const GeoPoint(13.76, 100.50))),
       ],
       child: MaterialApp.router(routerConfig: router),
     ));

@@ -99,6 +99,15 @@ class GeolocatorLocationService implements LocationService {
         .handleError((Object _) {}); // swallow transient platform errors
   }
 
+  /// Live self position for the guard's own map: a one-shot seed (so a pin shows immediately,
+  /// before the movement-gated [positionStream] emits) then every subsequent fix. Yields `null`
+  /// first when there is no fix yet → the map shows "กำลังหาตำแหน่ง" rather than a blank crosshair.
+  @override
+  Stream<GeoPoint?> selfLocationStream() async* {
+    yield await currentLocation();
+    yield* positionStream().map((s) => GeoPoint(s.lat, s.lng));
+  }
+
   @override
   Future<String> reverseGeocode(GeoPoint point) async {
     // Best-effort place NAME via Nominatim; fall back to the coordinate label on failure/offline

@@ -112,7 +112,9 @@ class PushRegistration extends _$PushRegistration {
   void _handle(Map<String, dynamic> data) {
     final call = IncomingCallPush.tryParse(data);
     if (call != null) {
-      final route = CallRoutes.incoming(call.callId);
+      // Forward the push's `call_type` (when present) so the ring UI shows the video indicator
+      // immediately — before the screen's `GET /calls/{id}` resolves the authoritative type.
+      final route = CallRoutes.incoming(call.callId, callType: call.callType);
       // Drop the call banner with a tap-to-(re)open-the-call-screen action, then route now.
       _banner(data, onTap: () => ref.read(pushNavigateProvider)(route));
       ref.read(pushNavigateProvider)(route);

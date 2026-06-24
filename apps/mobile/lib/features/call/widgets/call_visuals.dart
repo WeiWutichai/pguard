@@ -189,6 +189,42 @@ class CallRolePill extends StatelessWidget {
   }
 }
 
+/// A prominent "this is a VIDEO call" badge for the ring screens (incoming + dialing): a videocam
+/// icon + label on a translucent-white pill, so the callee knows it is a video call BEFORE
+/// answering. Shown only for video calls; audio calls render no badge (the plain status line).
+class CallTypeBadge extends StatelessWidget {
+  const CallTypeBadge({super.key, required this.isThai, required this.label});
+
+  final bool isThai;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: .18),
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.videocam, size: 15, color: Colors.white),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// A round call button with its 11px label below (design: icon circle + caption column).
 /// Reuses [CallRoundButton] for the circle; glass (white 18%) is the default rest style.
 class CallLabeledButton extends StatelessWidget {

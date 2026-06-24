@@ -4,6 +4,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../core/controllers/session_controller.dart';
 import '../core/models/auth_models.dart';
+import '../core/models/call.dart';
 import '../core/models/chat.dart';
 import '../core/models/service_catalog.dart';
 import '../features/auth/biometric_enroll_screen.dart';
@@ -178,6 +179,8 @@ GoRouter appRouter(AppRouterRef ref) {
         path: '/call',
         builder: (context, state) => CallScreen(
           incomingCallId: state.uri.queryParameters['incoming'],
+          incomingCallType:
+              CallType.tryParse(state.uri.queryParameters['type']),
         ),
       ),
       // Guard's full tabbed jobs list (Pending / Active / Done) — the bottom-nav "งาน" tab.

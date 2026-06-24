@@ -15,11 +15,13 @@ import '../booking/widgets/pg_map.dart';
 
 part 'guard_navigation_screen.g.dart';
 
-/// The guard's own current position — a one-shot device GPS fix (no polling). Null when there is
-/// no permission/fix; the navigation screen then degrades to a destination-only view.
+/// The guard's own position as a LIVE stream (the same device GPS the guard streams to presence,
+/// not a single stale one-shot) so the navigation map shows the guard moving + keeps the route
+/// fresh. Seeds with a one-shot fix, then tracks every subsequent fix (no `Timer.periodic` — it is
+/// the OS position stream). `null` (no permission/fix yet) ⟹ the map shows "กำลังหาตำแหน่ง".
 @riverpod
-Future<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) =>
-    ref.read(locationServiceProvider).currentLocation();
+Stream<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) =>
+    ref.read(locationServiceProvider).selfLocationStream();
 
 /// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed REAL
 /// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard pin, the destination ring
@@ -126,6 +128,15 @@ class _NavBody extends StatelessWidget {
         // Full-bleed painted map with the route + pins (degrades to a plain backdrop when there
         // are no coordinates to plot).
         Positioned.fill(child: _MapLayer(dest: dest, self: self)),
+        // Honest no-fix state: the live self stream hasn't produced a position yet (permission /
+        // cold GPS). Show "กำลังหาตำแหน่ง" over the destination map rather than a silent crosshair.
+        if (self == null)
+          Positioned(
+            top: topInset + PgTokens.space7,
+            left: 0,
+            right: 0,
+            child: Center(child: _LocatingChip(isThai: isThai)),
+          ),
         // Status pill overlay.
         Positioned(
           top: topInset + PgTokens.space3,
@@ -278,6 +289,46 @@ class _StatusPill extends StatelessWidget {
                   color: Colors.white,
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
+
+/// Honest "finding your location" chip shown over the map while the live self stream has not yet
+/// produced a fix (replaces a silent blank crosshair). A small spinner + "กำลังหาตำแหน่ง".
+class _LocatingChip extends StatelessWidget {
+  const _LocatingChip({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: PgTokens.space3, vertical: PgTokens.space2),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.94),
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+        boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 6)],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 14,
+            height: 14,
+            child: CircularProgressIndicator(
+                strokeWidth: 2, color: PgTokens.colorPrimary),
+          ),
+          const SizedBox(width: PgTokens.space2),
+          Text(
+            isThai ? 'กำลังหาตำแหน่ง' : 'Finding your location',
+            style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorTextStrong),
+          ),
         ],
       ),
     );

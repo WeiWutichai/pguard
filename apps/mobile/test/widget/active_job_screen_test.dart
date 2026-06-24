@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/guard/active_job_screen.dart';
 
@@ -36,6 +37,13 @@ void main() {
       overrides: [
         pguardApiProvider.overrideWithValue(api),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        // An active booking now takes a presence GPS-streaming lease on mount — keep that off
+        // platform channels (real permission_handler / WebSocket) with fakes.
+        permissionGateProvider
+            .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
+        presenceFeedBuilderProvider
+            .overrideWithValue((_) => FakePresenceFeed()),
+        locationServiceProvider.overrideWithValue(FakeLocationService()),
       ],
       child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
     ));

@@ -96,4 +96,82 @@ void main() {
       expect(dialing.copyWith(phase: CallPhase.active).isActive, isTrue);
     });
   });
+
+  group('CallSummary (chat-thread line)', () {
+    test('outcomeFrom: connected → completed regardless of reason', () {
+      expect(CallSummary.outcomeFrom(wentActive: true, endReason: 'hangup'),
+          CallOutcome.completed);
+      expect(CallSummary.outcomeFrom(wentActive: true, endReason: 'remote_hangup'),
+          CallOutcome.completed);
+    });
+
+    test('outcomeFrom: never-connected maps reason → rejected/failed/missed', () {
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'rejected'),
+          CallOutcome.rejected);
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'error'),
+          CallOutcome.failed);
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'media_failed'),
+          CallOutcome.failed);
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'no_answer'),
+          CallOutcome.missed);
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: 'hangup'),
+          CallOutcome.missed);
+      expect(CallSummary.outcomeFrom(wentActive: false, endReason: null),
+          CallOutcome.missed);
+    });
+
+    test('formatDuration: M:SS with zero-padded seconds; clamps negative/null', () {
+      expect(CallSummary.formatDuration(154), '2:34');
+      expect(CallSummary.formatDuration(9), '0:09');
+      expect(CallSummary.formatDuration(60), '1:00');
+      expect(CallSummary.formatDuration(0), '0:00');
+      expect(CallSummary.formatDuration(null), '0:00');
+      expect(CallSummary.formatDuration(-5), '0:00');
+    });
+
+    test('line: completed audio shows the duration (TH + EN)', () {
+      expect(
+        CallSummary.line(
+            type: CallType.audio,
+            outcome: CallOutcome.completed,
+            thai: true,
+            durationSeconds: 154),
+        '📞 สายเสียง · 2:34',
+      );
+      expect(
+        CallSummary.line(
+            type: CallType.audio,
+            outcome: CallOutcome.completed,
+            thai: false,
+            durationSeconds: 154),
+        '📞 Voice call · 2:34',
+      );
+    });
+
+    test('line: missed video uses the video emoji + outcome detail', () {
+      expect(
+        CallSummary.line(
+            type: CallType.video, outcome: CallOutcome.missed, thai: true),
+        '📹 วิดีโอคอล · ไม่ได้รับสาย',
+      );
+      expect(
+        CallSummary.line(
+            type: CallType.video, outcome: CallOutcome.missed, thai: false),
+        '📹 Video call · Missed call',
+      );
+    });
+
+    test('line: rejected + failed details', () {
+      expect(
+        CallSummary.line(
+            type: CallType.audio, outcome: CallOutcome.rejected, thai: true),
+        '📞 สายเสียง · ปฏิเสธสาย',
+      );
+      expect(
+        CallSummary.line(
+            type: CallType.audio, outcome: CallOutcome.failed, thai: false),
+        '📞 Voice call · Call failed',
+      );
+    });
+  });
 }
