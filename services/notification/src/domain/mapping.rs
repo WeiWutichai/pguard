@@ -388,8 +388,15 @@ mod tests {
         let plan = plan_for_event(topics::CALLING_INITIATED, &payload).expect("should map");
         assert_eq!(plan.recipient_id, callee, "the CALLEE is rung");
         assert_eq!(plan.data["type"], "incoming_call");
-        assert_eq!(plan.data["call_id"], json!(call_id), "the call_id MUST ride in the push");
-        assert_eq!(plan.data["call_type"], "video", "call_type is forwarded for audio/video init");
+        assert_eq!(
+            plan.data["call_id"],
+            json!(call_id),
+            "the call_id MUST ride in the push"
+        );
+        assert_eq!(
+            plan.data["call_type"], "video",
+            "call_type is forwarded for audio/video init"
+        );
         assert_eq!(plan.data["caller_id"], json!(caller));
     }
 
