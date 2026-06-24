@@ -8,8 +8,10 @@ import '../../features/call/call_routes.dart';
 import '../../routing/app_router.dart';
 import '../controllers/active_job_controller.dart';
 import '../controllers/booking_status_controller.dart';
+import '../controllers/customer_home_controller.dart';
 import '../controllers/guard_jobs_controller.dart';
 import '../controllers/locale_controller.dart';
+import '../controllers/notification_controller.dart';
 import '../controllers/session_controller.dart';
 import '../providers.dart';
 import 'booking_push.dart';
@@ -119,6 +121,7 @@ class PushRegistration extends _$PushRegistration {
     final job = NewJobPush.tryParse(data);
     if (job != null) {
       _onNewJob(); // new_job surfaces its own banner + refetches the open feed
+      _refreshNotificationCenter();
       return;
     }
     // A payment.completed / booking.* push: re-pull THIS booking's live state so a push received
@@ -133,6 +136,18 @@ class PushRegistration extends _$PushRegistration {
     // user sees it without leaving the current screen. No `type` field on these — classified by
     // `event_type`. A push we don't recognise yields a null banner and is silently ignored.
     _banner(data);
+    // The notification service ALSO persisted this push as a notification-center item, so refresh
+    // the bell badge + any open list so the unread count bumps LIVE (without waiting for the next
+    // dashboard focus). Cheap one-shot invalidates of two autoDispose providers — not polling.
+    _refreshNotificationCenter();
+  }
+
+  /// Re-pull the notification badge ([unreadCountProvider]) and, if open, the notification list
+  /// ([notificationControllerProvider]) so a freshly-arrived push bumps the bell's unread count
+  /// immediately. Safe whether or not either is mounted (unmounted → dispose, next read rebuilds).
+  void _refreshNotificationCenter() {
+    ref.invalidate(unreadCountProvider);
+    ref.invalidate(notificationControllerProvider);
   }
 
   /// A payment/booking push landed for [push].bookingId: invalidate that booking's live controllers
@@ -140,7 +155,11 @@ class PushRegistration extends _$PushRegistration {
   ///   - [bookingStatusControllerProvider] — the customer's live screen (status + `paid_at`);
   ///   - [activeJobControllerProvider] — the guard's active-job screen (its `isPaid` gate on
   ///     "Go en route"). It is a one-shot REST fetch, so without this it would stay stuck on
-  ///     "รอลูกค้าชำระเงิน".
+  ///     "รอลูกค้าชำระเงิน";
+  ///   - [customerHomeControllerProvider] — the customer's DASHBOARD ongoing-job card (the surface
+  ///     the customer most likely sits on when a guard accepts). It is a separate one-shot
+  ///     `/bookings` list, so without this the card would stay on "กำลังค้นหาเจ้าหน้าที่" even as the
+  ///     live screen advances. Family-less, so a plain invalidate re-pulls it.
   /// Invalidating an autoDispose provider is safe whether or not it is mounted (mounted → refetch;
   /// unmounted → dispose, the next read rebuilds fresh).
   ///
@@ -152,6 +171,7 @@ class PushRegistration extends _$PushRegistration {
     final id = push.bookingId;
     ref.invalidate(bookingStatusControllerProvider(id));
     ref.invalidate(activeJobControllerProvider(id));
+    ref.invalidate(customerHomeControllerProvider);
     if (push.isPayment) {
       unawaited(_retryActiveJobIfUnpaid(id));
     }

@@ -3,6 +3,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/booking.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import 'active_job_controller.dart';
 import 'locale_controller.dart';
 
 part 'guard_jobs_controller.g.dart';
@@ -58,8 +59,16 @@ class GuardJobsController extends _$GuardJobsController {
       all.where((b) => b.status == BookingStatus.completed).toList();
 
   /// `POST /v1/bookings/{id}/accept` — first-come accept (sets guard_id = caller).
-  Future<String?> accept(String id) =>
-      _act(() => ref.read(pguardApiProvider).post('/bookings/$id/accept'));
+  ///
+  /// On success also invalidates THIS booking's [activeJobControllerProvider] so the active-job
+  /// screen the caller navigates to next builds from a FRESH `accepted` snapshot. Without this the
+  /// detail screen's still-mounted (autoDispose) read of that provider — fetched while the booking
+  /// was `requested` — can be reused across the `context.go`, leaving the active screen showing the
+  /// stale `requested` state (wrong stage → no "Go en route" CTA) until a manual refresh.
+  Future<String?> accept(String id) => _act(
+        () => ref.read(pguardApiProvider).post('/bookings/$id/accept'),
+        also: () => ref.invalidate(activeJobControllerProvider(id)),
+      );
 
   /// Locally hide an incoming offer the guard isn't taking. v2 is first-come-accept: there is
   /// NO server-side "decline" for an unassigned `requested` job (PUT decline is the assigned
@@ -77,10 +86,14 @@ class GuardJobsController extends _$GuardJobsController {
   }
 
   /// Runs an action, reloads the list on success. Returns null on success or a user-safe error
-  /// message on failure (so the screen can surface it without wiping the loaded list).
-  Future<String?> _act(Future<dynamic> Function() op) async {
+  /// message on failure (so the screen can surface it without wiping the loaded list). [also] runs
+  /// once on success, after the op but before the list re-fetch, to refresh any RELATED surface
+  /// (e.g. the accepted booking's active-job provider).
+  Future<String?> _act(Future<dynamic> Function() op,
+      {void Function()? also}) async {
     try {
       await op();
+      also?.call();
       ref.invalidateSelf();
       await future;
       return null;

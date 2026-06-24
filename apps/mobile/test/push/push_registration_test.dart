@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/active_job_controller.dart';
 import 'package:pguard_mobile/core/controllers/booking_status_controller.dart';
+import 'package:pguard_mobile/core/controllers/customer_home_controller.dart';
 import 'package:pguard_mobile/core/controllers/guard_jobs_controller.dart';
 import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -222,6 +223,53 @@ void main() {
 
     // It did NOT navigate (new_job surfaces in-place; it never opens the call screen).
     expect(routes, isEmpty);
+  });
+
+  test(
+      'a booking.* push (guard accepted) re-fetches the customer home bookings '
+      'list so the ongoing-job card advances', () async {
+    final push = FakePushService();
+    // Count re-fetches of the customer dashboard's /bookings list.
+    var homeFetches = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings') homeFetches++;
+        return <dynamic>[];
+      },
+      onPost: (_, __) async => <String, dynamic>{},
+    );
+    final c = ProviderContainer(overrides: [
+      pushServiceProvider.overrideWithValue(push),
+      pguardApiProvider.overrideWithValue(api),
+      pushNavigateProvider.overrideWithValue((_) {}),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) {},
+      ),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+
+    // Keep the customer home feed actively listened so an invalidate REFETCHES (dashboard mounted).
+    final sub = c.listen(customerHomeControllerProvider, (_, __) {});
+    addTearDown(sub.close);
+
+    c.read(pushRegistrationProvider);
+    c.read(sessionProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(homeFetches, 1); // initial load
+
+    // The guard-accepted push fires (booking.* event, carries the booking id).
+    push.emitForeground({
+      'event_type': 'pguard.events.booking.job_accepted',
+      'booking_id': 'b-1',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(homeFetches, 2,
+        reason: 'the booking push invalidated customerHomeController → it re-pulled');
   });
 
   group('BookingPush.tryParse', () {

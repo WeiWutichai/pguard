@@ -335,8 +335,10 @@ async fn apply_transition(
 }
 
 /// Build + insert the `calling.*` event for a call into the outbox (same tx). Payload carries
-/// the AsyncAPI-required `{ call_id, booking_id }` plus `caller_id`/`callee_id` so a future
-/// notification mapper can route incoming/missed-call pushes to the right recipient.
+/// the AsyncAPI-required `{ call_id, booking_id }` plus `caller_id`/`callee_id` so the
+/// notification mapper can route incoming/missed-call pushes to the right recipient, and
+/// `call_type` so the rung CALLEE's app opens the call as audio vs video (the mobile defaults to
+/// audio only when this is absent — a video call would mis-init without it).
 async fn enqueue_event(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     topic: &str,
@@ -348,6 +350,7 @@ async fn enqueue_event(
         "booking_id": call.booking_id,
         "caller_id": call.caller_id,
         "callee_id": call.callee_id,
+        "call_type": call.call_type,
         "status": call.status,
     });
     let envelope = EventEnvelope::new(topic, correlation_id, payload);

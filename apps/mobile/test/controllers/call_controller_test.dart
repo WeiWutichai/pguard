@@ -252,17 +252,60 @@ void main() {
     expect(t.engine.addedCandidates.map((c) => c.candidate), ['c1', 'c2', 'c3']);
   });
 
-  test('local ICE candidates are relayed as candidate signals', () async {
+  test('caller: local ICE candidates buffer until `ready`, then flush in order', () async {
     final t = make(initiate: callJson('call1'));
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
 
+    // Candidates gathered BEFORE the callee joins the relay must NOT be sent (the relay has no
+    // store-and-forward — it would drop them as "peer offline"). They are buffered.
+    t.engine.emitLocalCandidate(
+        const SignalCandidate(candidate: 'c1', sdpMid: '0', sdpMLineIndex: 0));
+    t.engine.emitLocalCandidate(
+        const SignalCandidate(candidate: 'c2', sdpMid: '0', sdpMLineIndex: 0));
+    await tick();
+    expect(
+      t.feed.sent.where((s) => s.signal.kind == CallSignalKind.candidate),
+      isEmpty,
+      reason: 'no candidate is relayed before the peer is `ready`',
+    );
+
+    // The callee announces `ready` → the buffered candidates flush, in order.
+    t.feed.emitSignal('call1', CallSignal.ready());
+    await tick();
+    expect(
+      t.feed.sent
+          .where((s) => s.signal.kind == CallSignalKind.candidate)
+          .map((s) => s.signal.candidate),
+      ['c1', 'c2'],
+    );
+
+    // A candidate gathered AFTER `ready` is relayed immediately (no buffering once the peer is in).
+    t.engine.emitLocalCandidate(
+        const SignalCandidate(candidate: 'c3', sdpMid: '0', sdpMLineIndex: 0));
+    await tick();
+    expect(
+      t.feed.sent
+          .where((s) => s.signal.kind == CallSignalKind.candidate)
+          .map((s) => s.signal.candidate),
+      ['c1', 'c2', 'c3'],
+    );
+  });
+
+  test('callee: local ICE flows immediately (the caller is already on the relay)', () async {
+    final t = make(get: callJson('call1'));
+    await ctrl(t.c).startIncoming(callId: 'call1');
+
+    // The callee's peer (the caller) dialed first and is already connected, so the callee marks the
+    // peer ready when it announces itself — its local candidates are relayed without buffering.
     t.engine.emitLocalCandidate(
         const SignalCandidate(candidate: 'localC', sdpMid: '0', sdpMLineIndex: 0));
     await tick();
-
-    final cands =
-        t.feed.sent.where((s) => s.signal.kind == CallSignalKind.candidate);
-    expect(cands.last.signal.candidate, 'localC');
+    expect(
+      t.feed.sent
+          .where((s) => s.signal.kind == CallSignalKind.candidate)
+          .map((s) => s.signal.candidate),
+      ['localC'],
+    );
   });
 
   // ---- signal relay routing ----
