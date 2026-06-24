@@ -96,10 +96,13 @@ void main() {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       callEngineFactoryProvider.overrideWithValue(() => eng),
       callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
-      // The caller posts an end-of-call chat summary, which reads session (acting role) + locale.
-      // Stub them so the real async secure-storage/prefs loads never fire in these call tests.
+      // The caller posts an end-of-call chat summary, which reads session (acting role) + locale and
+      // (now) find-or-CREATEs the thread + opens a chat feed. Stub session/locale so the real async
+      // secure-storage/prefs loads never fire, and stub the chat feed so it never dials a real WS.
       sessionProvider.overrideWith(() => _StubSession('customer')),
       localeControllerProvider.overrideWith(() => _StubLocale(AppLocale.th)),
+      chatLauncherProvider.overrideWithValue(ChatLauncher(api)),
+      chatFeedBuilderProvider.overrideWithValue((_) => FakeChatFeed()),
     ]);
     if (autoDispose) addTearDown(c.dispose);
     // Keep the keepAlive provider alive + built.
@@ -525,7 +528,14 @@ void main() {
       final callFeed = FakeCallSignalFeed();
       final chatFeed = FakeChatFeed();
       final api = FakeApi(
-        onPost: (_, __) async => callJson('call1'),
+        // /calls/initiate → a call; /conversations (create, on a find miss) → a new conversation.
+        onPost: (path, __) async => path == '/conversations'
+            ? {
+                'id': 'convNew',
+                'request_id': 'bk1',
+                'created_at': '2026-06-05T10:00:00Z',
+              }
+            : callJson('call1'),
         onGet: (path, __) async => switch (path) {
           '/calls/ice' => iceJson(),
           '/conversations' => conversations,
@@ -605,13 +615,16 @@ void main() {
           reason: 'only the caller posts; the callee would double the row');
     });
 
-    test('no conversation yet → nothing posted (never spawns an empty thread)', () async {
+    test('no conversation yet → find-or-create then post into the new thread', () async {
+      // A call belongs in the matched pair's chat thread even if they never chatted before: the
+      // summary now find-OR-CREATEs the conversation and posts the system line into it (was: drop).
       final t = makeWithChat(conversations: const []);
       await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
       await ctrl(t.c).end();
       await settle();
 
-      expect(t.chatFeed.sent, isEmpty);
+      expect(t.chatFeed.sent.single['message_type'], 'system');
+      expect(t.chatFeed.sent.single['conversation_id'], 'convNew');
     });
 
     test('exactly one summary even if end() is reached twice', () async {
