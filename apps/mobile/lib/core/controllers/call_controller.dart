@@ -479,7 +479,9 @@ class CallController extends _$CallController {
   void _fail(String message) {
     state = state.copyWith(
         phase: CallPhase.ended, error: message, endReason: 'error');
-    unawaited(_postCallSummary());
+    // No chat summary on a SETUP failure (ICE fetch, permission denied, initiate rejected): the
+    // call never rang the callee, so there is nothing to record — and posting would spuriously
+    // create the pair's conversation. Summaries come from `_end` (a call that actually dialed).
     _teardown();
   }
 
@@ -532,11 +534,24 @@ class CallController extends _$CallController {
         durationSeconds: durationSeconds,
       );
 
-      final conversationId =
-          await launcher.findConversationId(requestId: bookingId, acting: acting);
-      if (_disposed || conversationId == null) {
-        return; // disposed mid-flight, or no thread opened yet → nothing to summarise into
-      }
+      // Find-OR-CREATE the matched pair's conversation so the call ALWAYS lands in their chat thread
+      // — even if they never opened a chat before. A call belongs IN the conversation between the two
+      // matched parties, not only as a transient call notification. Participants are the call's two
+      // parties (the callee's chat role is the opposite of the caller's), mirroring the chat entry
+      // button's create. callerId is the acting user (this is the caller's device).
+      final call = state.call;
+      if (call == null) return;
+      final counterRole =
+          acting == ChatRole.guard ? ChatRole.customer : ChatRole.guard;
+      final conversationId = await launcher.resolveConversationId(
+        requestId: bookingId,
+        acting: acting,
+        participants: [
+          ParticipantInput(userId: call.callerId, role: acting),
+          ParticipantInput(userId: call.calleeId, role: counterRole),
+        ],
+      );
+      if (_disposed) return; // disposed mid-flight
 
       // Chat send is WS-only (no REST POST messages endpoint) — open a short-lived feed, send the
       // one `system` frame, then close. Mirrors how ChatController builds its feed. The send is a

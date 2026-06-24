@@ -152,3 +152,9 @@ components:
                   type: string
                   format: uuid
                   description: The other participant (notification target).
+                message_type:
+                  type: string
+                  enum: [text, image, video, system]
+                  description: >-
+                    The message kind. `system` rows (e.g. a call-summary line) are recorded in
+                    the thread but do NOT raise a "new message" push.

@@ -197,13 +197,22 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "มีรีวิวใหม่",
             "คุณได้รับคะแนนรีวิวใหม่",
         )),
-        topics::CHAT_MESSAGE_SENT => Some(make(
-            uuid_field(payload, "recipient_id")?,
-            None,
-            NotificationType::ChatMessage,
-            "ข้อความใหม่",
-            "คุณมีข้อความใหม่",
-        )),
+        topics::CHAT_MESSAGE_SENT => {
+            // A `system` row (e.g. an end-of-call summary line) is a thread RECORD, not a message
+            // that should raise a "new message" push — the call already rang the callee. Only
+            // text/image/video messages notify. (Older events without message_type still notify.)
+            if payload.get("message_type").and_then(|v| v.as_str()) == Some("system") {
+                None
+            } else {
+                Some(make(
+                    uuid_field(payload, "recipient_id")?,
+                    None,
+                    NotificationType::ChatMessage,
+                    "ข้อความใหม่",
+                    "คุณมีข้อความใหม่",
+                ))
+            }
+        }
         // Ring the CALLEE on an incoming call. The data carries everything the mobile needs to
         // open the incoming-call screen and answer: `type=incoming_call` + the call_id + call_type
         // + caller_id. The field names mirror the AsyncAPI `calling.*` envelope EXACTLY: the
@@ -322,10 +331,25 @@ mod tests {
     #[test]
     fn chat_message_notifies_recipient() {
         let recipient = Uuid::new_v4();
-        let payload = json!({ "recipient_id": recipient, "sender_id": Uuid::new_v4(), "conversation_id": Uuid::new_v4(), "message_id": Uuid::new_v4() });
+        let payload = json!({ "recipient_id": recipient, "sender_id": Uuid::new_v4(), "conversation_id": Uuid::new_v4(), "message_id": Uuid::new_v4(), "message_type": "text" });
         let plan = plan_for_event(topics::CHAT_MESSAGE_SENT, &payload).expect("should map");
         assert_eq!(plan.recipient_id, recipient);
         assert_eq!(plan.notification_type, NotificationType::ChatMessage);
+    }
+
+    #[test]
+    fn chat_system_message_does_not_notify() {
+        // A `system` row (e.g. an end-of-call summary) is a thread record, not a push — the call
+        // already rang the callee. It must NOT raise a "new message" notification.
+        let payload = json!({ "recipient_id": Uuid::new_v4(), "sender_id": Uuid::new_v4(), "conversation_id": Uuid::new_v4(), "message_id": Uuid::new_v4(), "message_type": "system" });
+        assert!(plan_for_event(topics::CHAT_MESSAGE_SENT, &payload).is_none());
+    }
+
+    #[test]
+    fn chat_message_without_type_still_notifies() {
+        // Backward-compat: an event from before message_type was added still raises the push.
+        let payload = json!({ "recipient_id": Uuid::new_v4(), "sender_id": Uuid::new_v4(), "conversation_id": Uuid::new_v4(), "message_id": Uuid::new_v4() });
+        assert!(plan_for_event(topics::CHAT_MESSAGE_SENT, &payload).is_some());
     }
 
     #[test]

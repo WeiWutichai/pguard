@@ -414,6 +414,9 @@ async fn enqueue_message_sent(
         "conversation_id": message.conversation_id,
         "sender_id": message.sender_id,
         "recipient_id": recipient_id,
+        // So notification can suppress the "new message" push for `system` rows (e.g. a call-summary
+        // line): those are recorded in the thread but must not raise a redundant notification.
+        "message_type": message.message_type,
     });
     let envelope = EventEnvelope::new(topics::CHAT_MESSAGE_SENT, correlation_id, payload);
     let envelope_json = serde_json::to_value(&envelope)
