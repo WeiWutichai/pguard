@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/biometric_service.dart';
 import 'package:pguard_mobile/core/location/location_service.dart';
+import 'package:pguard_mobile/core/location/routing_service.dart';
 import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
 import 'package:pguard_mobile/core/media/chat_media_picker.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
@@ -357,6 +358,26 @@ class FakeLocationService implements LocationService {
 
   @override
   Future<String> reverseGeocode(GeoPoint point) async => 'fake place';
+}
+
+/// Fake [RoutingService] — returns a canned [RouteResult] (or null to force the straight-line
+/// fallback) and records the requested origin/dest pairs. No network. By default returns null so a
+/// test that doesn't care about routing gets the deterministic straight-line behaviour.
+class FakeRoutingService implements RoutingService {
+  FakeRoutingService({this.result});
+
+  /// What every [route] call resolves to (`null` = no route → caller degrades to straight line).
+  RouteResult? result;
+  final List<({GeoPoint origin, GeoPoint dest})> calls = [];
+
+  @override
+  Future<RouteResult?> route({
+    required GeoPoint origin,
+    required GeoPoint dest,
+  }) async {
+    calls.add((origin: origin, dest: dest));
+    return result;
+  }
 }
 
 /// Fake [CheckInService] — records submissions; optionally fails.

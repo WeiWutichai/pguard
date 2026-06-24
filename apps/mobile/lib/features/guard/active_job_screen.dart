@@ -8,6 +8,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/chat_launcher.dart';
+import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
@@ -395,9 +396,21 @@ class _InlineNavMap extends ConsumerWidget {
         ? GeoPoint(booking.lat!, booking.lng!)
         : null;
     final self = ref.watch(guardSelfLocationProvider).valueOrNull;
+    // Reuse the SAME cached road route the full-screen nav map fetches (keyed by the snapped
+    // origin/dest) — the preview never triggers its own OSRM request, and it shows the real road
+    // line when available (else TravelMapPreview falls back to the straight segment).
+    final route = (self != null && dest != null)
+        ? ref
+            .watch(guardRouteProvider(
+              start: snapOrigin(self),
+              end: snapDest(dest),
+            ))
+            .valueOrNull
+        : null;
     return TravelMapPreview(
       mover: self,
       target: dest,
+      routePoints: route?.polyline,
       moverMarker: const GuardNavGuardMarker(),
       targetMarker: const GuardNavDestMarker(),
       onExpand: () => context.push('/guard/active/$bookingId/navigate'),

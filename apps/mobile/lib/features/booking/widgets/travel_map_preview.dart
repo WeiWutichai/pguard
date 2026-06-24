@@ -7,13 +7,16 @@ import 'pg_map.dart';
 /// A short, inline LIVE travel-map card — the same OSM surface ([PgMap]) the full-screen
 /// customer live-map and guard navigation use, sized down to fit the empty space below a status
 /// card. It plots a [mover] pin (the guard, or the guard's own position) and a [target] pin (the
-/// destination, or the customer), with the honest straight-line [PgPolyline] between them (no
-/// directions API — by design). Tapping anywhere (or the fullscreen affordance) calls [onExpand],
-/// which both screens wire to push their existing full-screen map.
+/// destination, or the customer), with a [PgPolyline] between them. When [routePoints] are supplied
+/// (the guard nav preview passes the cached OSRM road geometry) it draws the REAL road route;
+/// otherwise it falls back to the honest straight [mover]→[target] segment. Tapping anywhere (or the
+/// fullscreen affordance) calls [onExpand], which both screens wire to push their full-screen map.
 ///
 /// Re-uses the SAME live data the callers already watch (no new polling): each screen passes the
 /// current points from its controller, and [PgMap] re-fits the camera imperatively as they move.
-/// The no-fix / loading state degrades to a calm [placeholder] band — never a crash.
+/// The [routePoints], when present, come from the shared `guardRouteProvider` cache (keyed by the
+/// snapped origin/dest) so the preview never triggers its own per-rebuild OSRM fetch. The no-fix /
+/// loading state degrades to a calm [placeholder] band — never a crash.
 class TravelMapPreview extends StatelessWidget {
   const TravelMapPreview({
     super.key,
@@ -22,6 +25,7 @@ class TravelMapPreview extends StatelessWidget {
     required this.moverMarker,
     required this.targetMarker,
     required this.onExpand,
+    this.routePoints,
     this.height = 220,
     this.placeholder,
   });
@@ -33,6 +37,10 @@ class TravelMapPreview extends StatelessWidget {
   /// Where [mover] is heading (booking destination, or the customer). `null` for a legacy
   /// address-only booking with no pinned coordinate — the map still centres on the [mover].
   final GeoPoint? target;
+
+  /// The REAL road route (≥2 points) when available — drawn in place of the straight segment.
+  /// Null → fall back to the straight [mover]→[target] line. Comes from the shared route cache.
+  final List<GeoPoint>? routePoints;
 
   /// The pin drawn at [mover] (each screen passes its own styled marker).
   final Widget moverMarker;
@@ -63,9 +71,13 @@ class TravelMapPreview extends StatelessWidget {
               // Static preview: pan/zoom is reserved for the full screen — a tap expands instead.
               PgMap(
                 interactive: false,
-                polyline: target != null
-                    ? PgPolyline(points: [mover!, target!])
-                    : null,
+                // Prefer the real road route (solid) when supplied; else the straight segment
+                // (dashed — the honest "approximate" cue). Null when there is no target at all.
+                polyline: (routePoints != null && routePoints!.length >= 2)
+                    ? PgPolyline(points: routePoints!, dashed: false)
+                    : (target != null
+                        ? PgPolyline(points: [mover!, target!])
+                        : null),
                 markers: [
                   if (target != null)
                     PgMarker(
