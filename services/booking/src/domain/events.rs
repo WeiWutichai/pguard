@@ -68,16 +68,20 @@ fn payload(booking_id: Uuid, customer_id: Uuid, guard_id: Option<Uuid>) -> Value
 /// produces no cross-service event. Pure: the caller (repo) enqueues the returned mapping
 /// into the outbox in the same transaction as the status write.
 ///
-/// The decision depends on BOTH ends of the transition, not just the target: e.g. a fresh
-/// arrival (`en_route → arrived`) notifies the customer, but the customer's completion
-/// REJECT (`pending_completion → arrived`) lands on the same `arrived` status and must NOT
-/// re-fire a "guard arrived" push.
+/// The target status alone determines the topic. Both ends of a transition land on the same
+/// topic where they share a status: a fresh arrival (`en_route → arrived`) AND the customer's
+/// completion REJECT (`pending_completion → arrived`) both emit `booking.arrived`, so the live
+/// WS updates the guard's screen on the reject bounce too (notification's mapper de-dupes copy by
+/// type, not by transition). `from` is retained for callers/clarity but no longer gates the topic.
 ///
 /// `completion` is only meaningful for [`BookingStatus::Completed`]: it adds
 /// `booked_hours` + `actual_seconds` to the payload so the payment consumer can prorate.
 /// Other statuses ignore it.
 pub fn event_for_status(
-    from: BookingStatus,
+    // The source status. No longer gates the topic (target status alone decides), but kept in the
+    // signature so callers stay explicit about the WHOLE transition and a future from-dependent
+    // rule needs no signature churn. Underscore-prefixed: intentionally unused today.
+    _from: BookingStatus,
     new_status: BookingStatus,
     booking_id: Uuid,
     customer_id: Uuid,
@@ -88,20 +92,20 @@ pub fn event_for_status(
         BookingStatus::Accepted => topics::BOOKING_JOB_ACCEPTED,
         BookingStatus::Declined => topics::BOOKING_DECLINED,
         BookingStatus::EnRoute => topics::BOOKING_GUARD_EN_ROUTE,
-        BookingStatus::Arrived => {
-            // Only a FRESH arrival (en_route → arrived) emits. The completion-reject bounce
-            // (pending_completion → arrived) reuses `arrived` but is NOT a new arrival, so it
-            // emits nothing (a re-fired "guard arrived" push would be wrong + duplicate).
-            if from == BookingStatus::PendingCompletion {
-                return None;
-            }
-            topics::BOOKING_ARRIVED
-        }
+        // BOTH a fresh arrival (en_route → arrived) AND the completion-REJECT bounce
+        // (pending_completion → arrived) emit `booking.arrived`: the customer's live screen must
+        // update on either path. (The earlier behavior of emitting nothing on the reject bounce
+        // left the GUARD's live screen stuck on "pending_completion" until a manual refresh.)
+        BookingStatus::Arrived => topics::BOOKING_ARRIVED,
         BookingStatus::Completed => topics::BOOKING_COMPLETED,
         BookingStatus::Cancelled => topics::BOOKING_CANCELLED,
-        // A bare request, and the guard's completion REQUEST (pending_completion is an
-        // internal milestone awaiting customer review), have no cross-service event.
-        BookingStatus::Requested | BookingStatus::PendingCompletion => return None,
+        // The guard's completion REQUEST (arrived → pending_completion) is a customer-facing
+        // lifecycle change: the customer must review it. Emit so the customer's live WS updates
+        // WITHOUT a manual refresh + notification pushes "please review".
+        BookingStatus::PendingCompletion => topics::BOOKING_COMPLETION_REQUESTED,
+        // A bare request has no cross-service event (create_booking emits booking.requested
+        // separately — don't double-emit here).
+        BookingStatus::Requested => return None,
     };
     let mut payload = payload(booking_id, customer_id, guard_id);
     // Completion carries the proration + pricing inputs the post-pay money path consumes.
@@ -266,21 +270,51 @@ mod tests {
     }
 
     #[test]
-    fn completion_reject_bounce_to_arrived_emits_nothing() {
-        // pending_completion → arrived is the customer REJECTING completion, not a new
-        // arrival; it must NOT re-fire booking.arrived (which would push "guard arrived").
+    fn pending_completion_emits_completion_requested() {
+        // The guard's completion REQUEST (arrived → pending_completion) MUST emit so the
+        // customer's live WS updates without a manual refresh (this was the dropped-event bug).
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let g = Uuid::new_v4();
+        let m = event_for_status(
+            BookingStatus::Arrived,
+            BookingStatus::PendingCompletion,
+            b,
+            c,
+            Some(g),
+            None,
+        )
+        .expect("pending_completion must emit");
+        assert_eq!(m.topic, topics::BOOKING_COMPLETION_REQUESTED);
+        assert_eq!(m.topic, "pguard.events.booking.completion_requested");
+        // Same booking-ref payload as the other lifecycle transitions.
+        assert_eq!(m.payload["booking_id"], json!(b));
+        assert_eq!(m.payload["customer_id"], json!(c));
+        assert_eq!(m.payload["guard_id"], json!(g));
+        // Proration/pricing fields ride ONLY booking.completed, never the completion request.
+        assert!(m.payload.get("booked_hours").is_none());
+    }
+
+    #[test]
+    fn completion_reject_bounce_to_arrived_emits_arrived() {
+        // pending_completion → arrived is the customer REJECTING completion: the guard goes back
+        // to work. It MUST emit booking.arrived so the GUARD's live screen leaves
+        // "pending_completion" without a manual refresh (the topic is keyed on the TARGET status).
+        let b = Uuid::new_v4();
+        let c = Uuid::new_v4();
+        let g = Uuid::new_v4();
         let m = event_for_status(
             BookingStatus::PendingCompletion,
             BookingStatus::Arrived,
-            Uuid::new_v4(),
-            Uuid::new_v4(),
-            Some(Uuid::new_v4()),
+            b,
+            c,
+            Some(g),
             None,
-        );
-        assert!(
-            m.is_none(),
-            "completion-reject bounce to arrived must emit no event"
-        );
+        )
+        .expect("completion-reject bounce must emit");
+        assert_eq!(m.topic, topics::BOOKING_ARRIVED);
+        assert_eq!(m.payload["booking_id"], json!(b));
+        assert_eq!(m.payload["guard_id"], json!(g));
     }
 
     #[test]

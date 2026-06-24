@@ -81,6 +81,12 @@ pub mod topics {
     pub const BOOKING_COMPLETED: &str = "pguard.events.booking.completed";
     pub const BOOKING_GUARD_EN_ROUTE: &str = "pguard.events.booking.guard_en_route";
     pub const BOOKING_ARRIVED: &str = "pguard.events.booking.arrived";
+    /// Guard REQUESTED completion (`arrived → pending_completion`): the customer must now review
+    /// and approve/reject. A customer-facing lifecycle status change — the gateway's booking
+    /// status WS maps it to the `pending_completion` wire status so the customer's live screen
+    /// updates WITHOUT a manual refresh; notification also pushes the customer "โปรดตรวจสอบ".
+    /// Same booking-ref payload (booking_id/customer_id/guard_id) as the other lifecycle events.
+    pub const BOOKING_COMPLETION_REQUESTED: &str = "pguard.events.booking.completion_requested";
     /// Guard hourly check-in persisted (photo key + GPS). NOT a lifecycle status change —
     /// the gateway's booking-status WS ignores it (`status_from_topic` → None). Future
     /// consumer: notification ("your guard checked in").
