@@ -114,7 +114,7 @@ class _MapBody extends StatelessWidget {
                         width: 90,
                         height: 44,
                         alignment: Alignment.center,
-                        child: _ReferenceMarker(
+                        child: GuardMapReferenceMarker(
                           isThai: isThai,
                           isDestination: track.targetIsDestination,
                         ),
@@ -125,7 +125,7 @@ class _MapBody extends StatelessWidget {
                         width: 44,
                         height: 56,
                         alignment: Alignment.center,
-                        child: _GuardMarker(heading: guard.heading),
+                        child: GuardMapGuardMarker(heading: guard.heading),
                       ),
                   ],
                 ),
@@ -147,8 +147,9 @@ class _MapBody extends StatelessWidget {
 }
 
 /// The guard's pin: brand shield in a circle; the small arrow rotates to the reported heading.
-class _GuardMarker extends StatelessWidget {
-  const _GuardMarker({this.heading});
+/// Public so the inline customer live-map preview reuses the exact same pin as the full screen.
+class GuardMapGuardMarker extends StatelessWidget {
+  const GuardMapGuardMarker({super.key, this.heading});
 
   final double? heading;
 
@@ -185,8 +186,10 @@ class _GuardMarker extends StatelessWidget {
 /// The destination marker — a labelled dot. Labelled "ปลายทาง / Destination" when it is the
 /// booking's pinned drop-off (`GuardTrack.destination`), or "คุณ / You" when it falls back to the
 /// customer's device fix (a legacy/address-only booking with no pinned coordinate).
-class _ReferenceMarker extends StatelessWidget {
-  const _ReferenceMarker({required this.isThai, required this.isDestination});
+/// Public so the inline customer live-map preview reuses the exact same marker as the full screen.
+class GuardMapReferenceMarker extends StatelessWidget {
+  const GuardMapReferenceMarker(
+      {super.key, required this.isThai, required this.isDestination});
 
   final bool isThai;
   final bool isDestination;

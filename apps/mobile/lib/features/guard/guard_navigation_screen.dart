@@ -180,18 +180,25 @@ class _MapLayer extends StatelessWidget {
       markers: [
         if (dest != null)
           PgMarker(
-              point: dest!, width: 44, height: 44, child: const _DestMarker()),
+              point: dest!,
+              width: 44,
+              height: 44,
+              child: const GuardNavDestMarker()),
         if (self != null)
           PgMarker(
-              point: self!, width: 40, height: 40, child: const _GuardMarker()),
+              point: self!,
+              width: 40,
+              height: 40,
+              child: const GuardNavGuardMarker()),
       ],
     );
   }
 }
 
-/// Design `.pin.guard`: a green badge with a shield.
-class _GuardMarker extends StatelessWidget {
-  const _GuardMarker();
+/// Design `.pin.guard`: a green badge with a shield. Public so the inline guard travel-map
+/// preview reuses the exact same pin as the full navigation screen.
+class GuardNavGuardMarker extends StatelessWidget {
+  const GuardNavGuardMarker({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -209,9 +216,10 @@ class _GuardMarker extends StatelessWidget {
   }
 }
 
-/// Design `.dest .ring`: a brand dot inside a soft ring.
-class _DestMarker extends StatelessWidget {
-  const _DestMarker();
+/// Design `.dest .ring`: a brand dot inside a soft ring. Public so the inline guard travel-map
+/// preview reuses the exact same marker as the full navigation screen.
+class GuardNavDestMarker extends StatelessWidget {
+  const GuardNavDestMarker({super.key});
 
   @override
   Widget build(BuildContext context) {

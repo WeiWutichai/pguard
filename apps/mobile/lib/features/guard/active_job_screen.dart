@@ -13,6 +13,7 @@ import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
+import '../../core/models/geo.dart';
 import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
@@ -21,9 +22,11 @@ import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
+import '../booking/widgets/travel_map_preview.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_entry_button.dart';
+import 'guard_navigation_screen.dart';
 import 'widgets/check_in_sheet.dart';
 
 /// The active-job working screen: drives the lifecycle transitions (en-route → arrived → start
@@ -213,6 +216,18 @@ class _Body extends StatelessWidget {
                 ),
                 child: BookingStatusStepper(status: booking.status),
               ),
+              // While travelling / at the location (en-route + arrived, before work starts), fill
+              // the empty space with an inline navigation map: the guard's own position + the
+              // customer/destination + the straight route. Tap / expand opens the full-screen
+              // navigation map. Only when the booking has site coordinates to plot.
+              if ((stageOf(state) == JobStage.enRoute ||
+                      stageOf(state) == JobStage.arrived ||
+                      stageOf(state) == JobStage.start) &&
+                  booking.lat != null &&
+                  booking.lng != null) ...[
+                const SizedBox(height: PgTokens.space4),
+                _InlineNavMap(bookingId: bookingId, booking: booking),
+              ],
               if (stageOf(state) == JobStage.working) ...[
                 const SizedBox(height: PgTokens.space4),
                 _WorkingPanel(bookingId: bookingId, state: state),
@@ -312,6 +327,34 @@ class _MiniMapBand extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Inline navigation map embedded in the guard's active-job screen while travelling / at the
+/// location: the guard's OWN live position + the customer/destination + the straight route between
+/// them, in a ~220px [TravelMapPreview] card. Reuses the SAME data + markers the full-screen guard
+/// navigation ([GuardNavigationScreen]) uses — destination from the booking's `lat`/`lng`, self
+/// from [guardSelfLocationProvider] (a one-shot device fix, no polling). Tap / fullscreen expands
+/// to `/guard/active/{id}/navigate`. No self fix yet degrades to a calm placeholder.
+class _InlineNavMap extends ConsumerWidget {
+  const _InlineNavMap({required this.bookingId, required this.booking});
+
+  final String bookingId;
+  final Booking booking;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final dest = (booking.lat != null && booking.lng != null)
+        ? GeoPoint(booking.lat!, booking.lng!)
+        : null;
+    final self = ref.watch(guardSelfLocationProvider).valueOrNull;
+    return TravelMapPreview(
+      mover: self,
+      target: dest,
+      moverMarker: const GuardNavGuardMarker(),
+      targetMarker: const GuardNavDestMarker(),
+      onExpand: () => context.push('/guard/active/$bookingId/navigate'),
     );
   }
 }

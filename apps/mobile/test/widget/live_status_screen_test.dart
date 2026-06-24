@@ -68,7 +68,7 @@ void main() {
   });
 
   testWidgets(
-      'guard assigned → track-guard tile navigates to the live-map screen',
+      'guard assigned → inline live-map preview expands to the full live-map screen',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') {
@@ -123,24 +123,26 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // The entry tile is visible because a guard is assigned and the job is active
-    // (default locale is Thai; the label toggles with the locale controller).
-    final tile = find.text('ดูตำแหน่งเจ้าหน้าที่');
-    expect(tile, findsOneWidget);
+    // The inline live-map preview is embedded because a guard is assigned and the job is active;
+    // it carries the fullscreen expand affordance.
+    final expand = find.byIcon(Icons.fullscreen);
+    expect(expand, findsOneWidget);
 
-    await tester.tap(tile);
+    await tester.tap(expand);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
     expect(find.byType(GuardMapScreen), findsOneWidget,
-        reason: 'tapping the tile pushes /booking/b1/map');
-    expect(find.byIcon(Icons.shield), findsOneWidget,
-        reason: 'the map rendered the guard marker');
+        reason: 'tapping the expand affordance pushes /booking/b1/map');
+    // The pushed full map renders the guard shield marker (the inline preview underneath also
+    // shows one, so at least one is on screen).
+    expect(find.byIcon(Icons.shield), findsWidgets,
+        reason: 'the full map rendered the guard marker');
 
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('no guard assigned → no track-guard tile', (tester) async {
+  testWidgets('no guard assigned → no inline live-map preview', (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') {
         return {
@@ -166,7 +168,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.text('ดูตำแหน่งเจ้าหน้าที่'), findsNothing);
+    expect(find.byIcon(Icons.fullscreen), findsNothing);
 
     await tester.pumpWidget(const SizedBox());
   });
@@ -300,13 +302,21 @@ void main() {
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tp) => FakeBookingFeed()),
+        locationServiceProvider.overrideWithValue(FakeLocationService()),
       ],
       child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
     ));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    await tester.tap(find.text('ให้ทำต่อ'));
+    // The completion-review panel + the inline live-map both render while pending_completion
+    // (guard assigned, not terminal). Tap the "keep working" CTA — the inline map needs a
+    // (fake) location service for its controller's device-fix fallback. The inline map adds
+    // height, so scroll the CTA into view before tapping.
+    final keepWorking = find.text('ให้ทำต่อ');
+    await tester.ensureVisible(keepWorking);
+    await tester.pump();
+    await tester.tap(keepWorking);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
