@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/widgets/reason_tile.dart';
 import 'package:pguard_mobile/features/guard/active_job_screen.dart';
@@ -48,6 +49,12 @@ Future<void> pumpFlow(WidgetTester tester, FakeApi api) async {
       // Locale defaults to Thai; the fake prefs store keeps locale load hermetic
       // (no platform channel) — the screen renders single-language Thai copy.
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      // The active booking takes a presence GPS-streaming lease on mount — keep that off
+      // platform channels (real permission_handler / WebSocket) with fakes.
+      permissionGateProvider
+          .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
+      presenceFeedBuilderProvider.overrideWithValue((_) => FakePresenceFeed()),
+      locationServiceProvider.overrideWithValue(FakeLocationService()),
     ],
     child: MaterialApp.router(routerConfig: buildRouter()),
   ));

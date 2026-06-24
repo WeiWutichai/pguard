@@ -15,6 +15,15 @@ enum CallType {
 
   static CallType parse(String? value) =>
       value == 'video' ? CallType.video : CallType.audio;
+
+  /// Parse a wire value, or `null` if absent/unrecognised (the incoming-call route uses this for
+  /// the optional `?type=` push hint — a missing hint is null, not a defaulted-to-audio guess).
+  static CallType? tryParse(String? value) {
+    for (final t in CallType.values) {
+      if (t.wire == value) return t;
+    }
+    return null;
+  }
 }
 
 /// Server-side call lifecycle status (the `status` field on [Call]).
@@ -76,6 +85,75 @@ class Call {
         durationSeconds: (json['duration_seconds'] as num?)?.toInt(),
         endReason: json['end_reason'] as String?,
       );
+}
+
+/// How a call finished, for the chat-thread summary line (WhatsApp-style). Derived from the
+/// caller's local end flow: whether media ever connected + the `endReason` the controller set.
+///  - [completed]: the call connected and then ended → show a duration ("2:34").
+///  - [missed]: never connected because the callee didn't answer (timeout / cancelled dial).
+///  - [rejected]: the callee actively declined.
+///  - [failed]: a media/setup error ended it before it connected.
+enum CallOutcome { completed, missed, rejected, failed }
+
+/// PURE builder for the one-line call summary posted into the booking chat thread when a call
+/// ends (a `system` chat message — rendered centred). No Flutter / no IO so it is unit-testable.
+///
+/// The line is `<emoji> <call-kind> · <detail>`, mirroring the design's WhatsApp-style row, e.g.
+/// "📞 สายเสียง · 2:34" (completed audio) or "📹 วิดีโอคอล · ไม่ได้รับสาย" (missed video). Only the
+/// CALLER posts (it alone knows the outcome+duration reliably and posting from both parties would
+/// double the row); the chat backend renders the resulting `system` message centred regardless of
+/// the server-derived `sender_role`.
+class CallSummary {
+  const CallSummary._();
+
+  /// Map the controller's local end bookkeeping to a [CallOutcome]. [wentActive] is true once the
+  /// call reached `active` (media connected). [endReason] is the controller's reason string
+  /// (`rejected`, `no_answer`, `media_failed`, `error`, `hangup`, `remote_hangup`, …).
+  static CallOutcome outcomeFrom({
+    required bool wentActive,
+    required String? endReason,
+  }) {
+    if (wentActive) return CallOutcome.completed;
+    switch (endReason) {
+      case 'rejected':
+        return CallOutcome.rejected;
+      case 'error':
+      case 'media_failed':
+      case 'media_closed':
+        return CallOutcome.failed;
+      default:
+        // no_answer / hangup (caller cancelled the dial) / remote_hangup before connect → missed.
+        return CallOutcome.missed;
+    }
+  }
+
+  /// `M:SS` (e.g. `2:34`, `0:09`) for a completed call's duration. Negative/absent → `0:00`.
+  static String formatDuration(int? seconds) {
+    final s = (seconds == null || seconds < 0) ? 0 : seconds;
+    final m = s ~/ 60;
+    final r = s % 60;
+    return '$m:${r.toString().padLeft(2, '0')}';
+  }
+
+  /// The chat-thread line for a finished call. [durationSeconds] is used only for [CallOutcome.completed].
+  static String line({
+    required CallType type,
+    required CallOutcome outcome,
+    required bool thai,
+    int? durationSeconds,
+  }) {
+    final emoji = type.isVideo ? '📹' : '📞';
+    final kind = type.isVideo
+        ? (thai ? 'วิดีโอคอล' : 'Video call')
+        : (thai ? 'สายเสียง' : 'Voice call');
+    final detail = switch (outcome) {
+      CallOutcome.completed => formatDuration(durationSeconds),
+      CallOutcome.missed => thai ? 'ไม่ได้รับสาย' : 'Missed call',
+      CallOutcome.rejected => thai ? 'ปฏิเสธสาย' : 'Declined',
+      CallOutcome.failed => thai ? 'สายขัดข้อง' : 'Call failed',
+    };
+    return '$emoji $kind · $detail';
+  }
 }
 
 /// The client-side UI phase of the active call (the state machine the controller drives):

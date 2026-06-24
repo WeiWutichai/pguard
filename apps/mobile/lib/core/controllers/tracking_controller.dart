@@ -10,33 +10,48 @@ import 'session_controller.dart';
 
 part 'tracking_controller.g.dart';
 
-/// Guard presence state: whether the guard is online (visible to customers), the live
+/// Guard presence state: whether the guard is online (visible to customers), whether GPS is
+/// being streamed because of an ACTIVE JOB (independent of the manual online toggle), the live
 /// connection link, and the latest GPS fix (for the accuracy readout).
 class TrackingState {
   const TrackingState({
     this.online = false,
+    this.jobIds = const {},
     this.link = PresenceLink.offline,
     this.lastSample,
   });
 
+  /// The manual "พร้อมรับงาน" toggle (the guard is discoverable for new offers).
   final bool online;
+
+  /// Booking ids currently holding a job-streaming lease (the guard has an active assigned job and
+  /// is on its active-job/navigation screen). Non-empty ⟹ stream GPS even when [online] is false,
+  /// so the customer sees the guard move in real time during the job.
+  final Set<String> jobIds;
+
   final PresenceLink link;
   final GpsSample? lastSample;
+
+  /// `true` whenever GPS should be flowing to presence: the manual toggle is on OR a job lease is
+  /// held. The feed is open exactly when this is true.
+  bool get streaming => online || jobIds.isNotEmpty;
 
   /// Qualitative accuracy band for the latest fix.
   GpsAccuracyBand get accuracyBand => GpsAccuracyBand.of(lastSample?.accuracy);
 
-  /// Truly tracking = online, link up, AND at least one fix received.
+  /// Truly tracking = streaming, link up, AND at least one fix received.
   bool get isTracking =>
-      online && link == PresenceLink.online && lastSample != null;
+      streaming && link == PresenceLink.online && lastSample != null;
 
   TrackingState copyWith({
     bool? online,
+    Set<String>? jobIds,
     PresenceLink? link,
     GpsSample? lastSample,
   }) =>
       TrackingState(
         online: online ?? this.online,
+        jobIds: jobIds ?? this.jobIds,
         link: link ?? this.link,
         lastSample: lastSample ?? this.lastSample,
       );
@@ -56,10 +71,11 @@ class TrackingController extends _$TrackingController {
   TrackingState build() {
     ref.onDispose(_teardown);
     // Going offline must follow the guard out of the session — otherwise GPS keeps streaming
-    // after logout (this provider is keepAlive and would survive the dashboard leaving).
+    // after logout (this provider is keepAlive and would survive the dashboard leaving). This also
+    // drops any job-streaming lease.
     ref.listen(sessionProvider, (_, next) {
-      if (next.status != SessionStatus.authenticated && state.online) {
-        goOffline();
+      if (next.status != SessionStatus.authenticated && state.streaming) {
+        _shutDown();
       }
     });
     return const TrackingState();
@@ -67,34 +83,13 @@ class TrackingController extends _$TrackingController {
 
   Future<void> toggle() => state.online ? goOffline() : goOnline();
 
-  /// Go online: open the presence feed, reflect link state, and stream GPS fixes up.
+  /// Go online (manual "พร้อมรับงาน"): the guard becomes discoverable for new offers and starts
+  /// streaming GPS. Opens the presence feed if it isn't already up (a job lease may already hold
+  /// it open).
   Future<void> goOnline() async {
     if (state.online) return;
-    // Request location permission on EVERY go-online path — the card toggle AND the duty FAB land
-    // here. Without it the OS allow dialog never shows (the FAB used to call this directly), the
-    // position stream is empty, and the GPS line spins forever. Idempotent: when already granted
-    // permission_handler returns immediately with no second dialog.
-    await ref.read(permissionGateProvider).requestLocation();
-    final api = ref.read(pguardApiProvider);
-    final feed = ref.read(presenceFeedBuilderProvider)(api.validAccessToken);
-    _feed = feed;
-    state = state.copyWith(online: true, link: PresenceLink.connecting);
-
-    _linkSub = feed.link.listen((link) {
-      // Ignore late frames after the guard has gone offline.
-      if (state.online) state = state.copyWith(link: link);
-    });
-    await feed.connect();
-    // goOffline() may have raced in during the await — _teardown ran and already closed the
-    // feed, but it could not cancel _posSub (not assigned yet). Bail before subscribing so we
-    // never orphan a GPS subscription that streams to a closed feed.
-    if (!state.online) return;
-
-    _posSub = ref.read(locationServiceProvider).positionStream().listen((s) {
-      if (!state.online) return;
-      feed.sendLocation(s);
-      state = state.copyWith(lastSample: s);
-    });
+    state = state.copyWith(online: true);
+    await _ensureStreaming();
 
     // Cheap safety net: refetch open jobs the moment the guard comes online, so any offer that
     // landed while they were offline (and whose push was therefore not delivered) shows up without
@@ -102,8 +97,79 @@ class TrackingController extends _$TrackingController {
     ref.invalidate(guardJobsControllerProvider);
   }
 
-  /// Go offline (standby): stop streaming + close the feed.
+  /// Go offline (standby): the guard is no longer discoverable. GPS keeps streaming if a job lease
+  /// is still held (an active job must stay live to the customer regardless of this toggle).
   Future<void> goOffline() async {
+    if (!state.online) return;
+    state = state.copyWith(online: false);
+    await _teardownIfIdle();
+  }
+
+  /// Take a job-streaming lease for [bookingId]: stream live GPS to presence for the duration of
+  /// an ACTIVE JOB (accepted/en_route/arrived) regardless of the manual online toggle, so the
+  /// customer's live map shows the guard moving. Idempotent per booking; the active-job /
+  /// navigation screen takes the lease on enter and releases it on leave (or when the job ends).
+  Future<void> startJobStreaming(String bookingId) async {
+    if (state.jobIds.contains(bookingId)) return;
+    state = state.copyWith(jobIds: {...state.jobIds, bookingId});
+    await _ensureStreaming();
+  }
+
+  /// Release the job-streaming lease for [bookingId]. If nothing else is keeping the feed open
+  /// (the manual toggle is off and no other job holds a lease), tear the feed/stream down.
+  Future<void> stopJobStreaming(String bookingId) async {
+    if (!state.jobIds.contains(bookingId)) return;
+    state = state.copyWith(jobIds: {...state.jobIds}..remove(bookingId));
+    await _teardownIfIdle();
+  }
+
+  /// Open the presence feed (if not already open) and start forwarding GPS fixes. Shared by the
+  /// manual toggle and the job lease — the feed + position subscription are reference-counted by
+  /// [TrackingState.streaming], so it is safe to call on every entry path. Idempotent.
+  Future<void> _ensureStreaming() async {
+    if (_feed != null) return; // already streaming (toggle or another job lease holds it open)
+
+    // Request location permission on EVERY streaming-start path — the card toggle, the duty FAB,
+    // AND the active-job lease land here. Without it the OS allow dialog never shows, the position
+    // stream is empty, and the GPS line spins forever. Idempotent: when already granted
+    // permission_handler returns immediately with no second dialog.
+    await ref.read(permissionGateProvider).requestLocation();
+    // A teardown may have raced in during the permission await; bail if streaming is no longer
+    // wanted (or the feed was opened by a concurrent call).
+    if (_feed != null || !state.streaming) return;
+    final api = ref.read(pguardApiProvider);
+    final feed = ref.read(presenceFeedBuilderProvider)(api.validAccessToken);
+    _feed = feed;
+    state = state.copyWith(link: PresenceLink.connecting);
+
+    _linkSub = feed.link.listen((link) {
+      // Ignore late frames after the guard has stopped streaming.
+      if (state.streaming) state = state.copyWith(link: link);
+    });
+    await feed.connect();
+    // A teardown (goOffline / stopJobStreaming / logout) may have raced in during the await —
+    // _teardown ran and already closed the feed, but it could not cancel _posSub (not assigned
+    // yet). Bail before subscribing so we never orphan a GPS subscription that streams to a closed
+    // feed.
+    if (_feed == null || !state.streaming) return;
+
+    _posSub = ref.read(locationServiceProvider).positionStream().listen((s) {
+      if (!state.streaming) return;
+      feed.sendLocation(s);
+      state = state.copyWith(lastSample: s);
+    });
+  }
+
+  /// Tear down the feed/stream only when nothing wants GPS anymore (toggle off AND no job lease),
+  /// resetting the link + last sample. Keeps streaming alive while any lease remains.
+  Future<void> _teardownIfIdle() async {
+    if (state.streaming) return;
+    await _teardown();
+    state = state.copyWith(link: PresenceLink.offline, lastSample: null);
+  }
+
+  /// Full stop (logout): drop the manual toggle AND all job leases, then tear down.
+  Future<void> _shutDown() async {
     await _teardown();
     state = const TrackingState();
   }

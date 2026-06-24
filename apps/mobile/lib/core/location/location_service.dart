@@ -19,6 +19,13 @@ abstract class LocationService {
   /// controller subscribes to this rather than running a `Timer.periodic`, so there is no
   /// polling in the tracking path. Returns an empty stream when no GPS source is available.
   Stream<GpsSample> positionStream();
+
+  /// The guard's OWN position as a live [GeoPoint] stream for the guard's self map: a one-shot
+  /// seed (so the map shows a pin immediately, before the movement-gated [positionStream] emits)
+  /// followed by every subsequent fix. Emits `null` first when no fix is available yet (the map
+  /// then shows "กำลังหาตำแหน่ง" rather than a blank crosshair). Implementations compose
+  /// [currentLocation] + [positionStream].
+  Stream<GeoPoint?> selfLocationStream();
 }
 
 /// Offline-safe default used in this frontend slice: no GPS plugin and no network calls. The
@@ -40,4 +47,9 @@ class DefaultLocationService implements LocationService {
 
   @override
   Stream<GpsSample> positionStream() => const Stream<GpsSample>.empty();
+
+  @override
+  Stream<GeoPoint?> selfLocationStream() async* {
+    yield null; // no GPS source → the guard map shows "กำลังหาตำแหน่ง"
+  }
 }

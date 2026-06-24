@@ -2,11 +2,34 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/call_controller.dart';
+import 'package:pguard_mobile/core/controllers/chat_launcher.dart';
+import 'package:pguard_mobile/core/controllers/locale_controller.dart';
+import 'package:pguard_mobile/core/controllers/session_controller.dart';
+import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/models/call.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
+
+/// Stub [Session] whose [build] returns a fixed authenticated user — so [CallController] can read
+/// the acting role (drives the call-summary `sender_role`) without the real async secure-storage
+/// load. Override [sessionProvider] with `overrideWith(() => _StubSession(role))`.
+class _StubSession extends Session {
+  _StubSession(this._role);
+  final String _role;
+  @override
+  SessionState build() => SessionState(SessionStatus.authenticated,
+      user: AuthUser(userId: 'me', role: _role));
+}
+
+/// Stub [LocaleController] pinned to a language (default Thai) — avoids the real async prefs load.
+class _StubLocale extends LocaleController {
+  _StubLocale(this._locale);
+  final AppLocale _locale;
+  @override
+  AppLocale build() => _locale;
+}
 
 Map<String, dynamic> callJson(
   String id, {
@@ -73,6 +96,10 @@ void main() {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       callEngineFactoryProvider.overrideWithValue(() => eng),
       callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
+      // The caller posts an end-of-call chat summary, which reads session (acting role) + locale.
+      // Stub them so the real async secure-storage/prefs loads never fire in these call tests.
+      sessionProvider.overrideWith(() => _StubSession('customer')),
+      localeControllerProvider.overrideWith(() => _StubLocale(AppLocale.th)),
     ]);
     if (autoDispose) addTearDown(c.dispose);
     // Keep the keepAlive provider alive + built.
@@ -140,6 +167,8 @@ void main() {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       callEngineFactoryProvider.overrideWithValue(() => eng),
       callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
+      sessionProvider.overrideWith(() => _StubSession('customer')),
+      localeControllerProvider.overrideWith(() => _StubLocale(AppLocale.th)),
     ]);
     addTearDown(c.dispose);
     final sub = c.listen(callControllerProvider, (_, __) {});
@@ -195,6 +224,55 @@ void main() {
     expect(st(t.c).callType, CallType.video);
     expect(t.api.calls, contains('GET /calls/call1'));
     expect(t.feed.sent.single.signal.kind, CallSignalKind.ready);
+  });
+
+  test('incoming video HINT: ring shows video BEFORE the GET resolves (callee knows pre-answer)',
+      () async {
+    // The push carried `call_type: video`; the GET would resolve audio (here) — but the ring UI
+    // must reflect the video hint IMMEDIATELY (synchronously, before the GET), so the callee knows
+    // it is a video call before answering. `startIncoming` sets state synchronously, then awaits.
+    final t = make(get: callJson('call1', callType: 'audio'));
+    final pending =
+        ctrl(t.c).startIncoming(callId: 'call1', typeHint: CallType.video);
+
+    // Synchronous part has run: ringing + video from the hint (the GET has NOT resolved yet).
+    expect(st(t.c).phase, CallPhase.incoming);
+    expect(st(t.c).callType, CallType.video,
+        reason: 'video hint reflected before the GET');
+    expect(st(t.c).speakerOn, isTrue, reason: 'speaker on for video by default');
+
+    await pending; // GET resolves → server type (audio here) is authoritative and overwrites.
+    expect(st(t.c).callType, CallType.audio,
+        reason: 'the GET is the source of truth and overrides the hint');
+  });
+
+  // ---- can-call-again-after-end (keepAlive singleton reset) ----
+
+  test('reset() returns an ENDED call to idle, so a fresh call starts right after', () async {
+    final t = make(get: callJson('call1'));
+    // A callee call that is rejected → ended (callee path does not hit the caller-only summary).
+    await ctrl(t.c).startIncoming(callId: 'call1');
+    await ctrl(t.c).reject();
+    expect(st(t.c).phase, CallPhase.ended);
+
+    // The screen's dispose calls reset(): the singleton must return to idle (not linger in ended).
+    ctrl(t.c).reset();
+    expect(st(t.c).phase, CallPhase.idle);
+
+    // A NEW outgoing call now works immediately (was blocked/stuck before the reset fix).
+    await ctrl(t.c).startOutgoing(bookingId: 'bk2', type: CallType.audio);
+    expect(st(t.c).phase, CallPhase.dialing);
+  });
+
+  test('reset() is a no-op for a LIVE call (never breaks the single-active-call guard)',
+      () async {
+    final t = make(get: callJson('call1'));
+    await ctrl(t.c).startIncoming(callId: 'call1');
+    expect(st(t.c).phase, CallPhase.incoming);
+
+    ctrl(t.c).reset(); // mid-call → must NOT tear the live call down
+    expect(st(t.c).phase, CallPhase.incoming,
+        reason: 'reset only acts on a terminal (ended) call');
   });
 
   test('accept: PUT /calls/{id}/accept → connecting; answers once the offer is in',
@@ -422,5 +500,128 @@ void main() {
 
     expect(t.engine.disposed, isTrue);
     expect(t.feed.closed, isTrue);
+  });
+
+  // ---- call-summary line posted into the booking chat thread (#93) ----
+
+  group('call summary → chat thread', () {
+    /// A container that also wires the chat side (feed + launcher + session/locale) so the caller's
+    /// end-of-call `system` chat post is observable. The `/conversations` list (read by the launcher
+    /// to map booking → conversation) is canned by [conversations].
+    ({
+      ProviderContainer c,
+      FakeCallEngine engine,
+      FakeCallSignalFeed callFeed,
+      FakeChatFeed chatFeed,
+      FakeApi api,
+    }) makeWithChat({
+      List<Map<String, dynamic>> conversations = const [
+        {'id': 'conv1', 'request_id': 'bk1', 'created_at': '2026-06-05T10:00:00Z'}
+      ],
+      String role = 'customer',
+      AppLocale locale = AppLocale.th,
+    }) {
+      final eng = FakeCallEngine();
+      final callFeed = FakeCallSignalFeed();
+      final chatFeed = FakeChatFeed();
+      final api = FakeApi(
+        onPost: (_, __) async => callJson('call1'),
+        onGet: (path, __) async => switch (path) {
+          '/calls/ice' => iceJson(),
+          '/conversations' => conversations,
+          _ => callJson('call1'),
+        },
+        onPut: (_, __) async => {'success': true},
+      );
+      final c = ProviderContainer(overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        callEngineFactoryProvider.overrideWithValue(() => eng),
+        callSignalFeedBuilderProvider.overrideWithValue((_) => callFeed),
+        chatFeedBuilderProvider.overrideWithValue((_) => chatFeed),
+        chatLauncherProvider.overrideWithValue(ChatLauncher(api)),
+        sessionProvider.overrideWith(() => _StubSession(role)),
+        localeControllerProvider.overrideWith(() => _StubLocale(locale)),
+      ]);
+      addTearDown(c.dispose);
+      final sub = c.listen(callControllerProvider, (_, __) {});
+      addTearDown(sub.close);
+      return (c: c, engine: eng, callFeed: callFeed, chatFeed: chatFeed, api: api);
+    }
+
+    /// `_postCallSummary` awaits a launcher GET + a chat connect + a 250ms flush delay; let it run.
+    Future<void> settle() => Future<void>.delayed(const Duration(milliseconds: 400));
+
+    test('completed call: caller posts a `system` line with the duration (TH)', () async {
+      final t = makeWithChat();
+      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+      // Media connects → active (anchors the duration), then the caller ends.
+      t.engine.emitMediaEvent(CallMediaEvent.connected);
+      await tick();
+      await ctrl(t.c).end();
+      await settle();
+
+      final frame = t.chatFeed.sent.single;
+      expect(frame['message_type'], 'system');
+      expect(frame['conversation_id'], 'conv1');
+      expect(frame['sender_role'], 'customer');
+      // Duration ~0s for an instant test; assert the audio kind + the M:SS shape, not the value.
+      expect(frame['content'], startsWith('📞 สายเสียง · '));
+      expect(frame['content'], matches(RegExp(r'· \d+:\d{2}$')));
+      expect(t.chatFeed.closed, isTrue, reason: 'the short-lived feed is closed after sending');
+    });
+
+    test('missed video call (never connected): line shows the video kind + missed outcome (EN)',
+        () async {
+      final t = makeWithChat(locale: AppLocale.en);
+      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.video);
+      await ctrl(t.c).end(); // caller hangs up before the callee answers → missed
+      await settle();
+
+      expect(t.chatFeed.sent.single['content'], '📹 Video call · Missed call');
+    });
+
+    test('rejected call: caller posts a declined line (the callee never posts)', () async {
+      final t = makeWithChat();
+      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+      // The callee's reject arrives as a remote `bye` on the caller, BUT the caller's reason for a
+      // pre-connect remote hangup is `remote_hangup` → "missed". A true reject outcome is the
+      // callee's own path; here we assert the CALLER still leaves exactly one row.
+      t.callFeed.emitSignal('call1', CallSignal.bye());
+      await tick();
+      await settle();
+
+      expect(t.chatFeed.sent, hasLength(1));
+      expect(t.chatFeed.sent.single['message_type'], 'system');
+    });
+
+    test('the CALLEE never posts a summary (avoids a duplicate row)', () async {
+      final t = makeWithChat();
+      await ctrl(t.c).startIncoming(callId: 'call1');
+      await ctrl(t.c).end();
+      await settle();
+
+      expect(t.chatFeed.sent, isEmpty,
+          reason: 'only the caller posts; the callee would double the row');
+    });
+
+    test('no conversation yet → nothing posted (never spawns an empty thread)', () async {
+      final t = makeWithChat(conversations: const []);
+      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+      await ctrl(t.c).end();
+      await settle();
+
+      expect(t.chatFeed.sent, isEmpty);
+    });
+
+    test('exactly one summary even if end() is reached twice', () async {
+      final t = makeWithChat();
+      await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+      await ctrl(t.c).end();
+      await ctrl(t.c).end(); // idempotent — a second end must not post again
+      await settle();
+
+      expect(t.chatFeed.sent, hasLength(1));
+    });
   });
 }

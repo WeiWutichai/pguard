@@ -11,6 +11,7 @@ import '../../core/controllers/chat_launcher.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
+import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
@@ -44,16 +45,56 @@ class ActiveJobScreen extends ConsumerStatefulWidget {
 
 class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
     with WidgetsBindingObserver {
+  /// True while THIS screen holds a presence job-streaming lease for the booking, so we release
+  /// exactly the one we took (and only once) on dispose.
+  bool _leaseHeld = false;
+
+  /// The keepAlive tracking notifier, captured in [initState]. Cached so [dispose] can release the
+  /// lease WITHOUT touching `ref` (which is illegal once the widget is disposed). The instance is
+  /// stable for the app lifetime (keepAlive), so caching it is safe.
+  late final TrackingController _tracking =
+      ref.read(trackingControllerProvider.notifier);
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Stream LIVE GPS to presence for the whole active-job window (independent of the manual
+    // online toggle) so the customer's map shows the guard moving. Driven by the job status:
+    // `listenManual` (fireImmediately) syncs the lease on first resolve and on every status change,
+    // OUTSIDE the build phase (safe to mutate the keepAlive TrackingController).
+    ref.listenManual(
+      activeJobControllerProvider(widget.bookingId),
+      (_, next) => _syncStreamingLease(next.valueOrNull?.booking.status),
+      fireImmediately: true,
+    );
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    // Drop the GPS job-streaming lease on the way out via the CACHED notifier (ref is unusable in
+    // dispose). A manual-online guard keeps streaming (the toggle still holds the feed); a standby
+    // guard's feed tears down when the last lease goes.
+    if (_leaseHeld) {
+      _tracking.stopJobStreaming(widget.bookingId);
+    }
     super.dispose();
+  }
+
+  /// Take or release the GPS streaming lease so the guard streams LIVE position to presence for
+  /// the whole active-job window (accepted/en_route/arrived/pending_completion) regardless of the
+  /// manual "พร้อมรับงาน" toggle — this is what keeps the customer's live map fresh. The instant
+  /// the job reaches a terminal status (completed/cancelled/declined) we release it.
+  void _syncStreamingLease(BookingStatus? status) {
+    final wantLease = status != null && BookingLifecycle.isActive(status);
+    if (wantLease == _leaseHeld) return;
+    if (wantLease) {
+      _tracking.startJobStreaming(widget.bookingId);
+    } else {
+      _tracking.stopJobStreaming(widget.bookingId);
+    }
+    _leaseHeld = wantLease;
   }
 
   @override
@@ -335,8 +376,9 @@ class _MiniMapBand extends StatelessWidget {
 /// location: the guard's OWN live position + the customer/destination + the straight route between
 /// them, in a ~220px [TravelMapPreview] card. Reuses the SAME data + markers the full-screen guard
 /// navigation ([GuardNavigationScreen]) uses — destination from the booking's `lat`/`lng`, self
-/// from [guardSelfLocationProvider] (a one-shot device fix, no polling). Tap / fullscreen expands
-/// to `/guard/active/{id}/navigate`. No self fix yet degrades to a calm placeholder.
+/// from [guardSelfLocationProvider] (a LIVE device-GPS stream — the same fixes the guard sends to
+/// presence). Tap / fullscreen expands to `/guard/active/{id}/navigate`. No self fix yet degrades
+/// to a calm placeholder.
 class _InlineNavMap extends ConsumerWidget {
   const _InlineNavMap({required this.bookingId, required this.booking});
 
