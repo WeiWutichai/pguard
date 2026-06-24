@@ -1,10 +1,13 @@
 // Pure chat presentation formatting — conversation-list timestamps, in-thread day labels,
-// and avatar initials. No Flutter, no IO → unit-testable (CLAUDE.md: logic in controllers).
+// last-message previews, and avatar initials. No Flutter, no IO → unit-testable (CLAUDE.md:
+// logic in controllers).
 //
 // The chat design uses ABSOLUTE time buckets ("14:06", "เมื่อวาน", "2 มิ.ย."), unlike the
 // notification list's compact relative times — so this is separate from [RelativeTime]
 // (which stays untouched for notifications). Day comparisons use the LOCAL calendar day of
 // both operands (`.toLocal()`), matching what the user's clock shows.
+
+import '../models/call.dart';
 
 /// Bilingual absolute-time buckets + initials for the chat flow. Pick the language at the
 /// call site (the locale toggle drives it).
@@ -61,6 +64,25 @@ class ChatFormat {
     if (days <= 0) return thai ? 'วันนี้' : 'Today';
     if (days == 1) return thai ? 'เมื่อวาน' : 'Yesterday';
     return shortDate(when, thai: thai);
+  }
+
+  /// The conversation-list last-message preview, localized. A SERVER-emitted call-summary
+  /// `system` message arrives with its content as the pinned call JSON
+  /// (`{"k":"call",...}`) — render it as the localized one-line summary
+  /// ("📞 สายเสียง · ไม่ได้รับสาย" / "📹 Video call · 2:34"), exactly as the in-thread bubble
+  /// does (reuses [CallSummary]). Any other content (plain text / a non-call system notice)
+  /// renders verbatim. A null/empty last message returns `null` so the caller can fall back to
+  /// its "tap to start chatting" placeholder.
+  static String? lastMessagePreview(String? lastMessage, {required bool thai}) {
+    if (lastMessage == null || lastMessage.isEmpty) return null;
+    final call = CallSummary.tryParseContent(lastMessage);
+    if (call == null) return lastMessage;
+    return CallSummary.line(
+      type: call.type,
+      outcome: call.outcome,
+      thai: thai,
+      durationSeconds: call.durationSeconds,
+    );
   }
 
   /// Initials for an avatar tile (e.g. "Somchai P." → "SP"); single word → first two

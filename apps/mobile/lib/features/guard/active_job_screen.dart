@@ -23,6 +23,7 @@ import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
+import '../booking/widgets/job_receipt_sheet.dart';
 import '../booking/widgets/travel_map_preview.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/chat_routes.dart';
@@ -494,25 +495,6 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     return '${two(l.hour)}:${two(l.minute)}';
   }
 
-  Future<void> _checkIn(int hour) async {
-    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    final ok = await showCheckInSheet(
-      context: context,
-      ref: ref,
-      bookingId: widget.bookingId,
-      hourNumber: hour,
-    );
-    if (ok == true && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            isThai ? 'ส่งรายงานเช็คอินแล้ว' : 'Check-in sent',
-          ),
-        ),
-      );
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
@@ -523,7 +505,6 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
       return const SizedBox.shrink();
     }
     final now = DateTime.now().toUtc();
-    final dueNow = schedule.isDueNow(now, state.completedCheckIns);
     final dueIndex = schedule.dueIndex(now);
     final startedAt = clock.startedAt; // clock != null ⟹ startedAt was set
 
@@ -595,49 +576,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
                         isThai: isThai,
                       ),
             ),
-          const SizedBox(height: PgTokens.space4),
-          if (dueNow)
-            PgPrimaryButton(
-              label: dueIndex == 0
-                  ? (isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in')
-                  : (isThai
-                      ? 'เช็คอินชั่วโมงที่ $dueIndex'
-                      : 'Hour $dueIndex check-in'),
-              color: PgTokens.colorAccent,
-              foreground: PgTokens.colorOnAmber,
-              onPressed: () => _checkIn(dueIndex),
-            )
-          else
-            const _CheckInIdle(),
-        ],
-      ),
-    );
-  }
-}
-
-class _CheckInIdle extends ConsumerWidget {
-  const _CheckInIdle();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    return Container(
-      padding: const EdgeInsets.all(PgTokens.space3),
-      decoration: BoxDecoration(
-        color: PgTokens.colorSuccessBg,
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.check_circle_outline,
-              size: 16, color: PgTokens.colorSuccess),
-          const SizedBox(width: PgTokens.space2),
-          Expanded(
-            child: Text(
-                isThai ? 'เช็คอินรอบนี้เรียบร้อย' : 'Up to date on check-ins',
-                style: const TextStyle(
-                    fontSize: 12.5, color: PgTokens.colorSuccess)),
-          ),
+          // #98: the PRIMARY job action (check-in / end) lives in ONE place — the bottom
+          // [_WorkingActionBar], not here. The panel is now purely the read-only progress
+          // (countdown + timeline); the guard no longer hunts between an in-panel check-in
+          // button and a separate bottom "End" button.
         ],
       ),
     );
@@ -671,8 +613,10 @@ class _TransitionBar extends ConsumerWidget {
 
   Future<void> _complete(
       BuildContext context, WidgetRef ref, bool isThai) async {
-    // Capture the notifier BEFORE the dialog await so we never touch `ref` post-await.
+    // Capture the notifier + messenger BEFORE the dialog await so we never touch `ref`/`context`
+    // post-await (the bar may rebuild as the status advances).
     final notifier = ref.read(activeJobControllerProvider(bookingId).notifier);
+    final messenger = ScaffoldMessenger.of(context);
     final yes = await _confirm(
       context,
       isThai,
@@ -681,7 +625,20 @@ class _TransitionBar extends ConsumerWidget {
           ? 'ส่งคำขอจบงานให้ลูกค้าตรวจสอบ — ย้อนกลับไม่ได้'
           : 'This requests completion and cannot be undone.',
     );
-    if (yes == true) await notifier.complete();
+    if (yes != true) return;
+    // #99b: SINGLE-TAP with clear feedback. `complete()` is busy-gated (a re-tap is ignored while
+    // in-flight) and idempotent on the controller side. Confirm success with a snackbar so the
+    // guard isn't left wondering whether it registered (the panel silently swapping to "awaiting"
+    // is what drove the reported re-tapping). A failure (e.g. 409 because the status already
+    // advanced) leaves the controller's state.error on screen.
+    final ok = await notifier.complete();
+    if (ok) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'ส่งจบงานให้ลูกค้าตรวจสอบแล้ว'
+            : 'Sent to the customer for review'),
+      ));
+    }
   }
 
   @override
@@ -761,10 +718,13 @@ class _TransitionBar extends ConsumerWidget {
           ),
         ));
       case JobStage.working:
-        return bar(PgPrimaryButton(
-          label: isThai ? 'จบงาน' : 'End',
-          busy: busy,
-          onPressed: busy ? null : () => _complete(context, ref, isThai),
+        // #98: the ONE primary working action lives here (not in the panel). It reflects the
+        // current sub-stage: a due check-in (เช็คอินเริ่มงาน → … → hourly) takes the primary slot,
+        // with "จบงาน/End" as the secondary; when no check-in is due, "จบงาน/End" is primary.
+        return bar(_WorkingActionBar(
+          bookingId: bookingId,
+          state: state,
+          onComplete: () => _complete(context, ref, isThai),
         ));
       case JobStage.awaiting:
         return bar(Column(
@@ -774,8 +734,15 @@ class _TransitionBar extends ConsumerWidget {
                 isThai ? 'รอลูกค้าตรวจสอบการจบงาน' : 'Awaiting customer review',
                 textAlign: TextAlign.center,
                 style: const TextStyle(color: PgTokens.colorTextMuted)),
-            const SizedBox(height: PgTokens.space2),
-            // Design G5: the primary CTA for this state is chatting the customer.
+            const SizedBox(height: PgTokens.space3),
+            // #99a: the guard is NOT stuck here — a clear primary returns them to their jobs list
+            // so they can pick up the next job while this one awaits the customer's approval.
+            PgPrimaryButton(
+              label: isThai ? 'กลับไปหน้างานของฉัน' : 'Back to my jobs',
+              onPressed: () => context.go('/guard/jobs'),
+            ),
+            const SizedBox(height: PgTokens.space1),
+            // Design G5: chatting the customer + viewing live status are the secondary actions.
             _ChatCustomerButton(booking: state.booking),
             PgGhostButton(
               label: isThai ? 'ดูสถานะสด' : 'View live status',
@@ -784,11 +751,171 @@ class _TransitionBar extends ConsumerWidget {
           ],
         ));
       case JobStage.done:
-        return bar(PgGhostButton(
-          label: isThai ? 'ดูสถานะสด' : 'View live status',
-          onPressed: () => context.push('/booking/$bookingId/live'),
+        // #99a + #99c: the completed view is NOT a dead-end and is NOT a rating CTA (rating is
+        // customer-only, #97). The guard gets a neutral completion state + the receipt + a clear
+        // path back to take new jobs.
+        return bar(Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(PgTokens.space3),
+              decoration: BoxDecoration(
+                color: PgTokens.colorSuccessBg,
+                borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.check_circle,
+                      size: 18, color: PgTokens.colorSuccess),
+                  const SizedBox(width: PgTokens.space2),
+                  Expanded(
+                    child: Text(
+                      isThai ? 'งานเสร็จสมบูรณ์' : 'Job completed',
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: PgTokens.colorSuccess),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: PgTokens.space3),
+            PgPrimaryButton(
+              label: isThai ? 'กลับไปรับงานใหม่' : 'Take new jobs',
+              onPressed: () => context.go('/guard/jobs'),
+            ),
+            const SizedBox(height: PgTokens.space1),
+            // The receipt the guard can see (booking-derived — a guard cannot read the customer's
+            // payment; the settled bill needs a participants-scoped endpoint, flagged as a backend
+            // follow-up in job_receipt_sheet.dart).
+            PgGhostButton(
+              label: isThai ? 'ดูใบสรุปค่าบริการ' : 'View receipt',
+              onPressed: () => showJobReceiptSheet(
+                context,
+                booking: state.booking,
+                payment: null,
+                isThai: isThai,
+              ),
+            ),
+            PgGhostButton(
+              label: isThai ? 'ดูสถานะสด' : 'View live status',
+              onPressed: () => context.push('/booking/$bookingId/live'),
+            ),
+          ],
         ));
     }
+  }
+}
+
+/// #98 — the SINGLE primary working action, in the bottom bar (consolidated from the old split
+/// between an in-panel "เช็คอินเริ่มงาน" button and a separate bottom "จบงาน" button). It reflects
+/// the current sub-stage of the working window:
+///   • a check-in is DUE → the check-in CTA is primary (เช็คอินเริ่มงาน at slot 0, then hourly),
+///     with "จบงาน/End" as a secondary so the guard can still end early;
+///   • nothing due → "จบงาน/End" is the primary.
+///
+/// Owns a 1s DISPLAY ticker (NOT status polling — like [_WorkingPanel]) so the due-state refreshes
+/// as the shift's hour boundaries pass, keeping the bottom action correct without a manual refresh.
+/// Both actions are busy-gated off the controller state so a re-tap mid-flight is a no-op (#99b).
+class _WorkingActionBar extends ConsumerStatefulWidget {
+  const _WorkingActionBar({
+    required this.bookingId,
+    required this.state,
+    required this.onComplete,
+  });
+
+  final String bookingId;
+  final ActiveJobState state;
+  final VoidCallback onComplete;
+
+  @override
+  ConsumerState<_WorkingActionBar> createState() => _WorkingActionBarState();
+}
+
+class _WorkingActionBarState extends ConsumerState<_WorkingActionBar> {
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    // Display-only 1s tick so the due-state (and thus which action is primary) stays current as
+    // hour boundaries pass. NOT status polling — it only re-reads the pure [CheckInSchedule].
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _checkIn(int slot) async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final ok = await showCheckInSheet(
+      context: context,
+      ref: ref,
+      bookingId: widget.bookingId,
+      hourNumber: slot,
+    );
+    if (ok == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content:
+              Text(isThai ? 'ส่งรายงานเช็คอินแล้ว' : 'Check-in sent'),
+        ),
+      );
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final state = widget.state;
+    final busy = state.busy;
+    final schedule = state.schedule;
+
+    final endButton = PgPrimaryButton(
+      label: isThai ? 'จบงาน' : 'End',
+      busy: busy,
+      onPressed: busy ? null : widget.onComplete,
+    );
+
+    // Without a schedule yet (clock not started) just show End — the start stage is handled by a
+    // different case, so reaching here means working with the schedule available in practice.
+    if (schedule == null) return endButton;
+
+    final now = DateTime.now().toUtc();
+    final dueIndex = schedule.dueIndex(now);
+    final dueNow = schedule.isDueNow(now, state.completedCheckIns);
+
+    if (!dueNow) return endButton;
+
+    // A check-in is due → make it the PRIMARY action; keep End as the secondary so the guard can
+    // still finish early. Slot 0 is the start check-in ("เช็คอินเริ่มงาน").
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PgPrimaryButton(
+          label: dueIndex == 0
+              ? (isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in')
+              : (isThai
+                  ? 'เช็คอินชั่วโมงที่ $dueIndex'
+                  : 'Hour $dueIndex check-in'),
+          color: PgTokens.colorAccent,
+          foreground: PgTokens.colorOnAmber,
+          busy: busy,
+          onPressed: busy ? null : () => _checkIn(dueIndex),
+        ),
+        const SizedBox(height: PgTokens.space1),
+        PgGhostButton(
+          label: isThai ? 'จบงาน' : 'End',
+          onPressed: busy ? null : widget.onComplete,
+        ),
+      ],
+    );
   }
 }
 

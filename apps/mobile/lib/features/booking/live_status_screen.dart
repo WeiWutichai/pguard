@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/booking_payment_controller.dart';
 import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/guard_clock.dart';
 import '../../core/controllers/guard_location_controller.dart';
@@ -25,6 +26,7 @@ import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'cancellation_screen.dart';
 import 'guard_map_screen.dart';
+import 'widgets/job_receipt_sheet.dart';
 import 'widgets/travel_map_preview.dart';
 
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
@@ -192,7 +194,7 @@ class _LiveBody extends ConsumerWidget {
                   _CompletionReviewPanel(bookingId: booking.id),
                   const SizedBox(height: PgTokens.space4),
                 ],
-                _Actions(booking: booking),
+                _Actions(booking: booking, isOwner: isOwner),
               ],
             ),
           ),
@@ -599,9 +601,14 @@ class _GuardCard extends StatelessWidget {
 }
 
 class _Actions extends ConsumerWidget {
-  const _Actions({required this.booking});
+  const _Actions({required this.booking, required this.isOwner});
 
   final Booking booking;
+
+  /// Whether the acting viewer is the booking's CUSTOMER (owner). Drives the rating CTA: ONLY the
+  /// customer rates the guard (#97) — a guard who reaches this screen for their own job must NEVER
+  /// see a "rate the guard" action; they get a neutral completion state + the receipt instead.
+  final bool isOwner;
 
   /// The cancellable window, exactly per the contract (`cancelBooking` in
   /// booking.yaml): PRE-ARRIVAL only — `requested`/`accepted`/`en_route`.
@@ -682,16 +689,21 @@ class _Actions extends ConsumerWidget {
                     ),
                   ),
                 )
-              // Once the job is completed, the design's next step is the customer review
-              // (Customer App ⑫). One review per assignment — a duplicate is handled by the
-              // review screen (409 → "already reviewed").
+              // Once the job is completed, the CUSTOMER's next step is the review (Customer App
+              // ⑫). One review per assignment — a duplicate is handled by the review screen (409
+              // → "already reviewed"). #97: rating is CUSTOMER-ONLY — gate by ownership so a guard
+              // who deep-links here for their own job NEVER sees a rating CTA; they get a "View
+              // receipt" action instead (the same receipt the customer sees, booking-derived).
               : booking.status == BookingStatus.completed
-                  ? PgPrimaryButton(
-                      label: isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
-                      color: PgTokens.colorAmber500,
-                      onPressed: () =>
-                          context.push('/booking/${booking.id}/review'),
-                    )
+                  ? (isOwner
+                      ? PgPrimaryButton(
+                          label:
+                              isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
+                          color: PgTokens.colorAmber500,
+                          onPressed: () =>
+                              context.push('/booking/${booking.id}/review'),
+                        )
+                      : _ViewReceiptButton(booking: booking, isOwner: false))
                   // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
                   // trailing action opens the booking-details sheet (address / schedule /
                   // hours / guards / price). Was a dead `onPressed: () {}` no-op (Build #80).
@@ -706,6 +718,38 @@ class _Actions extends ConsumerWidget {
                     ),
         ),
       ],
+    );
+  }
+}
+
+/// A "ดูใบสรุป/View receipt" action that opens the shared [showJobReceiptSheet] for a completed
+/// booking (#99c). [isOwner] decides whether to feed the sheet the settled payment: the CUSTOMER
+/// (owner) reads their own `GET /v1/payments` row for the authoritative reconciled bill; the GUARD
+/// (non-owner) cannot read the customer's payment, so the sheet is booking-derived only (and says
+/// so). Either way the guard now has a non-dead-end completed view (receipt, not a rating CTA).
+class _ViewReceiptButton extends ConsumerWidget {
+  const _ViewReceiptButton({required this.booking, required this.isOwner});
+
+  final Booking booking;
+  final bool isOwner;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // Owner-only payment read — a guard's `GET /payments` would return their own (empty) list,
+    // so don't even fetch it for a non-owner; pass null → booking-derived receipt.
+    final payment = isOwner
+        ? ref.watch(bookingPaymentControllerProvider(booking.id)).valueOrNull
+        : null;
+    return PgPrimaryButton(
+      label: isThai ? 'ดูใบสรุปค่าบริการ' : 'View receipt',
+      color: PgTokens.colorGreen700,
+      onPressed: () => showJobReceiptSheet(
+        context,
+        booking: booking,
+        payment: payment,
+        isThai: isThai,
+      ),
     );
   }
 }
