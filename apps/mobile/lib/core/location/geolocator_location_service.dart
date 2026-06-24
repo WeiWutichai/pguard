@@ -76,19 +76,31 @@ class GeolocatorLocationService implements LocationService {
         perm == LocationPermission.whileInUse;
   }
 
-  @override
-  Future<GeoPoint?> currentLocation() async {
+  /// Bounded one-shot fix: a slow GPS (indoors / cold start) must not hang the map-picker /
+  /// navigation UI or the tracking keepalive — on timeout/denial/error returns `null` (graceful
+  /// degrade; never throws). Shared by [currentLocation], [currentSample] and [selfLocationStream].
+  Future<Position?> _oneShot() async {
     try {
       if (!await _ready()) return null;
-      // Bound the one-shot fix: a slow GPS (indoors / cold start) must not hang the map-picker /
-      // navigation UI — on timeout the catch below returns null → graceful Bangkok fallback.
-      return pointFromPosition(await Geolocator.getCurrentPosition(
+      return await Geolocator.getCurrentPosition(
           desiredAccuracy: LocationAccuracy.high,
-          timeLimit: const Duration(seconds: 10)));
+          timeLimit: const Duration(seconds: 10));
     } catch (_) {
       // ServiceDisabled / PermissionDenied / timeout / platform error → best-effort null.
       return null;
     }
+  }
+
+  @override
+  Future<GeoPoint?> currentLocation() async {
+    final p = await _oneShot();
+    return p == null ? null : pointFromPosition(p);
+  }
+
+  @override
+  Future<GpsSample?> currentSample() async {
+    final p = await _oneShot();
+    return p == null ? null : sampleFromPosition(p);
   }
 
   @override

@@ -327,6 +327,14 @@ class FakeLocationService implements LocationService {
   /// What [currentLocation] resolves to (settable; `null` = no GPS fix).
   GeoPoint? current = GeoPoint.bangkok;
 
+  /// What the one-shot [currentSample] resolves to (settable; `null` = no fix / permission denied,
+  /// e.g. to test that the keepalive sends nothing). Defaults to a high-accuracy Bangkok fix so the
+  /// start-fix + keepalive paths have something to send. Counts calls so tests can assert how many
+  /// one-shot fixes were taken (start fix + each keepalive tick).
+  GpsSample? sample = GpsSample(
+      lat: 13.7, lng: 100.5, accuracy: 8, recordedAt: DateTime.utc(2026));
+  int sampleCount = 0;
+
   void emit(GpsSample sample) => _positions.add(sample);
 
   @override
@@ -334,6 +342,12 @@ class FakeLocationService implements LocationService {
 
   @override
   Future<GeoPoint?> currentLocation() async => current;
+
+  @override
+  Future<GpsSample?> currentSample() async {
+    sampleCount++;
+    return sample;
+  }
 
   @override
   Stream<GeoPoint?> selfLocationStream() async* {

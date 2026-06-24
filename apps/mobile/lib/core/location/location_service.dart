@@ -12,6 +12,14 @@ abstract class LocationService {
   /// Best-effort current GPS position; `null` if unavailable or permission-denied.
   Future<GeoPoint?> currentLocation();
 
+  /// One-shot CURRENT GPS fix as a full [GpsSample] (lat/lng + accuracy + timestamp), or `null`
+  /// when unavailable / permission-denied / no fix — never throws. Unlike [currentLocation]
+  /// (lat/lng only), this carries the whole sample so the presence uplink can be kept fresh while
+  /// the guard is STATIONARY: the movement-gated [positionStream] emits nothing until the guard
+  /// moves >15 m, so the tracking controller takes a one-shot fix on start and on a periodic
+  /// keepalive to stay inside the presence freshness window (and therefore discoverable).
+  Future<GpsSample?> currentSample();
+
   /// Reverse-geocode a coordinate to a human place name (Thai).
   Future<String> reverseGeocode(GeoPoint point);
 
@@ -40,6 +48,9 @@ class DefaultLocationService implements LocationService {
 
   @override
   Future<GeoPoint?> currentLocation() async => null;
+
+  @override
+  Future<GpsSample?> currentSample() async => null;
 
   @override
   Future<String> reverseGeocode(GeoPoint point) async =>

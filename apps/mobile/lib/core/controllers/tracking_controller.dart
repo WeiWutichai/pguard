@@ -66,6 +66,16 @@ class TrackingController extends _$TrackingController {
   PresenceFeed? _feed;
   StreamSubscription<PresenceLink>? _linkSub;
   StreamSubscription<GpsSample>? _posSub;
+  Timer? _keepalive;
+
+  /// How often to re-send a current GPS fix while streaming. The presence service drops a guard
+  /// from `online-guards` once its last fix is older than FRESHNESS_MINUTES=5; the movement-gated
+  /// [LocationService.positionStream] emits nothing while the guard sits still waiting for a job,
+  /// so without this a STATIONARY-but-online guard would go stale and undiscoverable. ~90 s stays
+  /// well inside the 5-min window while keeping the GPS/battery cost low (a one-shot
+  /// `getCurrentPosition`, not a continuous high-rate stream). This is the GPS UPLINK cadence — NOT
+  /// the forbidden booking/assignment STATUS polling.
+  static const Duration _keepaliveInterval = Duration(seconds: 90);
 
   @override
   TrackingState build() {
@@ -158,6 +168,34 @@ class TrackingController extends _$TrackingController {
       feed.sendLocation(s);
       state = state.copyWith(lastSample: s);
     });
+
+    // Stay fresh from t=0: the movement-gated positionStream may never emit while the guard sits
+    // still waiting for a job, so push a one-shot CURRENT fix immediately — the guard is
+    // discoverable without having to move first.
+    await _pushCurrentFix();
+    // Keep fresh while stationary: re-send a current fix on a cadence well under the presence
+    // 5-min freshness window so `recorded_at` never goes stale and the guard stays in
+    // `online-guards`. Cancelled in _teardown. (One-shot getCurrentPosition, not a high-rate
+    // stream — battery-sane; the movement stream above still carries live motion updates.)
+    _keepalive ??= Timer.periodic(_keepaliveInterval, (_) => _pushCurrentFix());
+  }
+
+  /// Push the latest available GPS fix to presence to keep `recorded_at` fresh: prefer a fresh
+  /// one-shot fix (accurate), else fall back to the last sample we already have. Sends nothing when
+  /// streaming has stopped (a teardown may have raced in during the await) or when no fix is
+  /// available at all (e.g. permission denied → [LocationService.currentSample] returns `null` and
+  /// there is no prior sample). Never throws.
+  Future<void> _pushCurrentFix() async {
+    if (!state.streaming) return;
+    final fresh = await ref.read(locationServiceProvider).currentSample();
+    final feed = _feed;
+    // Re-check after the async fix: a teardown (goOffline / stopJobStreaming / logout) may have run
+    // while awaiting, closing the feed — never send to a closed feed.
+    if (feed == null || !state.streaming) return;
+    final sample = fresh ?? state.lastSample;
+    if (sample == null) return; // no fix and nothing cached → nothing to send
+    feed.sendLocation(sample);
+    state = state.copyWith(lastSample: sample);
   }
 
   /// Tear down the feed/stream only when nothing wants GPS anymore (toggle off AND no job lease),
@@ -175,6 +213,8 @@ class TrackingController extends _$TrackingController {
   }
 
   Future<void> _teardown() async {
+    _keepalive?.cancel();
+    _keepalive = null;
     await _posSub?.cancel();
     await _linkSub?.cancel();
     _posSub = null;
