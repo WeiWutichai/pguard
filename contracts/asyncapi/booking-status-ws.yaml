@@ -37,8 +37,10 @@ channels:
     description: |
       Server→client only (the client sends nothing; inbound frames are ignored). On connect the
       server sends an initial snapshot frame with the booking's current status, then one frame
-      per subsequent status transition. `pending_completion` has no NATS event and therefore
-      arrives ONLY via the initial snapshot (or a reconnect's snapshot), never as a live push.
+      per subsequent status transition. `pending_completion` arrives live too — the guard's
+      completion request emits `booking.completion_requested`, which the gateway maps to this
+      status — so the customer's screen updates without a manual refresh. The initial snapshot
+      still covers a connect that lands mid-flight.
 
 operations:
   receiveBookingStatus:

@@ -2092,8 +2092,9 @@ mod db_tests {
             "reject must not emit booking.completed"
         );
 
-        // The reject bounce (pending_completion → arrived) must NOT re-fire booking.arrived:
-        // exactly ONE arrived event exists — the original fresh arrival (en_route → arrived).
+        // The reject bounce (pending_completion → arrived) RE-fires booking.arrived so the
+        // GUARD's live screen leaves "pending_completion" without a manual refresh: TWO arrived
+        // events now exist — the original fresh arrival + the reject bounce.
         let arrived_events: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
         )
@@ -2103,8 +2104,23 @@ mod db_tests {
         .await
         .expect("count arrived events");
         assert_eq!(
-            arrived_events, 1,
-            "only the fresh arrival emits; the reject bounce must add no booking.arrived"
+            arrived_events, 2,
+            "fresh arrival + reject bounce both emit booking.arrived (guard's live screen update)"
+        );
+
+        // The guard's completion REQUEST (arrived → pending_completion) emitted exactly one
+        // booking.completion_requested — the live event that updates the CUSTOMER's screen.
+        let completion_requested_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_COMPLETION_REQUESTED)
+        .bind(created.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count completion_requested events");
+        assert_eq!(
+            completion_requested_events, 1,
+            "the guard's completion request emits exactly one booking.completion_requested"
         );
 
         let _ =

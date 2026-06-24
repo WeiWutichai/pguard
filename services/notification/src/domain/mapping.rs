@@ -159,6 +159,13 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "เจ้าหน้าที่ถึงแล้ว",
             "เจ้าหน้าที่มาถึงจุดนัดหมายแล้ว",
         )),
+        topics::BOOKING_COMPLETION_REQUESTED => Some(make(
+            uuid_field(payload, "customer_id")?,
+            Some("customer"),
+            NotificationType::System,
+            "เจ้าหน้าที่ขอปิดงาน",
+            "เจ้าหน้าที่ขอปิดงาน — โปรดตรวจสอบ",
+        )),
         topics::BOOKING_COMPLETED => Some(make(
             uuid_field(payload, "guard_id")?,
             Some("guard"),
@@ -261,6 +268,20 @@ mod tests {
         assert_eq!(plan.notification_type, NotificationType::GuardAssigned);
         assert_eq!(plan.data["target_role"], "customer");
         assert_eq!(plan.data["booking_id"], json!(payload["booking_id"]));
+    }
+
+    #[test]
+    fn completion_requested_notifies_customer() {
+        // Belt-and-suspenders for the live-WS bug: the guard's completion request pushes the
+        // CUSTOMER ("โปรดตรวจสอบ"); the mobile push handler refreshes the booking on booking.*.
+        let customer = Uuid::new_v4();
+        let payload = json!({ "customer_id": customer, "guard_id": Uuid::new_v4(), "booking_id": Uuid::new_v4() });
+        let plan =
+            plan_for_event(topics::BOOKING_COMPLETION_REQUESTED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, customer);
+        assert_eq!(plan.notification_type, NotificationType::System);
+        assert_eq!(plan.data["target_role"], "customer");
+        assert_eq!(plan.title, "เจ้าหน้าที่ขอปิดงาน");
     }
 
     #[test]

@@ -8,9 +8,10 @@
 //! { "type": "booking_status", "booking_id": "…", "status": "…", "occurred_at": "…", "guard_id": "…"? }
 //! ```
 //!
-//! `status` uses the booking lifecycle wire values (accepted / en_route / arrived / completed /
-//! declined / cancelled). `pending_completion` has no event, so it never arrives over the WS —
-//! the client gets it from the initial REST snapshot the handler sends on connect.
+//! `status` uses the booking lifecycle wire values (accepted / en_route / arrived /
+//! pending_completion / completed / declined / cancelled). `pending_completion` arrives live via
+//! `booking.completion_requested` (the guard's completion request) so the customer's screen
+//! updates without a manual refresh; the initial REST snapshot still covers a mid-flight connect.
 
 use serde_json::Value;
 use shared_events::topics;
@@ -24,6 +25,8 @@ pub fn status_from_topic(event_type: &str) -> Option<&'static str> {
         Some("en_route")
     } else if event_type == topics::BOOKING_ARRIVED {
         Some("arrived")
+    } else if event_type == topics::BOOKING_COMPLETION_REQUESTED {
+        Some("pending_completion")
     } else if event_type == topics::BOOKING_COMPLETED {
         Some("completed")
     } else if event_type == topics::BOOKING_DECLINED {
@@ -117,6 +120,10 @@ mod tests {
         );
         assert_eq!(status_from_topic(topics::BOOKING_ARRIVED), Some("arrived"));
         assert_eq!(
+            status_from_topic(topics::BOOKING_COMPLETION_REQUESTED),
+            Some("pending_completion")
+        );
+        assert_eq!(
             status_from_topic(topics::BOOKING_COMPLETED),
             Some("completed")
         );
@@ -153,6 +160,24 @@ mod tests {
         assert_eq!(u.booking_id, "b1");
         assert_eq!(u.status, "en_route");
         assert_eq!(u.occurred_at, "2026-06-05T10:00:00Z");
+        assert_eq!(u.guard_id.as_deref(), Some("g1"));
+    }
+
+    #[test]
+    fn parses_completion_requested_to_pending_completion() {
+        // The guard's completion request must surface to the customer's live WS as
+        // pending_completion (the bug was this topic being dropped → no live frame).
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "event_id": "11111111-1111-1111-1111-111111111111",
+            "event_type": topics::BOOKING_COMPLETION_REQUESTED,
+            "occurred_at": "2026-06-24T10:00:00Z",
+            "correlation_id": "22222222-2222-2222-2222-222222222222",
+            "payload": { "booking_id": "b1", "customer_id": "c1", "guard_id": "g1" }
+        }))
+        .unwrap();
+        let u = parse_status_update(&bytes).expect("should parse");
+        assert_eq!(u.booking_id, "b1");
+        assert_eq!(u.status, "pending_completion");
         assert_eq!(u.guard_id.as_deref(), Some("g1"));
     }
 

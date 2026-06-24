@@ -58,6 +58,17 @@ channels:
   bookingArrived:
     address: pguard.events.booking.arrived
     messages: { arrived: { $ref: '#/components/messages/GenericBookingEvent' } }
+  bookingCompletionRequested:
+    address: pguard.events.booking.completion_requested
+    description: >-
+      Guard REQUESTED completion (arrived → pending_completion); the customer must now review and
+      approve (→ completed) or reject (→ arrived). Producer = booking (transactional outbox, atomic
+      with the status write). A customer-facing LIFECYCLE status change: the gateway's
+      `status_from_topic` maps it to the `pending_completion` wire status so the customer's
+      booking-status WS updates live (no manual refresh); notification pushes the customer
+      "เจ้าหน้าที่ขอปิดงาน — โปรดตรวจสอบ" / "Guard requested completion — please review". Same
+      booking-ref payload (booking_id/customer_id/guard_id) as the other lifecycle events.
+    messages: { completionRequested: { $ref: '#/components/messages/GenericBookingEvent' } }
   bookingProgressReported:
     address: pguard.events.booking.progress_reported
     description: >-
@@ -130,6 +141,13 @@ operations:
     summary: >-
       payment consumes this → RECONCILE the actual-hours bill against the PRE-PAID amount (refund
       the overpay via refund_processed / record the shortfall; idempotent by event_id).
+  onBookingCompletionRequested:
+    action: receive
+    channel: { $ref: '#/channels/bookingCompletionRequested' }
+    summary: >-
+      notification consumes this → push the CUSTOMER "เจ้าหน้าที่ขอปิดงาน — โปรดตรวจสอบ" (guard
+      requested completion, please review). The gateway booking-status WS also forwards it live as
+      the `pending_completion` status so the customer's screen updates without a manual refresh.
   onPaymentRefundProcessed:
     action: receive
     channel: { $ref: '#/channels/paymentRefundProcessed' }

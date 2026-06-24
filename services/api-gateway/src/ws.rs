@@ -225,8 +225,9 @@ async fn session(
     let (mut sink, mut stream) = socket.split();
     let id_str = id.to_string();
 
-    // Initial snapshot so the client has state immediately (covers pending_completion, which
-    // emits no event and therefore never arrives via the hub).
+    // Initial snapshot so the client has state immediately (covers a connect that lands
+    // mid-flight; live transitions, including pending_completion via booking.completion_requested,
+    // then arrive over the hub).
     let first = status_frame(
         &snapshot.booking_id,
         &snapshot.status,
