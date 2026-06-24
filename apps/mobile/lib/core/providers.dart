@@ -8,6 +8,7 @@ import 'controllers/session_controller.dart';
 import 'location/geolocator_location_service.dart';
 import 'location/location_service.dart';
 import 'location/place_search_service.dart';
+import 'location/routing_service.dart';
 import 'media/chat_attachment_service.dart';
 import 'media/chat_media_picker.dart';
 import 'media/document_picker.dart';
@@ -73,6 +74,13 @@ PermissionGate permissionGate(PermissionGateRef ref) =>
 @Riverpod(keepAlive: true)
 PlaceSearchService placeSearchService(PlaceSearchServiceRef ref) =>
     NominatimPlaceSearchService();
+
+/// Road (turn-by-turn) routing via the public OSRM demo (free, no API key) — powers the guard
+/// navigation screen's REAL road polyline + ETA. External host (NOT the `/v1` gateway), so it uses
+/// its own Dio with a timeout. Best-effort: returns null on any failure so the caller degrades to
+/// the straight-line geo.dart estimate. Tests override with a fake.
+@Riverpod(keepAlive: true)
+RoutingService routingService(RoutingServiceRef ref) => OsrmRoutingService();
 
 /// Builds a live booking-status feed for a booking id. Production returns a real
 /// [BookingStatusSocket]; tests override this provider to inject a fake feed.

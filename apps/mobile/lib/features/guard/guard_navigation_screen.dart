@@ -5,8 +5,10 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
+import '../../core/location/routing_service.dart';
 import '../../core/models/geo.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
@@ -45,13 +47,21 @@ Stream<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) {
 
 /// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed REAL
 /// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard pin, the destination ring
-/// and a straight dashed route, an amber-dot status pill, a glass back button, and a sheet showing
-/// the approximate distance·ETA + the site address with a single combined "arrived — start" CTA.
+/// and a REAL road route (a multi-point [PgPolyline] following the roads, via OSRM), an amber-dot
+/// status pill, a glass back button, a รถยนต์/มอเตอร์ไซค์/เดิน travel-mode selector, and a sheet
+/// showing the road distance + the selected-mode ETA with a single combined "arrived — start" CTA.
 ///
-/// HONEST LIMITS: there is no directions API, so the route is a straight line and the distance·ETA
-/// are straight-line approximations (labelled `~`). The destination comes from the booking's
-/// `lat`/`lng`; older bookings created without a map pin have none — the screen then shows the
-/// address only (no map route / no distance). Reached from the active-job en-route stage.
+/// ROUTING: the road geometry + distance + driving time come from the public OSRM demo
+/// ([RoutingService], no API key), keyed/cached by the snapped guard origin + destination
+/// ([guardRouteProvider]) so it re-fetches only when the guard crosses a ~100 m cell — not on each
+/// GPS tick — and the inline preview shares the same cached route. The mode selector switches ONLY
+/// the ETA (the geometry is identical — the public demo serves the driving profile only).
+///
+/// FALLBACK: when OSRM is unreachable / returns no route, the screen DEGRADES to the honest
+/// straight-line [PgPolyline] + the straight-line geo.dart distance·ETA, labelled `~` (a real
+/// routed ETA carries no tilde) — never a blank map or a crash. The destination comes from the
+/// booking's `lat`/`lng`; older bookings created without a map pin have none — the screen then
+/// shows the address only (no map route / no distance). Reached from the active-job en-route stage.
 class GuardNavigationScreen extends ConsumerWidget {
   const GuardNavigationScreen({super.key, required this.bookingId});
 
@@ -119,7 +129,7 @@ class GuardNavigationScreen extends ConsumerWidget {
   }
 }
 
-class _NavBody extends StatelessWidget {
+class _NavBody extends ConsumerStatefulWidget {
   const _NavBody({
     required this.isThai,
     required this.address,
@@ -137,17 +147,55 @@ class _NavBody extends StatelessWidget {
   final VoidCallback onArrive;
 
   @override
+  ConsumerState<_NavBody> createState() => _NavBodyState();
+}
+
+class _NavBodyState extends ConsumerState<_NavBody> {
+  /// The guard-selected travel mode (default รถยนต์/car) — switches the ETA label only.
+  TravelMode _mode = TravelMode.car;
+
+  @override
   Widget build(BuildContext context) {
+    final isThai = widget.isThai;
+    final dest = widget.dest;
+    final self = widget.self;
     final topInset = MediaQuery.of(context).padding.top;
-    final estimate = (self != null && dest != null)
-        ? TravelEstimate.between(self!, dest!)
+
+    // The REAL road route — fetched once per (snapped) origin/dest and shared with the inline
+    // preview via [guardRouteProvider]'s cache. `snapOrigin` throttles the family key to a ~100 m
+    // grid so re-fetches happen only when the guard moves meaningfully, not on each GPS tick.
+    final route = (self != null && dest != null)
+        ? ref
+            .watch(guardRouteProvider(
+              start: snapOrigin(self),
+              end: snapDest(dest),
+            ))
+            .valueOrNull
         : null;
+
+    // Straight-line fallback estimate (geo.dart, labelled `~`) — used whenever there is no routed
+    // result yet (loading) or routing failed/returned null (offline / OSRM down / no route).
+    final fallback = (self != null && dest != null)
+        ? TravelEstimate.between(self, dest)
+        : null;
+
+    final String primary;
+    if (route != null) {
+      // REAL route: road distance + the selected-mode ETA, NO tilde.
+      primary =
+          '${formatDistance(route.distanceMeters, thai: isThai)} · ${_mode.etaLabel(route, isThai)}';
+    } else if (fallback != null) {
+      // Fallback: straight-line distance·ETA, keeps the `~` to mark it approximate.
+      primary = '${fallback.distanceLabel(isThai)} · ${fallback.etaLabel(isThai)}';
+    } else {
+      primary = isThai ? 'กำลังไปจุดนัด' : 'Heading to site';
+    }
 
     return Stack(
       children: [
-        // Full-bleed painted map with the route + pins (degrades to a plain backdrop when there
-        // are no coordinates to plot).
-        Positioned.fill(child: _MapLayer(dest: dest, self: self)),
+        // Full-bleed map: REAL road polyline when available, else the straight fallback segment.
+        // Degrades to a plain backdrop when there are no coordinates to plot.
+        Positioned.fill(child: _MapLayer(dest: dest, self: self, route: route)),
         // Honest no-fix state: the live self stream hasn't produced a position yet (permission /
         // cold GPS). Show "กำลังหาตำแหน่ง" over the destination map rather than a silent crosshair.
         if (self == null)
@@ -174,17 +222,19 @@ class _NavBody extends StatelessWidget {
           left: PgTokens.space3,
           child: _GlassBack(onTap: () => context.pop()),
         ),
-        // Bottom sheet: distance·ETA + address + the combined arrive→start CTA.
+        // Bottom sheet: the mode selector + distance·ETA + address + the combined arrive→start CTA.
         Align(
           alignment: Alignment.bottomCenter,
           child: _Sheet(
             isThai: isThai,
-            primary: estimate != null
-                ? '${estimate.distanceLabel(isThai)} · ${estimate.etaLabel(isThai)}'
-                : (isThai ? 'กำลังไปจุดนัด' : 'Heading to site'),
-            address: address ?? (isThai ? 'จุดนัดหมาย' : 'Destination'),
-            busy: busy,
-            onArrive: onArrive,
+            primary: primary,
+            address: widget.address ?? (isThai ? 'จุดนัดหมาย' : 'Destination'),
+            // The selector only shows once there is something to estimate (a route or fallback);
+            // it switches the ETA label between car / motorcycle / walk.
+            mode: (route != null || fallback != null) ? _mode : null,
+            onModeChanged: (m) => setState(() => _mode = m),
+            busy: widget.busy,
+            onArrive: widget.onArrive,
           ),
         ),
       ],
@@ -192,21 +242,30 @@ class _NavBody extends StatelessWidget {
   }
 }
 
-/// The real OSM map + straight dashed route + guard/destination markers ([PgMap]). Degrades to a
-/// plain (Bangkok-centred) tiled backdrop when there are no coordinates to plot.
+/// The real OSM map + route + guard/destination markers ([PgMap]). When [route] is present it draws
+/// the REAL multi-point road polyline; otherwise it falls back to the honest straight 2-point line
+/// between self and dest. Degrades to a plain (Bangkok-centred) tiled backdrop when there are no
+/// coordinates to plot.
 class _MapLayer extends StatelessWidget {
-  const _MapLayer({required this.dest, required this.self});
+  const _MapLayer({required this.dest, required this.self, this.route});
 
   final GeoPoint? dest;
   final GeoPoint? self;
+  final RouteResult? route;
 
   @override
   Widget build(BuildContext context) {
+    // Prefer the real road geometry; else the straight segment (fallback / pre-route loading).
+    final List<GeoPoint>? linePoints = route != null
+        ? route!.polyline
+        : (self != null && dest != null ? [self!, dest!] : null);
     return PgMap(
-      // PgMap re-fits the camera imperatively (didUpdateWidget) when either coordinate changes —
+      // PgMap re-fits the camera imperatively (didUpdateWidget) when the coordinate set changes —
       // not re-keyed, so the map + TileLayer persist as the guard's own fix updates (no flicker).
-      polyline: (self != null && dest != null)
-          ? PgPolyline(points: [self!, dest!])
+      polyline: linePoints != null
+          // The real route is a definite road path → solid; the fallback stays dashed (the
+          // honest "this is a straight approximation" cue, matching the `~` label).
+          ? PgPolyline(points: linePoints, dashed: route == null)
           : null,
       markers: [
         if (dest != null)
@@ -379,13 +438,16 @@ class _GlassBack extends StatelessWidget {
   }
 }
 
-/// Design ④ sheet: a 54px nav-icon tile + the approximate distance·ETA and site address, then a
-/// single combined green CTA. Rounded-top with a grab handle; no top border on the footer.
+/// Design ④ sheet: a 54px nav-icon tile + the distance·ETA and site address, the รถยนต์/มอเตอร์ไซค์/
+/// เดิน travel-mode selector, then a single combined green CTA. Rounded-top with a grab handle; no
+/// top border on the footer.
 class _Sheet extends StatelessWidget {
   const _Sheet({
     required this.isThai,
     required this.primary,
     required this.address,
+    required this.mode,
+    required this.onModeChanged,
     required this.busy,
     required this.onArrive,
   });
@@ -393,6 +455,11 @@ class _Sheet extends StatelessWidget {
   final bool isThai;
   final String primary;
   final String address;
+
+  /// The selected travel mode, or null while there is nothing to estimate (no fix / no dest) —
+  /// the selector is then hidden.
+  final TravelMode? mode;
+  final ValueChanged<TravelMode> onModeChanged;
   final bool busy;
   final VoidCallback onArrive;
 
@@ -458,6 +525,15 @@ class _Sheet extends StatelessWidget {
                 ],
               ),
             ),
+            if (mode != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 0),
+                child: _ModeSelector(
+                  isThai: isThai,
+                  selected: mode!,
+                  onChanged: onModeChanged,
+                ),
+              ),
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
               child: PgPrimaryButton(
@@ -467,6 +543,108 @@ class _Sheet extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// The รถยนต์ / มอเตอร์ไซค์ / เดิน segmented selector — three equal chips that switch which ETA the
+/// sheet shows (the route geometry is unchanged). The selected chip fills brand-green; the rest are
+/// a calm sunken tile. Tapping a chip calls [onChanged].
+class _ModeSelector extends StatelessWidget {
+  const _ModeSelector({
+    required this.isThai,
+    required this.selected,
+    required this.onChanged,
+  });
+
+  final bool isThai;
+  final TravelMode selected;
+  final ValueChanged<TravelMode> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSunken,
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+      ),
+      child: Row(
+        children: [
+          _ModeChip(
+            icon: Icons.directions_car,
+            label: isThai ? 'รถยนต์' : 'Car',
+            active: selected == TravelMode.car,
+            onTap: () => onChanged(TravelMode.car),
+          ),
+          _ModeChip(
+            icon: Icons.two_wheeler,
+            label: isThai ? 'มอเตอร์ไซค์' : 'Motorcycle',
+            active: selected == TravelMode.motorcycle,
+            onTap: () => onChanged(TravelMode.motorcycle),
+          ),
+          _ModeChip(
+            icon: Icons.directions_walk,
+            label: isThai ? 'เดิน' : 'Walk',
+            active: selected == TravelMode.walk,
+            onTap: () => onChanged(TravelMode.walk),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// One pill in [_ModeSelector]. `active` → brand-green fill + white glyph; otherwise transparent
+/// with muted text. Equal-width (wrapped in [Expanded] by the row).
+class _ModeChip extends StatelessWidget {
+  const _ModeChip({
+    required this.icon,
+    required this.label,
+    required this.active,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Material(
+        color: active ? PgTokens.colorPrimary : Colors.transparent,
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 9),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(icon,
+                    size: 16,
+                    color: active ? Colors.white : PgTokens.colorTextMuted),
+                const SizedBox(width: 6),
+                Flexible(
+                  child: Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: active ? Colors.white : PgTokens.colorTextMuted,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
