@@ -7,6 +7,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/guard_clock.dart';
+import '../../core/controllers/guard_location_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
@@ -23,6 +24,8 @@ import '../../widgets/status_stepper.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'cancellation_screen.dart';
+import 'guard_map_screen.dart';
+import 'widgets/travel_map_preview.dart';
 
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
 /// controller, whose state advances from WebSocket PUSH frames — there is NO `Timer.periodic`
@@ -155,11 +158,13 @@ class _LiveBody extends ConsumerWidget {
               children: [
                 _GuardCard(booking: booking),
                 const SizedBox(height: PgTokens.space4),
-                // Live-map entry: visible once a guard is assigned and the job is still
-                // running (the map screen itself handles every state safely on deep link).
+                // Live-map: while a guard is assigned and the job is running, embed an inline
+                // preview (guard pin + destination + straight route) in the empty space below the
+                // card — tap / expand opens the full-screen map. The map screen itself handles
+                // every state safely on deep link.
                 if (booking.guardId != null &&
                     !BookingLifecycle.isTerminal(booking.status)) ...[
-                  _TrackGuardTile(bookingId: booking.id),
+                  _InlineGuardMap(bookingId: booking.id),
                   const SizedBox(height: PgTokens.space4),
                 ],
                 BookingStatusStepper(status: booking.status),
@@ -1180,47 +1185,32 @@ class _PayNowBanner extends ConsumerWidget {
   }
 }
 
-/// Opens the customer live-map (`/booking/{id}/map`) — guard marker + status, pushed by the
-/// booking-status WebSocket (no polling).
-class _TrackGuardTile extends ConsumerWidget {
-  const _TrackGuardTile({required this.bookingId});
+/// Inline live travel-map embedded in the customer live screen: the guard's LIVE position + the
+/// destination + the straight route between them, in a ~220px [TravelMapPreview] card. Reuses the
+/// SAME data + markers the full-screen customer map ([GuardMapScreen]) uses — it watches
+/// [guardLocationControllerProvider], which re-pulls on each booking-status WS frame (no polling).
+/// Tap / fullscreen expands to `/booking/{id}/map`. Loading / no-fix degrade to a calm placeholder.
+class _InlineGuardMap extends ConsumerWidget {
+  const _InlineGuardMap({required this.bookingId});
 
   final String bookingId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    return Material(
-      color: PgTokens.colorGreen50,
-      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      child: InkWell(
-        onTap: () => context.push('/booking/$bookingId/map'),
-        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        child: Padding(
-          padding: const EdgeInsets.symmetric(
-              horizontal: PgTokens.space3, vertical: PgTokens.space3),
-          child: Row(
-            children: [
-              const Icon(Icons.map_outlined,
-                  size: 20, color: PgTokens.colorGreen800),
-              const SizedBox(width: PgTokens.space2),
-              Expanded(
-                child: Text(
-                  isThai ? 'ดูตำแหน่งเจ้าหน้าที่' : 'Track guard',
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
-                    color: PgTokens.colorGreen800,
-                  ),
-                ),
-              ),
-              Icon(Icons.chevron_right,
-                  size: 18,
-                  color: PgTokens.colorGreen800.withValues(alpha: 0.7)),
-            ],
-          ),
-        ),
+    final track =
+        ref.watch(guardLocationControllerProvider(bookingId)).valueOrNull;
+    final guard = track?.guard;
+    final target = track?.target;
+    return TravelMapPreview(
+      mover: guard?.point,
+      target: target,
+      moverMarker: GuardMapGuardMarker(heading: guard?.heading),
+      targetMarker: GuardMapReferenceMarker(
+        isThai: isThai,
+        isDestination: track?.targetIsDestination ?? true,
       ),
+      onExpand: () => context.push('/booking/$bookingId/map'),
     );
   }
 }

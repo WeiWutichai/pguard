@@ -437,7 +437,12 @@ class _InCallView extends StatelessWidget {
                 child: Stack(
                   fit: StackFit.expand,
                   children: [
-                    RTCVideoView(localRenderer!, mirror: true),
+                    // Cover (crop, not letterbox) so the front-camera self-view FILLS the small
+                    // PiP frame — no grey gaps. mirror:true keeps the natural selfie orientation.
+                    RTCVideoView(localRenderer!,
+                        mirror: true,
+                        objectFit:
+                            RTCVideoViewObjectFit.RTCVideoViewObjectFitCover),
                     Positioned(
                       bottom: 6,
                       left: 0,
