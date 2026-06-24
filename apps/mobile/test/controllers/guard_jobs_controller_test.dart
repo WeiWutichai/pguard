@@ -1,6 +1,8 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/controllers/active_job_controller.dart';
 import 'package:pguard_mobile/core/controllers/guard_jobs_controller.dart';
+import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
@@ -112,6 +114,54 @@ void main() {
     // First-come-accept: dismiss must not call the (illegal pre-accept) decline endpoint —
     // only the two read calls from build happened.
     expect(api.calls, ['GET /bookings', 'GET /bookings/open']);
+  });
+
+  test(
+      'accept invalidates the booking\'s active-job provider → it re-fetches the '
+      'fresh accepted snapshot (no stale "requested" on the active screen)',
+      () async {
+    // The server flips the booking requested → accepted at the moment of accept; the
+    // active-job re-read after accept must see `accepted`.
+    var accepted = false;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/open') {
+          return accepted ? const [] : [bookingJson('b1', 'requested')];
+        }
+        if (path == '/bookings/b1') {
+          return bookingJson('b1', accepted ? 'accepted' : 'requested');
+        }
+        // /bookings (assigned) + /bookings/b1/progress-reports
+        return const [];
+      },
+      onPost: (path, _) async {
+        expect(path, '/bookings/b1/accept');
+        accepted = true;
+        return bookingJson('b1', 'accepted');
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    // The detail screen reads the active-job provider FIRST, while the booking is still
+    // `requested` — mirror that by listening (so the value is cached/built before accept).
+    final aSub = c.listen(activeJobControllerProvider('b1'), (_, __) {});
+    addTearDown(aSub.close);
+    final before = await c.read(activeJobControllerProvider('b1').future);
+    expect(before.booking.status, BookingStatus.requested);
+
+    await c.read(guardJobsControllerProvider.future);
+    expect(await c.read(guardJobsControllerProvider.notifier).accept('b1'),
+        isNull); // null = success
+
+    // The accept invalidated activeJobControllerProvider('b1'); the still-listened instance
+    // re-fetches and now reflects the accepted snapshot — NOT the cached `requested` one.
+    final after = await c.read(activeJobControllerProvider('b1').future);
+    expect(after.booking.status, BookingStatus.accepted,
+        reason: 'the active screen the guard navigates to builds fresh, not stale');
   });
 
   test('accept surfaces the server error message (and does not throw)', () async {

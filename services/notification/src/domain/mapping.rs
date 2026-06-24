@@ -205,9 +205,12 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "คุณมีข้อความใหม่",
         )),
         // Ring the CALLEE on an incoming call. The data carries everything the mobile needs to
-        // open the incoming-call screen and answer: `type=incoming_call` + the call_id (the call
-        // row's `id`) + call_type + caller_id. The OTHER calling.* events (accepted/rejected/ended)
-        // are still in-call signaling, not a push — left unmapped below.
+        // open the incoming-call screen and answer: `type=incoming_call` + the call_id + call_type
+        // + caller_id. The field names mirror the AsyncAPI `calling.*` envelope EXACTLY: the
+        // producer (calling `repo::enqueue_event`) emits `call_id` (per `EnvelopeOf_CallRef`), NOT
+        // `id` — reading `id` here silently dropped the call_id from the push so the callee could
+        // never open the call screen. The OTHER calling.* events (accepted/rejected/ended) are
+        // still in-call signaling, not a push — left unmapped below.
         topics::CALLING_INITIATED => {
             let mut data = build_data(None, event_type, payload);
             if let Value::Object(ref mut m) = data {
@@ -215,10 +218,7 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
                     "type".to_string(),
                     Value::String("incoming_call".to_string()),
                 );
-                if let Some(v) = payload.get("id") {
-                    m.insert("call_id".to_string(), v.clone());
-                }
-                for k in ["call_type", "caller_id"] {
+                for k in ["call_id", "call_type", "caller_id"] {
                     if let Some(v) = payload.get(k) {
                         m.insert(k.to_string(), v.clone());
                     }
@@ -371,21 +371,33 @@ mod tests {
     #[test]
     fn calling_initiated_rings_the_callee() {
         let callee = Uuid::new_v4();
+        let caller = Uuid::new_v4();
         let call_id = Uuid::new_v4();
-        // The event payload IS the CallResponse (call_id is the row's `id`).
+        // Use the EXACT envelope the producer emits (calling `repo::enqueue_event`): the call_id
+        // rides as `call_id` (AsyncAPI `EnvelopeOf_CallRef`), NEVER `id`. A prior version of this
+        // test used `id`, masking that the mapper read the wrong field → the push shipped without
+        // a call_id and the callee could never open the call screen.
         let payload = json!({
-            "id": call_id,
-            "caller_id": Uuid::new_v4(),
+            "call_id": call_id,
+            "caller_id": caller,
             "callee_id": callee,
             "booking_id": Uuid::new_v4(),
-            "call_type": "audio",
+            "call_type": "video",
             "status": "initiated",
         });
         let plan = plan_for_event(topics::CALLING_INITIATED, &payload).expect("should map");
         assert_eq!(plan.recipient_id, callee, "the CALLEE is rung");
         assert_eq!(plan.data["type"], "incoming_call");
-        assert_eq!(plan.data["call_id"], json!(call_id));
-        assert_eq!(plan.data["call_type"], "audio");
+        assert_eq!(
+            plan.data["call_id"],
+            json!(call_id),
+            "the call_id MUST ride in the push"
+        );
+        assert_eq!(
+            plan.data["call_type"], "video",
+            "call_type is forwarded for audio/video init"
+        );
+        assert_eq!(plan.data["caller_id"], json!(caller));
     }
 
     #[test]

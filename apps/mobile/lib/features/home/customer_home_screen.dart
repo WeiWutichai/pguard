@@ -39,14 +39,33 @@ class CustomerHomeScreen extends ConsumerStatefulWidget {
   ConsumerState<CustomerHomeScreen> createState() => _CustomerHomeScreenState();
 }
 
-class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen> {
+class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen>
+    with WidgetsBindingObserver {
   late final TextEditingController _bookingId =
       TextEditingController(text: CustomerHomeScreen._demoBookingId);
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _bookingId.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // Re-pull the customer's bookings on resume so the "งานที่กำลังดำเนิน" ongoing-job card
+    // advances (e.g. กำลังค้นหา → รับงานแล้ว) after a guard accepted while the app was backgrounded.
+    // invalidate (not refresh()) so it only refetches while this dashboard is mounted/listening —
+    // event-driven on resume, NOT a Timer.periodic.
+    if (state == AppLifecycleState.resumed) {
+      ref.invalidate(customerHomeControllerProvider);
+    }
   }
 
   /// Fresh booking via the catalog picker (loading / error / empty fallback for the grid).

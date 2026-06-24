@@ -31,6 +31,17 @@ class CallController extends _$CallController {
 
   /// Inbound ICE candidates that arrived BEFORE the remote description was set (trickle ICE).
   final List<SignalCandidate> _iceQueue = [];
+
+  /// OUTBOUND local ICE candidates gathered BEFORE the peer joined the relay. The relay has no
+  /// store-and-forward: a candidate sent while the peer's socket is not yet open is DROPPED (the
+  /// server replies "peer is offline"). The caller's PC starts gathering the moment it is built —
+  /// seconds before the callee opens its socket (the callee only learns of the call via the push,
+  /// which travels outbox → NATS → notification → FCM). Without buffering, the caller's early
+  /// host/srflx/relay candidates are lost, which on restrictive Thai-mobile NAT can stop the call
+  /// from connecting at all. So we QUEUE local candidates until the peer is `ready`, then flush —
+  /// symmetric with the inbound [_iceQueue] and the offer-on-`ready` bootstrap.
+  final List<SignalCandidate> _localIceQueue = [];
+  bool _peerReady = false;
   bool _remoteSet = false;
   bool _maybeAnswering = false; // in-flight guard: prevents a concurrent double-answer
   bool _accepted = false; // callee has accepted → answer once the offer is in
@@ -123,8 +134,13 @@ class CallController extends _$CallController {
         speakerOn: call.callType.isVideo,
       );
       await _setupSession(video: call.callType.isVideo);
-      // Relay has no lifecycle push → tell the caller we're here so it (re)sends the offer.
+      // Relay has no lifecycle push → tell the caller we're here so it (re)sends the offer. The
+      // callee's PEER (the caller) is already on the relay (it dialed first; we only learned of the
+      // call via the push), so our local ICE may flow immediately — mark the peer ready and flush
+      // anything that gathered during `_setupSession`.
+      _peerReady = true;
       _sendSignal(CallSignal.ready());
+      _flushLocalIce();
     } on ApiException catch (e) {
       _fail(e.message);
     } on CallException catch (e) {
@@ -224,13 +240,7 @@ class CallController extends _$CallController {
     _engine = engine;
     // may throw CallException (permission denied)
     await engine.initialize(video: video, iceServers: iceServers);
-    _localCandSub = engine.onLocalCandidate.listen((c) => _sendSignal(
-          CallSignal.candidate(
-            candidate: c.candidate,
-            sdpMid: c.sdpMid,
-            sdpMLineIndex: c.sdpMLineIndex,
-          ),
-        ));
+    _localCandSub = engine.onLocalCandidate.listen(_onLocalCandidate);
     _mediaSub = engine.onMediaEvent.listen(_onMediaEvent);
     _remoteSub = engine.onRemoteStreamChanged.listen((_) {
       if (state.phase == CallPhase.ended) return;
@@ -256,7 +266,9 @@ class CallController extends _$CallController {
     if (_tornDown || frame.callId != _callId) return; // not our call
     switch (frame.signal.kind) {
       case CallSignalKind.ready:
-        _resendOffer(); // caller re-sends its offer now the callee is connected
+        // The callee is on the relay: the caller re-sends its offer AND flushes the local ICE it
+        // buffered while the callee was still offline (the relay has no store-and-forward).
+        _onPeerReady();
       case CallSignalKind.offer:
         unawaited(_onRemoteOffer(frame.signal).catchError(_onSignalError));
       case CallSignalKind.answer:
@@ -273,10 +285,44 @@ class CallController extends _$CallController {
   void _onSignalError(Object error, StackTrace _) =>
       debugPrint('call signal handling failed: $error');
 
+  /// The peer is now on the relay: (re)send the caller's offer and flush any local ICE candidates
+  /// that were gathered + buffered before the peer joined (the relay drops anything sent earlier).
+  void _onPeerReady() {
+    _peerReady = true;
+    _resendOffer();
+    _flushLocalIce();
+  }
+
   void _resendOffer() {
     final offer = _localOffer;
     if (state.isCaller && offer != null) _sendSignal(CallSignal.offer(offer.sdp));
   }
+
+  /// A local ICE candidate fired: relay it if the peer is already on the room, else QUEUE it until
+  /// the peer signals `ready` (the relay has no store-and-forward — see [_localIceQueue]).
+  void _onLocalCandidate(SignalCandidate c) {
+    if (_peerReady) {
+      _sendLocalCandidate(c);
+    } else {
+      _localIceQueue.add(c);
+    }
+  }
+
+  void _flushLocalIce() {
+    if (_localIceQueue.isEmpty) return;
+    for (final c in _localIceQueue) {
+      _sendLocalCandidate(c);
+    }
+    _localIceQueue.clear();
+  }
+
+  void _sendLocalCandidate(SignalCandidate c) => _sendSignal(
+        CallSignal.candidate(
+          candidate: c.candidate,
+          sdpMid: c.sdpMid,
+          sdpMLineIndex: c.sdpMLineIndex,
+        ),
+      );
 
   Future<void> _onRemoteOffer(CallSignal signal) async {
     final sdp = signal.sdp;
@@ -414,6 +460,8 @@ class CallController extends _$CallController {
     _teardown();
     _tornDown = false;
     _iceQueue.clear();
+    _localIceQueue.clear();
+    _peerReady = false;
     _remoteSet = false;
     _maybeAnswering = false;
     _accepted = false;
