@@ -55,14 +55,21 @@ class ChatListScreen extends ConsumerWidget {
                       return ConversationTile(
                         conversation: c,
                         isThai: isThai,
-                        onTap: () => context.push(
-                          ChatRoutes.conversation(
-                            c.id,
-                            acting: actingRole,
-                            readOnly: c.isReadOnly,
-                          ),
-                          extra: c.participantName,
-                        ),
+                        onTap: () async {
+                          await context.push(
+                            ChatRoutes.conversation(
+                              c.id,
+                              acting: actingRole,
+                              readOnly: c.isReadOnly,
+                            ),
+                            extra: c.participantName,
+                          );
+                          // Opening the thread marks it read server-side (ChatController._markRead);
+                          // re-pull the list on return so this row's unread badge clears and the
+                          // entry-point/nav badge (also fed by this controller) refreshes. Same
+                          // gesture-driven pattern as ChatEntryButton — no polling.
+                          ref.invalidate(chatListControllerProvider(actingRole));
+                        },
                       );
                     },
                   ),

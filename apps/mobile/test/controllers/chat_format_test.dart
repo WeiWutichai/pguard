@@ -95,4 +95,43 @@ void main() {
       expect(ChatFormat.initials('ณ'), 'ณ');
     });
   });
+
+  group('ChatFormat.lastMessagePreview — call-summary JSON → localized line', () {
+    test('completed video call → emoji + kind + duration (not raw JSON)', () {
+      const json = '{"k":"call","ct":"video","oc":"completed","ds":154}';
+      expect(ChatFormat.lastMessagePreview(json, thai: false),
+          '📹 Video call · 2:34');
+      expect(ChatFormat.lastMessagePreview(json, thai: true),
+          '📹 วิดีโอคอล · 2:34');
+    });
+
+    test('missed audio call → Missed/ไม่ได้รับสาย', () {
+      const json = '{"k":"call","ct":"audio","oc":"missed","ds":null}';
+      expect(ChatFormat.lastMessagePreview(json, thai: false),
+          '📞 Voice call · Missed call');
+      expect(ChatFormat.lastMessagePreview(json, thai: true),
+          '📞 สายเสียง · ไม่ได้รับสาย');
+    });
+
+    test('rejected call → Declined/ปฏิเสธสาย', () {
+      const json = '{"k":"call","ct":"audio","oc":"rejected","ds":null}';
+      expect(ChatFormat.lastMessagePreview(json, thai: false),
+          '📞 Voice call · Declined');
+      expect(ChatFormat.lastMessagePreview(json, thai: true),
+          '📞 สายเสียง · ปฏิเสธสาย');
+    });
+
+    test('plain text / non-call system content renders verbatim', () {
+      expect(ChatFormat.lastMessagePreview('hello', thai: true), 'hello');
+      expect(ChatFormat.lastMessagePreview('{"k":"other"}', thai: false),
+          '{"k":"other"}');
+      expect(ChatFormat.lastMessagePreview('{not json', thai: false),
+          '{not json');
+    });
+
+    test('null/empty → null (caller falls back to placeholder)', () {
+      expect(ChatFormat.lastMessagePreview(null, thai: true), isNull);
+      expect(ChatFormat.lastMessagePreview('', thai: false), isNull);
+    });
+  });
 }

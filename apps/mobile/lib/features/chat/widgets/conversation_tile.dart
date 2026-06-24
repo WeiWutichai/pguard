@@ -23,7 +23,11 @@ class ConversationTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final name = conversation.participantName ??
         (isThai ? 'การสนทนา' : 'Conversation');
-    final preview = conversation.lastMessage ??
+    // Localize the last-message preview: a SERVER-emitted call-summary `system` message has its
+    // content as the pinned call JSON — render the one-line summary, not the raw '{"k":"call",…}'
+    // (reuses CallSummary via ChatFormat). Other messages render verbatim; null → placeholder.
+    final preview = ChatFormat.lastMessagePreview(conversation.lastMessage,
+            thai: isThai) ??
         (isThai ? 'แตะเพื่อเริ่มแชท' : 'Tap to start chatting');
     final when = conversation.lastMessageAt;
     final time = when == null

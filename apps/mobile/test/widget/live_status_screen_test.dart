@@ -417,6 +417,89 @@ void main() {
   });
 
   testWidgets(
+      '#97 completed: OWNER (customer) sees the Rate-the-guard CTA',
+      (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'completed',
+              'guard_id': 'g1',
+              'hours': 2,
+              'base_fee': '500.00',
+            }
+          : const <Map<String, dynamic>>[],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        // Acting user IS the owner (sub == customer_id 'c1').
+        appStoreProvider.overrideWithValue(
+            InMemoryStore()
+              ..refresh = 'r'
+              ..access = _jwt('c1')),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The customer keeps the rating CTA on a completed job.
+    expect(find.text('ให้คะแนนเจ้าหน้าที่'), findsOneWidget,
+        reason: 'the customer (owner) rates the guard');
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '#97 completed: NON-owner (guard) sees a receipt, NEVER a rating CTA',
+      (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'completed',
+              'guard_id': 'g1',
+              'hours': 2,
+              'base_fee': '500.00',
+            }
+          : const <Map<String, dynamic>>[],
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        // Acting user is the GUARD (sub 'g1') — NOT the booking owner 'c1'.
+        appStoreProvider.overrideWithValue(
+            InMemoryStore()
+              ..refresh = 'r'
+              ..access = _jwt('g1', role: 'guard')),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The guard must NEVER see a rating CTA for their own job (#97) — only a receipt.
+    expect(find.text('ให้คะแนนเจ้าหน้าที่'), findsNothing,
+        reason: 'a guard must never see a rating CTA (#97)');
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsOneWidget,
+        reason: 'the guard gets a receipt instead of a rating CTA');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
       '#87 NON-owner (guard) sees the await notice and NEVER the Pay button',
       (tester) async {
     final api = FakeApi(
