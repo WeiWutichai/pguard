@@ -118,7 +118,13 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       if (!mounted || attachment == null) return;
       _ctrl.sendAttachment(attachment);
     } on ApiException catch (e) {
-      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+      // A read-only conversation (booking completed/cancelled while the thread was open) makes the
+      // chat service reject the upload with 409 — surface the localized "job ended" line, NOT the
+      // server's English text or a generic transport error. Any other error shows its own message.
+      final text = e.isConflict
+          ? ChatReadOnly.sendBlockedMessage(isThai: isThai)
+          : e.message;
+      messenger.showSnackBar(SnackBar(content: Text(text)));
     } finally {
       if (mounted) setState(() => _attachBusy = false);
     }

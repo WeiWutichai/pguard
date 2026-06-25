@@ -461,10 +461,11 @@ mod tests {
         assert_eq!(BodyCap::DEFAULT_BYTES, MAX_BODY_BYTES);
         assert_eq!(BodyCap::Default.bytes(), MAX_BODY_BYTES);
         assert_eq!(BodyCap::Large.bytes(), 12 * 1024 * 1024);
+        assert_eq!(BodyCap::Chat.bytes(), 30 * 1024 * 1024);
     }
 
     /// A 5 MiB body — over the 1 MiB default but under the 12 MiB carve-out — reaches the
-    /// upstream when forwarded with the `Large` cap (the check-in / attachment upload path).
+    /// upstream when forwarded with the `Large` cap (the check-in / profile upload path).
     #[tokio::test]
     async fn forward_large_cap_admits_body_over_default() {
         let base = spawn_echo_upstream().await;
@@ -490,11 +491,66 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK, "upstream received the body");
     }
 
-    /// A 13 MiB body exceeds even the `Large` cap → 413 (the carve-out is bounded, not open).
+    /// A 13 MiB body exceeds the `Large` cap → 413 (the single-image carve-out is bounded, not
+    /// open). The check-in / profile-upload routes ride this cap.
     #[tokio::test]
     async fn forward_large_cap_still_rejects_over_12mib() {
         let http = reqwest::Client::new();
         let body = "x".repeat(BodyCap::LARGE_BYTES + 1);
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://gateway.local/v1/bookings/abc/progress-reports")
+            .body(Body::from(body))
+            .unwrap();
+        let res = forward(
+            &http,
+            "http://127.0.0.1:1",
+            "/bookings/abc/progress-reports",
+            None,
+            req,
+            None,
+            BodyCap::Large.bytes(),
+        )
+        .await;
+        match res {
+            Err(ProxyError::BodyTooLarge) => {}
+            other => panic!("expected ProxyError::BodyTooLarge, got {other:?}"),
+        }
+    }
+
+    /// A 13 MiB chat attachment — over the 12 MiB single-image cap but UNDER the 30 MiB chat cap
+    /// — now reaches the upstream (the raised cap is the whole point of the bug fix).
+    #[tokio::test]
+    async fn forward_chat_cap_admits_body_over_12mib() {
+        let base = spawn_echo_upstream().await;
+        let http = reqwest::Client::new();
+        let body = "x".repeat(13 * 1024 * 1024);
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://gateway.local/v1/attachments")
+            .header("content-type", "application/octet-stream")
+            .body(Body::from(body))
+            .unwrap();
+        let resp = forward(
+            &http,
+            &base,
+            "/attachments",
+            None,
+            req,
+            None,
+            BodyCap::Chat.bytes(),
+        )
+        .await
+        .expect("13 MiB body under the 30 MiB chat cap forwards");
+        assert_eq!(resp.status(), StatusCode::OK, "upstream received the body");
+    }
+
+    /// A 31 MiB body exceeds even the raised `Chat` cap → 413 (still bounded, not open — kept
+    /// well below the chat service's 200 MiB video contract).
+    #[tokio::test]
+    async fn forward_chat_cap_still_rejects_over_30mib() {
+        let http = reqwest::Client::new();
+        let body = "x".repeat(BodyCap::CHAT_BYTES + 1);
         let req = Request::builder()
             .method("POST")
             .uri("http://gateway.local/v1/attachments")
@@ -507,7 +563,7 @@ mod tests {
             None,
             req,
             None,
-            BodyCap::Large.bytes(),
+            BodyCap::Chat.bytes(),
         )
         .await;
         match res {

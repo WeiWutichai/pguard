@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../location/routing_service.dart';
@@ -37,6 +39,17 @@ GeoPoint snapDest(GeoPoint p) => GeoPoint(
 /// watching, so a fresh fetch fires only when the guard moves into a new ~100 m cell (or the dest
 /// changes) — never on each ~15 m GPS tick. Returns null when [RoutingService] could not produce a
 /// route (offline / OSRM down / no route); the caller then DEGRADES to the straight-line estimate.
+///
+/// TRANSIENT-FAILURE RECOVERY: the family key is the SNAPPED origin/dest, which stays constant while
+/// the guard is roughly stationary — so without this, ONE flaky OSRM fetch (timeout / 429 / 5xx)
+/// would cache a `null` for the whole ~100 m cell and the map would be stuck on the straight line
+/// even after the network recovered. So when the fetch yields `null` (a genuine failure — the
+/// service already retried both hosts and consulted its own success cache), we schedule ONE delayed
+/// [GuardRouteRef.invalidateSelf] to re-attempt. The timer is cancelled on dispose; a successful
+/// route does NOT re-arm it, so the loop stops as soon as a road route is obtained. The fixed delay
+/// (not a busy retry) keeps load on the public demo low while still recovering within seconds.
+const Duration _retryDelay = Duration(seconds: 5);
+
 // NOTE: the parameters are named `start`/`end`, NOT `origin`/`dest`/`from`/`to` — riverpod_generator
 // turns each family parameter into a getter/named-arg in the generated code, and several names are
 // RESERVED there: `origin` clashes with `ProviderElementBase.origin`, and `from` clashes with the
@@ -49,5 +62,13 @@ Future<RouteResult?> guardRoute(
   required GeoPoint end,
 }) async {
   final service = ref.watch(routingServiceProvider);
-  return service.route(origin: start, dest: end);
+  final result = await service.route(origin: start, dest: end);
+
+  if (result == null) {
+    // Failed: re-attempt after a short delay so a transient OSRM blip doesn't freeze the
+    // straight-line fallback for the whole cell. Cancelled if nothing is watching by then (dispose).
+    final timer = Timer(_retryDelay, ref.invalidateSelf);
+    ref.onDispose(timer.cancel);
+  }
+  return result;
 }

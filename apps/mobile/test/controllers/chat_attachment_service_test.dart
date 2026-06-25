@@ -130,9 +130,9 @@ void main() {
   test(
       'a video over the gateway body cap fails fast with a clear size message '
       '(no doomed POST)', () async {
-    // The api-gateway caps POST /attachments at 12 MiB; a phone video clears that easily. The
-    // service must reject BEFORE the network round-trip so the user gets an actionable message
-    // instead of the bare-413 "Request failed". (Root cause: the edge BodyCap::Large carve-out.)
+    // The api-gateway caps POST /attachments at 30 MiB (BodyCap::Chat); a phone video clears that
+    // easily. The service must reject BEFORE the network round-trip so the user gets an actionable
+    // message instead of the bare-413 "Request failed". (Root cause: the edge BodyCap::Chat carve-out.)
     final big = File('${tmp.path}/big.mp4')..writeAsBytesSync(const <int>[1, 2]);
     final picker = FakeChatMediaPicker(
         media: PickedMedia(

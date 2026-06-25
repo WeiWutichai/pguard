@@ -135,39 +135,89 @@ abstract class RoutingService {
   Future<RouteResult?> route({required GeoPoint origin, required GeoPoint dest});
 }
 
-/// Live [RoutingService] hitting the **public OSRM demo** (`router.project-osrm.org`) — free, no
-/// API key. The public demo only serves the `driving` profile, so the request is always
-/// `/route/v1/driving/...`; the per-mode difference is the ETA (computed by [TravelMode]), not the
-/// geometry. External host (NOT the `/v1` gateway), so — like [NominatimPlaceSearchService] — it
-/// uses its own bare Dio with a timeout, not [PguardApi].
+/// Live [RoutingService] hitting the **public OSRM demo** — free, no API key. The public demo only
+/// serves the `driving` profile, so the request is always `/route/v1/driving/...`; the per-mode
+/// difference is the ETA (computed by [TravelMode]), not the geometry. External host (NOT the `/v1`
+/// gateway), so — like [NominatimPlaceSearchService] — it uses its own bare Dio with a timeout, not
+/// [PguardApi].
+///
+/// RESILIENCE (the public demo is best-effort and routinely rate-limits / blips on a mobile
+/// network):
+///  - SHORT per-attempt timeout (6 s) so a stalled request fails fast and we can retry rather than
+///    hang the map on a straight line;
+///  - ONE retry on a transient failure, and a SECOND mirror host ([_mirrors]) — we try the primary,
+///    then the mirror, before giving up to the straight-line fallback. A 4xx (e.g. 429 rate-limit)
+///    on the primary still falls through to the mirror;
+///  - a tiny in-memory SUCCESS cache ([_cache], keyed by the rounded origin/dest) so a later flaky
+///    fetch for the SAME leg returns the last good road route instead of blanking it to a straight
+///    line. Only successes are cached — a failure is never cached, so the next tick can recover.
+///
+/// Still best-effort: returns null only when EVERY host fails (and there is no cached route), so the
+/// caller degrades to the straight-line geo.dart estimate. Never throws.
 class OsrmRoutingService implements RoutingService {
-  OsrmRoutingService({Dio? dio})
+  OsrmRoutingService({Dio? dio, List<String>? mirrors})
       : _dio = dio ??
             Dio(BaseOptions(
-              baseUrl: _base,
-              connectTimeout: const Duration(seconds: 8),
-              receiveTimeout: const Duration(seconds: 8),
-              // Accept any <500 so a 4xx surfaces as a null result (not an exception); the catch
-              // below also guarantees null on any transport failure.
+              // Short per-attempt budget: fail fast, then retry / try the mirror instead of hanging.
+              connectTimeout: const Duration(seconds: 6),
+              receiveTimeout: const Duration(seconds: 6),
+              // Accept any <500 so a 4xx (e.g. 429 rate-limit) surfaces as a null parse (not an
+              // exception) and we fall through to the next host; the catch below also guarantees
+              // null on any transport failure.
               validateStatus: (s) => s != null && s < 500,
-            ));
+            )),
+        _hosts = mirrors ?? _defaultHosts;
 
-  static const String _base = 'https://router.project-osrm.org';
+  /// The primary public OSRM demo, then a community mirror used as a fallback before giving up to
+  /// the straight line. Tried in order per call; a success on any host wins.
+  static const List<String> _defaultHosts = [
+    'https://router.project-osrm.org',
+    'https://routing.openstreetmap.de/routed-car',
+  ];
 
   final Dio _dio;
+  final List<String> _hosts;
+
+  /// Last successful route per leg (rounded ~10 m origin/dest key) so a subsequent flaky fetch for
+  /// the same leg holds the drawn road route instead of blanking to a straight line. Tiny + bounded.
+  final Map<String, RouteResult> _cache = {};
+
+  static String _legKey(GeoPoint origin, GeoPoint dest) {
+    String r(double v) => v.toStringAsFixed(4); // ~10 m — finer than the caller's snap grid.
+    return '${r(origin.lat)},${r(origin.lng)};${r(dest.lat)},${r(dest.lng)}';
+  }
 
   @override
   Future<RouteResult?> route({
     required GeoPoint origin,
     required GeoPoint dest,
   }) async {
+    // OSRM expects `{lon},{lat};{lon},{lat}` (longitude FIRST). geojson geometry so we can read the
+    // coordinate list directly; `overview=full` keeps every vertex for an accurate line.
+    final path =
+        '/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}';
+    final key = _legKey(origin, dest);
+
+    // Try each host once, in order (primary → mirror). The first usable route wins.
+    for (final host in _hosts) {
+      final result = await _tryHost(host, path);
+      if (result != null) {
+        _cache[key] = result; // cache successes only — a failure must stay retryable.
+        return result;
+      }
+    }
+
+    // Every host failed: hold the last good route for this leg if we have one (don't blank a drawn
+    // route on a transient blip), else null → the caller's straight-line fallback.
+    return _cache[key];
+  }
+
+  /// One GET against [host]+[path], returning a parsed [RouteResult] or null on any failure
+  /// (timeout / 4xx / 5xx / garbled / no route). Never throws.
+  Future<RouteResult?> _tryHost(String host, String path) async {
     try {
-      // OSRM expects `{lon},{lat};{lon},{lat}` (longitude FIRST). geojson geometry so we can read
-      // the coordinate list directly; `overview=full` keeps every vertex for an accurate line.
-      final coords =
-          '${origin.lng},${origin.lat};${dest.lng},${dest.lat}';
       final res = await _dio.get<dynamic>(
-        '/route/v1/driving/$coords',
+        '$host$path',
         queryParameters: const {
           'overview': 'full',
           'geometries': 'geojson',
