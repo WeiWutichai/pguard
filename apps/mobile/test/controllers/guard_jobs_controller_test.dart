@@ -55,6 +55,57 @@ void main() {
     expect(api.calls, ['GET /bookings', 'GET /bookings/open']);
   });
 
+  test(
+      'a pending_completion job (guard requested completion) stays in the ACTIVE '
+      'tab — not lost from in-progress and not yet in Done', () async {
+    // After PUT /complete the booking is `pending_completion` in the guard's assigned feed; it must
+    // remain visible in the Active tab (awaiting the customer) and NOT vanish, nor jump to Done.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [bookingJson('b9', 'pending_completion')]
+          : const <Map<String, dynamic>>[],
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(GuardJobsController.active(list).map((b) => b.id), ['b9'],
+        reason: 'pending_completion belongs to the in-progress (Active) tab');
+    expect(GuardJobsController.completed(list), isEmpty,
+        reason: 'not completed until the CUSTOMER confirms');
+    expect(GuardJobsController.incoming(list), isEmpty);
+
+    final b = list.single;
+    expect(GuardJobsController.statusBadge(b, isThai: true), 'รอลูกค้ายืนยันจบงาน',
+        reason: 'the card must label the awaiting-confirmation state');
+    expect(GuardJobsController.statusBadge(b, isThai: false),
+        'Awaiting customer confirmation');
+    expect(GuardJobsController.opensReadOnly(b), isTrue,
+        reason: 'the guard can\'t re-end it → opens the read-only status view');
+  });
+
+  test(
+      'a normal in-progress job carries no status badge and opens the working '
+      'active screen (not read-only)', () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [bookingJson('b1', 'en_route')]
+          : const <Map<String, dynamic>>[],
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final b = (await c.read(guardJobsControllerProvider.future)).single;
+    expect(GuardJobsController.statusBadge(b, isThai: true), isNull);
+    expect(GuardJobsController.opensReadOnly(b), isFalse);
+  });
+
   test('open-feed failure degrades to assigned-only (no throw, incoming empty)', () async {
     final api = FakeApi(
       onGet: (path, _) async {

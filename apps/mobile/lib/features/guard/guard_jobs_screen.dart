@@ -84,10 +84,18 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
                                 booking: b,
                                 isThai: isThai,
                                 highlight: _tab == 0,
-                                // Route by the booking's own status (robust to tab order):
-                                // a working job → the active screen; otherwise the read-only detail.
+                                // A `pending_completion` job sits in the Active tab awaiting the
+                                // customer's confirmation — badge it so it's not mistaken for a job
+                                // the guard should still be working.
+                                statusLabel: GuardJobsController.statusBadge(b,
+                                    isThai: isThai),
+                                // Route by the booking's own status (robust to tab order): a job the
+                                // guard is still working → the active screen; a job awaiting the
+                                // customer (pending_completion) or any non-working state → the
+                                // read-only status detail (the guard correctly can't re-end it).
                                 onTap: () => context.push(
-                                    BookingLifecycle.isActive(b.status)
+                                    BookingLifecycle.isActive(b.status) &&
+                                            !GuardJobsController.opensReadOnly(b)
                                         ? '/guard/active/${b.id}'
                                         : '/guard/job/${b.id}'),
                               );

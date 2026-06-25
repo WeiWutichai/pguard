@@ -14,6 +14,7 @@ class GuardJobCard extends StatelessWidget {
     this.onTap,
     this.actions,
     this.infoLine,
+    this.statusLabel,
     this.highlight = false,
   });
 
@@ -25,6 +26,14 @@ class GuardJobCard extends StatelessWidget {
   /// Optional full-width line between the header and the actions (e.g. the incoming card's
   /// guard→job distance). Kept generic so the card stays reusable + Riverpod-free.
   final Widget? infoLine;
+
+  /// Optional status pill shown under the header (e.g. "รอลูกค้ายืนยันจบงาน / Awaiting customer
+  /// confirmation" for a `pending_completion` job). When set, the card carries an amber badge so a
+  /// job whose state the guard can't act on is visibly distinct from a normal in-progress card —
+  /// otherwise a `pending_completion` job looks identical to an active one and the guard, finding no
+  /// "End" action on tap, reads it as being stuck. Kept a plain string so the card stays
+  /// Riverpod-free (the caller localizes it).
+  final String? statusLabel;
   final bool highlight;
 
   /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
@@ -111,6 +120,10 @@ class GuardJobCard extends StatelessWidget {
                   ),
                 ],
               ),
+              if (statusLabel != null) ...[
+                const SizedBox(height: PgTokens.space2),
+                _StatusPill(label: statusLabel!),
+              ],
               if (infoLine != null) ...[
                 const SizedBox(height: PgTokens.space2),
                 infoLine!,
@@ -122,6 +135,46 @@ class GuardJobCard extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// A small amber status badge for a card whose job is in a guard-can't-act state (today: a
+/// `pending_completion` job awaiting the customer's confirmation). An hourglass glyph + the
+/// caller-localized label, so the card reads as "waiting on the customer" rather than a normal
+/// active job the guard should be working.
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(
+          horizontal: PgTokens.space3, vertical: PgTokens.space2),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.hourglass_empty,
+              size: 14, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Flexible(
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorWarning,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }
