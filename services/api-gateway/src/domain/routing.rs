@@ -31,29 +31,41 @@ pub enum Tier {
 /// Per-route request-body cap. The gateway buffers the request body before forwarding;
 /// almost every route uses [`BodyCap::Default`] (1 MiB — a DoS guard, also the WS frame
 /// cap via `proxy::MAX_BODY_BYTES`). The upload routes whose OpenAPI contract allows a
-/// larger body opt into [`BodyCap::Large`] (12 MiB): the check-in photo and chat image
-/// attachments. The cap is decided here (pure) and applied in `proxy::forward`.
+/// larger body opt into a wider cap: the check-in photo + guard credential/avatar uploads
+/// take [`BodyCap::Large`] (12 MiB — a single image), and the chat image attachment takes
+/// the wider [`BodyCap::Chat`] (30 MiB — photos straight off a modern phone camera run well
+/// past 12 MiB). The cap is decided here (pure) and applied in `proxy::forward`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BodyCap {
     /// 1 MiB — the edge default for every non-upload route.
     Default,
-    /// 12 MiB — carve-out for the multipart upload routes (covers a ≤10 MiB image plus
-    /// multipart framing). Large video uploads through the edge are still out of scope.
+    /// 12 MiB — carve-out for the single-image upload routes (check-in photo, guard
+    /// credential image, avatar): covers a ≤10 MiB image plus multipart framing.
     Large,
+    /// 30 MiB — the chat image-attachment carve-out (`POST /attachments`). Sits ABOVE
+    /// [`BodyCap::Large`] because a chat photo can be an unedited full-resolution camera
+    /// shot; the chat service's own `DefaultBodyLimit` is 210 MiB (it re-validates per-kind:
+    /// image ≤10 MiB / video ≤200 MiB), so this is purely the edge buffer ceiling. Large
+    /// video uploads through the edge are still out of scope (kept below the 200 MiB video
+    /// contract on purpose).
+    Chat,
 }
 
 impl BodyCap {
     /// 1 MiB. Pinned equal to `crate::proxy::MAX_BODY_BYTES` by a test so the edge default
     /// and the WS frame cap never drift apart.
     pub const DEFAULT_BYTES: usize = 1024 * 1024;
-    /// 12 MiB — the carve-out cap.
+    /// 12 MiB — the single-image carve-out cap.
     pub const LARGE_BYTES: usize = 12 * 1024 * 1024;
+    /// 30 MiB — the chat attachment carve-out cap.
+    pub const CHAT_BYTES: usize = 30 * 1024 * 1024;
 
     /// The cap in bytes — what `proxy::forward` buffers up to before a 413.
     pub fn bytes(self) -> usize {
         match self {
             BodyCap::Default => Self::DEFAULT_BYTES,
             BodyCap::Large => Self::LARGE_BYTES,
+            BodyCap::Chat => Self::CHAT_BYTES,
         }
     }
 }
@@ -509,16 +521,17 @@ fn has_encoded_separator(path: &str) -> bool {
 /// routing [`RULES`] (which stay byte-for-byte unchanged) so cap policy and routing policy
 /// don't entangle — and so this can be SEGMENT-BOUNDARY precise where a plain prefix rule
 /// could not: a near-miss like `/attachmentsx` or `/bookings/x/progress-reportsx` keeps the
-/// 1 MiB default. Two upload routes get [`BodyCap::Large`] (12 MiB):
-///   - `POST /attachments`                  — chat image attachment
-///   - `/bookings/{id}/progress-reports`    — guard hourly check-in photo
+/// 1 MiB default. The upload routes split by cap:
+///   - `POST /attachments`                  — chat image attachment → [`BodyCap::Chat`] (30 MiB)
+///   - `/bookings/{id}/progress-reports`    — guard hourly check-in photo → [`BodyCap::Large`] (12 MiB)
+///   - `/profile/guard/{id}/documents`·`/avatar` — credential image / avatar → [`BodyCap::Large`]
 ///
 /// Method-agnostic (the edge resolves on path only): the sibling GET on each path carries no
 /// request body, so the larger cap is irrelevant to it; and both backends re-validate the
 /// upload (own `DefaultBodyLimit` + magic-byte/size check + IDOR), so a larger gateway buffer
-/// bypasses no backend protection. The cap is still bounded (12 MiB), and per-IP rate limiting
-/// (edge + gateway) bounds concurrent large uploads — peak buffered memory is
-/// `≤ 12 MiB × in-flight-large-uploads`, not unbounded.
+/// bypasses no backend protection. Each cap is still bounded (≤ 30 MiB for chat, ≤ 12 MiB for the
+/// single-image routes), and per-IP rate limiting (edge + gateway) bounds concurrent large uploads
+/// — peak buffered memory is `≤ 30 MiB × in-flight-large-uploads`, not unbounded.
 ///
 /// NOTE (layer asymmetry, safe direction): this matches a touch WIDER than staging nginx —
 /// deeper subpaths (`/attachments/{id}`, `/bookings/{id}/progress-reports/{n}`) get `Large`
@@ -526,9 +539,10 @@ fn has_encoded_separator(path: &str) -> bool {
 /// subpaths fall to its 2m default). nginx being stricter can never widen the edge; but if a
 /// future slice adds a REAL deep upload subpath, widen the nginx location to match.
 fn body_cap_for(stripped: &str) -> BodyCap {
-    // `POST /attachments` (exact, or a trailing-slash variant) — NOT `/attachmentsx`.
+    // `POST /attachments` (exact, or a trailing-slash variant) — NOT `/attachmentsx`. The chat
+    // image attachment gets the WIDER 30 MiB cap (a full-res phone photo overflows 12 MiB).
     if stripped == "/attachments" || stripped.starts_with("/attachments/") {
-        return BodyCap::Large;
+        return BodyCap::Chat;
     }
     // `/bookings/{id}/progress-reports`: exactly one non-empty `{id}` segment, then the
     // `progress-reports` segment at a boundary (so `…/progress-reportsx` does NOT match).
@@ -1196,25 +1210,25 @@ mod tests {
         assert_eq!(tier, Tier::Api);
     }
 
-    // ----- body-cap carve-out (the two upload routes) -----
+    // ----- body-cap carve-out (the upload routes) -----
 
     #[test]
     fn carved_upload_routes_get_large_body_cap() {
-        // The exact upload routes the carve-out targets.
+        // The chat image attachment gets the WIDER 30 MiB cap (full-res phone photo).
         assert_eq!(
             body_cap(resolve("/v1/attachments")),
-            BodyCap::Large,
-            "POST /attachments (chat image upload)"
+            BodyCap::Chat,
+            "POST /attachments (chat image upload) → 30 MiB"
         );
         assert_eq!(
             body_cap(resolve("/v1/bookings/abc-123/progress-reports")),
             BodyCap::Large,
             "POST /bookings/{{id}}/progress-reports (guard check-in)"
         );
-        // The attachment download shares the prefix — Large is harmless (GET has no body),
-        // and the routing is unchanged (still Chat).
+        // The attachment download shares the prefix — the wider cap is harmless (GET has no
+        // body), and the routing is unchanged (still Chat).
         let d = resolve("/v1/attachments/abc-123");
-        assert_eq!(body_cap(d.clone()), BodyCap::Large);
+        assert_eq!(body_cap(d.clone()), BodyCap::Chat);
         assert_eq!(proxy(d).0, Upstream::Chat);
         // Guard document upload — Large cap, routed to profile, token-gated.
         assert_eq!(
@@ -1338,6 +1352,22 @@ mod tests {
             body_cap(resolve("/v1/bookings/abc/progress-reports/99")),
             BodyCap::Large
         );
+    }
+
+    #[test]
+    fn chat_attachment_cap_is_30_mib_and_above_large() {
+        // The chat attachment carve-out is 30 MiB — strictly wider than the 12 MiB single-image
+        // cap (a full-res phone photo overflows 12 MiB) and the 1 MiB edge default.
+        assert_eq!(BodyCap::CHAT_BYTES, 30 * 1024 * 1024);
+        assert_eq!(BodyCap::Chat.bytes(), 30 * 1024 * 1024);
+        assert!(
+            BodyCap::Chat.bytes() > BodyCap::Large.bytes(),
+            "chat attachment cap must exceed the single-image cap"
+        );
+        assert!(BodyCap::Large.bytes() > BodyCap::Default.bytes());
+        // Stays BELOW the chat service's 200 MiB video contract on purpose (edge buffers an
+        // image, not a video; the service re-validates per-kind).
+        assert!(BodyCap::Chat.bytes() < 200 * 1024 * 1024);
     }
 
     // ----- presence routes -----

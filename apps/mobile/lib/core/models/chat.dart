@@ -57,6 +57,15 @@ class ChatReadOnly {
 
   static bool fromStatus(String? requestStatus) =>
       requestStatus == 'completed' || requestStatus == 'cancelled';
+
+  /// The localized message shown when a send/upload is attempted on a read-only conversation.
+  /// Used both by the disabled-composer affordance AND as the friendly mapping for the chat
+  /// service's `409 Conflict` (so a read-only send/upload never surfaces a generic transport
+  /// error). The booking may have closed WHILE the thread was open (the read-only route flag is
+  /// captured at navigation time and can go stale), so this path must stay reachable.
+  static String sendBlockedMessage({required bool isThai}) => isThai
+      ? 'งานสิ้นสุดแล้ว — ส่งข้อความไม่ได้'
+      : 'This job has ended — you can no longer send messages';
 }
 
 /// One chat message — the shape of both `GET /conversations/{id}/messages` rows AND the WS

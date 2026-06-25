@@ -59,21 +59,23 @@ class ImagePickerChatMediaPicker implements ChatMediaPicker {
 
 /// The client-side upload size ceiling for a chat attachment. This is NOT the chat service's own
 /// per-kind cap (10MB image / 200MB video, `contracts/openapi/chat.yaml`); it is the **api-gateway
-/// edge body cap** — `BodyCap::Large` = 12 MiB in
+/// edge body cap** — `BodyCap::Chat` = 30 MiB in
 /// `services/api-gateway/src/domain/routing.rs` — which buffers the whole multipart body before
-/// forwarding and 413s anything larger. Until that edge cap is raised for the video path, a video
-/// over ~12 MiB cannot reach the chat service at all, so we reject it here with a clear, localized
-/// message instead of firing a doomed POST that returns a bare 413 ("Request failed").
+/// forwarding and 413s anything larger. A picked file over ~30 MiB cannot reach the chat service
+/// at all, so we reject it here with a clear, localized message instead of firing a doomed POST
+/// that returns a bare 413 ("Request failed").
 ///
-/// BACKEND FOLLOW-UP (flagged): raise the `POST /attachments` edge cap (a streaming/chunked
-/// carve-out, or a higher `BodyCap` for this route) so the 200MB video contract is actually
-/// reachable end-to-end; then relax this constant to match.
+/// BACKEND FOLLOW-UP (flagged): raising this to 30 MiB requires DEPLOYING the api-gateway (the
+/// `POST /attachments` `BodyCap::Chat` carve-out) AND the staging nginx (`client_max_body_size
+/// 30m`) together — the mobile guard mirrors the edge cap, so an un-deployed edge would 413 a
+/// 12–30 MiB upload despite this guard passing it. The full 200MB video contract still needs a
+/// streaming/chunked edge carve-out (out of scope here).
 class ChatUploadLimit {
   const ChatUploadLimit._();
 
-  /// 12 MiB — equals the api-gateway `BodyCap::LARGE_BYTES` for `POST /attachments`. We subtract a
+  /// 30 MiB — equals the api-gateway `BodyCap::CHAT_BYTES` for `POST /attachments`. We subtract a
   /// small multipart-framing margin so a file right at the limit still fits under the edge cap.
-  static const int gatewayBodyCapBytes = 12 * 1024 * 1024;
+  static const int gatewayBodyCapBytes = 30 * 1024 * 1024;
 
   /// Multipart framing overhead headroom (boundaries + the `conversation_id` field + headers).
   static const int _framingMarginBytes = 64 * 1024;

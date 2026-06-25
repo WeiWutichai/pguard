@@ -23,6 +23,13 @@ class ApiException implements Exception {
   /// Authentication failure that refresh could not resolve.
   bool get isUnauthorized => statusCode == 401;
 
+  /// A `409 Conflict` — the resource's current state forbids the write. For chat, the chat
+  /// service returns this when the conversation is READ-ONLY (its booking is completed/cancelled),
+  /// so the send/upload paths can surface the localized "job ended" message instead of a generic
+  /// transport error. Distinct from [isNetwork]: a 409 carried an HTTP response, a network error
+  /// did not.
+  bool get isConflict => statusCode == 409;
+
   @override
   String toString() =>
       'ApiException($statusCode${code != null ? ' $code' : ''}): $message';
