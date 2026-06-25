@@ -7,6 +7,8 @@ import '../../../core/controllers/chat_format.dart';
 import '../../../core/media/media_host.dart';
 import '../../../core/models/call.dart';
 import '../../../core/models/chat.dart';
+import '../../../core/network/api_exception.dart';
+import 'chat_media_viewer.dart';
 
 /// One message bubble. Side is decided by `sender_role == acting` ([ChatMessage.isFromRole]) —
 /// right for the caller's own role, left for the counterpart — NEVER by sender id. Own bubbles
@@ -169,11 +171,15 @@ class ChatBubble extends StatelessWidget {
 }
 
 /// Media content for an `image`/`video` message. The message `content` carries the attachment
-/// id; the presigned URL is resolved on view via [chatAttachmentProvider]
-/// (`GET /v1/attachments/{id}` — TTL 1h, held in provider memory only, never persisted) and
-/// rewritten by [MediaHost] so the device can reach the storage host. A `content` that is
-/// already an absolute URL (forward-compat) renders directly. Video shows a labelled chip
-/// (no in-app player dependency — documented gap).
+/// id; the presigned URL is resolved via [chatAttachmentProvider] (`GET /v1/attachments/{id}` —
+/// TTL 1h, held in provider memory only, never persisted) and rewritten by [MediaHost] so the
+/// device can reach the storage host. A `content` that is already an absolute URL (forward-compat)
+/// renders directly.
+///
+/// TAP TO VIEW (the fix): an IMAGE resolves its URL eagerly (it renders inline) and TAP opens the
+/// full-screen zoomable viewer; a VIDEO renders a labelled chip WITHOUT an eager GET (nothing
+/// inline to play) and resolves its URL ONLY on TAP, then opens the in-app player. So a video
+/// still costs no GET until the user actually opens it.
 class _AttachmentContent extends ConsumerWidget {
   const _AttachmentContent({
     required this.message,
@@ -192,22 +198,28 @@ class _AttachmentContent extends ConsumerWidget {
     final content = message.content;
     if (content == null || content.isEmpty) return _fallbackChip();
 
-    // Video renders as a labelled chip in every case (no in-app player — documented gap), so
-    // never spend an authenticated GET resolving a presigned URL nothing would play.
+    // Video: tappable chip, resolved lazily ON TAP (no eager GET — nothing renders inline).
     if (_isVideo) {
-      return _chip(Icons.videocam_outlined, isThai ? 'วิดีโอ' : 'Video');
+      return _VideoChip(
+        attachmentRef: content,
+        isThai: isThai,
+        fg: fg,
+      );
     }
 
     if (content.startsWith('http://') || content.startsWith('https://')) {
-      return _BubbleImage(url: MediaHost.forApp(content), isThai: isThai, fg: fg);
+      return _BubbleImage(
+          url: MediaHost.forApp(content), isThai: isThai, fg: fg);
     }
 
     final async = ref.watch(chatAttachmentProvider(content));
     return async.when(
-      loading: () => _chip(Icons.image_outlined, isThai ? 'กำลังโหลด…' : 'Loading…'),
-      error: (_, __) => _chip(
+      loading: () =>
+          chip(Icons.image_outlined, isThai ? 'กำลังโหลด…' : 'Loading…', fg),
+      error: (_, __) => chip(
         Icons.broken_image_outlined,
         isThai ? 'โหลดไฟล์แนบไม่สำเร็จ' : 'Could not load attachment',
+        fg,
       ),
       data: (attachment) => _BubbleImage(
         url: MediaHost.forApp(attachment.fileUrl),
@@ -217,31 +229,123 @@ class _AttachmentContent extends ConsumerWidget {
     );
   }
 
-  Widget _fallbackChip() => _chip(
+  Widget _fallbackChip() => chip(
         _isVideo ? Icons.videocam_outlined : Icons.image_outlined,
-        _isVideo ? (isThai ? 'วิดีโอ' : 'Video') : (isThai ? 'รูปภาพ' : 'Image'),
+        _isVideo
+            ? (isThai ? 'วิดีโอ' : 'Video')
+            : (isThai ? 'รูปภาพ' : 'Image'),
+        fg,
       );
+}
 
-  Widget _chip(IconData icon, String label) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 18, color: fg),
-        const SizedBox(width: 6),
-        Flexible(
-          child: Text(label,
-              style: TextStyle(fontSize: 14, color: fg),
-              overflow: TextOverflow.ellipsis),
-        ),
-      ],
+/// A small icon+label chip used for video bubbles and image loading/error states.
+Widget chip(IconData icon, String label, Color fg) {
+  return Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Icon(icon, size: 18, color: fg),
+      const SizedBox(width: 6),
+      Flexible(
+        child: Text(label,
+            style: TextStyle(fontSize: 14, color: fg),
+            overflow: TextOverflow.ellipsis),
+      ),
+    ],
+  );
+}
+
+/// A tappable video bubble. Renders the "Video" chip with a play glyph; tapping RESOLVES the
+/// attachment id to a fresh presigned URL ([chatAttachmentProvider]) and opens the in-app player
+/// ([showChatVideoViewer]). The resolve happens only on tap (no eager GET); a resolve/permission
+/// error surfaces as a snackbar rather than a dead tap. A `content` that is already an absolute
+/// URL plays directly.
+class _VideoChip extends ConsumerStatefulWidget {
+  const _VideoChip({
+    required this.attachmentRef,
+    required this.isThai,
+    required this.fg,
+  });
+
+  /// The attachment id (UUID) or an absolute URL carried in the message `content`.
+  final String attachmentRef;
+  final bool isThai;
+  final Color fg;
+
+  @override
+  ConsumerState<_VideoChip> createState() => _VideoChipState();
+}
+
+class _VideoChipState extends ConsumerState<_VideoChip> {
+  bool _busy = false;
+
+  Future<void> _open() async {
+    if (_busy) return;
+    final ref0 = widget.attachmentRef;
+    final messenger = ScaffoldMessenger.of(context);
+
+    // Already an absolute URL → play directly (forward-compat path, no GET).
+    if (ref0.startsWith('http://') || ref0.startsWith('https://')) {
+      await showChatVideoViewer(context,
+          url: MediaHost.forApp(ref0), isThai: widget.isThai);
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      // Resolve a FRESH presigned URL only now (on tap); never persisted.
+      final attachment = await ref.read(chatAttachmentProvider(ref0).future);
+      // Re-check liveness after the await before touching `context` (the State's `mounted`
+      // guards its `context`).
+      if (!mounted) return;
+      await showChatVideoViewer(context,
+          url: MediaHost.forApp(attachment.fileUrl), isThai: widget.isThai);
+    } on ApiException catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text(e.message)));
+    } catch (_) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(
+            widget.isThai ? 'เปิดวิดีโอไม่สำเร็จ' : 'Could not open video'),
+      ));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final label = widget.isThai ? 'วิดีโอ' : 'Video';
+    return InkWell(
+      onTap: _busy ? null : _open,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (_busy)
+            SizedBox(
+              width: 18,
+              height: 18,
+              child:
+                  CircularProgressIndicator(strokeWidth: 2, color: widget.fg),
+            )
+          else
+            Icon(Icons.play_circle_outline, size: 20, color: widget.fg),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(label,
+                style: TextStyle(fontSize: 14, color: widget.fg),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
+      ),
     );
   }
 }
 
 /// The inline image: constrained, rounded, with loading progress and a graceful error chip
 /// (a presigned URL can expire mid-scroll — the error state invites a reopen, not a crash).
+/// TAP opens the full-screen zoomable viewer ([showChatImageViewer]) on the SAME presigned URL.
 class _BubbleImage extends StatelessWidget {
-  const _BubbleImage({required this.url, required this.isThai, required this.fg});
+  const _BubbleImage(
+      {required this.url, required this.isThai, required this.fg});
 
   final String url;
   final bool isThai;
@@ -249,42 +353,47 @@ class _BubbleImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(PgTokens.radiusMd),
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 220, maxHeight: 240),
-        child: Image.network(
-          url,
-          fit: BoxFit.cover,
-          loadingBuilder: (context, child, progress) {
-            if (progress == null) return child;
-            return const SizedBox(
-              width: 220,
-              height: 140,
-              child: Center(
-                child: SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            );
-          },
-          errorBuilder: (context, _, __) => Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.broken_image_outlined, size: 18, color: fg),
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    isThai ? 'รูปหมดอายุ — เปิดแชทใหม่' : 'Image expired — reopen chat',
-                    style: TextStyle(fontSize: 13, color: fg),
-                    overflow: TextOverflow.ellipsis,
+    return GestureDetector(
+      onTap: () => showChatImageViewer(context, url: url, isThai: isThai),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(PgTokens.radiusMd),
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 220, maxHeight: 240),
+          child: Image.network(
+            url,
+            fit: BoxFit.cover,
+            loadingBuilder: (context, child, progress) {
+              if (progress == null) return child;
+              return const SizedBox(
+                width: 220,
+                height: 140,
+                child: Center(
+                  child: SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
                 ),
-              ],
+              );
+            },
+            errorBuilder: (context, _, __) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 4),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.broken_image_outlined, size: 18, color: fg),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      isThai
+                          ? 'รูปหมดอายุ — เปิดแชทใหม่'
+                          : 'Image expired — reopen chat',
+                      style: TextStyle(fontSize: 13, color: fg),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
         ),

@@ -14,10 +14,11 @@ abstract class BookingStatusFeed {
 
 /// Typed booking-status subscription over [ReconnectingWebSocket].
 ///
-/// BACKEND DEPENDENCY (documented): the api-gateway does not yet proxy WebSocket upgrades
-/// (the `upgrade` header is stripped as hop-by-hop) and no `/v1/ws/bookings/{id}` endpoint
-/// is exposed. This client codes against the agreed contract so the moment a WS-aware ingress
-/// lands, the live-status screen works with no client change:
+/// The api-gateway DOES proxy this WS now: it registers `/v1/ws/bookings/{id}` and runs a NATS
+/// status hub that fans `pguard.events.booking.*` (incl. the progress-report refresh nudge) out to
+/// every connected session. `{wsBaseUrl}` already carries the `/v1` prefix, so the URL below resolves
+/// to `…/v1/ws/bookings/{id}`. The resume re-pull on the live screen is now a belt-and-suspenders for
+/// a backgrounded socket, not the primary path. Contract:
 ///
 ///   URL : `{wsBaseUrl}/ws/bookings/{id}`        (subscription scope = the path)
 ///   Auth: `Authorization: Bearer <access>`       on the HTTP upgrade (never URL query)

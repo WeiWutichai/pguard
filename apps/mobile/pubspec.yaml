@@ -72,6 +72,7 @@ dependencies:
   # cross-language trio lives in apps/design-tokens (tokens.css / .dart / tokens.ts).
   pguard_design_tokens:
     path: ../design-tokens
+  video_player: ^2.11.1
 
 dev_dependencies:
   flutter_test:

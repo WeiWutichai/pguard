@@ -33,7 +33,8 @@ void main() {
   test('pick → multipart POST /attachments → returns the stored Attachment',
       () async {
     final picker = FakeChatMediaPicker(
-        media: PickedMedia(path: photo.path, mimeType: 'image/jpeg'));
+        media: PickedMedia(
+            path: photo.path, mimeType: 'image/jpeg', sizeBytes: 64));
     FormData? sent;
     final api = FakeApi(onPost: (path, data) async {
       expect(path, '/attachments');
@@ -74,7 +75,8 @@ void main() {
 
   test('unsupported MIME fails fast client-side (no upload attempt)', () async {
     final picker = FakeChatMediaPicker(
-        media: PickedMedia(path: '${tmp.path}/a.gif', mimeType: 'image/gif'));
+        media: PickedMedia(
+            path: '${tmp.path}/a.gif', mimeType: 'image/gif', sizeBytes: 64));
     final api = FakeApi(onPost: (_, __) async => fail('must not upload'));
 
     final service = ApiChatAttachmentService(api: api, picker: picker);
@@ -90,7 +92,8 @@ void main() {
   test('server rejection (size/MIME gate) propagates the friendly ApiException',
       () async {
     final picker = FakeChatMediaPicker(
-        media: PickedMedia(path: photo.path, mimeType: 'image/jpeg'));
+        media: PickedMedia(
+            path: photo.path, mimeType: 'image/jpeg', sizeBytes: 64));
     final api = FakeApi(onPost: (_, __) async {
       throw const ApiException(
           message: 'ไฟล์ใหญ่เกินไป / File too large', statusCode: 400);
@@ -109,7 +112,8 @@ void main() {
     final video = File('${tmp.path}/clip.mp4')
       ..writeAsBytesSync(List<int>.filled(64, 9));
     final picker = FakeChatMediaPicker(
-        media: PickedMedia(path: video.path, mimeType: 'video/mp4'));
+        media: PickedMedia(
+            path: video.path, mimeType: 'video/mp4', sizeBytes: 64));
     final api = FakeApi(onPost: (_, __) async {
       return attachmentJson()
         ..['mime_type'] = 'video/mp4'
@@ -121,5 +125,48 @@ void main() {
         .pickAndUpload('cv1', ChatAttachmentSource.galleryVideo, isThai: true);
     expect(attachment!.mimeType, 'video/mp4');
     expect(attachment.messageType.wire, 'video');
+  });
+
+  test(
+      'a video over the gateway body cap fails fast with a clear size message '
+      '(no doomed POST)', () async {
+    // The api-gateway caps POST /attachments at 12 MiB; a phone video clears that easily. The
+    // service must reject BEFORE the network round-trip so the user gets an actionable message
+    // instead of the bare-413 "Request failed". (Root cause: the edge BodyCap::Large carve-out.)
+    final big = File('${tmp.path}/big.mp4')..writeAsBytesSync(const <int>[1, 2]);
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(
+            path: big.path,
+            mimeType: 'video/mp4',
+            sizeBytes: ChatUploadLimit.maxUploadBytes + 1));
+    final api = FakeApi(onPost: (_, __) async => fail('must not POST a too-large file'));
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    await expectLater(
+      service.pickAndUpload('cv1', ChatAttachmentSource.galleryVideo,
+          isThai: false),
+      throwsA(isA<ApiException>()
+          .having((e) => e.message, 'message', contains('too large'))),
+    );
+    expect(api.calls, isEmpty, reason: 'rejected before any upload');
+  });
+
+  test('a file exactly at the upload limit is allowed through', () async {
+    final ok = File('${tmp.path}/ok.mp4')..writeAsBytesSync(const <int>[1, 2]);
+    final picker = FakeChatMediaPicker(
+        media: PickedMedia(
+            path: ok.path,
+            mimeType: 'video/mp4',
+            sizeBytes: ChatUploadLimit.maxUploadBytes));
+    final api = FakeApi(onPost: (_, __) async {
+      return attachmentJson()
+        ..['mime_type'] = 'video/mp4'
+        ..['file_key'] = 'chat/cv1/x.mp4';
+    });
+
+    final service = ApiChatAttachmentService(api: api, picker: picker);
+    final attachment = await service
+        .pickAndUpload('cv1', ChatAttachmentSource.galleryVideo, isThai: true);
+    expect(attachment, isNotNull, reason: 'at-limit file uploads');
   });
 }

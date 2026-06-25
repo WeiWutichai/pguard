@@ -1,6 +1,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/booking_status_controller.dart';
+import 'package:pguard_mobile/core/controllers/progress_reports_controller.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -241,5 +242,97 @@ void main() {
     expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
         BookingStatus.arrived,
         reason: 'state unchanged on failure');
+  });
+
+  test(
+      'a guard check-in nudge (progress_reported) re-pulls the progress reports '
+      'WITHOUT changing booking status — the customer live feed updates, no refresh',
+      () async {
+    // The booking is `arrived` with 3 booked hours; the guard submits hour-2's check-in. The
+    // gateway fans that out as a refresh-only `progress_reported` frame. We assert: (a) the
+    // booking status STAYS arrived, and (b) the progress-reports controller (which watches the
+    // booking-status controller) RE-PULLS `/bookings/b1/progress-reports` — so the new photo +
+    // the advancing countdown appear live, with no manual refresh.
+    var reportRows = <Map<String, dynamic>>[
+      {
+        'id': 'pr1',
+        'booking_id': 'b1',
+        'hour_number': 1,
+        'photo_url': 'https://x/1.jpg',
+        'created_at': '2026-06-25T10:00:00Z',
+      },
+    ];
+    final feed = FakeBookingFeed();
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'arrived',
+          'guard_id': 'g1',
+          'hours': 3,
+        };
+      }
+      if (path == '/bookings/b1/progress-reports') return reportRows;
+      return <dynamic>[];
+    });
+
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+    ]);
+    addTearDown(c.dispose);
+
+    final statusSub =
+        c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(statusSub.close);
+    final progressSub =
+        c.listen(progressReportsControllerProvider('b1'), (_, __) {});
+    addTearDown(progressSub.close);
+
+    // Initial pull: one report so far.
+    final first = await c.read(progressReportsControllerProvider('b1').future);
+    expect(first.reportedCount, 1);
+    final pullsBefore = api.calls
+        .where((x) => x == 'GET /bookings/b1/progress-reports')
+        .length;
+
+    // The guard checks in hour 2 — the server now returns 2 reports.
+    reportRows = [
+      ...reportRows,
+      {
+        'id': 'pr2',
+        'booking_id': 'b1',
+        'hour_number': 2,
+        'photo_url': 'https://x/2.jpg',
+        'created_at': '2026-06-25T11:00:00Z',
+      },
+    ];
+
+    // The refresh-only nudge arrives over the WS (NO status field → status null, isRefresh true).
+    feed.emit(BookingStatusEvent(
+      bookingId: 'b1',
+      status: null,
+      occurredAt: DateTime.utc(2026, 6, 25, 11),
+      guardId: 'g1',
+      isRefresh: true,
+    ));
+    await Future<void>.delayed(Duration.zero);
+
+    // Status is UNCHANGED (a check-in is not a lifecycle transition).
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.arrived);
+
+    // The progress-reports controller RE-PULLED and now shows the new check-in.
+    final reloaded =
+        await c.read(progressReportsControllerProvider('b1').future);
+    expect(reloaded.reportedCount, 2,
+        reason: 'the new check-in appears live, no manual refresh');
+    final pullsAfter = api.calls
+        .where((x) => x == 'GET /bookings/b1/progress-reports')
+        .length;
+    expect(pullsAfter, greaterThan(pullsBefore),
+        reason: 'the nudge forced a fresh progress-reports fetch');
   });
 }

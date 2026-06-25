@@ -172,17 +172,29 @@ void main() {
     final provider = image.image as NetworkImage;
     expect(provider.url, 'http://media.test/chat/cv1/x.jpg?sig=abc');
 
+    // TAP the image bubble → a full-screen zoomable viewer opens on the SAME presigned URL.
+    await tester.tap(find.byType(Image).first);
+    await tester.pumpAndSettle();
+    expect(find.byType(InteractiveViewer), findsOneWidget,
+        reason: 'tapping an image opens the full-screen zoom viewer');
+    // The viewer shows its own Image on the resolved URL.
+    final viewerImages = tester
+        .widgetList<Image>(find.byType(Image))
+        .map((w) => (w.image as NetworkImage).url);
+    expect(viewerImages, contains('http://media.test/chat/cv1/x.jpg?sig=abc'));
+
     await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets(
-      'a video message renders a labelled chip without resolving the '
-      'attachment (no inline player, no wasted GET)', (tester) async {
+      'a video message renders a TAPPABLE labelled chip WITHOUT eagerly '
+      'resolving the attachment (the GET only happens on tap)', (tester) async {
     final feed = FakeChatFeed();
     final api = FakeApi(
       onGet: (path, _) async {
         if (path.startsWith('/attachments/')) {
-          fail('video bubbles must not resolve attachments');
+          // The attachment must NOT be resolved until the user taps to play.
+          fail('video bubbles must not resolve attachments on render');
         }
         return [
           imageMsgJson()
@@ -198,8 +210,10 @@ void main() {
     await settle(tester);
     await settle(tester);
 
+    // The chip shows a play affordance + the "Video" label and is tappable (InkWell).
     expect(find.text('วิดีโอ'), findsOneWidget);
-    expect(find.byIcon(Icons.videocam_outlined), findsOneWidget);
+    expect(find.byIcon(Icons.play_circle_outline), findsOneWidget);
+    expect(find.byType(InkWell), findsWidgets);
 
     await tester.pumpWidget(const SizedBox());
   });
