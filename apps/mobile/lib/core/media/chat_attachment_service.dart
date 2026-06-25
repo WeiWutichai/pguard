@@ -49,6 +49,20 @@ class ApiChatAttachmentService implements ChatAttachmentService {
           message: isThai ? 'ชนิดไฟล์ไม่รองรับ' : 'Unsupported file type');
     }
 
+    // Size guard BEFORE the network round-trip: the api-gateway edge body cap (12 MiB for
+    // POST /attachments) 413s anything larger with a bare body, which the app would surface as a
+    // generic "Request failed". A short phone video easily clears 12 MiB, so reject it here with a
+    // clear, actionable message. (Images are picker-compressed and stay well under the cap.) See
+    // [ChatUploadLimit] for the backend follow-up needed to lift this for the 200MB video path.
+    if (ChatUploadLimit.exceeds(media.sizeBytes)) {
+      final mb = (media.sizeBytes / (1024 * 1024)).toStringAsFixed(0);
+      throw ApiException(
+        message: isThai
+            ? 'ไฟล์ใหญ่เกินไป ($mb MB) — ส่งได้ไม่เกิน ${ChatUploadLimit.maxMb} MB กรุณาเลือกวิดีโอที่สั้นลง'
+            : 'File too large ($mb MB) — the limit is ${ChatUploadLimit.maxMb} MB. Pick a shorter video.',
+      );
+    }
+
     final form = FormData.fromMap({
       'conversation_id': conversationId,
       'file': await MultipartFile.fromFile(

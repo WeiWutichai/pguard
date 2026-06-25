@@ -16,8 +16,19 @@
 use serde_json::Value;
 use shared_events::topics;
 
+/// The sentinel "status" the hub forwards for a guard CHECK-IN (`booking.progress_reported`).
+/// It is NOT a booking lifecycle status — the booking stays `arrived`. It rides the existing
+/// `booking_status` frame as a lightweight live NUDGE so the customer's live screen re-pulls its
+/// progress-reports (the new check-in photo + the advancing countdown) WITHOUT a manual refresh.
+/// The mobile client recognises it as a refresh-only signal and never folds it into `status`.
+pub const PROGRESS_REPORTED_NUDGE: &str = "progress_reported";
+
 /// Map a booking event topic (`EventEnvelope.event_type`) to the client status wire value, or
 /// `None` if the topic carries no client-visible status transition.
+///
+/// `booking.progress_reported` (a guard hourly check-in) is NOT a lifecycle transition, so it maps
+/// to the [`PROGRESS_REPORTED_NUDGE`] sentinel rather than a real status — the customer's live
+/// screen treats it as "re-pull the check-in timeline + countdown", not a status change.
 pub fn status_from_topic(event_type: &str) -> Option<&'static str> {
     if event_type == topics::BOOKING_JOB_ACCEPTED {
         Some("accepted")
@@ -33,6 +44,8 @@ pub fn status_from_topic(event_type: &str) -> Option<&'static str> {
         Some("declined")
     } else if event_type == topics::BOOKING_CANCELLED {
         Some("cancelled")
+    } else if event_type == topics::BOOKING_PROGRESS_REPORTED {
+        Some(PROGRESS_REPORTED_NUDGE)
     } else {
         None
     }
@@ -138,12 +151,43 @@ mod tests {
     }
 
     #[test]
+    fn maps_progress_reported_to_the_refresh_nudge() {
+        // A guard check-in is NOT a lifecycle transition — it maps to the refresh-only sentinel so
+        // the customer's live screen re-pulls its progress timeline without a manual refresh.
+        assert_eq!(
+            status_from_topic(topics::BOOKING_PROGRESS_REPORTED),
+            Some(PROGRESS_REPORTED_NUDGE)
+        );
+        assert_eq!(PROGRESS_REPORTED_NUDGE, "progress_reported");
+    }
+
+    #[test]
     fn ignores_non_status_topics() {
         assert_eq!(status_from_topic("pguard.events.payment.completed"), None);
         assert_eq!(
             status_from_topic("pguard.events.booking.something_new"),
             None
         );
+        // `requested` carries no client-visible status frame (the customer created it).
+        assert_eq!(status_from_topic(topics::BOOKING_REQUESTED), None);
+    }
+
+    #[test]
+    fn parses_progress_reported_to_the_nudge_frame() {
+        // The check-in envelope the booking outbox publishes — carries booking_id + customer_id +
+        // guard_id (see booking::domain::events::event_for_progress_report).
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "event_id": "11111111-1111-1111-1111-111111111111",
+            "event_type": topics::BOOKING_PROGRESS_REPORTED,
+            "occurred_at": "2026-06-25T10:00:00Z",
+            "correlation_id": "22222222-2222-2222-2222-222222222222",
+            "payload": { "booking_id": "b1", "customer_id": "c1", "guard_id": "g1" }
+        }))
+        .unwrap();
+        let u = parse_status_update(&bytes).expect("check-in must fan out as a nudge");
+        assert_eq!(u.booking_id, "b1");
+        assert_eq!(u.status, PROGRESS_REPORTED_NUDGE);
+        assert_eq!(u.guard_id.as_deref(), Some("g1"));
     }
 
     #[test]

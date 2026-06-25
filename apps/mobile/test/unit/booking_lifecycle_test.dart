@@ -35,6 +35,35 @@ void main() {
         isNull, // missing booking_id
       );
     });
+
+    test('parses a progress_reported check-in as a refresh-only nudge', () {
+      // A guard check-in rides the booking_status frame with the sentinel status — it must parse
+      // as a refresh nudge (no lifecycle status) so the live screen re-pulls progress reports
+      // WITHOUT changing the booking's status.
+      final e = BookingStatusEvent.tryParse({
+        'type': 'booking_status',
+        'booking_id': 'b1',
+        'status': 'progress_reported',
+        'occurred_at': '2026-06-25T10:00:00Z',
+        'guard_id': 'g1',
+      });
+      expect(e, isNotNull);
+      expect(e!.isRefresh, isTrue);
+      expect(e.status, isNull, reason: 'a check-in carries NO lifecycle status');
+      expect(e.bookingId, 'b1');
+      expect(e.guardId, 'g1');
+    });
+
+    test('rejects a truly unknown status (forward-compat) but not the nudge', () {
+      expect(
+        BookingStatusEvent.tryParse({
+          'type': 'booking_status',
+          'booking_id': 'b1',
+          'status': 'something_new',
+        }),
+        isNull,
+      );
+    });
   });
 
   group('BookingLifecycle', () {
@@ -82,6 +111,31 @@ void main() {
       expect(next.status, BookingStatus.enRoute);
       expect(next.guardId, 'g9');
       expect(next.id, 'b1');
+    });
+
+    test('a refresh-only nudge keeps status but returns a fresh instance', () {
+      // A guard check-in nudge (status == null) must NOT rewind the booking's lifecycle status —
+      // it stays `arrived` — yet still produce a NEW instance so re-emitting it notifies the
+      // progress-reports controller to re-pull (the check-in photo + advancing countdown).
+      const booking = Booking(
+        id: 'b1',
+        customerId: 'c1',
+        guardId: 'g1',
+        status: BookingStatus.arrived,
+        hours: 3,
+      );
+      final next = booking.applyEvent(BookingStatusEvent(
+        bookingId: 'b1',
+        status: null,
+        occurredAt: DateTime.utc(2026),
+        isRefresh: true,
+      ));
+      expect(next.status, BookingStatus.arrived,
+          reason: 'a check-in is not a status change');
+      expect(next.guardId, 'g1');
+      expect(next.hours, 3);
+      expect(identical(next, booking), isFalse,
+          reason: 'a fresh instance must notify watchers to re-pull');
     });
   });
 }

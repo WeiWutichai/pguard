@@ -30,34 +30,65 @@ enum BookingStatus {
   }
 }
 
-/// One real-time status transition pushed over the booking-status WebSocket.
+/// The gateway's sentinel "status" for a guard CHECK-IN (`booking.progress_reported`). It is NOT
+/// a lifecycle status — the booking stays `arrived`. It rides the same `booking_status` frame as a
+/// lightweight live NUDGE so the customer's live screen re-pulls its hourly-report timeline + the
+/// work countdown the instant the guard submits a photo, with no manual refresh. Mirrors the
+/// gateway's `PROGRESS_REPORTED_NUDGE` (`services/api-gateway/src/domain/ws.rs`).
+const String _progressReportedNudge = 'progress_reported';
+
+/// One real-time event pushed over the booking-status WebSocket.
 /// Envelope (documented contract — see booking_status_socket.dart):
 /// `{ "type":"booking_status", "booking_id", "status", "occurred_at", "guard_id"? }`.
+///
+/// Two shapes ride this frame:
+///  - a LIFECYCLE transition ([status] non-null) — folded into the booking by [Booking.applyEvent];
+///  - a REFRESH-ONLY nudge ([status] null, [isRefresh] true) — a guard check-in. It carries NO
+///    status change; it only signals dependents (the progress-reports controller) to re-pull.
 class BookingStatusEvent {
   const BookingStatusEvent({
     required this.bookingId,
     required this.status,
     required this.occurredAt,
     this.guardId,
+    this.isRefresh = false,
   });
 
   final String bookingId;
-  final BookingStatus status;
+
+  /// The lifecycle status this frame advances to, or `null` for a refresh-only nudge (a check-in).
+  final BookingStatus? status;
   final DateTime occurredAt;
   final String? guardId;
+
+  /// Whether this frame is a refresh-only nudge (a guard check-in): no status change, just a
+  /// signal for the live screen to re-pull its progress-reports + countdown.
+  final bool isRefresh;
 
   /// Parse a decoded WS frame; returns `null` if it is not a well-formed `booking_status`
   /// message (so the socket can ignore heartbeats / unknown frames).
   static BookingStatusEvent? tryParse(Map<String, dynamic> json) {
     if (json['type'] != 'booking_status') return null;
-    final status = BookingStatus.tryParse(json['status'] as String?);
     final bookingId = json['booking_id'] as String?;
-    if (status == null || bookingId == null) return null;
+    if (bookingId == null) return null;
+    final rawStatus = json['status'] as String?;
     final occurredRaw = json['occurred_at'] as String?;
     final occurredAt =
         (occurredRaw != null ? DateTime.tryParse(occurredRaw) : null)
                 ?.toUtc() ??
             DateTime.now().toUtc();
+    // A guard CHECK-IN nudge: not a lifecycle status, so [status] stays null and [isRefresh] is set.
+    if (rawStatus == _progressReportedNudge) {
+      return BookingStatusEvent(
+        bookingId: bookingId,
+        status: null,
+        occurredAt: occurredAt,
+        guardId: json['guard_id'] as String?,
+        isRefresh: true,
+      );
+    }
+    final status = BookingStatus.tryParse(rawStatus);
+    if (status == null) return null; // unknown status (and not a nudge) — ignore forward-compat
     return BookingStatusEvent(
       bookingId: bookingId,
       status: status,
@@ -166,11 +197,16 @@ class Booking {
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
   /// [paidAt] is CARRIED FORWARD (the WS frame has no payment field) so a booking already known
   /// to be paid stays paid as later status frames arrive.
+  ///
+  /// A REFRESH-ONLY event (a guard check-in nudge — [BookingStatusEvent.status] is null) carries NO
+  /// status change: the current [status] is kept. The returned copy is still a FRESH instance, so
+  /// re-emitting it notifies dependents (the progress-reports controller re-pulls the new check-in
+  /// photo + the advancing countdown) WITHOUT rewinding the booking's lifecycle status.
   Booking applyEvent(BookingStatusEvent event) => Booking(
         id: id,
         customerId: customerId,
         guardId: event.guardId ?? guardId,
-        status: event.status,
+        status: event.status ?? status,
         address: address,
         scheduledAt: scheduledAt,
         hours: hours,

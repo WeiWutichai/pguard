@@ -59,12 +59,11 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState lifecycle) {
-    // The live feed is server-PUSH (the WS owned by BookingStatusController). But the
-    // api-gateway does not yet proxy WS upgrades (see booking_status_socket.dart — a BACKEND
-    // gap), so today the screen would otherwise sit on its one initial snapshot and appear
-    // stuck on "finding a guard". Re-pull a fresh snapshot on resume so a status that advanced
-    // while backgrounded (accepted → en_route → …) shows; harmless once the WS lands (the push
-    // frame is idempotent with the refetched snapshot). Event-driven, NOT a timer.
+    // The live feed is server-PUSH (the WS owned by BookingStatusController) and the gateway DOES
+    // proxy /v1/ws/bookings/{id} now. While backgrounded the socket can drop, so re-pull a fresh
+    // snapshot on resume to catch any status that advanced (accepted → en_route → …) — a
+    // belt-and-suspenders for the WS, not a substitute. The push frame is idempotent with the
+    // refetched snapshot. Event-driven, NOT a timer.
     if (lifecycle == AppLifecycleState.resumed) {
       ref.invalidate(bookingStatusControllerProvider(widget.bookingId));
     }
