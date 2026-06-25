@@ -13,6 +13,48 @@ part 'active_job_controller.g.dart';
 
 const Object _unset = Object();
 
+/// Remembers the guard's client-recorded work-start time per booking for the app session.
+///
+/// `work_started_at` is NOT exposed on the Booking API (it is the server-internal proration
+/// basis), so the active-job screen's countdown + check-in schedule run off a client stamp taken
+/// when the guard taps "Start job". That stamp lives only in [ActiveJobState] — which is wiped
+/// whenever the controller is invalidated (e.g. the `resumed` re-fetch after the camera backgrounds
+/// the app during a check-in). Before the FIRST check-in lands there is no progress-report to
+/// re-anchor from, so a naive rebuild loses the start, collapses the working panel, and re-prompts
+/// "Start job" — making a just-submitted round look unregistered. This keep-alive holder lets
+/// [ActiveJobController.build] restore the start across rebuilds so the working session is stable.
+class WorkSessionStore {
+  final Map<String, DateTime> _startedAt = {};
+  final Set<String> _checkInInFlight = {};
+
+  /// The client-recorded start for [bookingId], or null if the guard hasn't started it this session.
+  DateTime? startedAt(String bookingId) => _startedAt[bookingId];
+
+  /// True while a check-in submit (camera → POST) is in progress for [bookingId]. The screen reads
+  /// this to SUPPRESS the `resumed` re-fetch while the check-in camera round-trip is happening — a
+  /// rebuild mid-submit would drop the controller into `loading`, making the in-flight
+  /// `submitCheckIn` read a null state and silently no-op.
+  bool isCheckInInFlight(String bookingId) =>
+      _checkInInFlight.contains(bookingId);
+
+  void beginCheckIn(String bookingId) => _checkInInFlight.add(bookingId);
+  void endCheckIn(String bookingId) => _checkInInFlight.remove(bookingId);
+
+  /// Record the start the moment the guard taps "Start job" (idempotent-friendly: keep the
+  /// EARLIEST stamp so a re-tap / rebuild never pushes the countdown later).
+  void markStarted(String bookingId, DateTime at) {
+    final existing = _startedAt[bookingId];
+    if (existing == null || at.isBefore(existing)) _startedAt[bookingId] = at;
+  }
+
+  /// Reconcile with the server-derived anchor (earliest check-in anchor). Keeps the EARLIEST of the
+  /// two so a hydrated start never drifts later than the real one.
+  void reconcile(String bookingId, DateTime at) => markStarted(bookingId, at);
+}
+
+@Riverpod(keepAlive: true)
+WorkSessionStore workSessionStore(WorkSessionStoreRef ref) => WorkSessionStore();
+
 /// State for the active-job screen: the booking, the client-recorded start time (the API does
 /// NOT expose `work_started_at`, so we stamp it when the guard taps "start" to drive the DISPLAY
 /// countdown), and which hourly check-ins have been submitted.
@@ -104,6 +146,19 @@ class ActiveJobController extends _$ActiveJobController {
       // tapping Start again is idempotent server-side (start_job keeps the original work_started_at).
     }
 
+    // Restore the client-recorded start across rebuilds. `work_started_at` is NOT on the API, so an
+    // invalidation (notably the `resumed` re-fetch after the camera backgrounds the app during a
+    // check-in) would otherwise WIPE `startedAt` — and before the first check-in lands there is no
+    // report to re-anchor from, which collapses the working panel and re-prompts "Start job". The
+    // keep-alive [WorkSessionStore] survives the rebuild, so we fall back to it. When the server
+    // trail DOES yield an anchor we reconcile (keep the earliest) so the stored value can't drift
+    // the countdown later than the real start.
+    final store = ref.read(workSessionStoreProvider);
+    if (startedAt != null) {
+      store.reconcile(bookingId, startedAt);
+    }
+    startedAt ??= store.startedAt(bookingId);
+
     return ActiveJobState(
       booking: booking,
       startedAt: startedAt,
@@ -137,10 +192,19 @@ class ActiveJobController extends _$ActiveJobController {
           .read(pguardApiProvider)
           .put('/bookings/${current.booking.id}/$action');
       final booking = Booking.fromJson(data as Map<String, dynamic>);
+      DateTime? startedAt;
+      if (markStart) {
+        startedAt = DateTime.now().toUtc();
+        // Persist the client start so it SURVIVES a controller rebuild (the API never returns
+        // `work_started_at`). Without this, the `resumed` re-fetch triggered when the check-in
+        // camera backgrounds the app would wipe the start before the first report exists to
+        // re-anchor from — reverting the screen to "Start job".
+        ref.read(workSessionStoreProvider).markStarted(booking.id, startedAt);
+      }
       state = AsyncData(current.copyWith(
         booking: booking,
         busy: false,
-        startedAt: markStart ? DateTime.now().toUtc() : null,
+        startedAt: startedAt,
       ));
       return true;
     } on ApiException catch (e) {

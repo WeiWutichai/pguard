@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pguard_mobile/core/location/routing_service.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -49,11 +51,31 @@ Map<String, dynamic> ratingsJson({String? average = '4.9', int count = 12}) => {
       'reviews': <Map<String, dynamic>>[],
     };
 
+/// A 4-point road route (so the customer map draws a multi-point road line, not the straight
+/// 2-point fallback), 6 km road distance.
+RouteResult routeResult() => RouteResult.fromOsrm({
+      'routes': [
+        {
+          'distance': 6000.0,
+          'duration': 600.0,
+          'geometry': {
+            'coordinates': [
+              [100.5018, 13.7563],
+              [100.5400, 13.7700],
+              [100.5800, 13.7850],
+              [100.6000, 13.8000],
+            ],
+          },
+        },
+      ],
+    })!;
+
 Widget host({
   required FakeApi api,
   FakeBookingFeed? feed,
   FakeLocationService? loc,
   Map<String, String> prefs = const {},
+  RouteResult? route,
 }) {
   return ProviderScope(
     overrides: [
@@ -64,6 +86,11 @@ Widget host({
       bookingStatusFeedBuilderProvider
           .overrideWithValue((id, tp) => feed ?? FakeBookingFeed()),
       locationServiceProvider.overrideWithValue(loc ?? FakeLocationService()),
+      // Real OSRM routing is reused on the customer side (matches the guard nav) — fake it so the
+      // map watches the shared guardRouteProvider without any network. `null` (default) → the
+      // straight-line fallback every existing assertion expects; a RouteResult → the real road path.
+      routingServiceProvider
+          .overrideWithValue(FakeRoutingService(result: route)),
     ],
     child: const MaterialApp(home: GuardMapScreen(bookingId: 'b1')),
   );
@@ -71,10 +98,20 @@ Widget host({
 
 Future<void> settle(WidgetTester tester) async {
   // Three pumps: deliver the (broadcast-stream) event, run the scheduled provider rebuild
-  // (async build), then render the dirty widget.
+  // (async build), then render the dirty widget. A fourth covers the guardRoute future resolving
+  // (the FakeRoutingService is async) so the real-route polyline lands before assertions.
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 20));
   await tester.pump(const Duration(milliseconds: 20));
+  await tester.pump(const Duration(milliseconds: 20));
+}
+
+/// The number of points in the (single) road/route polyline drawn on the map, or 0 when there is
+/// none — distinguishes the multi-point real route from the straight 2-point fallback.
+int polylinePointCount(WidgetTester tester) {
+  final layers = tester.widgetList<PolylineLayer>(find.byType(PolylineLayer));
+  if (layers.isEmpty) return 0;
+  return layers.first.polylines.first.points.length;
 }
 
 void main() {
@@ -280,10 +317,45 @@ void main() {
         reason: 'the marker labels the booking pin as the destination');
     expect(find.text('คุณ'), findsNothing,
         reason: 'the device-fix label is not used when a pin exists');
-    expect(find.textContaining('ห่างจากจุดหมาย'), findsOneWidget,
-        reason: 'distance measured to the destination');
+    expect(find.textContaining('ห่างจากจุดหมายประมาณ'), findsOneWidget,
+        reason: 'straight-line fallback → approximate "ประมาณ" wording');
     expect(find.textContaining('นาที'), findsNothing,
         reason: 'no routing service → distance only, never a fake ETA');
+    // No route → the straight 2-point fallback segment is drawn.
+    expect(polylinePointCount(tester), 2,
+        reason: 'fallback: the straight guard→destination segment');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'REAL route: the customer map draws the multi-point road line + the road '
+      'distance with NO "ประมาณ" (matches the guard nav)', (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return bookingJson(guardId: 'g1', lat: 13.80, lng: 100.60);
+      }
+      if (path == '/guards/g1/location') return locationJson();
+      if (path == '/guards/g1/public') return publicJson();
+      if (path == '/guards/g1/ratings') return ratingsJson();
+      if (path == '/conversations') return <Map<String, dynamic>>[];
+      fail('unexpected GET $path');
+    });
+
+    await tester.pumpWidget(host(api: api, route: routeResult()));
+    await settle(tester);
+
+    // The map draws the full 4-point OSRM road geometry, not the 2-point straight line — the
+    // guard pin then animates along this real road line as its position updates.
+    expect(polylinePointCount(tester), 4,
+        reason: 'real road polyline reused from the shared guardRouteProvider');
+    // The road distance (6 km) is exact → no "ประมาณ" hedge, and the routed wording is used.
+    expect(find.textContaining('ระยะตามถนน'), findsOneWidget,
+        reason: 'routed → real road distance label');
+    expect(find.textContaining('ประมาณ'), findsNothing,
+        reason: 'a routed distance is exact — no approximate cue');
+    expect(find.textContaining('6.0 กม.'), findsOneWidget,
+        reason: 'the OSRM road distance, not the straight-line haversine');
 
     await tester.pumpWidget(const SizedBox());
   });

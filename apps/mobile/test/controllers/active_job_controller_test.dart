@@ -199,6 +199,42 @@ void main() {
   });
 
   test(
+      'startedAt SURVIVES an invalidate with an EMPTY trail (the resumed re-fetch '
+      'after the check-in camera backgrounds the app — round 1 not yet submitted)',
+      () async {
+    // The progress-reports trail stays EMPTY (no check-in has landed yet) — this is the exact
+    // first-check-in scenario: the guard tapped Start, opened the camera (which backgrounds the
+    // app), and the `resumed` re-fetch fires before the round-1 POST. Without the keep-alive
+    // WorkSessionStore fallback, the rebuild would lose `startedAt` (the API never returns
+    // work_started_at) → schedule/clock null → working panel collapses → "Start job" re-prompts.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('b1', 'arrived')
+          : const <Map<String, dynamic>>[],
+      onPut: (path, _) async => bookingJson('b1', 'arrived'),
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    await c.read(activeJobControllerProvider('b1').future);
+    expect(await c.read(activeJobControllerProvider('b1').notifier).start(),
+        isTrue);
+    final started = c.read(activeJobControllerProvider('b1')).value!.startedAt;
+    expect(started, isNotNull); // start stamped the client time
+
+    // Simulate the resumed re-fetch: invalidate → rebuild from the (still empty) server trail.
+    c.invalidate(activeJobControllerProvider('b1'));
+    final s = await c.read(activeJobControllerProvider('b1').future);
+    expect(s.startedAt, started,
+        reason: 'the client start is restored from the keep-alive store');
+    expect(s.clock, isNotNull); // working panel stays up (schedule available)
+    expect(s.schedule, isNotNull);
+  });
+
+  test(
       'build hydrates completedCheckIns + startedAt from the check-in trail '
       '(resumes the working panel after an app restart)', () async {
     final api = FakeApi(

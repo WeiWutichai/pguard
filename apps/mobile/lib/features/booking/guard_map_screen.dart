@@ -3,9 +3,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/guard_location_controller.dart';
+import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/relative_time.dart';
 import '../../core/controllers/session_controller.dart';
+import '../../core/location/routing_service.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
@@ -24,8 +26,16 @@ import 'widgets/pg_map.dart';
 /// events (and the refresh gesture), never a `Timer.periodic` (the v2 contract has no
 /// customer-readable location stream; see the controller doc). The map is a REAL
 /// OpenStreetMap surface ([PgMap], flutter_map + OSM tiles), the same widget the booking
-/// picker uses; the guard + destination markers and the straight route ride on top (the
-/// distance/ETA readouts stay straight-line via geo.dart — no business logic in this widget).
+/// picker uses; the guard + destination markers ride on top.
+///
+/// REAL ROUTING (matches the guard nav): the line between the guard and the destination is the REAL
+/// road route from the shared [guardRouteProvider] (OSRM via [RoutingService]), keyed by the SNAPPED
+/// guard origin (the guard's LIVE position) + the booking destination — so it is fetched once per
+/// ~100 m cell and CACHED (the inline preview shares the same route; no re-fetch on each guard GPS
+/// update). The guard pin animates along that real road line as it moves. FALLBACK: when the route is
+/// null (OSRM down / no guard fix yet) the map DEGRADES to the honest straight [guard]→[target]
+/// segment, and the distance readout stays straight-line "≈" via geo.dart; when a route IS available
+/// the distance shows the real ROAD distance (no "≈"). Never blank/crash.
 class GuardMapScreen extends ConsumerWidget {
   const GuardMapScreen({super.key, required this.bookingId});
 
@@ -75,7 +85,7 @@ class GuardMapScreen extends ConsumerWidget {
   }
 }
 
-class _MapBody extends StatelessWidget {
+class _MapBody extends ConsumerWidget {
   const _MapBody({
     required this.track,
     required this.isThai,
@@ -87,11 +97,30 @@ class _MapBody extends StatelessWidget {
   final Future<void> Function() onRefresh;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final guard = track.guard;
     // Where the guard is heading: the booking's pinned destination when present, else the
     // customer's device fix as a fallback (see GuardTrack.target).
     final target = track.target;
+
+    // The REAL road route, shared with the inline preview via [guardRouteProvider]'s cache — origin =
+    // the guard's LIVE position, dest = the booking target. `snapOrigin` quantises the origin to a
+    // ~100 m grid so a fresh OSRM fetch fires only when the guard crosses a cell, not on each GPS
+    // tick. Null (loading / OSRM down / no fix) → the straight-line fallback below.
+    final route = (guard != null && target != null)
+        ? ref
+            .watch(guardRouteProvider(
+              start: snapOrigin(guard.point),
+              end: snapDest(target),
+            ))
+            .valueOrNull
+        : null;
+
+    // The line to draw: the REAL multi-point road geometry when routed, else the honest straight
+    // 2-point segment (fallback / pre-route loading).
+    final List<GeoPoint>? linePoints = route != null
+        ? route.polyline
+        : (guard != null && target != null ? [guard.point, target] : null);
 
     return Column(
       children: [
@@ -104,8 +133,11 @@ class _MapBody extends StatelessWidget {
               Positioned.fill(
                 child: PgMap(
                   interactive: true,
-                  polyline: (guard != null && target != null)
-                      ? PgPolyline(points: [guard.point, target])
+                  // The real route is a definite road path → solid; the straight fallback stays
+                  // dashed (the honest "this is a straight approximation" cue, matching the "≈"
+                  // distance label below).
+                  polyline: linePoints != null
+                      ? PgPolyline(points: linePoints, dashed: route == null)
                       : null,
                   markers: [
                     if (target != null)
@@ -140,7 +172,12 @@ class _MapBody extends StatelessWidget {
             ],
           ),
         ),
-        _InfoPanel(track: track, isThai: isThai, onRefresh: onRefresh),
+        _InfoPanel(
+          track: track,
+          isThai: isThai,
+          onRefresh: onRefresh,
+          route: route,
+        ),
       ],
     );
   }
@@ -344,16 +381,26 @@ class _InfoPanel extends ConsumerWidget {
     required this.track,
     required this.isThai,
     required this.onRefresh,
+    this.route,
   });
 
   final GuardTrack track;
   final bool isThai;
   final Future<void> Function() onRefresh;
 
+  /// The REAL road route to the target when one is available — its road distance replaces the
+  /// straight-line haversine in the distance readout (and drops the "≈" approximate cue). Null →
+  /// the straight-line geo.dart distance, labelled "≈".
+  final RouteResult? route;
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final guard = track.guard;
-    final distance = track.distanceToTarget;
+    // Prefer the REAL road distance (along the route) when routed — that is an exact road figure, so
+    // it drops the "≈". Fall back to the straight-line haversine ([GuardTrack.distanceToTarget]),
+    // which stays approximate.
+    final routed = route != null;
+    final distance = route?.distanceMeters ?? track.distanceToTarget;
     final booking = track.booking;
     final myUserId = ref.watch(sessionProvider).user?.userId;
     return Container(
@@ -410,10 +457,17 @@ class _InfoPanel extends ConsumerWidget {
             ),
           if (distance != null)
             Text(
+              // A routed (real road) distance is exact → no "ประมาณ"/"About" hedge; the straight-line
+              // fallback keeps the approximate wording. The device-fix target ("from you") is only
+              // ever straight-line.
               track.targetIsDestination
-                  ? (isThai
-                      ? 'ห่างจากจุดหมายประมาณ ${formatDistance(distance, thai: true)}'
-                      : 'About ${formatDistance(distance, thai: false)} from the destination')
+                  ? (routed
+                      ? (isThai
+                          ? 'ระยะตามถนน ${formatDistance(distance, thai: true)} ถึงจุดหมาย'
+                          : '${formatDistance(distance, thai: false)} by road to the destination')
+                      : (isThai
+                          ? 'ห่างจากจุดหมายประมาณ ${formatDistance(distance, thai: true)}'
+                          : 'About ${formatDistance(distance, thai: false)} from the destination'))
                   : (isThai
                       ? 'ห่างจากคุณประมาณ ${formatDistance(distance, thai: true)}'
                       : 'About ${formatDistance(distance, thai: false)} from you'),

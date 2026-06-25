@@ -9,6 +9,7 @@ import '../../core/controllers/booking_payment_controller.dart';
 import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/guard_clock.dart';
 import '../../core/controllers/guard_location_controller.dart';
+import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
@@ -1230,10 +1231,20 @@ class _PayNowBanner extends ConsumerWidget {
 }
 
 /// Inline live travel-map embedded in the customer live screen: the guard's LIVE position + the
-/// destination + the straight route between them, in a ~220px [TravelMapPreview] card. Reuses the
+/// destination + the REAL road route between them, in a ~220px [TravelMapPreview] card. Reuses the
 /// SAME data + markers the full-screen customer map ([GuardMapScreen]) uses — it watches
 /// [guardLocationControllerProvider], which re-pulls on each booking-status WS frame (no polling).
-/// Tap / fullscreen expands to `/booking/{id}/map`. Loading / no-fix degrade to a calm placeholder.
+///
+/// REAL ROUTING (matches the guard nav): the road geometry comes from the shared
+/// [guardRouteProvider] (OSRM via [RoutingService]), keyed by the SNAPPED guard origin + the booking
+/// destination — origin = the guard's LIVE position, dest = [GuardTrack.target]. `snapOrigin` quantises
+/// the origin to a ~100 m grid so the route is fetched once per cell and CACHED, not re-fetched on
+/// each guard GPS update; the full-screen [GuardMapScreen] shares that same cached route. The guard
+/// pin still animates along the real road line as its position updates.
+///
+/// FALLBACK: when the route is null (OSRM down / no guard fix yet) [TravelMapPreview] degrades to the
+/// honest straight [mover]→[target] segment — never blank/crash. Tap / fullscreen expands to
+/// `/booking/{id}/map`. Loading / no-fix degrade to a calm placeholder.
 class _InlineGuardMap extends ConsumerWidget {
   const _InlineGuardMap({required this.bookingId});
 
@@ -1246,9 +1257,22 @@ class _InlineGuardMap extends ConsumerWidget {
         ref.watch(guardLocationControllerProvider(bookingId)).valueOrNull;
     final guard = track?.guard;
     final target = track?.target;
+    // The REAL road route, shared (via the cache) with the full-screen map — origin = the guard's
+    // live position, dest = the booking target. Snapped so it re-fetches only when the guard crosses
+    // a ~100 m cell, not on every GPS tick. Null (loading / OSRM down) → the preview's straight
+    // fallback.
+    final route = (guard != null && target != null)
+        ? ref
+            .watch(guardRouteProvider(
+              start: snapOrigin(guard.point),
+              end: snapDest(target),
+            ))
+            .valueOrNull
+        : null;
     return TravelMapPreview(
       mover: guard?.point,
       target: target,
+      routePoints: route?.polyline,
       moverMarker: GuardMapGuardMarker(heading: guard?.heading),
       targetMarker: GuardMapReferenceMarker(
         isThai: isThai,
