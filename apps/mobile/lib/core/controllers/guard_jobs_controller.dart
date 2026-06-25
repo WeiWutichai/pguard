@@ -58,6 +58,28 @@ class GuardJobsController extends _$GuardJobsController {
   static List<Booking> completed(List<Booking> all) =>
       all.where((b) => b.status == BookingStatus.completed).toList();
 
+  /// The status badge a job card should carry on the guard's list, or `null` for the normal
+  /// in-progress states (accepted/en_route/arrived) that need no extra label. Today only
+  /// `pending_completion` gets one: the guard has requested completion and the job now sits in the
+  /// active tab awaiting the CUSTOMER's confirmation — without this badge that card is visually
+  /// identical to a job the guard should still be working, and finding no "End" action on tap reads
+  /// as being stuck. The customer (not the guard) advances it: confirm → `completed` (moves to the
+  /// Done tab); reject → `arrived` (back to a normal in-progress card).
+  static String? statusBadge(Booking booking, {required bool isThai}) =>
+      booking.status == BookingStatus.pendingCompletion
+          ? (isThai
+              ? 'รอลูกค้ายืนยันจบงาน'
+              : 'Awaiting customer confirmation')
+          : null;
+
+  /// Whether tapping this card should open the READ-ONLY job status view (`/guard/job/{id}`)
+  /// instead of the working active-job screen (`/guard/active/{id}`). True for `pending_completion`:
+  /// the guard cannot re-end the job (the customer confirms), so the working screen's chrome is
+  /// inappropriate — the read-only detail shows the awaiting-confirmation status cleanly. The
+  /// genuinely-working states (accepted/en_route/arrived) still open the active screen.
+  static bool opensReadOnly(Booking booking) =>
+      booking.status == BookingStatus.pendingCompletion;
+
   /// `POST /v1/bookings/{id}/accept` — first-come accept (sets guard_id = caller).
   ///
   /// On success also invalidates THIS booking's [activeJobControllerProvider] so the active-job

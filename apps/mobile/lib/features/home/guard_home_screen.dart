@@ -461,7 +461,15 @@ class _JobsBody extends StatelessWidget {
         else
           for (final b in active) ...[
             GuardJobCard(
-                booking: b, isThai: isThai, onTap: () => onOpenActive(b.id)),
+              booking: b,
+              isThai: isThai,
+              // Badge a `pending_completion` job (awaiting the customer) and open it READ-ONLY —
+              // it's in the active list but the guard can't re-end it; the customer confirms.
+              statusLabel: GuardJobsController.statusBadge(b, isThai: isThai),
+              onTap: () => GuardJobsController.opensReadOnly(b)
+                  ? onOpenDetail(b.id)
+                  : onOpenActive(b.id),
+            ),
             const SizedBox(height: PgTokens.space3),
           ],
         const SizedBox(height: PgTokens.space4),

@@ -3,11 +3,14 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/booking_payment_controller.dart';
+import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/review_controller.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/star_rating.dart';
+import 'widgets/job_receipt_sheet.dart';
 
 /// Customer review screen for a completed booking (design `Mobile - Customer App.html` ⑫ "รีวิว"):
 /// a required overall ★ + optional per-category ministars (ตรงเวลา / มืออาชีพ / สื่อสาร / การแต่งกาย)
@@ -52,24 +55,108 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
             );
     if (!mounted) return;
     switch (outcome) {
+      // A fresh submit AND an already-reviewed booking both END the review flow successfully:
+      // thank the customer, then leave the rating screen. Idempotent — a 409 ("คุณรีวิวงานนี้แล้ว")
+      // is a normal end state, not an error, so it gets the same thank-you + escape, not a dead-end.
       case ReviewOutcome.submitted:
-        _toast(isThai ? 'ขอบคุณสำหรับรีวิว' : 'Thanks for your review');
-        context.pop();
+        await _thankYouThenHome(isThai, alreadyReviewed: false);
       case ReviewOutcome.alreadyReviewed:
-        _toast(isThai ? 'คุณรีวิวงานนี้แล้ว' : 'You already reviewed this job');
-        context.pop();
+        await _thankYouThenHome(isThai, alreadyReviewed: true);
       case ReviewOutcome.error:
         break; // state.error renders inline below
     }
   }
 
-  void _toast(String msg) =>
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  /// Show the "ขอบคุณสำหรับการรีวิว / Thank you for your review!" confirmation, then RESET the
+  /// navigation stack to the customer home. We use `context.go` (not `pop`) on purpose: the review
+  /// screen is reached via `pushReplacement` from the job-completion summary, so popping would land
+  /// the customer back on a stale live-status / nowhere — the "รีวิวแล้วกลับหน้าหลักไม่ได้" dead-end.
+  /// `go('/home/customer')` rebuilds the stack at home, always escaping it. The dialog also offers
+  /// "ดูใบเสร็จ / View receipt" so the customer can see the settled bill straight from here.
+  Future<void> _thankYouThenHome(bool isThai,
+      {required bool alreadyReviewed}) async {
+    final wantsReceipt = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        icon: const Icon(Icons.check_circle,
+            size: 44, color: PgTokens.colorSuccess),
+        title: Text(
+          isThai ? 'ขอบคุณสำหรับการรีวิว' : 'Thank you for your review!',
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
+        content: Text(
+          alreadyReviewed
+              ? (isThai
+                  ? 'คุณรีวิวงานนี้แล้ว ความคิดเห็นของคุณช่วยพัฒนาบริการของเรา'
+                  : "You've already reviewed this job. Your feedback helps us improve.")
+              : (isThai
+                  ? 'ความคิดเห็นของคุณช่วยพัฒนาบริการของเรา'
+                  : 'Your feedback helps us improve our service.'),
+          textAlign: TextAlign.center,
+          style: const TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
+        ),
+        actionsAlignment: MainAxisAlignment.center,
+        actions: [
+          TextButton.icon(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            icon: const Icon(Icons.receipt_long_outlined, size: 18),
+            label: Text(isThai ? 'ดูใบเสร็จ' : 'View receipt'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            style: FilledButton.styleFrom(
+                backgroundColor: PgTokens.colorGreen800),
+            child: Text(isThai ? 'กลับหน้าหลัก' : 'Back to home'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    // Show the receipt FIRST (and wait for it to close) when asked — otherwise navigating home
+    // would tear the review screen down and dismiss the sheet immediately.
+    if (wantsReceipt == true) {
+      await _openReceipt(isThai);
+      if (!mounted) return;
+    }
+    // Then always land the customer at home — a clean stack reset out of the review/summary/live
+    // chain (escapes the "รีวิวแล้วกลับหน้าหลักไม่ได้" dead-end).
+    context.go('/home/customer');
+  }
+
+  /// Open the shared job RECEIPT for this booking, enriched with the CUSTOMER's settled payment
+  /// when available. The customer is the payment owner, so `GET /v1/payments` (owner-scoped, picked
+  /// by booking_id via [bookingPaymentControllerProvider]) yields the authoritative reconciled
+  /// `final_amount` / `refund_amount` / `actual_hours`. If the settle hasn't propagated (no row),
+  /// the sheet falls back to the booking-derived estimate — it never blocks. Reuses #99's
+  /// [showJobReceiptSheet].
+  Future<void> _openReceipt(bool isThai) async {
+    final booking = ref
+        .read(bookingStatusControllerProvider(widget.bookingId))
+        .valueOrNull;
+    if (booking == null || !mounted) return;
+    final payment = ref
+        .read(bookingPaymentControllerProvider(widget.bookingId))
+        .valueOrNull;
+    await showJobReceiptSheet(
+      context,
+      booking: booking,
+      payment: payment,
+      isThai: isThai,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final state = ref.watch(reviewControllerProvider);
+
+    // Prime the booking snapshot + the customer's owner-scoped payment so they're already loaded
+    // when the post-submit thank-you dialog offers "ดูใบเสร็จ / View receipt" — watching keeps both
+    // alive for this screen and starts their fetch on mount (no extra request at receipt time).
+    ref.watch(bookingStatusControllerProvider(widget.bookingId));
+    ref.watch(bookingPaymentControllerProvider(widget.bookingId));
 
     final categories = <({String label, int value, ValueChanged<int> set})>[
       (

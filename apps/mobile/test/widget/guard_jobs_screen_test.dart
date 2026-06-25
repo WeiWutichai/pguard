@@ -60,6 +60,26 @@ void main() {
     expect(find.text('ยังไม่มีงานรอตอบรับ'), findsOneWidget);
   });
 
+  testWidgets(
+      'a pending_completion job shows in the Active tab WITH the '
+      '"awaiting customer confirmation" badge (not lost, not in Done)',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
+        ? [_booking('pending_completion', 'หมู่บ้านนนทรี', 'b-pc')]
+        : const <Map<String, dynamic>>[]);
+    await _pump(tester, api);
+
+    // Default tab = Active → the card and its awaiting-confirmation badge are visible.
+    expect(find.text('หมู่บ้านนนทรี'), findsOneWidget);
+    expect(find.text('รอลูกค้ายืนยันจบงาน'), findsOneWidget);
+
+    // It must NOT have leaked into Done.
+    await tester.tap(find.textContaining('เสร็จ'));
+    await tester.pumpAndSettle();
+    expect(find.text('หมู่บ้านนนทรี'), findsNothing);
+    expect(find.text('ยังไม่มีงานที่เสร็จ'), findsOneWidget);
+  });
+
   testWidgets('open-discovery jobs (/bookings/open) appear in the Pending tab',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async => path == '/bookings/open'
