@@ -110,6 +110,15 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
     // Timer.periodic — the active-job controller has no live WS, so a manual re-pull is the only way
     // it reflects an async server change.
     if (lifecycle == AppLifecycleState.resumed) {
+      // SKIP the re-fetch while a check-in is in flight: capturing the checkpoint photo opens the
+      // system camera, which backgrounds the app — so this `resumed` fires when the camera RETURNS,
+      // mid-check-in. Invalidating then drops the controller into `loading` (wiping the
+      // client-only `startedAt` + the in-memory completedCheckIns) and races the not-yet-submitted
+      // report, which is exactly what made round 1 look unregistered / re-prompt "Start job". The
+      // payment-resync this guard exists for can wait until the check-in sheet closes.
+      if (ref.read(workSessionStoreProvider).isCheckInInFlight(widget.bookingId)) {
+        return;
+      }
       ref.invalidate(activeJobControllerProvider(widget.bookingId));
     }
   }
@@ -867,17 +876,27 @@ class _WorkingActionBarState extends ConsumerState<_WorkingActionBar> {
 
   Future<void> _checkIn(int slot) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    final ok = await showCheckInSheet(
-      context: context,
-      ref: ref,
-      bookingId: widget.bookingId,
-      hourNumber: slot,
-    );
+    final store = ref.read(workSessionStoreProvider);
+    // Mark the check-in in flight for the WHOLE sheet lifecycle — the photo capture opens the
+    // system camera and backgrounds the app, so the screen's `resumed` handler must NOT re-fetch
+    // (and wipe the working session) until the sheet closes. Always cleared in `finally` so a
+    // cancel / error can never leave resync permanently suppressed.
+    store.beginCheckIn(widget.bookingId);
+    final bool? ok;
+    try {
+      ok = await showCheckInSheet(
+        context: context,
+        ref: ref,
+        bookingId: widget.bookingId,
+        hourNumber: slot,
+      );
+    } finally {
+      store.endCheckIn(widget.bookingId);
+    }
     if (ok == true && mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content:
-              Text(isThai ? 'ส่งรายงานเช็คอินแล้ว' : 'Check-in sent'),
+          content: Text(isThai ? 'ส่งรายงานเช็คอินแล้ว' : 'Check-in sent'),
         ),
       );
     }

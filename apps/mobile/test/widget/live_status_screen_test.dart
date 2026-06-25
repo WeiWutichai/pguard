@@ -37,6 +37,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(store),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tokenProvider) => feed),
@@ -112,6 +115,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
@@ -158,6 +164,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
@@ -238,6 +247,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
@@ -298,6 +310,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
@@ -349,6 +364,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
@@ -390,6 +408,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // The acting user IS the booking owner (sub == customer_id 'c1'). A refresh token (+ no
         // PIN) makes the session resolve `authenticated` so sessionProvider.user is populated.
         appStoreProvider.overrideWithValue(
@@ -435,6 +456,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // Acting user IS the owner (sub == customer_id 'c1').
         appStoreProvider.overrideWithValue(
             InMemoryStore()
@@ -476,6 +500,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // Acting user is the GUARD (sub 'g1') — NOT the booking owner 'c1'.
         appStoreProvider.overrideWithValue(
             InMemoryStore()
@@ -516,6 +543,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
+        // Real OSRM routing is now reused by the inline live-map preview — fake it so no test hits
+        // the network (default null route → the straight-line fallback the preview degrades to).
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // The acting user is the GUARD (sub 'g1', role guard) — NOT the booking owner 'c1'.
         appStoreProvider.overrideWithValue(
             InMemoryStore()
