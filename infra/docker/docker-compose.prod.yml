@@ -328,6 +328,12 @@ services:
       CALLING_URL: http://calling:3008
       PRESENCE_URL: http://presence:3009
       CHAT_URL: http://chat:3010
+      # EXTERNAL OSRM routing proxy: the device can't reach OSRM directly on a Thai mobile
+      # network, but always reaches the VPS — so the gateway proxies `/v1/osrm/*` to OSRM (the
+      # VPS reaches it reliably) and owns the primary→mirror failover. Sane public defaults are
+      # baked into the gateway, so it works even if these are unset; override on the VPS `.env`.
+      OSRM_PRIMARY_URL: ${OSRM_PRIMARY_URL:-https://router.project-osrm.org}
+      OSRM_MIRROR_URL: ${OSRM_MIRROR_URL:-https://routing.openstreetmap.de/routed-car}
     # The ONLY service that publishes a host port. In real prod an ingress/nginx
     # terminates TLS in front of this; here the gateway is the single ingress.
     ports:

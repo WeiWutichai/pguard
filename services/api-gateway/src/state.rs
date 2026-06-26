@@ -19,6 +19,10 @@ use crate::domain::ws::StatusUpdate;
 #[derive(Debug, Clone)]
 pub struct UpstreamTable {
     urls: HashMap<Upstream, String>,
+    /// The OSRM failover base URL (`OSRM_MIRROR_URL`). Kept OUT of `urls` because it is not a
+    /// distinct routing target — it's the mirror the handler retries against once when the
+    /// PRIMARY ([`Upstream::Osrm`] in `urls`) forward fails. See `proxy::forward_osrm`.
+    osrm_mirror_url: String,
 }
 
 impl UpstreamTable {
@@ -60,13 +64,34 @@ impl UpstreamTable {
             env_url("PRESENCE_URL", "http://localhost:3009"),
         );
         urls.insert(Upstream::Chat, env_url("CHAT_URL", "http://localhost:3010"));
-        Self { urls }
+        // EXTERNAL OSRM routing proxy (the device can't reach OSRM directly on a Thai mobile
+        // network, but always reaches the VPS). Sane public defaults are baked in so the gateway
+        // proxies OSRM even when the env vars are unset. The PRIMARY lives in `urls`
+        // (Upstream::Osrm); the MIRROR is the handler's once-only failover.
+        urls.insert(
+            Upstream::Osrm,
+            env_url("OSRM_PRIMARY_URL", "https://router.project-osrm.org"),
+        );
+        let osrm_mirror_url = env_url(
+            "OSRM_MIRROR_URL",
+            "https://routing.openstreetmap.de/routed-car",
+        );
+        Self {
+            urls,
+            osrm_mirror_url,
+        }
     }
 
     /// Base URL for an upstream (no trailing slash). Present for every variant because
     /// [`from_env`](Self::from_env) inserts all of them.
     pub fn base_url(&self, upstream: Upstream) -> Option<&str> {
         self.urls.get(&upstream).map(String::as_str)
+    }
+
+    /// The OSRM failover base URL (`OSRM_MIRROR_URL`, no trailing slash). The handler retries
+    /// against this ONCE when the primary ([`Upstream::Osrm`]) forward fails.
+    pub fn osrm_mirror_url(&self) -> &str {
+        &self.osrm_mirror_url
     }
 
     /// Override a single upstream's base URL (trailing slash trimmed). Used by tests to
@@ -124,7 +149,9 @@ mod tests {
 
     #[test]
     fn upstream_table_has_all_upstreams_with_defaults() {
-        // No env set in test → documented dev defaults; trailing slash trimmed.
+        // No env set in test → documented dev defaults; trailing slash trimmed. The INTERNAL
+        // services default to `http://` cluster hosts; the EXTERNAL OSRM proxy defaults to its
+        // public `https://` demo host (checked separately below).
         let t = UpstreamTable::from_env();
         for up in [
             Upstream::Identity,
@@ -142,5 +169,20 @@ mod tests {
             assert!(url.starts_with("http://"), "{up:?} -> {url}");
             assert!(!url.ends_with('/'), "trailing slash trimmed: {url}");
         }
+    }
+
+    #[test]
+    fn osrm_upstream_defaults_to_public_demo_with_mirror() {
+        // The EXTERNAL OSRM proxy resolves the PRIMARY into the table and the MIRROR separately,
+        // both to baked-in public defaults (so it works without the env), trailing slash trimmed.
+        let t = UpstreamTable::from_env();
+        let primary = t.base_url(Upstream::Osrm).expect("osrm primary resolves");
+        assert_eq!(primary, "https://router.project-osrm.org");
+        assert_eq!(
+            t.osrm_mirror_url(),
+            "https://routing.openstreetmap.de/routed-car"
+        );
+        assert!(!primary.ends_with('/'));
+        assert!(!t.osrm_mirror_url().ends_with('/'));
     }
 }

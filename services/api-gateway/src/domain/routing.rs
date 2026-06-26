@@ -84,6 +84,14 @@ pub enum Upstream {
     Rating,
     Presence,
     Chat,
+    /// EXTERNAL upstream (NOT an internal pguard service): the public OSRM routing demo
+    /// (`OSRM_PRIMARY_URL`, with `OSRM_MIRROR_URL` as the gateway's failover). The device
+    /// (Thai mobile network) can't reliably reach OSRM directly but always reaches the VPS,
+    /// so the gateway proxies `/v1/osrm/<rest>` → `{OSRM_PRIMARY_URL}/<rest>` (the `/osrm`
+    /// segment is stripped in [`resolve`]). Token-gated like any protected `/v1` route — the
+    /// gateway auths the caller, then forwards (OSRM itself needs no auth). The handler's
+    /// OSRM-specific mirror retry lives in `proxy::forward_osrm`.
+    Osrm,
 }
 
 impl Upstream {
@@ -100,6 +108,7 @@ impl Upstream {
             Upstream::Rating => "rating",
             Upstream::Presence => "presence",
             Upstream::Chat => "chat",
+            Upstream::Osrm => "osrm",
         }
     }
 }
@@ -470,6 +479,18 @@ const RULES: &[Rule] = &[
         upstream: Upstream::Rating,
         tier: Tier::Api,
     },
+    Rule {
+        // EXTERNAL OSRM routing proxy: `/v1/osrm/<rest>` → `{OSRM_PRIMARY_URL}/<rest>`. The
+        // `/osrm` segment is additionally stripped from `forward_path` in `resolve` (see the
+        // strip below), so `/osrm/route/v1/driving/{coords}` forwards as `/route/v1/driving/
+        // {coords}`. Token-gated (NOT in PUBLIC_PATHS) — the gateway auths the caller before
+        // forwarding to OSRM (OSRM needs no auth). Api tier (rate-limited). The mirror-retry
+        // failover is the handler's job (`proxy::forward_osrm`), not a routing concern.
+        prefix: "/osrm/",
+        suffix: None,
+        upstream: Upstream::Osrm,
+        tier: Tier::Api,
+    },
 ];
 
 /// Exact public (token-not-required) resource paths, post-`/v1` strip. Everything
@@ -589,6 +610,28 @@ fn is_guard_documents_path(stripped: &str) -> bool {
     false
 }
 
+/// The path to forward to `upstream`, given the `/v1`-stripped resource path. For every
+/// upstream this is the stripped path verbatim; the EXTERNAL [`Upstream::Osrm`] proxy
+/// additionally removes the leading `/osrm` segment so `/osrm/route/v1/driving/{coords}`
+/// forwards to the OSRM base as `/route/v1/driving/{coords}`. A bare `/osrm` (the `/osrm/`
+/// rule can't actually match it — there is no trailing segment — but be total anyway) maps
+/// to `/`. Pure (no I/O).
+fn forward_path_for(upstream: Upstream, stripped: &str) -> String {
+    if upstream == Upstream::Osrm {
+        // `stripped` matched the `/osrm/` rule, so it always starts with `/osrm/`; strip the
+        // segment, keeping the remainder's leading slash (so the OSRM base joins cleanly).
+        if let Some(rest) = stripped.strip_prefix("/osrm") {
+            // `rest` keeps its own leading '/' (e.g. "/route/v1/driving/...").
+            return if rest.is_empty() {
+                "/".to_string()
+            } else {
+                rest.to_string()
+            };
+        }
+    }
+    stripped.to_string()
+}
+
 /// Resolve an inbound request path (the raw URI path, e.g. `/v1/auth/login`) into a
 /// [`RouteDecision`]. Query strings must be stripped by the caller before this point.
 ///
@@ -634,7 +677,10 @@ pub fn resolve(path: &str) -> RouteDecision {
     match best {
         Some(rule) => RouteDecision::Proxy {
             upstream: rule.upstream,
-            forward_path: stripped.to_string(),
+            // The EXTERNAL OSRM upstream additionally strips the leading `/osrm` segment so
+            // `/osrm/route/v1/driving/{coords}` forwards to the OSRM base as `/route/v1/
+            // driving/{coords}`. Every other upstream forwards the bare `/v1`-stripped path.
+            forward_path: forward_path_for(rule.upstream, stripped),
             // Edge-public if an exact public path OR the guard documents route (dual-auth like the
             // `/profile/guard` submit — the profile service validates the purpose/access token).
             public: PUBLIC_PATHS.contains(&stripped) || is_guard_documents_path(stripped),
@@ -1181,6 +1227,66 @@ mod tests {
         assert_eq!(Upstream::Rating.as_str(), "rating");
         assert_eq!(Upstream::Presence.as_str(), "presence");
         assert_eq!(Upstream::Chat.as_str(), "chat");
+        assert_eq!(Upstream::Osrm.as_str(), "osrm");
+    }
+
+    // ----- OSRM external routing proxy -----
+
+    #[test]
+    fn osrm_route_forwards_with_osrm_segment_stripped_and_is_protected() {
+        // The whole point of the slice: `/v1/osrm/route/v1/driving/{coords}` → Osrm upstream,
+        // forward_path has BOTH `/v1` and the `/osrm` segment stripped → `/route/v1/driving/...`.
+        let (up, fwd, public, tier) =
+            proxy(resolve("/v1/osrm/route/v1/driving/100.5,13.7;100.6,13.8"));
+        assert_eq!(up, Upstream::Osrm);
+        assert_eq!(fwd, "/route/v1/driving/100.5,13.7;100.6,13.8");
+        assert!(
+            !public,
+            "/osrm proxy requires a token (NOT a public open proxy)"
+        );
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn osrm_subpaths_strip_only_the_leading_osrm_segment() {
+        // A deeper subpath keeps everything after `/osrm`; an inner `osrm` token in the path is
+        // NOT stripped (only the leading segment is).
+        let (up, fwd, _, _) = proxy(resolve("/v1/osrm/table/v1/driving/100.5,13.7"));
+        assert_eq!(up, Upstream::Osrm);
+        assert_eq!(fwd, "/table/v1/driving/100.5,13.7");
+        // `osrm` appearing again as a later segment must be preserved verbatim.
+        let (_, fwd2, _, _) = proxy(resolve("/v1/osrm/route/osrm/x"));
+        assert_eq!(fwd2, "/route/osrm/x");
+    }
+
+    #[test]
+    fn osrm_bare_collection_is_not_found() {
+        // The `/osrm/` rule needs a trailing segment; bare `/osrm` (no slash) matches nothing.
+        assert_eq!(resolve("/v1/osrm"), RouteDecision::NotFound);
+    }
+
+    #[test]
+    fn osrm_internal_smuggle_is_blocked() {
+        // The /internal block must hold for the external proxy too — never let an `/internal`
+        // segment (or encoded separator) ride the OSRM passthrough.
+        assert_eq!(resolve("/v1/osrm/internal/x"), RouteDecision::Block);
+        assert_eq!(resolve("/v1/osrm/route%2finternal"), RouteDecision::Block);
+    }
+
+    #[test]
+    fn forward_path_for_only_strips_osrm_for_osrm_upstream() {
+        // Pure helper: only the Osrm upstream strips `/osrm`; every other upstream forwards the
+        // stripped path verbatim (a path that happens to start with `/osrm` stays intact).
+        assert_eq!(
+            forward_path_for(Upstream::Osrm, "/osrm/route/v1"),
+            "/route/v1"
+        );
+        assert_eq!(forward_path_for(Upstream::Osrm, "/osrm"), "/");
+        assert_eq!(
+            forward_path_for(Upstream::Booking, "/osrm/route/v1"),
+            "/osrm/route/v1",
+            "non-OSRM upstreams never strip /osrm"
+        );
     }
 
     // ----- chat routes (gateway routing gap) -----

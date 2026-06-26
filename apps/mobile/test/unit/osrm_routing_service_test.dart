@@ -6,16 +6,22 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/location/routing_service.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
 
-/// Resilience tests for the LIVE [OsrmRoutingService] (network behaviour), distinct from the pure
-/// [RouteResult.fromOsrm] parsing tests. We drive a scriptable Dio adapter so no real network is hit:
-///  - the primary host failing falls through to the mirror,
-///  - a 429 rate-limit on the primary also falls through,
-///  - a transient all-hosts failure is served from the per-leg SUCCESS cache (not blanked),
-///  - a genuine no-route (everything fails, nothing cached) returns null for the straight fallback,
+/// Behaviour tests for the LIVE [OsrmRoutingService] (now routing THROUGH the api-gateway OSRM
+/// proxy), distinct from the pure [RouteResult.fromOsrm] parsing tests. We drive a scriptable Dio
+/// adapter so no real network is hit, asserting:
+///  - the request targets the gateway `{base}/v1/osrm/route/v1/driving/{lon},{lat};{lon},{lat}` URL
+///    (lon FIRST) with the `overview=full&geometries=geojson` query and a sample geojson parses;
+///  - the access token is attached as `Authorization: Bearer <token>` (the proxy is token-gated);
+///  - a transient failure is served from the per-leg SUCCESS cache (not blanked);
+///  - a genuine failure (request fails, nothing cached) returns null for the straight-line fallback;
 ///  - the service never throws.
+///
+/// NOTE: the in-app primary/mirror host list is GONE — the gateway owns that failover now, so this
+/// client only ever talks to ONE host (the VPS).
 void main() {
   const origin = GeoPoint(13.7563, 100.5018);
   const dest = GeoPoint(13.7367, 100.5331);
+  const base = 'http://gateway.test';
 
   // A minimal valid OSRM body the parser accepts (coordinates are [lon, lat]).
   Map<String, dynamic> okBody() => {
@@ -38,97 +44,104 @@ void main() {
 
   OsrmRoutingService serviceWith(
     Future<ResponseBody> Function(RequestOptions o) handler, {
-    List<String>? mirrors,
+    Future<String?> Function()? tokenProvider,
   }) {
     final dio = Dio(BaseOptions(validateStatus: (s) => s != null && s < 500))
       ..httpClientAdapter = _StubAdapter(handler);
-    return OsrmRoutingService(dio: dio, mirrors: mirrors);
+    return OsrmRoutingService(
+      dio: dio,
+      baseUrl: '$base/v1/osrm',
+      tokenProvider: tokenProvider ?? () async => 'access-token',
+    );
   }
 
-  test('returns the parsed road route on a primary-host success', () async {
-    final svc = serviceWith((o) async => _json(200, okBody()));
+  test('builds the gateway /v1/osrm URL with the geojson query and parses the body', () async {
+    Uri? seenUri;
+    final svc = serviceWith((o) async {
+      seenUri = o.uri;
+      return _json(200, okBody());
+    });
+
     final r = await svc.route(origin: origin, dest: dest);
+
     expect(r, isNotNull);
     expect(r!.distanceMeters, 4200.0);
     expect(r.polyline.length, 3);
+
+    // Targets the gateway OSRM proxy, lon FIRST in each coordinate, /route/v1/driving path.
+    expect(seenUri, isNotNull);
+    expect(seenUri!.path, '/v1/osrm/route/v1/driving/'
+        '${origin.lng},${origin.lat};${dest.lng},${dest.lat}');
+    expect(seenUri!.queryParameters['overview'], 'full');
+    expect(seenUri!.queryParameters['geometries'], 'geojson');
   });
 
-  test('falls through to the mirror host when the primary throws (transient)', () async {
-    var primaryHits = 0;
-    var mirrorHits = 0;
+  test('attaches the access token as Authorization: Bearer (the proxy is token-gated)', () async {
+    String? seenAuth;
     final svc = serviceWith(
       (o) async {
-        if (o.uri.host == 'primary.test') {
-          primaryHits++;
-          throw DioException(
-              requestOptions: o, type: DioExceptionType.connectionTimeout);
-        }
-        mirrorHits++;
+        seenAuth = o.headers['Authorization'] as String?;
         return _json(200, okBody());
       },
-      mirrors: const ['https://primary.test', 'https://mirror.test'],
+      tokenProvider: () async => 'tok-123',
     );
+
     final r = await svc.route(origin: origin, dest: dest);
-    expect(r, isNotNull, reason: 'mirror should have served the route');
-    expect(primaryHits, 1);
-    expect(mirrorHits, 1);
+    expect(r, isNotNull);
+    expect(seenAuth, 'Bearer tok-123');
   });
 
-  test('a 429 rate-limit on the primary falls through to the mirror', () async {
+  test('sends no Authorization header when there is no session token', () async {
+    var sawHeader = true;
     final svc = serviceWith(
       (o) async {
-        if (o.uri.host == 'primary.test') {
-          // 429 is <500 → surfaces as a non-OSRM body that fails to parse (null), not an exception.
-          return _json(429, {'message': 'Too Many Requests'});
-        }
+        sawHeader = o.headers.containsKey('Authorization');
         return _json(200, okBody());
       },
-      mirrors: const ['https://primary.test', 'https://mirror.test'],
+      tokenProvider: () async => null,
     );
-    final r = await svc.route(origin: origin, dest: dest);
-    expect(r, isNotNull, reason: 'the mirror should cover a primary 429');
+    await svc.route(origin: origin, dest: dest);
+    expect(sawHeader, isFalse, reason: 'no token → no Authorization header');
   });
 
-  test('a transient all-hosts failure is served from the success cache (not blanked)', () async {
+  test('a transient failure is served from the success cache (not blanked)', () async {
     var fail = false;
-    final svc = serviceWith(
-      (o) async {
-        if (fail) {
-          throw DioException(
-              requestOptions: o, type: DioExceptionType.connectionError);
-        }
-        return _json(200, okBody());
-      },
-      mirrors: const ['https://primary.test', 'https://mirror.test'],
-    );
+    final svc = serviceWith((o) async {
+      if (fail) {
+        throw DioException(
+            requestOptions: o, type: DioExceptionType.connectionError);
+      }
+      return _json(200, okBody());
+    });
 
     // First call succeeds and primes the per-leg cache.
     final first = await svc.route(origin: origin, dest: dest);
     expect(first, isNotNull);
 
-    // Now every host fails — the SAME leg must still resolve to the cached road route.
+    // Now the gateway request fails — the SAME leg must still resolve to the cached road route.
     fail = true;
     final second = await svc.route(origin: origin, dest: dest);
     expect(second, isNotNull, reason: 'cached route should survive a transient blip');
     expect(second!.distanceMeters, first!.distanceMeters);
   });
 
-  test('returns null when every host fails and nothing is cached (straight-line fallback)', () async {
-    final svc = serviceWith(
-      (o) async => throw DioException(
-          requestOptions: o, type: DioExceptionType.connectionError),
-      mirrors: const ['https://primary.test', 'https://mirror.test'],
-    );
+  test('returns null when the request fails and nothing is cached (straight-line fallback)',
+      () async {
+    final svc = serviceWith((o) async => throw DioException(
+        requestOptions: o, type: DioExceptionType.connectionError));
     final r = await svc.route(origin: origin, dest: dest);
     expect(r, isNull);
   });
 
-  test('never throws even on a 5xx from every host', () async {
-    final svc = serviceWith(
-      (o) async => _json(503, 'upstream down'),
-      mirrors: const ['https://primary.test', 'https://mirror.test'],
-    );
+  test('never throws even on a 5xx from the gateway', () async {
+    final svc = serviceWith((o) async => _json(503, 'upstream down'));
     // 503 is >=500 → Dio raises (validateStatus<500), caught internally → null, no throw.
+    final r = await svc.route(origin: origin, dest: dest);
+    expect(r, isNull);
+  });
+
+  test('a 401/429 from the gateway degrades to null (4xx parses to null, no throw)', () async {
+    final svc = serviceWith((o) async => _json(401, {'error': 'Unauthorized'}));
     final r = await svc.route(origin: origin, dest: dest);
     expect(r, isNull);
   });

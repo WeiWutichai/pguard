@@ -19,7 +19,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 
 use crate::domain::ratelimit::RateDecision;
-use crate::domain::routing::{resolve, RouteDecision};
+use crate::domain::routing::{resolve, RouteDecision, Upstream};
 use crate::state::AppState;
 use crate::{auth, proxy, ratelimit};
 
@@ -134,17 +134,35 @@ pub async fn gateway(
         return err(StatusCode::BAD_GATEWAY, "Upstream service unavailable");
     };
 
-    match proxy::forward(
-        &state.http,
-        base_url,
-        &forward_path,
-        query,
-        request,
-        user.as_ref(),
-        body_cap.bytes(),
-    )
-    .await
-    {
+    // The EXTERNAL OSRM proxy gets the gateway-owned primary→mirror failover (the device can't
+    // reach OSRM directly on a Thai mobile network, only the VPS can). Every other upstream is a
+    // single internal service — a plain forward. Both inject the trusted `X-User-*` (the route is
+    // token-gated; harmless to OSRM).
+    let forwarded = if upstream == Upstream::Osrm {
+        proxy::forward_osrm(
+            &state.http,
+            base_url,
+            state.routes.osrm_mirror_url(),
+            &forward_path,
+            query,
+            request,
+            user.as_ref(),
+        )
+        .await
+    } else {
+        proxy::forward(
+            &state.http,
+            base_url,
+            &forward_path,
+            query,
+            request,
+            user.as_ref(),
+            body_cap.bytes(),
+        )
+        .await
+    };
+
+    match forwarded {
         Ok(resp) => resp,
         Err(pe) => err(pe.status(), pe.message()),
     }
@@ -396,6 +414,35 @@ mod tests {
             resp.status(),
             StatusCode::UNAUTHORIZED,
             "no token → 401 at edge"
+        );
+    }
+
+    #[tokio::test]
+    async fn full_pipeline_osrm_route_without_token_is_401() {
+        // The OSRM proxy is token-gated like any protected /v1 route — a no-token request is
+        // rejected at the edge BEFORE any forward to OSRM (NOT a public open proxy).
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .unwrap();
+        let upstream = spawn_echo_upstream().await;
+        let router = test_router(build_test_state(conn, &upstream));
+
+        let req = AxumRequest::builder()
+            .method("GET")
+            .uri("/v1/osrm/route/v1/driving/100.5,13.7;100.6,13.8?overview=full&geometries=geojson")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(with_connect_info(req)).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "OSRM proxy requires a token → 401 at edge"
         );
     }
 
