@@ -81,6 +81,7 @@ class PgMap extends StatefulWidget {
     this.interactive = true,
     this.minZoom = 3,
     this.maxZoom = 18,
+    this.recenterToken = 0,
   });
 
   /// Where to centre when there is nothing to fit (0 or 1 marker). Defaults to Bangkok.
@@ -101,6 +102,12 @@ class PgMap extends StatefulWidget {
   final bool interactive;
   final double minZoom;
   final double maxZoom;
+
+  /// An on-demand re-fit trigger. After the user pans/zooms away there is no coordinate change to
+  /// re-frame the camera, so a parent (the guard-nav sheet's ▲, the customer map's recenter FAB)
+  /// bumps this integer to re-fit the camera to the CURRENT points — see [didUpdateWidget]. A bump
+  /// with unchanged points still re-fits; an unchanged token never does. Default 0 = never asked.
+  final int recenterToken;
 
   @override
   State<PgMap> createState() => _PgMapState();
@@ -134,13 +141,23 @@ class _PgMapState extends State<PgMap> {
   @override
   void didUpdateWidget(covariant PgMap old) {
     super.didUpdateWidget(old);
-    // Re-fit IMPERATIVELY (no remount/TileLayer re-fetch/flicker) when the plotted coordinate set
-    // changed — this replaces re-keying the whole widget on moving coordinates (the live customer
-    // map + guard navigation push fresh guard fixes every WebSocket update). The single FlutterMap
-    // + TileLayer persists; only the camera moves.
+    // Re-fit IMPERATIVELY (no remount/TileLayer re-fetch/flicker) when EITHER the plotted coordinate
+    // set changed (the live customer map + guard navigation push fresh guard fixes every WebSocket
+    // update — this replaces re-keying the whole widget on moving coordinates) OR the parent bumped
+    // [recenterToken] to ask for an on-demand re-frame after the user panned/zoomed away (coordinates
+    // unchanged). A no-op rebuild (same points, same token) must NOT re-fit. The single FlutterMap +
+    // TileLayer persists across both; only the camera moves.
     final points = _allPoints;
-    final oldPoints = _pointsOf(old);
-    if (_pointsEqual(points, oldPoints)) return;
+    final pointsChanged = !_pointsEqual(points, _pointsOf(old));
+    final recenterRequested = widget.recenterToken != old.recenterToken;
+    if (!pointsChanged && !recenterRequested) return;
+    _fitTo(points);
+  }
+
+  /// Frame the camera on [points] imperatively: fit all when there are ≥2, recentre (keeping the
+  /// current zoom) on a lone point, no-op when empty. Shared by the coordinate-change and the
+  /// [recenterToken] on-demand re-fit so both frame the map identically.
+  void _fitTo(List<GeoPoint> points) {
     if (points.length >= 2) {
       _controller.fitCamera(_coordinatesFit(points));
     } else if (points.length == 1) {

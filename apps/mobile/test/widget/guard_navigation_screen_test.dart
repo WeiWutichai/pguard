@@ -3,6 +3,7 @@ import 'package:flutter_map/flutter_map.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:latlong2/latlong.dart';
 import 'package:pguard_mobile/core/location/routing_service.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -130,6 +131,37 @@ void main() {
     expect(find.textContaining('72 นาที'), findsOneWidget);
     // The geometry is unchanged — only the ETA label flips.
     expect(_polylinePointCount(tester), before);
+  });
+
+  testWidgets(
+      'the sheet ▲ recenters the map: re-frames the whole route after panning away',
+      (tester) async {
+    final api = FakeApi(onGet: (_, __) async => _bookingJson('en_route'));
+    await _pump(tester, api, const GeoPoint(13.7600, 100.5001),
+        route: _route());
+
+    // The ▲ tile is now a tappable recenter button with the brand recenter Semantics/Tooltip.
+    final recenter = find.byTooltip('จัดกึ่งกลางเส้นทาง');
+    expect(recenter, findsOneWidget,
+        reason: 'the ▲ tile carries the recenter tooltip');
+
+    final controller =
+        tester.widget<FlutterMap>(find.byType(FlutterMap)).mapController!;
+    final framed = controller.camera.center;
+
+    // The guard pans + zooms far off the route.
+    controller.move(const LatLng(15.0, 102.0), 8);
+    await _settle(tester);
+    expect(controller.camera.center.latitude, isNot(closeTo(framed.latitude, 0.1)),
+        reason: 'precondition: the camera moved off the route');
+
+    // Tapping ▲ bumps the recenter token → PgMap re-fits the camera back onto the route.
+    await tester.tap(recenter);
+    await _settle(tester);
+
+    expect(controller.camera.center.latitude, closeTo(framed.latitude, 0.05),
+        reason: 'the ▲ tap re-frames the route (guard + dest + road polyline)');
+    expect(controller.camera.center.longitude, closeTo(framed.longitude, 0.05));
   });
 
   testWidgets('degrades to address-only when there is no GPS fix (no distance)',
