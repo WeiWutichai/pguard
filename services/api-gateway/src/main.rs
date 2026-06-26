@@ -68,6 +68,13 @@ async fn main() -> anyhow::Result<()> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .connect_timeout(Duration::from_secs(5))
+        // Force IPv4. The external OSRM host (router.project-osrm.org / routing.openstreetmap.de)
+        // resolves to BOTH A (IPv4) and AAAA (IPv6) records, and inside the IPv4-only Docker bridge
+        // network the container has no IPv6 route — so a connect to the IPv6 address fails with
+        // "error sending request" and the OSRM proxy never reaches the upstream. Binding an IPv4
+        // source address makes the connector use only the IPv4 destination. All INTERNAL upstreams
+        // are IPv4 on the Docker network, so this is safe for them too.
+        .local_address(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED))
         .build()
         .context("build HTTP client")?;
 
