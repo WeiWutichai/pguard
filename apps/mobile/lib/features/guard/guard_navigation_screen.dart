@@ -154,6 +154,11 @@ class _NavBodyState extends ConsumerState<_NavBody> {
   /// The guard-selected travel mode (default รถยนต์/car) — switches the ETA label only.
   TravelMode _mode = TravelMode.car;
 
+  /// On-demand recenter trigger threaded into [PgMap.recenterToken]: bumped when the guard taps the
+  /// sheet's ▲ to re-frame the map on the whole route after panning/zooming away. The map persists;
+  /// only the camera re-fits (see PgMap.didUpdateWidget).
+  int _recenterToken = 0;
+
   @override
   Widget build(BuildContext context) {
     final isThai = widget.isThai;
@@ -195,7 +200,14 @@ class _NavBodyState extends ConsumerState<_NavBody> {
       children: [
         // Full-bleed map: REAL road polyline when available, else the straight fallback segment.
         // Degrades to a plain backdrop when there are no coordinates to plot.
-        Positioned.fill(child: _MapLayer(dest: dest, self: self, route: route)),
+        Positioned.fill(
+          child: _MapLayer(
+            dest: dest,
+            self: self,
+            route: route,
+            recenterToken: _recenterToken,
+          ),
+        ),
         // Honest no-fix state: the live self stream hasn't produced a position yet (permission /
         // cold GPS). Show "กำลังหาตำแหน่ง" over the destination map rather than a silent crosshair.
         if (self == null)
@@ -233,6 +245,9 @@ class _NavBodyState extends ConsumerState<_NavBody> {
             // it switches the ETA label between car / motorcycle / walk.
             mode: (route != null || fallback != null) ? _mode : null,
             onModeChanged: (m) => setState(() => _mode = m),
+            // The sheet's ▲ re-frames the map on the whole route (guard + dest + road polyline) by
+            // bumping the token PgMap watches — useful after the guard pans/zooms away.
+            onRecenter: () => setState(() => _recenterToken++),
             busy: widget.busy,
             onArrive: widget.onArrive,
           ),
@@ -247,11 +262,18 @@ class _NavBodyState extends ConsumerState<_NavBody> {
 /// between self and dest. Degrades to a plain (Bangkok-centred) tiled backdrop when there are no
 /// coordinates to plot.
 class _MapLayer extends StatelessWidget {
-  const _MapLayer({required this.dest, required this.self, this.route});
+  const _MapLayer(
+      {required this.dest,
+      required this.self,
+      this.route,
+      this.recenterToken = 0});
 
   final GeoPoint? dest;
   final GeoPoint? self;
   final RouteResult? route;
+
+  /// Threaded into [PgMap.recenterToken] — bumped by the sheet's ▲ to re-frame the whole route.
+  final int recenterToken;
 
   @override
   Widget build(BuildContext context) {
@@ -260,8 +282,10 @@ class _MapLayer extends StatelessWidget {
         ? route!.polyline
         : (self != null && dest != null ? [self!, dest!] : null);
     return PgMap(
-      // PgMap re-fits the camera imperatively (didUpdateWidget) when the coordinate set changes —
-      // not re-keyed, so the map + TileLayer persist as the guard's own fix updates (no flicker).
+      // PgMap re-fits the camera imperatively (didUpdateWidget) when the coordinate set changes OR
+      // the recenterToken is bumped — not re-keyed, so the map + TileLayer persist as the guard's
+      // own fix updates / on a recenter tap (no flicker).
+      recenterToken: recenterToken,
       polyline: linePoints != null
           // The real route is a definite road path → solid; the fallback stays dashed (the
           // honest "this is a straight approximation" cue, matching the `~` label).
@@ -448,6 +472,7 @@ class _Sheet extends StatelessWidget {
     required this.address,
     required this.mode,
     required this.onModeChanged,
+    required this.onRecenter,
     required this.busy,
     required this.onArrive,
   });
@@ -460,6 +485,9 @@ class _Sheet extends StatelessWidget {
   /// the selector is then hidden.
   final TravelMode? mode;
   final ValueChanged<TravelMode> onModeChanged;
+
+  /// Tapping the ▲ tile re-frames the map on the whole route (the parent bumps the recenter token).
+  final VoidCallback onRecenter;
   final bool busy;
   final VoidCallback onArrive;
 
@@ -492,15 +520,29 @@ class _Sheet extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(20, 0, 20, 6),
               child: Row(
                 children: [
-                  Container(
-                    width: 54,
-                    height: 54,
-                    decoration: BoxDecoration(
-                      color: PgTokens.colorGreen50,
-                      borderRadius: BorderRadius.circular(16),
+                  // The ▲ tile doubles as a RECENTER button: same green50 visual, now tappable with
+                  // a ripple to re-frame the map on the whole route after the guard pans/zooms away.
+                  Tooltip(
+                    message:
+                        isThai ? 'จัดกึ่งกลางเส้นทาง' : 'Recenter route',
+                    child: Semantics(
+                      button: true,
+                      label: isThai ? 'จัดกึ่งกลางเส้นทาง' : 'Recenter route',
+                      child: Material(
+                        color: PgTokens.colorGreen50,
+                        borderRadius: BorderRadius.circular(16),
+                        clipBehavior: Clip.antiAlias,
+                        child: InkWell(
+                          onTap: onRecenter,
+                          child: const SizedBox(
+                            width: 54,
+                            height: 54,
+                            child: Icon(Icons.navigation,
+                                color: PgTokens.colorPrimary, size: 26),
+                          ),
+                        ),
+                      ),
                     ),
-                    child: const Icon(Icons.navigation,
-                        color: PgTokens.colorPrimary, size: 26),
                   ),
                   const SizedBox(width: 14),
                   Expanded(

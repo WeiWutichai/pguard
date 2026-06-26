@@ -85,7 +85,7 @@ class GuardMapScreen extends ConsumerWidget {
   }
 }
 
-class _MapBody extends ConsumerWidget {
+class _MapBody extends ConsumerStatefulWidget {
   const _MapBody({
     required this.track,
     required this.isThai,
@@ -97,7 +97,19 @@ class _MapBody extends ConsumerWidget {
   final Future<void> Function() onRefresh;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_MapBody> createState() => _MapBodyState();
+}
+
+class _MapBodyState extends ConsumerState<_MapBody> {
+  /// On-demand recenter trigger threaded into [PgMap.recenterToken]: bumped when the customer taps
+  /// the recenter FAB to re-frame the map on the guard + destination after panning/zooming away.
+  /// The map persists; only the camera re-fits (see PgMap.didUpdateWidget).
+  int _recenterToken = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final track = widget.track;
+    final isThai = widget.isThai;
     final guard = track.guard;
     // Where the guard is heading: the booking's pinned destination when present, else the
     // customer's device fix as a fallback (see GuardTrack.target).
@@ -133,6 +145,9 @@ class _MapBody extends ConsumerWidget {
               Positioned.fill(
                 child: PgMap(
                   interactive: true,
+                  // Bumped by the recenter FAB to re-frame the camera on the guard + destination
+                  // after the customer pans/zooms away (PgMap re-fits without a re-key / flicker).
+                  recenterToken: _recenterToken,
                   // The real route is a definite road path → solid; the straight fallback stays
                   // dashed (the honest "this is a straight approximation" cue, matching the "≈"
                   // distance label below).
@@ -169,16 +184,67 @@ class _MapBody extends ConsumerWidget {
                 left: PgTokens.space3,
                 child: _StatusChip(status: track.status, isThai: isThai),
               ),
+              // Recenter affordance: re-frames the map on the guard + destination after the customer
+              // pans/zooms away. Shown only when there is something to frame (a guard fix or target);
+              // bumps the token PgMap watches (no re-key / flicker), bottom-right above the sheet.
+              if (guard != null || target != null)
+                Positioned(
+                  right: PgTokens.space3,
+                  bottom: PgTokens.space3,
+                  child: _RecenterFab(
+                    isThai: isThai,
+                    onTap: () => setState(() => _recenterToken++),
+                  ),
+                ),
             ],
           ),
         ),
         _InfoPanel(
           track: track,
           isThai: isThai,
-          onRefresh: onRefresh,
+          onRefresh: widget.onRefresh,
           route: route,
         ),
       ],
+    );
+  }
+}
+
+/// A small circular recenter button floated over the customer tracking map (bottom-right, above the
+/// sheet). Brand-styled (white circle, brand-green crosshair glyph) with a ripple + Semantics/Tooltip
+/// so the customer can re-focus the guard-tracking map after panning/zooming away — taps [onTap],
+/// which bumps the token PgMap re-fits on.
+class _RecenterFab extends StatelessWidget {
+  const _RecenterFab({required this.isThai, required this.onTap});
+
+  final bool isThai;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = isThai ? 'จัดกึ่งกลางแผนที่' : 'Recenter map';
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        label: label,
+        child: Material(
+          color: PgTokens.colorSurface,
+          shape: const CircleBorder(),
+          elevation: 3,
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: onTap,
+            customBorder: const CircleBorder(),
+            child: const SizedBox(
+              width: 44,
+              height: 44,
+              child: Icon(Icons.my_location,
+                  size: 22, color: PgTokens.colorPrimary),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
