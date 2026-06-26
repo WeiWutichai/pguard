@@ -328,12 +328,12 @@ services:
       CALLING_URL: http://calling:3008
       PRESENCE_URL: http://presence:3009
       CHAT_URL: http://chat:3010
-      # EXTERNAL OSRM routing proxy: the device can't reach OSRM directly on a Thai mobile
-      # network, but always reaches the VPS — so the gateway proxies `/v1/osrm/*` to OSRM (the
-      # VPS reaches it reliably) and owns the primary→mirror failover. Sane public defaults are
-      # baked into the gateway, so it works even if these are unset; override on the VPS `.env`.
-      OSRM_PRIMARY_URL: ${OSRM_PRIMARY_URL:-https://router.project-osrm.org}
-      OSRM_MIRROR_URL: ${OSRM_MIRROR_URL:-https://routing.openstreetmap.de/routed-car}
+      # OSRM routing proxy: the device can't reach OSRM directly (Thai mobile network), but always
+      # reaches the VPS — so the gateway proxies `/v1/osrm/*` to OSRM. We SELF-HOST OSRM (the `osrm`
+      # service below) because OSRM public is only reachable over IPv6 and the IPv4-only Docker
+      # bridge can't reach it. Both point at the internal service over the Docker IPv4 network.
+      OSRM_PRIMARY_URL: ${OSRM_PRIMARY_URL:-http://osrm:5000}
+      OSRM_MIRROR_URL: ${OSRM_MIRROR_URL:-http://osrm:5000}
     # The ONLY service that publishes a host port. In real prod an ingress/nginx
     # terminates TLS in front of this; here the gateway is the single ingress.
     ports:
@@ -813,3 +813,20 @@ services:
       - tempo
       - loki
       - prometheus
+
+  # ── Self-hosted OSRM routing (Thailand) ──────────────────────────────────────
+  # The api-gateway's /v1/osrm/* proxy forwards here over the internal IPv4 Docker network. OSRM
+  # public is only reachable over IPv6 and the IPv4-only Docker bridge can't reach it, so we host
+  # our own. ONE-TIME data prep on the VPS before first start (downloads + preprocesses the
+  # Thailand extract into ${OSRM_DATA_DIR:-/opt/pguard-osrm}): run `bash infra/docker/osrm-prep.sh`.
+  osrm:
+    image: ghcr.io/project-osrm/osrm-backend:latest
+    container_name: pguard-prod-osrm
+    command: osrm-routed --algorithm mld --max-table-size 8000 /data/thailand-latest.osrm
+    volumes:
+      - ${OSRM_DATA_DIR:-/opt/pguard-osrm}:/data:ro
+    expose:
+      - "5000"
+    networks:
+      - pguard-prod
+    restart: unless-stopped
