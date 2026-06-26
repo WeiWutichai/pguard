@@ -151,7 +151,13 @@ class _PgMapState extends State<PgMap> {
     final pointsChanged = !_pointsEqual(points, _pointsOf(old));
     final recenterRequested = widget.recenterToken != old.recenterToken;
     if (!pointsChanged && !recenterRequested) return;
-    _fitTo(points);
+    // Defer to AFTER this frame. Calling fitCamera/move synchronously inside didUpdateWidget is
+    // dropped on a real device (the FlutterMap's render box / camera isn't settled mid-rebuild) even
+    // though it "works" in a widget test — which is why the on-demand recenter looked dead on-device.
+    // A post-frame callback runs once the map is laid out, so the camera actually moves.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _fitTo(points);
+    });
   }
 
   /// Frame the camera on [points] imperatively: fit all when there are ≥2, recentre (keeping the
@@ -192,6 +198,14 @@ class _PgMapState extends State<PgMap> {
         initialCenter: toLatLng(center),
         initialZoom: widget.initialZoom,
         initialCameraFit: fit,
+        // Re-apply the fit once the map is actually ready/laid-out. initialCameraFit can land before
+        // the render box has its real size (esp. when the route/markers arrive a frame later), so the
+        // open view wasn't framing the whole route — this guarantees the on-open auto-fit.
+        onMapReady: () {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _fitTo(_allPoints);
+          });
+        },
         minZoom: widget.minZoom,
         maxZoom: widget.maxZoom,
         onTap: widget.onTap == null
