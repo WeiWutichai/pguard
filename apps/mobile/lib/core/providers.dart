@@ -75,12 +75,15 @@ PermissionGate permissionGate(PermissionGateRef ref) =>
 PlaceSearchService placeSearchService(PlaceSearchServiceRef ref) =>
     NominatimPlaceSearchService();
 
-/// Road (turn-by-turn) routing via the public OSRM demo (free, no API key) — powers the guard
-/// navigation screen's REAL road polyline + ETA. External host (NOT the `/v1` gateway), so it uses
-/// its own Dio with a timeout. Best-effort: returns null on any failure so the caller degrades to
-/// the straight-line geo.dart estimate. Tests override with a fake.
+/// Road (turn-by-turn) routing via the api-gateway OSRM proxy (`{apiHost}/v1/osrm/...`). The device
+/// can't reach OSRM directly on a Thai mobile network but always reaches the VPS, so the gateway
+/// proxies it (and owns the primary→mirror failover). Token-gated, so the service threads the same
+/// `validAccessToken` the sockets use. Best-effort: returns null on any failure so the caller
+/// degrades to the straight-line geo.dart estimate. Tests override with a fake.
 @Riverpod(keepAlive: true)
-RoutingService routingService(RoutingServiceRef ref) => OsrmRoutingService();
+RoutingService routingService(RoutingServiceRef ref) => OsrmRoutingService(
+      tokenProvider: ref.watch(pguardApiProvider).validAccessToken,
+    );
 
 /// Builds a live booking-status feed for a booking id. Production returns a real
 /// [BookingStatusSocket]; tests override this provider to inject a fake feed.

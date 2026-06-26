@@ -1,5 +1,6 @@
 import 'package:dio/dio.dart';
 
+import '../config/app_config.dart';
 import '../models/geo.dart';
 
 /// A REAL road route between two coordinates: the road-following polyline plus the road distance
@@ -135,48 +136,58 @@ abstract class RoutingService {
   Future<RouteResult?> route({required GeoPoint origin, required GeoPoint dest});
 }
 
-/// Live [RoutingService] hitting the **public OSRM demo** — free, no API key. The public demo only
-/// serves the `driving` profile, so the request is always `/route/v1/driving/...`; the per-mode
-/// difference is the ETA (computed by [TravelMode]), not the geometry. External host (NOT the `/v1`
-/// gateway), so — like [NominatimPlaceSearchService] — it uses its own bare Dio with a timeout, not
-/// [PguardApi].
+/// Live [RoutingService] routing through the **api-gateway OSRM proxy** (`{apiHost}/v1/osrm/...`).
 ///
-/// RESILIENCE (the public demo is best-effort and routinely rate-limits / blips on a mobile
-/// network):
-///  - SHORT per-attempt timeout (6 s) so a stalled request fails fast and we can retry rather than
-///    hang the map on a straight line;
-///  - ONE retry on a transient failure, and a SECOND mirror host ([_mirrors]) — we try the primary,
-///    then the mirror, before giving up to the straight-line fallback. A 4xx (e.g. 429 rate-limit)
-///    on the primary still falls through to the mirror;
+/// WHY THE GATEWAY (not OSRM directly): on a Thai mobile network the device cannot reliably reach
+/// the public OSRM demo directly, but it ALWAYS reaches the VPS (every other API call works). So the
+/// gateway proxies OSRM — the device only ever talks to the VPS, which reaches OSRM reliably. The
+/// gateway also OWNS the primary→mirror failover now (it retries the community mirror once on a
+/// primary failure), so this client has a SINGLE host and no in-app mirror list.
+///
+/// AUTH: the proxy route is token-gated like every protected `/v1` route, so each request carries
+/// `Authorization: Bearer <access>` — fetched per-call from [_tokenProvider] (the same
+/// `validAccessToken` plumbing the sockets use, so a (re)attempt always sends a fresh token).
+///
+/// The public demo only serves the `driving` profile, so the request is always
+/// `/route/v1/driving/...`; the per-mode difference is the ETA (computed by [TravelMode]), not the
+/// geometry. External-shaped call (NOT a `/v1`-relative [PguardApi] call), so — like
+/// [NominatimPlaceSearchService] — it uses its own bare Dio with a SHORT timeout.
+///
+/// RESILIENCE (best-effort; the upstream still rate-limits / blips):
+///  - SHORT per-attempt timeout (6 s) so a stalled request fails fast and degrades rather than
+///    hanging the map on a straight line;
 ///  - a tiny in-memory SUCCESS cache ([_cache], keyed by the rounded origin/dest) so a later flaky
 ///    fetch for the SAME leg returns the last good road route instead of blanking it to a straight
 ///    line. Only successes are cached — a failure is never cached, so the next tick can recover.
+///  - the cross-tick self-heal lives in [guardRouteProvider] (one delayed re-attempt on null).
 ///
-/// Still best-effort: returns null only when EVERY host fails (and there is no cached route), so the
-/// caller degrades to the straight-line geo.dart estimate. Never throws.
+/// Still best-effort: returns null only when the request fails (and there is no cached route), so
+/// the caller degrades to the straight-line geo.dart estimate. Never throws.
 class OsrmRoutingService implements RoutingService {
-  OsrmRoutingService({Dio? dio, List<String>? mirrors})
-      : _dio = dio ??
+  OsrmRoutingService({
+    required Future<String?> Function() tokenProvider,
+    Dio? dio,
+    String? baseUrl,
+  })  : _tokenProvider = tokenProvider,
+        _dio = dio ??
             Dio(BaseOptions(
-              // Short per-attempt budget: fail fast, then retry / try the mirror instead of hanging.
+              // Short per-attempt budget: fail fast and degrade instead of hanging the map.
               connectTimeout: const Duration(seconds: 6),
               receiveTimeout: const Duration(seconds: 6),
-              // Accept any <500 so a 4xx (e.g. 429 rate-limit) surfaces as a null parse (not an
-              // exception) and we fall through to the next host; the catch below also guarantees
-              // null on any transport failure.
+              // Accept any <500 so a 4xx (e.g. 401/429) surfaces as a null parse (not an exception)
+              // and we degrade; the catch below also guarantees null on any transport failure.
               validateStatus: (s) => s != null && s < 500,
             )),
-        _hosts = mirrors ?? _defaultHosts;
+        // The gateway OSRM proxy base. The `/v1/osrm` prefix is stripped by the gateway down to the
+        // OSRM base (`/route/v1/driving/...`); the device only ever talks to the VPS.
+        _base = baseUrl ?? '${AppConfig.apiHost}/v1/osrm';
 
-  /// The primary public OSRM demo, then a community mirror used as a fallback before giving up to
-  /// the straight line. Tried in order per call; a success on any host wins.
-  static const List<String> _defaultHosts = [
-    'https://router.project-osrm.org',
-    'https://routing.openstreetmap.de/routed-car',
-  ];
-
+  /// Supplies a fresh, non-expired access token per request (or null if there is no session).
+  final Future<String?> Function() _tokenProvider;
   final Dio _dio;
-  final List<String> _hosts;
+
+  /// Gateway OSRM-proxy base URL (no trailing slash), e.g. `http://localhost:3000/v1/osrm`.
+  final String _base;
 
   /// Last successful route per leg (rounded ~10 m origin/dest key) so a subsequent flaky fetch for
   /// the same leg holds the drawn road route instead of blanking to a straight line. Tiny + bounded.
@@ -193,35 +204,37 @@ class OsrmRoutingService implements RoutingService {
     required GeoPoint dest,
   }) async {
     // OSRM expects `{lon},{lat};{lon},{lat}` (longitude FIRST). geojson geometry so we can read the
-    // coordinate list directly; `overview=full` keeps every vertex for an accurate line.
-    final path =
-        '/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}';
+    // coordinate list directly; `overview=full` keeps every vertex for an accurate line. Forwarded
+    // through the gateway: GET {apiHost}/v1/osrm/route/v1/driving/{lon},{lat};{lon},{lat}.
+    final url =
+        '$_base/route/v1/driving/${origin.lng},${origin.lat};${dest.lng},${dest.lat}';
     final key = _legKey(origin, dest);
 
-    // Try each host once, in order (primary → mirror). The first usable route wins.
-    for (final host in _hosts) {
-      final result = await _tryHost(host, path);
-      if (result != null) {
-        _cache[key] = result; // cache successes only — a failure must stay retryable.
-        return result;
-      }
+    final result = await _fetch(url);
+    if (result != null) {
+      _cache[key] = result; // cache successes only — a failure must stay retryable.
+      return result;
     }
 
-    // Every host failed: hold the last good route for this leg if we have one (don't blank a drawn
+    // The request failed: hold the last good route for this leg if we have one (don't blank a drawn
     // route on a transient blip), else null → the caller's straight-line fallback.
     return _cache[key];
   }
 
-  /// One GET against [host]+[path], returning a parsed [RouteResult] or null on any failure
-  /// (timeout / 4xx / 5xx / garbled / no route). Never throws.
-  Future<RouteResult?> _tryHost(String host, String path) async {
+  /// One GET against the gateway OSRM proxy, returning a parsed [RouteResult] or null on any failure
+  /// (timeout / 4xx / 5xx / garbled / no route / no session token). Never throws.
+  Future<RouteResult?> _fetch(String url) async {
     try {
+      final token = await _tokenProvider();
       final res = await _dio.get<dynamic>(
-        '$host$path',
+        url,
         queryParameters: const {
           'overview': 'full',
           'geometries': 'geojson',
         },
+        options: Options(
+          headers: token == null ? null : {'Authorization': 'Bearer $token'},
+        ),
       );
       return RouteResult.fromOsrm(res.data);
     } catch (_) {

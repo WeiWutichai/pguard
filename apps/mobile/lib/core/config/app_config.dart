@@ -32,6 +32,11 @@ class AppConfig {
   /// REST base URL including the `/v1` version prefix the gateway expects.
   static String get apiBaseUrl => '$_apiHost/v1';
 
+  /// The bare gateway host (scheme + authority, no `/v1`), e.g. `http://localhost:3000`. Used by
+  /// the OSRM routing proxy, which builds `{apiHost}/v1/osrm/...` itself (it is NOT a `/v1`-relative
+  /// [PguardApi] call — it threads its own Bearer + short per-attempt timeout).
+  static String get apiHost => _apiHost;
+
   /// WebSocket base URL including `/v1`. If not overridden, swap the http(s) scheme to ws(s).
   static String get wsBaseUrl {
     if (_wsHostOverride.isNotEmpty) return '$_wsHostOverride/v1';

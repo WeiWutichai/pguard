@@ -129,6 +129,104 @@ pub async fn forward(
     // always the gateway's.
     observability::inject_context(&mut fwd_headers);
 
+    send_buffered(
+        http,
+        base_url,
+        forward_path,
+        query,
+        &method,
+        &fwd_headers,
+        body_bytes.as_ref(),
+    )
+    .await
+}
+
+/// Forward to the EXTERNAL OSRM routing proxy with a once-only mirror failover. The device can't
+/// reach OSRM directly on a Thai mobile network but always reaches the VPS, so the gateway owns
+/// the primary→mirror fallback (moved off the app): try `primary_base`, and on ANY transport
+/// failure / 5xx / timeout retry the SAME `forward_path`+`query` against `mirror_base` ONCE before
+/// returning the error. OSRM responds in < 1 s so the existing 30 s/5 s reqwest client is ample.
+///
+/// `forward_path` already has BOTH `/v1` and the `/osrm` segment stripped (see
+/// `domain::routing::forward_path_for`). The route is token-gated at the edge, so `user` is the
+/// edge-verified caller; the trusted `X-User-*` are injected (harmless to OSRM). The request
+/// carries no body (GET) and uses the [`MAX_BODY_BYTES`] default cap.
+#[tracing::instrument(
+    skip(http, request, user),
+    fields(primary_base, mirror_base, forward_path)
+)]
+pub async fn forward_osrm(
+    http: &reqwest::Client,
+    primary_base: &str,
+    mirror_base: &str,
+    forward_path: &str,
+    query: Option<&str>,
+    request: Request,
+    user: Option<&VerifiedUser>,
+) -> Result<Response, ProxyError> {
+    let (parts, body) = request.into_parts();
+    let method = parts.method.clone();
+
+    // GET with no body; still bound the buffer at the default cap (defensive).
+    let body_bytes = axum::body::to_bytes(body, MAX_BODY_BYTES)
+        .await
+        .map_err(|_| ProxyError::BodyTooLarge)?;
+
+    let mut fwd_headers = build_forward_headers(&parts.headers, user);
+    observability::inject_context(&mut fwd_headers);
+
+    // Primary first. A 5xx is a SUCCESSFUL forward (`Ok`) that we still want to retry on, so peek
+    // the status: only an `Ok(<500)` short-circuits; everything else (transport error, timeout,
+    // or 5xx) falls through to the mirror once.
+    let primary = send_buffered(
+        http,
+        primary_base,
+        forward_path,
+        query,
+        &method,
+        &fwd_headers,
+        body_bytes.as_ref(),
+    )
+    .await;
+    if let Ok(resp) = &primary {
+        if !resp.status().is_server_error() {
+            return primary;
+        }
+    }
+    tracing::warn!(
+        primary = %primary_base,
+        mirror = %mirror_base,
+        path = %forward_path,
+        "OSRM primary failed; retrying mirror once"
+    );
+
+    // Mirror retry (once). If the mirror ALSO fails, prefer returning its result so the client
+    // sees the freshest attempt; on a mirror transport error, surface that error.
+    send_buffered(
+        http,
+        mirror_base,
+        forward_path,
+        query,
+        &method,
+        &fwd_headers,
+        body_bytes.as_ref(),
+    )
+    .await
+}
+
+/// Send a pre-buffered request (method + filtered headers + body) to `{base_url}{forward_path}
+/// {?query}` and translate the upstream response back. Shared by [`forward`] and
+/// [`forward_osrm`] (which calls it twice — primary then mirror — for the OSRM failover).
+#[allow(clippy::too_many_arguments)]
+async fn send_buffered(
+    http: &reqwest::Client,
+    base_url: &str,
+    forward_path: &str,
+    query: Option<&str>,
+    method: &axum::http::Method,
+    fwd_headers: &reqwest::header::HeaderMap,
+    body_bytes: &[u8],
+) -> Result<Response, ProxyError> {
     let url = match query {
         Some(q) if !q.is_empty() => format!("{base_url}{forward_path}?{q}"),
         _ => format!("{base_url}{forward_path}"),
@@ -139,7 +237,7 @@ pub async fn forward(
 
     let upstream_resp = http
         .request(reqwest_method, &url)
-        .headers(fwd_headers)
+        .headers(fwd_headers.clone())
         .body(body_bytes.to_vec())
         .send()
         .await
@@ -569,6 +667,155 @@ mod tests {
         match res {
             Err(ProxyError::BodyTooLarge) => {}
             other => panic!("expected ProxyError::BodyTooLarge, got {other:?}"),
+        }
+    }
+
+    // ----- OSRM external proxy: primary → mirror failover -----
+
+    /// A tiny upstream that returns a fixed `status` and echoes the path it saw (so a test can
+    /// assert WHICH host served the OSRM request). Used as the mirror, or as a primary that 5xxs.
+    async fn spawn_fixed_status_upstream(status: u16) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/{*rest}",
+            any(move |req: Request| async move {
+                let path = req.uri().path().to_string();
+                let code = StatusCode::from_u16(status).unwrap_or(StatusCode::OK);
+                (
+                    code,
+                    axum::Json(serde_json::json!({ "got_path": path, "served_by": "stub" })),
+                )
+                    .into_response()
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    fn osrm_request() -> Request {
+        Request::builder()
+            .method("GET")
+            .uri("http://gateway.local/v1/osrm/route/v1/driving/100.5,13.7;100.6,13.8")
+            .body(Body::empty())
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn forward_osrm_uses_primary_when_it_succeeds() {
+        // Happy path: the primary answers 200 → no mirror retry, the path is forwarded verbatim
+        // (the `/osrm` strip happens upstream in routing; forward_osrm forwards what it's given).
+        let primary = spawn_echo_upstream().await;
+        let http = reqwest::Client::new();
+        let resp = forward_osrm(
+            &http,
+            &primary,
+            "http://127.0.0.1:1", // mirror unreachable — must NOT be used
+            "/route/v1/driving/100.5,13.7;100.6,13.8",
+            Some("overview=full&geometries=geojson"),
+            osrm_request(),
+            None,
+        )
+        .await
+        .expect("primary success");
+        assert_eq!(resp.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["got_path"], "/route/v1/driving/100.5,13.7;100.6,13.8");
+        assert_eq!(json["got_query"], "overview=full&geometries=geojson");
+    }
+
+    #[tokio::test]
+    async fn forward_osrm_falls_back_to_mirror_on_primary_transport_error() {
+        // The whole point of the slice: an unreachable PRIMARY (transport error) retries the
+        // MIRROR once, and the mirror's 200 is returned. Primary = a closed port → fast connect
+        // error with a short connect-timeout client.
+        let mirror = spawn_echo_upstream().await;
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let resp = forward_osrm(
+            &http,
+            "http://192.0.2.1:9", // TEST-NET-1 — connection fails fast
+            &mirror,
+            "/route/v1/driving/100.5,13.7;100.6,13.8",
+            None,
+            osrm_request(),
+            None,
+        )
+        .await
+        .expect("mirror serves after primary transport failure");
+        assert_eq!(resp.status(), StatusCode::OK, "mirror answered");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["got_path"], "/route/v1/driving/100.5,13.7;100.6,13.8",
+            "the same path is retried against the mirror"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_osrm_falls_back_to_mirror_on_primary_5xx() {
+        // A primary 5xx is a completed forward but still a FAILURE for routing purposes → the
+        // mirror is tried once and its 200 wins.
+        let primary = spawn_fixed_status_upstream(503).await;
+        let mirror = spawn_echo_upstream().await;
+        let http = reqwest::Client::new();
+        let resp = forward_osrm(
+            &http,
+            &primary,
+            &mirror,
+            "/route/v1/driving/100.5,13.7;100.6,13.8",
+            None,
+            osrm_request(),
+            None,
+        )
+        .await
+        .expect("mirror serves after primary 5xx");
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "mirror answered after the primary 5xx"
+        );
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["served_by"].as_str(),
+            None,
+            "mirror is the echo, not the 503 stub"
+        );
+    }
+
+    #[tokio::test]
+    async fn forward_osrm_surfaces_mirror_failure_when_both_down() {
+        // Both hosts unreachable → the mirror's transport error surfaces as 502 (the caller then
+        // degrades to the straight-line fallback on the device).
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(200))
+            .build()
+            .unwrap();
+        let res = forward_osrm(
+            &http,
+            "http://192.0.2.1:9",
+            "http://192.0.2.2:9",
+            "/route/v1/driving/100.5,13.7;100.6,13.8",
+            None,
+            osrm_request(),
+            None,
+        )
+        .await;
+        match res {
+            Err(ProxyError::Upstream) => {}
+            other => panic!("expected ProxyError::Upstream, got {other:?}"),
         }
     }
 }
