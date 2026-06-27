@@ -145,8 +145,11 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               Positioned.fill(
                 child: PgMap(
                   interactive: true,
-                  // Bumped by the recenter FAB to re-frame the camera on the guard + destination
-                  // after the customer pans/zooms away (PgMap re-fits without a re-key / flicker).
+                  // LIVE FOLLOW: the camera centres on the GUARD's live position at nav zoom and
+                  // follows it as new fixes arrive (nav-app feel) — it does NOT zoom out to the whole
+                  // route. A manual pan pauses follow; the recenter FAB re-engages it. The map is NOT
+                  // re-keyed, so it + the TileLayer persist across WebSocket updates (no flicker).
+                  follow: guard?.point,
                   recenterToken: _recenterToken,
                   // The real route is a definite road path → solid; the straight fallback stays
                   // dashed (the honest "this is a straight approximation" cue, matching the "≈"
@@ -269,7 +272,8 @@ class GuardMapGuardMarker extends StatelessWidget {
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 2.5),
             boxShadow: const [
-              BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
+              BoxShadow(
+                  color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
             ],
           ),
           child: const Icon(Icons.shield, color: Colors.white, size: 19),
@@ -430,8 +434,8 @@ class _NoFixCard extends StatelessWidget {
           Flexible(
             child: Text(
               text,
-              style: const TextStyle(
-                  fontSize: 13, color: PgTokens.colorTextMuted),
+              style:
+                  const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
             ),
           ),
         ],
@@ -518,8 +522,8 @@ class _InfoPanel extends ConsumerWidget {
               isThai
                   ? 'ความแม่นยำ: ${GpsAccuracyBand.of(guard.accuracy).labelTh}'
                   : 'Accuracy: ${GpsAccuracyBand.of(guard.accuracy).labelEn}',
-              style: const TextStyle(
-                  fontSize: 12, color: PgTokens.colorTextMuted),
+              style:
+                  const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
             ),
           if (distance != null)
             Text(
@@ -537,8 +541,8 @@ class _InfoPanel extends ConsumerWidget {
                   : (isThai
                       ? 'ห่างจากคุณประมาณ ${formatDistance(distance, thai: true)}'
                       : 'About ${formatDistance(distance, thai: false)} from you'),
-              style: const TextStyle(
-                  fontSize: 12, color: PgTokens.colorTextMuted),
+              style:
+                  const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
             ),
           // The design's tracking-sheet action row: chat + call (same enable rules as the
           // live-status screen — chat once a guard is assigned, call while the job is active).

@@ -113,7 +113,8 @@ void main() {
     expect(_polylinePointCount(tester), 4);
   });
 
-  testWidgets('mode selector switches the ETA (car → walk) keeping the geometry',
+  testWidgets(
+      'mode selector switches the ETA (car → walk) keeping the geometry',
       (tester) async {
     final api = FakeApi(onGet: (_, __) async => _bookingJson('en_route'));
     await _pump(tester, api, const GeoPoint(13.7600, 100.5001),
@@ -134,11 +135,11 @@ void main() {
   });
 
   testWidgets(
-      'the sheet ▲ recenters the map: re-frames the whole route after panning away',
+      'the sheet ▲ recenters the map onto the guard live fix at nav zoom after panning away',
       (tester) async {
     final api = FakeApi(onGet: (_, __) async => _bookingJson('en_route'));
-    await _pump(tester, api, const GeoPoint(13.7600, 100.5001),
-        route: _route());
+    const self = GeoPoint(13.7600, 100.5001);
+    await _pump(tester, api, self, route: _route());
 
     // The ▲ tile is now a tappable recenter button with the brand recenter Semantics/Tooltip.
     final recenter = find.byTooltip('จัดกึ่งกลางเส้นทาง');
@@ -147,21 +148,29 @@ void main() {
 
     final controller =
         tester.widget<FlutterMap>(find.byType(FlutterMap)).mapController!;
-    final framed = controller.camera.center;
 
-    // The guard pans + zooms far off the route.
-    controller.move(const LatLng(15.0, 102.0), 8);
+    // Live follow: on open the camera sits ON the guard's own fix at the nav zoom — not zoomed out
+    // to the whole route.
+    expect(controller.camera.center.latitude, closeTo(self.lat, 1e-3),
+        reason:
+            'the guard-nav map follows the guard self fix, not the route overview');
+    expect(controller.camera.zoom, closeTo(16, 0.01));
+
+    // The guard pans + zooms far off the live point (a real gesture → follow pauses).
+    (controller as MapControllerImpl).moveRaw(const LatLng(15.0, 102.0), 8,
+        hasGesture: true, source: MapEventSource.onDrag);
     await _settle(tester);
-    expect(controller.camera.center.latitude, isNot(closeTo(framed.latitude, 0.1)),
-        reason: 'precondition: the camera moved off the route');
+    expect(controller.camera.center.latitude, isNot(closeTo(self.lat, 0.1)),
+        reason: 'precondition: the camera moved off the live point');
 
-    // Tapping ▲ bumps the recenter token → PgMap re-fits the camera back onto the route.
+    // Tapping ▲ bumps the recenter token → snaps the camera back onto the guard fix at nav zoom.
     await tester.tap(recenter);
     await _settle(tester);
 
-    expect(controller.camera.center.latitude, closeTo(framed.latitude, 0.05),
-        reason: 'the ▲ tap re-frames the route (guard + dest + road polyline)');
-    expect(controller.camera.center.longitude, closeTo(framed.longitude, 0.05));
+    expect(controller.camera.center.latitude, closeTo(self.lat, 1e-3),
+        reason: 'the ▲ tap re-centres on the guard live fix');
+    expect(controller.camera.center.longitude, closeTo(self.lng, 1e-3));
+    expect(controller.camera.zoom, closeTo(16, 0.01));
   });
 
   testWidgets('degrades to address-only when there is no GPS fix (no distance)',
