@@ -7,6 +7,7 @@ import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/guard_map_screen.dart';
+import 'package:pguard_mobile/features/booking/widgets/pg_map.dart';
 
 import '../support/fakes.dart';
 
@@ -37,7 +38,8 @@ Map<String, dynamic> locationJson({bool live = true}) => {
       'is_live': live,
     };
 
-Map<String, dynamic> publicJson({String? fullName = 'ณัฐพล วงศ์ดี', int? years = 7}) =>
+Map<String, dynamic> publicJson(
+        {String? fullName = 'ณัฐพล วงศ์ดี', int? years = 7}) =>
     {
       'user_id': 'g1',
       if (fullName != null) 'full_name': fullName,
@@ -135,7 +137,8 @@ void main() {
     expect(find.text('คุณ'), findsOneWidget, reason: 'reference marker label');
     // The profile block shows the real name + honest rating (no fake photo/ETA).
     expect(find.text('ณัฐพล วงศ์ดี'), findsOneWidget, reason: 'guard name');
-    expect(find.textContaining('4.9'), findsOneWidget, reason: 'rating average');
+    expect(find.textContaining('4.9'), findsOneWidget,
+        reason: 'rating average');
     // En-route uses the design's customer-directed tracking copy, not the lifecycle label.
     expect(find.text('กำลังเดินทางมาหาคุณ'), findsOneWidget,
         reason: 'status chip');
@@ -168,8 +171,7 @@ void main() {
 
     expect(find.text('ถึงจุดนัดหมาย'), findsOneWidget,
         reason: 'arrived chip after the push');
-    expect(
-        api.calls.where((c) => c == 'GET /guards/g1/location').length, 2,
+    expect(api.calls.where((c) => c == 'GET /guards/g1/location').length, 2,
         reason: 'event-driven snapshot refresh — exactly one per push');
     expect(api.calls.where((c) => c == 'GET /bookings/b1').length, 1,
         reason: 'the booking REST is never polled');
@@ -236,8 +238,7 @@ void main() {
       return locationJson();
     });
 
-    await tester
-        .pumpWidget(host(api: api, prefs: const {'pg_locale': 'en'}));
+    await tester.pumpWidget(host(api: api, prefs: const {'pg_locale': 'en'}));
     await settle(tester);
 
     expect(find.text('On the way to you'), findsOneWidget);
@@ -313,10 +314,20 @@ void main() {
     await tester.pumpWidget(host(api: api));
     await settle(tester);
 
-    expect(find.text('ปลายทาง'), findsOneWidget,
-        reason: 'the marker labels the booking pin as the destination');
-    expect(find.text('คุณ'), findsNothing,
-        reason: 'the device-fix label is not used when a pin exists');
+    // The live-follow camera centres on the GUARD pin at nav zoom, so the destination marker can sit
+    // off-screen — and flutter_map CULLS off-screen markers out of the widget tree entirely. Assert
+    // on the reference marker PgMap is HANDED (the [PgMap.markers] prop), which is cull-independent,
+    // rather than its painted label / built child.
+    final pgMap = tester.widget<PgMap>(find.byType(PgMap));
+    final refMarkers = pgMap.markers
+        .where((m) => m.child is GuardMapReferenceMarker)
+        .map((m) => m.child as GuardMapReferenceMarker)
+        .toList();
+    expect(refMarkers, hasLength(1),
+        reason: 'one reference marker for the booking pin');
+    expect(refMarkers.single.isDestination, isTrue,
+        reason:
+            'the marker labels the booking pin as the destination, not "คุณ"');
     expect(find.textContaining('ห่างจากจุดหมายประมาณ'), findsOneWidget,
         reason: 'straight-line fallback → approximate "ประมาณ" wording');
     expect(find.textContaining('นาที'), findsNothing,

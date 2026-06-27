@@ -191,7 +191,8 @@ class _NavBodyState extends ConsumerState<_NavBody> {
           '${formatDistance(route.distanceMeters, thai: isThai)} · ${_mode.etaLabel(route, isThai)}';
     } else if (fallback != null) {
       // Fallback: straight-line distance·ETA, keeps the `~` to mark it approximate.
-      primary = '${fallback.distanceLabel(isThai)} · ${fallback.etaLabel(isThai)}';
+      primary =
+          '${fallback.distanceLabel(isThai)} · ${fallback.etaLabel(isThai)}';
     } else {
       primary = isThai ? 'กำลังไปจุดนัด' : 'Heading to site';
     }
@@ -282,9 +283,11 @@ class _MapLayer extends StatelessWidget {
         ? route!.polyline
         : (self != null && dest != null ? [self!, dest!] : null);
     return PgMap(
-      // PgMap re-fits the camera imperatively (didUpdateWidget) when the coordinate set changes OR
-      // the recenterToken is bumped — not re-keyed, so the map + TileLayer persist as the guard's
-      // own fix updates / on a recenter tap (no flicker).
+      // LIVE FOLLOW: the camera centres on the guard's OWN live fix at nav zoom and follows it like
+      // a nav app (it does NOT zoom out to the whole 36 km route). A manual pan pauses follow; the
+      // sheet's ▲ (recenterToken) re-engages it. The map is NOT re-keyed, so it + the TileLayer
+      // persist as the guard's fix updates (no tile re-fetch / flicker).
+      follow: self,
       recenterToken: recenterToken,
       polyline: linePoints != null
           // The real route is a definite road path → solid; the fallback stays dashed (the
@@ -523,8 +526,7 @@ class _Sheet extends StatelessWidget {
                   // The ▲ tile doubles as a RECENTER button: same green50 visual, now tappable with
                   // a ripple to re-frame the map on the whole route after the guard pans/zooms away.
                   Tooltip(
-                    message:
-                        isThai ? 'จัดกึ่งกลางเส้นทาง' : 'Recenter route',
+                    message: isThai ? 'จัดกึ่งกลางเส้นทาง' : 'Recenter route',
                     child: Semantics(
                       button: true,
                       label: isThai ? 'จัดกึ่งกลางเส้นทาง' : 'Recenter route',
@@ -579,7 +581,9 @@ class _Sheet extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
               child: PgPrimaryButton(
-                label: isThai ? 'ถึงจุดนัดแล้ว — เริ่มงาน' : "I've arrived — start",
+                label: isThai
+                    ? 'ถึงจุดนัดแล้ว — เริ่มงาน'
+                    : "I've arrived — start",
                 busy: busy,
                 onPressed: busy ? null : onArrive,
               ),
@@ -708,8 +712,8 @@ class _Plain extends StatelessWidget {
             top: PgTokens.space2,
             left: PgTokens.space3,
             child: IconButton(
-              icon: const Icon(Icons.arrow_back,
-                  color: PgTokens.colorTextStrong),
+              icon:
+                  const Icon(Icons.arrow_back, color: PgTokens.colorTextStrong),
               onPressed: () => context.pop(),
             ),
           ),
