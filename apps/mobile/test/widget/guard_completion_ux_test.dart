@@ -51,6 +51,12 @@ Future<void> pumpActiveJob(
         path: '/guard/jobs',
         builder: (_, __) => const Scaffold(body: Text('JOBS LIST')),
       ),
+      // _backToJobs resets the stack to the guard home then pushes /guard/jobs (so 'back' from the
+      // jobs list returns home instead of being frozen) — the home route must exist for go() to land.
+      GoRoute(
+        path: '/home/guard',
+        builder: (_, __) => const Scaffold(body: Text('GUARD HOME')),
+      ),
       GoRoute(
         path: '/booking/:id/live',
         builder: (_, __) => const Scaffold(body: Text('LIVE')),
@@ -99,6 +105,10 @@ void main() {
     // shows the read-only progress (countdown + timeline), no separate in-panel check-in button.
     expect(find.text('เช็คอินเริ่มงาน'), findsOneWidget);
     expect(find.text('จบงาน'), findsOneWidget);
+    // The #123 status timeline grew the card above, so the working panel's progress header can sit
+    // below the lazy ListView fold (off-screen children aren't built) — scroll it up first.
+    await tester.drag(find.byType(ListView), const Offset(0, -400));
+    await tester.pump();
     expect(find.textContaining('ความคืบหน้า'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());

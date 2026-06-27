@@ -266,6 +266,10 @@ void main() {
     expect(approve, findsOneWidget);
     expect(find.text('ให้ทำต่อ'), findsOneWidget);
 
+    // The #123 status timeline added height above; the approve CTA can sit below the fold, so
+    // bring it into view before tapping (the screen is scrollable).
+    await tester.ensureVisible(approve);
+    await tester.pumpAndSettle();
     await tester.tap(approve);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
@@ -377,7 +381,12 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    await tester.tap(find.text('ดูรายละเอียด'));
+    // The #123 status timeline added height above; the Details CTA can sit below the fold, so
+    // bring it into view before tapping (the screen is scrollable).
+    final detailsBtn = find.text('ดูรายละเอียด');
+    await tester.ensureVisible(detailsBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(detailsBtn);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 

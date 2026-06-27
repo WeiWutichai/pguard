@@ -2,20 +2,39 @@
 //
 // booking owns discovery but neither the guard catalog (profile) nor reviews (rating); the
 // endpoint returns the APPROVED guard catalog enriched with each guard's rating summary
-// (contracts/openapi/booking.yaml → AvailableGuard). The contract carries NO name / avatar /
-// distance / completed-jobs — only the fields below — so the UI renders the merged
-// rating-summary the spec calls out: average rating + review count (+ experience).
+// (contracts/openapi/booking.yaml → AvailableGuard), plus — once the BACKEND change lands — the
+// guard's `display_name` and `avatar_url` (read by booking from profile's catalog).
+//
+// [displayName] / [avatarUrl] are OPTIONAL on the wire: the UI shows the real name + photo when
+// the field is present and falls back to the id-derived handle / initials avatar when it is not,
+// so the client is forward-compatible (works against both the current and the enriched contract).
+// See the per-field FLAGs below for the exact backend endpoints that must emit them.
 
 /// One discoverable guard with their rating summary. Pure (no Flutter) → unit-testable.
 class AvailableGuard {
   const AvailableGuard({
     required this.guardId,
+    this.displayName,
+    this.avatarUrl,
     this.yearsOfExperience,
     this.averageRating,
     required this.reviewCount,
   });
 
   final String guardId;
+
+  /// The guard's real display name (profile `full_name`). Null until the BACKEND enriches the
+  /// discovery list with it — booking's `/available-guards` aggregator must read it from profile's
+  /// `/internal/guards` catalog (`InternalGuard.full_name`) and add `display_name` to the
+  /// `AvailableGuard` schema. Falls back to [displayLabel]'s id handle while absent.
+  final String? displayName;
+
+  /// A short-lived presigned URL for the guard's profile photo (profile `avatar_key`). Null until
+  /// the BACKEND enriches the discovery list with it — booking's aggregator must presign each
+  /// guard's avatar (profile already stores `avatar_key`; today only owner/admin can read it via
+  /// `GET /profile/guard/{id}/avatar`). Falls back to the initials avatar while absent.
+  final String? avatarUrl;
+
   final int? yearsOfExperience;
 
   /// AVG of visible overall ratings as a decimal STRING ("4.50"); null if none/unreachable.
@@ -24,11 +43,20 @@ class AvailableGuard {
 
   factory AvailableGuard.fromJson(Map<String, dynamic> json) => AvailableGuard(
         guardId: json['guard_id'] as String,
+        // Optional enrichment (present once the backend FLAG below ships) — trim to null so an
+        // empty/whitespace name never wins over the id-handle fallback.
+        displayName: _nonEmpty(json['display_name'] as Object?),
+        avatarUrl: _nonEmpty(json['avatar_url'] as Object?),
         yearsOfExperience: (json['years_of_experience'] as num?)?.toInt(),
         // Decimal string on the wire; parse defensively.
         averageRating: (json['average_rating'] as Object?)?.toString(),
         reviewCount: (json['review_count'] as num?)?.toInt() ?? 0,
       );
+
+  static String? _nonEmpty(Object? v) {
+    final s = v?.toString().trim();
+    return (s == null || s.isEmpty) ? null : s;
+  }
 
   /// The rating parsed for display (null if absent/garbage).
   double? get rating =>
@@ -37,8 +65,40 @@ class AvailableGuard {
   /// Whether this guard has a usable rating summary to show.
   bool get hasRating => rating != null && reviewCount > 0;
 
-  /// A short, stable handle derived from the id (the discovery contract has no name).
+  /// A short, stable handle derived from the id — the fallback when discovery carries no name.
   String get shortHandle => guardId.length >= 4
       ? guardId.substring(0, 4).toUpperCase()
       : guardId.toUpperCase();
+
+  /// Whether the discovery list provided a real photo for this guard.
+  bool get hasPhoto => avatarUrl != null;
+
+  /// The avatar's initials fallback — the leading grapheme CLUSTER of the real name when present,
+  /// otherwise the id handle (so a guard with no photo still gets a stable, legible monogram). The
+  /// pure model stays Flutter-free, so the grapheme split is done locally: a base code point plus
+  /// any trailing Thai combining marks (above/below vowels + tone marks, U+0E31/U+0E33-0E3A/
+  /// U+0E47-0E4E) are kept together as ONE cluster — a leading "บุ" stays "บุ", never a broken "บ".
+  String get avatarInitials {
+    final name = displayName?.trimLeft();
+    if (name != null && name.isNotEmpty) {
+      final runes = name.runes.toList();
+      final buffer = StringBuffer()..writeCharCode(runes.first);
+      for (var i = 1; i < runes.length && _isThaiCombining(runes[i]); i++) {
+        buffer.writeCharCode(runes[i]);
+      }
+      final first = buffer.toString();
+      if (first.trim().isNotEmpty) return first.toUpperCase();
+    }
+    return shortHandle;
+  }
+
+  /// Thai combining marks that hang off the preceding base consonant (so they belong to the same
+  /// grapheme cluster): mai han-akat, sara am, the below/above vowels, and the tone marks.
+  static bool _isThaiCombining(int r) =>
+      r == 0x0E31 || (r >= 0x0E33 && r <= 0x0E3A) || (r >= 0x0E47 && r <= 0x0E4E);
+
+  /// The card title: the guard's REAL NAME when discovery provides it, else the id-derived
+  /// "เจ้าหน้าที่ #XXXX" handle (so an un-enriched list still renders, just without the name).
+  String displayLabel(bool isThai) =>
+      displayName ?? (isThai ? 'เจ้าหน้าที่ #$shortHandle' : 'Guard #$shortHandle');
 }

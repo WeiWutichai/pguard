@@ -5,10 +5,11 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/available_guard.dart';
 
-/// One guard in the discovery list. Renders the merged-discovery summary the contract provides
-/// — rating average + review count + years of experience (there is no name/avatar/distance in
-/// `AvailableGuard`). Selection is a discovery-preview highlight, not an assignment.
-class GuardCard extends StatelessWidget {
+/// One guard in the discovery list. Renders the guard's REAL NAME + PHOTO when discovery provides
+/// them (falling back to an id handle + initials avatar otherwise), plus the rating summary
+/// (average + review count + years of experience). Selection is a discovery-preview highlight,
+/// not an assignment (first-come).
+class GuardCard extends ConsumerWidget {
   const GuardCard({
     super.key,
     required this.guard,
@@ -28,7 +29,8 @@ class GuardCard extends StatelessWidget {
   final VoidCallback onViewReviews;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     return Material(
       color: selected ? PgTokens.colorGreen50 : PgTokens.colorSurface,
       borderRadius: BorderRadius.circular(PgTokens.radius2xl),
@@ -44,26 +46,10 @@ class GuardCard extends StatelessWidget {
           ),
           child: Row(
             children: [
-              // Design avatar: 50×50 rounded square (radius 14) on green-100, 17px w600.
-              Container(
-                width: 50,
-                height: 50,
-                alignment: Alignment.center,
-                decoration: BoxDecoration(
-                  color: PgTokens.colorGreen100,
-                  borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-                ),
-                child: FittedBox(
-                  fit: BoxFit.scaleDown,
-                  child: Text(
-                    guard.shortHandle,
-                    style: const TextStyle(
-                        color: PgTokens.colorGreen800,
-                        fontWeight: FontWeight.w600,
-                        fontSize: 17),
-                  ),
-                ),
-              ),
+              // Design avatar: 50×50 rounded square (radius 14). Shows the guard's PHOTO when the
+              // discovery list provides an avatar URL; falls back to the initials monogram on
+              // green-100 when there is no photo (or the image fails to load).
+              _GuardAvatar(guard: guard),
               const SizedBox(width: PgTokens.space3),
               Expanded(
                 child: Column(
@@ -71,10 +57,16 @@ class GuardCard extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        Text(
-                          'เจ้าหน้าที่ #${guard.shortHandle}',
-                          style: const TextStyle(
-                              fontSize: 15, fontWeight: FontWeight.w600),
+                        Flexible(
+                          child: Text(
+                            // REAL NAME when discovery provides it, else the "เจ้าหน้าที่ #XXXX"
+                            // id handle (forward-compatible with the un-enriched contract).
+                            guard.displayLabel(isThai),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.w600),
+                          ),
                         ),
                         const SizedBox(width: PgTokens.space1),
                         const Icon(Icons.verified,
@@ -100,6 +92,53 @@ class GuardCard extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The 50×50 rounded-square avatar: the guard's profile PHOTO when discovery provides an
+/// `avatar_url`, else the initials monogram on green-100. The image decodes into the same rounded
+/// frame and falls back to the monogram if it errors (a stale presigned URL or a dead link never
+/// leaves an empty box).
+class _GuardAvatar extends StatelessWidget {
+  const _GuardAvatar({required this.guard});
+
+  final AvailableGuard guard;
+
+  @override
+  Widget build(BuildContext context) {
+    final monogram = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Text(
+        guard.avatarInitials,
+        style: const TextStyle(
+            color: PgTokens.colorGreen800,
+            fontWeight: FontWeight.w600,
+            fontSize: 17),
+      ),
+    );
+    return Container(
+      width: 50,
+      height: 50,
+      alignment: Alignment.center,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        color: PgTokens.colorGreen100,
+        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+      ),
+      child: guard.hasPhoto
+          ? Image.network(
+              guard.avatarUrl!,
+              width: 50,
+              height: 50,
+              fit: BoxFit.cover,
+              // Keep the monogram visible behind the image until it decodes (no flash of empty
+              // box), and restore it if the URL fails to load.
+              loadingBuilder: (context, child, progress) =>
+                  progress == null ? child : monogram,
+              errorBuilder: (context, _, __) => monogram,
+            )
+          : monogram,
     );
   }
 }

@@ -8,6 +8,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
 import '../../core/controllers/chat_launcher.dart';
+import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
@@ -18,12 +19,14 @@ import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
+import '../booking/live_status_screen.dart' show showBookingDetailsSheet;
 import '../booking/widgets/job_receipt_sheet.dart';
 import '../booking/widgets/travel_map_preview.dart';
 import '../call/widgets/call_entry_button.dart';
@@ -259,8 +262,19 @@ class _Body extends StatelessWidget {
         Expanded(
           child: ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
+            // #123: the address card + status card + the shared status timeline can push the
+            // working panel (countdown + check-in progress) just below the viewport on a short
+            // device. A one-screen cache extent keeps that panel BUILT while just off-screen so its
+            // countdown + progress are live the instant the guard scrolls. Cheap — the page has only
+            // a handful of children.
+            cacheExtent: 600,
             children: [
-              _AddressCard(address: booking.address),
+              // #122: the address card carries an obvious "ดูรายละเอียดงาน / Job details" entry
+              // that opens the SAME booking-details sheet the customer sees (address / place type /
+              // schedule / hours / guards / payment / status / total), so the guard works from the
+              // full job spec — folded into this card so it adds no extra height above the working
+              // panel (a standalone block pushed the countdown out of the lazy ListView viewport).
+              _AddressCard(booking: booking),
               const SizedBox(height: PgTokens.space4),
               Container(
                 padding: const EdgeInsets.all(PgTokens.space4),
@@ -269,7 +283,27 @@ class _Body extends StatelessWidget {
                   borderRadius: BorderRadius.circular(PgTokens.radius2xl),
                   border: Border.all(color: PgTokens.colorBorder),
                 ),
-                child: BookingStatusStepper(status: booking.status),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    BookingStatusStepper(status: booking.status),
+                    const Padding(
+                      padding:
+                          EdgeInsets.symmetric(vertical: PgTokens.space3),
+                      child: Divider(height: 1, color: PgTokens.colorBorder),
+                    ),
+                    // #123: the SHARED guard-progress timeline (accept → en route → arrived →
+                    // working → completed) — the SAME [BookingStatusTimeline] the customer's live
+                    // screen renders. The guard side passes `started` from its client work-start
+                    // stamp so the "Working" step ticks the instant the guard taps "Start job"
+                    // (the booking stays `arrived` while working, so status alone can't tell them
+                    // apart). Driven purely by status — no timer.
+                    _GuardStatusTimeline(
+                      status: booking.status,
+                      started: state.startedAt != null,
+                    ),
+                  ],
+                ),
               ),
               // While travelling / at the location (en-route + arrived, before work starts), fill
               // the empty space with an inline navigation map: the guard's own position + the
@@ -301,49 +335,109 @@ class _Body extends StatelessWidget {
   }
 }
 
-class _AddressCard extends ConsumerWidget {
-  const _AddressCard({required this.address});
+/// Locale-resolving wrapper around the shared [BookingStatusTimeline] for the guard active-job
+/// screen (#123). `_Body` is a plain StatelessWidget, so this small Consumer reads the locale and
+/// forwards the booking status + the client work-start flag to the SAME timeline the customer sees.
+class _GuardStatusTimeline extends ConsumerWidget {
+  const _GuardStatusTimeline({required this.status, required this.started});
 
-  final String? address;
+  final BookingStatus status;
+  final bool started;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return BookingStatusTimeline(
+      status: status,
+      isThai: isThai,
+      started: started,
+    );
+  }
+}
+
+/// The customer-location card at the top of the active-job screen. #122: the whole card is now
+/// TAPPABLE and carries an obvious "ดูรายละเอียดงาน / Job details" affordance that opens the SAME
+/// [showBookingDetailsSheet] the customer's live screen uses — so the guard sees the identical job
+/// spec (address + place type / schedule / hours / guard count / payment / status / total), not just
+/// the bare address + the check-in timeline. Folded into THIS card (rather than a standalone block)
+/// so it adds no height above the working panel. Reuses the shared sheet + the shared
+/// [Booking.displayTotalSatang], so the guard's and customer's figures never drift.
+class _AddressCard extends ConsumerWidget {
+  const _AddressCard({required this.booking});
+
+  final Booking booking;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // The booking carries only a free-text address (no lat/lng in the v2 contract), so we show
     // the address over a stylised area band rather than a real customer pin.
-    return Container(
-      padding: const EdgeInsets.all(PgTokens.space4),
-      decoration: BoxDecoration(
-        color: PgTokens.colorGreen50,
+    return Material(
+      color: PgTokens.colorGreen50,
+      borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+      child: InkWell(
         borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-        border: Border.all(color: PgTokens.colorGreen100),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
+        onTap: () => showBookingDetailsSheet(
+          context,
+          booking: booking,
+          totalSatang: booking.displayTotalSatang,
+          isThai: isThai,
+        ),
+        child: Container(
+          padding: const EdgeInsets.all(PgTokens.space4),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+            border: Border.all(color: PgTokens.colorGreen100),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              const Icon(Icons.place_outlined,
-                  color: PgTokens.colorGreen800, size: 22),
-              const SizedBox(width: PgTokens.space3),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(isThai ? 'สถานที่ลูกค้า' : 'Customer location',
-                        style: const TextStyle(
-                            fontSize: 11, color: PgTokens.colorTextMuted)),
-                    Text(address ?? '—',
-                        style: const TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w600)),
-                  ],
-                ),
+              Row(
+                children: [
+                  const Icon(Icons.place_outlined,
+                      color: PgTokens.colorGreen800, size: 22),
+                  const SizedBox(width: PgTokens.space3),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(isThai ? 'สถานที่ลูกค้า' : 'Customer location',
+                            style: const TextStyle(
+                                fontSize: 11, color: PgTokens.colorTextMuted)),
+                        Text(booking.address ?? '—',
+                            style: const TextStyle(
+                                fontSize: 14, fontWeight: FontWeight.w600)),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: PgTokens.space3),
+              const _MiniMapBand(),
+              const SizedBox(height: PgTokens.space2),
+              // The obvious #122 entry: a "ดูรายละเอียดงาน / Job details" row with a chevron, so the
+              // tappable card visibly advertises the full details sheet (not a hidden tap target).
+              Row(
+                children: [
+                  const Icon(Icons.receipt_long_outlined,
+                      size: 16, color: PgTokens.colorGreen800),
+                  const SizedBox(width: PgTokens.space2),
+                  Expanded(
+                    child: Text(
+                      isThai ? 'ดูรายละเอียดงาน' : 'Job details',
+                      style: const TextStyle(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: PgTokens.colorGreen800),
+                    ),
+                  ),
+                  const Icon(Icons.chevron_right,
+                      size: 18, color: PgTokens.colorGreen800),
+                ],
               ),
             ],
           ),
-          const SizedBox(height: PgTokens.space3),
-          const _MiniMapBand(),
-        ],
+        ),
       ),
     );
   }
@@ -633,6 +727,28 @@ class _TransitionBar extends ConsumerWidget {
     );
   }
 
+  /// Return the guard to their "งานของฉัน / My Jobs" list after a job leaves their hands
+  /// (awaiting the customer, or completed). Two problems this fixes (#121):
+  ///
+  ///   1. STALE LIST — the jobs list ([guardJobsControllerProvider]) is a cached fetch that is NOT
+  ///      refetched on completion, so the just-completed job lingers in "กำลังทำ / Active" instead
+  ///      of moving to "เสร็จ / Done". Invalidate it FIRST so the list this navigation lands on is
+  ///      rebuilt from a fresh `GET /bookings` (the completed job now partitions into the Done tab).
+  ///
+  ///   2. FROZEN BACK — a bare `context.go('/guard/jobs')` REPLACES the whole navigation stack with
+  ///      a single page rooted at the jobs list (My Jobs is normally a PUSHED child of the guard
+  ///      home, not a root). Its header back button then has nothing to pop → the screen looks
+  ///      frozen and the guard force-closes the app. Rebuild a real, poppable stack instead
+  ///      (home → jobs) so back returns to the dashboard normally, no restart needed.
+  ///
+  /// Single-tap / idempotent: `context.go` is a stack reset, so a double-tap just re-lands on the
+  /// same two-page stack — it can never deepen it or strand the guard.
+  void _backToJobs(BuildContext context, WidgetRef ref) {
+    ref.invalidate(guardJobsControllerProvider);
+    context.go('/home/guard');
+    context.push('/guard/jobs');
+  }
+
   Future<void> _complete(
       BuildContext context, WidgetRef ref, bool isThai) async {
     // Capture the notifier + messenger BEFORE the dialog await so we never touch `ref`/`context`
@@ -761,7 +877,7 @@ class _TransitionBar extends ConsumerWidget {
             // so they can pick up the next job while this one awaits the customer's approval.
             PgPrimaryButton(
               label: isThai ? 'กลับไปหน้างานของฉัน' : 'Back to my jobs',
-              onPressed: () => context.go('/guard/jobs'),
+              onPressed: () => _backToJobs(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
             // Design G5: chatting the customer + viewing live status are the secondary actions.
@@ -805,7 +921,7 @@ class _TransitionBar extends ConsumerWidget {
             const SizedBox(height: PgTokens.space3),
             PgPrimaryButton(
               label: isThai ? 'กลับไปรับงานใหม่' : 'Take new jobs',
-              onPressed: () => context.go('/guard/jobs'),
+              onPressed: () => _backToJobs(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
             // The receipt the guard can see (booking-derived — a guard cannot read the customer's
