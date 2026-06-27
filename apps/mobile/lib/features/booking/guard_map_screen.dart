@@ -145,11 +145,14 @@ class _MapBodyState extends ConsumerState<_MapBody> {
               Positioned.fill(
                 child: PgMap(
                   interactive: true,
-                  // LIVE FOLLOW: the camera centres on the GUARD's live position at nav zoom and
-                  // follows it as new fixes arrive (nav-app feel) — it does NOT zoom out to the whole
-                  // route. A manual pan pauses follow; the recenter FAB re-engages it. The map is NOT
-                  // re-keyed, so it + the TileLayer persist across WebSocket updates (no flicker).
-                  follow: guard?.point,
+                  // CUSTOMER VIEW: the camera centres on the CUSTOMER's OWN position (the booking
+                  // destination they're waiting at) — NOT the guard — so the customer sees where they
+                  // are; the guard's LIVE marker + route then update around it as the guard travels
+                  // in. A moderately wide zoom (≈14) keeps the approaching guard visible from a few km
+                  // out. A manual pan pauses re-centring; the recenter FAB re-engages it. The map is
+                  // NOT re-keyed, so it + the TileLayer persist across WebSocket updates (no flicker).
+                  follow: target,
+                  followZoom: 14,
                   recenterToken: _recenterToken,
                   // The real route is a definite road path → solid; the straight fallback stays
                   // dashed (the honest "this is a straight approximation" cue, matching the "≈"
