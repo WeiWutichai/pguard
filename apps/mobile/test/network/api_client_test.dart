@@ -119,6 +119,44 @@ void main() {
     );
     expect(hits, 2, reason: 'original + exactly one retry, then it gives up');
   });
+
+  // A refresh that fails for a TRANSIENT reason (identity restarting during a deploy, a flaky
+  // network → 5xx/no-response) must NOT log the user out — the refresh token is still valid. Only a
+  // genuine rejection of the refresh token itself (401/403: invalid / expired / reuse-detected)
+  // drops the session. (Regression: both devices logged out during a deploy despite valid 7-day
+  // refresh tokens, because ANY DioException cleared the session.)
+  for (final c in [
+    (status: 503, lost: false), // identity restarting
+    (status: 502, lost: false), // bad gateway
+    (status: 500, lost: false), // upstream blip
+    (status: 401, lost: true), // refresh token rejected
+    (status: 403, lost: true), // refresh token rejected
+  ]) {
+    test('refresh ${c.status} → sessionLost=${c.lost}', () async {
+      final store = InMemoryStore()
+        ..access = fakeJwt({'exp': 1}) // expired → proactive refresh fires first
+        ..refresh = 'r1';
+      var authLost = false;
+      final adapter = _StubAdapter((options) async {
+        if (options.path == '/auth/refresh') {
+          return _json(c.status, {'success': false, 'error': 'x'});
+        }
+        return _json(200, {'success': true, 'data': {'ok': true}});
+      });
+      final client = ApiClient(
+        store: store,
+        dio: Dio()..httpClientAdapter = adapter,
+        refreshDio: Dio()..httpClientAdapter = adapter,
+        onAuthLost: () => authLost = true,
+      );
+      try {
+        await client.get('/bookings/b1');
+      } catch (_) {}
+      expect(authLost, c.lost);
+      // The refresh token is preserved on a transient failure, cleared on a genuine rejection.
+      expect(store.refresh, c.lost ? isNull : 'r1');
+    });
+  }
 }
 
 /// A scriptable [HttpClientAdapter] routed by request path.
