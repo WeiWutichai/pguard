@@ -23,8 +23,8 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuardRow, PublicGuardProfile, RecruitCandidate,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    GuardProfileResponse, InternalGuardRow, PublicCustomerProfile, PublicGuardProfile,
+    RecruitCandidate, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -402,6 +402,27 @@ pub async fn get_public_guard_profile(
          WHERE user_id = $1 AND approval_status = 'approved'::profile.approval_status",
     )
     .bind(guard_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
+/// Fetch the guard-facing customer MINI-profile for the assigned guard's job sheet
+/// (`GET /customers/{id}/public`). The mirror of [`get_public_guard_profile`] for the other
+/// direction. Returns `None` (→ 404) when the customer has no profile row. Lean projection
+/// (user_id + full_name) — NEVER the address/company/email/phone PII. UNLIKE the guard read,
+/// there is NO approval filter: a customer's name must be visible to their guard regardless of
+/// the customer's own admin-approval state (a booking only exists for an approved customer
+/// anyway). The IDOR gate (the caller must be the guard ASSIGNED to an active booking with this
+/// customer) is the handler's job; this is the post-authz read.
+pub async fn get_public_customer_profile(
+    db: &PgPool,
+    customer_id: Uuid,
+) -> Result<Option<PublicCustomerProfile>, AppError> {
+    let row = sqlx::query_as::<_, PublicCustomerProfile>(
+        "SELECT user_id, full_name FROM profile.customer_profiles WHERE user_id = $1",
+    )
+    .bind(customer_id)
     .fetch_optional(db)
     .await?;
     Ok(row)

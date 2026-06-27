@@ -470,6 +470,17 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Guard-readable customer MINI-profile (name only) — the mirror of `/guards/{id}/public`,
+        // for the assigned guard's job sheet. profile owns customer_profiles; the IDOR (the caller
+        // is the guard on the customer's active booking) + role gate is the profile service's job.
+        // Token-gated (NOT in PUBLIC_PATHS) — the gate needs AuthUser. `/public` is the segment
+        // after the `{id}`, and `/customers/` collides with no other upstream's prefix.
+        prefix: "/customers/",
+        suffix: Some("/public"),
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Review submission (`/assignments/{id}/review`). Suffixed so ONLY the review
         // resource routes to rating — booking exposes no `/assignments` at the edge today,
         // and a future booking-owned `/assignments/{id}/…` resource can still be added
@@ -1551,6 +1562,24 @@ mod tests {
         assert_eq!(fwd, "/guards/abc-123/public");
         assert!(!public, "/guards/{{id}}/public requires a token");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn customers_id_public_routes_to_profile_protected() {
+        // Guard-readable customer mini-profile → profile, token-required (IDOR gate needs AuthUser).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/customers/abc-123/public"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/customers/abc-123/public");
+        assert!(!public, "/customers/{{id}}/public requires a token");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn customers_without_public_suffix_are_not_found() {
+        // Only the `/public` resource under /customers is owned at the edge; the bare collection /
+        // item has no upstream → 404 (no customer-owned resource exists there yet).
+        assert_eq!(resolve("/v1/customers"), RouteDecision::NotFound);
+        assert_eq!(resolve("/v1/customers/abc-123"), RouteDecision::NotFound);
     }
 
     #[test]

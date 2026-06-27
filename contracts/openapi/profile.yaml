@@ -194,6 +194,43 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /customers/{id}/public:
+    get:
+      tags: [Profile]
+      summary: Assigned guard's view of a customer's public mini-profile (name only)
+      description: |
+        The MINI-profile (name only) of the customer on the caller's booking, so the assigned guard's
+        job sheet can address the customer by their REAL NAME instead of a raw id. The MIRROR of
+        `GET /guards/{id}/public` for the other direction. **IDOR-gated:** a `guard` may read it ONLY
+        while they have an ACTIVE booking with this customer (the same event-derived read-model
+        projected from `pguard.events.booking.*`, queried with the roles flipped); a `customer` may
+        read only their own; an `admin` may read any. A guard without an active booking gets **403**
+        (NOT 404 — no existence probe). Returns ONLY `{ user_id, full_name }` — never the customer's
+        address/company/email/phone PII. `full_name` is PII reachable by a non-owner ONLY under this
+        active-booking trust boundary (PDPA §7).
+      operationId: getPublicCustomerProfile
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The customer's user_id.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The customer's public mini-profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PublicCustomerProfile' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /profile/guard/{user_id}/documents:
     post:
       tags: [Profile]
@@ -940,6 +977,18 @@ components:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
         years_of_experience: { type: integer, format: int32, nullable: true }
+
+    PublicCustomerProfile:
+      type: object
+      description: |
+        The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the
+        other direction. NARROW by design: only the customer's name (so the assigned guard's job
+        sheet can address them by name); NEVER the address/company/email/phone PII. `full_name` is
+        reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`).
+      required: [user_id]
+      properties:
+        user_id: { type: string, format: uuid }
+        full_name: { type: string, nullable: true }
 
     GuardDocumentResponse:
       type: object

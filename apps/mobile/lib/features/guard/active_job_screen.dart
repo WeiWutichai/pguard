@@ -269,6 +269,14 @@ class _Body extends StatelessWidget {
             // a handful of children.
             cacheExtent: 600,
             children: [
+              // #126: while the guard waits on the CUSTOMER to confirm completion
+              // (pending_completion), lead the screen with a prominent, emphasised status card so
+              // the guard plainly understands they are BLOCKED on the customer — not stuck. Sits
+              // above the address card so it is the first thing the guard reads on this stage.
+              if (stageOf(state) == JobStage.awaiting) ...[
+                const _AwaitingCustomerCard(),
+                const SizedBox(height: PgTokens.space4),
+              ],
               // #122: the address card carries an obvious "ดูรายละเอียดงาน / Job details" entry
               // that opens the SAME booking-details sheet the customer sees (address / place type /
               // schedule / hours / guards / payment / status / total), so the guard works from the
@@ -355,6 +363,76 @@ class _GuardStatusTimeline extends ConsumerWidget {
   }
 }
 
+/// #126: the PROMINENT awaiting-confirmation status card shown at the top of the guard's active-job
+/// screen while the booking is `pending_completion` (the guard has requested completion and is now
+/// waiting on the CUSTOMER to confirm). An emphasised amber card — a status icon + a bold
+/// "รอลูกค้ายืนยันการจบงาน / Waiting for the customer to confirm completion" headline + a short
+/// reassurance line — so the guard obviously understands they are BLOCKED on the customer, not stuck
+/// in a broken flow. Purely informational (the action to leave for other jobs lives in the bottom
+/// bar's awaiting case); driven by status, no timer.
+class _AwaitingCustomerCard extends ConsumerWidget {
+  const _AwaitingCustomerCard();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorAmber50,
+        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+        border: Border.all(color: PgTokens.colorAmber200),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // An emphasised status badge: a filled amber disc with an hourglass so the "waiting on
+          // the customer" meaning reads at a glance, not just from the text.
+          Container(
+            width: 40,
+            height: 40,
+            decoration: const BoxDecoration(
+              color: PgTokens.colorAmber500,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.hourglass_top,
+                size: 21, color: PgTokens.colorOnAmber),
+          ),
+          const SizedBox(width: PgTokens.space3),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                // The bold, unambiguous headline: the guard is waiting on the CUSTOMER to confirm.
+                Text(
+                  isThai
+                      ? 'รอลูกค้ายืนยันการจบงาน'
+                      : 'Waiting for the customer to confirm completion',
+                  style: const TextStyle(
+                    fontSize: 15.5,
+                    fontWeight: FontWeight.w700,
+                    color: PgTokens.colorAmber700,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isThai
+                      ? 'คุณส่งคำขอจบงานแล้ว — งานนี้รอลูกค้าตรวจสอบและยืนยัน คุณรับงานอื่นต่อได้เลย'
+                      : "You've requested completion. This job is now with the customer for review "
+                          '— you can take other jobs in the meantime.',
+                  style: const TextStyle(
+                      fontSize: 12.5, color: PgTokens.colorTextMuted),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// The customer-location card at the top of the active-job screen. #122: the whole card is now
 /// TAPPABLE and carries an obvious "ดูรายละเอียดงาน / Job details" affordance that opens the SAME
 /// [showBookingDetailsSheet] the customer's live screen uses — so the guard sees the identical job
@@ -382,6 +460,8 @@ class _AddressCard extends ConsumerWidget {
           booking: booking,
           totalSatang: booking.displayTotalSatang,
           isThai: isThai,
+          // #127: the guard sees the customer's REAL NAME row (IDOR-gated resolve).
+          showCustomer: true,
         ),
         child: Container(
           padding: const EdgeInsets.all(PgTokens.space4),

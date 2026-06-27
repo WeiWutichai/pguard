@@ -229,7 +229,10 @@ void main() {
       'a booking.* push (guard accepted) re-fetches the customer home bookings '
       'list so the ongoing-job card advances', () async {
     final push = FakePushService();
-    // Count re-fetches of the customer dashboard's /bookings list.
+    // Count re-fetches of the customer dashboard's /bookings list. NOTE: the booking push now ALSO
+    // invalidates guardJobsController (#128), which shares `/bookings` — so we assert this count
+    // INCREASED after the push (the customer home re-pulled) rather than an exact figure that would
+    // couple to the unrelated guard-jobs (re)build.
     var homeFetches = 0;
     final api = FakeApi(
       onGet: (path, _) async {
@@ -260,6 +263,7 @@ void main() {
     c.read(sessionProvider);
     await Future<void>.delayed(const Duration(milliseconds: 20));
     expect(homeFetches, 1); // initial load
+    final before = homeFetches;
 
     // The guard-accepted push fires (booking.* event, carries the booking id).
     push.emitForeground({
@@ -268,8 +272,60 @@ void main() {
     });
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
-    expect(homeFetches, 2,
+    expect(homeFetches, greaterThan(before),
         reason: 'the booking push invalidated customerHomeController → it re-pulled');
+  });
+
+  test(
+      '#128 a booking.completed push (customer confirmed) re-fetches the guard '
+      'jobs list so the just-completed job leaves "กำลังทำ"', () async {
+    final push = FakePushService();
+    // Count fetches of `/bookings/open` — this path is UNIQUE to guardJobsController's build
+    // (customerHomeController, which the push also invalidates, only hits `/bookings`), so it
+    // isolates the guard-jobs (re)build count cleanly without coupling to the shared `/bookings`.
+    var openFetches = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/open') openFetches++;
+        return <dynamic>[]; // /bookings + /bookings/open both empty
+      },
+      onPost: (_, __) async => <String, dynamic>{},
+    );
+    final c = ProviderContainer(overrides: [
+      pushServiceProvider.overrideWithValue(push),
+      pguardApiProvider.overrideWithValue(api),
+      pushNavigateProvider.overrideWithValue((_) {}),
+      pushNotifyProvider.overrideWithValue(
+        (message, {title, type = InAppBannerType.info, onTap}) {},
+      ),
+      appStoreProvider
+          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+
+    // Keep the (autoDispose) guard-jobs feed actively listened so the invalidate REFETCHES rather
+    // than just disposing — i.e. exercise the guard-dashboard-mounted path.
+    final sub = c.listen(guardJobsControllerProvider, (_, __) {});
+    addTearDown(sub.close);
+
+    c.read(pushRegistrationProvider);
+    c.read(sessionProvider);
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+    expect(openFetches, 1); // initial load
+
+    // The customer-confirmed push fires: booking.completed carries this booking id and (per the
+    // notification mapper) is delivered TO THE GUARD.
+    push.emitForeground({
+      'event_type': 'pguard.events.booking.completed',
+      'booking_id': 'b-1',
+    });
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+
+    expect(openFetches, greaterThan(1),
+        reason: 'the booking.completed push invalidated guardJobsController → it re-pulled, so the '
+            'completed job leaves "กำลังทำ"');
   });
 
   group('BookingPush.tryParse', () {

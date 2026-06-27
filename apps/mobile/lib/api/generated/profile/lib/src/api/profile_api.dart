@@ -13,6 +13,7 @@ import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+import 'package:pguard_profile_api/src/model/get_public_customer_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
@@ -268,6 +269,87 @@ class ProfileApi {
     }
 
     return Response<GetMyProfile200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Assigned guard&#39;s view of a customer&#39;s public mini-profile (name only)
+  /// The MINI-profile (name only) of the customer on the caller&#39;s booking, so the assigned guard&#39;s job sheet can address the customer by their REAL NAME instead of a raw id. The MIRROR of &#x60;GET /guards/{id}/public&#x60; for the other direction. **IDOR-gated:** a &#x60;guard&#x60; may read it ONLY while they have an ACTIVE booking with this customer (the same event-derived read-model projected from &#x60;pguard.events.booking.*&#x60;, queried with the roles flipped); a &#x60;customer&#x60; may read only their own; an &#x60;admin&#x60; may read any. A guard without an active booking gets **403** (NOT 404 — no existence probe). Returns ONLY &#x60;{ user_id, full_name }&#x60; — never the customer&#39;s address/company/email/phone PII. &#x60;full_name&#x60; is PII reachable by a non-owner ONLY under this active-booking trust boundary (PDPA §7). 
+  ///
+  /// Parameters:
+  /// * [id] - The customer's user_id.
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetPublicCustomerProfile200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetPublicCustomerProfile200Response>> getPublicCustomerProfile({ 
+    required String id,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/customers/{id}/public'.replaceAll('{' r'id' '}', encodeQueryParameter(_serializers, id, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetPublicCustomerProfile200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetPublicCustomerProfile200Response),
+      ) as GetPublicCustomerProfile200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetPublicCustomerProfile200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

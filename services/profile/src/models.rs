@@ -54,6 +54,18 @@ pub struct PublicGuardProfile {
     pub years_of_experience: Option<i32>,
 }
 
+/// The lean, GUARD-facing customer mini-profile (`GET /customers/{id}/public`) — the mirror of
+/// [`PublicGuardProfile`] for the OTHER direction. The assigned guard's job sheet needs to address
+/// the customer by name (not a raw id), so this exposes ONLY `{ user_id, full_name }`. NEVER the
+/// address / company / email / phone (least-privilege; those stay owner/admin-only). `full_name`
+/// is PII reachable by a non-owner ONLY under the same active-booking IDOR gate the guard-profile
+/// read uses — here flipped so it is the ASSIGNED GUARD (not the customer) who may read it.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PublicCustomerProfile {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+}
+
 /// Response for a guard-document upload / read: the canonical type + a short-lived presigned GET
 /// URL (1h) for the stored image. The raw S3 key is never exposed (only the signed URL).
 #[derive(Debug, Serialize)]

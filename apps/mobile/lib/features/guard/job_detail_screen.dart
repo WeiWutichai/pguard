@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/customer_public_profile_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
@@ -268,7 +269,7 @@ class _GlassBack extends StatelessWidget {
 }
 
 /// Design `.sheet`: a rounded-top surface (grab handle) holding the detail rows + the footer.
-class _Sheet extends StatelessWidget {
+class _Sheet extends ConsumerWidget {
   const _Sheet({
     required this.isThai,
     required this.booking,
@@ -286,20 +287,31 @@ class _Sheet extends StatelessWidget {
   final VoidCallback onSkip;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final hours = booking.hours;
-    final customerRef = booking.customerId.length >= 8
+    // #127: the customer's REAL NAME, resolved from the IDOR-gated `/customers/{id}/public` read.
+    // It is only readable once this guard is ASSIGNED (active booking) — so an UNACCEPTED offer
+    // (`requested`) degrades to null (403 not-yet-assigned) and falls back to the short `#id` ref,
+    // which is exactly the right privacy behaviour (no name leak before the guard takes the job).
+    final customerName = ref
+        .watch(customerPublicProfileProvider(booking.customerId))
+        .valueOrNull
+        ?.fullName
+        ?.trim();
+    final customerShortRef = booking.customerId.length >= 8
         ? '#${booking.customerId.substring(0, 8)}'
         : '#${booking.customerId}';
+    final customerValue = (customerName != null && customerName.isNotEmpty)
+        ? customerName
+        : customerShortRef;
     final guardCount = booking.guardCount ?? 1;
 
     final rows = <Widget>[
-      // Customer — the contract carries no customer name pre-accept, so the short reference id
-      // stands in (honest, matching the app's #id convention); the name needs a profile read.
+      // Customer — the customer's real name once this guard is assigned, else a short id ref.
       _DetailRow(
         icon: Icons.person_outline,
         label: isThai ? 'ลูกค้า' : 'Customer',
-        value: customerRef,
+        value: customerValue,
       ),
       _DetailRow(
         icon: Icons.calendar_today_outlined,
