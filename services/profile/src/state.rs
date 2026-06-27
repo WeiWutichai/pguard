@@ -123,6 +123,10 @@ pub trait ProfileInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     fn db_read(&self) -> &PgPool {
         self.db()
     }
+    /// S3 presigner — the internal catalog presigns each guard's `avatar_key` into a
+    /// short-lived `avatar_url` (the raw key never leaves profile), reusing the same
+    /// `download_url` the owner/admin avatar path uses.
+    fn s3(&self) -> &S3Client;
 }
 
 impl ProfileInternalDeps for AppState {
@@ -131,5 +135,8 @@ impl ProfileInternalDeps for AppState {
     }
     fn db_read(&self) -> &PgPool {
         &self.db_read
+    }
+    fn s3(&self) -> &S3Client {
+        &self.s3
     }
 }

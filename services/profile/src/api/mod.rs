@@ -937,23 +937,37 @@ pub async fn admin_list_access_audit<S: ProfileDeps>(
 
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
 /// guard catalog. Guarded by [`ServiceCaller`] (a valid service-JWT) — never reachable from
-/// the public edge (the gateway blocks `/internal/`). Returns only `{ user_id,
-/// years_of_experience }` (least-privilege — no bank/PII over the wire). Generic over
-/// [`ProfileInternalDeps`] so the guard is unit-testable (mirrors booking's internal read).
+/// the public edge (the gateway blocks `/internal/`). Returns `{ user_id, full_name,
+/// avatar_url, years_of_experience }` — `full_name`/`avatar_url` power the customer's
+/// guard-selection card and are the SAME approved-guard exposure as `GET /guards/{id}/public`
+/// (no bank/PII over the wire). `avatar_url` is the raw `avatar_key` presigned into a
+/// short-lived GET URL (the key never leaves profile), `None` when no avatar is set. Generic
+/// over [`ProfileInternalDeps`] so the guard is unit-testable (mirrors booking's internal read).
 #[tracing::instrument(skip(state), fields(caller = %caller.service))]
 pub async fn internal_list_guards<S: ProfileInternalDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
 ) -> Result<Json<ApiResponse<Vec<InternalGuard>>>, AppError> {
-    let guards = repo::list_approved_guards(state.db_read(), INTERNAL_GUARDS_LIMIT).await?;
+    let rows = repo::list_approved_guards(state.db_read(), INTERNAL_GUARDS_LIMIT).await?;
     // Surface the (un-paginated) truncation so a roster that outgrows the cap is observable
     // rather than silently dropping guards from discovery.
-    if guards.len() as i64 >= INTERNAL_GUARDS_LIMIT {
+    if rows.len() as i64 >= INTERNAL_GUARDS_LIMIT {
         tracing::warn!(
             limit = INTERNAL_GUARDS_LIMIT,
             "approved-guard catalog hit the cap; discovery results truncated (no pagination yet)"
         );
     }
+    // Presign each guard's avatar key into a short-lived GET URL here (one place, like the
+    // owner/admin avatar path) so the raw S3 key never crosses the wire; null key → no URL.
+    let guards: Vec<InternalGuard> = rows
+        .into_iter()
+        .map(|r| InternalGuard {
+            user_id: r.user_id,
+            full_name: r.full_name,
+            avatar_url: r.avatar_key.as_deref().map(|k| state.s3().download_url(k)),
+            years_of_experience: r.years_of_experience,
+        })
+        .collect();
     Ok(Json(ApiResponse::success(guards)))
 }
 
@@ -2381,6 +2395,7 @@ mod tests {
     struct InternalDeps {
         dec: Arc<DecodingKey>,
         db: sqlx::PgPool,
+        s3: crate::s3::S3Client,
     }
     impl shared::service_jwt::HasServiceJwt for InternalDeps {
         fn service_decoding_key(&self) -> &DecodingKey {
@@ -2390,6 +2405,9 @@ mod tests {
     impl ProfileInternalDeps for InternalDeps {
         fn db(&self) -> &sqlx::PgPool {
             &self.db
+        }
+        fn s3(&self) -> &crate::s3::S3Client {
+            &self.s3
         }
     }
 
@@ -2404,6 +2422,7 @@ mod tests {
         let deps = InternalDeps {
             dec: Arc::new(DecodingKey::from_secret(SERVICE_SECRET.as_bytes())),
             db,
+            s3: test_s3(),
         };
         Router::new()
             .route(

@@ -20,10 +20,17 @@ use shared::service_jwt::encode_service_jwt;
 
 // ----- shared shapes (deserialized from the owners' `{ success, data }` envelopes) -----
 
-/// One approved guard from profile's `/internal/guards`.
+/// One approved guard from profile's `/internal/guards`. `full_name` + `avatar_url` (a
+/// short-lived presigned GET URL, already signed by profile) feed the customer's
+/// guard-selection card; both are `None`-safe (a guard with no name / no avatar set), and
+/// `#[serde(default)]` keeps booking forward-compatible if profile omits them.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogGuard {
     pub user_id: Uuid,
+    #[serde(default)]
+    pub full_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub years_of_experience: Option<i32>,
 }
 

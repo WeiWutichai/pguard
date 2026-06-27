@@ -12,11 +12,31 @@ use uuid::Uuid;
 // ----- Internal (service-to-service) -----
 
 /// The lean guard-catalog row exposed to internal (service-JWT'd) callers — booking's
-/// discovery (`/available-guards`). Deliberately NARROW: only what discovery needs, NEVER
-/// bank/PII fields (least-privilege over the wire; the PDPA-sensitive columns stay home).
-#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+/// discovery (`/available-guards`). Deliberately NARROW: only what the customer's
+/// guard-selection card needs (name + photo + experience), NEVER bank/PII fields
+/// (least-privilege over the wire; the PDPA-sensitive columns stay home). `full_name` and
+/// `avatar_url` are the same exposure already made by `GET /guards/{id}/public` — the
+/// approved guard the customer is choosing — so this is no NEW disclosure. `avatar_url` is a
+/// short-lived presigned GET URL (the raw S3 key is never on the wire) and is `None` when the
+/// guard has not set an avatar.
+#[derive(Debug, Clone, Serialize)]
 pub struct InternalGuard {
     pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub avatar_url: Option<String>,
+    pub years_of_experience: Option<i32>,
+}
+
+/// The raw `list_approved_guards` repo row — DB columns only, including the unsigned
+/// `avatar_key` (an S3 object key, NEVER serialized to a caller). The handler presigns
+/// `avatar_key` into [`InternalGuard::avatar_url`]; keeping the raw key off the wire shape
+/// means the presign decision lives in exactly one place (the handler), like the owner/admin
+/// avatar path.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct InternalGuardRow {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub avatar_key: Option<String>,
     pub years_of_experience: Option<i32>,
 }
 

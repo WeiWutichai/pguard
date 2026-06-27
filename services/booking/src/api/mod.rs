@@ -938,6 +938,8 @@ pub async fn available_guards<S: DiscoveryDeps>(
             };
             let guard = AvailableGuard {
                 guard_id: g.user_id,
+                display_name: g.full_name,
+                avatar_url: g.avatar_url,
                 years_of_experience: g.years_of_experience,
                 average_rating: summary.average,
                 review_count: summary.count,
@@ -2218,6 +2220,18 @@ mod tests {
         }
     }
 
+    /// A minimal catalog guard for the filter/order tests that don't care about the
+    /// name/avatar (those default to `None`); the merge test constructs `CatalogGuard`
+    /// explicitly to assert the name + presigned avatar thread through.
+    fn catalog_guard(user_id: Uuid, years_of_experience: Option<i32>) -> CatalogGuard {
+        CatalogGuard {
+            user_id,
+            full_name: None,
+            avatar_url: None,
+            years_of_experience,
+        }
+    }
+
     /// Presence stub — `online` is the LIVE id set returned by the consult; `down=true` makes
     /// the consult ERROR so the handler's FAIL-OPEN path (unfiltered list) is exercised.
     #[derive(Clone)]
@@ -2404,10 +2418,14 @@ mod tests {
             guards: vec![
                 CatalogGuard {
                     user_id: good,
+                    full_name: Some("Somchai Jaidee".to_string()),
+                    avatar_url: Some("https://minio.example/presigned-good".to_string()),
                     years_of_experience: Some(5),
                 },
                 CatalogGuard {
                     user_id: bad,
+                    full_name: None,
+                    avatar_url: None,
                     years_of_experience: None,
                 },
             ],
@@ -2453,6 +2471,12 @@ mod tests {
         assert_eq!(data[0]["average_rating"], serde_json::json!("4.50"));
         assert_eq!(data[0]["review_count"], serde_json::json!(2));
         assert_eq!(data[0]["years_of_experience"], serde_json::json!(5));
+        // The catalog's name + presigned avatar thread through to the selection card.
+        assert_eq!(data[0]["display_name"], serde_json::json!("Somchai Jaidee"));
+        assert_eq!(
+            data[0]["avatar_url"],
+            serde_json::json!("https://minio.example/presigned-good")
+        );
         // The guard whose rating lookup failed still appears, with best-effort defaults.
         assert_eq!(data[1]["guard_id"], serde_json::json!(bad));
         assert!(
@@ -2460,6 +2484,15 @@ mod tests {
             "no rating → null average"
         );
         assert_eq!(data[1]["review_count"], serde_json::json!(0));
+        // Absent name/avatar are OMITTED from the JSON (skip_serializing_if), not null keys.
+        assert!(
+            data[1].get("display_name").is_none(),
+            "no name → key omitted"
+        );
+        assert!(
+            data[1].get("avatar_url").is_none(),
+            "no avatar → key omitted"
+        );
     }
 
     /// Issue the discovery request and return the `data` guard_ids as a `Vec<String>`, or `None`
@@ -2507,14 +2540,8 @@ mod tests {
         let offline_guard = Uuid::new_v4();
         let catalog = StubCatalog {
             guards: vec![
-                CatalogGuard {
-                    user_id: online_guard,
-                    years_of_experience: Some(3),
-                },
-                CatalogGuard {
-                    user_id: offline_guard,
-                    years_of_experience: Some(7),
-                },
+                catalog_guard(online_guard, Some(3)),
+                catalog_guard(offline_guard, Some(7)),
             ],
         };
         let Some(ids) = discovery_guard_ids(
@@ -2540,16 +2567,7 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let catalog = StubCatalog {
-            guards: vec![
-                CatalogGuard {
-                    user_id: a,
-                    years_of_experience: Some(1),
-                },
-                CatalogGuard {
-                    user_id: b,
-                    years_of_experience: Some(2),
-                },
-            ],
+            guards: vec![catalog_guard(a, Some(1)), catalog_guard(b, Some(2))],
         };
         let Some(ids) = discovery_guard_ids(
             catalog,
@@ -2618,14 +2636,8 @@ mod tests {
         let busy_guard = Uuid::new_v4();
         let catalog = StubCatalog {
             guards: vec![
-                CatalogGuard {
-                    user_id: free,
-                    years_of_experience: Some(2),
-                },
-                CatalogGuard {
-                    user_id: busy_guard,
-                    years_of_experience: Some(9),
-                },
+                catalog_guard(free, Some(2)),
+                catalog_guard(busy_guard, Some(9)),
             ],
         };
         let Some(ids) = discovery_guard_ids_with(
@@ -2660,10 +2672,7 @@ mod tests {
     async fn available_guards_fails_closed_when_busy_lookup_errors() {
         let a = Uuid::new_v4();
         let catalog = StubCatalog {
-            guards: vec![CatalogGuard {
-                user_id: a,
-                years_of_experience: Some(1),
-            }],
+            guards: vec![catalog_guard(a, Some(1))],
         };
         let Some(app) = discovery_router_with(
             catalog,
