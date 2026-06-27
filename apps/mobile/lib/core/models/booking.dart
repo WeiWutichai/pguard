@@ -4,6 +4,8 @@
 // lifecycle helpers (BookingLifecycle) are PURE (no Flutter imports) so the stepper logic
 // is unit-testable; colors live in the widget layer.
 
+import 'money.dart';
+
 /// The booking lifecycle status (snake_case wire values match the backend enum).
 enum BookingStatus {
   requested('requested'),
@@ -151,6 +153,24 @@ class Booking {
   /// Whether the PRE-PAY charge has cleared — `true` once [paidAt] is set. Gates the guard's
   /// start action and the customer's "waiting for the guard" state.
   bool get isPaid => paidAt != null;
+
+  /// DISPLAY-only charge estimate in satang — `base_fee × hours × guard_count + tip` — derived
+  /// purely from this snapshot's server-owned fields (the same figure the customer's live screen
+  /// shows). `null` when the rate/hours aren't known yet (a fresh `requested` snapshot), so a
+  /// caller can omit the total rather than print ฿0. NOT authoritative: the payment service
+  /// re-computes + verifies the real charge (see [Money]). Reused by BOTH the customer's
+  /// booking-details sheet and the guard's active-job details sheet so they never drift.
+  int? get displayTotalSatang {
+    final baseFeeSatang = Money.satangFromString(baseFee);
+    final h = hours ?? 0;
+    if (baseFeeSatang <= 0 || h <= 0) return null;
+    return Money.total(
+      baseFeeSatang: baseFeeSatang,
+      hours: h,
+      guardCount: guardCount ?? 1,
+      tipSatang: Money.satangFromString(tip),
+    );
+  }
 
   factory Booking.fromJson(Map<String, dynamic> json) => Booking(
         id: json['id'] as String,

@@ -55,12 +55,16 @@ void main() {
         return [
           {
             'guard_id': 'guard-aaaa-1111',
+            // Enriched contract: real name + avatar URL (once the backend FLAG ships).
+            'display_name': 'สมชาย มั่นคง',
+            'avatar_url': 'https://cdn.example/guard-aaaa.jpg',
             'years_of_experience': 6,
             'average_rating': '4.90',
             'review_count': 188,
           },
           {
             'guard_id': 'guard-bbbb-2222',
+            // Un-enriched row (no name/avatar) — must still parse and fall back.
             'years_of_experience': null,
             'average_rating': null,
             'review_count': 0,
@@ -115,6 +119,15 @@ void main() {
     expect(state().guards.length, 2);
     expect(state().guards.first.reviewCount, 188);
     expect(state().guards.first.rating, 4.9);
+    // Enriched fields parse: real name + photo on the first guard…
+    expect(state().guards.first.displayName, 'สมชาย มั่นคง');
+    expect(state().guards.first.avatarUrl, 'https://cdn.example/guard-aaaa.jpg');
+    expect(state().guards.first.hasPhoto, isTrue);
+    expect(state().guards.first.displayLabel(true), 'สมชาย มั่นคง');
+    // …and the un-enriched guard falls back to the id handle + initials avatar.
+    expect(state().guards[1].displayName, isNull);
+    expect(state().guards[1].hasPhoto, isFalse);
+    expect(state().guards[1].displayLabel(true), startsWith('เจ้าหน้าที่ #'));
 
     // Select a guard (preview only — no network call)
     ctrl.selectGuard(state().guards.first.guardId);

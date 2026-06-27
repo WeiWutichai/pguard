@@ -58,6 +58,75 @@ void main() {
     expect(find.textContaining('ยังไม่มีรีวิว'), findsOneWidget);
   });
 
+  testWidgets('shows the guard REAL NAME when discovery provides display_name',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-aaaa-1111',
+        displayName: 'สมชาย มั่นคง',
+        averageRating: '4.90',
+        reviewCount: 188,
+      ),
+    );
+
+    // Real name rendered as the title — NOT the id handle.
+    expect(find.text('สมชาย มั่นคง'), findsOneWidget);
+    expect(find.textContaining('เจ้าหน้าที่ #'), findsNothing);
+  });
+
+  testWidgets('falls back to the id handle when there is no display_name',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-bbbb-2222',
+        averageRating: null,
+        reviewCount: 0,
+      ),
+    );
+
+    // No name → the "เจ้าหน้าที่ #XXXX" id-derived handle (Thai-default locale).
+    expect(find.textContaining('เจ้าหน้าที่ #'), findsOneWidget);
+  });
+
+  testWidgets('renders the guard PHOTO when an avatar_url is provided',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-cccc-3333',
+        displayName: 'อนันต์ ศรีสุข',
+        avatarUrl: 'https://cdn.example/guard-cccc.jpg',
+        averageRating: '4.50',
+        reviewCount: 12,
+      ),
+    );
+
+    // The avatar is a network image (the photo) — present when avatar_url is set.
+    final img = tester.widget<Image>(find.byType(Image));
+    expect(img.image, isA<NetworkImage>());
+    expect((img.image as NetworkImage).url, 'https://cdn.example/guard-cccc.jpg');
+  });
+
+  testWidgets('shows the initials monogram (no Image) when there is no photo',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-dddd-4444',
+        displayName: 'บุญมี',
+        averageRating: null,
+        reviewCount: 0,
+      ),
+    );
+
+    // No photo → no network image; the first GRAPHEME of the name is the monogram. "บุญมี" begins
+    // with the cluster "บุ" (บ + the below-vowel ◌ุ), so the monogram is "บุ" not a broken "บ".
+    expect(find.byType(Image), findsNothing);
+    expect(find.text('บุ'), findsOneWidget);
+  });
+
   testWidgets(
       'the "ดูรีวิว" affordance fires onViewReviews and does NOT radio-select the card',
       (tester) async {

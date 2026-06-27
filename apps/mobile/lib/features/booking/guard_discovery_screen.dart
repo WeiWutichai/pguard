@@ -80,10 +80,21 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
                 ),
               ),
             _ContinueBar(
-              // Enabled once guards are loaded and we are not mid-request. Confirm CREATES the
-              // booking; no pre-existing booking is required (it doesn't exist yet by design).
-              enabled: !state.busy && state.guards.isNotEmpty,
+              // Require a guard SELECTION before confirm works: enabled only once guards are
+              // loaded, one is radio-selected (the customer's first-come preference), and we are
+              // not mid-request. Confirm CREATES the booking; no pre-existing booking is required
+              // (it doesn't exist yet by design).
+              enabled: !state.busy &&
+                  state.guards.isNotEmpty &&
+                  state.selectedGuardId != null,
               busy: state.busy,
+              // A nudge shown under the disabled button when nothing is picked yet, so the gate is
+              // explained rather than just inert. Cleared once a guard is selected.
+              hint: state.guards.isNotEmpty && state.selectedGuardId == null
+                  ? (isThai
+                      ? 'เลือกเจ้าหน้าที่ที่ต้องการก่อน'
+                      : 'Select a guard to continue')
+                  : null,
               // Post-pay: confirm creates the booking then goes straight to live status (no up-front
               // payment). A guard accepts first-come; billing is on completion.
               onContinue: _confirm,
@@ -250,12 +261,16 @@ class _ContinueBar extends StatelessWidget {
     required this.busy,
     required this.onContinue,
     required this.isThai,
+    this.hint,
   });
 
   final bool enabled;
   final bool busy;
   final VoidCallback onContinue;
   final bool isThai;
+
+  /// Optional caption shown above a DISABLED button to explain the gate ("select a guard first").
+  final String? hint;
 
   @override
   Widget build(BuildContext context) {
@@ -267,11 +282,26 @@ class _ContinueBar extends StatelessWidget {
       ),
       child: SafeArea(
         top: false,
-        child: PgPrimaryButton(
-          // Confirm CREATES the booking (fixes #79) — show the spinner while the POST is in flight.
-          label: isThai ? 'ยืนยันการจอง' : 'Confirm booking',
-          busy: busy,
-          onPressed: enabled ? onContinue : null,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (hint != null) ...[
+              Text(
+                hint!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 12.5, color: PgTokens.colorTextMuted),
+              ),
+              const SizedBox(height: PgTokens.space2),
+            ],
+            PgPrimaryButton(
+              // Confirm CREATES the booking (fixes #79) — show the spinner while the POST is in
+              // flight. Gated on a guard selection (the customer's first-come preference).
+              label: isThai ? 'ยืนยันการจอง' : 'Confirm booking',
+              busy: busy,
+              onPressed: enabled ? onContinue : null,
+            ),
+          ],
         ),
       ),
     );

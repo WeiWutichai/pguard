@@ -9,6 +9,7 @@ import '../../core/controllers/booking_payment_controller.dart';
 import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/guard_clock.dart';
 import '../../core/controllers/guard_location_controller.dart';
+import '../../core/controllers/guard_public_profile_controller.dart';
 import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
@@ -18,6 +19,7 @@ import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
 import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -170,6 +172,15 @@ class _LiveBody extends ConsumerWidget {
                   const SizedBox(height: PgTokens.space4),
                 ],
                 BookingStatusStepper(status: booking.status),
+                // #123: the shared vertical step timeline of the guard's progress for THIS booking
+                // (accept → en route → arrived → working → completed). Shown the instant a guard is
+                // assigned (a guard_id exists) — before that there is no progress to track. The same
+                // widget renders on the guard's active-job screen. Driven purely by the booking
+                // status the WS pushes — no timer.
+                if (booking.guardId != null) ...[
+                  const SizedBox(height: PgTokens.space4),
+                  _StatusTimelineSection(status: booking.status),
+                ],
                 const SizedBox(height: PgTokens.space4),
                 // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
                 // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
@@ -554,14 +565,32 @@ class _TimelineItem extends StatelessWidget {
   }
 }
 
-class _GuardCard extends StatelessWidget {
+class _GuardCard extends ConsumerWidget {
   const _GuardCard({required this.booking});
 
   final Booking booking;
 
   @override
-  Widget build(BuildContext context) {
-    final assigned = booking.guardId != null;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final guardId = booking.guardId;
+    final assigned = guardId != null;
+    // #123: show the assigned guard's REAL NAME (from the same IDOR-gated `/guards/{id}/public`
+    // read the live map uses) rather than a generic role label. Enrichment only — while it loads
+    // or if it degrades (403/404/5xx → null), we fall back to the role label, never a fabricated
+    // name. Watched only when a guard is assigned.
+    final name = assigned
+        ? ref
+            .watch(guardPublicProfileProvider(guardId))
+            .valueOrNull
+            ?.fullName
+            ?.trim()
+        : null;
+    final title = !assigned
+        ? (isThai ? 'กำลังค้นหาเจ้าหน้าที่' : 'Finding a guard')
+        : (name != null && name.isNotEmpty)
+            ? name
+            : (isThai ? 'เจ้าหน้าที่รักษาความปลอดภัย' : 'Security guard');
     return Row(
       children: [
         CircleAvatar(
@@ -579,9 +608,9 @@ class _GuardCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                assigned
-                    ? 'เจ้าหน้าที่รักษาความปลอดภัย'
-                    : 'กำลังค้นหาเจ้าหน้าที่',
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style:
                     const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
               ),
@@ -595,6 +624,35 @@ class _GuardCard extends StatelessWidget {
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+/// The #123 status-timeline section on the customer live screen: a titled card-internal block
+/// wrapping the shared [BookingStatusTimeline]. The customer has no client work-start stamp, so
+/// `started` stays default (false) — the "Working" step ticks once the booking moves past
+/// `arrived`. The same [BookingStatusTimeline] renders on the guard's active-job screen.
+class _StatusTimelineSection extends ConsumerWidget {
+  const _StatusTimelineSection({required this.status});
+
+  final BookingStatus status;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          isThai ? 'สถานะการทำงาน' : 'Job progress',
+          style: const TextStyle(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: PgTokens.colorText),
+        ),
+        const SizedBox(height: PgTokens.space3),
+        BookingStatusTimeline(status: status, isThai: isThai),
       ],
     );
   }
@@ -618,19 +676,11 @@ class _Actions extends ConsumerWidget {
     BookingStatus.enRoute,
   };
 
-  /// Display total in satang for the cancellation screen's refund banner; `null` when
-  /// the server-owned rate isn't known yet (the banner then omits the amount).
-  int? get _totalSatang {
-    final baseFeeSatang = Money.satangFromString(booking.baseFee);
-    final hours = booking.hours ?? 0;
-    if (baseFeeSatang <= 0 || hours <= 0) return null;
-    return Money.total(
-      baseFeeSatang: baseFeeSatang,
-      hours: hours,
-      guardCount: booking.guardCount ?? 1,
-      tipSatang: Money.satangFromString(booking.tip),
-    );
-  }
+  /// Display total in satang for the cancellation screen's refund banner + the booking-details
+  /// sheet; `null` when the server-owned rate isn't known yet (callers then omit the amount).
+  /// Shared with the guard's active-job details sheet via [Booking.displayTotalSatang] so the two
+  /// never drift.
+  int? get _totalSatang => booking.displayTotalSatang;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1034,14 +1084,11 @@ Future<void> showBookingDetailsSheet(
                     label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
                     value: '$guards',
                   ),
-                // The name is not on the booking snapshot — show a short id ref so the customer
-                // can quote the assigned guard (e.g. in support / chat).
+                // #123: show the assigned guard's REAL NAME (resolved from the IDOR-gated
+                // `/guards/{id}/public` read). While it loads / if it degrades it falls back to a
+                // short id ref so the customer can still quote the guard (e.g. in support / chat).
                 if (booking.guardId != null)
-                  _DetailRow(
-                    icon: Icons.shield_outlined,
-                    label: isThai ? 'เจ้าหน้าที่' : 'Guard',
-                    value: '#${_shortRef(booking.guardId!)}',
-                  ),
+                  _GuardDetailRow(guardId: booking.guardId!, isThai: isThai),
                 if (tipSatang > 0)
                   _DetailRow(
                     icon: Icons.volunteer_activism_outlined,
@@ -1099,6 +1146,28 @@ Future<void> showBookingDetailsSheet(
 
 /// First 8 chars of an id (or the whole id if shorter) — a short human-quotable reference.
 String _shortRef(String id) => id.length <= 8 ? id : id.substring(0, 8);
+
+/// The booking-details sheet's "เจ้าหน้าที่ / Guard" row, resolving the assigned guard's REAL NAME
+/// (#123) from the same IDOR-gated `/guards/{id}/public` read the live map + guard card use. Pure
+/// enrichment: while it loads / if it degrades to null, it falls back to a short `#id` ref so the
+/// customer always has a quotable reference (never a fabricated name).
+class _GuardDetailRow extends ConsumerWidget {
+  const _GuardDetailRow({required this.guardId, required this.isThai});
+
+  final String guardId;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final name =
+        ref.watch(guardPublicProfileProvider(guardId)).valueOrNull?.fullName?.trim();
+    return _DetailRow(
+      icon: Icons.shield_outlined,
+      label: isThai ? 'เจ้าหน้าที่' : 'Guard',
+      value: (name != null && name.isNotEmpty) ? name : '#${_shortRef(guardId)}',
+    );
+  }
+}
 
 class _DetailRow extends StatelessWidget {
   const _DetailRow({
