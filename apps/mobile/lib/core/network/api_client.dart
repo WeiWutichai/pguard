@@ -183,9 +183,17 @@ class ApiClient implements PguardApi {
       }
       await _sessionLost();
       return null;
-    } on DioException {
-      // Reuse-detected / expired / network: drop the session; UI re-authenticates.
-      await _sessionLost();
+    } on DioException catch (e) {
+      // Drop the session ONLY on a genuine auth rejection — the refresh token itself was rejected
+      // (invalid / expired / reuse-detected → 401/403). A TRANSIENT failure (no response, timeout,
+      // connection error, or a 5xx — e.g. identity restarting during a deploy, or a flaky network)
+      // must NOT log the user out: keep the still-valid refresh token and let the next request
+      // retry. Dropping the session on a network blip is what logged BOTH devices out during a
+      // deploy even though their 7-day refresh tokens were still valid server-side.
+      final status = e.response?.statusCode;
+      if (status == 401 || status == 403) {
+        await _sessionLost();
+      }
       return null;
     }
   }
