@@ -8,10 +8,12 @@ import 'package:built_value/serializer.dart';
 
 part 'available_guard.g.dart';
 
-/// An approved guard (profile catalog) enriched with their rating summary (rating).
+/// An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set).
 ///
 /// Properties:
 /// * [guardId] 
+/// * [displayName] - Guard's full name for the selection card; null/omitted if not set.
+/// * [avatarUrl] - Short-lived presigned GET URL for the guard's photo; null/omitted if no avatar.
 /// * [yearsOfExperience] 
 /// * [averageRating] - AVG of visible overall ratings (decimal string); null if none / rating unreachable.
 /// * [reviewCount] 
@@ -19,6 +21,14 @@ part 'available_guard.g.dart';
 abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBuilder> {
   @BuiltValueField(wireName: r'guard_id')
   String get guardId;
+
+  /// Guard's full name for the selection card; null/omitted if not set.
+  @BuiltValueField(wireName: r'display_name')
+  String? get displayName;
+
+  /// Short-lived presigned GET URL for the guard's photo; null/omitted if no avatar.
+  @BuiltValueField(wireName: r'avatar_url')
+  String? get avatarUrl;
 
   @BuiltValueField(wireName: r'years_of_experience')
   int? get yearsOfExperience;
@@ -58,6 +68,20 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
       object.guardId,
       specifiedType: const FullType(String),
     );
+    if (object.displayName != null) {
+      yield r'display_name';
+      yield serializers.serialize(
+        object.displayName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.avatarUrl != null) {
+      yield r'avatar_url';
+      yield serializers.serialize(
+        object.avatarUrl,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.yearsOfExperience != null) {
       yield r'years_of_experience';
       yield serializers.serialize(
@@ -106,6 +130,20 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
             specifiedType: const FullType(String),
           ) as String;
           result.guardId = valueDes;
+          break;
+        case r'display_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.displayName = valueDes;
+          break;
+        case r'avatar_url':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.avatarUrl = valueDes;
           break;
         case r'years_of_experience':
           final valueDes = serializers.deserialize(

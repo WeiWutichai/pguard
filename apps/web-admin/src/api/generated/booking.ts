@@ -796,10 +796,17 @@ export interface components {
              */
             tip: string;
         };
-        /** @description An approved guard (profile catalog) enriched with their rating summary (rating). */
+        /** @description An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set). */
         AvailableGuard: {
             /** Format: uuid */
             guard_id: string;
+            /**
+             * @description Guard's full name for the selection card; null/omitted if not set.
+             * @example Somchai Jaidee
+             */
+            display_name?: string | null;
+            /** @description Short-lived presigned GET URL for the guard's photo; null/omitted if no avatar. */
+            avatar_url?: string | null;
             /** Format: int32 */
             years_of_experience?: number | null;
             /**

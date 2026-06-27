@@ -23,7 +23,7 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuard, PublicGuardProfile, RecruitCandidate,
+    GuardProfileResponse, InternalGuardRow, PublicGuardProfile, RecruitCandidate,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
@@ -530,13 +530,18 @@ pub async fn list_guard_profiles(
 }
 
 /// List APPROVED guards for the internal discovery catalog (booking's `/available-guards`).
-/// Narrow projection (user_id + experience) — NEVER the bank/PII columns; least-privilege
-/// over the service-to-service wire. Bounded (`LIMIT`), newest first; NOT paginated yet, so a
-/// roster beyond the cap is truncated (the handler logs it). The `user_id` tiebreaker makes
-/// the order deterministic when `created_at` ties (stable across calls).
-pub async fn list_approved_guards(db: &PgPool, limit: i64) -> Result<Vec<InternalGuard>, AppError> {
-    let rows = sqlx::query_as::<_, InternalGuard>(
-        "SELECT user_id, years_of_experience FROM profile.guard_profiles \
+/// Narrow projection (user_id + name + avatar key + experience) — NEVER the bank/PII columns;
+/// least-privilege over the service-to-service wire. `full_name` + `avatar_key` enrich the
+/// customer's guard-selection card (the handler presigns `avatar_key`); both are the same
+/// approved-guard exposure as `GET /guards/{id}/public`. Bounded (`LIMIT`), newest first; NOT
+/// paginated yet, so a roster beyond the cap is truncated (the handler logs it). The `user_id`
+/// tiebreaker makes the order deterministic when `created_at` ties (stable across calls).
+pub async fn list_approved_guards(
+    db: &PgPool,
+    limit: i64,
+) -> Result<Vec<InternalGuardRow>, AppError> {
+    let rows = sqlx::query_as::<_, InternalGuardRow>(
+        "SELECT user_id, full_name, avatar_key, years_of_experience FROM profile.guard_profiles \
          WHERE approval_status = 'approved'::profile.approval_status \
          ORDER BY created_at DESC, user_id DESC LIMIT $1",
     )
@@ -1110,6 +1115,7 @@ mod db_tests {
 
         // 1) upsert (create) — defaults to pending, stores the full account number.
         let req = UpsertGuardProfileRequest {
+            full_name: Some("Somchai Jaidee".to_string()),
             gender: Some("male".to_string()),
             date_of_birth: NaiveDate::from_ymd_opt(1990, 1, 2),
             years_of_experience: Some(5),
@@ -1178,14 +1184,18 @@ mod db_tests {
             .expect("list");
         assert!(listed.iter().any(|p| p.user_id == user_id));
 
-        // 6) the internal catalog returns the approved guard (with experience) — and the
-        //    projection carries no bank fields (it's `InternalGuard`, type-enforced).
+        // 6) the internal catalog returns the approved guard (with experience + name for the
+        //    customer's selection card) — and the projection carries no bank fields (it's
+        //    `InternalGuardRow`, type-enforced; `avatar_key` is presigned by the handler, never
+        //    re-sent raw). No avatar was set here, so `avatar_key` is None.
         let catalog = list_approved_guards(&pool, 100).await.expect("catalog");
         let row = catalog
             .iter()
             .find(|g| g.user_id == user_id)
             .expect("approved guard appears in the internal catalog");
         assert_eq!(row.years_of_experience, Some(5));
+        assert_eq!(row.full_name.as_deref(), Some("Somchai Jaidee"));
+        assert_eq!(row.avatar_key, None, "no avatar set → key is null");
 
         // cleanup
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")

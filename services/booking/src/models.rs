@@ -291,9 +291,16 @@ pub struct UpdateServiceRequest {
 /// One entry in the `/available-guards` discovery list: an approved guard (from profile's
 /// catalog) enriched with their live rating summary (from rating). `average_rating` is `None`
 /// when the guard has no visible reviews (or rating was unreachable — best-effort).
+/// `display_name` + `avatar_url` come straight from profile's catalog (the same approved-guard
+/// exposure as `GET /guards/{id}/public`) so the customer's selection card shows a real name +
+/// photo instead of an id + initials; both are omitted from the JSON when absent.
 #[derive(Debug, Serialize)]
 pub struct AvailableGuard {
     pub guard_id: Uuid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_url: Option<String>,
     pub years_of_experience: Option<i32>,
     pub average_rating: Option<Decimal>,
     pub review_count: i64,
