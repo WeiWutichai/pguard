@@ -161,7 +161,17 @@ class PushRegistration extends _$PushRegistration {
   ///   - [customerHomeControllerProvider] — the customer's DASHBOARD ongoing-job card (the surface
   ///     the customer most likely sits on when a guard accepts). It is a separate one-shot
   ///     `/bookings` list, so without this the card would stay on "กำลังค้นหาเจ้าหน้าที่" even as the
-  ///     live screen advances. Family-less, so a plain invalidate re-pulls it.
+  ///     live screen advances. Family-less, so a plain invalidate re-pulls it;
+  ///   - [guardJobsControllerProvider] (#128) — the GUARD's dashboard + "งานของฉัน" list. Its
+  ///     "งานที่กำลังทำ / Active" partition includes `pending_completion`, so when the CUSTOMER
+  ///     confirms completion (booking → `completed`, which emits `booking.completed` → the
+  ///     notification service pushes the GUARD, recipient = guard_id, with this booking_id) the
+  ///     just-completed job must LEAVE "กำลังทำ" and move to "เสร็จ" promptly. Without re-pulling
+  ///     this one-shot `/bookings` list, the completed job lingers under "กำลังทำ" showing
+  ///     "รอลูกค้ายืนยันจบงาน" until the guard manually pulls-to-refresh or backgrounds/resumes
+  ///     (the home's resume invalidate is only the fallback). Family-less, so a plain invalidate
+  ///     re-pulls it. The guard receives no push for the OTHER parties' booking.* transitions
+  ///     (those route to the customer), so this invalidate is effectively a no-op cost there.
   /// Invalidating an autoDispose provider is safe whether or not it is mounted (mounted → refetch;
   /// unmounted → dispose, the next read rebuilds fresh).
   ///
@@ -174,6 +184,9 @@ class PushRegistration extends _$PushRegistration {
     ref.invalidate(bookingStatusControllerProvider(id));
     ref.invalidate(activeJobControllerProvider(id));
     ref.invalidate(customerHomeControllerProvider);
+    // #128: refresh the guard's home/jobs active list so a `booking.completed` push (customer
+    // confirmed) moves the job out of "กำลังทำ" without a long wait.
+    ref.invalidate(guardJobsControllerProvider);
     if (push.isPayment) {
       unawaited(_retryActiveJobIfUnpaid(id));
     }

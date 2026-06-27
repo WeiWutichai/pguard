@@ -7,6 +7,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_payment_controller.dart';
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/customer_public_profile_controller.dart';
 import '../../core/controllers/guard_clock.dart';
 import '../../core/controllers/guard_location_controller.dart';
 import '../../core/controllers/guard_public_profile_controller.dart';
@@ -19,6 +20,7 @@ import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
 import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/booking_status_pill.dart';
 import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
@@ -1012,6 +1014,10 @@ Future<void> showBookingDetailsSheet(
   required Booking booking,
   required int? totalSatang,
   required bool isThai,
+  // #127: when the GUARD opens this sheet (their active-job card), show a "ลูกค้า / Customer" row
+  // resolving the customer's REAL NAME (the IDOR-gated `/customers/{id}/public` read). The CUSTOMER
+  // viewing their own booking never sees it (it would be their own name) → defaults off.
+  bool showCustomer = false,
 }) {
   String two(int n) => n.toString().padLeft(2, '0');
   String? schedule;
@@ -1084,6 +1090,13 @@ Future<void> showBookingDetailsSheet(
                     label: isThai ? 'จำนวนเจ้าหน้าที่' : 'Guards',
                     value: '$guards',
                   ),
+                // #127: the GUARD-only customer row — resolves the customer's REAL NAME (the
+                // IDOR-gated `/customers/{id}/public` read) so the guard addresses them by name, not
+                // a raw id. Only shown when [showCustomer] (the guard's active-job card); a customer
+                // viewing their own booking never sees it. Degrades to a short `#id` ref.
+                if (showCustomer)
+                  _CustomerDetailRow(
+                      customerId: booking.customerId, isThai: isThai),
                 // #123: show the assigned guard's REAL NAME (resolved from the IDOR-gated
                 // `/guards/{id}/public` read). While it loads / if it degrades it falls back to a
                 // short id ref so the customer can still quote the guard (e.g. in support / chat).
@@ -1104,13 +1117,31 @@ Future<void> showBookingDetailsSheet(
                       ? (isThai ? 'ชำระแล้ว' : 'Paid')
                       : (isThai ? 'รอชำระเงิน' : 'Awaiting payment'),
                 ),
-                _DetailRow(
-                  icon: Icons.flag_outlined,
-                  label: isThai ? 'สถานะ' : 'Status',
-                  value: isThai
-                      ? BookingLifecycle.labelTh(booking.status)
-                      : BookingLifecycle.labelEn(booking.status),
-                ),
+                // #127: the "สถานะ / status" line carries a COLOURED status pill (not plain text)
+                // so the current state stands out — especially `pending_completion` (the guard's
+                // job awaiting the customer's confirmation), which otherwise read as a flat,
+                // ignorable row. The pill's colour is status-driven (amber for the awaiting state,
+                // green when completed, danger for terminals, blue/info while in flight).
+                _StatusDetailRow(status: booking.status, isThai: isThai),
+                // #129: the shared step timeline (accept → en route → arrived → working →
+                // completed) INSIDE the details sheet, shown the instant a guard is assigned — the
+                // SAME [BookingStatusTimeline] the main live + active-job screens render, so opening
+                // "ดูรายละเอียด / Details" shows the work-status progress too. Driven purely by
+                // status (no `started` stamp here → "Working" ticks once past `arrived`), no timer.
+                if (booking.guardId != null) ...[
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+                    child: Divider(height: 1, color: PgTokens.colorBorder),
+                  ),
+                  Text(
+                    isThai ? 'สถานะการทำงาน' : 'Job progress',
+                    style: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: PgTokens.space3),
+                  BookingStatusTimeline(
+                      status: booking.status, isThai: isThai),
+                ],
                 if (totalSatang != null) ...[
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
@@ -1165,6 +1196,71 @@ class _GuardDetailRow extends ConsumerWidget {
       icon: Icons.shield_outlined,
       label: isThai ? 'เจ้าหน้าที่' : 'Guard',
       value: (name != null && name.isNotEmpty) ? name : '#${_shortRef(guardId)}',
+    );
+  }
+}
+
+/// #127: the GUARD-facing "ลูกค้า / Customer" row, resolving the booking customer's REAL NAME from
+/// the IDOR-gated `/customers/{id}/public` read (the mirror of [_GuardDetailRow]). Pure enrichment:
+/// while it loads / if it degrades to null (e.g. the customer set no name), it falls back to a short
+/// `#id` ref so the guard always has a quotable reference (never a fabricated name).
+class _CustomerDetailRow extends ConsumerWidget {
+  const _CustomerDetailRow({required this.customerId, required this.isThai});
+
+  final String customerId;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final name = ref
+        .watch(customerPublicProfileProvider(customerId))
+        .valueOrNull
+        ?.fullName
+        ?.trim();
+    return _DetailRow(
+      icon: Icons.person_outline,
+      label: isThai ? 'ลูกค้า' : 'Customer',
+      value:
+          (name != null && name.isNotEmpty) ? name : '#${_shortRef(customerId)}',
+    );
+  }
+}
+
+/// #127: the booking-details sheet's "สถานะ / Status" row, rendering the booking status as a
+/// COLOURED PILL rather than a flat text value so the current state stands out. Same icon + bilingual
+/// label gutter as a [_DetailRow], but the value is a [BookingStatusPill]. Shared by BOTH roles (the
+/// guard now opens this same sheet), so the emphasised `pending_completion` state is obvious wherever
+/// the sheet is opened.
+class _StatusDetailRow extends StatelessWidget {
+  const _StatusDetailRow({required this.status, required this.isThai});
+
+  final BookingStatus status;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: PgTokens.space2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.flag_outlined,
+              size: 18, color: PgTokens.colorTextMuted),
+          const SizedBox(width: PgTokens.space3),
+          Expanded(
+            child: Text(isThai ? 'สถานะ' : 'Status',
+                style: const TextStyle(
+                    fontSize: 13, color: PgTokens.colorTextMuted)),
+          ),
+          const SizedBox(width: PgTokens.space3),
+          Flexible(
+            child: Align(
+              alignment: Alignment.centerRight,
+              child: BookingStatusPill(status: status, isThai: isThai),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

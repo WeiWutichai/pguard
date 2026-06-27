@@ -32,6 +32,7 @@ import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+import 'package:pguard_profile_api/src/model/get_public_customer_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/guard_avatar_response.dart';
 import 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
@@ -48,6 +49,7 @@ import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_res
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/my_profile.dart';
+import 'package:pguard_profile_api/src/model/public_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
@@ -78,6 +80,7 @@ part 'serializers.g.dart';
   GetGuardAvatar200Response,
   GetGuardDocument200Response,
   GetMyProfile200Response,
+  GetPublicCustomerProfile200Response,
   GetPublicGuardProfile200Response,
   GuardAvatarResponse,
   GuardDocumentExpiry,
@@ -94,6 +97,7 @@ part 'serializers.g.dart';
   MyCustomerProfile,
   MyGuardProfile,
   MyProfile,
+  PublicCustomerProfile,
   PublicGuardProfile,
   RecruitCandidate,
   RejectRequest,

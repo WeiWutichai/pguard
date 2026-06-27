@@ -123,6 +123,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/customers/{id}/public": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Assigned guard's view of a customer's public mini-profile (name only)
+         * @description The MINI-profile (name only) of the customer on the caller's booking, so the assigned guard's
+         *     job sheet can address the customer by their REAL NAME instead of a raw id. The MIRROR of
+         *     `GET /guards/{id}/public` for the other direction. **IDOR-gated:** a `guard` may read it ONLY
+         *     while they have an ACTIVE booking with this customer (the same event-derived read-model
+         *     projected from `pguard.events.booking.*`, queried with the roles flipped); a `customer` may
+         *     read only their own; an `admin` may read any. A guard without an active booking gets **403**
+         *     (NOT 404 — no existence probe). Returns ONLY `{ user_id, full_name }` — never the customer's
+         *     address/company/email/phone PII. `full_name` is PII reachable by a non-owner ONLY under this
+         *     active-booking trust boundary (PDPA §7).
+         */
+        get: operations["getPublicCustomerProfile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/profile/guard/{user_id}/documents": {
         parameters: {
             query?: never;
@@ -578,6 +606,17 @@ export interface components {
             years_of_experience?: number | null;
         };
         /**
+         * @description The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the
+         *     other direction. NARROW by design: only the customer's name (so the assigned guard's job
+         *     sheet can address them by name); NEVER the address/company/email/phone PII. `full_name` is
+         *     reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`).
+         */
+        PublicCustomerProfile: {
+            /** Format: uuid */
+            user_id: string;
+            full_name?: string | null;
+        };
+        /**
          * @description The result of a guard-document upload/read: the canonical document type + a short-lived
          *     (1h) presigned GET URL for the stored image. The raw S3 key is NEVER exposed.
          */
@@ -961,6 +1000,34 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["PublicGuardProfile"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    getPublicCustomerProfile: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The customer's user_id. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The customer's public mini-profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PublicCustomerProfile"];
                     };
                 };
             };

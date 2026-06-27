@@ -165,6 +165,27 @@ void main() {
   });
 
   testWidgets(
+      '#126 awaiting stage: a PROMINENT status card makes "waiting on the customer" clear',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson('pending_completion');
+      return const <Map<String, dynamic>>[];
+    });
+
+    await pumpActiveJob(tester, api: api);
+
+    // The emphasised card leads the screen with a bold, unambiguous headline: the guard is BLOCKED
+    // on the CUSTOMER's confirmation, not stuck. (#126)
+    expect(find.text('รอลูกค้ายืนยันการจบงาน'), findsOneWidget);
+    // A status badge icon (hourglass) reinforces the meaning at a glance.
+    expect(find.byIcon(Icons.hourglass_top), findsOneWidget);
+    // The reassurance line tells the guard they can pick up other jobs in the meantime.
+    expect(find.textContaining('รับงานอื่นต่อได้'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
       '#99a awaiting stage: guard can return to their jobs (not stuck)',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {

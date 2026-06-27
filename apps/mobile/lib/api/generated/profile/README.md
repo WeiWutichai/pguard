@@ -111,6 +111,7 @@ Class | Method | HTTP request | Description
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
 [*ProfileApi*](doc/ProfileApi.md) | [**getMyProfile**](doc/ProfileApi.md#getmyprofile) | **GET** /profile/me | The caller&#39;s own profile (account number MASKED)
+[*ProfileApi*](doc/ProfileApi.md) | [**getPublicCustomerProfile**](doc/ProfileApi.md#getpubliccustomerprofile) | **GET** /customers/{id}/public | Assigned guard&#39;s view of a customer&#39;s public mini-profile (name only)
 [*ProfileApi*](doc/ProfileApi.md) | [**getPublicGuardProfile**](doc/ProfileApi.md#getpublicguardprofile) | **GET** /guards/{id}/public | Assigned guard&#39;s public mini-profile (customer live-tracking map)
 [*ProfileApi*](doc/ProfileApi.md) | [**listGuardDocumentExpiries**](doc/ProfileApi.md#listguarddocumentexpiries) | **GET** /profile/guard/{user_id}/document-expiries | The guard&#39;s recorded credential expiry dates
 [*ProfileApi*](doc/ProfileApi.md) | [**setGuardDocumentExpiry**](doc/ProfileApi.md#setguarddocumentexpiry) | **PUT** /profile/guard/{user_id}/document-expiry | Set/replace one credential&#39;s expiry date
@@ -141,6 +142,7 @@ Class | Method | HTTP request | Description
  - [GetGuardAvatar200Response](doc/GetGuardAvatar200Response.md)
  - [GetGuardDocument200Response](doc/GetGuardDocument200Response.md)
  - [GetMyProfile200Response](doc/GetMyProfile200Response.md)
+ - [GetPublicCustomerProfile200Response](doc/GetPublicCustomerProfile200Response.md)
  - [GetPublicGuardProfile200Response](doc/GetPublicGuardProfile200Response.md)
  - [GuardAvatarResponse](doc/GuardAvatarResponse.md)
  - [GuardDocumentExpiry](doc/GuardDocumentExpiry.md)
@@ -157,6 +159,7 @@ Class | Method | HTTP request | Description
  - [MyCustomerProfile](doc/MyCustomerProfile.md)
  - [MyGuardProfile](doc/MyGuardProfile.md)
  - [MyProfile](doc/MyProfile.md)
+ - [PublicCustomerProfile](doc/PublicCustomerProfile.md)
  - [PublicGuardProfile](doc/PublicGuardProfile.md)
  - [RecruitCandidate](doc/RecruitCandidate.md)
  - [RejectRequest](doc/RejectRequest.md)

@@ -131,6 +131,13 @@ async fn main() -> anyhow::Result<()> {
             "/guards/{id}/public",
             get(api::get_public_guard_profile::<AppState>),
         )
+        // Guard-readable customer mini-profile (name only) — the MIRROR of the guard read above,
+        // for the assigned guard's job sheet. IDOR-gated: a guard reads it only for a customer on
+        // their ACTIVE booking; the customer's own read + admin allowed.
+        .route(
+            "/customers/{id}/public",
+            get(api::get_public_customer_profile::<AppState>),
+        )
         // Guard document image upload/read. Own-docs-only write (logged-in guard); owner-or-admin
         // read (presigned). 12 MiB body cap on THIS route only (images); gateway carves the same.
         .route(

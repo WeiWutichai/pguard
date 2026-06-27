@@ -7,6 +7,8 @@ import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/guard_map_screen.dart';
 import 'package:pguard_mobile/features/booking/job_completion_summary_screen.dart';
 import 'package:pguard_mobile/features/booking/live_status_screen.dart';
+import 'package:pguard_mobile/widgets/booking_status_pill.dart';
+import 'package:pguard_mobile/widgets/booking_status_timeline.dart';
 
 import '../support/fakes.dart';
 
@@ -396,6 +398,63 @@ void main() {
     expect(find.text('จำนวนชั่วโมง'), findsOneWidget);
     // The composed address is now split into clean rows; the first line is the 'ที่อยู่' row.
     expect(find.text('ที่อยู่'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '#127/#129 details sheet: emphasised status pill + the work-status timeline',
+      (tester) async {
+    // A pending_completion booking: the guard requested completion and the job awaits the customer.
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'pending_completion',
+          'guard_id': 'g1',
+          'address': 'หมู่บ้านลัดดารมย์',
+          'hours': 3,
+          'base_fee': '500.00',
+        };
+      }
+      return <Map<String, dynamic>>[];
+    });
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    final detailsBtn = find.text('ดูรายละเอียด');
+    await tester.ensureVisible(detailsBtn);
+    await tester.pumpAndSettle();
+    await tester.tap(detailsBtn);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // #127: the status row carries an emphasised COLOURED pill (not flat text) for the
+    // awaiting-confirmation state — assert the pill widget is present in the open sheet.
+    expect(find.byType(BookingStatusPill), findsOneWidget);
+
+    // #129: the shared work-status timeline now renders INSIDE the details sheet (the same widget
+    // the main live/active screens use), under the "สถานะการทำงาน" heading.
+    expect(find.byType(BookingStatusTimeline), findsWidgets);
+    // The sheet's own "Job progress" heading (the customer screen above also has one, so the sheet
+    // adds a second occurrence).
+    expect(find.text('สถานะการทำงาน'), findsWidgets);
+    // The timeline's step labels render in the sheet (e.g. the first + last steps).
+    expect(find.text('เริ่มรับงาน'), findsWidgets);
+    expect(find.text('เสร็จงาน'), findsWidgets);
 
     await tester.pumpWidget(const SizedBox());
   });
