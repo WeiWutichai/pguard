@@ -150,13 +150,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 /// Build [`Limits`] from env, falling back to v1's zone defaults.
-/// `RATE_OTP_PER_MIN` (10), `RATE_OTP_VERIFY_PER_MIN` (30), `RATE_AUTH_PER_SEC` (5),
-/// `RATE_API_PER_SEC` (30).
+/// `RATE_OTP_PER_MIN` (10), `RATE_OTP_VERIFY_PER_MIN` (30), `RATE_OTP_CHALLENGE_PER_MIN` (30),
+/// `RATE_AUTH_PER_SEC` (5), `RATE_API_PER_SEC` (30).
 fn limits_from_env() -> Limits {
     let d = Limits::default();
     Limits {
         otp_per_min: parse_env("RATE_OTP_PER_MIN", d.otp_per_min),
         otp_verify_per_min: parse_env("RATE_OTP_VERIFY_PER_MIN", d.otp_verify_per_min),
+        otp_challenge_per_min: parse_env("RATE_OTP_CHALLENGE_PER_MIN", d.otp_challenge_per_min),
         auth_per_sec: parse_env("RATE_AUTH_PER_SEC", d.auth_per_sec),
         api_per_sec: parse_env("RATE_API_PER_SEC", d.api_per_sec),
     }
