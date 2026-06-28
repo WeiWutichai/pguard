@@ -3,72 +3,63 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object.g.dart';
+part 'setup2fa_response.g.dart';
 
-/// InlineObject
+/// TOTP enrollment material (2FA NOT yet enabled). `otpauth_uri` is the `otpauth://totp/...` provisioning URI to render as a QR; `secret` is the base32 manual-entry fallback. 
 ///
 /// Properties:
-/// * [success] 
-/// * [error] 
-/// * [data] 
+/// * [otpauthUri] 
+/// * [secret] 
 @BuiltValue()
-abstract class InlineObject implements ApiResponseEnvelope, Built<InlineObject, InlineObjectBuilder> {
-  @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+abstract class Setup2faResponse implements Built<Setup2faResponse, Setup2faResponseBuilder> {
+  @BuiltValueField(wireName: r'otpauth_uri')
+  String get otpauthUri;
 
-  InlineObject._();
+  @BuiltValueField(wireName: r'secret')
+  String get secret;
 
-  factory InlineObject([void updates(InlineObjectBuilder b)]) = _$InlineObject;
+  Setup2faResponse._();
+
+  factory Setup2faResponse([void updates(Setup2faResponseBuilder b)]) = _$Setup2faResponse;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObjectBuilder b) => b;
+  static void _defaults(Setup2faResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject> get serializer => _$InlineObjectSerializer();
+  static Serializer<Setup2faResponse> get serializer => _$Setup2faResponseSerializer();
 }
 
-class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
+class _$Setup2faResponseSerializer implements PrimitiveSerializer<Setup2faResponse> {
   @override
-  final Iterable<Type> types = const [InlineObject, _$InlineObject];
+  final Iterable<Type> types = const [Setup2faResponse, _$Setup2faResponse];
 
   @override
-  final String wireName = r'InlineObject';
+  final String wireName = r'Setup2faResponse';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject object, {
+    Setup2faResponse object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    if (object.data != null) {
-      yield r'data';
-      yield serializers.serialize(
-        object.data,
-        specifiedType: const FullType.nullable(JsonObject),
-      );
-    }
-    if (object.error != null) {
-      yield r'error';
-      yield serializers.serialize(
-        object.error,
-        specifiedType: const FullType(String),
-      );
-    }
-    yield r'success';
+    yield r'otpauth_uri';
     yield serializers.serialize(
-      object.success,
-      specifiedType: const FullType(bool),
+      object.otpauthUri,
+      specifiedType: const FullType(String),
+    );
+    yield r'secret';
+    yield serializers.serialize(
+      object.secret,
+      specifiedType: const FullType(String),
     );
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject object, {
+    Setup2faResponse object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,34 +70,26 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObjectBuilder result,
+    required Setup2faResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'data':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
-          break;
-        case r'error':
+        case r'otpauth_uri':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(String),
           ) as String;
-          result.error = valueDes;
+          result.otpauthUri = valueDes;
           break;
-        case r'success':
+        case r'secret':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(bool),
-          ) as bool;
-          result.success = valueDes;
+            specifiedType: const FullType(String),
+          ) as String;
+          result.secret = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -117,12 +100,12 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   }
 
   @override
-  InlineObject deserialize(
+  Setup2faResponse deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObjectBuilder();
+    final result = Setup2faResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

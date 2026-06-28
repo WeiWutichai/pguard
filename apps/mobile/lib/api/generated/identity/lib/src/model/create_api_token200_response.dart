@@ -3,52 +3,52 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:pguard_identity_api/src/model/create_api_token_response.dart';
 import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object.g.dart';
+part 'create_api_token200_response.g.dart';
 
-/// InlineObject
+/// CreateApiToken200Response
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject implements ApiResponseEnvelope, Built<InlineObject, InlineObjectBuilder> {
+abstract class CreateApiToken200Response implements ApiResponseEnvelope, Built<CreateApiToken200Response, CreateApiToken200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+  CreateApiTokenResponse? get data;
 
-  InlineObject._();
+  CreateApiToken200Response._();
 
-  factory InlineObject([void updates(InlineObjectBuilder b)]) = _$InlineObject;
+  factory CreateApiToken200Response([void updates(CreateApiToken200ResponseBuilder b)]) = _$CreateApiToken200Response;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObjectBuilder b) => b;
+  static void _defaults(CreateApiToken200ResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject> get serializer => _$InlineObjectSerializer();
+  static Serializer<CreateApiToken200Response> get serializer => _$CreateApiToken200ResponseSerializer();
 }
 
-class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
+class _$CreateApiToken200ResponseSerializer implements PrimitiveSerializer<CreateApiToken200Response> {
   @override
-  final Iterable<Type> types = const [InlineObject, _$InlineObject];
+  final Iterable<Type> types = const [CreateApiToken200Response, _$CreateApiToken200Response];
 
   @override
-  final String wireName = r'InlineObject';
+  final String wireName = r'CreateApiToken200Response';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject object, {
+    CreateApiToken200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType.nullable(JsonObject),
+        specifiedType: const FullType(CreateApiTokenResponse),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject object, {
+    CreateApiToken200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObjectBuilder result,
+    required CreateApiToken200ResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,10 +89,9 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
+            specifiedType: const FullType(CreateApiTokenResponse),
+          ) as CreateApiTokenResponse;
+          result.data.replace(valueDes);
           break;
         case r'error':
           final valueDes = serializers.deserialize(
@@ -117,12 +116,12 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   }
 
   @override
-  InlineObject deserialize(
+  CreateApiToken200Response deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObjectBuilder();
+    final result = CreateApiToken200ResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

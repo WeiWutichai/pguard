@@ -4,51 +4,51 @@
 
 // ignore_for_file: unused_element
 import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
+import 'package:pguard_identity_api/src/model/login200_response_all_of_data.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object.g.dart';
+part 'login200_response.g.dart';
 
-/// InlineObject
+/// Login200Response
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject implements ApiResponseEnvelope, Built<InlineObject, InlineObjectBuilder> {
+abstract class Login200Response implements ApiResponseEnvelope, Built<Login200Response, Login200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+  Login200ResponseAllOfData? get data;
 
-  InlineObject._();
+  Login200Response._();
 
-  factory InlineObject([void updates(InlineObjectBuilder b)]) = _$InlineObject;
+  factory Login200Response([void updates(Login200ResponseBuilder b)]) = _$Login200Response;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObjectBuilder b) => b;
+  static void _defaults(Login200ResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject> get serializer => _$InlineObjectSerializer();
+  static Serializer<Login200Response> get serializer => _$Login200ResponseSerializer();
 }
 
-class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
+class _$Login200ResponseSerializer implements PrimitiveSerializer<Login200Response> {
   @override
-  final Iterable<Type> types = const [InlineObject, _$InlineObject];
+  final Iterable<Type> types = const [Login200Response, _$Login200Response];
 
   @override
-  final String wireName = r'InlineObject';
+  final String wireName = r'Login200Response';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject object, {
+    Login200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType.nullable(JsonObject),
+        specifiedType: const FullType(Login200ResponseAllOfData),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject object, {
+    Login200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObjectBuilder result,
+    required Login200ResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,10 +89,9 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
+            specifiedType: const FullType(Login200ResponseAllOfData),
+          ) as Login200ResponseAllOfData;
+          result.data.replace(valueDes);
           break;
         case r'error':
           final valueDes = serializers.deserialize(
@@ -117,12 +116,12 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   }
 
   @override
-  InlineObject deserialize(
+  Login200Response deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObjectBuilder();
+    final result = Login200ResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

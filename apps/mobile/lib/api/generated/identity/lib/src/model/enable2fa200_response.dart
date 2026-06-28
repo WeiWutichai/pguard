@@ -3,52 +3,52 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:pguard_identity_api/src/model/enable2fa_response.dart';
 import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object.g.dart';
+part 'enable2fa200_response.g.dart';
 
-/// InlineObject
+/// Enable2fa200Response
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject implements ApiResponseEnvelope, Built<InlineObject, InlineObjectBuilder> {
+abstract class Enable2fa200Response implements ApiResponseEnvelope, Built<Enable2fa200Response, Enable2fa200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+  Enable2faResponse? get data;
 
-  InlineObject._();
+  Enable2fa200Response._();
 
-  factory InlineObject([void updates(InlineObjectBuilder b)]) = _$InlineObject;
+  factory Enable2fa200Response([void updates(Enable2fa200ResponseBuilder b)]) = _$Enable2fa200Response;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObjectBuilder b) => b;
+  static void _defaults(Enable2fa200ResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject> get serializer => _$InlineObjectSerializer();
+  static Serializer<Enable2fa200Response> get serializer => _$Enable2fa200ResponseSerializer();
 }
 
-class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
+class _$Enable2fa200ResponseSerializer implements PrimitiveSerializer<Enable2fa200Response> {
   @override
-  final Iterable<Type> types = const [InlineObject, _$InlineObject];
+  final Iterable<Type> types = const [Enable2fa200Response, _$Enable2fa200Response];
 
   @override
-  final String wireName = r'InlineObject';
+  final String wireName = r'Enable2fa200Response';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject object, {
+    Enable2fa200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType.nullable(JsonObject),
+        specifiedType: const FullType(Enable2faResponse),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject object, {
+    Enable2fa200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObjectBuilder result,
+    required Enable2fa200ResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,10 +89,9 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
+            specifiedType: const FullType(Enable2faResponse),
+          ) as Enable2faResponse;
+          result.data.replace(valueDes);
           break;
         case r'error':
           final valueDes = serializers.deserialize(
@@ -117,12 +116,12 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   }
 
   @override
-  InlineObject deserialize(
+  Enable2fa200Response deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObjectBuilder();
+    final result = Enable2fa200ResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

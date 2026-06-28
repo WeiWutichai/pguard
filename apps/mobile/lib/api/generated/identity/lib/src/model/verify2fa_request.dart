@@ -3,72 +3,79 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object1.g.dart';
+part 'verify2fa_request.g.dart';
 
-/// InlineObject1
+/// Second login step. Carries the single-use `challenge_token` from login plus EITHER a TOTP `code` OR a one-time `recovery_code`. 
 ///
 /// Properties:
-/// * [success] 
-/// * [error] 
-/// * [data] 
+/// * [challengeToken] - The challenge token returned by login.
+/// * [code] - A 6-digit TOTP code.
+/// * [recoveryCode] - A one-time recovery code.
 @BuiltValue()
-abstract class InlineObject1 implements ApiResponseEnvelope, Built<InlineObject1, InlineObject1Builder> {
-  @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+abstract class Verify2faRequest implements Built<Verify2faRequest, Verify2faRequestBuilder> {
+  /// The challenge token returned by login.
+  @BuiltValueField(wireName: r'challenge_token')
+  String get challengeToken;
 
-  InlineObject1._();
+  /// A 6-digit TOTP code.
+  @BuiltValueField(wireName: r'code')
+  String? get code;
 
-  factory InlineObject1([void updates(InlineObject1Builder b)]) = _$InlineObject1;
+  /// A one-time recovery code.
+  @BuiltValueField(wireName: r'recovery_code')
+  String? get recoveryCode;
+
+  Verify2faRequest._();
+
+  factory Verify2faRequest([void updates(Verify2faRequestBuilder b)]) = _$Verify2faRequest;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObject1Builder b) => b;
+  static void _defaults(Verify2faRequestBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject1> get serializer => _$InlineObject1Serializer();
+  static Serializer<Verify2faRequest> get serializer => _$Verify2faRequestSerializer();
 }
 
-class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
+class _$Verify2faRequestSerializer implements PrimitiveSerializer<Verify2faRequest> {
   @override
-  final Iterable<Type> types = const [InlineObject1, _$InlineObject1];
+  final Iterable<Type> types = const [Verify2faRequest, _$Verify2faRequest];
 
   @override
-  final String wireName = r'InlineObject1';
+  final String wireName = r'Verify2faRequest';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject1 object, {
+    Verify2faRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    if (object.data != null) {
-      yield r'data';
+    yield r'challenge_token';
+    yield serializers.serialize(
+      object.challengeToken,
+      specifiedType: const FullType(String),
+    );
+    if (object.code != null) {
+      yield r'code';
       yield serializers.serialize(
-        object.data,
-        specifiedType: const FullType.nullable(JsonObject),
-      );
-    }
-    if (object.error != null) {
-      yield r'error';
-      yield serializers.serialize(
-        object.error,
+        object.code,
         specifiedType: const FullType(String),
       );
     }
-    yield r'success';
-    yield serializers.serialize(
-      object.success,
-      specifiedType: const FullType(bool),
-    );
+    if (object.recoveryCode != null) {
+      yield r'recovery_code';
+      yield serializers.serialize(
+        object.recoveryCode,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject1 object, {
+    Verify2faRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,34 +86,33 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObject1Builder result,
+    required Verify2faRequestBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'data':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
-          break;
-        case r'error':
+        case r'challenge_token':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(String),
           ) as String;
-          result.error = valueDes;
+          result.challengeToken = valueDes;
           break;
-        case r'success':
+        case r'code':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(bool),
-          ) as bool;
-          result.success = valueDes;
+            specifiedType: const FullType(String),
+          ) as String;
+          result.code = valueDes;
+          break;
+        case r'recovery_code':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.recoveryCode = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -117,12 +123,12 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
   }
 
   @override
-  InlineObject1 deserialize(
+  Verify2faRequest deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObject1Builder();
+    final result = Verify2faRequestBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

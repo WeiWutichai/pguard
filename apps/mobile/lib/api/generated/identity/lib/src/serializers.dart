@@ -16,19 +16,32 @@ import 'package:pguard_identity_api/src/model/date.dart';
 
 import 'package:pguard_identity_api/src/model/admin_search_users200_response.dart';
 import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
+import 'package:pguard_identity_api/src/model/api_token_view.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response_all_of_data.dart';
 import 'package:pguard_identity_api/src/model/change_password_request.dart';
+import 'package:pguard_identity_api/src/model/create_api_token200_response.dart';
+import 'package:pguard_identity_api/src/model/create_api_token_request.dart';
+import 'package:pguard_identity_api/src/model/create_api_token_response.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response_all_of_data.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response_all_of_data_meta.dart';
 import 'package:pguard_identity_api/src/model/delete_me200_response.dart';
 import 'package:pguard_identity_api/src/model/delete_me200_response_all_of_data.dart';
+import 'package:pguard_identity_api/src/model/disable2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/disable2fa200_response_all_of_data.dart';
+import 'package:pguard_identity_api/src/model/disable2fa_request.dart';
+import 'package:pguard_identity_api/src/model/enable2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/enable2fa_request.dart';
+import 'package:pguard_identity_api/src/model/enable2fa_response.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
 import 'package:pguard_identity_api/src/model/error_detail.dart';
 import 'package:pguard_identity_api/src/model/inline_object.dart';
-import 'package:pguard_identity_api/src/model/inline_object1.dart';
 import 'package:pguard_identity_api/src/model/internal_resolve_user_names200_response.dart';
+import 'package:pguard_identity_api/src/model/list_api_tokens200_response.dart';
+import 'package:pguard_identity_api/src/model/list_sessions200_response.dart';
+import 'package:pguard_identity_api/src/model/login200_response.dart';
+import 'package:pguard_identity_api/src/model/login200_response_all_of_data.dart';
 import 'package:pguard_identity_api/src/model/login_request.dart';
 import 'package:pguard_identity_api/src/model/me.dart';
 import 'package:pguard_identity_api/src/model/me200_response.dart';
@@ -38,29 +51,48 @@ import 'package:pguard_identity_api/src/model/register_request.dart';
 import 'package:pguard_identity_api/src/model/register_result.dart';
 import 'package:pguard_identity_api/src/model/resolve_users_request.dart';
 import 'package:pguard_identity_api/src/model/resolved_user.dart';
+import 'package:pguard_identity_api/src/model/session_view.dart';
+import 'package:pguard_identity_api/src/model/setup2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/setup2fa_response.dart';
 import 'package:pguard_identity_api/src/model/token_pair.dart';
+import 'package:pguard_identity_api/src/model/two_factor_challenge.dart';
 import 'package:pguard_identity_api/src/model/update_me_request.dart';
 import 'package:pguard_identity_api/src/model/user_role.dart';
 import 'package:pguard_identity_api/src/model/user_search_result.dart';
+import 'package:pguard_identity_api/src/model/verify2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/verify2fa_request.dart';
 
 part 'serializers.g.dart';
 
 @SerializersFor([
   AdminSearchUsers200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
+  ApiTokenView,
   ChangePassword200Response,
   ChangePassword200ResponseAllOfData,
   ChangePasswordRequest,
+  CreateApiToken200Response,
+  CreateApiTokenRequest,
+  CreateApiTokenResponse,
   DataExport200Response,
   DataExport200ResponseAllOfData,
   DataExport200ResponseAllOfDataMeta,
   DeleteMe200Response,
   DeleteMe200ResponseAllOfData,
+  Disable2fa200Response,
+  Disable2fa200ResponseAllOfData,
+  Disable2faRequest,
+  Enable2fa200Response,
+  Enable2faRequest,
+  Enable2faResponse,
   ErrorBody,
   ErrorDetail,
   InlineObject,
-  InlineObject1,
   InternalResolveUserNames200Response,
+  ListApiTokens200Response,
+  ListSessions200Response,
+  Login200Response,
+  Login200ResponseAllOfData,
   LoginRequest,
   Me,
   Me200Response,
@@ -70,10 +102,16 @@ part 'serializers.g.dart';
   RegisterResult,
   ResolveUsersRequest,
   ResolvedUser,
+  SessionView,
+  Setup2fa200Response,
+  Setup2faResponse,
   TokenPair,
+  TwoFactorChallenge,
   UpdateMeRequest,
   UserRole,
   UserSearchResult,
+  Verify2fa200Response,
+  Verify2faRequest,
 ])
 Serializers serializers = (_$serializers.toBuilder()
       ..add(ApiResponseEnvelope.serializer)

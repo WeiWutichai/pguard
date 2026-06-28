@@ -3,72 +3,69 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
-import 'package:built_value/json_object.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object.g.dart';
+part 'disable2fa_request.g.dart';
 
-/// InlineObject
+/// Confirm intent with EITHER a live TOTP `code` OR the account `password` (at least one). 
 ///
 /// Properties:
-/// * [success] 
-/// * [error] 
-/// * [data] 
+/// * [code] - A live 6-digit TOTP code.
+/// * [password] - SHA-256 hex of the account PIN (same shape as login's `password`).
 @BuiltValue()
-abstract class InlineObject implements ApiResponseEnvelope, Built<InlineObject, InlineObjectBuilder> {
-  @BuiltValueField(wireName: r'data')
-  JsonObject? get data;
+abstract class Disable2faRequest implements Built<Disable2faRequest, Disable2faRequestBuilder> {
+  /// A live 6-digit TOTP code.
+  @BuiltValueField(wireName: r'code')
+  String? get code;
 
-  InlineObject._();
+  /// SHA-256 hex of the account PIN (same shape as login's `password`).
+  @BuiltValueField(wireName: r'password')
+  String? get password;
 
-  factory InlineObject([void updates(InlineObjectBuilder b)]) = _$InlineObject;
+  Disable2faRequest._();
+
+  factory Disable2faRequest([void updates(Disable2faRequestBuilder b)]) = _$Disable2faRequest;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObjectBuilder b) => b;
+  static void _defaults(Disable2faRequestBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject> get serializer => _$InlineObjectSerializer();
+  static Serializer<Disable2faRequest> get serializer => _$Disable2faRequestSerializer();
 }
 
-class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
+class _$Disable2faRequestSerializer implements PrimitiveSerializer<Disable2faRequest> {
   @override
-  final Iterable<Type> types = const [InlineObject, _$InlineObject];
+  final Iterable<Type> types = const [Disable2faRequest, _$Disable2faRequest];
 
   @override
-  final String wireName = r'InlineObject';
+  final String wireName = r'Disable2faRequest';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject object, {
+    Disable2faRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    if (object.data != null) {
-      yield r'data';
+    if (object.code != null) {
+      yield r'code';
       yield serializers.serialize(
-        object.data,
-        specifiedType: const FullType.nullable(JsonObject),
-      );
-    }
-    if (object.error != null) {
-      yield r'error';
-      yield serializers.serialize(
-        object.error,
+        object.code,
         specifiedType: const FullType(String),
       );
     }
-    yield r'success';
-    yield serializers.serialize(
-      object.success,
-      specifiedType: const FullType(bool),
-    );
+    if (object.password != null) {
+      yield r'password';
+      yield serializers.serialize(
+        object.password,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject object, {
+    Disable2faRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,34 +76,26 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObjectBuilder result,
+    required Disable2faRequestBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'data':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType.nullable(JsonObject),
-          ) as JsonObject?;
-          if (valueDes == null) continue;
-          result.data = valueDes;
-          break;
-        case r'error':
+        case r'code':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(String),
           ) as String;
-          result.error = valueDes;
+          result.code = valueDes;
           break;
-        case r'success':
+        case r'password':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(bool),
-          ) as bool;
-          result.success = valueDes;
+            specifiedType: const FullType(String),
+          ) as String;
+          result.password = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -117,12 +106,12 @@ class _$InlineObjectSerializer implements PrimitiveSerializer<InlineObject> {
   }
 
   @override
-  InlineObject deserialize(
+  Disable2faRequest deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObjectBuilder();
+    final result = Disable2faRequestBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

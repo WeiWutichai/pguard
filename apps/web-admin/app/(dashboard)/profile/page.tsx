@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { KeyRound, Loader2, LogOut, ShieldCheck } from "lucide-react";
+import { KeyRound, Loader2, ShieldCheck } from "lucide-react";
 
 import type { components } from "@/api/generated/profile";
 import { identityApi, profileApi } from "@/lib/api";
@@ -20,11 +20,13 @@ import {
   Panel,
   PanelBody,
   PanelHead,
-  Toggle,
 } from "@/components/ui";
 
 import { COPY as ACTIVITY_COPY, actionText } from "../activity/copy";
 import { COPY } from "./copy";
+import { TwoFactorCard } from "./two-factor-card";
+import { SessionsCard } from "./sessions-card";
+import { ApiTokensCard } from "./api-tokens-card";
 
 type AccessAuditEntry = components["schemas"]["AccessAuditEntry"];
 
@@ -44,9 +46,13 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
  * PUT /auth/me (display_name 1–120 + optional email; a 409 `EMAIL_TAKEN` is surfaced inline);
  * the password is changed via PUT /auth/password (current + new PIN, SHA-256-hashed client-side
  * — the server then revokes every OTHER session and clears THIS browser's cookies, so we bounce
- * to /login on success). Plus the identity card (role + id from useAuth) and "sign out everywhere"
- * (POST /auth/revoke-all). HONEST GAPS (no v2 endpoint — Phase D): 2FA, the per-session device
- * list, API tokens. The personal feed is the PDPA §30 data-access audit, filtered to self.
+ * to /login on success). Plus the identity card (role + id from useAuth).
+ *
+ * The three security features now wire to real identity endpoints (#144) via dedicated cards:
+ * 2FA enrollment (<TwoFactorCard/>: setup → QR → enable → recovery codes → disable), the
+ * per-device session list + revoke + sign-out-everywhere (<SessionsCard/>), and admin API tokens
+ * (<ApiTokensCard/>: create-once / list / revoke). The personal feed is the PDPA §30 data-access
+ * audit, filtered to self.
  */
 export default function ProfilePage() {
   const { t, lang } = useLanguage();
@@ -54,10 +60,6 @@ export default function ProfilePage() {
   const ac = ACTIVITY_COPY[lang];
   const user = useAuth();
   const router = useRouter();
-
-  const [confirmOpen, setConfirmOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState(false);
 
   // ---- Account details (#144) — LIVE: load from /auth/me, save via PUT /auth/me. ----
   // Seed from the AuthProvider's /auth/me (already resolved server-side), then re-fetch so an edit
@@ -210,23 +212,6 @@ export default function ProfilePage() {
     [activity, user.user_id],
   );
 
-  async function signOutEverywhere() {
-    setBusy(true);
-    setError(false);
-    // Revokes ALL sessions incl. this one + clears our cookies → always bounce to /login.
-    // On a transient failure, surface it (the session may still be valid) rather than silently
-    // pretending we signed out.
-    const res = await identityApi.POST("/auth/revoke-all", {});
-    if (res.error) {
-      setBusy(false);
-      setError(true);
-      return;
-    }
-    router.replace("/login");
-    router.refresh();
-  }
-
-  const gapChip = <Badge tone="gray">{t("gap.endpoints")}</Badge>;
   const displayName = name.trim() || t("shell.adminName");
 
   return (
@@ -372,53 +357,14 @@ export default function ProfilePage() {
             </PanelBody>
           </Panel>
 
-          {/* 2FA — not in v2. */}
-          <Panel>
-            <PanelHead title={c.twoFaHead} sub={c.twoFaSub}>
-              {gapChip}
-            </PanelHead>
-            <PanelBody className="flex items-center">
-              <span className="text-[12.5px] text-muted">{c.gap2fa}</span>
-              <span className="ml-auto">
-                <Toggle checked={false} disabled onChange={() => {}} aria-label={c.twoFaHead} />
-              </span>
-            </PanelBody>
-          </Panel>
+          {/* 2FA — LIVE (#144): setup → QR → enable → recovery codes → disable. */}
+          <TwoFactorCard c={c} />
 
-          {/* Session security — REAL "sign out everywhere"; the per-device list is a gap. */}
-          <Panel>
-            <PanelHead title={c.sessionsHead}>
-              <Button variant="danger-ghost" size="sm" onClick={() => setConfirmOpen(true)}>
-                <LogOut size={15} />
-                {c.signOutAll}
-              </Button>
-            </PanelHead>
-            <PanelBody>
-              <p className="text-sm text-text-strong">{c.signOutAllSub}</p>
-              <div className="mt-3 flex items-start gap-2 rounded-lg border border-dashed border-border bg-sunken px-4 py-3 text-[12.5px] text-muted">
-                <Badge tone="gray">{t("gap.endpoints")}</Badge>
-                <span>{c.gapSessions}</span>
-              </div>
-              {error && (
-                <p role="alert" className="mt-3 text-sm text-danger">
-                  {c.signOutError}
-                </p>
-              )}
-            </PanelBody>
-          </Panel>
+          {/* Session security — LIVE (#144): per-device list + revoke + sign-out-everywhere. */}
+          <SessionsCard c={c} lang={lang} />
 
-          {/* API tokens — not in v2. */}
-          <Panel>
-            <PanelHead title={c.tokensHead}>
-              {gapChip}
-              <Button variant="secondary" size="sm" disabled>
-                {c.generate}
-              </Button>
-            </PanelHead>
-            <PanelBody>
-              <p className="text-[12.5px] text-muted">{c.gapTokens}</p>
-            </PanelBody>
-          </Panel>
+          {/* API tokens — LIVE (#144): create-once / list / revoke (admin role). */}
+          <ApiTokensCard c={c} lang={lang} />
         </div>
       </div>
 
@@ -464,23 +410,6 @@ export default function ProfilePage() {
           <Button onClick={submitPassword} disabled={pwBusy || !pwCurrent || !pwNew || !pwConfirm}>
             {pwBusy ? <Loader2 className="size-4 animate-spin" /> : <KeyRound size={15} />}
             {c.pwSubmit}
-          </Button>
-        </div>
-      </Modal>
-
-      <Modal
-        open={confirmOpen}
-        onClose={() => setConfirmOpen(false)}
-        title={c.signOutConfirmTitle}
-      >
-        <p className="text-sm text-muted">{c.signOutConfirmBody}</p>
-        <div className="mt-5 flex justify-end gap-2.5">
-          <Button variant="secondary" onClick={() => setConfirmOpen(false)} disabled={busy}>
-            {c.cancel}
-          </Button>
-          <Button variant="danger-ghost" onClick={signOutEverywhere} disabled={busy}>
-            <LogOut size={15} />
-            {c.confirm}
           </Button>
         </div>
       </Modal>

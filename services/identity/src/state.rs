@@ -18,6 +18,9 @@ pub struct AppState {
     pub service_jwt_config: ServiceJwtConfig,
     /// PDPA data-export aggregator: fans out to the data owners' internal export reads.
     pub export_client: crate::export_client::ExportClient,
+    /// AES-256 key (32 bytes) that seals the per-user TOTP secret at rest (#144 2FA). Loaded
+    /// fail-fast from `TOTP_ENC_KEY` (64 hex chars). Held as raw bytes; never logged.
+    pub totp_enc_key: [u8; 32],
 }
 
 impl HasJwtSecret for AppState {

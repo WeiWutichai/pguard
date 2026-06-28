@@ -87,16 +87,25 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminSearchUsers**](doc/AdminApi.md#adminsearchusers) | **GET** /admin/users/search | Search users by name / phone / email / id (role&#x3D;admin,
+[*AdminApi*](doc/AdminApi.md) | [**createApiToken**](doc/AdminApi.md#createapitoken) | **POST** /admin/api-tokens | Create an admin API token — full token returned ONCE (role&#x3D;admin,
+[*AdminApi*](doc/AdminApi.md) | [**listApiTokens**](doc/AdminApi.md#listapitokens) | **GET** /admin/api-tokens | List the caller&#39;s admin API tokens (NEVER the secret, role&#x3D;admin,
+[*AdminApi*](doc/AdminApi.md) | [**revokeApiToken**](doc/AdminApi.md#revokeapitoken) | **DELETE** /admin/api-tokens/{id} | Revoke one of the caller&#39;s admin API tokens (role&#x3D;admin,
 [*AuthApi*](doc/AuthApi.md) | [**changePassword**](doc/AuthApi.md#changepassword) | **PUT** /auth/password | Change the caller&#39;s OWN password (#144)
 [*AuthApi*](doc/AuthApi.md) | [**dataExport**](doc/AuthApi.md#dataexport) | **GET** /me/data-export | Export the authenticated user&#39;s data (PDPA §19 access / §32 portability)
 [*AuthApi*](doc/AuthApi.md) | [**deleteMe**](doc/AuthApi.md#deleteme) | **DELETE** /auth/me | Erase the authenticated user&#39;s account (PDPA §33 right to erasure)
+[*AuthApi*](doc/AuthApi.md) | [**disable2fa**](doc/AuthApi.md#disable2fa) | **POST** /auth/2fa/disable | Disable TOTP 2FA (confirm with a code or password,
+[*AuthApi*](doc/AuthApi.md) | [**enable2fa**](doc/AuthApi.md#enable2fa) | **POST** /auth/2fa/enable | Enable TOTP 2FA after verifying a live code (#144)
+[*AuthApi*](doc/AuthApi.md) | [**listSessions**](doc/AuthApi.md#listsessions) | **GET** /auth/sessions | List the caller&#39;s active sessions (per-device,
 [*AuthApi*](doc/AuthApi.md) | [**login**](doc/AuthApi.md#login) | **POST** /auth/login | Authenticate with phone/email + password; issue an access + refresh token
 [*AuthApi*](doc/AuthApi.md) | [**logout**](doc/AuthApi.md#logout) | **POST** /auth/logout | Log out — blocklist the access jti and revoke the refresh family
 [*AuthApi*](doc/AuthApi.md) | [**me**](doc/AuthApi.md#me) | **GET** /auth/me | Current authenticated user
 [*AuthApi*](doc/AuthApi.md) | [**refresh**](doc/AuthApi.md#refresh) | **POST** /auth/refresh | Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
 [*AuthApi*](doc/AuthApi.md) | [**register**](doc/AuthApi.md#register) | **POST** /auth/register | Create an account from a verified phone + chosen role (returns 202, NO tokens)
 [*AuthApi*](doc/AuthApi.md) | [**revokeAllSessions**](doc/AuthApi.md#revokeallsessions) | **POST** /auth/revoke-all | Sign out everywhere — revoke ALL of the caller&#39;s own sessions
+[*AuthApi*](doc/AuthApi.md) | [**revokeSession**](doc/AuthApi.md#revokesession) | **DELETE** /auth/sessions/{family_id} | Revoke ONE of the caller&#39;s sessions (sign out a single device,
+[*AuthApi*](doc/AuthApi.md) | [**setup2fa**](doc/AuthApi.md#setup2fa) | **POST** /auth/2fa/setup | Begin TOTP 2FA enrollment (provision — NOT yet enabled,
 [*AuthApi*](doc/AuthApi.md) | [**updateMe**](doc/AuthApi.md#updateme) | **PUT** /auth/me | Update the caller&#39;s OWN display_name + email (#144 admin self-profile)
+[*AuthApi*](doc/AuthApi.md) | [**verify2fa**](doc/AuthApi.md#verify2fa) | **POST** /auth/2fa/verify | Complete a 2FA login (second step) — issues the token pair (#144)
 [*InternalApi*](doc/InternalApi.md) | [**internalResolveUserNames**](doc/InternalApi.md#internalresolveusernames) | **POST** /internal/users/names | Batch-resolve user_ids to { role, display_name } (service-JWT only)
 [*InternalApi*](doc/InternalApi.md) | [**internalRevokeAll**](doc/InternalApi.md#internalrevokeall) | **POST** /internal/users/{id}/revoke-all | Force-revoke all of a user&#39;s tokens (service-JWT only)
 
@@ -105,19 +114,32 @@ Class | Method | HTTP request | Description
 
  - [AdminSearchUsers200Response](doc/AdminSearchUsers200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [ApiTokenView](doc/ApiTokenView.md)
  - [ChangePassword200Response](doc/ChangePassword200Response.md)
  - [ChangePassword200ResponseAllOfData](doc/ChangePassword200ResponseAllOfData.md)
  - [ChangePasswordRequest](doc/ChangePasswordRequest.md)
+ - [CreateApiToken200Response](doc/CreateApiToken200Response.md)
+ - [CreateApiTokenRequest](doc/CreateApiTokenRequest.md)
+ - [CreateApiTokenResponse](doc/CreateApiTokenResponse.md)
  - [DataExport200Response](doc/DataExport200Response.md)
  - [DataExport200ResponseAllOfData](doc/DataExport200ResponseAllOfData.md)
  - [DataExport200ResponseAllOfDataMeta](doc/DataExport200ResponseAllOfDataMeta.md)
  - [DeleteMe200Response](doc/DeleteMe200Response.md)
  - [DeleteMe200ResponseAllOfData](doc/DeleteMe200ResponseAllOfData.md)
+ - [Disable2fa200Response](doc/Disable2fa200Response.md)
+ - [Disable2fa200ResponseAllOfData](doc/Disable2fa200ResponseAllOfData.md)
+ - [Disable2faRequest](doc/Disable2faRequest.md)
+ - [Enable2fa200Response](doc/Enable2fa200Response.md)
+ - [Enable2faRequest](doc/Enable2faRequest.md)
+ - [Enable2faResponse](doc/Enable2faResponse.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
- - [InlineObject1](doc/InlineObject1.md)
  - [InternalResolveUserNames200Response](doc/InternalResolveUserNames200Response.md)
+ - [ListApiTokens200Response](doc/ListApiTokens200Response.md)
+ - [ListSessions200Response](doc/ListSessions200Response.md)
+ - [Login200Response](doc/Login200Response.md)
+ - [Login200ResponseAllOfData](doc/Login200ResponseAllOfData.md)
  - [LoginRequest](doc/LoginRequest.md)
  - [Me](doc/Me.md)
  - [Me200Response](doc/Me200Response.md)
@@ -127,10 +149,16 @@ Class | Method | HTTP request | Description
  - [RegisterResult](doc/RegisterResult.md)
  - [ResolveUsersRequest](doc/ResolveUsersRequest.md)
  - [ResolvedUser](doc/ResolvedUser.md)
+ - [SessionView](doc/SessionView.md)
+ - [Setup2fa200Response](doc/Setup2fa200Response.md)
+ - [Setup2faResponse](doc/Setup2faResponse.md)
  - [TokenPair](doc/TokenPair.md)
+ - [TwoFactorChallenge](doc/TwoFactorChallenge.md)
  - [UpdateMeRequest](doc/UpdateMeRequest.md)
  - [UserRole](doc/UserRole.md)
  - [UserSearchResult](doc/UserSearchResult.md)
+ - [Verify2fa200Response](doc/Verify2fa200Response.md)
+ - [Verify2faRequest](doc/Verify2faRequest.md)
 
 
 ## Documentation For Authorization

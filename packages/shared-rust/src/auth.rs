@@ -243,6 +243,36 @@ pub fn decode_profile_token(
     Ok((data.claims.sub, data.claims.jti))
 }
 
+/// Purpose for the short-lived 2FA login-challenge token (identity → identity). Issued by
+/// `POST /auth/login` when the account has TOTP enabled (in place of the token pair), and
+/// consumed by `POST /auth/2fa/verify` (which checks a TOTP/recovery code and THEN issues the
+/// real tokens). Single-use is enforced by the issuer storing the jti in Redis and the consumer
+/// `GETDEL`-ing it — the same scheme as the profile token. Structurally a purpose token (no
+/// iss/aud/role), so an access token can never be mistaken for a 2FA challenge and vice-versa.
+pub const TWO_FACTOR_CHALLENGE_PURPOSE: &str = "twofa_challenge";
+
+/// Encode a single-use 2FA login-challenge JWT for `user_id`. Returns `(token, jti)`; the issuer
+/// (identity's login) stores the jti "valid" in Redis for the verify step's single-use GETDEL.
+/// Reuses the [`ProfileTokenClaims`] shape (sub/purpose/jti/exp/iat) — it carries exactly what a
+/// challenge needs and keeps one purpose-token claim type.
+pub fn encode_2fa_challenge_token(
+    user_id: Uuid,
+    key: &EncodingKey,
+    expiry_minutes: i64,
+) -> Result<(String, String), AppError> {
+    encode_profile_token(user_id, TWO_FACTOR_CHALLENGE_PURPOSE, key, expiry_minutes)
+}
+
+/// Decode + verify a 2FA login-challenge JWT, enforcing `purpose == TWO_FACTOR_CHALLENGE_PURPOSE`.
+/// Returns `(user_id, jti)`; the caller (identity `/auth/2fa/verify`) enforces single-use via
+/// GETDEL. An access token / profile token / forged token is rejected (purpose isolation).
+pub fn decode_2fa_challenge_token(
+    token: &str,
+    key: &DecodingKey,
+) -> Result<(Uuid, String), AppError> {
+    decode_profile_token(token, key, TWO_FACTOR_CHALLENGE_PURPOSE)
+}
+
 /// Build a Set-Cookie value for an httpOnly, Secure, SameSite=Lax cookie.
 pub fn build_cookie(name: &str, value: &str, max_age_secs: i64, path: &str) -> String {
     format!("{name}={value}; HttpOnly; Secure; SameSite=Lax; Path={path}; Max-Age={max_age_secs}")
@@ -545,6 +575,27 @@ mod tests {
             decode_jwt(&profile, TEST_SECRET).is_err(),
             "a profile token must not pass as an access token (no iss/aud/role)"
         );
+    }
+
+    /// The 2FA challenge token is a purpose token: it round-trips its user id + jti, and is NOT
+    /// interchangeable with a profile token or an access token (purpose isolation), even though all
+    /// share the user secret. This is what lets `/auth/2fa/verify` accept ONLY a real challenge.
+    #[test]
+    fn two_factor_challenge_token_round_trips_and_is_isolated() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        let uid = Uuid::new_v4();
+        let (tok, jti) = encode_2fa_challenge_token(uid, &ek, 5).unwrap();
+        let (decoded_uid, decoded_jti) = decode_2fa_challenge_token(&tok, &dk).unwrap();
+        assert_eq!(decoded_uid, uid);
+        assert_eq!(decoded_jti, jti);
+
+        // A profile token must NOT decode as a challenge…
+        let (profile, _) = encode_profile_token(uid, PROFILE_PURPOSE_GUARD, &ek, 5).unwrap();
+        assert!(decode_2fa_challenge_token(&profile, &dk).is_err());
+        // …and a challenge must NOT decode as a profile token or an access token.
+        assert!(decode_profile_token(&tok, &dk, PROFILE_PURPOSE_GUARD).is_err());
+        assert!(decode_jwt(&tok, TEST_SECRET).is_err());
     }
 
     #[test]

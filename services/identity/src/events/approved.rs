@@ -313,6 +313,7 @@ mod e2e_tests {
                 60,
                 vec![],
             ),
+            totp_enc_key: [0u8; 32],
         };
 
         let client = shared_events::connect(&nats_url)
@@ -451,6 +452,7 @@ mod e2e_tests {
                 60,
                 vec![],
             ),
+            totp_enc_key: [0u8; 32],
         };
 
         let client = shared_events::connect(&nats_url)

@@ -380,6 +380,9 @@ services:
       NATS_PASSWORD: ${NATS_IDENTITY_PASSWORD:?NATS_IDENTITY_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       JWT_EXPIRY_MINUTES: ${JWT_EXPIRY_MINUTES:-15}
+      # AES-256 key (64 hex chars / 32 bytes) sealing the per-user TOTP 2FA secret at rest (#144).
+      # DEDICATED — never an overload of any JWT secret. Generate: `openssl rand -hex 32`.
+      TOTP_ENC_KEY: ${TOTP_ENC_KEY:?TOTP_ENC_KEY is required (64 hex chars / 32 bytes for 2FA)}
     expose:
       - "3001"
 

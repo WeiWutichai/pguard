@@ -100,6 +100,11 @@ paths:
         refresh token (new family). Tokens are returned in the body AND set as cookies.
         Any failure returns a generic 401 — the response never reveals whether the
         account exists.
+
+        **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the `200`
+        body instead carries a `TwoFactorChallenge` (`{ two_factor_required: true, challenge_token }`)
+        with NO tokens/cookies. The client completes login at `POST /auth/2fa/verify` with a code.
+        Accounts WITHOUT 2FA are unaffected (the `data` is the usual `TokenPair`).
       operationId: login
       requestBody:
         required: true
@@ -107,7 +112,26 @@ paths:
           application/json:
             schema: { $ref: '#/components/schemas/LoginRequest' }
       responses:
-        '200': { $ref: '#/components/responses/TokenPairOk' }
+        '200':
+          description: |
+            Either the issued token pair (no 2FA) OR a 2FA challenge (`two_factor_required: true`).
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        oneOf:
+                          - $ref: '#/components/schemas/TokenPair'
+                          - $ref: '#/components/schemas/TwoFactorChallenge'
+          headers:
+            Set-Cookie:
+              description: |
+                On the no-2FA path, httpOnly Secure SameSite=Lax `access_token` + `refresh_token`
+                cookies (absent on the 2FA-challenge path).
+              schema: { type: string }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
   /auth/refresh:
@@ -271,6 +295,254 @@ paths:
                           password_changed: { type: boolean, example: true }
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/2fa/setup:
+    post:
+      tags: [Auth]
+      summary: Begin TOTP 2FA enrollment (provision — NOT yet enabled, #144)
+      description: |
+        Generates a fresh TOTP secret for the CALLER, seals it at rest (AES-256-GCM under the
+        service-held `TOTP_ENC_KEY`), and returns the `otpauth://` provisioning URI (render as a QR)
+        plus the base32 `secret` (manual-entry fallback). **2FA is NOT enabled yet** — the client
+        must scan the QR and then call `POST /auth/2fa/enable` with a live code. Calling setup again
+        before enabling simply re-provisions. `409` if 2FA is already enabled (disable first).
+      operationId: setup2fa
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Provisioning URI + base32 secret (2FA still off)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Setup2faResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /auth/2fa/enable:
+    post:
+      tags: [Auth]
+      summary: Enable TOTP 2FA after verifying a live code (#144)
+      description: |
+        Verifies the 6-digit `code` from the authenticator against the provisioning secret from
+        `/auth/2fa/setup`, then turns 2FA ON and returns one-time **recovery codes** shown EXACTLY
+        ONCE (store them — they are not retrievable again). A wrong code → `401` (nothing changes);
+        no provisioning in progress → `409`.
+      operationId: enable2fa
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Enable2faRequest' }
+      responses:
+        '200':
+          description: 2FA enabled; one-time recovery codes (shown once)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Enable2faResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /auth/2fa/disable:
+    post:
+      tags: [Auth]
+      summary: Disable TOTP 2FA (confirm with a code or password, #144)
+      description: |
+        Turns 2FA OFF for the CALLER after confirming intent via EITHER a live TOTP `code` OR the
+        account `password` (SHA-256 hex, same shape as login). Clears the secret + recovery codes.
+        A wrong code/password → `401`; neither supplied → `400`. Disabling an already-off account is
+        a harmless no-op (`200`).
+      operationId: disable2fa
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Disable2faRequest' }
+      responses:
+        '200':
+          description: 2FA disabled
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          two_factor_enabled: { type: boolean, example: false }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/2fa/verify:
+    post:
+      tags: [Auth]
+      summary: Complete a 2FA login (second step) — issues the token pair (#144)
+      description: |
+        The second login step. When `POST /auth/login` finds 2FA enabled it returns a single-use
+        `challenge_token` (NOT a token pair). The client posts that token here together with EITHER a
+        TOTP `code` OR a one-time `recovery_code`; on success identity issues the access + refresh
+        token pair (also set as cookies), exactly like a normal login. The challenge is single-use
+        (replays rejected); a recovery code is single-use (consumed). **Edge-public** (carries the
+        challenge token, not an access token). Invalid/expired challenge or wrong code → `401`.
+      operationId: verify2fa
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Verify2faRequest' }
+      responses:
+        '200':
+          description: Tokens issued (same shape + cookies as login)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/TokenPair' }
+          headers:
+            Set-Cookie:
+              description: httpOnly Secure SameSite=Lax `access_token` + `refresh_token` cookies.
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/sessions:
+    get:
+      tags: [Auth]
+      summary: List the caller's active sessions (per-device, #144)
+      description: |
+        Lists the caller's ACTIVE refresh families as a device list: `{ family_id, user_agent, ip
+        (masked), created_at, last_used_at, current }`. `current` marks the session whose refresh
+        token is presented (cookie or `X-Refresh-Token`). `ip` is masked to its first two octets/
+        hextets. A family is "active" if it still has a non-revoked, unexpired token.
+      operationId: listSessions
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's active sessions
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SessionView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/sessions/{family_id}:
+    delete:
+      tags: [Auth]
+      summary: Revoke ONE of the caller's sessions (sign out a single device, #144)
+      description: |
+        Revokes a single refresh family that belongs to the CALLER (sign out one device). Ownership-
+        scoped — a family that isn't the caller's → `404` (IDOR-safe). The "sign out everywhere"
+        endpoint (`POST /auth/revoke-all`) is separate. The revoked device's refresh token can no
+        longer rotate; its access token expires naturally (≤15 min).
+      operationId: revokeSession
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: family_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/EmptyOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/api-tokens:
+    post:
+      tags: [Admin]
+      summary: Create an admin API token — full token returned ONCE (role=admin, #144)
+      description: |
+        Creates a long-lived admin API token for the CALLER. **Admin only** (else `403`). Returns the
+        FULL token `pguard_<prefix>_<secret>` **exactly once** — only the SHA-256 hash of the secret
+        is stored, so it can never be shown again. The token authenticates as the creator's role
+        (admin) and is usable as a `Bearer` for admin API calls (the gateway validates it via
+        identity's internal verify endpoint and injects the trusted user). Revoke via DELETE.
+      operationId: createApiToken
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateApiTokenRequest' }
+      responses:
+        '200':
+          description: The created token (full secret shown once)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/CreateApiTokenResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    get:
+      tags: [Admin]
+      summary: List the caller's admin API tokens (NEVER the secret, role=admin, #144)
+      description: |
+        Lists the CALLER'S admin API tokens — `{ id, name, prefix, role, created_at, last_used_at,
+        revoked }`. **Admin only**. The secret is NEVER returned (only the public prefix). A revoked
+        token is still listed (audit) but cannot authenticate.
+      operationId: listApiTokens
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller's API tokens (no secrets)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/ApiTokenView' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/api-tokens/{id}:
+    delete:
+      tags: [Admin]
+      summary: Revoke one of the caller's admin API tokens (role=admin, #144)
+      description: |
+        Soft-revokes ONE of the caller's OWN admin API tokens by id. **Admin only** + ownership-scoped
+        (a token that isn't theirs → `404`, IDOR-safe). The row is kept for audit; a revoked token
+        fails verification immediately.
+      operationId: revokeApiToken
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200': { $ref: '#/components/responses/EmptyOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /admin/users/search:
     get:
@@ -631,6 +903,123 @@ components:
         role: { $ref: '#/components/schemas/UserRole' }
         display_name: { type: string, nullable: true }
         phone_masked: { type: string, example: '******5678' }
+
+    # ----- 2FA (#144) -----
+
+    Setup2faResponse:
+      type: object
+      required: [otpauth_uri, secret]
+      description: |
+        TOTP enrollment material (2FA NOT yet enabled). `otpauth_uri` is the `otpauth://totp/...`
+        provisioning URI to render as a QR; `secret` is the base32 manual-entry fallback.
+      properties:
+        otpauth_uri:
+          type: string
+          example: otpauth://totp/pguard:0812345678?secret=JBSWY3DPEHPK3PXP&issuer=pguard&digits=6&period=30
+        secret: { type: string, example: JBSWY3DPEHPK3PXP }
+
+    Enable2faRequest:
+      type: object
+      required: [code]
+      properties:
+        code:
+          type: string
+          description: The 6-digit TOTP code from the authenticator app.
+          example: '123456'
+
+    Enable2faResponse:
+      type: object
+      required: [recovery_codes]
+      description: One-time recovery codes — shown ONCE, never retrievable again.
+      properties:
+        recovery_codes:
+          type: array
+          items: { type: string, example: ABCD-EFGH-IJKL-MNOP }
+
+    Disable2faRequest:
+      type: object
+      description: |
+        Confirm intent with EITHER a live TOTP `code` OR the account `password` (at least one).
+      properties:
+        code: { type: string, nullable: true, description: A live 6-digit TOTP code. }
+        password:
+          type: string
+          nullable: true
+          description: SHA-256 hex of the account PIN (same shape as login's `password`).
+
+    Verify2faRequest:
+      type: object
+      required: [challenge_token]
+      description: |
+        Second login step. Carries the single-use `challenge_token` from login plus EITHER a TOTP
+        `code` OR a one-time `recovery_code`.
+      properties:
+        challenge_token: { type: string, description: The challenge token returned by login. }
+        code: { type: string, nullable: true, description: A 6-digit TOTP code. }
+        recovery_code: { type: string, nullable: true, description: A one-time recovery code. }
+
+    TwoFactorChallenge:
+      type: object
+      required: [two_factor_required, challenge_token]
+      description: |
+        Login outcome when 2FA is enabled — NO tokens. The client posts `challenge_token` to
+        `POST /auth/2fa/verify` with a code to complete login.
+      properties:
+        two_factor_required: { type: boolean, enum: [true] }
+        challenge_token: { type: string }
+
+    # ----- Admin API tokens (#144) -----
+
+    CreateApiTokenRequest:
+      type: object
+      required: [name]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 80
+          description: Human label for the token, e.g. "CI deploy bot".
+
+    CreateApiTokenResponse:
+      type: object
+      required: [id, name, prefix, token]
+      description: |
+        The created token. `token` is the FULL bearer (`pguard_<prefix>_<secret>`) shown EXACTLY
+        ONCE — store it now; it is not retrievable later. Only the prefix is listed thereafter.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string, example: ab2cd3 }
+        token: { type: string, example: pguard_ab2cd3_v8w9x0secretsecretsecret }
+
+    ApiTokenView:
+      type: object
+      required: [id, name, prefix, role, created_at, revoked]
+      description: One admin API token in the listing — NEVER the secret.
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        prefix: { type: string, example: ab2cd3 }
+        role: { $ref: '#/components/schemas/UserRole' }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        revoked: { type: boolean }
+
+    # ----- Per-device sessions (#144) -----
+
+    SessionView:
+      type: object
+      required: [family_id, created_at, current]
+      description: |
+        One active session (refresh family). `current` marks the caller's own session. `ip` is
+        masked (first two octets/hextets kept).
+      properties:
+        family_id: { type: string, format: uuid }
+        user_agent: { type: string, nullable: true }
+        ip: { type: string, nullable: true, example: '203.0.x.x' }
+        created_at: { type: string, format: date-time }
+        last_used_at: { type: string, format: date-time, nullable: true }
+        current: { type: boolean }
 
     ApiResponseEnvelope:
       type: object

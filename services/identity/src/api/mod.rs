@@ -19,13 +19,17 @@ use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
 use crate::domain::rotation::{decide, RotationDecision};
-use crate::domain::{mask, registration, token};
+use crate::domain::{mask, registration, token, twofactor};
 use crate::models::{
-    ChangePasswordRequest, LoginRequest, MeResponse, RefreshRequest, RegisterRequest,
-    RegisterResult, ReissueProfileTokenRequest, ResolveUsersRequest, ResolvedUser, TokenPair,
-    UpdateMeRequest, UserSearchQuery, UserSearchResult,
+    ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest, CreateApiTokenResponse,
+    Disable2faRequest, Enable2faRequest, Enable2faResponse, LoginRequest, MeResponse,
+    RefreshRequest, RegisterRequest, RegisterResult, ReissueProfileTokenRequest,
+    ResolveUsersRequest, ResolvedUser, SessionView, Setup2faResponse, TokenPair,
+    TwoFactorChallenge, UpdateMeRequest, UserSearchQuery, UserSearchResult, Verify2faRequest,
+    VerifyApiTokenRequest, VerifyApiTokenResponse,
 };
 use crate::repo;
+use crate::repo::DeviceContext;
 use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
 
 /// Hard cap on the admin user-search result count (a picker page never needs more). A larger
@@ -48,6 +52,40 @@ const PROFILE_TOKEN_TTL_MINUTES: i64 = 15;
 /// Clock-skew buffer added to the profile-token jti's Redis TTL beyond the JWT exp, so the
 /// single-use marker never expires a hair before the token it guards.
 const PROFILE_JTI_SKEW_BUFFER_SECS: i64 = 30;
+/// 2FA login-challenge lifetime (minutes) — short window between password success and the second
+/// factor. Generous enough to fetch a code from the authenticator, tight enough to bound replay.
+const TWO_FACTOR_CHALLENGE_TTL_MINUTES: i64 = 5;
+/// Redis key prefix for the single-use 2FA-challenge jti (mirrors the profile-jti scheme).
+const TWO_FACTOR_JTI_PREFIX: &str = "twofa_jti";
+/// Max length captured for a stored `User-Agent` (defensive bound; a UA is never legitimately huge).
+const MAX_USER_AGENT_LEN: usize = 400;
+/// Max `name` length for an admin API token.
+const API_TOKEN_NAME_MAX: usize = 80;
+
+/// Extract the device context (User-Agent + client IP) from the request headers for the
+/// per-device sessions list (#144). The gateway injects the verified client IP as
+/// `X-Forwarded-For`; we take the first hop. The UA is length-bounded. Both are best-effort —
+/// a missing header just yields `None`.
+fn device_context(headers: &HeaderMap) -> DeviceContext {
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.chars().take(MAX_USER_AGENT_LEN).collect::<String>())
+        .filter(|s| !s.is_empty());
+    let ip = headers
+        .get("x-forwarded-for")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    DeviceContext { user_agent, ip }
+}
+
+/// The 2FA-challenge jti's Redis TTL (challenge JWT lifetime + the same skew buffer the profile
+/// token uses), so the single-use marker never expires a hair before the JWT it guards.
+fn two_factor_jti_ttl_secs() -> u64 {
+    (TWO_FACTOR_CHALLENGE_TTL_MINUTES * 60 + PROFILE_JTI_SKEW_BUFFER_SECS) as u64
+}
 
 /// Build the response that carries the token pair both in the JSON body (mobile/API) and
 /// as httpOnly Secure SameSite=Lax cookies (web).
@@ -86,8 +124,9 @@ fn append_cookie(headers: &mut HeaderMap, cookie: &str) {
 #[tracing::instrument(skip_all)]
 pub async fn login(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(req): Json<LoginRequest>,
-) -> Result<impl IntoResponse, AppError> {
+) -> Result<axum::response::Response, AppError> {
     if req.identifier.trim().is_empty() || req.password.is_empty() {
         // Generic 401 — never reveal which field was the problem.
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
@@ -95,14 +134,64 @@ pub async fn login(
 
     let user = repo::verify_credentials(&state.db, req.identifier.trim(), &req.password).await?;
 
-    let (access_token, _jti) = encode_jwt_with_key(
+    // 2FA gate (#144): if the account has TOTP enabled, the password is NOT enough — issue a
+    // single-use, short-lived challenge token (NO access/refresh tokens, NO session) that the
+    // client exchanges at `POST /auth/2fa/verify` with a code. Backward-compatible: an account
+    // WITHOUT 2FA logs in exactly as before. Done AFTER credential verification so the existence
+    // of 2FA is never an enumeration oracle (an unknown/wrong-password login already 401'd above).
+    if repo::totp_enabled_for_user(&state.db, user.id).await? {
+        let (challenge_token, jti) = shared::auth::encode_2fa_challenge_token(
+            user.id,
+            &state.jwt_config.encoding_key,
+            TWO_FACTOR_CHALLENGE_TTL_MINUTES,
+        )?;
+        // Single-use marker (mirrors the profile-token jti scheme): /2fa/verify GETDELs it.
+        let mut redis = state.redis_conn.clone();
+        redis
+            .set_ex::<_, _, ()>(
+                format!("{TWO_FACTOR_JTI_PREFIX}:{jti}"),
+                "valid",
+                two_factor_jti_ttl_secs(),
+            )
+            .await?;
+        tracing::info!(user_id = %user.id, "login: 2FA required (challenge issued)");
+        return Ok(Json(ApiResponse::success(TwoFactorChallenge {
+            two_factor_required: true,
+            challenge_token,
+        }))
+        .into_response());
+    }
+
+    Ok(issue_login_tokens(
+        &state,
         user.id,
         &user.role,
-        user.token_revocation_version as i64,
+        user.token_revocation_version,
+        &headers,
+    )
+    .await?
+    .into_response())
+}
+
+/// Mint the access token + a new refresh family and build the token response (body + cookies),
+/// stamping the login device context. Shared by `login` (no-2FA path) and `verify_2fa` (the
+/// second factor succeeded), so both issue tokens identically.
+async fn issue_login_tokens(
+    state: &AppState,
+    user_id: Uuid,
+    role: &str,
+    trv: i32,
+    headers: &HeaderMap,
+) -> Result<axum::response::Response, AppError> {
+    let (access_token, _jti) = encode_jwt_with_key(
+        user_id,
+        role,
+        trv as i64,
         &state.jwt_config.encoding_key,
         state.jwt_config.expiry_minutes,
     )?;
-    let refresh_token = repo::create_refresh_family(&state.db, user.id).await?;
+    let refresh_token =
+        repo::create_refresh_family(&state.db, user_id, &device_context(headers)).await?;
 
     let pair = TokenPair {
         access_token,
@@ -110,7 +199,7 @@ pub async fn login(
         expires_in: state.jwt_config.expiry_minutes * 60,
         token_type: "Bearer",
     };
-    Ok(token_response(pair, state.jwt_config.expiry_minutes * 60))
+    Ok(token_response(pair, state.jwt_config.expiry_minutes * 60).into_response())
 }
 
 // ----- POST /auth/register -----
@@ -341,8 +430,14 @@ pub async fn refresh(
                 .await?
                 .ok_or_else(generic_401)?;
 
-            let Some(refresh_token) =
-                repo::rotate(&state.db, located.user_id, located.family_id, rotation_id).await?
+            let Some(refresh_token) = repo::rotate(
+                &state.db,
+                located.user_id,
+                located.family_id,
+                rotation_id,
+                &device_context(&headers),
+            )
+            .await?
             else {
                 // A concurrent refresh of this exact token already rotated the row (double-spend
                 // race). Minting a second successor would create two live chains from one token,
@@ -635,6 +730,415 @@ pub async fn revoke_all_sessions(
     ))
 }
 
+// ===================== 2FA (#144 admin security) =====================
+
+// ----- POST /auth/2fa/setup (provision, NOT yet enabled) -----
+
+/// Begin TOTP enrollment for the CALLER. Generates a fresh secret, SEALS it at rest (AES-256-GCM
+/// under `TOTP_ENC_KEY`), stores it as the provisioning secret (2FA still OFF), and returns the
+/// `otpauth://` URI (for the QR) + the base32 secret (manual entry). 2FA is enabled only after the
+/// user proves a live code at `/2fa/enable`. Calling setup again before enabling simply re-provisions.
+/// `skip_all`: never log the secret / URI.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn setup_2fa(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Setup2faResponse>>, AppError> {
+    // The account label shown in the authenticator app — the phone (account's stable handle).
+    let row = repo::totp_row(&state.db, user.user_id).await?;
+    if row.totp_enabled {
+        // Already on — disable first (so a stray setup can't silently rotate a live secret).
+        return Err(AppError::Conflict(
+            "2FA is already enabled. Disable it first to re-enroll.".to_string(),
+        ));
+    }
+    let secret = twofactor::generate_totp_secret();
+    let (otpauth_uri, base32) = twofactor::provisioning(&secret, &row.phone)?;
+    let sealed = twofactor::seal_secret(&state.totp_enc_key, &secret)?;
+    repo::store_provisioned_totp(&state.db, user.user_id, &sealed).await?;
+    tracing::info!("2FA provisioning secret issued");
+    Ok(Json(ApiResponse::success(Setup2faResponse {
+        otpauth_uri,
+        secret: base32,
+    })))
+}
+
+// ----- POST /auth/2fa/enable -----
+
+/// Turn 2FA ON for the CALLER after verifying a live TOTP `code` against the provisioning secret
+/// from `/2fa/setup`. On success, flips `totp_enabled`, regenerates the one-time recovery codes,
+/// and returns them ONCE. A wrong code → 401 (nothing changes); no provisioning in progress → 409.
+/// `skip_all`: never log the code / secret / recovery codes.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn enable_2fa(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<Enable2faRequest>,
+) -> Result<Json<ApiResponse<Enable2faResponse>>, AppError> {
+    let row = repo::totp_row(&state.db, user.user_id).await?;
+    if row.totp_enabled {
+        return Err(AppError::Conflict("2FA is already enabled.".to_string()));
+    }
+    let sealed = row.totp_secret_enc.ok_or_else(|| {
+        AppError::Conflict("No 2FA setup in progress — call /2fa/setup first.".to_string())
+    })?;
+    let secret = twofactor::open_secret(&state.totp_enc_key, &sealed)?;
+    if !twofactor::verify_totp(&secret, &row.phone, &req.code)? {
+        return Err(AppError::Unauthorized("Invalid 2FA code".to_string()));
+    }
+
+    // Mint + persist the recovery codes (store hashes only), flip the flag in one tx.
+    let codes = twofactor::generate_recovery_codes();
+    let hashes: Vec<String> = codes.iter().map(|(_, h)| h.clone()).collect();
+    repo::enable_totp_with_recovery_codes(&state.db, user.user_id, &hashes).await?;
+    tracing::info!("2FA enabled");
+    Ok(Json(ApiResponse::success(Enable2faResponse {
+        recovery_codes: codes.into_iter().map(|(plain, _)| plain).collect(),
+    })))
+}
+
+// ----- POST /auth/2fa/disable -----
+
+/// Turn 2FA OFF for the CALLER. Requires confirmation via EITHER a live TOTP `code` OR the account
+/// `password` (so a momentary unlocked session can't silently weaken the account without a factor).
+/// Clears the secret + recovery codes. A wrong code/password → 401. `skip_all`: never log secrets.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn disable_2fa(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<Disable2faRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    let row = repo::totp_row(&state.db, user.user_id).await?;
+    if !row.totp_enabled {
+        // Idempotent-friendly: already off.
+        return Ok(Json(ApiResponse::success(
+            serde_json::json!({ "two_factor_enabled": false }),
+        )));
+    }
+
+    // Confirm intent: a live TOTP code OR the password (at least one must verify).
+    let confirmed = match (&req.code, &req.password) {
+        (Some(code), _) if !code.trim().is_empty() => {
+            let sealed = row.totp_secret_enc.clone().ok_or_else(|| {
+                AppError::Internal("2FA enabled without a stored secret".to_string())
+            })?;
+            let secret = twofactor::open_secret(&state.totp_enc_key, &sealed)?;
+            twofactor::verify_totp(&secret, &row.phone, code)?
+        }
+        (_, Some(password)) if !password.is_empty() => {
+            let password = password.clone();
+            let hash = row.password_hash.clone();
+            tokio::task::spawn_blocking(move || {
+                crate::domain::password::verify_secret(&password, &hash)
+            })
+            .await
+            .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??
+        }
+        _ => {
+            return Err(AppError::BadRequest(
+                "Provide a 2FA code or your password to disable 2FA.".to_string(),
+            ))
+        }
+    };
+    if !confirmed {
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+
+    repo::disable_totp(&state.db, user.user_id).await?;
+    tracing::info!("2FA disabled");
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "two_factor_enabled": false }),
+    )))
+}
+
+// ----- POST /auth/2fa/verify (second login step) -----
+
+/// Complete a 2FA login: validate the single-use `challenge_token` (issued by `/auth/login` when
+/// 2FA is enabled), verify EITHER a TOTP `code` OR a one-time `recovery_code`, then issue the real
+/// token pair (same as a normal login). The challenge jti is consumed (GETDEL) up front so a stolen
+/// challenge can't be replayed. A recovery code is single-use (consumed atomically). Edge-public
+/// (it carries a purpose token, not an access token). `skip_all`: never log the codes/tokens.
+#[tracing::instrument(skip_all)]
+pub async fn verify_2fa(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<Verify2faRequest>,
+) -> Result<axum::response::Response, AppError> {
+    // 1) Decode the challenge token (purpose-isolated) → user_id + jti.
+    let (user_id, jti) = shared::auth::decode_2fa_challenge_token(
+        &req.challenge_token,
+        &state.jwt_config.decoding_key,
+    )
+    .map_err(|_| AppError::Unauthorized("Invalid or expired 2FA challenge".to_string()))?;
+
+    // 2) Single-use: GETDEL the challenge jti FIRST (a replayed/expired challenge has no live
+    //    marker → reject before touching any code).
+    let mut redis = state.redis_conn.clone();
+    let claim: Option<String> = redis::cmd("GETDEL")
+        .arg(format!("{TWO_FACTOR_JTI_PREFIX}:{jti}"))
+        .query_async(&mut redis)
+        .await?;
+    if claim.as_deref() != Some("valid") {
+        return Err(AppError::Unauthorized(
+            "2FA challenge is invalid, expired, or already used".to_string(),
+        ));
+    }
+
+    // 3) Load the account's 2FA state (must still be enabled).
+    let row = repo::totp_row(&state.db, user_id).await?;
+    if !row.totp_enabled {
+        return Err(AppError::Unauthorized("2FA is not enabled".to_string()));
+    }
+
+    // 4) Verify a TOTP code, else a one-time recovery code.
+    let ok = if let Some(code) = req.code.as_deref().filter(|c| !c.trim().is_empty()) {
+        let sealed = row
+            .totp_secret_enc
+            .clone()
+            .ok_or_else(|| AppError::Internal("2FA enabled without a stored secret".to_string()))?;
+        let secret = twofactor::open_secret(&state.totp_enc_key, &sealed)?;
+        twofactor::verify_totp(&secret, &row.phone, code)?
+    } else if let Some(rc) = req
+        .recovery_code
+        .as_deref()
+        .filter(|c| !c.trim().is_empty())
+    {
+        let hash = twofactor::sha256_hex(&twofactor::normalize_recovery_code(rc));
+        repo::consume_recovery_code(&state.db, user_id, &hash).await?
+    } else {
+        return Err(AppError::BadRequest(
+            "Provide a 2FA code or a recovery code.".to_string(),
+        ));
+    };
+    if !ok {
+        return Err(AppError::Unauthorized("Invalid 2FA code".to_string()));
+    }
+
+    // 5) Re-read the user's CURRENT role + revocation version, then issue the token pair (the
+    //    challenge proved the password; this proves the second factor).
+    let meta = repo::user_auth_meta(&state.db, user_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("Account is no longer eligible".to_string()))?;
+    tracing::info!(%user_id, "2FA verified — issuing tokens");
+    Ok(issue_login_tokens(
+        &state,
+        meta.id,
+        &meta.role,
+        meta.token_revocation_version,
+        &headers,
+    )
+    .await?
+    .into_response())
+}
+
+// ===================== Per-device sessions (#144) =====================
+
+// ----- GET /auth/sessions -----
+
+/// List the CALLER'S active sessions (refresh families) as a device list. `current` marks the
+/// session whose refresh token is presented (cookie or `X-Refresh-Token` header) so the UI can
+/// label "this device". `ip` is masked to its first two octets (last two redacted) — enough to
+/// recognise a network without exposing the full address.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn list_sessions(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: HeaderMap,
+) -> Result<Json<ApiResponse<Vec<SessionView>>>, AppError> {
+    let rows = repo::list_sessions(&state.db, user.user_id).await?;
+
+    // Resolve the caller's CURRENT family from the presented refresh token (cookie, or the
+    // `X-Refresh-Token` header for mobile/API clients that don't use cookies). Best-effort —
+    // if absent/unparseable, no row is flagged current (the list is still correct).
+    let current_family = current_refresh_family(&state, &headers).await;
+
+    let views = rows
+        .into_iter()
+        .map(|r| SessionView {
+            current: Some(r.family_id) == current_family,
+            family_id: r.family_id,
+            user_agent: r.user_agent,
+            ip: r.ip.as_deref().map(mask::mask_ip),
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(views)))
+}
+
+/// Resolve the caller's CURRENT refresh family from the presented refresh token (cookie or
+/// `X-Refresh-Token` header), or `None`. Used only to flag the `current` session — never an
+/// auth decision, so a miss is harmless.
+async fn current_refresh_family(state: &AppState, headers: &HeaderMap) -> Option<Uuid> {
+    let presented = headers
+        .get("x-refresh-token")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            headers
+                .get(header::COOKIE)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|c| extract_cookie_value(c, REFRESH_TOKEN_COOKIE))
+                .map(|t| t.to_string())
+        })?;
+    let (rotation_id, _) = token::parse(&presented)?;
+    let located = repo::find_refresh_by_rotation(&state.db, rotation_id)
+        .await
+        .ok()??;
+    Some(located.family_id)
+}
+
+// ----- DELETE /auth/sessions/{family_id} -----
+
+/// Revoke ONE of the caller's OWN sessions (sign out a single device, #144). Ownership-scoped to
+/// the caller (a family that isn't theirs → 404, IDOR-safe). The existing "revoke-all" stays as a
+/// separate endpoint. The revoked device's refresh token can no longer rotate; its access token
+/// expires naturally (≤15 min) — same model as logout.
+#[tracing::instrument(skip_all, fields(user = %user.user_id, family = %family_id))]
+pub async fn revoke_session(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(family_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    repo::revoke_own_family(&state.db, user.user_id, family_id).await?;
+    tracing::info!("session revoked (single device)");
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "revoked": true }),
+    )))
+}
+
+// ===================== Admin API tokens (#144) =====================
+
+// ----- POST /admin/api-tokens -----
+
+/// Create a long-lived admin API token for the CALLER. ADMIN-ONLY (else 403). Returns the FULL
+/// token (`pguard_<prefix>_<secret>`) EXACTLY ONCE — only the SHA-256 hash of the secret is stored,
+/// so it can never be shown again. The token authenticates as the creator's role (admin).
+/// `skip_all`: never log the token.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn create_api_token(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<CreateApiTokenRequest>,
+) -> Result<Json<ApiResponse<CreateApiTokenResponse>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let name = req.name.trim();
+    if name.is_empty() || name.chars().count() > API_TOKEN_NAME_MAX {
+        return Err(AppError::BadRequest(format!(
+            "name is required and must be ≤ {API_TOKEN_NAME_MAX} characters"
+        )));
+    }
+    let minted = twofactor::generate_api_token();
+    let id = repo::create_api_token(
+        &state.db,
+        user.user_id,
+        name,
+        &minted.prefix,
+        &minted.secret_hash,
+        &user.role,
+    )
+    .await?;
+    tracing::info!(token_id = %id, "admin API token created");
+    Ok(Json(ApiResponse::success(CreateApiTokenResponse {
+        id,
+        name: name.to_string(),
+        prefix: minted.prefix,
+        token: minted.full,
+    })))
+}
+
+// ----- GET /admin/api-tokens -----
+
+/// List the CALLER'S admin API tokens (NEVER the secret). ADMIN-ONLY. `revoked` is derived; a
+/// revoked token is shown (for audit) but cannot authenticate.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn list_api_tokens(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<ApiTokenView>>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let rows = repo::list_api_tokens(&state.db, user.user_id).await?;
+    let views = rows
+        .into_iter()
+        .map(|r| ApiTokenView {
+            id: r.id,
+            name: r.name,
+            prefix: r.prefix,
+            role: r.role,
+            created_at: r.created_at,
+            last_used_at: r.last_used_at,
+            revoked: r.revoked_at.is_some(),
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(views)))
+}
+
+// ----- DELETE /admin/api-tokens/{id} -----
+
+/// Revoke ONE of the caller's OWN admin API tokens by id. ADMIN-ONLY + ownership-scoped (a token
+/// that isn't theirs → 404, IDOR-safe). Soft-revoke (the row is kept for audit); a revoked token
+/// fails verification immediately.
+#[tracing::instrument(skip_all, fields(user = %user.user_id, token = %token_id))]
+pub async fn revoke_api_token(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Path(token_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    repo::revoke_api_token(&state.db, user.user_id, token_id).await?;
+    tracing::info!("admin API token revoked");
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "revoked": true }),
+    )))
+}
+
+// ----- POST /internal/api-tokens/verify (service-JWT only; the gateway calls this) -----
+
+/// Verify a presented `pguard_…` API token (service-to-service). The gateway, on seeing a bearer
+/// with the `pguard_` namespace, calls THIS endpoint (service-JWT'd) to resolve the principal; on
+/// success it injects the trusted `X-User-*` and proxies. Looks the token up by its public prefix,
+/// constant-time-compares the secret hash, checks the owner is still active/approved, and stamps
+/// `last_used_at`. A bad/revoked/unknown token → 401. Generic over [`RevokeAllDeps`] so the
+/// service-JWT guard is testable in isolation (reuses the `db()` seam). `skip_all`: never log the token.
+#[tracing::instrument(skip_all)]
+pub async fn internal_verify_api_token<S: RevokeAllDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Json(req): Json<VerifyApiTokenRequest>,
+) -> Result<Json<ApiResponse<VerifyApiTokenResponse>>, AppError> {
+    let generic_401 = || AppError::Unauthorized("Invalid API token".to_string());
+    let (prefix, secret) = twofactor::parse_api_token(&req.token).ok_or_else(generic_401)?;
+
+    let row = repo::find_api_token_by_prefix(state.db(), &prefix)
+        .await?
+        .ok_or_else(generic_401)?;
+    // Constant-time hash compare (anti-timing); a mismatch is the same generic 401.
+    if !twofactor::api_token_secret_matches(&secret, &row.token_hash) {
+        return Err(generic_401());
+    }
+    // Best-effort freshness stamp (a hiccup must not fail an otherwise-valid auth).
+    if let Err(e) = repo::touch_api_token(state.db(), row.token_id).await {
+        tracing::warn!("failed to stamp api-token last_used_at: {e}");
+    }
+    tracing::debug!(caller = %caller.service, user_id = %row.user_id, "API token verified");
+    Ok(Json(ApiResponse::success(VerifyApiTokenResponse {
+        user_id: row.user_id,
+        role: row.role,
+    })))
+}
+
 // ----- POST /internal/users/{id}/revoke-all -----
 
 /// Force-revoke-all for a user (service-to-service). **v2:** requires a valid service-JWT
@@ -794,11 +1298,58 @@ mod tests {
                 "/internal/users/names",
                 post(internal_resolve_users::<TestDeps>),
             )
+            .route(
+                "/internal/api-tokens/verify",
+                post(internal_verify_api_token::<TestDeps>),
+            )
             .with_state(deps)
     }
 
     const URI: &str = "/internal/users/00000000-0000-0000-0000-000000000001/revoke-all";
     const NAMES_URI: &str = "/internal/users/names";
+    const VERIFY_URI: &str = "/internal/api-tokens/verify";
+
+    /// The API-token verify endpoint is service-JWT-gated: no token → 401, before any DB access.
+    #[tokio::test]
+    async fn verify_api_token_rejects_missing_service_token() {
+        let res = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(VERIFY_URI)
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "token": "pguard_a_b" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A garbage (non-`pguard_`) token with a VALID service-JWT is rejected with a generic 401
+    /// BEFORE the DB (parse fails first), proving the namespace guard + generic-401 contract.
+    #[tokio::test]
+    async fn verify_api_token_rejects_non_namespaced_token() {
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let tok = encode_service_jwt("api-gateway", &ek, 60).unwrap();
+        let res = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(VERIFY_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "token": "not-a-pguard-token" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
 
     fn names_body(n: usize) -> Body {
         let ids: Vec<String> = (0..n).map(|_| Uuid::new_v4().to_string()).collect();
