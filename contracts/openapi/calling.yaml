@@ -76,8 +76,9 @@ paths:
       description: |
         The admin call log — every call (NOT participant-scoped, unlike `GET /calls/{id}`),
         newest first, optional `status`/`call_type` filters + limit/offset. Admin only (else
-        403). The per-call timeline / ICE / signal-quality detail in the design is not
-        persisted (this service is a relay) — that needs a future call-events read model.
+        403). The per-call lifecycle TIMELINE is served by `GET /admin/calls/{id}/events`. Media
+        QUALITY (jitter/loss/bitrate) is NOT persisted — a signaling relay can't observe it; it
+        needs SFU/TURN stats (not wired). See that endpoint's description.
       operationId: adminListCalls
       security: [{ bearerAuth: [] }]
       parameters:
@@ -113,6 +114,33 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/calls/{id}/events:
+    get:
+      tags: [Admin]
+      summary: One call's lifecycle TIMELINE (role=admin, call-events read model)
+      description: |
+        The ordered per-call timeline — the call record plus its lifecycle events in
+        chronological order: milestones (`ringing` → `accepted`/`rejected` → `connected` →
+        `ended`/`missed`, each with `occurred_at` + the `actor_id` that drove it) plus the
+        signaling steps the relay observes as it forwards frames (`offer`/`answer`/
+        `ice_candidate` relayed, `peer_offline` when the peer had no live socket). Admin only
+        (else 403); a non-existent call → 404.
+
+        **NOT included (by design):** media QUALITY — jitter, packet loss, bitrate, MOS. A
+        signaling relay cannot observe these; they require SFU (mediasoup `getStats`) / TURN
+        (coturn) statistics, which are not wired into the calling service. The timeline surfaces
+        only what the control + signaling planes actually see. `detail` carries small structured
+        metadata about each step (e.g. `end_reason`, the relayed `to`/`delivered`) — never the
+        raw SDP/ICE blob.
+      operationId: adminCallEvents
+      security: [{ bearerAuth: [] }]
+      parameters: [{ $ref: '#/components/parameters/CallId' }]
+      responses:
+        '200': { $ref: '#/components/responses/CallTimelineOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /calls/{id}:
     get:
@@ -249,6 +277,16 @@ components:
     Conflict:
       description: Illegal state transition, callee busy, or booking not callable
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
+    CallTimelineOk:
+      description: The call record + its ordered lifecycle timeline
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/CallTimeline' }
     IceConfigOk:
       description: ICE server list (STUN + short-lived TURN credentials)
       content:
@@ -324,6 +362,50 @@ components:
         end_reason: { type: string, nullable: true }
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
+
+    CallEventType:
+      type: string
+      description: |
+        The kind of timeline step. Lifecycle milestones (from the control plane):
+        `ringing`/`accepted`/`rejected`/`connected`/`ended`/`missed`. Signaling steps (observed
+        by the relay): `offer`/`answer`/`ice_candidate` (relayed between peers), `peer_offline`
+        (a frame the peer's socket couldn't receive).
+      enum:
+        [ringing, accepted, rejected, connected, ended, missed,
+         offer, answer, ice_candidate, peer_offline]
+
+    CallEvent:
+      type: object
+      required: [id, call_id, event_type, occurred_at]
+      description: One step of a call's timeline (admin call-events read model).
+      properties:
+        id: { type: string, format: uuid }
+        call_id: { type: string, format: uuid }
+        event_type: { $ref: '#/components/schemas/CallEventType' }
+        actor_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: The participant this step is attributed to (caller/callee), when known.
+        detail:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: 'Small structured metadata about the step (e.g. end_reason, the relayed to/delivered). NEVER the raw SDP/ICE blob.'
+        occurred_at: { type: string, format: date-time }
+
+    CallTimeline:
+      type: object
+      required: [call, events]
+      description: |
+        One call's record + its ordered lifecycle timeline. Media QUALITY (jitter/loss/bitrate)
+        is intentionally absent — a signaling relay can't observe it (needs SFU/TURN stats).
+      properties:
+        call: { $ref: '#/components/schemas/Call' }
+        events:
+          type: array
+          description: Lifecycle + signaling steps in chronological order.
+          items: { $ref: '#/components/schemas/CallEvent' }
 
     ApiResponseEnvelope:
       type: object

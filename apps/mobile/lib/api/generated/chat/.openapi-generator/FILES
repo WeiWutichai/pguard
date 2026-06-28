@@ -32,11 +32,15 @@ lib/src/model/error_body_error.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/inline_object2.dart
+lib/src/model/inline_object3.dart
 lib/src/model/list_conversations200_response.dart
 lib/src/model/list_messages200_response.dart
 lib/src/model/message.dart
 lib/src/model/message_type.dart
+lib/src/model/moderation_reason_body.dart
+lib/src/model/moderation_result.dart
 lib/src/model/participant_input.dart
+lib/src/model/set_moderation_status_request.dart
 lib/src/model/set_request_status_request.dart
 lib/src/serializers.dart
 pubspec.yaml

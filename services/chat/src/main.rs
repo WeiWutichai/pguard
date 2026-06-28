@@ -26,7 +26,7 @@ mod state;
 
 use anyhow::Context;
 use axum::extract::DefaultBodyLimit;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
@@ -178,6 +178,21 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/admin/conversations/{id}/messages",
             get(api::admin_list_messages::<AppState>),
+        )
+        // Admin MODERATION writes (Phase D — #136/#137). All admin-role gated in-handler
+        // (require_admin) + audited (chat.moderation_actions) + idempotent + soft-delete. Routed via
+        // the gateway's `/admin/conversations`, `/admin/messages`, `/admin/users` prefix rules.
+        .route(
+            "/admin/conversations/{id}/status",
+            put(api::admin_set_moderation_status::<AppState>),
+        )
+        .route(
+            "/admin/messages/{id}",
+            delete(api::admin_redact_message::<AppState>),
+        )
+        .route(
+            "/admin/users/{user_id}/block",
+            put(api::admin_block_user::<AppState>).delete(api::admin_unblock_user::<AppState>),
         )
         .route(
             "/conversations/{id}/messages",

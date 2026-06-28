@@ -80,6 +80,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminAssignBooking**](doc/AdminApi.md#adminassignbooking) | **POST** /admin/bookings/{id}/assign | Admin assigns a guard to an unassigned booking (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminBookingsByServiceReport**](doc/AdminApi.md#adminbookingsbyservicereport) | **GET** /admin/reports/bookings-by-service | Bookings by service type — count + revenue (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminBookingsReport**](doc/AdminApi.md#adminbookingsreport) | **GET** /admin/reports/bookings | Booking analytics — volume + utilization + retention (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminCreateService**](doc/AdminApi.md#admincreateservice) | **POST** /admin/pricing/services | Create a catalog service (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminCustomerBookingsReport**](doc/AdminApi.md#admincustomerbookingsreport) | **GET** /admin/reports/customer-bookings | Per-customer booking aggregates (role&#x3D;admin)
@@ -110,6 +111,7 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AdminBookingsByServiceReport200Response](doc/AdminBookingsByServiceReport200Response.md)
  - [AdminBookingsReport200Response](doc/AdminBookingsReport200Response.md)
  - [AdminCustomerBookingsReport200Response](doc/AdminCustomerBookingsReport200Response.md)
  - [AdminListServices200Response](doc/AdminListServices200Response.md)
@@ -119,6 +121,7 @@ Class | Method | HTTP request | Description
  - [AvailableGuard](doc/AvailableGuard.md)
  - [Booking](doc/Booking.md)
  - [BookingStatus](doc/BookingStatus.md)
+ - [BookingsByServiceReport](doc/BookingsByServiceReport.md)
  - [BookingsReport](doc/BookingsReport.md)
  - [CreateBookingRequest](doc/CreateBookingRequest.md)
  - [CreateProgressReport200Response](doc/CreateProgressReport200Response.md)
@@ -143,6 +146,7 @@ Class | Method | HTTP request | Description
  - [RetentionPoint](doc/RetentionPoint.md)
  - [ReviewCompletionRequest](doc/ReviewCompletionRequest.md)
  - [ServiceCatalogItem](doc/ServiceCatalogItem.md)
+ - [ServiceTypeStat](doc/ServiceTypeStat.md)
  - [UpdateServiceRequest](doc/UpdateServiceRequest.md)
  - [UtilizationCell](doc/UtilizationCell.md)
 

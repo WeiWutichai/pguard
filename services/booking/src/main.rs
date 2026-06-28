@@ -182,6 +182,13 @@ async fn main() -> anyhow::Result<()> {
             "/admin/reports/customer-bookings",
             get(api::admin_customer_bookings_report::<AppState>),
         )
+        // Bookings-by-service-type breakdown (#140 "งานตามประเภทบริการ"). Gateway needs a NEW,
+        // MORE-specific `/admin/reports/bookings-by-service` prefix rule → Booking so longest-prefix
+        // beats the broader `/admin/reports/bookings` rule (which also matches this path).
+        .route(
+            "/admin/reports/bookings-by-service",
+            get(api::admin_bookings_by_service_report::<AppState>),
+        )
         // Admin missed/overdue hourly check-ins (dashboard alert card). Gateway needs a NEW
         // `/admin/checkins` prefix rule → Booking (no /admin/* catch-all exists).
         .route(

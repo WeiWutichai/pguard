@@ -1,8 +1,8 @@
 // Screen-local bilingual copy for the reports (รายงาน) analytics screen.
-// Backed by payment `GET /admin/reports/revenue` + booking `GET /admin/reports/bookings`.
-// Three panels are REAL (revenue trend, guard utilization heatmap, retention cohort); the
-// design's "bookings by service type" panel is an HONEST GAP — the v2 booking model has no
-// service_type dimension (adding it entails the deferred catalog→charge integration decision).
+// Backed by payment `GET /admin/reports/revenue` + booking `GET /admin/reports/bookings` +
+// booking `GET /admin/reports/bookings-by-service`. All four panels are REAL now (revenue trend,
+// guard utilization heatmap, retention cohort, AND bookings-by-service-type, #140) — bookings now
+// carry a `service_id` linking to the catalog, so the by-service panel groups jobs by service type.
 import type { Lang } from "@/lib/lang";
 
 export const RANGE_DAYS = [30, 60, 90] as const;
@@ -21,7 +21,8 @@ export interface ReportsCopy {
   bookingsLegend: string;
   momLabel: string;
   byServiceHead: string;
-  byServiceGap: string;
+  byServiceUnspecified: string;
+  byServiceCountUnit: string;
   utilizationHead: string;
   utilizationUnit: string;
   retentionHead: string;
@@ -42,8 +43,8 @@ export const COPY: Record<Lang, ReportsCopy> = {
     bookingsLegend: "จำนวนงาน",
     momLabel: "เทียบช่วงก่อน",
     byServiceHead: "งานตามประเภทบริการ",
-    byServiceGap:
-      "v2 ยังไม่มีมิติ service_type ใน booking (ต้องตัดสินใจเรื่องผูก catalog→ตอนคิดเงินก่อน)",
+    byServiceUnspecified: "ไม่ระบุประเภท",
+    byServiceCountUnit: "งาน",
     utilizationHead: "การใช้งานเจ้าหน้าที่",
     utilizationUnit: "ชม.-คน × ช่วงเวลา",
     retentionHead: "การกลับมาใช้ซ้ำของลูกค้า",
@@ -62,8 +63,8 @@ export const COPY: Record<Lang, ReportsCopy> = {
     bookingsLegend: "Bookings",
     momLabel: "vs prior period",
     byServiceHead: "Bookings by service",
-    byServiceGap:
-      "v2 has no service_type dimension on bookings yet (needs the deferred catalog→charge decision)",
+    byServiceUnspecified: "Unspecified",
+    byServiceCountUnit: "jobs",
     utilizationHead: "Guard utilization",
     utilizationUnit: "guard-hrs × time",
     retentionHead: "Customer retention",

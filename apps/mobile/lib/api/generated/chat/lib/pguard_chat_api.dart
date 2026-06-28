@@ -31,10 +31,14 @@ export 'package:pguard_chat_api/src/model/error_body_error.dart';
 export 'package:pguard_chat_api/src/model/inline_object.dart';
 export 'package:pguard_chat_api/src/model/inline_object1.dart';
 export 'package:pguard_chat_api/src/model/inline_object2.dart';
+export 'package:pguard_chat_api/src/model/inline_object3.dart';
 export 'package:pguard_chat_api/src/model/list_conversations200_response.dart';
 export 'package:pguard_chat_api/src/model/list_messages200_response.dart';
 export 'package:pguard_chat_api/src/model/message.dart';
 export 'package:pguard_chat_api/src/model/message_type.dart';
+export 'package:pguard_chat_api/src/model/moderation_reason_body.dart';
+export 'package:pguard_chat_api/src/model/moderation_result.dart';
 export 'package:pguard_chat_api/src/model/participant_input.dart';
+export 'package:pguard_chat_api/src/model/set_moderation_status_request.dart';
 export 'package:pguard_chat_api/src/model/set_request_status_request.dart';
 

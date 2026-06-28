@@ -14,6 +14,7 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_booking_api/src/date_serializer.dart';
 import 'package:pguard_booking_api/src/model/date.dart';
 
+import 'package:pguard_booking_api/src/model/admin_bookings_by_service_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
@@ -23,6 +24,7 @@ import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 import 'package:pguard_booking_api/src/model/available_guard.dart';
 import 'package:pguard_booking_api/src/model/booking.dart';
 import 'package:pguard_booking_api/src/model/booking_status.dart';
+import 'package:pguard_booking_api/src/model/bookings_by_service_report.dart';
 import 'package:pguard_booking_api/src/model/bookings_report.dart';
 import 'package:pguard_booking_api/src/model/create_booking_request.dart';
 import 'package:pguard_booking_api/src/model/create_progress_report200_response.dart';
@@ -47,12 +49,14 @@ import 'package:pguard_booking_api/src/model/public_service_item.dart';
 import 'package:pguard_booking_api/src/model/retention_point.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
 import 'package:pguard_booking_api/src/model/service_catalog_item.dart';
+import 'package:pguard_booking_api/src/model/service_type_stat.dart';
 import 'package:pguard_booking_api/src/model/update_service_request.dart';
 import 'package:pguard_booking_api/src/model/utilization_cell.dart';
 
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminBookingsByServiceReport200Response,
   AdminBookingsReport200Response,
   AdminCustomerBookingsReport200Response,
   AdminListServices200Response,
@@ -62,6 +66,7 @@ part 'serializers.g.dart';
   AvailableGuard,
   Booking,
   BookingStatus,
+  BookingsByServiceReport,
   BookingsReport,
   CreateBookingRequest,
   CreateProgressReport200Response,
@@ -86,6 +91,7 @@ part 'serializers.g.dart';
   RetentionPoint,
   ReviewCompletionRequest,
   ServiceCatalogItem,
+  ServiceTypeStat,
   UpdateServiceRequest,
   UtilizationCell,
 ])

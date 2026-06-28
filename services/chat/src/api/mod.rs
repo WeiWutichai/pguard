@@ -22,9 +22,10 @@ use crate::domain;
 use crate::events;
 use crate::models::{
     AdminAttachmentView, AdminCallEvent, AdminConversationRow, AdminEnrichedMessage,
-    AdminListConversationsQuery, AttachmentResponse, AttachmentRow, ConversationResponse,
-    CreateConversationRequest, EnrichedConversation, IncomingChatMessage, ListMessagesQuery,
-    OutgoingChatMessage, RoleQuery, SetRequestStatusRequest,
+    AdminListConversationsQuery, AttachmentResponse, AttachmentRow, BlockUserRequest,
+    ConversationResponse, CreateConversationRequest, EnrichedConversation, IncomingChatMessage,
+    ListMessagesQuery, ModerationResult, OutgoingChatMessage, RedactMessageRequest, RoleQuery,
+    SetModerationStatusRequest, SetRequestStatusRequest,
 };
 use crate::repo;
 use crate::state::{ChatDeps, ChatInternalDeps};
@@ -169,11 +170,7 @@ pub async fn admin_list_conversations<S: ChatDeps>(
     user: AuthUser,
     Query(query): Query<AdminListConversationsQuery>,
 ) -> Result<Json<ApiResponse<Vec<AdminConversationRow>>>, AppError> {
-    if user.role != ROLE_ADMIN {
-        return Err(AppError::Forbidden(
-            "This action requires the admin role".to_string(),
-        ));
-    }
+    require_admin(&user)?;
     let limit = query.limit.unwrap_or(50).clamp(1, 200);
     let offset = query.offset.unwrap_or(0).max(0);
     let convos = repo::admin_list_conversations(state.db_read(), limit, offset).await?;
@@ -217,11 +214,7 @@ pub async fn admin_list_messages<S: ChatDeps>(
     Path(id): Path<Uuid>,
     Query(query): Query<ListMessagesQuery>,
 ) -> Result<Json<ApiResponse<Vec<AdminEnrichedMessage>>>, AppError> {
-    if user.role != ROLE_ADMIN {
-        return Err(AppError::Forbidden(
-            "This action requires the admin role".to_string(),
-        ));
-    }
+    require_admin(&user)?;
     let limit = query.limit.unwrap_or(DEFAULT_LIMIT);
     let offset = query.offset.unwrap_or(0);
     let messages = repo::list_messages(state.db_read(), id, limit, offset).await?;
@@ -268,6 +261,27 @@ fn enrich_message(
     let mut attachment: Option<AdminAttachmentView> = None;
     let mut attachment_id: Option<String> = None;
     let mut call_event: Option<AdminCallEvent> = None;
+
+    // A REDACTED (soft-deleted) message: the read path already SUPPRESSED `content` (it now holds
+    // the placeholder, not the original text / attachment id). Surface the redaction marker and the
+    // placeholder text, but do NOT attempt to resolve an attachment or parse a call event from the
+    // suppressed content — the original is never re-exposed, even to an admin, through this view.
+    if m.redacted {
+        return AdminEnrichedMessage {
+            id: m.id,
+            conversation_id: m.conversation_id,
+            sender_id: m.sender_id,
+            sender_role: m.sender_role,
+            message_type: m.message_type,
+            created_at: m.created_at,
+            kind: "redacted".to_string(),
+            text: m.content,
+            attachment: None,
+            attachment_id: None,
+            call_event: None,
+            redacted: true,
+        };
+    }
 
     match m.message_type.as_str() {
         MSG_TYPE_TEXT => {
@@ -322,7 +336,121 @@ fn enrich_message(
         attachment,
         attachment_id,
         call_event,
+        redacted: false,
     }
+}
+
+/// Admin-role gate shared by the moderation writes. The gateway proves IDENTITY (a valid token)
+/// and routes the `/admin/*` prefix to chat, but the ROLE check is the service's job (CLAUDE.md:
+/// "admin endpoints role-gated at gateway + handler require_role(admin)"). A non-admin gets `403`
+/// before any DB access.
+fn require_admin(user: &AuthUser) -> Result<(), AppError> {
+    if user.role == ROLE_ADMIN {
+        Ok(())
+    } else {
+        Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ))
+    }
+}
+
+// ----- DELETE /admin/messages/{id} (redact a message) -----
+
+/// ADMIN: REDACT (soft-delete) a message. The message stays in the table (never hard-deleted —
+/// audit/PDPA), but every read path SUPPRESSES its content (shows "[message removed by
+/// moderator]") and the admin audit view marks it `redacted`. Who/when/why is recorded on the
+/// message row AND in the `chat.moderation_actions` ledger (one transaction). Admin only (else
+/// 403). IDEMPOTENT: re-redacting an already-redacted message returns 200 with `applied:false`
+/// (no second audit row). A non-existent message → 404.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id, message_id = %id))]
+pub async fn admin_redact_message<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    body: Option<Json<RedactMessageRequest>>,
+) -> Result<Json<ApiResponse<ModerationResult>>, AppError> {
+    require_admin(&user)?;
+    let reason = body.and_then(|Json(b)| b.reason);
+    let applied = repo::redact_message(state.db(), id, user.user_id, reason.as_deref()).await?;
+    Ok(Json(ApiResponse::success(ModerationResult {
+        applied,
+        status: "redacted".to_string(),
+    })))
+}
+
+// ----- PUT /admin/conversations/{id}/status (moderation status / archive) -----
+
+/// ADMIN: set a conversation's MODERATION status (`active` | `archived`). This is DISTINCT from the
+/// booking `request_status` (lifecycle): archiving freezes the thread to new writes regardless of
+/// the booking state, and reactivating reopens it. Audited (who/when/why → `chat.moderation_actions`).
+/// Admin only (else 403). IDEMPOTENT: setting the status it already holds returns `applied:false`.
+/// Rejects an unknown status (400). A non-existent conversation → 404.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, conversation_id = %id, status = %req.moderation_status))]
+pub async fn admin_set_moderation_status<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Json(req): Json<SetModerationStatusRequest>,
+) -> Result<Json<ApiResponse<ModerationResult>>, AppError> {
+    require_admin(&user)?;
+    if !domain::is_valid_moderation_status(&req.moderation_status) {
+        return Err(AppError::BadRequest(
+            "moderation_status must be 'active' or 'archived'".to_string(),
+        ));
+    }
+    let applied = repo::set_moderation_status(
+        state.db(),
+        id,
+        user.user_id,
+        &req.moderation_status,
+        req.reason.as_deref(),
+    )
+    .await?;
+    Ok(Json(ApiResponse::success(ModerationResult {
+        applied,
+        status: req.moderation_status,
+    })))
+}
+
+// ----- PUT/DELETE /admin/users/{user_id}/block (chat-level block) -----
+
+/// ADMIN: BLOCK a user from chat (a chat-level ban). A blocked user cannot SEND in any conversation
+/// (enforced server-side in `repo::send_message`). Audited. Admin only (else 403). IDEMPOTENT:
+/// re-blocking an already-blocked user returns `applied:false`.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id, target = %target_user_id))]
+pub async fn admin_block_user<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(target_user_id): Path<Uuid>,
+    body: Option<Json<BlockUserRequest>>,
+) -> Result<Json<ApiResponse<ModerationResult>>, AppError> {
+    require_admin(&user)?;
+    let reason = body.and_then(|Json(b)| b.reason);
+    let applied =
+        repo::block_user(state.db(), target_user_id, user.user_id, reason.as_deref()).await?;
+    Ok(Json(ApiResponse::success(ModerationResult {
+        applied,
+        status: "blocked".to_string(),
+    })))
+}
+
+/// ADMIN: UNBLOCK a user (lift the active chat block; the block row is kept for audit). Audited.
+/// Admin only (else 403). IDEMPOTENT: unblocking a user with no active block returns `applied:false`.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id, target = %target_user_id))]
+pub async fn admin_unblock_user<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(target_user_id): Path<Uuid>,
+    body: Option<Json<BlockUserRequest>>,
+) -> Result<Json<ApiResponse<ModerationResult>>, AppError> {
+    require_admin(&user)?;
+    let reason = body.and_then(|Json(b)| b.reason);
+    let applied =
+        repo::unblock_user(state.db(), target_user_id, user.user_id, reason.as_deref()).await?;
+    Ok(Json(ApiResponse::success(ModerationResult {
+        applied,
+        status: "unblocked".to_string(),
+    })))
 }
 
 // ----- PUT /conversations/{id}/read?role= -----
@@ -661,6 +789,18 @@ mod tests {
                 get(admin_list_messages::<TestDeps>),
             )
             .route(
+                "/admin/conversations/{id}/status",
+                put(admin_set_moderation_status::<TestDeps>),
+            )
+            .route(
+                "/admin/messages/{id}",
+                axum::routing::delete(admin_redact_message::<TestDeps>),
+            )
+            .route(
+                "/admin/users/{user_id}/block",
+                put(admin_block_user::<TestDeps>).delete(admin_unblock_user::<TestDeps>),
+            )
+            .route(
                 "/conversations/{id}/messages",
                 get(list_messages::<TestDeps>),
             )
@@ -766,6 +906,75 @@ mod tests {
         assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
     }
 
+    /// The Phase-D moderation WRITES are admin-only — a non-admin (even a participant) gets 403
+    /// BEFORE any DB access (the require_admin gate fires first, like the read views). Covers
+    /// redact-message, set-status, block, unblock.
+    #[tokio::test]
+    async fn moderation_writes_reject_non_admin() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let tok = token(Uuid::new_v4(), "guard");
+        let cases = [
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/messages/{id}"))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/admin/conversations/{id}/status"))
+                .header("authorization", format!("Bearer {tok}"))
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"moderation_status":"archived"}"#))
+                .unwrap(),
+            Request::builder()
+                .method("PUT")
+                .uri(format!("/admin/users/{id}/block"))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/admin/users/{id}/block"))
+                .header("authorization", format!("Bearer {tok}"))
+                .body(Body::empty())
+                .unwrap(),
+        ];
+        for req in cases {
+            assert_eq!(
+                status_of(router(deps.clone()), req).await,
+                StatusCode::FORBIDDEN
+            );
+        }
+    }
+
+    /// An invalid `moderation_status` is rejected with 400 — but only AFTER the admin gate (an
+    /// admin token + a bad status → 400; a non-admin → 403 regardless). The 400 path needs no DB
+    /// (the validation fires before the repo call).
+    #[tokio::test]
+    async fn set_moderation_status_rejects_invalid_status() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/admin/conversations/{id}/status"))
+            .header(
+                "authorization",
+                format!("Bearer {}", token(Uuid::new_v4(), "admin")),
+            )
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"moderation_status":"deleted"}"#))
+            .unwrap();
+        assert_eq!(status_of(router(deps), req).await, StatusCode::BAD_REQUEST);
+    }
+
     /// PURE enrichment: `enrich_message` resolves a text row to `text`, a media row to a presigned
     /// `attachment` view (image vs video by MIME), an unresolved media id to `attachment_id` only,
     /// and a call-summary `system` row to a structured `call_event` (kind `call-event`).
@@ -783,6 +992,7 @@ mod tests {
             content,
             message_type: mtype.to_string(),
             created_at: chrono::Utc::now(),
+            redacted: false,
         };
 
         // Build the attachment index the handler would have batch-fetched.
@@ -868,6 +1078,26 @@ mod tests {
         );
         assert_eq!(sys.kind, "system");
         assert!(sys.call_event.is_none());
+
+        // A REDACTED message (the read path already suppressed content to the placeholder) →
+        // kind=redacted, the placeholder surfaced as text, and NO attachment/call resolution even
+        // for what was a media row (the original is never re-exposed through the audit view).
+        let mut redacted_media = mk(
+            "image",
+            Some(domain::REDACTED_CONTENT_PLACEHOLDER.to_string()),
+        );
+        redacted_media.redacted = true;
+        let r = enrich_message(redacted_media, &by_id, &s3);
+        assert_eq!(r.kind, "redacted");
+        assert!(r.redacted);
+        assert_eq!(
+            r.text.as_deref(),
+            Some(domain::REDACTED_CONTENT_PLACEHOLDER)
+        );
+        assert!(
+            r.attachment.is_none() && r.attachment_id.is_none() && r.call_event.is_none(),
+            "a redacted message resolves no attachment/call"
+        );
     }
 
     /// Build an authoritative booking the stub reader returns for create-conversation.

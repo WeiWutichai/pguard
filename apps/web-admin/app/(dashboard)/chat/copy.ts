@@ -1,16 +1,16 @@
-// Screen-local bilingual copy for the chat (แชท) admin moderation screen — a READ-ONLY
-// conversation list (chat `GET /admin/conversations`) + a per-conversation message read pane
-// (`GET /conversations/{id}/messages`, admin bypasses the participant gate). The design's
-// moderation actions (flag / delete message / block user / archive) have no v2 endpoint →
-// honest gaps; admins can READ but not act.
+// Screen-local bilingual copy for the chat (แชท) admin moderation screen — a conversation list
+// (chat `GET /admin/conversations`) + a per-conversation message pane (`GET /admin/conversations/
+// {id}/messages`, admin bypasses the participant gate). Phase D (#136/#137) added the WRITE surface:
+// redact a message (`DELETE /admin/messages/{id}`), archive/reactivate a conversation
+// (`PUT /admin/conversations/{id}/status`), and block/unblock a user from chat
+// (`PUT|DELETE /admin/users/{user_id}/block`) — each admin-only, audited, idempotent. Redacted
+// messages render as removed; the original content is never re-exposed.
 import type { Lang } from "@/lib/lang";
 
 export interface ChatCopy {
   title: string;
   subtitle: (n: string) => string;
   searchPlaceholder: string;
-  awaitingApi: string;
-  moderationGap: string;
   colConversation: string;
   colParticipants: string;
   colStatus: string;
@@ -34,6 +34,32 @@ export interface ChatCopy {
   callMissed: string;
   callRejected: string;
   callDuration: (s: string) => string;
+  // --- Phase D moderation (#136/#137) ---
+  moderationHead: string;
+  archiveAction: string;
+  reactivateAction: string;
+  redactAction: string;
+  blockAction: string;
+  redactedBadge: string;
+  redactedBody: string;
+  reasonLabel: string;
+  reasonPlaceholder: string;
+  cancel: string;
+  confirm: string;
+  working: string;
+  /** Confirm-dialog titles + bodies (some take the target's display name). */
+  confirmRedactTitle: string;
+  confirmRedactBody: string;
+  confirmArchiveTitle: string;
+  confirmArchiveBody: string;
+  confirmReactivateTitle: string;
+  confirmReactivateBody: string;
+  confirmBlockTitle: string;
+  confirmBlockBody: (name: string) => string;
+  actionFailed: string;
+  noopHint: string;
+  /** Status pill shown when the thread is archived. */
+  archivedBadge: string;
 }
 
 export const COPY: Record<Lang, ChatCopy> = {
@@ -41,9 +67,6 @@ export const COPY: Record<Lang, ChatCopy> = {
     title: "แชท",
     subtitle: (n) => `บทสนทนาทั้งหมด ${n} รายการ`,
     searchPlaceholder: "ค้นหาบทสนทนา / ผู้ร่วม…",
-    awaitingApi: "รอ API",
-    moderationGap:
-      "ดูได้อย่างเดียว — การกำกับ (ตั้งค่าสถานะ/ลบข้อความ/บล็อก/เก็บถาวร) ยังไม่มี endpoint ใน v2",
     colConversation: "บทสนทนา",
     colParticipants: "ผู้ร่วม",
     colStatus: "สถานะงาน",
@@ -66,14 +89,35 @@ export const COPY: Record<Lang, ChatCopy> = {
     callMissed: "ไม่ได้รับสาย",
     callRejected: "ปฏิเสธสาย",
     callDuration: (s) => `· ${s}`,
+    moderationHead: "การกำกับดูแล",
+    archiveAction: "เก็บถาวร",
+    reactivateAction: "เปิดใช้ใหม่",
+    redactAction: "ลบข้อความ",
+    blockAction: "บล็อกผู้ใช้",
+    redactedBadge: "ถูกลบโดยผู้ดูแล",
+    redactedBody: "[ข้อความถูกลบโดยผู้ดูแล]",
+    reasonLabel: "เหตุผล (บันทึกในประวัติ)",
+    reasonPlaceholder: "ระบุเหตุผล… (ไม่บังคับ)",
+    cancel: "ยกเลิก",
+    confirm: "ยืนยัน",
+    working: "กำลังดำเนินการ…",
+    confirmRedactTitle: "ลบข้อความนี้?",
+    confirmRedactBody:
+      "ข้อความจะถูกซ่อนจากทุกฝ่าย (เก็บไว้เพื่อตรวจสอบเท่านั้น) การกระทำนี้ย้อนกลับไม่ได้",
+    confirmArchiveTitle: "เก็บบทสนทนาถาวร?",
+    confirmArchiveBody: "ผู้ร่วมจะส่งข้อความใหม่ไม่ได้จนกว่าจะเปิดใช้ใหม่",
+    confirmReactivateTitle: "เปิดบทสนทนาใหม่?",
+    confirmReactivateBody: "ผู้ร่วมจะกลับมาส่งข้อความได้อีกครั้ง",
+    confirmBlockTitle: "บล็อกผู้ใช้จากแชท?",
+    confirmBlockBody: (name) => `${name} จะส่งข้อความในทุกบทสนทนาไม่ได้`,
+    actionFailed: "ดำเนินการไม่สำเร็จ ลองอีกครั้ง",
+    noopHint: "อยู่ในสถานะนี้อยู่แล้ว",
+    archivedBadge: "เก็บถาวร",
   },
   en: {
     title: "Chat",
     subtitle: (n) => `${n} conversations`,
     searchPlaceholder: "Search conversation / participants…",
-    awaitingApi: "awaiting API",
-    moderationGap:
-      "Read-only — moderation (flag / delete message / block / archive) has no v2 endpoint",
     colConversation: "Conversation",
     colParticipants: "Participants",
     colStatus: "Job status",
@@ -96,6 +140,30 @@ export const COPY: Record<Lang, ChatCopy> = {
     callMissed: "missed",
     callRejected: "rejected",
     callDuration: (s) => `· ${s}`,
+    moderationHead: "Moderation",
+    archiveAction: "Archive",
+    reactivateAction: "Reactivate",
+    redactAction: "Redact",
+    blockAction: "Block user",
+    redactedBadge: "Removed by moderator",
+    redactedBody: "[message removed by moderator]",
+    reasonLabel: "Reason (recorded in audit log)",
+    reasonPlaceholder: "Reason… (optional)",
+    cancel: "Cancel",
+    confirm: "Confirm",
+    working: "Working…",
+    confirmRedactTitle: "Redact this message?",
+    confirmRedactBody:
+      "The message is hidden from all parties (kept in-table for audit only). This cannot be undone.",
+    confirmArchiveTitle: "Archive conversation?",
+    confirmArchiveBody: "Participants can't send new messages until it's reactivated.",
+    confirmReactivateTitle: "Reactivate conversation?",
+    confirmReactivateBody: "Participants will be able to send messages again.",
+    confirmBlockTitle: "Block user from chat?",
+    confirmBlockBody: (name) => `${name} won't be able to send in any conversation.`,
+    actionFailed: "Action failed — please try again.",
+    noopHint: "Already in this state.",
+    archivedBadge: "Archived",
   },
 };
 

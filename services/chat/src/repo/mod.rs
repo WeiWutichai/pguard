@@ -24,9 +24,19 @@ use crate::models::{
     EnrichedConversation, IncomingChatMessage, OutgoingChatMessage, ParticipantInput,
 };
 
-/// Columns of a message row as returned to clients (`message_type` cast to text → no enum decode).
-const MESSAGE_COLUMNS: &str =
-    "id, conversation_id, sender_id, sender_role, content, message_type::text AS message_type, created_at";
+/// Columns of a freshly-INSERTED message row (the `RETURNING` shape for send / call-summary).
+/// `message_type` is cast to text (no enum decode); a just-inserted row is never redacted, so
+/// `redacted` is the literal `false` and `content` is returned as stored.
+const MESSAGE_COLUMNS: &str = "id, conversation_id, sender_id, sender_role, content, \
+     message_type::text AS message_type, created_at, false AS redacted";
+
+/// Columns of a message row on the READ path (history / admin audit). A REDACTED (soft-deleted)
+/// message's `content` is SUPPRESSED — replaced with the placeholder so the thread shows the
+/// message was removed without leaking the original text/attachment id — and `redacted` is `true`.
+/// The original `content` stays in the table (never hard-deleted), but is never re-exposed here.
+const MESSAGE_READ_COLUMNS: &str = "id, conversation_id, sender_id, sender_role, \
+     CASE WHEN redacted_at IS NOT NULL THEN '[message removed by moderator]' ELSE content END AS content, \
+     message_type::text AS message_type, created_at, (redacted_at IS NOT NULL) AS redacted";
 
 /// The single N+1-free enriched-list query. Exposed as a const so a unit test can assert its
 /// SHAPE (one `FROM chat.conversations`, the counterpart + last-message LATERALs, the
@@ -227,7 +237,7 @@ pub async fn list_messages(
     let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
     let sql = format!(
-        "SELECT {MESSAGE_COLUMNS} FROM chat.messages \
+        "SELECT {MESSAGE_READ_COLUMNS} FROM chat.messages \
          WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
     );
     let rows = sqlx::query_as::<_, OutgoingChatMessage>(&sql)
@@ -346,19 +356,31 @@ pub async fn send_message(
     let conversation_id = msg.conversation_id;
     let mut tx = db.begin().await?;
 
-    // Lock the conversation + read status (existence check + read-only gate basis).
-    let status: Option<(Option<String>,)> =
-        sqlx::query_as("SELECT request_status FROM chat.conversations WHERE id = $1 FOR UPDATE")
-            .bind(conversation_id)
-            .fetch_optional(&mut *tx)
-            .await?;
-    let request_status = match status {
-        Some((s,)) => s,
+    // Lock the conversation + read BOTH gating statuses (existence check + read-only basis):
+    //   * `request_status`    — booking lifecycle (completed/cancelled → frozen).
+    //   * `moderation_status` — admin archive (Phase D; archived → frozen) — a SECOND read-only
+    //     gate independent of the booking lifecycle.
+    let status: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT request_status, moderation_status FROM chat.conversations WHERE id = $1 FOR UPDATE",
+    )
+    .bind(conversation_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (request_status, moderation_status) = match status {
+        Some((rs, ms)) => (rs, ms),
         None => {
             tx.rollback().await?;
             return Err(AppError::NotFound("Conversation not found".to_string()));
         }
     };
+
+    // Chat-level BLOCK gate (Phase D): a blocked user cannot send in ANY conversation. Checked
+    // server-side (the single write path) — never trust the client. A blocked send is rejected
+    // BEFORE the membership/read-only checks so a ban is decisive.
+    if is_user_blocked_tx(&mut tx, sender_id).await? {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden("You are blocked from chat".to_string()));
+    }
 
     // Participant gate (IDOR) + recipient derivation (the OTHER party) + the AUTHORITATIVE sender
     // role — all from the membership rows, never the client frame.
@@ -378,11 +400,18 @@ pub async fn send_message(
         }
     };
 
-    // Read-only gate: never trust the client — reject writes to a closed conversation.
+    // Read-only gate: never trust the client — reject writes to a closed conversation. TWO sources:
+    // the booking lifecycle (completed/cancelled) AND an admin archive (Phase D).
     if !domain::is_writable(request_status.as_deref()) {
         tx.rollback().await?;
         return Err(AppError::Conflict(
             "Conversation is read-only (booking completed/cancelled)".to_string(),
+        ));
+    }
+    if domain::is_archived(moderation_status.as_deref()) {
+        tx.rollback().await?;
+        return Err(AppError::Conflict(
+            "Conversation is archived (read-only)".to_string(),
         ));
     }
 
@@ -664,6 +693,255 @@ pub async fn set_request_status(
     Ok(res.rows_affected())
 }
 
+// =============================================================================
+// Admin moderation (Phase D) — soft-delete / archive / block, all audited
+// =============================================================================
+
+/// `true` iff `user_id` has an ACTIVE chat block (a `chat.user_blocks` row with `lifted_at IS
+/// NULL`) — the tx-scoped probe the send path uses (the partial unique index makes it a single
+/// indexed lookup). A blocked user cannot send in any conversation.
+async fn is_user_blocked_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+) -> Result<bool, AppError> {
+    let exists: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM chat.user_blocks \
+         WHERE user_id = $1 AND lifted_at IS NULL)",
+    )
+    .bind(user_id)
+    .fetch_one(&mut **tx)
+    .await?;
+    Ok(exists)
+}
+
+/// Append one row to the `chat.moderation_actions` audit ledger (same tx as the effect). Records
+/// who (`actor_id`), what (`action`), the target (`target_kind`/`target_id`), and an optional why.
+async fn record_moderation_action(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    actor_id: Uuid,
+    action: &str,
+    target_kind: &str,
+    target_id: Uuid,
+    reason: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO chat.moderation_actions (actor_id, action, target_kind, target_id, reason) \
+         VALUES ($1, $2, $3, $4, $5)",
+    )
+    .bind(actor_id)
+    .bind(action)
+    .bind(target_kind)
+    .bind(target_id)
+    .bind(reason)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
+/// REDACT (soft-delete) a message: stamp `redacted_at`/`redacted_by`/`redacted_reason` so every
+/// read path suppresses the `content`. The original content is NEVER hard-deleted (audit/PDPA).
+/// IDEMPOTENT: re-redacting an already-redacted message is a no-op (the `redacted_at IS NULL`
+/// guard means the UPDATE touches 0 rows and no second audit row is written). One transaction (the
+/// UPDATE + the audit row are atomic). Returns:
+///   * `Ok(true)`  — newly redacted (an audit row was written),
+///   * `Ok(false)` — already redacted (idempotent no-op, still 200),
+///   * `Err(NotFound)` — no such message.
+pub async fn redact_message(
+    db: &sqlx::PgPool,
+    message_id: Uuid,
+    actor_id: Uuid,
+    reason: Option<&str>,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    // Existence (lock the row): distinguish "no such message" (404) from "already redacted" (no-op).
+    let existing: Option<(Option<chrono::DateTime<chrono::Utc>>,)> =
+        sqlx::query_as("SELECT redacted_at FROM chat.messages WHERE id = $1 FOR UPDATE")
+            .bind(message_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((redacted_at,)) = existing else {
+        tx.rollback().await?;
+        return Err(AppError::NotFound("Message not found".to_string()));
+    };
+    if redacted_at.is_some() {
+        // Already redacted → idempotent no-op (no second audit row).
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    sqlx::query(
+        "UPDATE chat.messages \
+         SET redacted_at = now(), redacted_by = $2, redacted_reason = $3 \
+         WHERE id = $1",
+    )
+    .bind(message_id)
+    .bind(actor_id)
+    .bind(reason)
+    .execute(&mut *tx)
+    .await?;
+
+    record_moderation_action(
+        &mut tx,
+        actor_id,
+        domain::ACTION_REDACT_MESSAGE,
+        domain::TARGET_MESSAGE,
+        message_id,
+        reason,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// SET a conversation's MODERATION status (`active` | `archived`; distinct from `request_status`).
+/// Archiving freezes writes (the second read-only gate); un-archiving reopens them. IDEMPOTENT:
+/// setting the status it already holds is a no-op (no second audit row). Returns `Ok(true)` if the
+/// status changed, `Ok(false)` if unchanged, `Err(NotFound)` if no such conversation. One tx.
+pub async fn set_moderation_status(
+    db: &sqlx::PgPool,
+    conversation_id: Uuid,
+    actor_id: Uuid,
+    new_status: &str,
+    reason: Option<&str>,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    let existing: Option<(String,)> =
+        sqlx::query_as("SELECT moderation_status FROM chat.conversations WHERE id = $1 FOR UPDATE")
+            .bind(conversation_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let Some((current,)) = existing else {
+        tx.rollback().await?;
+        return Err(AppError::NotFound("Conversation not found".to_string()));
+    };
+    if current == new_status {
+        // Already in the target state → idempotent no-op.
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    let archiving = new_status == domain::MODERATION_STATUS_ARCHIVED;
+    // Stamp archived_at/by when archiving; clear them when reactivating (so a re-archive re-stamps).
+    sqlx::query(
+        "UPDATE chat.conversations \
+         SET moderation_status = $2, \
+             archived_at = CASE WHEN $3 THEN now() ELSE NULL END, \
+             archived_by = CASE WHEN $3 THEN $4 ELSE NULL END \
+         WHERE id = $1",
+    )
+    .bind(conversation_id)
+    .bind(new_status)
+    .bind(archiving)
+    .bind(actor_id)
+    .execute(&mut *tx)
+    .await?;
+
+    let action = if archiving {
+        domain::ACTION_ARCHIVE_CONVERSATION
+    } else {
+        domain::ACTION_UNARCHIVE_CONVERSATION
+    };
+    record_moderation_action(
+        &mut tx,
+        actor_id,
+        action,
+        domain::TARGET_CONVERSATION,
+        conversation_id,
+        reason,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// BLOCK a user from chat (a chat-level ban). IDEMPOTENT: the `WHERE lifted_at IS NULL` partial
+/// unique index means a repeat block conflicts and inserts nothing (no-op). Returns `Ok(true)` if a
+/// new block was created (audit row written), `Ok(false)` if the user was already blocked. One tx.
+pub async fn block_user(
+    db: &sqlx::PgPool,
+    target_user_id: Uuid,
+    actor_id: Uuid,
+    reason: Option<&str>,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    // ON CONFLICT on the active-block partial unique index → a repeat block inserts nothing.
+    let inserted = sqlx::query(
+        "INSERT INTO chat.user_blocks (user_id, blocked_by, reason) VALUES ($1, $2, $3) \
+         ON CONFLICT (user_id) WHERE lifted_at IS NULL DO NOTHING",
+    )
+    .bind(target_user_id)
+    .bind(actor_id)
+    .bind(reason)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        == 1;
+
+    if !inserted {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    record_moderation_action(
+        &mut tx,
+        actor_id,
+        domain::ACTION_BLOCK_USER,
+        domain::TARGET_USER,
+        target_user_id,
+        reason,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
+}
+
+/// UNBLOCK a user — lift the active block (stamp `lifted_at`/`lifted_by`; the row is kept for
+/// audit, never deleted). IDEMPOTENT: if the user has no active block the UPDATE touches 0 rows
+/// (no-op, no audit row). Returns `Ok(true)` if a block was lifted, `Ok(false)` if none was active.
+pub async fn unblock_user(
+    db: &sqlx::PgPool,
+    target_user_id: Uuid,
+    actor_id: Uuid,
+    reason: Option<&str>,
+) -> Result<bool, AppError> {
+    let mut tx = db.begin().await?;
+
+    let lifted = sqlx::query(
+        "UPDATE chat.user_blocks SET lifted_at = now(), lifted_by = $2 \
+         WHERE user_id = $1 AND lifted_at IS NULL",
+    )
+    .bind(target_user_id)
+    .bind(actor_id)
+    .execute(&mut *tx)
+    .await?
+    .rows_affected()
+        >= 1;
+
+    if !lifted {
+        tx.rollback().await?;
+        return Ok(false);
+    }
+
+    record_moderation_action(
+        &mut tx,
+        actor_id,
+        domain::ACTION_UNBLOCK_USER,
+        domain::TARGET_USER,
+        target_user_id,
+        reason,
+    )
+    .await?;
+
+    tx.commit().await?;
+    Ok(true)
+}
+
 // ----- Outbox relay support -----
 
 pub async fn fetch_unpublished(db: &sqlx::PgPool, limit: i64) -> Result<Vec<OutboxRow>, AppError> {
@@ -688,6 +966,21 @@ pub async fn mark_published(db: &sqlx::PgPool, id: Uuid) -> Result<(), AppError>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The redaction placeholder baked into `MESSAGE_READ_COLUMNS` (the SQL `CASE`) MUST equal the
+    /// pure `domain::REDACTED_CONTENT_PLACEHOLDER` — a drift would silently leak/garble the removed
+    /// marker. Pinned here (the SQL is a string literal, not built from the const, to keep the
+    /// query a compile-time-checkable static).
+    #[test]
+    fn read_columns_pin_the_redaction_placeholder() {
+        assert!(
+            MESSAGE_READ_COLUMNS.contains(domain::REDACTED_CONTENT_PLACEHOLDER),
+            "MESSAGE_READ_COLUMNS must substitute the exact domain redaction placeholder"
+        );
+        // The read path must compute the `redacted` flag from `redacted_at`, never expose the
+        // original content of a redacted row.
+        assert!(MESSAGE_READ_COLUMNS.contains("redacted_at IS NOT NULL"));
+    }
 
     /// Static "no N+1 / no cross-schema JOIN" proof: the enriched list is ONE query whose shape
     /// resolves everything in-query inside the `chat` schema. Pairs with the DB integration
@@ -1217,6 +1510,278 @@ mod tests {
             .await
             .expect("find missing");
         assert_eq!(missing, None, "unknown booking → None");
+        cleanup(&db, conv.id).await;
+    }
+
+    // ----- Admin moderation (Phase D): redact / archive / block — audited + idempotent -----
+
+    /// REDACT a message: every read path SUPPRESSES the content (placeholder) + flags `redacted`,
+    /// the original is retained (never hard-deleted), an audit row is written, and a re-redact is an
+    /// idempotent no-op (no second audit row). A non-existent message → NotFound.
+    #[tokio::test]
+    async fn redact_message_suppresses_content_audits_and_is_idempotent() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let admin = Uuid::new_v4();
+        let req = convo_req(
+            Uuid::new_v4(),
+            Some("accepted"),
+            vec![(customer, "customer", "C"), (guard, "guard", "G")],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+        let m = send_message(
+            &db,
+            customer,
+            &IncomingChatMessage {
+                conversation_id: conv.id,
+                content: Some("secret text".to_string()),
+                message_type: None,
+                sender_role: None,
+            },
+        )
+        .await
+        .expect("send");
+
+        // First redact → applied.
+        let applied = redact_message(&db, m.id, admin, Some("abuse"))
+            .await
+            .expect("redact");
+        assert!(applied, "first redact changes state");
+
+        // The read path suppresses content + flags redacted; the ORIGINAL content is retained.
+        let msgs = list_messages(&db, conv.id, 50, 0).await.expect("list");
+        let read = msgs.iter().find(|x| x.id == m.id).expect("message present");
+        assert!(read.redacted, "read flags the message redacted");
+        assert_eq!(
+            read.content.as_deref(),
+            Some(domain::REDACTED_CONTENT_PLACEHOLDER),
+            "content is suppressed to the placeholder"
+        );
+        let original: Option<String> =
+            sqlx::query_scalar("SELECT content FROM chat.messages WHERE id = $1")
+                .bind(m.id)
+                .fetch_one(&db)
+                .await
+                .expect("raw content");
+        assert_eq!(
+            original.as_deref(),
+            Some("secret text"),
+            "original content retained (soft-delete, not hard-delete)"
+        );
+
+        // One audit row for the redact.
+        let audit_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat.moderation_actions \
+             WHERE action = 'redact_message' AND target_id = $1 AND actor_id = $2",
+        )
+        .bind(m.id)
+        .bind(admin)
+        .fetch_one(&db)
+        .await
+        .expect("audit count");
+        assert_eq!(audit_count, 1, "exactly one audit row");
+
+        // Re-redact → idempotent no-op (no second audit row).
+        let again = redact_message(&db, m.id, admin, None)
+            .await
+            .expect("re-redact");
+        assert!(!again, "re-redact is a no-op");
+        let audit_count2: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM chat.moderation_actions \
+             WHERE action = 'redact_message' AND target_id = $1",
+        )
+        .bind(m.id)
+        .fetch_one(&db)
+        .await
+        .expect("audit recount");
+        assert_eq!(
+            audit_count2, 1,
+            "no second audit row on idempotent re-redact"
+        );
+
+        // A non-existent message → NotFound.
+        assert!(matches!(
+            redact_message(&db, Uuid::new_v4(), admin, None).await,
+            Err(AppError::NotFound(_))
+        ));
+
+        let _ = sqlx::query("DELETE FROM chat.moderation_actions WHERE target_id = $1")
+            .bind(m.id)
+            .execute(&db)
+            .await;
+        cleanup(&db, conv.id).await;
+    }
+
+    /// ARCHIVE a conversation: flips `moderation_status`, freezes writes (send → Conflict), is
+    /// audited + idempotent, and un-archiving reopens writes.
+    #[tokio::test]
+    async fn archive_conversation_freezes_writes_and_reopens() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let admin = Uuid::new_v4();
+        let req = convo_req(
+            Uuid::new_v4(),
+            Some("accepted"),
+            vec![(customer, "customer", "C"), (guard, "guard", "G")],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+
+        let send = |role: &str| IncomingChatMessage {
+            conversation_id: conv.id,
+            content: Some(format!("from {role}")),
+            message_type: None,
+            sender_role: None,
+        };
+
+        // Writable before archive.
+        send_message(&db, customer, &send("customer"))
+            .await
+            .expect("pre-archive send");
+
+        // Archive → applied; a re-archive is a no-op.
+        assert!(
+            set_moderation_status(&db, conv.id, admin, "archived", Some("spam"))
+                .await
+                .expect("archive")
+        );
+        assert!(
+            !set_moderation_status(&db, conv.id, admin, "archived", None)
+                .await
+                .expect("re-archive"),
+            "re-archive is idempotent"
+        );
+
+        // Writes are now frozen by the admin archive (independent of booking lifecycle).
+        assert!(matches!(
+            send_message(&db, guard, &send("guard")).await,
+            Err(AppError::Conflict(_))
+        ));
+
+        // Un-archive → reopens; a send succeeds again.
+        assert!(set_moderation_status(&db, conv.id, admin, "active", None)
+            .await
+            .expect("unarchive"));
+        send_message(&db, guard, &send("guard"))
+            .await
+            .expect("post-unarchive send");
+
+        // Audit: one archive + one unarchive.
+        let actions: Vec<String> = sqlx::query_scalar(
+            "SELECT action FROM chat.moderation_actions WHERE target_id = $1 ORDER BY created_at",
+        )
+        .bind(conv.id)
+        .fetch_all(&db)
+        .await
+        .expect("audit");
+        assert_eq!(
+            actions,
+            vec![
+                "archive_conversation".to_string(),
+                "unarchive_conversation".to_string()
+            ]
+        );
+
+        // A non-existent conversation → NotFound.
+        assert!(matches!(
+            set_moderation_status(&db, Uuid::new_v4(), admin, "archived", None).await,
+            Err(AppError::NotFound(_))
+        ));
+
+        let _ = sqlx::query("DELETE FROM chat.moderation_actions WHERE target_id = $1")
+            .bind(conv.id)
+            .execute(&db)
+            .await;
+        cleanup(&db, conv.id).await;
+    }
+
+    /// BLOCK a user: a blocked user's send is rejected (Forbidden) in ANY conversation; block +
+    /// unblock are audited + idempotent; unblock reopens sending.
+    #[tokio::test]
+    async fn block_user_rejects_send_and_is_idempotent() {
+        let Some(db) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let admin = Uuid::new_v4();
+        let req = convo_req(
+            Uuid::new_v4(),
+            Some("accepted"),
+            vec![(customer, "customer", "C"), (guard, "guard", "G")],
+        );
+        let conv = create_conversation(&db, &req).await.expect("create");
+
+        let send = IncomingChatMessage {
+            conversation_id: conv.id,
+            content: Some("hi".to_string()),
+            message_type: None,
+            sender_role: None,
+        };
+
+        // Block the customer → applied; a re-block is a no-op.
+        assert!(block_user(&db, customer, admin, Some("harassment"))
+            .await
+            .expect("block"));
+        assert!(
+            !block_user(&db, customer, admin, None)
+                .await
+                .expect("re-block"),
+            "re-block is idempotent"
+        );
+
+        // The blocked customer cannot send (Forbidden); the guard (not blocked) still can.
+        assert!(matches!(
+            send_message(&db, customer, &send).await,
+            Err(AppError::Forbidden(_))
+        ));
+        send_message(&db, guard, &send)
+            .await
+            .expect("non-blocked guard sends");
+
+        // Unblock → reopens; the customer can send again. Re-unblock is a no-op.
+        assert!(unblock_user(&db, customer, admin, None)
+            .await
+            .expect("unblock"));
+        assert!(
+            !unblock_user(&db, customer, admin, None)
+                .await
+                .expect("re-unblock"),
+            "re-unblock is idempotent"
+        );
+        send_message(&db, customer, &send)
+            .await
+            .expect("post-unblock send");
+
+        // Audit: block + unblock recorded.
+        let actions: Vec<String> = sqlx::query_scalar(
+            "SELECT action FROM chat.moderation_actions WHERE target_id = $1 ORDER BY created_at",
+        )
+        .bind(customer)
+        .fetch_all(&db)
+        .await
+        .expect("audit");
+        assert_eq!(
+            actions,
+            vec!["block_user".to_string(), "unblock_user".to_string()]
+        );
+
+        let _ = sqlx::query("DELETE FROM chat.user_blocks WHERE user_id = $1")
+            .bind(customer)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM chat.moderation_actions WHERE target_id = $1")
+            .bind(customer)
+            .execute(&db)
+            .await;
         cleanup(&db, conv.id).await;
     }
 }

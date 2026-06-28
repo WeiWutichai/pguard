@@ -13,7 +13,7 @@ import 'package:pguard_calling_api/src/model/end_call_request.dart';
 import 'package:pguard_calling_api/src/model/error_body.dart';
 import 'package:pguard_calling_api/src/model/initiate_call_request.dart';
 import 'package:pguard_calling_api/src/model/inline_object.dart';
-import 'package:pguard_calling_api/src/model/inline_object1.dart';
+import 'package:pguard_calling_api/src/model/inline_object2.dart';
 
 class CallsApi {
 
@@ -380,9 +380,9 @@ class CallsApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject1>> getIceConfig({ 
+  Future<Response<InlineObject2>> getIceConfig({ 
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -417,14 +417,14 @@ class CallsApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject1? _responseData;
+    InlineObject2? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject1),
-      ) as InlineObject1;
+        specifiedType: const FullType(InlineObject2),
+      ) as InlineObject2;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -436,7 +436,7 @@ class CallsApi {
       );
     }
 
-    return Response<InlineObject1>(
+    return Response<InlineObject2>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

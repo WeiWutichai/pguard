@@ -12,11 +12,14 @@ use shared::error::AppError;
 use shared_events::{topics, EventEnvelope};
 
 use crate::domain::{can_transition, end_target, CallStatus};
-use crate::models::CallResponse;
+use crate::models::{CallEventRow, CallResponse};
 
 const CALL_COLUMNS: &str = "id, caller_id, callee_id, booking_id, call_type::text AS call_type, \
      status::text AS status, started_at, answered_at, ended_at, duration_seconds, end_reason, \
      created_at, updated_at";
+
+/// Columns for one row of the per-call timeline (admin call-events read model).
+const CALL_EVENT_COLUMNS: &str = "id, call_id, event_type, actor_id, detail, occurred_at";
 
 /// Active statuses that make a callee "busy" (a fresh initiate is rejected).
 const ACTIVE_STATUSES: &str = "('initiated', 'accepted', 'connected')";
@@ -108,6 +111,100 @@ pub async fn participants(
     }
 }
 
+/// One call's ordered lifecycle timeline (admin call-events read model). Chronological
+/// (`occurred_at` asc, then insertion `id` to break ties on identical timestamps). The admin-role
+/// gate is the API layer's job (this is a cross-user read, like `admin_list_calls`).
+pub async fn call_events(db: &sqlx::PgPool, call_id: Uuid) -> Result<Vec<CallEventRow>, AppError> {
+    let sql = format!(
+        "SELECT {CALL_EVENT_COLUMNS} FROM calling.call_events \
+         WHERE call_id = $1 ORDER BY occurred_at ASC, id ASC"
+    );
+    let rows = sqlx::query_as::<_, CallEventRow>(&sql)
+        .bind(call_id)
+        .fetch_all(db)
+        .await?;
+    Ok(rows)
+}
+
+// ----- Call-events read model (timeline) writes -----
+
+/// Append one timeline event for a call (admin read model). IDEMPOTENT for the once-per-call
+/// lifecycle milestones: they pass `dedupe_key = Some("<call_id>:<event_type>")` and a duplicate
+/// INSERT is silently ignored (`ON CONFLICT DO NOTHING` on the partial unique index). Repeatable
+/// signaling steps (offer/answer/ice_candidate/peer_offline) pass `dedupe_key = None` and always
+/// append. Bound to a caller-supplied `Executor` so it can run inside the SAME transaction as a
+/// state change (lifecycle milestones) or standalone on the pool (the WS relay's signaling steps).
+async fn insert_call_event<'e, E>(
+    exec: E,
+    call_id: Uuid,
+    event_type: &str,
+    actor_id: Option<Uuid>,
+    detail: Option<&Value>,
+    dedupe_key: Option<String>,
+) -> Result<(), AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    sqlx::query(
+        "INSERT INTO calling.call_events (call_id, event_type, actor_id, detail, dedupe_key) \
+         VALUES ($1, $2, $3, $4, $5) ON CONFLICT (dedupe_key) DO NOTHING",
+    )
+    .bind(call_id)
+    .bind(event_type)
+    .bind(actor_id)
+    .bind(detail)
+    .bind(dedupe_key)
+    .execute(exec)
+    .await?;
+    Ok(())
+}
+
+/// Record a once-per-call LIFECYCLE milestone (ringing/accepted/rejected/connected/ended/missed)
+/// inside a state-change transaction. The `dedupe_key` makes a retried/replayed control call a
+/// no-op (the lifecycle event is written at most once per call). A timeline-write failure must
+/// NOT abort the authoritative state change, so this is best-effort within the tx: it returns
+/// `Ok(())` even on a write error (logged) — the call_logs UPDATE + outbox event are the source of
+/// truth; the read model is derived/advisory. (A unique-violation is already swallowed by
+/// `ON CONFLICT`; this guards the rarer infra error.)
+async fn record_lifecycle(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    call_id: Uuid,
+    event_type: &str,
+    actor_id: Option<Uuid>,
+    detail: Option<Value>,
+) {
+    let dedupe = Some(format!("{call_id}:{event_type}"));
+    if let Err(e) = insert_call_event(
+        &mut **tx,
+        call_id,
+        event_type,
+        actor_id,
+        detail.as_ref(),
+        dedupe,
+    )
+    .await
+    {
+        tracing::warn!(%call_id, event_type, "call-events timeline write failed (non-fatal): {e}");
+    }
+}
+
+/// Record a SIGNALING step the WS relay observed (offer/answer/ice_candidate/peer_offline),
+/// standalone on the pool. Best-effort: a failure here never breaks signal relaying (the read
+/// model is advisory). `dedupe_key = None` → these always append (ICE trickles many candidates).
+pub async fn record_signal_event(
+    db: &sqlx::PgPool,
+    call_id: Uuid,
+    event_type: &str,
+    actor_id: Option<Uuid>,
+    detail: Option<Value>,
+) {
+    if let Err(e) =
+        insert_call_event(db, call_id, event_type, actor_id, detail.as_ref(), None).await
+    {
+        tracing::warn!(%call_id, event_type, "call-events signal write failed (non-fatal): {e}");
+    }
+}
+
 // ----- Writes -----
 
 /// Initiate a call: reject if the callee is already in an active call, else INSERT the
@@ -165,6 +262,8 @@ pub async fn initiate(
         .await?;
 
     enqueue_event(&mut tx, topics::CALLING_INITIATED, &call, correlation_id).await?;
+    // Timeline: the call is now ringing the callee. Same tx as the call_logs INSERT.
+    record_lifecycle(&mut tx, call.id, "ringing", Some(caller_id), None).await;
     tx.commit().await?;
     Ok(call)
 }
@@ -323,13 +422,20 @@ async fn apply_transition(
         .bind(target.as_db_str())
         .bind(set_answered)
         .bind(is_terminal)
-        .bind(reason)
+        .bind(&reason)
         .fetch_one(&mut *tx)
         .await?;
 
     if let Some(topic) = topic {
         enqueue_event(&mut tx, topic, &call, correlation_id).await?;
     }
+
+    // Timeline: the target status IS the lifecycle event_type (accepted/rejected/connected/
+    // ended/missed). Carry the end_reason for terminal moves. Same tx as the call_logs UPDATE;
+    // de-duped per (call, event_type) so a retried control call doesn't double-append.
+    let detail = reason.map(|r| serde_json::json!({ "end_reason": r }));
+    record_lifecycle(&mut tx, id, target.as_db_str(), Some(actor), detail).await;
+
     tx.commit().await?;
     Ok(call)
 }
@@ -538,7 +644,87 @@ mod db_tests {
         cleanup(&pool, call.id).await;
     }
 
+    /// The call-events read model records the lifecycle timeline (ringing → accepted →
+    /// connected → ended), de-duped per (call, event_type), AND the WS relay's signaling steps
+    /// append (offer/answer/ice_candidate, no dedupe). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn timeline_records_lifecycle_and_signaling_idempotently() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let caller = Uuid::new_v4();
+        let callee = Uuid::new_v4();
+        let corr = Uuid::new_v4();
+
+        let call = initiate(&pool, caller, callee, Uuid::new_v4(), "audio", corr)
+            .await
+            .expect("initiate");
+        accept(&pool, call.id, callee, corr).await.expect("accept");
+        mark_connected(&pool, call.id, callee)
+            .await
+            .expect("connected");
+        end(&pool, call.id, caller, "hangup", corr)
+            .await
+            .expect("end");
+
+        // Signaling steps the relay would record (offer once, two trickled candidates).
+        record_signal_event(&pool, call.id, "offer", Some(caller), None).await;
+        record_signal_event(&pool, call.id, "ice_candidate", Some(caller), None).await;
+        record_signal_event(&pool, call.id, "ice_candidate", Some(callee), None).await;
+
+        let events = call_events(&pool, call.id).await.expect("timeline");
+        let types: Vec<&str> = events.iter().map(|e| e.event_type.as_str()).collect();
+        // The four lifecycle milestones are present, in chronological order, exactly once each.
+        assert_eq!(
+            types
+                .iter()
+                .copied()
+                .filter(|t| matches!(*t, "ringing" | "accepted" | "connected" | "ended"))
+                .collect::<Vec<_>>(),
+            vec!["ringing", "accepted", "connected", "ended"],
+            "lifecycle milestones in order"
+        );
+        // Two ICE candidates appended (no dedupe on signaling steps).
+        assert_eq!(
+            types.iter().filter(|t| **t == "ice_candidate").count(),
+            2,
+            "trickled candidates both append"
+        );
+
+        // Idempotency: re-recording a lifecycle milestone (same call+type) is a no-op.
+        record_lifecycle_for_test(&pool, call.id, "ended", Some(caller)).await;
+        let after = call_events(&pool, call.id).await.expect("timeline 2");
+        assert_eq!(
+            after.iter().filter(|e| e.event_type == "ended").count(),
+            1,
+            "ended recorded at most once per call"
+        );
+
+        cleanup(&pool, call.id).await;
+    }
+
+    /// Test-only helper: drive a lifecycle insert through the SAME dedupe path the repo uses
+    /// (standalone tx) to prove the once-per-call guard.
+    async fn record_lifecycle_for_test(
+        pool: &sqlx::PgPool,
+        call_id: Uuid,
+        event_type: &str,
+        actor: Option<Uuid>,
+    ) {
+        let dedupe = Some(format!("{call_id}:{event_type}"));
+        super::insert_call_event(pool, call_id, event_type, actor, None, dedupe)
+            .await
+            .expect("insert");
+    }
+
     async fn cleanup(pool: &sqlx::PgPool, call_id: Uuid) {
+        // call_events cascades on the call_logs delete (FK ON DELETE CASCADE), but delete
+        // explicitly too in case the FK isn't present in an older test DB.
+        let _ = sqlx::query("DELETE FROM calling.call_events WHERE call_id = $1")
+            .bind(call_id)
+            .execute(pool)
+            .await;
         let _ = sqlx::query("DELETE FROM calling.outbox WHERE payload->'payload'->>'call_id' = $1")
             .bind(call_id.to_string())
             .execute(pool)

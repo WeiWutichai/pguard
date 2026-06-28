@@ -12,7 +12,7 @@ import 'package:pguard_chat_api/src/api_util.dart';
 import 'package:pguard_chat_api/src/model/create_conversation_request.dart';
 import 'package:pguard_chat_api/src/model/error_body.dart';
 import 'package:pguard_chat_api/src/model/inline_object.dart';
-import 'package:pguard_chat_api/src/model/inline_object2.dart';
+import 'package:pguard_chat_api/src/model/inline_object3.dart';
 import 'package:pguard_chat_api/src/model/list_conversations200_response.dart';
 
 class ConversationsApi {
@@ -223,9 +223,9 @@ class ConversationsApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject3] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject2>> markConversationRead({ 
+  Future<Response<InlineObject3>> markConversationRead({ 
     required String id,
     String? role,
     CancelToken? cancelToken,
@@ -267,14 +267,14 @@ class ConversationsApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject2? _responseData;
+    InlineObject3? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject2),
-      ) as InlineObject2;
+        specifiedType: const FullType(InlineObject3),
+      ) as InlineObject3;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -286,7 +286,7 @@ class ConversationsApi {
       );
     }
 
-    return Response<InlineObject2>(
+    return Response<InlineObject3>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

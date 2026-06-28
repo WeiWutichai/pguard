@@ -19,7 +19,7 @@ use shared::models::ApiResponse;
 use crate::booking_client::BookingReader;
 use crate::domain::{is_callable_status, is_valid_call_type, peer_of};
 use crate::models::{
-    AdminListCallsQuery, CallResponse, EndCallRequest, IceConfig, InitiateCallRequest,
+    AdminListCallsQuery, CallResponse, CallTimeline, EndCallRequest, IceConfig, InitiateCallRequest,
 };
 use crate::repo;
 use crate::state::CallDeps;
@@ -127,6 +127,33 @@ pub async fn admin_list_calls<S: CallDeps>(
     let offset = q.offset.unwrap_or(0).max(0);
     let items = repo::admin_list_calls(state.db(), status, call_type, limit, offset).await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+/// GET /admin/calls/{id}/events — the ordered lifecycle TIMELINE of ONE call (admin call-events
+/// read model, #135). Admin only (else 403). Returns the call record + its events in
+/// chronological order: lifecycle milestones (ringing → accepted/rejected → connected → ended/
+/// missed, with timestamps + actor) plus the signaling steps the relay observed
+/// (offer/answer/ice_candidate relayed, peer_offline). A non-existent call → 404.
+///
+/// LIMITATION (intentional, not a bug): media QUALITY — jitter / packet loss / bitrate — is NOT
+/// in the timeline. A signaling relay cannot observe it; it needs SFU (mediasoup `getStats`) /
+/// TURN (coturn) stats, which are not wired into this service. The read model surfaces only what
+/// the control + signaling planes actually see.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, call_id = %id))]
+pub async fn admin_call_events<S: CallDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<CallTimeline>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    // 404 if the call doesn't exist (get_call already maps the missing row → NotFound).
+    let call = repo::get_call(state.db(), id).await?;
+    let events = repo::call_events(state.db(), id).await?;
+    Ok(Json(ApiResponse::success(CallTimeline { call, events })))
 }
 
 /// PUT /calls/{id}/accept — the callee accepts (`initiated → accepted`). The SQL guard
@@ -301,6 +328,10 @@ mod tests {
                 .route("/calls/initiate", post(initiate_call::<TestDeps>))
                 .route("/calls/ice", get(ice_config::<TestDeps>))
                 .route("/admin/calls", get(admin_list_calls::<TestDeps>))
+                .route(
+                    "/admin/calls/{id}/events",
+                    get(admin_call_events::<TestDeps>),
+                )
                 .with_state(deps),
         )
     }
@@ -320,6 +351,31 @@ mod tests {
                     .header(
                         "authorization",
                         format!("Bearer {}", token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_call_events_rejects_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read a call's timeline (admin-only) — rejected BEFORE any DB read
+        // (the lazy pool would otherwise fail to connect), proving the role gate runs first.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/admin/calls/{}/events", Uuid::new_v4()))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", token(Uuid::new_v4(), "guard")),
                     )
                     .body(Body::empty())
                     .unwrap(),

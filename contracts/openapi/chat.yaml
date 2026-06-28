@@ -64,7 +64,9 @@ tags:
   - name: Messages
     description: Message history (newest-first)
   - name: Admin
-    description: Admin cross-user read-only views (conversation list + enriched message audit)
+    description: >-
+      Admin cross-user views (conversation list + enriched message audit) AND the moderation
+      WRITES (redact a message, archive a conversation, block a user) — Phase D (#136/#137).
   - name: Attachments
     description: Image/video upload + presigned download (magic-byte validated)
   - name: Internal
@@ -170,7 +172,11 @@ paths:
         text rows, a resolved `attachment` (fresh presigned URL + MIME so the web renders an image
         thumbnail / video indicator) for media rows, and a structured `call_event` for a
         call-summary `system` row. Attachments are resolved in ONE batch query (no N+1) and the
-        bucket is never exposed. Admin only (else 403). READ-ONLY: no moderation actions (Phase D).
+        bucket is never exposed. Admin only (else 403). A redacted (soft-deleted) message is
+        SURFACED with `redacted: true` and `kind: redacted`; its content is suppressed (the
+        original is never re-exposed, even to an admin). The moderation WRITES live at
+        `DELETE /admin/messages/{id}`, `PUT /admin/conversations/{id}/status`, and
+        `PUT|DELETE /admin/users/{user_id}/block`.
       operationId: adminListMessages
       security: [{ bearerAuth: [] }]
       parameters:
@@ -189,6 +195,102 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/AdminEnrichedMessage' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/conversations/{id}/status:
+    put:
+      tags: [Admin]
+      summary: Set a conversation's MODERATION status (archive / reactivate)
+      description: |
+        Admin moderation (Phase D, #136/#137). Sets the conversation's `moderation_status`
+        (`active` | `archived`) — DISTINCT from the booking `request_status`. Archiving FREEZES the
+        thread to new writes (a second server-side read-only gate, independent of the booking
+        lifecycle); reactivating reopens it. Audited (who/when/why → `chat.moderation_actions`).
+        Admin only (else 403). IDEMPOTENT: setting the status it already holds returns
+        `applied: false` (still 200). An unknown status → 400; a non-existent conversation → 404.
+      operationId: adminSetConversationModerationStatus
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ConversationId' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/SetModerationStatusRequest' }
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/messages/{id}:
+    delete:
+      tags: [Admin]
+      summary: Redact (soft-delete) a message
+      description: |
+        Admin moderation (Phase D, #136/#137). SOFT-deletes a message: it stays in the table
+        (the original content is NEVER hard-deleted — audit/PDPA), but every read path SUPPRESSES
+        its content (substituting `[message removed by moderator]`) and the admin audit view marks
+        it `redacted`. Who/when/why is recorded on the message row AND in `chat.moderation_actions`.
+        Admin only (else 403). IDEMPOTENT: re-redacting an already-redacted message returns
+        `applied: false` (still 200, no second audit row). A non-existent message → 404.
+      operationId: adminRedactMessage
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/MessageId' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationReasonBody' }
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /admin/users/{user_id}/block:
+    put:
+      tags: [Admin]
+      summary: Block a user from chat (chat-level ban)
+      description: |
+        Admin moderation (Phase D, #136/#137). Sets a chat-level block on the user: a blocked user
+        CANNOT send in ANY conversation (enforced server-side in the send path — never trust the
+        client). Audited. Admin only (else 403). IDEMPOTENT: re-blocking an already-blocked user
+        returns `applied: false` (still 200).
+      operationId: adminBlockUser
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationReasonBody' }
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    delete:
+      tags: [Admin]
+      summary: Unblock a user (lift the chat block)
+      description: |
+        Admin moderation (Phase D, #136/#137). Lifts the user's active chat block (the block row is
+        retained for audit, never deleted) so they can send again. Audited. Admin only (else 403).
+        IDEMPOTENT: unblocking a user with no active block returns `applied: false` (still 200).
+      operationId: adminUnblockUser
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/UserId' }
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ModerationReasonBody' }
+      responses:
+        '200': { $ref: '#/components/responses/ModerationOk' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -328,6 +430,18 @@ components:
       required: true
       description: Attachment UUID.
       schema: { type: string, format: uuid }
+    MessageId:
+      name: id
+      in: path
+      required: true
+      description: Message UUID (the message to redact).
+      schema: { type: string, format: uuid }
+    UserId:
+      name: user_id
+      in: path
+      required: true
+      description: User UUID (the user to block/unblock from chat).
+      schema: { type: string, format: uuid }
     RequestId:
       name: request_id
       in: path
@@ -426,6 +540,47 @@ components:
           type: string
           description: New booking lifecycle status (e.g. `completed`, `cancelled`, `accepted`).
 
+    SetModerationStatusRequest:
+      type: object
+      required: [moderation_status]
+      description: Body for the admin set-moderation-status (archive/reactivate) endpoint.
+      properties:
+        moderation_status:
+          type: string
+          enum: [active, archived]
+          description: >-
+            The MODERATION status (distinct from `request_status`). `archived` freezes the thread
+            to new writes; `active` reopens it.
+        reason:
+          type: string
+          nullable: true
+          description: Optional audited reason recorded in `chat.moderation_actions`.
+
+    ModerationReasonBody:
+      type: object
+      description: >-
+        Optional body shared by redact / block / unblock — an audited reason. The whole body may be
+        omitted (the endpoints accept no body too).
+      properties:
+        reason:
+          type: string
+          nullable: true
+          description: Optional audited reason recorded in `chat.moderation_actions`.
+
+    ModerationResult:
+      type: object
+      required: [applied, status]
+      description: >-
+        The result of a moderation write. `applied` distinguishes a state-changing call from an
+        idempotent no-op (e.g. re-redacting / re-blocking) — both are success (200).
+      properties:
+        applied:
+          type: boolean
+          description: True if this call changed state; false on an idempotent repeat.
+        status:
+          type: string
+          description: The resulting state (e.g. `redacted`, `archived`, `blocked`, `unblocked`).
+
     ConversationResponse:
       type: object
       required: [id, request_id, created_at]
@@ -465,9 +620,20 @@ components:
         conversation_id: { type: string, format: uuid }
         sender_id: { type: string, format: uuid }
         sender_role: { type: string, nullable: true, description: 'guard | customer (drives alignment)' }
-        content: { type: string, nullable: true }
+        content:
+          type: string
+          nullable: true
+          description: >-
+            Message body. When `redacted` is true this is the SUPPRESSED placeholder
+            (`[message removed by moderator]`), never the original — an admin soft-deleted it.
         message_type: { $ref: '#/components/schemas/MessageType' }
         created_at: { type: string, format: date-time }
+        redacted:
+          type: boolean
+          default: false
+          description: >-
+            True when an admin soft-deleted (redacted) the message; `content` is then the
+            suppressed placeholder. The client should render the bubble as removed.
 
     AdminEnrichedMessage:
       type: object
@@ -476,7 +642,8 @@ components:
         `message_type`: text rows carry `text`; image/video rows resolve to a presigned
         `attachment` (with the raw `attachment_id` echoed even if resolution fails); a
         call-summary `system` row parses into a structured `call_event` (and `kind` becomes
-        `call-event`). READ-ONLY (no moderation fields — Phase D).
+        `call-event`). A redacted (soft-deleted) row is surfaced with `redacted: true` and
+        `kind: redacted`; its content is the suppressed placeholder (original never re-exposed).
       required: [id, conversation_id, sender_id, message_type, kind, created_at]
       properties:
         id: { type: string, format: uuid }
@@ -487,10 +654,11 @@ components:
         created_at: { type: string, format: date-time }
         kind:
           type: string
-          enum: [text, image, video, call-event, system, unknown]
+          enum: [text, image, video, call-event, system, unknown, redacted]
           description: >-
             The parsed render kind the web switches on. Distinct from `message_type`: a `system`
-            row whose content is the pinned call JSON becomes `call-event`.
+            row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is
+            `redacted`.
         text:
           type: string
           nullable: true
@@ -511,6 +679,13 @@ components:
           oneOf: [{ $ref: '#/components/schemas/AdminCallEvent' }]
           nullable: true
           description: Parsed call event for a call-summary `system` row; null otherwise.
+        redacted:
+          type: boolean
+          default: false
+          description: >-
+            True when an admin soft-deleted (redacted) this message. The per-kind fields then
+            reflect the suppressed content (placeholder text, no attachment/call); the original is
+            never re-exposed through this view.
 
     AdminAttachmentView:
       type: object
@@ -602,6 +777,15 @@ components:
             properties:
               success: { type: boolean, example: true }
               data: { $ref: '#/components/schemas/Attachment' }
+    ModerationOk:
+      description: Moderation action result (applied vs idempotent no-op)
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              success: { type: boolean, example: true }
+              data: { $ref: '#/components/schemas/ModerationResult' }
     Empty:
       description: Success (no body payload)
       content:

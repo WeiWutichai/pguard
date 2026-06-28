@@ -29,11 +29,15 @@ import 'package:pguard_chat_api/src/model/error_body_error.dart';
 import 'package:pguard_chat_api/src/model/inline_object.dart';
 import 'package:pguard_chat_api/src/model/inline_object1.dart';
 import 'package:pguard_chat_api/src/model/inline_object2.dart';
+import 'package:pguard_chat_api/src/model/inline_object3.dart';
 import 'package:pguard_chat_api/src/model/list_conversations200_response.dart';
 import 'package:pguard_chat_api/src/model/list_messages200_response.dart';
 import 'package:pguard_chat_api/src/model/message.dart';
 import 'package:pguard_chat_api/src/model/message_type.dart';
+import 'package:pguard_chat_api/src/model/moderation_reason_body.dart';
+import 'package:pguard_chat_api/src/model/moderation_result.dart';
 import 'package:pguard_chat_api/src/model/participant_input.dart';
+import 'package:pguard_chat_api/src/model/set_moderation_status_request.dart';
 import 'package:pguard_chat_api/src/model/set_request_status_request.dart';
 
 part 'serializers.g.dart';
@@ -54,11 +58,15 @@ part 'serializers.g.dart';
   InlineObject,
   InlineObject1,
   InlineObject2,
+  InlineObject3,
   ListConversations200Response,
   ListMessages200Response,
   Message,
   MessageType,
+  ModerationReasonBody,
+  ModerationResult,
   ParticipantInput,
+  SetModerationStatusRequest,
   SetRequestStatusRequest,
 ])
 Serializers serializers = (_$serializers.toBuilder()

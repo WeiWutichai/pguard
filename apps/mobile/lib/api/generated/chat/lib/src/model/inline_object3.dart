@@ -3,46 +3,41 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_chat_api/src/model/moderation_result.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object2.g.dart';
+part 'inline_object3.g.dart';
 
-/// InlineObject2
+/// InlineObject3
 ///
 /// Properties:
 /// * [success] 
-/// * [data] 
 @BuiltValue()
-abstract class InlineObject2 implements Built<InlineObject2, InlineObject2Builder> {
+abstract class InlineObject3 implements Built<InlineObject3, InlineObject3Builder> {
   @BuiltValueField(wireName: r'success')
   bool? get success;
 
-  @BuiltValueField(wireName: r'data')
-  ModerationResult? get data;
+  InlineObject3._();
 
-  InlineObject2._();
-
-  factory InlineObject2([void updates(InlineObject2Builder b)]) = _$InlineObject2;
+  factory InlineObject3([void updates(InlineObject3Builder b)]) = _$InlineObject3;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObject2Builder b) => b;
+  static void _defaults(InlineObject3Builder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject2> get serializer => _$InlineObject2Serializer();
+  static Serializer<InlineObject3> get serializer => _$InlineObject3Serializer();
 }
 
-class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
+class _$InlineObject3Serializer implements PrimitiveSerializer<InlineObject3> {
   @override
-  final Iterable<Type> types = const [InlineObject2, _$InlineObject2];
+  final Iterable<Type> types = const [InlineObject3, _$InlineObject3];
 
   @override
-  final String wireName = r'InlineObject2';
+  final String wireName = r'InlineObject3';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject2 object, {
+    InlineObject3 object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.success != null) {
@@ -52,19 +47,12 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
         specifiedType: const FullType(bool),
       );
     }
-    if (object.data != null) {
-      yield r'data';
-      yield serializers.serialize(
-        object.data,
-        specifiedType: const FullType(ModerationResult),
-      );
-    }
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject2 object, {
+    InlineObject3 object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -75,7 +63,7 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObject2Builder result,
+    required InlineObject3Builder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,13 +77,6 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
           ) as bool;
           result.success = valueDes;
           break;
-        case r'data':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(ModerationResult),
-          ) as ModerationResult;
-          result.data.replace(valueDes);
-          break;
         default:
           unhandled.add(key);
           unhandled.add(value);
@@ -105,12 +86,12 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
   }
 
   @override
-  InlineObject2 deserialize(
+  InlineObject3 deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObject2Builder();
+    final result = InlineObject3Builder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

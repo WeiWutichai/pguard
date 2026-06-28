@@ -63,6 +63,10 @@ pub struct BookingResponse {
     pub base_fee: Decimal,
     pub guard_count: i32,
     pub tip: Decimal,
+    /// The catalog service this booking was placed against (the SERVICE_TYPE dimension). `None`
+    /// for back-compat bookings created without picking a catalog service. Set server-side at
+    /// create from the customer's `service_id` (the same id that resolved the `base_fee`).
+    pub service_id: Option<Uuid>,
     /// Site coordinates — `None` when the customer did not provide them at create.
     pub lat: Option<f64>,
     pub lng: Option<f64>,
@@ -227,6 +231,34 @@ pub struct BookingsReport {
     pub daily: Vec<DailyCount>,
     pub utilization: Vec<UtilizationCell>,
     pub retention: Vec<RetentionPoint>,
+    pub total: i64,
+}
+
+/// One row of the bookings-by-service-type report (#140 "งานตามประเภทบริการ"): a service-catalog
+/// entry with its booking count + gross revenue in the window. `service_id`/`name_*` are `None`
+/// for the "unspecified" bucket (bookings placed before a catalog existed, or without picking a
+/// service). `revenue` is gross (`base_fee × hours × guard_count + tip`) over NON-cancelled
+/// bookings in the window — the same authoritative pricing inputs the money path reads, summed in
+/// SQL as Decimal (money rule: never `f64`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ServiceTypeStat {
+    /// The catalog service id, or `None` for the "unspecified" bucket.
+    pub service_id: Option<Uuid>,
+    /// Catalog Thai/English names (a point-in-time JOIN; `None` for the unspecified bucket or if
+    /// the catalog row was hard-deleted — the FK is `ON DELETE SET NULL`, so that re-buckets here).
+    pub name_th: Option<String>,
+    pub name_en: Option<String>,
+    /// Bookings placed against this service in the window (all statuses).
+    pub count: i64,
+    /// Gross ฿ revenue (`Σ base_fee × hours × guard_count + tip`) over non-cancelled bookings.
+    pub revenue: Decimal,
+}
+
+/// The bookings-by-service-type payload: the per-service rows plus a `total` count (Σ of all rows'
+/// `count`, including the unspecified bucket) for the panel header. Mirrors `BookingsReport.total`.
+#[derive(Debug, Serialize)]
+pub struct BookingsByServiceReport {
+    pub items: Vec<ServiceTypeStat>,
     pub total: i64,
 }
 

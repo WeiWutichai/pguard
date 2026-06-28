@@ -23,6 +23,7 @@ import { callingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 import { useNameResolver } from "@/lib/use-names";
 
+import { CallDetailModal } from "./call-detail-modal";
 import { CALL_STATUSES, CALL_TONE, type CallStatusKey, COPY, fmtDuration } from "./copy";
 
 type Call = CallingComponents["schemas"]["Call"];
@@ -40,6 +41,7 @@ export default function CallsPage() {
   const [statusFilter, setStatusFilter] = useState<CallStatusKey | "all">("all");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [selected, setSelected] = useState<Call | null>(null);
 
   const fetchInto = useCallback((alive: () => boolean) => {
     return callingApi
@@ -151,12 +153,6 @@ export default function CallsPage() {
         />
       </KpiGrid>
 
-      {/* Per-call timeline/ICE detail isn't persisted — honest gap note. */}
-      <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-sunken px-4 py-2.5 text-[12.5px] text-muted">
-        <Badge tone="gray">{c.awaitingApi}</Badge>
-        <span>{c.detailGap}</span>
-      </div>
-
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <Chip active={statusFilter === "all"} onClick={() => setStatusFilter("all")}>
           {t("common.all")}
@@ -211,7 +207,7 @@ export default function CallsPage() {
                 {visible.map((call) => {
                   const status = call.status as CallStatusKey;
                   return (
-                    <Tr key={call.id}>
+                    <Tr key={call.id} onClick={() => setSelected(call)}>
                       <Td className="font-mono font-semibold text-text-strong">
                         #{call.id.slice(0, 8)}
                       </Td>
@@ -250,6 +246,8 @@ export default function CallsPage() {
           </>
         )}
       </Panel>
+
+      {selected && <CallDetailModal call={selected} onClose={() => setSelected(null)} />}
     </div>
   );
 }

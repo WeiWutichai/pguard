@@ -22,6 +22,7 @@ part 'booking.g.dart';
 /// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal)
 /// * [guardCount] 
 /// * [tip] - Up-front tip (exact decimal)
+/// * [serviceId] - The catalog service this booking was placed against (the service-type dimension). null for bookings created without picking a catalog service. Set server-side from the request's `service_id` (the same id that resolved `base_fee`).
 /// * [lat] - Site latitude (null when not provided at create).
 /// * [lng] - Site longitude (null when not provided at create).
 /// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
@@ -61,6 +62,10 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// Up-front tip (exact decimal)
   @BuiltValueField(wireName: r'tip')
   String get tip;
+
+  /// The catalog service this booking was placed against (the service-type dimension). null for bookings created without picking a catalog service. Set server-side from the request's `service_id` (the same id that resolved `base_fee`).
+  @BuiltValueField(wireName: r'service_id')
+  String? get serviceId;
 
   /// Site latitude (null when not provided at create).
   @BuiltValueField(wireName: r'lat')
@@ -155,6 +160,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       object.tip,
       specifiedType: const FullType(String),
     );
+    if (object.serviceId != null) {
+      yield r'service_id';
+      yield serializers.serialize(
+        object.serviceId,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.lat != null) {
       yield r'lat';
       yield serializers.serialize(
@@ -278,6 +290,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(String),
           ) as String;
           result.tip = valueDes;
+          break;
+        case r'service_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.serviceId = valueDes;
           break;
         case r'lat':
           final valueDes = serializers.deserialize(

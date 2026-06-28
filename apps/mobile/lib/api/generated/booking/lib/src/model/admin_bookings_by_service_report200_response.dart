@@ -3,52 +3,52 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_calling_api/src/model/api_response_envelope.dart';
-import 'package:pguard_calling_api/src/model/call_timeline.dart';
+import 'package:pguard_booking_api/src/model/api_response_envelope.dart';
+import 'package:pguard_booking_api/src/model/bookings_by_service_report.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object1.g.dart';
+part 'admin_bookings_by_service_report200_response.g.dart';
 
-/// InlineObject1
+/// AdminBookingsByServiceReport200Response
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject1 implements ApiResponseEnvelope, Built<InlineObject1, InlineObject1Builder> {
+abstract class AdminBookingsByServiceReport200Response implements ApiResponseEnvelope, Built<AdminBookingsByServiceReport200Response, AdminBookingsByServiceReport200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  CallTimeline? get data;
+  BookingsByServiceReport? get data;
 
-  InlineObject1._();
+  AdminBookingsByServiceReport200Response._();
 
-  factory InlineObject1([void updates(InlineObject1Builder b)]) = _$InlineObject1;
+  factory AdminBookingsByServiceReport200Response([void updates(AdminBookingsByServiceReport200ResponseBuilder b)]) = _$AdminBookingsByServiceReport200Response;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObject1Builder b) => b;
+  static void _defaults(AdminBookingsByServiceReport200ResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject1> get serializer => _$InlineObject1Serializer();
+  static Serializer<AdminBookingsByServiceReport200Response> get serializer => _$AdminBookingsByServiceReport200ResponseSerializer();
 }
 
-class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
+class _$AdminBookingsByServiceReport200ResponseSerializer implements PrimitiveSerializer<AdminBookingsByServiceReport200Response> {
   @override
-  final Iterable<Type> types = const [InlineObject1, _$InlineObject1];
+  final Iterable<Type> types = const [AdminBookingsByServiceReport200Response, _$AdminBookingsByServiceReport200Response];
 
   @override
-  final String wireName = r'InlineObject1';
+  final String wireName = r'AdminBookingsByServiceReport200Response';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject1 object, {
+    AdminBookingsByServiceReport200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType(CallTimeline),
+        specifiedType: const FullType(BookingsByServiceReport),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject1 object, {
+    AdminBookingsByServiceReport200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObject1Builder result,
+    required AdminBookingsByServiceReport200ResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,8 +89,8 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(CallTimeline),
-          ) as CallTimeline;
+            specifiedType: const FullType(BookingsByServiceReport),
+          ) as BookingsByServiceReport;
           result.data.replace(valueDes);
           break;
         case r'error':
@@ -116,12 +116,12 @@ class _$InlineObject1Serializer implements PrimitiveSerializer<InlineObject1> {
   }
 
   @override
-  InlineObject1 deserialize(
+  AdminBookingsByServiceReport200Response deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObject1Builder();
+    final result = AdminBookingsByServiceReport200ResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

@@ -38,10 +38,43 @@ export interface paths {
          * List ALL calls cross-user (role=admin, read-only call log)
          * @description The admin call log — every call (NOT participant-scoped, unlike `GET /calls/{id}`),
          *     newest first, optional `status`/`call_type` filters + limit/offset. Admin only (else
-         *     403). The per-call timeline / ICE / signal-quality detail in the design is not
-         *     persisted (this service is a relay) — that needs a future call-events read model.
+         *     403). The per-call lifecycle TIMELINE is served by `GET /admin/calls/{id}/events`. Media
+         *     QUALITY (jitter/loss/bitrate) is NOT persisted — a signaling relay can't observe it; it
+         *     needs SFU/TURN stats (not wired). See that endpoint's description.
          */
         get: operations["adminListCalls"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/calls/{id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * One call's lifecycle TIMELINE (role=admin, call-events read model)
+         * @description The ordered per-call timeline — the call record plus its lifecycle events in
+         *     chronological order: milestones (`ringing` → `accepted`/`rejected` → `connected` →
+         *     `ended`/`missed`, each with `occurred_at` + the `actor_id` that drove it) plus the
+         *     signaling steps the relay observes as it forwards frames (`offer`/`answer`/
+         *     `ice_candidate` relayed, `peer_offline` when the peer had no live socket). Admin only
+         *     (else 403); a non-existent call → 404.
+         *
+         *     **NOT included (by design):** media QUALITY — jitter, packet loss, bitrate, MOS. A
+         *     signaling relay cannot observe these; they require SFU (mediasoup `getStats`) / TURN
+         *     (coturn) statistics, which are not wired into the calling service. The timeline surfaces
+         *     only what the control + signaling planes actually see. `detail` carries small structured
+         *     metadata about each step (e.g. `end_reason`, the relayed `to`/`delivered`) — never the
+         *     raw SDP/ICE blob.
+         */
+        get: operations["adminCallEvents"];
         put?: never;
         post?: never;
         delete?: never;
@@ -227,6 +260,42 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
+        /**
+         * @description The kind of timeline step. Lifecycle milestones (from the control plane):
+         *     `ringing`/`accepted`/`rejected`/`connected`/`ended`/`missed`. Signaling steps (observed
+         *     by the relay): `offer`/`answer`/`ice_candidate` (relayed between peers), `peer_offline`
+         *     (a frame the peer's socket couldn't receive).
+         * @enum {string}
+         */
+        CallEventType: "ringing" | "accepted" | "rejected" | "connected" | "ended" | "missed" | "offer" | "answer" | "ice_candidate" | "peer_offline";
+        /** @description One step of a call's timeline (admin call-events read model). */
+        CallEvent: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            call_id: string;
+            event_type: components["schemas"]["CallEventType"];
+            /**
+             * Format: uuid
+             * @description The participant this step is attributed to (caller/callee), when known.
+             */
+            actor_id?: string | null;
+            /** @description Small structured metadata about the step (e.g. end_reason, the relayed to/delivered). NEVER the raw SDP/ICE blob. */
+            detail?: {
+                [key: string]: unknown;
+            } | null;
+            /** Format: date-time */
+            occurred_at: string;
+        };
+        /**
+         * @description One call's record + its ordered lifecycle timeline. Media QUALITY (jitter/loss/bitrate)
+         *     is intentionally absent — a signaling relay can't observe it (needs SFU/TURN stats).
+         */
+        CallTimeline: {
+            call: components["schemas"]["Call"];
+            /** @description Lifecycle + signaling steps in chronological order. */
+            events: components["schemas"]["CallEvent"][];
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -296,6 +365,17 @@ export interface components {
             };
             content: {
                 "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /** @description The call record + its ordered lifecycle timeline */
+        CallTimelineOk: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                    data?: components["schemas"]["CallTimeline"];
+                };
             };
         };
         /** @description ICE server list (STUN + short-lived TURN credentials) */
@@ -368,6 +448,23 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    adminCallEvents: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["CallId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["CallTimelineOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     getCall: {

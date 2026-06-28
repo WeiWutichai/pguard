@@ -77,12 +77,95 @@ export interface paths {
          *     text rows, a resolved `attachment` (fresh presigned URL + MIME so the web renders an image
          *     thumbnail / video indicator) for media rows, and a structured `call_event` for a
          *     call-summary `system` row. Attachments are resolved in ONE batch query (no N+1) and the
-         *     bucket is never exposed. Admin only (else 403). READ-ONLY: no moderation actions (Phase D).
+         *     bucket is never exposed. Admin only (else 403). A redacted (soft-deleted) message is
+         *     SURFACED with `redacted: true` and `kind: redacted`; its content is suppressed (the
+         *     original is never re-exposed, even to an admin). The moderation WRITES live at
+         *     `DELETE /admin/messages/{id}`, `PUT /admin/conversations/{id}/status`, and
+         *     `PUT|DELETE /admin/users/{user_id}/block`.
          */
         get: operations["adminListMessages"];
         put?: never;
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/conversations/{id}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set a conversation's MODERATION status (archive / reactivate)
+         * @description Admin moderation (Phase D, #136/#137). Sets the conversation's `moderation_status`
+         *     (`active` | `archived`) — DISTINCT from the booking `request_status`. Archiving FREEZES the
+         *     thread to new writes (a second server-side read-only gate, independent of the booking
+         *     lifecycle); reactivating reopens it. Audited (who/when/why → `chat.moderation_actions`).
+         *     Admin only (else 403). IDEMPOTENT: setting the status it already holds returns
+         *     `applied: false` (still 200). An unknown status → 400; a non-existent conversation → 404.
+         */
+        put: operations["adminSetConversationModerationStatus"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/messages/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Redact (soft-delete) a message
+         * @description Admin moderation (Phase D, #136/#137). SOFT-deletes a message: it stays in the table
+         *     (the original content is NEVER hard-deleted — audit/PDPA), but every read path SUPPRESSES
+         *     its content (substituting `[message removed by moderator]`) and the admin audit view marks
+         *     it `redacted`. Who/when/why is recorded on the message row AND in `chat.moderation_actions`.
+         *     Admin only (else 403). IDEMPOTENT: re-redacting an already-redacted message returns
+         *     `applied: false` (still 200, no second audit row). A non-existent message → 404.
+         */
+        delete: operations["adminRedactMessage"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users/{user_id}/block": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Block a user from chat (chat-level ban)
+         * @description Admin moderation (Phase D, #136/#137). Sets a chat-level block on the user: a blocked user
+         *     CANNOT send in ANY conversation (enforced server-side in the send path — never trust the
+         *     client). Audited. Admin only (else 403). IDEMPOTENT: re-blocking an already-blocked user
+         *     returns `applied: false` (still 200).
+         */
+        put: operations["adminBlockUser"];
+        post?: never;
+        /**
+         * Unblock a user (lift the chat block)
+         * @description Admin moderation (Phase D, #136/#137). Lifts the user's active chat block (the block row is
+         *     retained for audit, never deleted) so they can send again. Audited. Admin only (else 403).
+         *     IDEMPOTENT: unblocking a user with no active block returns `applied: false` (still 200).
+         */
+        delete: operations["adminUnblockUser"];
         options?: never;
         head?: never;
         patch?: never;
@@ -252,6 +335,28 @@ export interface components {
             /** @description New booking lifecycle status (e.g. `completed`, `cancelled`, `accepted`). */
             request_status: string;
         };
+        /** @description Body for the admin set-moderation-status (archive/reactivate) endpoint. */
+        SetModerationStatusRequest: {
+            /**
+             * @description The MODERATION status (distinct from `request_status`). `archived` freezes the thread to new writes; `active` reopens it.
+             * @enum {string}
+             */
+            moderation_status: "active" | "archived";
+            /** @description Optional audited reason recorded in `chat.moderation_actions`. */
+            reason?: string | null;
+        };
+        /** @description Optional body shared by redact / block / unblock — an audited reason. The whole body may be omitted (the endpoints accept no body too). */
+        ModerationReasonBody: {
+            /** @description Optional audited reason recorded in `chat.moderation_actions`. */
+            reason?: string | null;
+        };
+        /** @description The result of a moderation write. `applied` distinguishes a state-changing call from an idempotent no-op (e.g. re-redacting / re-blocking) — both are success (200). */
+        ModerationResult: {
+            /** @description True if this call changed state; false on an idempotent repeat. */
+            applied: boolean;
+            /** @description The resulting state (e.g. `redacted`, `archived`, `blocked`, `unblocked`). */
+            status: string;
+        };
         ConversationResponse: {
             /** Format: uuid */
             id: string;
@@ -294,12 +399,18 @@ export interface components {
             sender_id: string;
             /** @description guard | customer (drives alignment) */
             sender_role?: string | null;
+            /** @description Message body. When `redacted` is true this is the SUPPRESSED placeholder (`[message removed by moderator]`), never the original — an admin soft-deleted it. */
             content?: string | null;
             message_type: components["schemas"]["MessageType"];
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description True when an admin soft-deleted (redacted) the message; `content` is then the suppressed placeholder. The client should render the bubble as removed.
+             * @default false
+             */
+            redacted: boolean;
         };
-        /** @description An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). READ-ONLY (no moderation fields — Phase D). */
+        /** @description An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). A redacted (soft-deleted) row is surfaced with `redacted: true` and `kind: redacted`; its content is the suppressed placeholder (original never re-exposed). */
         AdminEnrichedMessage: {
             /** Format: uuid */
             id: string;
@@ -313,10 +424,10 @@ export interface components {
             /** Format: date-time */
             created_at: string;
             /**
-             * @description The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+             * @description The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
              * @enum {string}
              */
-            kind: "text" | "image" | "video" | "call-event" | "system" | "unknown";
+            kind: "text" | "image" | "video" | "call-event" | "system" | "unknown" | "redacted";
             /** @description Plain text for a `text` message; null otherwise. */
             text?: string | null;
             /** @description Resolved attachment (fresh presigned URL + MIME) for an image/video message; null for non-media or if the referenced attachment can't be resolved. */
@@ -325,6 +436,11 @@ export interface components {
             attachment_id?: string | null;
             /** @description Parsed call event for a call-summary `system` row; null otherwise. */
             call_event?: components["schemas"]["AdminCallEvent"] | null;
+            /**
+             * @description True when an admin soft-deleted (redacted) this message. The per-kind fields then reflect the suppressed content (placeholder text, no attachment/call); the original is never re-exposed through this view.
+             * @default false
+             */
+            redacted: boolean;
         };
         /** @description The resolvable bits of an attachment for the admin message view — a fresh presigned URL plus the MIME so the web renders an `<img>` thumbnail or a video indicator. */
         AdminAttachmentView: {
@@ -409,6 +525,19 @@ export interface components {
                 };
             };
         };
+        /** @description Moderation action result (applied vs idempotent no-op) */
+        ModerationOk: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": {
+                    /** @example true */
+                    success?: boolean;
+                    data?: components["schemas"]["ModerationResult"];
+                };
+            };
+        };
         /** @description Success (no body payload) */
         Empty: {
             headers: {
@@ -472,6 +601,10 @@ export interface components {
         ConversationId: string;
         /** @description Attachment UUID. */
         AttachmentId: string;
+        /** @description Message UUID (the message to redact). */
+        MessageId: string;
+        /** @description User UUID (the user to block/unblock from chat). */
+        UserId: string;
         /** @description Booking request UUID the conversation is linked to. */
         RequestId: string;
         /**
@@ -600,6 +733,93 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminSetConversationModerationStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Conversation UUID. */
+                id: components["parameters"]["ConversationId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SetModerationStatusRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ModerationOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    adminRedactMessage: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Message UUID (the message to redact). */
+                id: components["parameters"]["MessageId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ModerationReasonBody"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ModerationOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    adminBlockUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User UUID (the user to block/unblock from chat). */
+                user_id: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ModerationReasonBody"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ModerationOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminUnblockUser: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description User UUID (the user to block/unblock from chat). */
+                user_id: components["parameters"]["UserId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ModerationReasonBody"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ModerationOk"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

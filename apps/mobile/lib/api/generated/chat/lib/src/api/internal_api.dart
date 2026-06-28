@@ -10,7 +10,7 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_chat_api/src/api_util.dart';
 import 'package:pguard_chat_api/src/model/error_body.dart';
-import 'package:pguard_chat_api/src/model/inline_object2.dart';
+import 'package:pguard_chat_api/src/model/inline_object3.dart';
 import 'package:pguard_chat_api/src/model/set_request_status_request.dart';
 
 class InternalApi {
@@ -34,9 +34,9 @@ class InternalApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject2] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject3] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject2>> setConversationRequestStatus({ 
+  Future<Response<InlineObject3>> setConversationRequestStatus({ 
     required String requestId,
     required SetRequestStatusRequest setRequestStatusRequest,
     CancelToken? cancelToken,
@@ -93,14 +93,14 @@ class InternalApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject2? _responseData;
+    InlineObject3? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject2),
-      ) as InlineObject2;
+        specifiedType: const FullType(InlineObject3),
+      ) as InlineObject3;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -112,7 +112,7 @@ class InternalApi {
       );
     }
 
-    return Response<InlineObject2>(
+    return Response<InlineObject3>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

@@ -250,6 +250,51 @@ pub fn is_writable(request_status: Option<&str>) -> bool {
 }
 
 // =============================================================================
+// Moderation (admin) — Phase D
+// =============================================================================
+
+/// The placeholder shown in place of a redacted (soft-deleted) message's `content` on the client
+/// read path. The real content is NEVER hard-deleted (audit/PDPA); the read path substitutes this
+/// marker so the thread shows the message was removed without leaking the original text/attachment.
+///
+/// The canonical definition. The redaction-aware read SQL (`repo::MESSAGE_READ_COLUMNS`) embeds the
+/// SAME literal in its `CASE`; a `repo` test PINS the two equal so they can't drift. `allow(dead_code)`
+/// because the production read substitution happens in SQL — this const is the spec/pin anchor.
+#[allow(dead_code)]
+pub const REDACTED_CONTENT_PLACEHOLDER: &str = "[message removed by moderator]";
+
+/// The two moderation states a conversation can be in (DISTINCT from the booking `request_status`).
+/// `archived` freezes writes regardless of the booking lifecycle — an admin can archive an open
+/// thread. The DB defaults a fresh conversation to `active`.
+pub const MODERATION_STATUS_ACTIVE: &str = "active";
+pub const MODERATION_STATUS_ARCHIVED: &str = "archived";
+
+/// `true` iff `status` is a valid moderation status (the admin set-status endpoint rejects others).
+pub fn is_valid_moderation_status(status: &str) -> bool {
+    status == MODERATION_STATUS_ACTIVE || status == MODERATION_STATUS_ARCHIVED
+}
+
+/// `true` iff an admin-set `moderation_status` closes the conversation to writes. `archived` (and,
+/// defensively, an unrecognized/garbage value) freezes; `active`/`None` (un-synced) stays open.
+/// This is the SECOND read-only gate, layered on top of the booking-lifecycle [`is_closed`].
+pub fn is_archived(moderation_status: Option<&str>) -> bool {
+    matches!(moderation_status, Some(s) if s != MODERATION_STATUS_ACTIVE)
+}
+
+/// The canonical `action` strings written to `chat.moderation_actions` (the audit ledger). Kept as
+/// constants so only a fixed, vetted set is ever recorded (mirrors the booking sub-code pattern).
+pub const ACTION_REDACT_MESSAGE: &str = "redact_message";
+pub const ACTION_ARCHIVE_CONVERSATION: &str = "archive_conversation";
+pub const ACTION_UNARCHIVE_CONVERSATION: &str = "unarchive_conversation";
+pub const ACTION_BLOCK_USER: &str = "block_user";
+pub const ACTION_UNBLOCK_USER: &str = "unblock_user";
+
+/// The `target_kind` discriminators for `chat.moderation_actions.target_id`.
+pub const TARGET_MESSAGE: &str = "message";
+pub const TARGET_CONVERSATION: &str = "conversation";
+pub const TARGET_USER: &str = "user";
+
+// =============================================================================
 // Attachment validation (magic bytes + size)
 // =============================================================================
 
@@ -566,6 +611,27 @@ mod tests {
         // The two terminal ones are not writable.
         assert!(!is_writable(Some("completed")));
         assert!(!is_writable(Some("cancelled")));
+    }
+
+    // ----- moderation (Phase D) -----
+
+    #[test]
+    fn moderation_status_validation() {
+        assert!(is_valid_moderation_status("active"));
+        assert!(is_valid_moderation_status("archived"));
+        for bad in ["", "Active", "deleted", "completed"] {
+            assert!(!is_valid_moderation_status(bad), "{bad} must be invalid");
+        }
+    }
+
+    #[test]
+    fn archived_freezes_writes_active_does_not() {
+        // active / None (un-synced) → open; archived (and, defensively, garbage) → frozen.
+        assert!(!is_archived(None));
+        assert!(!is_archived(Some("active")));
+        assert!(is_archived(Some("archived")));
+        // Defensive: an unexpected value is treated as frozen (fail-closed for an admin signal).
+        assert!(is_archived(Some("whatever")));
     }
 
     // ----- magic bytes -----

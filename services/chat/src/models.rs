@@ -129,8 +129,53 @@ pub struct AdminListConversationsQuery {
     pub offset: Option<i64>,
 }
 
+// ----- Admin moderation (Phase D) requests -----
+
+/// Body for `DELETE /admin/messages/{id}` (redact a message) — an OPTIONAL audited reason.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct RedactMessageRequest {
+    pub reason: Option<String>,
+}
+
+/// Body for `PUT /admin/conversations/{id}/status` — set the conversation's MODERATION status
+/// (`active` | `archived`; distinct from the booking `request_status`). Archiving freezes writes.
+#[derive(Debug, Deserialize)]
+pub struct SetModerationStatusRequest {
+    pub moderation_status: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// Body for `PUT /admin/users/{user_id}/block` and `DELETE …/block` (unblock) — an OPTIONAL
+/// audited reason. Block/unblock are idempotent.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+pub struct BlockUserRequest {
+    pub reason: Option<String>,
+}
+
+// ----- Admin moderation (Phase D) responses -----
+
+/// The result of a moderation write — `applied` distinguishes a state-changing call from an
+/// idempotent no-op (e.g. re-redacting an already-redacted message, re-blocking a blocked user).
+/// The web admin can show "already done" vs "done" without a follow-up read.
+#[derive(Debug, Serialize)]
+pub struct ModerationResult {
+    /// `true` if this call changed state; `false` if it was an idempotent repeat (already in the
+    /// target state) — both are success (200), never an error.
+    pub applied: bool,
+    /// Echo of the resulting state for the convenience of the caller (e.g. `archived`, `blocked`).
+    pub status: String,
+}
+
 /// A message row (read path). `message_type` is the enum cast to text. `sender_role` drives
 /// client-side alignment.
+///
+/// `redacted` is `true` when an admin soft-deleted the message (Phase D moderation): the read
+/// queries SUPPRESS the original `content` (substituting [`crate::domain::REDACTED_CONTENT_PLACEHOLDER`])
+/// so a removed message shows as removed without leaking the original text/attachment. A freshly
+/// sent message is never redacted. `#[serde(default)]` keeps the WS frame backward-compatible.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct OutgoingChatMessage {
     pub id: Uuid,
@@ -140,6 +185,8 @@ pub struct OutgoingChatMessage {
     pub content: Option<String>,
     pub message_type: String,
     pub created_at: DateTime<Utc>,
+    #[serde(default)]
+    pub redacted: bool,
 }
 
 /// An ADMIN-ENRICHED message (`GET /admin/conversations/{id}/messages`). Unlike
@@ -173,6 +220,11 @@ pub struct AdminEnrichedMessage {
     pub attachment_id: Option<String>,
     /// Parsed call event for a `system` call-summary line; `null` otherwise.
     pub call_event: Option<AdminCallEvent>,
+    /// `true` when an admin soft-deleted (redacted) this message (Phase D). The admin audit view
+    /// STILL surfaces the redaction so a moderator sees a removed message exists; the per-kind
+    /// fields above reflect the SUPPRESSED content (text/attachment carry the placeholder/null),
+    /// not the original — the original is never re-exposed, even to an admin, through this view.
+    pub redacted: bool,
 }
 
 /// The resolvable bits of an attachment for the admin message view — a fresh presigned URL plus

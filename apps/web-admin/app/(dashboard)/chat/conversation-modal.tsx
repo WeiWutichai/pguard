@@ -1,10 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, FileWarning, Loader2, PhoneCall, PhoneMissed, Video } from "lucide-react";
+import {
+  AlertTriangle,
+  Archive,
+  ArchiveRestore,
+  FileWarning,
+  Loader2,
+  PhoneCall,
+  PhoneMissed,
+  Trash2,
+  UserX,
+  Video,
+} from "lucide-react";
 
 import type { components } from "@/api/generated/chat";
-import { Badge, Button, Modal } from "@/components/ui";
+import { Badge, Button, Modal, Textarea } from "@/components/ui";
 import { chatApi } from "@/lib/api";
 import { cn } from "@/lib/cn";
 import { useLanguage } from "@/lib/i18n";
@@ -15,20 +26,30 @@ import { type ChatCopy, COPY, senderLabel } from "./copy";
 
 type EnrichedMessage = components["schemas"]["AdminEnrichedMessage"];
 
-/** Read-only ENRICHED message pane for one conversation (admin bypasses the participant gate via
- * `GET /admin/conversations/{id}/messages`). Each row arrives pre-parsed by the chat service into
- * a render `kind` — so the admin sees the real content (image thumbnail, video indicator, parsed
- * call event, text) instead of a raw attachment UUID / call JSON. Messages align by `sender_role`
- * (guard right, customer left). Sender names resolve via the Phase-A useNameResolver. Moderation
- * actions have no v2 endpoint → none. */
+/** A pending moderation action awaiting confirmation. Carries everything the confirm dialog and the
+ * eventual mutation need. `reason` is collected in the dialog and posted to the audit log. */
+type PendingAction =
+  | { kind: "redact"; messageId: string }
+  | { kind: "archive" }
+  | { kind: "reactivate" }
+  | { kind: "block"; userId: string; name: string };
+
+/** Read + MODERATE one conversation. Reads the enriched message pane (admin bypasses the
+ * participant gate via `GET /admin/conversations/{id}/messages`), renders each row by its parsed
+ * `kind` (image/video/call-event/text; redacted rows show as removed), and exposes the Phase-D
+ * moderation writes (#136/#137): per-message redact, conversation archive/reactivate, per-sender
+ * block — each behind a confirm dialog, audited + idempotent. Sender names resolve via the shared
+ * useNameResolver. `onChanged` lets the list refresh after a state-changing action. */
 export function ConversationModal({
   conversationId,
   heading,
   onClose,
+  onChanged,
 }: {
   conversationId: string;
   heading: string;
   onClose: () => void;
+  onChanged?: () => void;
 }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
@@ -36,6 +57,11 @@ export function ConversationModal({
   const [messages, setMessages] = useState<EnrichedMessage[]>([]);
   const [loading, setLoading] = useState(true);
   const [failed, setFailed] = useState(false);
+
+  // Conversation moderation status is not on the list row → unknown until the admin acts. `null`
+  // means unknown (both archive + reactivate offered); after a successful write it reflects truth.
+  const [archived, setArchived] = useState<boolean | null>(null);
+  const [pending, setPending] = useState<PendingAction | null>(null);
 
   useEffect(() => {
     let alive = true;
@@ -62,6 +88,58 @@ export function ConversationModal({
   const senderIds = useMemo(() => messages.map((m) => m.sender_id), [messages]);
   const { resolve } = useNameResolver(senderIds, lang);
 
+  // The distinct senders, for the block menu (a conversation has a guard + a customer).
+  const blockTargets = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const m of messages) {
+      if (m.sender_role === "guard" || m.sender_role === "customer") {
+        if (!seen.has(m.sender_id)) seen.set(m.sender_id, resolve(m.sender_id).label);
+      }
+    }
+    return Array.from(seen, ([id, name]) => ({ id, name }));
+  }, [messages, resolve]);
+
+  // Apply the confirmed action against the right endpoint; reflect the result locally + refresh list.
+  async function runAction(action: PendingAction, reason: string): Promise<boolean> {
+    const body = reason.trim() ? { reason: reason.trim() } : undefined;
+    if (action.kind === "redact") {
+      const { error } = await chatApi.DELETE("/admin/messages/{id}", {
+        params: { path: { id: action.messageId } },
+        body,
+      });
+      if (error) return false;
+      // Reflect the redaction in place (suppress content, mark removed) — never re-fetch the original.
+      setMessages((cur) =>
+        cur.map((m) =>
+          m.id === action.messageId
+            ? { ...m, redacted: true, kind: "redacted", text: null, attachment: null, call_event: null }
+            : m,
+        ),
+      );
+      onChanged?.();
+      return true;
+    }
+    if (action.kind === "archive" || action.kind === "reactivate") {
+      const next = action.kind === "archive" ? "archived" : "active";
+      const { error } = await chatApi.PUT("/admin/conversations/{id}/status", {
+        params: { path: { id: conversationId } },
+        body: { moderation_status: next, ...(body ?? {}) },
+      });
+      if (error) return false;
+      setArchived(action.kind === "archive");
+      onChanged?.();
+      return true;
+    }
+    // block
+    const { error } = await chatApi.PUT("/admin/users/{user_id}/block", {
+      params: { path: { user_id: action.userId } },
+      body,
+    });
+    if (error) return false;
+    onChanged?.();
+    return true;
+  }
+
   return (
     <Modal
       open
@@ -74,9 +152,40 @@ export function ConversationModal({
         </Button>
       }
     >
-      <div className="mb-3 min-w-0">
-        <div className="font-mono text-xs text-muted">#{conversationId.slice(0, 8)}</div>
-        <div className="mt-0.5 truncate text-sm font-semibold text-text-strong">{heading}</div>
+      <div className="mb-3 flex items-start justify-between gap-3 min-w-0">
+        <div className="min-w-0">
+          <div className="font-mono text-xs text-muted">#{conversationId.slice(0, 8)}</div>
+          <div className="mt-0.5 truncate text-sm font-semibold text-text-strong">{heading}</div>
+        </div>
+        {archived === true && <Badge tone="amber">{c.archivedBadge}</Badge>}
+      </div>
+
+      {/* --- Moderation toolbar (Phase D) — conversation-level + per-user actions --- */}
+      <div className="mb-3 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-sunken px-3 py-2.5">
+        <span className="mr-1 text-[12px] font-semibold text-muted">{c.moderationHead}</span>
+        {archived === true ? (
+          <Button variant="secondary" size="sm" onClick={() => setPending({ kind: "reactivate" })}>
+            <ArchiveRestore size={14} />
+            {c.reactivateAction}
+          </Button>
+        ) : (
+          <Button variant="secondary" size="sm" onClick={() => setPending({ kind: "archive" })}>
+            <Archive size={14} />
+            {c.archiveAction}
+          </Button>
+        )}
+        {blockTargets.map((tgt) => (
+          <Button
+            key={tgt.id}
+            variant="danger-ghost"
+            size="sm"
+            onClick={() => setPending({ kind: "block", userId: tgt.id, name: tgt.name })}
+            title={tgt.id}
+          >
+            <UserX size={14} />
+            {c.blockAction}: {tgt.name}
+          </Button>
+        ))}
       </div>
 
       {loading ? (
@@ -97,12 +206,17 @@ export function ConversationModal({
       ) : (
         <div className="flex max-h-[55vh] flex-col gap-2 overflow-y-auto pr-1">
           {messages.map((m) => {
-            // call-event / system rows render centered (no bubble); media + text use bubbles.
-            if (m.kind === "call-event" || m.kind === "system" || m.kind === "unknown") {
+            const isRedacted = m.redacted || m.kind === "redacted";
+            // call-event / system / redacted rows render centered (no bubble); media + text use bubbles.
+            if (m.kind === "call-event" || m.kind === "system" || m.kind === "unknown" || (isRedacted && m.kind === "redacted")) {
               return (
                 <div key={m.id} className="my-1 flex items-center justify-center gap-1.5 text-center text-[11.5px] text-faint">
                   {m.kind === "call-event" && m.call_event ? <CallLine event={m.call_event} c={c} /> : null}
-                  {m.kind !== "call-event" ? <span>{m.text ?? "—"}</span> : null}
+                  {isRedacted ? (
+                    <span className="italic">{c.redactedBody}</span>
+                  ) : m.kind !== "call-event" ? (
+                    <span>{m.text ?? "—"}</span>
+                  ) : null}
                   <span className="font-mono opacity-60">{fmtTime(m.created_at, lang)}</span>
                 </div>
               );
@@ -110,20 +224,38 @@ export function ConversationModal({
             const mine = m.sender_role === "guard"; // align guard right, customer left
             const name = resolve(m.sender_id).label;
             return (
-              <div key={m.id} className={cn("flex", mine ? "justify-end" : "justify-start")}>
-                <div
-                  className={cn(
-                    "max-w-[78%] rounded-2xl px-3.5 py-2 text-sm",
-                    mine ? "bg-brand-int text-white" : "bg-sunken text-text-strong",
+              <div key={m.id} className={cn("group flex", mine ? "justify-end" : "justify-start")}>
+                <div className="flex items-end gap-1.5">
+                  {/* Redact action sits beside the bubble; hidden until hover, suppressed once redacted. */}
+                  {mine && !isRedacted && (
+                    <RedactButton c={c} onClick={() => setPending({ kind: "redact", messageId: m.id })} />
                   )}
-                >
-                  <div className="mb-0.5 text-[10.5px] font-semibold opacity-70" title={m.sender_id}>
-                    {name} · {senderLabel(m.sender_role, c)}
+                  <div
+                    className={cn(
+                      "max-w-[78%] rounded-2xl px-3.5 py-2 text-sm",
+                      isRedacted
+                        ? "border border-dashed border-border bg-transparent text-faint italic"
+                        : mine
+                          ? "bg-brand-int text-white"
+                          : "bg-sunken text-text-strong",
+                    )}
+                  >
+                    <div className="mb-0.5 flex items-center gap-1.5 text-[10.5px] font-semibold opacity-70" title={m.sender_id}>
+                      {name} · {senderLabel(m.sender_role, c)}
+                      {isRedacted && <Badge tone="red">{c.redactedBadge}</Badge>}
+                    </div>
+                    {isRedacted ? (
+                      <div className="whitespace-pre-wrap break-words">{c.redactedBody}</div>
+                    ) : (
+                      <MessageBody msg={m} c={c} />
+                    )}
+                    <div className="mt-0.5 text-right font-mono text-[10px] opacity-60">
+                      {fmtTime(m.created_at, lang)}
+                    </div>
                   </div>
-                  <MessageBody msg={m} c={c} />
-                  <div className="mt-0.5 text-right font-mono text-[10px] opacity-60">
-                    {fmtTime(m.created_at, lang)}
-                  </div>
+                  {!mine && !isRedacted && (
+                    <RedactButton c={c} onClick={() => setPending({ kind: "redact", messageId: m.id })} />
+                  )}
                 </div>
               </div>
             );
@@ -131,12 +263,115 @@ export function ConversationModal({
         </div>
       )}
 
-      <div className="mt-3 flex items-center gap-2 text-[12px] text-muted">
-        <Badge tone="gray">{c.awaitingApi}</Badge>
-        <span>{c.moderationGap}</span>
-      </div>
+      {pending && (
+        <ConfirmAction
+          action={pending}
+          c={c}
+          onCancel={() => setPending(null)}
+          onConfirm={(reason) => runAction(pending, reason)}
+          onDone={() => setPending(null)}
+        />
+      )}
     </Modal>
   );
+}
+
+/** A small hover-revealed redact button beside a message bubble. */
+function RedactButton({ c, onClick }: { c: ChatCopy; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={c.redactAction}
+      aria-label={c.redactAction}
+      className="flex size-7 flex-none items-center justify-center rounded-md text-faint opacity-0 transition-opacity hover:bg-danger-bg hover:text-danger group-hover:opacity-100"
+    >
+      <Trash2 size={14} />
+    </button>
+  );
+}
+
+/** Confirm dialog for a moderation action — a nested Modal with an optional audited-reason field.
+ * Runs the mutation on confirm; on failure shows an inline error and stays open for a retry. */
+function ConfirmAction({
+  action,
+  c,
+  onCancel,
+  onConfirm,
+  onDone,
+}: {
+  action: PendingAction;
+  c: ChatCopy;
+  onCancel: () => void;
+  onConfirm: (reason: string) => Promise<boolean>;
+  onDone: () => void;
+}) {
+  const [reason, setReason] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState(false);
+
+  const { title, body, danger } = describe(action, c);
+
+  async function submit() {
+    setBusy(true);
+    setError(false);
+    const ok = await onConfirm(reason);
+    setBusy(false);
+    if (ok) onDone();
+    else setError(true);
+  }
+
+  return (
+    <Modal
+      open
+      onClose={busy ? () => {} : onCancel}
+      title={title}
+      footer={
+        <>
+          <Button variant="secondary" size="sm" onClick={onCancel} disabled={busy}>
+            {c.cancel}
+          </Button>
+          <Button variant={danger ? "danger" : "primary"} size="sm" onClick={submit} disabled={busy}>
+            {busy && <Loader2 className="size-4 animate-spin" />}
+            {busy ? c.working : c.confirm}
+          </Button>
+        </>
+      }
+    >
+      <p className="mb-3 text-sm text-text">{body}</p>
+      <label className="mb-1.5 block text-[12.5px] font-semibold text-muted">{c.reasonLabel}</label>
+      <Textarea
+        value={reason}
+        onChange={(e) => setReason(e.target.value)}
+        placeholder={c.reasonPlaceholder}
+        disabled={busy}
+        rows={2}
+      />
+      {error && (
+        <div
+          role="alert"
+          className="mt-3 flex items-center gap-2 rounded-lg border border-danger/40 bg-danger-bg px-3 py-2 text-[12.5px] text-danger"
+        >
+          <AlertTriangle className="size-4 flex-none" />
+          {c.actionFailed}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+/** Localized title/body + destructive flag for a pending action. */
+function describe(action: PendingAction, c: ChatCopy): { title: string; body: string; danger: boolean } {
+  switch (action.kind) {
+    case "redact":
+      return { title: c.confirmRedactTitle, body: c.confirmRedactBody, danger: true };
+    case "archive":
+      return { title: c.confirmArchiveTitle, body: c.confirmArchiveBody, danger: false };
+    case "reactivate":
+      return { title: c.confirmReactivateTitle, body: c.confirmReactivateBody, danger: false };
+    case "block":
+      return { title: c.confirmBlockTitle, body: c.confirmBlockBody(action.name), danger: true };
+  }
 }
 
 /** Render an enriched message's body by its parsed `kind`. */

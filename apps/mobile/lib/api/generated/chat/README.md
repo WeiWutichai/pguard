@@ -92,14 +92,14 @@ import 'package:pguard_chat_api/pguard_chat_api.dart';
 
 
 final api = PguardChatApi().getAdminApi();
-final int limit = 789; // int | 
-final int offset = 789; // int | 
+final String userId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | User UUID (the user to block/unblock from chat).
+final ModerationReasonBody moderationReasonBody = ; // ModerationReasonBody | 
 
 try {
-    final response = await api.adminListConversations(limit, offset);
+    final response = await api.adminBlockUser(userId, moderationReasonBody);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AdminApi->adminListConversations: $e\n");
+    print("Exception when calling AdminApi->adminBlockUser: $e\n");
 }
 
 ```
@@ -110,8 +110,12 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminBlockUser**](doc/AdminApi.md#adminblockuser) | **PUT** /admin/users/{user_id}/block | Block a user from chat (chat-level ban)
 [*AdminApi*](doc/AdminApi.md) | [**adminListConversations**](doc/AdminApi.md#adminlistconversations) | **GET** /admin/conversations | List ALL conversations cross-user (role&#x3D;admin, read-only)
 [*AdminApi*](doc/AdminApi.md) | [**adminListMessages**](doc/AdminApi.md#adminlistmessages) | **GET** /admin/conversations/{id}/messages | ENRICHED message audit for a conversation (role&#x3D;admin, read-only)
+[*AdminApi*](doc/AdminApi.md) | [**adminRedactMessage**](doc/AdminApi.md#adminredactmessage) | **DELETE** /admin/messages/{id} | Redact (soft-delete) a message
+[*AdminApi*](doc/AdminApi.md) | [**adminSetConversationModerationStatus**](doc/AdminApi.md#adminsetconversationmoderationstatus) | **PUT** /admin/conversations/{id}/status | Set a conversation&#39;s MODERATION status (archive / reactivate)
+[*AdminApi*](doc/AdminApi.md) | [**adminUnblockUser**](doc/AdminApi.md#adminunblockuser) | **DELETE** /admin/users/{user_id}/block | Unblock a user (lift the chat block)
 [*AttachmentsApi*](doc/AttachmentsApi.md) | [**getAttachment**](doc/AttachmentsApi.md#getattachment) | **GET** /attachments/{id} | Fetch an attachment with a fresh presigned URL
 [*AttachmentsApi*](doc/AttachmentsApi.md) | [**uploadAttachment**](doc/AttachmentsApi.md#uploadattachment) | **POST** /attachments | Upload an image/video to a conversation
 [*ConversationsApi*](doc/ConversationsApi.md) | [**createConversation**](doc/ConversationsApi.md#createconversation) | **POST** /conversations | Create a booking-scoped conversation
@@ -138,11 +142,15 @@ Class | Method | HTTP request | Description
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InlineObject2](doc/InlineObject2.md)
+ - [InlineObject3](doc/InlineObject3.md)
  - [ListConversations200Response](doc/ListConversations200Response.md)
  - [ListMessages200Response](doc/ListMessages200Response.md)
  - [Message](doc/Message.md)
  - [MessageType](doc/MessageType.md)
+ - [ModerationReasonBody](doc/ModerationReasonBody.md)
+ - [ModerationResult](doc/ModerationResult.md)
  - [ParticipantInput](doc/ParticipantInput.md)
+ - [SetModerationStatusRequest](doc/SetModerationStatusRequest.md)
  - [SetRequestStatusRequest](doc/SetRequestStatusRequest.md)
 
 

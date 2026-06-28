@@ -340,10 +340,32 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
-        // Admin conversation list (cross-user, read-only). The message pane reuses the existing
-        // /conversations/{id}/messages rule. Admin authz is the chat service's job.
+        // Admin conversation list (cross-user, read-only) + the enriched message audit + the
+        // MODERATION set-status/archive write (`/admin/conversations/{id}/status`, #136/#137 Phase
+        // D). One bare prefix covers all three subpaths. Admin authz is the chat service's job.
         prefix: "/admin/conversations",
         suffix: None,
+        upstream: Upstream::Chat,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin chat MESSAGE moderation — redact/soft-delete a message
+        // (`DELETE /admin/messages/{id}`, #136/#137 Phase D). Distinct prefix (no overlap with any
+        // other rule) → chat. Admin authz is the chat service's job.
+        prefix: "/admin/messages",
+        suffix: None,
+        upstream: Upstream::Chat,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin chat-level user BLOCK (`PUT`/`DELETE /admin/users/{id}/block`, #136/#137 Phase D).
+        // A SUFFIX rule (one wildcard `{id}` + `/block`) so it OUTRANKS the bare `/admin/users`
+        // rule (→ profile) for THIS subpath only — every other `/admin/users/*` path still falls to
+        // profile (resolve) / identity (search). The prefix carries a TRAILING SLASH (like
+        // `/guards/`) so the wildcard segment isn't read as empty (the suffix matcher splits the
+        // post-prefix remainder on '/'). Admin authz is the chat service's job.
+        prefix: "/admin/users/",
+        suffix: Some("/block"),
         upstream: Upstream::Chat,
         tier: Tier::Api,
     },
@@ -382,6 +404,16 @@ const RULES: &[Rule] = &[
     Rule {
         // Admin booking analytics report (volume + utilization + retention). Booking owns it.
         prefix: "/admin/reports/bookings",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    // ANCHOR: reports-bookings-by-service (#140) — keep adjacent to /admin/reports/bookings.
+    Rule {
+        // Bookings-by-service-type breakdown (#140 "งานตามประเภทบริการ"). Booking owns it. A MORE
+        // specific prefix than `/admin/reports/bookings` above (which also matches this path), so
+        // longest-prefix selection routes it here and not to the broader booking-analytics handler.
+        prefix: "/admin/reports/bookings-by-service",
         suffix: None,
         upstream: Upstream::Booking,
         tier: Tier::Api,
@@ -1109,11 +1141,53 @@ mod tests {
 
     #[test]
     fn admin_conversations_routes_to_chat() {
-        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/conversations"));
+        // List + enriched audit + the moderation set-status/archive write all share the prefix.
+        for p in [
+            "/v1/admin/conversations",
+            "/v1/admin/conversations/abc-123/messages",
+            "/v1/admin/conversations/abc-123/status",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Chat, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "admin routes are edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn admin_message_redaction_routes_to_chat() {
+        // Phase D message moderation — DELETE /admin/messages/{id} → chat (own prefix).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/messages/abc-123"));
         assert_eq!(up, Upstream::Chat);
-        assert_eq!(fwd, "/admin/conversations");
+        assert_eq!(fwd, "/admin/messages/abc-123");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_user_block_routes_to_chat_but_other_admin_users_stay() {
+        // The chat-level block subpath outranks the bare `/admin/users` (→ profile) via the suffix
+        // rule — but ONLY for `/{id}/block`; every other `/admin/users/*` path is unaffected.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/users/abc-123/block"));
+        assert_eq!(up, Upstream::Chat, "the block subpath routes to chat");
+        assert_eq!(fwd, "/admin/users/abc-123/block");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+
+        // `/admin/users/resolve` still falls to profile; `/admin/users/search` still to identity.
+        let (up_r, _, _, _) = proxy(resolve("/v1/admin/users/resolve"));
+        assert_eq!(
+            up_r,
+            Upstream::Profile,
+            "resolve unaffected by the block rule"
+        );
+        let (up_s, _, _, _) = proxy(resolve("/v1/admin/users/search"));
+        assert_eq!(
+            up_s,
+            Upstream::Identity,
+            "search unaffected by the block rule"
+        );
     }
 
     #[test]
@@ -1169,6 +1243,16 @@ mod tests {
         assert_eq!(fwd2, "/admin/reports/bookings");
         assert!(!public2);
 
+        // Bookings-by-service-type (#140) → booking, via a MORE-specific prefix than
+        // `/admin/reports/bookings` (which is a strict prefix of it). Longest-prefix selection must
+        // pick the by-service rule, not silently fall through to the broader bookings-analytics one.
+        let (up_svc, fwd_svc, public_svc, tier_svc) =
+            proxy(resolve("/v1/admin/reports/bookings-by-service"));
+        assert_eq!(up_svc, Upstream::Booking);
+        assert_eq!(fwd_svc, "/admin/reports/bookings-by-service");
+        assert!(!public_svc, "admin routes are edge-protected");
+        assert_eq!(tier_svc, Tier::Api);
+
         // Per-customer aggregates (admin customers page) — distinct prefixes, each to its owner.
         let (up3, fwd3, public3, _) = proxy(resolve("/v1/admin/reports/customer-bookings"));
         assert_eq!(up3, Upstream::Booking);
@@ -1185,6 +1269,17 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/calls"));
         assert_eq!(up, Upstream::Calling);
         assert_eq!(fwd, "/admin/calls");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_call_events_subpath_routes_to_calling() {
+        // The per-call TIMELINE (#135 call-events read model) lives under the same /admin/calls
+        // prefix (suffix: None matches subpaths) → no new gateway rule needed.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/calls/abc-123/events"));
+        assert_eq!(up, Upstream::Calling);
+        assert_eq!(fwd, "/admin/calls/abc-123/events");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

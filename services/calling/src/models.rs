@@ -54,6 +54,35 @@ pub struct CallResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+/// One row of a call's lifecycle TIMELINE (admin call-events read model, #135). An append-only
+/// audit step keyed by `call_id`: a lifecycle milestone (ringing/accepted/rejected/connected/
+/// ended/missed) recorded by the REST control plane, or a signaling step (offer/answer/
+/// ice_candidate/peer_offline) the WS relay observes as it forwards frames. `detail` carries
+/// small structured metadata (e.g. `end_reason`, the relayed `from`/`to`) — NEVER the raw SDP/ICE
+/// blob. Media QUALITY (jitter/loss/bitrate) is NOT here: a signaling relay can't observe it (it
+/// needs SFU/TURN stats), so the read model deliberately omits it rather than fabricate.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct CallEventRow {
+    pub id: Uuid,
+    pub call_id: Uuid,
+    /// One of: ringing, accepted, rejected, connected, ended, missed, offer, answer,
+    /// ice_candidate, peer_offline.
+    pub event_type: String,
+    /// The participant this step is attributed to, when known (caller/callee); else null.
+    pub actor_id: Option<Uuid>,
+    /// Small structured metadata about the step (never raw SDP/ICE).
+    pub detail: Option<serde_json::Value>,
+    pub occurred_at: DateTime<Utc>,
+}
+
+/// The admin call-detail response: the call record + its ordered lifecycle timeline. Returned by
+/// `GET /admin/calls/{id}/events`. `media_quality` is intentionally ABSENT — see [`CallEventRow`].
+#[derive(Debug, Serialize)]
+pub struct CallTimeline {
+    pub call: CallResponse,
+    pub events: Vec<CallEventRow>,
+}
+
 /// One ICE server for the client's RTCPeerConnection — a STUN entry (urls only) or a TURN entry
 /// (urls + a short-lived username/credential). Field names match the WebRTC `RTCIceServer` shape
 /// the mobile client feeds straight into `createPeerConnection`.

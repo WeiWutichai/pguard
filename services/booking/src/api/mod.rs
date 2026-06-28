@@ -21,11 +21,12 @@ use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, Ra
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
-    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
-    CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, InternalBooking,
-    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, OverdueCheckinsQuery,
-    OverdueCheckinsResponse, ProgressReportResponse, PublicServiceItem, ReportRangeQuery,
-    RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem, UpdateServiceRequest,
+    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse,
+    BookingsByServiceReport, BookingsReport, CreateBookingRequest, CreateServiceRequest,
+    CustomerBookingStat, InternalBooking, ListProgressReportsQuery, NewProgressReport,
+    OpenJobsQuery, OverdueCheckinsQuery, OverdueCheckinsResponse, ProgressReportResponse,
+    PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
+    ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -483,6 +484,28 @@ pub async fn admin_customer_bookings_report<S: BookingDeps>(
     require_role(&user, ROLE_ADMIN)?;
     let stats = repo::customer_booking_stats(state.db_read()).await?;
     Ok(Json(ApiResponse::success(stats)))
+}
+
+/// GET /admin/reports/bookings-by-service?from=&to= — the bookings-by-service-type breakdown
+/// (#140 "งานตามประเภทบริการ"): per catalog service, the booking count + gross revenue over the
+/// window, plus an "unspecified" bucket for bookings placed without picking a service. Defaults to
+/// the last 30 days (capped at 366). `total` is Σ of all rows' counts (for the panel header). Admin
+/// only (else 403); replica read (pure analytics). A MORE-specific prefix than `/admin/reports/
+/// bookings` so the gateway routes it to booking via longest-prefix.
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_bookings_by_service_report<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<ReportRangeQuery>,
+) -> Result<Json<ApiResponse<BookingsByServiceReport>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let (from, to) = report_range(&q);
+    let items = repo::bookings_by_service(state.db_read(), from, to).await?;
+    let total = items.iter().map(|s| s.count).sum();
+    Ok(Json(ApiResponse::success(BookingsByServiceReport {
+        items,
+        total,
+    })))
 }
 
 /// GET /admin/checkins/overdue — active jobs whose next scheduled hourly check-in is OVERDUE

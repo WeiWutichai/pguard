@@ -29,7 +29,8 @@ use crate::models::{
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
-     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, paid_at, created_at, updated_at";
+     scheduled_at, hours, base_fee, guard_count, tip, service_id, lat, lng, paid_at, created_at, \
+     updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -268,6 +269,48 @@ pub async fn customer_booking_stats(
     Ok(rows)
 }
 
+/// Bookings-by-service-type breakdown over `[from, to)` keyed on `created_at` (#140
+/// "งานตามประเภทบริการ"): per catalog service, the booking `count` and gross `revenue`. Revenue is
+/// `Σ base_fee × hours × guard_count + tip` over NON-cancelled/declined bookings (those represent
+/// no money), summed in SQL as `NUMERIC` (money rule — never `f64`); `count` is ALL bookings in the
+/// window (any status) so the volume mix is honest. A LEFT JOIN to `service_catalog` carries the
+/// names; bookings with a NULL `service_id` (no service picked) collapse into a single
+/// "unspecified" row (`service_id`/names NULL). Ordered most-booked first. Replica read.
+///
+/// Grouping on the nullable `service_id` keeps the unspecified bucket as one row (SQL groups NULLs
+/// together) — the report degrades honestly instead of dropping untyped jobs. Covered for the typed
+/// rows by `idx_bookings_service_id (service_id, created_at) WHERE service_id IS NOT NULL`.
+pub async fn bookings_by_service(
+    db: &sqlx::PgPool,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<crate::models::ServiceTypeStat>, AppError> {
+    let rows = sqlx::query_as::<_, crate::models::ServiceTypeStat>(
+        r#"
+        SELECT b.service_id                                   AS service_id,
+               sc.name_th                                     AS name_th,
+               sc.name_en                                     AS name_en,
+               COUNT(*)                                       AS count,
+               COALESCE(
+                   SUM(b.base_fee * b.hours * b.guard_count + b.tip)
+                       FILTER (WHERE b.status NOT IN ('cancelled'::booking.booking_status,
+                                                      'declined'::booking.booking_status)),
+                   0
+               )::numeric                                     AS revenue
+        FROM booking.bookings b
+        LEFT JOIN booking.service_catalog sc ON sc.id = b.service_id
+        WHERE b.created_at >= $1 AND b.created_at < $2
+        GROUP BY b.service_id, sc.name_th, sc.name_en
+        ORDER BY count DESC, sc.name_en NULLS LAST
+        "#,
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 /// Active jobs with an OVERDUE hourly check-in — the admin dashboard "missed check-ins" signal.
 ///
 /// A job is in progress when `status = 'arrived'` AND `work_started_at` is stamped (the
@@ -462,6 +505,12 @@ pub async fn deactivate_service(
 /// handler picked a catalog service (the catalog's authoritative rate), or `None` to fall to
 /// the server-owned column DEFAULT (the back-compat path, no service chosen). Either way the
 /// rate is server-owned, so the customer can never undercut the price.
+///
+/// `service_id` (the SERVICE_TYPE link, #140) is `req.service_id` ONLY when the handler validated
+/// it against an active catalog service (the same id that yielded `base_fee`). It is persisted so
+/// the by-service report can group jobs by service type; `None` when no service was picked (the
+/// "unspecified" bucket). `base_fee.is_some()` ⇔ `service_id.is_some()` (the handler resolves them
+/// together), but they are passed separately so the repo never re-reads the catalog.
 #[tracing::instrument(skip(db, req), fields(customer_id = %customer_id))]
 pub async fn create_booking(
     db: &sqlx::PgPool,
@@ -474,22 +523,24 @@ pub async fn create_booking(
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
 
-    // 1) the business row. `base_fee` is bound when a catalog service was picked; otherwise the
-    // column is omitted so its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid,
-    // so branch the SQL).
+    // 1) the business row. `service_id` is always bound ($9; NULL when no service was picked). The
+    // catalog-resolved `base_fee` is appended as a trailing bind ONLY when present; otherwise the
+    // column is omitted so its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid, so
+    // branch the SQL). service_id is bound regardless because a NULL bind is a valid column value
+    // (unlike a defaulted base_fee, where omission is what triggers the DEFAULT).
     let sql = if base_fee.is_some() {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, base_fee)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, service_id, base_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
     } else {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, service_id)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
@@ -502,7 +553,8 @@ pub async fn create_booking(
         .bind(guard_count)
         .bind(tip)
         .bind(req.lat)
-        .bind(req.lng);
+        .bind(req.lng)
+        .bind(req.service_id);
     if let Some(fee) = base_fee {
         query = query.bind(fee);
     }
@@ -3336,8 +3388,8 @@ mod db_tests {
     }
 
     /// The charge-path wiring: `create_booking` with `Some(base_fee)` (the catalog rate)
-    /// persists THAT rate, while `None` falls to the server-owned column DEFAULT (back-compat).
-    /// DATABASE_URL-gated.
+    /// persists THAT rate AND the `service_id` link (#140), while `None` falls to the server-owned
+    /// column DEFAULT with a NULL `service_id` (back-compat). DATABASE_URL-gated.
     #[tokio::test]
     async fn create_booking_uses_catalog_base_fee_else_default() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -3352,13 +3404,17 @@ mod db_tests {
 
         let customer_id = Uuid::new_v4();
         let correlation = Uuid::new_v4();
-        let catalog_fee: rust_decimal::Decimal = "230.00".parse().unwrap();
+        let marker = Uuid::new_v4().to_string();
+        let service = seed_service(&pool, &marker, "230.00", 1).await;
+        let catalog_fee = service.base_fee;
 
-        // With a catalog fee → the booking carries the catalog rate.
+        // With a catalog service → the booking carries the catalog rate AND records the service_id.
+        let mut req_priced = booking_req("1 Catalog Rd", 4, None);
+        req_priced.service_id = Some(service.id);
         let priced = create_booking(
             &pool,
             customer_id,
-            &booking_req("1 Catalog Rd", 4, None),
+            &req_priced,
             1,
             rust_decimal::Decimal::ZERO,
             Some(catalog_fee),
@@ -3370,8 +3426,13 @@ mod db_tests {
             priced.base_fee, catalog_fee,
             "the booking's base_fee is the catalog rate, not the column default"
         );
+        assert_eq!(
+            priced.service_id,
+            Some(service.id),
+            "the booking records WHICH service it was placed against (#140 dimension)"
+        );
 
-        // Without a fee → the server-owned column DEFAULT (migration 0002 = 500.00).
+        // Without a service → the server-owned column DEFAULT (migration 0002 = 500.00), NULL link.
         let defaulted = create_booking(
             &pool,
             customer_id,
@@ -3388,8 +3449,98 @@ mod db_tests {
             "500.00".parse::<rust_decimal::Decimal>().unwrap(),
             "no service → the server-owned base_fee column DEFAULT (back-compat)"
         );
+        assert_eq!(
+            defaulted.service_id, None,
+            "no service picked → NULL service_id (the unspecified bucket)"
+        );
 
         cleanup_booking(&pool, priced.id).await;
         cleanup_booking(&pool, defaulted.id).await;
+        cleanup_service(&pool, service.id).await;
+    }
+
+    /// `bookings_by_service` (#140): a window-scoped breakdown that groups the typed booking under
+    /// its catalog service (with name + a count) and the untyped booking under the NULL
+    /// "unspecified" bucket — so the report degrades honestly instead of dropping untyped jobs.
+    /// Revenue is the gross pricing inputs over non-cancelled bookings. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn bookings_by_service_groups_typed_and_unspecified() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let marker = Uuid::new_v4().to_string();
+        let service = seed_service(&pool, &marker, "100.00", 1).await;
+
+        // One typed booking (base_fee 100 × 2h × 1 guard + 0 tip = 200 revenue).
+        let mut req_typed = booking_req("1 Typed Rd", 2, None);
+        req_typed.service_id = Some(service.id);
+        let typed = create_booking(
+            &pool,
+            customer_id,
+            &req_typed,
+            1,
+            rust_decimal::Decimal::ZERO,
+            Some(service.base_fee),
+            correlation,
+        )
+        .await
+        .expect("create typed");
+
+        // One untyped booking (no service picked → the unspecified bucket).
+        let untyped = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("2 Untyped Rd", 3, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create untyped");
+
+        let from = Utc::now() - chrono::TimeDelta::hours(1);
+        let to = Utc::now() + chrono::TimeDelta::hours(1);
+        let stats = bookings_by_service(&pool, from, to)
+            .await
+            .expect("by-service report");
+
+        let typed_row = stats
+            .iter()
+            .find(|s| s.service_id == Some(service.id))
+            .expect("the typed service appears as its own row");
+        assert_eq!(typed_row.name_en, Some(format!("en-{marker}")));
+        assert_eq!(typed_row.count, 1, "one typed booking in the window");
+        assert_eq!(
+            typed_row.revenue,
+            "200.00".parse::<rust_decimal::Decimal>().unwrap(),
+            "gross revenue = base_fee × hours × guard_count + tip"
+        );
+
+        let unspecified = stats
+            .iter()
+            .find(|s| s.service_id.is_none())
+            .expect("untyped bookings collapse into the unspecified bucket");
+        assert!(
+            unspecified.count >= 1,
+            "the untyped booking is counted, not dropped"
+        );
+        assert!(
+            unspecified.name_en.is_none(),
+            "the unspecified bucket has no catalog name"
+        );
+
+        cleanup_booking(&pool, typed.id).await;
+        cleanup_booking(&pool, untyped.id).await;
+        cleanup_service(&pool, service.id).await;
     }
 }

@@ -209,6 +209,50 @@ async fn handle_signal(db: &sqlx::PgPool, registry: &Registry, sender: Uuid, tex
     if !delivered {
         send_to(registry, sender, err_frame("peer is offline")).await;
     }
+
+    // Timeline (admin call-events read model, #135): record the SIGNALING STEP the relay just
+    // observed — classified from the opaque `signal` shape, storing only metadata (never the raw
+    // SDP/ICE blob). Best-effort + standalone (a write error never breaks signaling). When the
+    // peer had no live socket, also note the undelivered step.
+    if let Some(step) = classify_signal(&parsed.signal) {
+        let detail = json!({ "to": peer, "delivered": delivered });
+        repo::record_signal_event(db, parsed.call_id, step, Some(sender), Some(detail)).await;
+    }
+    if !delivered {
+        let detail = json!({ "to": peer });
+        repo::record_signal_event(
+            db,
+            parsed.call_id,
+            "peer_offline",
+            Some(sender),
+            Some(detail),
+        )
+        .await;
+    }
+}
+
+/// Classify an opaque WebRTC signaling payload into a timeline step type WITHOUT reading any
+/// sensitive SDP/ICE content beyond the structural discriminator — so the relay can audit *that*
+/// an offer/answer/candidate was relayed without persisting the blob. Standard webrtc-over-JSON
+/// shapes: `{ "sdp": { "type": "offer"|"answer", ... } }` or a flat `{ "type": "offer", ... }`,
+/// and ICE as `{ "candidate": ... }`. Unknown shapes return `None` (recorded as nothing — we
+/// never guess). Pure.
+fn classify_signal(signal: &Value) -> Option<&'static str> {
+    // SDP type lives at signal.sdp.type (nested) or signal.type (flat).
+    let sdp_type = signal
+        .get("sdp")
+        .and_then(|s| s.get("type"))
+        .or_else(|| signal.get("type"))
+        .and_then(Value::as_str);
+    match sdp_type {
+        Some("offer") => return Some("offer"),
+        Some("answer") => return Some("answer"),
+        _ => {}
+    }
+    if signal.get("candidate").is_some() {
+        return Some("ice_candidate");
+    }
+    None
 }
 
 /// Push a text frame to `uid`'s live socket. Returns whether a live, open sender existed.
@@ -222,6 +266,47 @@ async fn send_to(registry: &Registry, uid: Uuid, text: String) -> bool {
 
 fn err_frame(message: &str) -> String {
     json!({ "type": "error", "message": message }).to_string()
+}
+
+#[cfg(test)]
+mod classify_tests {
+    use super::classify_signal;
+    use serde_json::json;
+
+    #[test]
+    fn classifies_nested_and_flat_sdp() {
+        // Nested webrtc shape: { sdp: { type: "offer", sdp: "..." } }.
+        assert_eq!(
+            classify_signal(&json!({ "sdp": { "type": "offer", "sdp": "v=0..." } })),
+            Some("offer")
+        );
+        assert_eq!(
+            classify_signal(&json!({ "sdp": { "type": "answer" } })),
+            Some("answer")
+        );
+        // Flat shape: { type: "offer", ... }.
+        assert_eq!(classify_signal(&json!({ "type": "offer" })), Some("offer"));
+        assert_eq!(
+            classify_signal(&json!({ "type": "answer" })),
+            Some("answer")
+        );
+    }
+
+    #[test]
+    fn classifies_ice_candidate() {
+        assert_eq!(
+            classify_signal(&json!({ "candidate": "candidate:842163049 1 udp ..." })),
+            Some("ice_candidate")
+        );
+    }
+
+    #[test]
+    fn unknown_shapes_are_not_guessed() {
+        assert_eq!(classify_signal(&json!({ "foo": "bar" })), None);
+        assert_eq!(classify_signal(&json!({ "type": "renegotiate" })), None);
+        assert_eq!(classify_signal(&json!("opaque-string")), None);
+        assert_eq!(classify_signal(&json!(null)), None);
+    }
 }
 
 #[cfg(test)]

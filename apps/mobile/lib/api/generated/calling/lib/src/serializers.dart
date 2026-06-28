@@ -17,7 +17,10 @@ import 'package:pguard_calling_api/src/model/date.dart';
 import 'package:pguard_calling_api/src/model/admin_list_calls200_response.dart';
 import 'package:pguard_calling_api/src/model/api_response_envelope.dart';
 import 'package:pguard_calling_api/src/model/call.dart';
+import 'package:pguard_calling_api/src/model/call_event.dart';
+import 'package:pguard_calling_api/src/model/call_event_type.dart';
 import 'package:pguard_calling_api/src/model/call_status.dart';
+import 'package:pguard_calling_api/src/model/call_timeline.dart';
 import 'package:pguard_calling_api/src/model/call_type.dart';
 import 'package:pguard_calling_api/src/model/end_call_request.dart';
 import 'package:pguard_calling_api/src/model/error_body.dart';
@@ -27,6 +30,7 @@ import 'package:pguard_calling_api/src/model/ice_server.dart';
 import 'package:pguard_calling_api/src/model/initiate_call_request.dart';
 import 'package:pguard_calling_api/src/model/inline_object.dart';
 import 'package:pguard_calling_api/src/model/inline_object1.dart';
+import 'package:pguard_calling_api/src/model/inline_object2.dart';
 
 part 'serializers.g.dart';
 
@@ -34,7 +38,10 @@ part 'serializers.g.dart';
   AdminListCalls200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   Call,
+  CallEvent,
+  CallEventType,
   CallStatus,
+  CallTimeline,
   CallType,
   EndCallRequest,
   ErrorBody,
@@ -44,6 +51,7 @@ part 'serializers.g.dart';
   InitiateCallRequest,
   InlineObject,
   InlineObject1,
+  InlineObject2,
 ])
 Serializers serializers = (_$serializers.toBuilder()
       ..add(ApiResponseEnvelope.serializer)

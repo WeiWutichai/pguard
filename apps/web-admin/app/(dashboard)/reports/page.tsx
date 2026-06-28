@@ -13,6 +13,7 @@ import { COPY, fmtBaht, fmtDay, HOUR_BUCKETS, RANGE_DAYS, type RangeDays } from 
 
 type RevenueReport = PaymentComponents["schemas"]["RevenueReport"];
 type BookingsReport = BookingComponents["schemas"]["BookingsReport"];
+type BookingsByServiceReport = BookingComponents["schemas"]["BookingsByServiceReport"];
 
 const CHART_W = 520;
 const CHART_H = 180;
@@ -23,6 +24,7 @@ export default function ReportsPage() {
 
   const [revenue, setRevenue] = useState<RevenueReport | null>(null);
   const [bookings, setBookings] = useState<BookingsReport | null>(null);
+  const [byService, setByService] = useState<BookingsByServiceReport | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [rangeDays, setRangeDays] = useState<RangeDays>(30);
@@ -36,12 +38,14 @@ export default function ReportsPage() {
       return Promise.all([
         paymentApi.GET("/admin/reports/revenue", { params: { query } }),
         bookingApi.GET("/admin/reports/bookings", { params: { query } }),
+        bookingApi.GET("/admin/reports/bookings-by-service", { params: { query } }),
       ])
-        .then(([revRes, bkRes]) => {
+        .then(([revRes, bkRes, svcRes]) => {
           if (!alive()) return;
-          setHasError(Boolean(revRes.error || bkRes.error));
+          setHasError(Boolean(revRes.error || bkRes.error || svcRes.error));
           setRevenue(revRes.error ? null : (revRes.data?.data ?? null));
           setBookings(bkRes.error ? null : (bkRes.data?.data ?? null));
+          setByService(svcRes.error ? null : (svcRes.data?.data ?? null));
           setLoading(false);
         })
         .catch(() => {
@@ -94,6 +98,24 @@ export default function ReportsPage() {
     const max = Math.max(1, ...grid.flat());
     return { grid, max };
   }, [bookings]);
+
+  // --- bookings-by-service-type rows (count + revenue), widest bar = max count ---
+  const serviceRows = useMemo(() => {
+    const items = byService?.items ?? [];
+    const maxCount = Math.max(1, ...items.map((s) => s.count));
+    return items.map((s) => ({
+      key: s.service_id ?? "__unspecified__",
+      // Prefer the active-language catalog name; fall back to the other; null → "Unspecified".
+      label:
+        (lang === "th" ? s.name_th : s.name_en) ??
+        (lang === "th" ? s.name_en : s.name_th) ??
+        c.byServiceUnspecified,
+      unspecified: s.service_id == null,
+      count: s.count,
+      revenue: s.revenue,
+      pct: Math.round((s.count / maxCount) * 100),
+    }));
+  }, [byService, lang, c.byServiceUnspecified]);
 
   const mom = revenue?.mom_pct ?? null;
   const isEmpty = !loading && !hasError && chart.dates.length === 0;
@@ -217,14 +239,48 @@ export default function ReportsPage() {
             </PanelBody>
           </Panel>
 
-          {/* ---- bookings by service — honest gap (no service_type in v2) ---- */}
+          {/* ---- bookings by service type (#140) — count + revenue per catalog service ---- */}
           <Panel>
-            <PanelHead title={c.byServiceHead} />
+            <PanelHead title={c.byServiceHead}>
+              {byService != null && (
+                <span className="text-[12.5px] text-muted">
+                  {byService.total} {c.byServiceCountUnit}
+                </span>
+              )}
+            </PanelHead>
             <PanelBody>
-              <div className="flex items-start gap-2 rounded-lg border border-dashed border-border bg-sunken px-4 py-6 text-[12.5px] text-muted">
-                <Badge tone="gray">{t("gap.endpoints")}</Badge>
-                <span>{c.byServiceGap}</span>
-              </div>
+              {serviceRows.length === 0 ? (
+                <div className="py-10 text-center text-muted">{t("reports.empty")}</div>
+              ) : (
+                <div className="flex flex-col gap-2.5">
+                  {serviceRows.map((row) => (
+                    <div key={row.key} className="flex items-center gap-3">
+                      <span
+                        className="w-32 flex-none truncate text-[12.5px]"
+                        style={{ color: row.unspecified ? "var(--muted)" : "var(--text)" }}
+                        title={row.label}
+                      >
+                        {row.label}
+                      </span>
+                      <div className="h-[22px] flex-1 overflow-hidden rounded-md bg-sunken">
+                        <div
+                          className="h-full rounded-md"
+                          style={{
+                            width: `${Math.max(2, row.pct)}%`,
+                            background: row.unspecified ? "var(--border)" : "var(--brand-int)",
+                          }}
+                        />
+                      </div>
+                      <span className="w-10 text-right font-mono text-[12.5px] font-semibold text-text-strong">
+                        {row.count}
+                      </span>
+                      <span className="w-20 text-right font-mono text-[12.5px] text-muted">
+                        {fmtBaht(row.revenue)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </PanelBody>
           </Panel>
 

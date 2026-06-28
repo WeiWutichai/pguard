@@ -16,7 +16,10 @@ export 'package:pguard_calling_api/src/api/calls_api.dart';
 export 'package:pguard_calling_api/src/model/admin_list_calls200_response.dart';
 export 'package:pguard_calling_api/src/model/api_response_envelope.dart';
 export 'package:pguard_calling_api/src/model/call.dart';
+export 'package:pguard_calling_api/src/model/call_event.dart';
+export 'package:pguard_calling_api/src/model/call_event_type.dart';
 export 'package:pguard_calling_api/src/model/call_status.dart';
+export 'package:pguard_calling_api/src/model/call_timeline.dart';
 export 'package:pguard_calling_api/src/model/call_type.dart';
 export 'package:pguard_calling_api/src/model/end_call_request.dart';
 export 'package:pguard_calling_api/src/model/error_body.dart';
@@ -26,4 +29,5 @@ export 'package:pguard_calling_api/src/model/ice_server.dart';
 export 'package:pguard_calling_api/src/model/initiate_call_request.dart';
 export 'package:pguard_calling_api/src/model/inline_object.dart';
 export 'package:pguard_calling_api/src/model/inline_object1.dart';
+export 'package:pguard_calling_api/src/model/inline_object2.dart';
 

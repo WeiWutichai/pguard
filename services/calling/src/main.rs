@@ -111,6 +111,12 @@ async fn main() -> anyhow::Result<()> {
         // Admin cross-user call log (admin-role gated in the handler). Distinct prefix from
         // `/calls/*`; the gateway routes it via a new /admin/calls rule.
         .route("/admin/calls", get(api::admin_list_calls::<AppState>))
+        // Admin per-call TIMELINE (call-events read model, #135). Same `/admin/calls` gateway
+        // prefix (suffix: None matches subpaths) → no new gateway rule needed.
+        .route(
+            "/admin/calls/{id}/events",
+            get(api::admin_call_events::<AppState>),
+        )
         .route("/calls/{id}/accept", put(api::accept_call::<AppState>))
         .route("/calls/{id}/reject", put(api::reject_call::<AppState>))
         .route(

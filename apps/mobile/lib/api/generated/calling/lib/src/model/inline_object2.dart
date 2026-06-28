@@ -3,7 +3,8 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_chat_api/src/model/moderation_result.dart';
+import 'package:pguard_calling_api/src/model/api_response_envelope.dart';
+import 'package:pguard_calling_api/src/model/ice_config.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -13,14 +14,12 @@ part 'inline_object2.g.dart';
 ///
 /// Properties:
 /// * [success] 
+/// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class InlineObject2 implements Built<InlineObject2, InlineObject2Builder> {
-  @BuiltValueField(wireName: r'success')
-  bool? get success;
-
+abstract class InlineObject2 implements ApiResponseEnvelope, Built<InlineObject2, InlineObject2Builder> {
   @BuiltValueField(wireName: r'data')
-  ModerationResult? get data;
+  IceConfig? get data;
 
   InlineObject2._();
 
@@ -45,20 +44,25 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
     InlineObject2 object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    if (object.success != null) {
-      yield r'success';
-      yield serializers.serialize(
-        object.success,
-        specifiedType: const FullType(bool),
-      );
-    }
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType(ModerationResult),
+        specifiedType: const FullType(IceConfig),
       );
     }
+    if (object.error != null) {
+      yield r'error';
+      yield serializers.serialize(
+        object.error,
+        specifiedType: const FullType(String),
+      );
+    }
+    yield r'success';
+    yield serializers.serialize(
+      object.success,
+      specifiedType: const FullType(bool),
+    );
   }
 
   @override
@@ -82,19 +86,26 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
+        case r'data':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(IceConfig),
+          ) as IceConfig;
+          result.data.replace(valueDes);
+          break;
+        case r'error':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.error = valueDes;
+          break;
         case r'success':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(bool),
           ) as bool;
           result.success = valueDes;
-          break;
-        case r'data':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(ModerationResult),
-          ) as ModerationResult;
-          result.data.replace(valueDes);
           break;
         default:
           unhandled.add(key);

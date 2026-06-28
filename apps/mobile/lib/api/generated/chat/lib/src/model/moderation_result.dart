@@ -3,68 +3,65 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_chat_api/src/model/moderation_result.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'inline_object2.g.dart';
+part 'moderation_result.g.dart';
 
-/// InlineObject2
+/// The result of a moderation write. `applied` distinguishes a state-changing call from an idempotent no-op (e.g. re-redacting / re-blocking) — both are success (200).
 ///
 /// Properties:
-/// * [success] 
-/// * [data] 
+/// * [applied] - True if this call changed state; false on an idempotent repeat.
+/// * [status] - The resulting state (e.g. `redacted`, `archived`, `blocked`, `unblocked`).
 @BuiltValue()
-abstract class InlineObject2 implements Built<InlineObject2, InlineObject2Builder> {
-  @BuiltValueField(wireName: r'success')
-  bool? get success;
+abstract class ModerationResult implements Built<ModerationResult, ModerationResultBuilder> {
+  /// True if this call changed state; false on an idempotent repeat.
+  @BuiltValueField(wireName: r'applied')
+  bool get applied;
 
-  @BuiltValueField(wireName: r'data')
-  ModerationResult? get data;
+  /// The resulting state (e.g. `redacted`, `archived`, `blocked`, `unblocked`).
+  @BuiltValueField(wireName: r'status')
+  String get status;
 
-  InlineObject2._();
+  ModerationResult._();
 
-  factory InlineObject2([void updates(InlineObject2Builder b)]) = _$InlineObject2;
+  factory ModerationResult([void updates(ModerationResultBuilder b)]) = _$ModerationResult;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(InlineObject2Builder b) => b;
+  static void _defaults(ModerationResultBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<InlineObject2> get serializer => _$InlineObject2Serializer();
+  static Serializer<ModerationResult> get serializer => _$ModerationResultSerializer();
 }
 
-class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
+class _$ModerationResultSerializer implements PrimitiveSerializer<ModerationResult> {
   @override
-  final Iterable<Type> types = const [InlineObject2, _$InlineObject2];
+  final Iterable<Type> types = const [ModerationResult, _$ModerationResult];
 
   @override
-  final String wireName = r'InlineObject2';
+  final String wireName = r'ModerationResult';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    InlineObject2 object, {
+    ModerationResult object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    if (object.success != null) {
-      yield r'success';
-      yield serializers.serialize(
-        object.success,
-        specifiedType: const FullType(bool),
-      );
-    }
-    if (object.data != null) {
-      yield r'data';
-      yield serializers.serialize(
-        object.data,
-        specifiedType: const FullType(ModerationResult),
-      );
-    }
+    yield r'applied';
+    yield serializers.serialize(
+      object.applied,
+      specifiedType: const FullType(bool),
+    );
+    yield r'status';
+    yield serializers.serialize(
+      object.status,
+      specifiedType: const FullType(String),
+    );
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    InlineObject2 object, {
+    ModerationResult object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -75,26 +72,26 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required InlineObject2Builder result,
+    required ModerationResultBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'success':
+        case r'applied':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(bool),
           ) as bool;
-          result.success = valueDes;
+          result.applied = valueDes;
           break;
-        case r'data':
+        case r'status':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(ModerationResult),
-          ) as ModerationResult;
-          result.data.replace(valueDes);
+            specifiedType: const FullType(String),
+          ) as String;
+          result.status = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -105,12 +102,12 @@ class _$InlineObject2Serializer implements PrimitiveSerializer<InlineObject2> {
   }
 
   @override
-  InlineObject2 deserialize(
+  ModerationResult deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = InlineObject2Builder();
+    final result = ModerationResultBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

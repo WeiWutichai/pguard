@@ -190,6 +190,44 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/reports/bookings-by-service:
+    get:
+      tags: [Admin]
+      summary: Bookings by service type — count + revenue (role=admin)
+      description: |
+        The "งานตามประเภทบริการ" / bookings-by-service-type breakdown (#140) over `[from, to)`
+        keyed on `created_at`: per catalog service, the booking `count` (all statuses) and gross
+        `revenue` (`Σ base_fee × hours × guard_count + tip` over non-cancelled/declined bookings).
+        Bookings placed WITHOUT picking a catalog service collapse into a single "unspecified"
+        bucket (`service_id` / names null) so untyped jobs are shown, not dropped. Defaults to the
+        last 30 days (capped at 366). `total` = Σ of all rows' counts. Admin only (else 403).
+      operationId: adminBookingsByServiceReport
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive window start (RFC3339). Default = `to − 30 days`.
+          schema: { type: string, format: date-time }
+        - name: to
+          in: query
+          required: false
+          description: Exclusive window end (RFC3339). Default = now.
+          schema: { type: string, format: date-time }
+      responses:
+        '200':
+          description: Bookings-by-service-type breakdown
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/BookingsByServiceReport' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/checkins/overdue:
     get:
       tags: [Admin]
@@ -1017,6 +1055,14 @@ components:
         base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
         guard_count: { type: integer, format: int32 }
         tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+        service_id:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            The catalog service this booking was placed against (the service-type dimension). null for
+            bookings created without picking a catalog service. Set server-side from the request's
+            `service_id` (the same id that resolved `base_fee`).
         lat: { type: number, format: double, nullable: true, description: Site latitude (null when not provided at create). }
         lng: { type: number, format: double, nullable: true, description: Site longitude (null when not provided at create). }
         paid_at:
@@ -1154,6 +1200,29 @@ components:
           type: array
           items: { $ref: '#/components/schemas/RetentionPoint' }
         total: { type: integer, format: int64, description: Total bookings in the window. }
+
+    ServiceTypeStat:
+      type: object
+      description: >-
+        One row of the bookings-by-service-type report: a catalog service with its booking count +
+        gross revenue in the window. `service_id` / names are null for the "unspecified" bucket
+        (bookings placed without a service).
+      required: [count, revenue]
+      properties:
+        service_id: { type: string, format: uuid, nullable: true, description: Catalog service id, or null for the unspecified bucket. }
+        name_th: { type: string, nullable: true, description: Catalog Thai name (null for the unspecified bucket). }
+        name_en: { type: string, nullable: true, description: Catalog English name (null for the unspecified bucket). }
+        count: { type: integer, format: int64, description: Bookings placed against this service in the window (all statuses). }
+        revenue: { type: string, description: "Gross ฿ revenue (Σ base_fee×hours×guard_count + tip over non-cancelled bookings; exact decimal)", example: "0" }
+
+    BookingsByServiceReport:
+      type: object
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/ServiceTypeStat' }
+        total: { type: integer, format: int64, description: "Σ of all rows' counts (incl. the unspecified bucket)." }
 
     CustomerBookingStat:
       type: object

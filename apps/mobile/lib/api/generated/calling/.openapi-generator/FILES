@@ -16,7 +16,10 @@ lib/src/date_serializer.dart
 lib/src/model/admin_list_calls200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/call.dart
+lib/src/model/call_event.dart
+lib/src/model/call_event_type.dart
 lib/src/model/call_status.dart
+lib/src/model/call_timeline.dart
 lib/src/model/call_type.dart
 lib/src/model/date.dart
 lib/src/model/end_call_request.dart
@@ -27,5 +30,6 @@ lib/src/model/ice_server.dart
 lib/src/model/initiate_call_request.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
+lib/src/model/inline_object2.dart
 lib/src/serializers.dart
 pubspec.yaml

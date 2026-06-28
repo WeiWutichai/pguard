@@ -100,6 +100,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/reports/bookings-by-service": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Bookings by service type — count + revenue (role=admin)
+         * @description The "งานตามประเภทบริการ" / bookings-by-service-type breakdown (#140) over `[from, to)`
+         *     keyed on `created_at`: per catalog service, the booking `count` (all statuses) and gross
+         *     `revenue` (`Σ base_fee × hours × guard_count + tip` over non-cancelled/declined bookings).
+         *     Bookings placed WITHOUT picking a catalog service collapse into a single "unspecified"
+         *     bucket (`service_id` / names null) so untyped jobs are shown, not dropped. Defaults to the
+         *     last 30 days (capped at 366). `total` = Σ of all rows' counts. Admin only (else 403).
+         */
+        get: operations["adminBookingsByServiceReport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/checkins/overdue": {
         parameters: {
             query?: never;
@@ -713,6 +738,11 @@ export interface components {
              */
             tip: string;
             /**
+             * Format: uuid
+             * @description The catalog service this booking was placed against (the service-type dimension). null for bookings created without picking a catalog service. Set server-side from the request's `service_id` (the same id that resolved `base_fee`).
+             */
+            service_id?: string | null;
+            /**
              * Format: double
              * @description Site latitude (null when not provided at create).
              */
@@ -881,6 +911,36 @@ export interface components {
             /**
              * Format: int64
              * @description Total bookings in the window.
+             */
+            total: number;
+        };
+        /** @description One row of the bookings-by-service-type report: a catalog service with its booking count + gross revenue in the window. `service_id` / names are null for the "unspecified" bucket (bookings placed without a service). */
+        ServiceTypeStat: {
+            /**
+             * Format: uuid
+             * @description Catalog service id
+             */
+            service_id?: string | null;
+            /** @description Catalog Thai name (null for the unspecified bucket). */
+            name_th?: string | null;
+            /** @description Catalog English name (null for the unspecified bucket). */
+            name_en?: string | null;
+            /**
+             * Format: int64
+             * @description Bookings placed against this service in the window (all statuses).
+             */
+            count: number;
+            /**
+             * @description Gross ฿ revenue (Σ base_fee×hours×guard_count + tip over non-cancelled bookings; exact decimal)
+             * @example 0
+             */
+            revenue: string;
+        };
+        BookingsByServiceReport: {
+            items: components["schemas"]["ServiceTypeStat"][];
+            /**
+             * Format: int64
+             * @description Σ of all rows' counts (incl. the unspecified bucket).
              */
             total: number;
         };
@@ -1157,6 +1217,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["CustomerBookingStat"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminBookingsByServiceReport: {
+        parameters: {
+            query?: {
+                /** @description Inclusive window start (RFC3339). Default = `to − 30 days`. */
+                from?: string;
+                /** @description Exclusive window end (RFC3339). Default = now. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Bookings-by-service-type breakdown */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["BookingsByServiceReport"];
                     };
                 };
             };

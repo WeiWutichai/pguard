@@ -16,9 +16,10 @@ part 'message.g.dart';
 /// * [conversationId] 
 /// * [senderId] 
 /// * [senderRole] - guard | customer (drives alignment)
-/// * [content] 
+/// * [content] - Message body. When `redacted` is true this is the SUPPRESSED placeholder (`[message removed by moderator]`), never the original — an admin soft-deleted it.
 /// * [messageType] 
 /// * [createdAt] 
+/// * [redacted] - True when an admin soft-deleted (redacted) the message; `content` is then the suppressed placeholder. The client should render the bubble as removed.
 @BuiltValue()
 abstract class Message implements Built<Message, MessageBuilder> {
   @BuiltValueField(wireName: r'id')
@@ -34,6 +35,7 @@ abstract class Message implements Built<Message, MessageBuilder> {
   @BuiltValueField(wireName: r'sender_role')
   String? get senderRole;
 
+  /// Message body. When `redacted` is true this is the SUPPRESSED placeholder (`[message removed by moderator]`), never the original — an admin soft-deleted it.
   @BuiltValueField(wireName: r'content')
   String? get content;
 
@@ -44,12 +46,17 @@ abstract class Message implements Built<Message, MessageBuilder> {
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
 
+  /// True when an admin soft-deleted (redacted) the message; `content` is then the suppressed placeholder. The client should render the bubble as removed.
+  @BuiltValueField(wireName: r'redacted')
+  bool? get redacted;
+
   Message._();
 
   factory Message([void updates(MessageBuilder b)]) = _$Message;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(MessageBuilder b) => b;
+  static void _defaults(MessageBuilder b) => b
+      ..redacted = false;
 
   @BuiltValueSerializer(custom: true)
   static Serializer<Message> get serializer => _$MessageSerializer();
@@ -106,6 +113,13 @@ class _$MessageSerializer implements PrimitiveSerializer<Message> {
       object.createdAt,
       specifiedType: const FullType(DateTime),
     );
+    if (object.redacted != null) {
+      yield r'redacted';
+      yield serializers.serialize(
+        object.redacted,
+        specifiedType: const FullType(bool),
+      );
+    }
   }
 
   @override
@@ -177,6 +191,13 @@ class _$MessageSerializer implements PrimitiveSerializer<Message> {
             specifiedType: const FullType(DateTime),
           ) as DateTime;
           result.createdAt = valueDes;
+          break;
+        case r'redacted':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.redacted = valueDes;
           break;
         default:
           unhandled.add(key);

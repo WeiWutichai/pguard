@@ -98,12 +98,6 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Read-only moderation note. */}
-      <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-sunken px-4 py-2.5 text-[12.5px] text-muted">
-        <Badge tone="gray">{c.awaitingApi}</Badge>
-        <span>{c.moderationGap}</span>
-      </div>
-
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         <SearchField
           size="sm"
@@ -179,6 +173,7 @@ export default function ChatPage() {
           conversationId={selected.id}
           heading={selected.participants ?? `#${selected.request_id.slice(0, 8)}`}
           onClose={() => setSelected(null)}
+          onChanged={() => setReloadNonce((n) => n + 1)}
         />
       )}
     </div>

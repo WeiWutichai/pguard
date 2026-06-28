@@ -74,16 +74,13 @@ import 'package:pguard_calling_api/pguard_calling_api.dart';
 
 
 final api = PguardCallingApi().getAdminApi();
-final CallStatus status = ; // CallStatus | 
-final CallType callType = ; // CallType | 
-final int limit = 789; // int | 
-final int offset = 789; // int | 
+final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
 
 try {
-    final response = await api.adminListCalls(status, callType, limit, offset);
+    final response = await api.adminCallEvents(id);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AdminApi->adminListCalls: $e\n");
+    print("Exception when calling AdminApi->adminCallEvents: $e\n");
 }
 
 ```
@@ -94,6 +91,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminCallEvents**](doc/AdminApi.md#admincallevents) | **GET** /admin/calls/{id}/events | One call&#39;s lifecycle TIMELINE (role&#x3D;admin, call-events read model)
 [*AdminApi*](doc/AdminApi.md) | [**adminListCalls**](doc/AdminApi.md#adminlistcalls) | **GET** /admin/calls | List ALL calls cross-user (role&#x3D;admin, read-only call log)
 [*CallsApi*](doc/CallsApi.md) | [**acceptCall**](doc/CallsApi.md#acceptcall) | **PUT** /calls/{id}/accept | Callee accepts a ringing call (initiated → accepted)
 [*CallsApi*](doc/CallsApi.md) | [**connectedCall**](doc/CallsApi.md#connectedcall) | **PUT** /calls/{id}/connected | Report media connected (accepted → connected)
@@ -109,7 +107,10 @@ Class | Method | HTTP request | Description
  - [AdminListCalls200Response](doc/AdminListCalls200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [Call](doc/Call.md)
+ - [CallEvent](doc/CallEvent.md)
+ - [CallEventType](doc/CallEventType.md)
  - [CallStatus](doc/CallStatus.md)
+ - [CallTimeline](doc/CallTimeline.md)
  - [CallType](doc/CallType.md)
  - [EndCallRequest](doc/EndCallRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
@@ -119,6 +120,7 @@ Class | Method | HTTP request | Description
  - [InitiateCallRequest](doc/InitiateCallRequest.md)
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
+ - [InlineObject2](doc/InlineObject2.md)
 
 
 ## Documentation For Authorization

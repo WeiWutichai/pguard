@@ -12,7 +12,7 @@ import 'package:built_value/serializer.dart';
 
 part 'admin_enriched_message.g.dart';
 
-/// An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). READ-ONLY (no moderation fields — Phase D).
+/// An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). A redacted (soft-deleted) row is surfaced with `redacted: true` and `kind: redacted`; its content is the suppressed placeholder (original never re-exposed).
 ///
 /// Properties:
 /// * [id] 
@@ -21,11 +21,12 @@ part 'admin_enriched_message.g.dart';
 /// * [senderRole] - guard | customer
 /// * [messageType] 
 /// * [createdAt] 
-/// * [kind] - The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+/// * [kind] - The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
 /// * [text] - Plain text for a `text` message; null otherwise.
 /// * [attachment] 
 /// * [attachmentId] - Raw attachment id carried in a media message's `content` (echoed even if resolution fails, so the admin still sees there WAS an attachment); null for non-media.
 /// * [callEvent] 
+/// * [redacted] - True when an admin soft-deleted (redacted) this message. The per-kind fields then reflect the suppressed content (placeholder text, no attachment/call); the original is never re-exposed through this view.
 @BuiltValue()
 abstract class AdminEnrichedMessage implements Built<AdminEnrichedMessage, AdminEnrichedMessageBuilder> {
   @BuiltValueField(wireName: r'id')
@@ -48,10 +49,10 @@ abstract class AdminEnrichedMessage implements Built<AdminEnrichedMessage, Admin
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
 
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueField(wireName: r'kind')
   AdminEnrichedMessageKindEnum get kind;
-  // enum kindEnum {  text,  image,  video,  call-event,  system,  unknown,  };
+  // enum kindEnum {  text,  image,  video,  call-event,  system,  unknown,  redacted,  };
 
   /// Plain text for a `text` message; null otherwise.
   @BuiltValueField(wireName: r'text')
@@ -67,12 +68,17 @@ abstract class AdminEnrichedMessage implements Built<AdminEnrichedMessage, Admin
   @BuiltValueField(wireName: r'call_event')
   AdminCallEvent? get callEvent;
 
+  /// True when an admin soft-deleted (redacted) this message. The per-kind fields then reflect the suppressed content (placeholder text, no attachment/call); the original is never re-exposed through this view.
+  @BuiltValueField(wireName: r'redacted')
+  bool? get redacted;
+
   AdminEnrichedMessage._();
 
   factory AdminEnrichedMessage([void updates(AdminEnrichedMessageBuilder b)]) = _$AdminEnrichedMessage;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(AdminEnrichedMessageBuilder b) => b;
+  static void _defaults(AdminEnrichedMessageBuilder b) => b
+      ..redacted = false;
 
   @BuiltValueSerializer(custom: true)
   static Serializer<AdminEnrichedMessage> get serializer => _$AdminEnrichedMessageSerializer();
@@ -153,6 +159,13 @@ class _$AdminEnrichedMessageSerializer implements PrimitiveSerializer<AdminEnric
       yield serializers.serialize(
         object.callEvent,
         specifiedType: const FullType(AdminCallEvent),
+      );
+    }
+    if (object.redacted != null) {
+      yield r'redacted';
+      yield serializers.serialize(
+        object.redacted,
+        specifiedType: const FullType(bool),
       );
     }
   }
@@ -255,6 +268,13 @@ class _$AdminEnrichedMessageSerializer implements PrimitiveSerializer<AdminEnric
           ) as AdminCallEvent;
           result.callEvent.replace(valueDes);
           break;
+        case r'redacted':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.redacted = valueDes;
+          break;
         default:
           unhandled.add(key);
           unhandled.add(value);
@@ -286,24 +306,27 @@ class _$AdminEnrichedMessageSerializer implements PrimitiveSerializer<AdminEnric
 
 class AdminEnrichedMessageKindEnum extends EnumClass {
 
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'text')
   static const AdminEnrichedMessageKindEnum text = _$adminEnrichedMessageKindEnum_text;
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'image')
   static const AdminEnrichedMessageKindEnum image = _$adminEnrichedMessageKindEnum_image;
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'video')
   static const AdminEnrichedMessageKindEnum video = _$adminEnrichedMessageKindEnum_video;
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'call-event')
   static const AdminEnrichedMessageKindEnum callEvent = _$adminEnrichedMessageKindEnum_callEvent;
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'system')
   static const AdminEnrichedMessageKindEnum system = _$adminEnrichedMessageKindEnum_system;
-  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
   @BuiltValueEnumConst(wireName: r'unknown')
   static const AdminEnrichedMessageKindEnum unknown = _$adminEnrichedMessageKindEnum_unknown;
+  /// The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`; a soft-deleted row is `redacted`.
+  @BuiltValueEnumConst(wireName: r'redacted')
+  static const AdminEnrichedMessageKindEnum redacted = _$adminEnrichedMessageKindEnum_redacted;
 
   static Serializer<AdminEnrichedMessageKindEnum> get serializer => _$adminEnrichedMessageKindEnumSerializer;
 
