@@ -70,6 +70,18 @@ pub(crate) fn auth_err(e: AppError) -> Response {
     err(status, msg)
 }
 
+/// If the request carries a `pguard_…` admin API token in the `Authorization: Bearer` header,
+/// return it (for the edge to verify via identity). API tokens are only ever sent as a Bearer
+/// (never a cookie), so this checks the header alone. `None` for a JWT bearer / cookie / no auth.
+fn bearer_api_token(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|h| h.strip_prefix("Bearer "))
+        .filter(|t| auth::is_api_token(t))
+        .map(|t| t.to_string())
+}
+
 /// Catch-all handler mounted on `/{*path}`. Owns the full edge pipeline.
 #[tracing::instrument(skip_all, fields(method = %request.method(), path = %request.uri().path()))]
 pub async fn gateway(
@@ -117,8 +129,27 @@ pub async fn gateway(
     }
 
     // 3. Edge auth for protected routes (jti + trv + CSRF). Public routes skip this.
+    //    A `pguard_…` Bearer is an admin API token, not a JWT — validate it via identity's
+    //    service-JWT'd verify endpoint (#144) instead of decoding a JWT locally. Everything else
+    //    (access-token Bearer / cookie) goes through the standard edge JWT validator.
     let user = if public {
         None
+    } else if let Some(api_token) = bearer_api_token(&headers) {
+        let Some(identity_url) = state.routes.base_url(Upstream::Identity) else {
+            tracing::error!("no base URL for identity (api-token verify)");
+            return err(StatusCode::BAD_GATEWAY, "Upstream service unavailable");
+        };
+        match auth::validate_api_token(
+            &api_token,
+            &state.http,
+            identity_url,
+            &state.service_jwt_config,
+        )
+        .await
+        {
+            Ok(u) => Some(u),
+            Err(e) => return auth_err(e),
+        }
     } else {
         let mut redis = state.redis_conn.clone();
         match auth::validate(&headers, &method, &state.jwt_config, &mut redis).await {
@@ -312,10 +343,17 @@ mod tests {
         let routes = crate::state::UpstreamTable::from_env()
             .with_override(crate::domain::routing::Upstream::Booking, booking_url);
 
+        let service_jwt_config = shared::config::ServiceJwtConfig {
+            encoding_key: EncodingKey::from_secret(TEST_SECRET.as_bytes()),
+            decoding_key: jsonwebtoken::DecodingKey::from_secret(TEST_SECRET.as_bytes()),
+            ttl_secs: 60,
+        };
+
         AppState {
             http: reqwest::Client::new(),
             redis_conn: redis,
             jwt_config,
+            service_jwt_config,
             routes,
             // High limits so the test isn't throttled.
             limits: crate::domain::ratelimit::Limits {
@@ -336,6 +374,139 @@ mod tests {
         Router::new()
             .route("/{*path}", any_route(gateway))
             .with_state(state)
+    }
+
+    /// A stub identity that answers `POST /internal/api-tokens/verify`: a valid `pguard_…` token
+    /// (one that matches `ok_token`) → 200 with `{user_id, role}`; anything else → 401. Lets the
+    /// gateway's API-token branch be exercised hermetically (no real identity service).
+    async fn spawn_stub_identity(ok_token: String, user_id: Uuid, role: &'static str) -> String {
+        use axum::Json as AxJson;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let app = Router::new().route(
+            "/internal/api-tokens/verify",
+            any_route(move |body: AxJson<serde_json::Value>| {
+                let ok_token = ok_token.clone();
+                async move {
+                    let presented = body.0.get("token").and_then(|v| v.as_str()).unwrap_or("");
+                    if presented == ok_token {
+                        AxJson(serde_json::json!({
+                            "success": true,
+                            "data": { "user_id": user_id, "role": role }
+                        }))
+                        .into_response()
+                    } else {
+                        (
+                            StatusCode::UNAUTHORIZED,
+                            AxJson(serde_json::json!({ "success": false, "error": "Invalid API token" })),
+                        )
+                            .into_response()
+                    }
+                }
+            }),
+        );
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Build a test state with BOTH the booking echo upstream and a stub identity (for API-token
+    /// verification) overridden.
+    fn build_test_state_with_identity(
+        redis: redis::aio::ConnectionManager,
+        booking_url: &str,
+        identity_url: &str,
+    ) -> AppState {
+        let mut state = build_test_state(redis, booking_url);
+        state.routes = state
+            .routes
+            .with_override(crate::domain::routing::Upstream::Identity, identity_url);
+        state
+    }
+
+    /// #144: a `pguard_…` admin API-token Bearer on a protected route is validated via identity's
+    /// internal verify endpoint (NOT the local JWT path), and the resolved principal is injected as
+    /// the trusted `X-User-*` before forwarding. A spoofed `X-User-*` from the client is stripped.
+    #[tokio::test]
+    async fn full_pipeline_api_token_bearer_verified_via_identity_and_injected() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .unwrap();
+        let booking = spawn_echo_upstream().await;
+        let admin_id = Uuid::new_v4();
+        let token = "pguard_abc123_def456secret".to_string();
+        let identity = spawn_stub_identity(token.clone(), admin_id, "admin").await;
+        let state = build_test_state_with_identity(conn, &booking, &identity);
+
+        let req = AxumRequest::builder()
+            .method("GET")
+            .uri("/v1/bookings/x")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-user-id", "spoofed")
+            .header("x-user-role", "customer")
+            .body(Body::empty())
+            .unwrap();
+        let resp = test_router(state)
+            .oneshot(with_connect_info(req))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK, "valid API token proxies");
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["x_user_id"],
+            admin_id.to_string(),
+            "verified id injected"
+        );
+        assert_eq!(json["x_user_role"], "admin", "verified role injected");
+    }
+
+    /// #144: an INVALID `pguard_…` token (identity returns 401) is rejected at the edge → 401,
+    /// never forwarded. Proves the gateway fails closed on a bad API token.
+    #[tokio::test]
+    async fn full_pipeline_invalid_api_token_is_401() {
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let conn = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .unwrap();
+        let booking = spawn_echo_upstream().await;
+        let identity = spawn_stub_identity(
+            "pguard_the_only_good_one".to_string(),
+            Uuid::new_v4(),
+            "admin",
+        )
+        .await;
+        let state = build_test_state_with_identity(conn, &booking, &identity);
+
+        let req = AxumRequest::builder()
+            .method("GET")
+            .uri("/v1/bookings/x")
+            .header("authorization", "Bearer pguard_bad_token")
+            .body(Body::empty())
+            .unwrap();
+        let resp = test_router(state)
+            .oneshot(with_connect_info(req))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::UNAUTHORIZED,
+            "an invalid API token is rejected at the edge"
+        );
     }
 
     #[tokio::test]

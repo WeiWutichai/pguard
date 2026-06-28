@@ -11,6 +11,7 @@ export { Modal, type ModalProps } from "./modal";
 export { Panel, PanelBody, PanelHead } from "./panel";
 export { PageIntro } from "./page-intro";
 export { Pagination, type PaginationProps } from "./pagination";
+export { QrCode, type QrCodeProps } from "./qr-code";
 export { SearchField, type SearchFieldProps } from "./search-field";
 export { Table, Td, Th, Tr } from "./table";
 export { Tab, Tabs, type TabProps } from "./tabs";

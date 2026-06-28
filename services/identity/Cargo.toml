@@ -19,6 +19,12 @@ uuid = { workspace = true }
 chrono = { workspace = true }
 jsonwebtoken = { workspace = true }     # user access JWTs (HS256, via shared::auth)
 argon2 = { workspace = true }           # password + refresh-secret hashing (CPU-only)
+totp-rs = { workspace = true }          # RFC-6238 TOTP 2FA (#144) — vetted, not hand-rolled
+aes-gcm = { workspace = true }          # AES-256-GCM seal of the TOTP secret at rest (TOTP_ENC_KEY)
+sha2 = { workspace = true }             # SHA-256 of API-token secrets + recovery codes (hash-at-rest)
+rand = { workspace = true }             # CSPRNG: TOTP secret, recovery codes, API-token secret
+data-encoding = { workspace = true }    # base32 recovery-code / token alphabet (RFC 4648)
+subtle = { workspace = true }           # constant-time compare of presented API-token / recovery hash
 async-nats = { workspace = true }       # JetStream consumer for user.compromised
 async-trait = { workspace = true }      # dyn seam for the revoke-all dependency
 futures = { workspace = true }          # StreamExt over the JetStream consumer + export fan-out

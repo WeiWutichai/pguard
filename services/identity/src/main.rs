@@ -16,7 +16,7 @@ mod repo;
 mod state;
 
 use anyhow::Context;
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
@@ -41,6 +41,13 @@ async fn main() -> anyhow::Result<()> {
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
     let service_jwt_config = ServiceJwtConfig::from_env()?;
+    // AES-256 key sealing the per-user TOTP secret at rest (#144 2FA). Fail-fast at startup so a
+    // misconfigured key can never reach the request path (which must never run with no/weak key).
+    let totp_enc_key = {
+        let hex = std::env::var("TOTP_ENC_KEY")
+            .map_err(|_| anyhow::anyhow!("TOTP_ENC_KEY is required (64 hex chars / 32 bytes)"))?;
+        domain::twofactor::parse_enc_key(&hex).map_err(|e| anyhow::anyhow!("{e:?}"))?
+    };
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -86,6 +93,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_jwt_config,
         export_client,
+        totp_enc_key,
     };
 
     // --- background JetStream consumers ---
@@ -127,6 +135,21 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/auth/password", put(api::change_password))
         .route("/auth/revoke-all", post(api::revoke_all_sessions))
+        // 2FA (#144): setup (provision) / enable / disable are self + bearer-gated; verify is the
+        // edge-public second login step (carries a purpose challenge token, not an access token).
+        .route("/auth/2fa/setup", post(api::setup_2fa))
+        .route("/auth/2fa/enable", post(api::enable_2fa))
+        .route("/auth/2fa/disable", post(api::disable_2fa))
+        .route("/auth/2fa/verify", post(api::verify_2fa))
+        // Per-device sessions (#144): list the caller's active families + revoke ONE device.
+        .route("/auth/sessions", get(api::list_sessions))
+        .route("/auth/sessions/{family_id}", delete(api::revoke_session))
+        // Admin API tokens (#144): create-once / list / revoke (admin-gated in the handler).
+        .route(
+            "/admin/api-tokens",
+            post(api::create_api_token).get(api::list_api_tokens),
+        )
+        .route("/admin/api-tokens/{id}", delete(api::revoke_api_token))
         .route("/me/data-export", get(api::data_export))
         // Admin user search (#138 per-user notify) — admin-gated in the handler. The gateway routes
         // `/admin/users/search` → identity (a more-specific rule than `/admin/users` → profile).
@@ -134,6 +157,12 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/internal/users/{id}/revoke-all",
             post(api::internal_revoke_all::<AppState>),
+        )
+        // API-token verification for the gateway (service-JWT only; blocked at the edge). The
+        // gateway calls this when it sees a `pguard_…` bearer to resolve the principal.
+        .route(
+            "/internal/api-tokens/verify",
+            post(api::internal_verify_api_token::<AppState>),
         )
         // Internal batch id → {role, display_name} resolver (service-JWT only; blocked at the edge).
         // The profile resolver merges admin names from here (#142 Activity Log).

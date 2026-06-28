@@ -250,6 +250,17 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin API tokens (#144 admin self-profile): create-once / list / revoke long-lived
+        // bearer credentials for admin API automation. IDENTITY owns the token store + the
+        // verify path; admin authz is identity's own job (role check in the handler). A distinct
+        // prefix that collides with no other `/admin/*` rule. The single prefix also routes the
+        // `/admin/api-tokens/{id}` revoke subpath (suffix: None).
+        prefix: "/admin/api-tokens",
+        suffix: None,
+        upstream: Upstream::Identity,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin batch name-resolver (`POST /admin/users/resolve`): id[] → display names for the
         // admin lists (jobs/reviews/calls/activity log) that render raw UUIDs. profile owns the
         // guard/customer display names + merges admin names from identity. Admin authz is profile's
@@ -589,6 +600,12 @@ const RULES: &[Rule] = &[
 const PUBLIC_PATHS: &[&str] = &[
     "/auth/login",
     "/auth/refresh",
+    // 2FA second login step (#144): the client presents the single-use `challenge_token` (a
+    // purpose JWT, NOT an access token) issued by `/auth/login` when 2FA is enabled, plus a TOTP
+    // or recovery code. The edge access-token validator cannot decode the challenge token, so this
+    // must be edge-public; identity validates the challenge (signature + purpose + single-use)
+    // and the code itself. The OTHER 2FA routes (setup/enable/disable) stay token-protected.
+    "/auth/2fa/verify",
     // Registration is unauthenticated at the HTTP layer — it carries a single-use
     // `phone_verified_token` in the BODY (consumed internally), not an access token. Without
     // this, the edge access-token validator rejects every register attempt (401) and new-user
@@ -1040,6 +1057,60 @@ mod tests {
         // A query string is split off before resolve(), so search with `?q=` resolves the same.
         let (up_q, _, _, _) = proxy(resolve("/v1/admin/users/search"));
         assert_eq!(up_q, Upstream::Identity);
+    }
+
+    #[test]
+    fn admin_api_tokens_route_to_identity_protected() {
+        // #144: create/list/revoke admin API tokens → identity, edge-protected, Api tier. The
+        // single prefix also routes the `/{id}` revoke subpath.
+        for p in ["/v1/admin/api-tokens", "/v1/admin/api-tokens/abc-123"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Identity, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token (admin-gated)");
+            assert_eq!(tier, Tier::Api);
+        }
+        // It does NOT collide with the `/admin/users/*` split.
+        let (up_r, _, _, _) = proxy(resolve("/v1/admin/users/resolve"));
+        assert_eq!(up_r, Upstream::Profile, "resolve unaffected by api-tokens");
+    }
+
+    #[test]
+    fn two_factor_routes_split_public_verify_from_protected_management() {
+        // #144: `/auth/2fa/verify` is the edge-PUBLIC second login step (carries a challenge
+        // token, not an access token)…
+        let (up_v, fwd_v, public_v, tier_v) = proxy(resolve("/v1/auth/2fa/verify"));
+        assert_eq!(up_v, Upstream::Identity);
+        assert_eq!(fwd_v, "/auth/2fa/verify");
+        assert!(
+            public_v,
+            "2fa verify must be edge-public (challenge token, not access)"
+        );
+        assert_eq!(tier_v, Tier::Auth);
+
+        // …but setup / enable / disable stay token-PROTECTED (they act on the logged-in user).
+        for p in [
+            "/v1/auth/2fa/setup",
+            "/v1/auth/2fa/enable",
+            "/v1/auth/2fa/disable",
+        ] {
+            let (up, _, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Identity, "{p}");
+            assert!(!public, "{p} must require a token");
+            assert_eq!(tier, Tier::Auth);
+        }
+    }
+
+    #[test]
+    fn auth_sessions_route_to_identity_protected() {
+        // #144 per-device sessions: list + single-device revoke → identity, token-protected.
+        for p in ["/v1/auth/sessions", "/v1/auth/sessions/abc-123"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Identity, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Auth);
+        }
     }
 
     #[test]

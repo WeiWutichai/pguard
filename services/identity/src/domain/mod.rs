@@ -13,3 +13,5 @@ pub mod registration;
 pub mod revocation;
 pub mod rotation;
 pub mod token;
+/// 2FA + secret-sealing primitives (TOTP, AES-256-GCM seal, recovery codes, API-token format).
+pub mod twofactor;

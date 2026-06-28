@@ -541,12 +541,18 @@ mod e2e_tests {
             encoding_key: EncodingKey::from_secret(SECRET.as_bytes()),
             decoding_key: DecodingKey::from_secret(SECRET.as_bytes()),
         };
+        let service_jwt_config = shared::config::ServiceJwtConfig {
+            encoding_key: EncodingKey::from_secret(SECRET.as_bytes()),
+            decoding_key: DecodingKey::from_secret(SECRET.as_bytes()),
+            ttl_secs: 60,
+        };
         let routes = crate::state::UpstreamTable::from_env()
             .with_override(crate::domain::routing::Upstream::Chat, chat_url);
         let state = AppState {
             http: reqwest::Client::new(),
             redis_conn,
             jwt_config,
+            service_jwt_config,
             routes,
             limits: crate::domain::ratelimit::Limits {
                 otp_per_min: 100_000,

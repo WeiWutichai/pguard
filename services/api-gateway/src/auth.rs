@@ -12,16 +12,90 @@
 
 use axum::http::{HeaderMap, Method};
 use redis::AsyncCommands;
+use serde::Deserialize;
 use uuid::Uuid;
 
 use shared::auth::{decode_jwt_with_key, extract_cookie_value, ACCESS_TOKEN_COOKIE};
-use shared::config::JwtConfig;
+use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::error::AppError;
+use shared::service_jwt::encode_service_jwt;
 
-/// Identity proven by a validated, non-revoked access token.
+/// The `pguard_` namespace prefix that marks a bearer as an admin API token (vs. a JWT). Mirrors
+/// `identity::domain::twofactor::API_TOKEN_NAMESPACE` — kept as a const here so the edge can branch
+/// WITHOUT a dependency on the identity crate (the gateway forwards the token to identity to verify).
+pub const API_TOKEN_NAMESPACE: &str = "pguard_";
+
+/// Identity proven by a validated, non-revoked access token (or admin API token).
 pub struct VerifiedUser {
     pub user_id: Uuid,
     pub role: String,
+}
+
+/// `true` if a bearer is an admin API token (`pguard_…`) rather than a JWT. Only ever checked for
+/// a `Bearer` header (API tokens are never sent as cookies). Drives the edge to validate via
+/// identity's internal verify endpoint instead of decoding a JWT locally.
+pub fn is_api_token(token: &str) -> bool {
+    token.starts_with(API_TOKEN_NAMESPACE)
+}
+
+/// Deserialize side of identity's `{ success, data: { user_id, role } }` verify envelope.
+#[derive(Deserialize)]
+struct VerifyEnvelope {
+    data: Option<VerifiedPrincipal>,
+}
+#[derive(Deserialize)]
+struct VerifiedPrincipal {
+    user_id: Uuid,
+    role: String,
+}
+
+/// Validate an admin API-token bearer at the edge by calling identity's service-JWT'd
+/// `POST /internal/api-tokens/verify`. The gateway mints a short-lived service token, forwards the
+/// presented `pguard_…` token, and on success gets back the resolved `{ user_id, role }` to inject
+/// as the trusted `X-User-*`. A non-2xx from identity (revoked/unknown/bad secret) → 401; an
+/// unreachable identity → 401 fail-CLOSED (the edge must not admit a token it can't confirm).
+///
+/// API tokens carry their OWN revocation (the `revoked_at` column, checked by identity) — they are
+/// NOT JWTs, so the jti/trv Redis gates don't apply; identity is the single source of truth.
+#[tracing::instrument(skip_all)]
+pub async fn validate_api_token(
+    token: &str,
+    http: &reqwest::Client,
+    identity_base_url: &str,
+    service_jwt: &ServiceJwtConfig,
+) -> Result<VerifiedUser, AppError> {
+    let svc_token = encode_service_jwt(
+        "api-gateway",
+        &service_jwt.encoding_key,
+        service_jwt.ttl_secs,
+    )?;
+    let url = format!("{identity_base_url}/internal/api-tokens/verify");
+    let resp = http
+        .post(&url)
+        .bearer_auth(svc_token)
+        .json(&serde_json::json!({ "token": token }))
+        .send()
+        .await
+        .map_err(|e| {
+            // Fail closed: an unreachable identity must DENY (the edge can't confirm the token).
+            tracing::warn!("api-token verify call to identity failed: {e}");
+            AppError::Unauthorized("Invalid API token".to_string())
+        })?;
+    if !resp.status().is_success() {
+        // Identity rejected it (401) — surface a generic 401 (no enumeration).
+        return Err(AppError::Unauthorized("Invalid API token".to_string()));
+    }
+    let env: VerifyEnvelope = resp
+        .json()
+        .await
+        .map_err(|_| AppError::Unauthorized("Invalid API token".to_string()))?;
+    let principal = env
+        .data
+        .ok_or_else(|| AppError::Unauthorized("Invalid API token".to_string()))?;
+    Ok(VerifiedUser {
+        user_id: principal.user_id,
+        role: principal.role,
+    })
 }
 
 /// Where the token came from — controls the CSRF requirement.

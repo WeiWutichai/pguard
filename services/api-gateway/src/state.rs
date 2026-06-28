@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use shared::config::JwtConfig;
+use shared::config::{JwtConfig, ServiceJwtConfig};
 
 use tokio::sync::broadcast;
 
@@ -124,6 +124,10 @@ pub struct AppState {
     pub redis_conn: redis::aio::ConnectionManager,
     /// User-JWT validation config (decoding key + secret) for edge auth.
     pub jwt_config: JwtConfig,
+    /// Service-JWT config — used to MINT a short-lived service token when the edge has to call
+    /// identity's `/internal/api-tokens/verify` to validate a `pguard_…` admin API-token bearer
+    /// (#144). The gateway is an internal caller for that one east-west hop.
+    pub service_jwt_config: ServiceJwtConfig,
     /// Env-resolved upstream base URLs.
     pub routes: UpstreamTable,
     /// Per-tier rate limits.

@@ -30,7 +30,7 @@ use anyhow::Context;
 use axum::routing::{any, get};
 use axum::{Json, Router};
 
-use shared::config::{JwtConfig, RedisConfig};
+use shared::config::{JwtConfig, RedisConfig, ServiceJwtConfig};
 use shared::redis_client::create_connection_manager;
 
 use crate::domain::ratelimit::Limits;
@@ -55,6 +55,9 @@ async fn main() -> anyhow::Result<()> {
     // --- config (fail-fast at startup) ---
     let redis_config = RedisConfig::from_env()?;
     let jwt_config = JwtConfig::from_env()?;
+    // Service-JWT (separate secret) so the edge can mint an internal token to call identity's
+    // API-token verify endpoint (#144). Fail-fast at startup like the user-JWT config.
+    let service_jwt_config = ServiceJwtConfig::from_env()?;
     let limits = limits_from_env();
     let routes = UpstreamTable::from_env();
 
@@ -86,6 +89,7 @@ async fn main() -> anyhow::Result<()> {
         http,
         redis_conn,
         jwt_config,
+        service_jwt_config,
         routes,
         limits,
         status_tx,

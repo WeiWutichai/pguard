@@ -259,13 +259,27 @@ pub async fn approve_user_on_event(
 /// grow unbounded session state (the only other ceiling is natural 7-day expiry).
 const MAX_SESSIONS_PER_USER: i64 = 5;
 
+/// Device/IP/user-agent context captured onto a refresh-token row at login/refresh (#144
+/// per-device sessions). All optional — a login without a captured UA/IP still works. `ip` is
+/// stored raw (the sessions API may mask it on the way out).
+#[derive(Debug, Default, Clone)]
+pub struct DeviceContext {
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+}
+
 /// Persist a freshly-issued refresh token (new family on login). Returns the opaque
 /// token the client receives (`{rotation_id}.{secret}`). Enforces the per-user session cap
-/// first (evict oldest beyond the cap).
-pub async fn create_refresh_family(db: &PgPool, user_id: Uuid) -> Result<String, AppError> {
+/// first (evict oldest beyond the cap). `device` stamps the login's UA/IP onto the family's
+/// first row so the sessions list (#144) can show it.
+pub async fn create_refresh_family(
+    db: &PgPool,
+    user_id: Uuid,
+    device: &DeviceContext,
+) -> Result<String, AppError> {
     enforce_session_cap(db, user_id).await?;
     let family_id = Uuid::new_v4();
-    issue_refresh(db, user_id, family_id).await
+    issue_refresh(db, user_id, family_id, device).await
 }
 
 /// Revoke the least-recently-active refresh families beyond `MAX_SESSIONS_PER_USER - 1`, so that
@@ -298,8 +312,14 @@ async fn enforce_session_cap(db: &PgPool, user_id: Uuid) -> Result<(), AppError>
 }
 
 /// Insert one refresh-token row in `family_id` and return its opaque token. Used for the
-/// initial login token (rotation uses its own in-tx insert).
-async fn issue_refresh(db: &PgPool, user_id: Uuid, family_id: Uuid) -> Result<String, AppError> {
+/// initial login token (rotation uses its own in-tx insert). Stamps the login `device` context
+/// (UA/IP) + `last_used_at = now()` so the sessions list (#144) shows the device + freshness.
+async fn issue_refresh(
+    db: &PgPool,
+    user_id: Uuid,
+    family_id: Uuid,
+    device: &DeviceContext,
+) -> Result<String, AppError> {
     let rotation_id = Uuid::new_v4();
     let jti = Uuid::new_v4();
     let secret = Uuid::new_v4().to_string();
@@ -313,8 +333,9 @@ async fn issue_refresh(db: &PgPool, user_id: Uuid, family_id: Uuid) -> Result<St
     sqlx::query(
         r#"
         INSERT INTO identity.refresh_tokens
-            (user_id, family_id, rotation_id, jti, secret_hash, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (user_id, family_id, rotation_id, jti, secret_hash, expires_at,
+             user_agent, ip, last_used_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
         "#,
     )
     .bind(user_id)
@@ -323,6 +344,8 @@ async fn issue_refresh(db: &PgPool, user_id: Uuid, family_id: Uuid) -> Result<St
     .bind(jti)
     .bind(&secret_hash)
     .bind(expires_at)
+    .bind(device.user_agent.as_deref())
+    .bind(device.ip.as_deref())
     .execute(db)
     .await?;
 
@@ -402,6 +425,7 @@ pub async fn rotate(
     user_id: Uuid,
     family_id: Uuid,
     presented_rotation_id: Uuid,
+    device: &DeviceContext,
 ) -> Result<Option<String>, AppError> {
     let mut tx = db.begin().await?;
 
@@ -419,7 +443,9 @@ pub async fn rotate(
     }
 
     // Re-issue inside the family. We hash + insert here rather than calling `issue_refresh`
-    // so the whole rotate stays in one tx.
+    // so the whole rotate stays in one tx. The successor inherits the family's device context
+    // when the refresh carried none (a token refresh from the same device often omits the UA),
+    // and stamps `last_used_at = now()` so the sessions list shows the family as fresh.
     let rotation_id = Uuid::new_v4();
     let jti = Uuid::new_v4();
     let secret = Uuid::new_v4().to_string();
@@ -429,11 +455,25 @@ pub async fn rotate(
         .await
         .map_err(|e| AppError::Internal(format!("hash task failed: {e}")))??;
 
+    // Carry the family's existing UA/IP forward when this refresh didn't supply one (so the
+    // session's device label doesn't blank out on a UA-less token refresh).
+    let prior: Option<(Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT user_agent, ip FROM identity.refresh_tokens \
+         WHERE family_id = $1 ORDER BY created_at ASC LIMIT 1",
+    )
+    .bind(family_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (prior_ua, prior_ip) = prior.unwrap_or((None, None));
+    let ua = device.user_agent.clone().or(prior_ua);
+    let ip = device.ip.clone().or(prior_ip);
+
     sqlx::query(
         r#"
         INSERT INTO identity.refresh_tokens
-            (user_id, family_id, rotation_id, jti, secret_hash, expires_at)
-        VALUES ($1, $2, $3, $4, $5, $6)
+            (user_id, family_id, rotation_id, jti, secret_hash, expires_at,
+             user_agent, ip, last_used_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
         "#,
     )
     .bind(user_id)
@@ -442,6 +482,8 @@ pub async fn rotate(
     .bind(jti)
     .bind(&secret_hash)
     .bind(expires_at)
+    .bind(ua.as_deref())
+    .bind(ip.as_deref())
     .execute(&mut *tx)
     .await?;
 
@@ -900,6 +942,411 @@ pub async fn search_users(
         .collect())
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// (1) TOTP 2FA (#144) — provisioning, enable/disable, login gate, recovery codes.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The caller's account row needed for a password-or-code 2FA disable (`POST /auth/2fa/disable`):
+/// the (possibly NULL) sealed TOTP secret, whether 2FA is enabled, the phone (TOTP account label),
+/// and the Argon2 password hash (so a password-confirm path can verify). `None` if the row is
+/// gone/soft-deleted.
+pub struct TotpRow {
+    pub totp_secret_enc: Option<Vec<u8>>,
+    pub totp_enabled: bool,
+    pub phone: String,
+    pub password_hash: String,
+}
+
+/// Read the caller's TOTP row (sealed secret + enabled flag + phone + password hash). Soft-deleted
+/// rows are excluded. Used by setup/enable/disable/verify — the secret never leaves repo unsealed.
+pub async fn totp_row(db: &PgPool, user_id: Uuid) -> Result<TotpRow, AppError> {
+    let row: Option<(Option<Vec<u8>>, bool, String, String)> = sqlx::query_as(
+        r#"
+        SELECT totp_secret_enc, totp_enabled, phone, password_hash
+        FROM identity.users
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let (totp_secret_enc, totp_enabled, phone, password_hash) =
+        row.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    Ok(TotpRow {
+        totp_secret_enc,
+        totp_enabled,
+        phone,
+        password_hash,
+    })
+}
+
+/// Whether the account (by login identifier) has TOTP enabled — read during login to decide
+/// whether to issue the token pair directly or a 2FA challenge. Eligibility (active + approved)
+/// has already been established by `verify_credentials`; this is a cheap follow-up on the id.
+pub async fn totp_enabled_for_user(db: &PgPool, user_id: Uuid) -> Result<bool, AppError> {
+    let row: Option<(bool,)> =
+        sqlx::query_as("SELECT totp_enabled FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|(b,)| b).unwrap_or(false))
+}
+
+/// Store a freshly-PROVISIONED (not-yet-enabled) sealed TOTP secret. Overwrites any prior
+/// provisioning secret and leaves `totp_enabled` UNCHANGED (still false until `/2fa/enable`
+/// proves a live code). Soft-deleted rows excluded.
+pub async fn store_provisioned_totp(
+    db: &PgPool,
+    user_id: Uuid,
+    sealed: &[u8],
+) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "UPDATE identity.users SET totp_secret_enc = $2, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(sealed)
+    .execute(db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound("User not found".to_string()));
+    }
+    Ok(())
+}
+
+/// Flip `totp_enabled = true` and REPLACE the user's recovery-code set, in ONE transaction. Called
+/// after `/2fa/enable` has verified a live TOTP code against the provisioned secret. The old codes
+/// (if any) are deleted and the new `code_hashes` inserted (hash-at-rest — only hashes are stored).
+pub async fn enable_totp_with_recovery_codes(
+    db: &PgPool,
+    user_id: Uuid,
+    code_hashes: &[String],
+) -> Result<(), AppError> {
+    let mut tx = db.begin().await?;
+
+    let res = sqlx::query(
+        "UPDATE identity.users \
+         SET totp_enabled = TRUE, totp_confirmed_at = now(), updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL AND totp_secret_enc IS NOT NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        tx.rollback().await?;
+        // No provisioned secret to enable (must call /2fa/setup first), or no such user.
+        return Err(AppError::Conflict(
+            "No 2FA setup in progress for this account.".to_string(),
+        ));
+    }
+
+    // Replace the recovery-code set.
+    sqlx::query("DELETE FROM identity.totp_recovery_codes WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    for hash in code_hashes {
+        sqlx::query(
+            "INSERT INTO identity.totp_recovery_codes (user_id, code_hash) VALUES ($1, $2)",
+        )
+        .bind(user_id)
+        .bind(hash)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    tracing::info!("2FA enabled (recovery codes regenerated)");
+    Ok(())
+}
+
+/// Disable TOTP: clear the secret + flag and delete every recovery code, in ONE transaction. The
+/// caller has already proven a live TOTP code OR the account password. Idempotent-ish: a NotFound
+/// if the row is gone; disabling an already-disabled account is a harmless no-op write.
+pub async fn disable_totp(db: &PgPool, user_id: Uuid) -> Result<(), AppError> {
+    let mut tx = db.begin().await?;
+    let res = sqlx::query(
+        "UPDATE identity.users \
+         SET totp_enabled = FALSE, totp_secret_enc = NULL, totp_confirmed_at = NULL, \
+             updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+    if res.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Err(AppError::NotFound("User not found".to_string()));
+    }
+    sqlx::query("DELETE FROM identity.totp_recovery_codes WHERE user_id = $1")
+        .bind(user_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    tracing::info!("2FA disabled");
+    Ok(())
+}
+
+/// Atomically CONSUME an unused recovery code by its hash (single-use): stamp `used_at = now()`
+/// only where it's still unused. Returns `true` if a code was consumed (valid + unused), `false`
+/// otherwise (unknown, already used). The conditional `WHERE used_at IS NULL` makes a replay of
+/// the same code a no-op even under a race.
+pub async fn consume_recovery_code(
+    db: &PgPool,
+    user_id: Uuid,
+    code_hash: &str,
+) -> Result<bool, AppError> {
+    let res = sqlx::query(
+        "UPDATE identity.totp_recovery_codes SET used_at = now() \
+         WHERE user_id = $1 AND code_hash = $2 AND used_at IS NULL",
+    )
+    .bind(user_id)
+    .bind(code_hash)
+    .execute(db)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (2) Admin API tokens (#144) — create / list / revoke / verify.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One row of the caller's API-token listing (`GET /v1/admin/api-tokens`). NEVER the secret/hash.
+pub struct ApiTokenRow {
+    pub id: Uuid,
+    pub name: String,
+    pub prefix: String,
+    pub role: String,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+/// Insert a new API token for `user_id` (the `secret_hash` + public `prefix` come from the domain
+/// generator; the `role` is the creator's own role). Returns the new row id.
+pub async fn create_api_token(
+    db: &PgPool,
+    user_id: Uuid,
+    name: &str,
+    prefix: &str,
+    secret_hash: &str,
+    role: &str,
+) -> Result<Uuid, AppError> {
+    let (id,): (Uuid,) = sqlx::query_as(
+        r#"
+        INSERT INTO identity.api_tokens (user_id, name, token_hash, prefix, role)
+        VALUES ($1, $2, $3, $4, $5::identity.user_role)
+        RETURNING id
+        "#,
+    )
+    .bind(user_id)
+    .bind(name)
+    .bind(secret_hash)
+    .bind(prefix)
+    .bind(role)
+    .fetch_one(db)
+    .await?;
+    Ok(id)
+}
+
+/// List the caller's OWN API tokens (newest first). NEVER returns the hash/secret.
+// Wide positional row tuple (7 cols) — consistent with the file's other ad-hoc reads.
+#[allow(clippy::type_complexity)]
+pub async fn list_api_tokens(db: &PgPool, user_id: Uuid) -> Result<Vec<ApiTokenRow>, AppError> {
+    let rows: Vec<(
+        Uuid,
+        String,
+        String,
+        String,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
+        r#"
+        SELECT id, name, prefix, role::text AS role, created_at, last_used_at, revoked_at
+        FROM identity.api_tokens
+        WHERE user_id = $1
+        ORDER BY created_at DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(id, name, prefix, role, created_at, last_used_at, revoked_at)| ApiTokenRow {
+                id,
+                name,
+                prefix,
+                role,
+                created_at,
+                last_used_at,
+                revoked_at,
+            },
+        )
+        .collect())
+}
+
+/// Revoke (soft) ONE of the caller's OWN API tokens by id. Scoped to `user_id` so an admin can
+/// only revoke their own token (IDOR-safe). Returns NotFound if the id isn't theirs / already gone.
+/// Re-revoking an already-revoked token is a harmless no-op (still 0 rows → NotFound is fine since
+/// the handler treats "nothing to revoke" uniformly; we keep the row for audit either way).
+pub async fn revoke_api_token(db: &PgPool, user_id: Uuid, token_id: Uuid) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "UPDATE identity.api_tokens SET revoked_at = now() \
+         WHERE id = $1 AND user_id = $2 AND revoked_at IS NULL",
+    )
+    .bind(token_id)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound(
+            "API token not found or already revoked".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// The stored secret-hash + owner identity for an API-token PREFIX, for the verify path. Only LIVE
+/// (non-revoked) tokens of a still-active, non-deleted user are returned — a revoked token or an
+/// erased owner yields `None`. The handler constant-time-compares the presented secret's hash.
+pub struct ApiTokenVerifyRow {
+    pub token_id: Uuid,
+    pub user_id: Uuid,
+    pub role: String,
+    pub token_hash: String,
+}
+
+/// Look up a LIVE API token by its public `prefix` (the verify lookup key). Joins the owning user
+/// so a token whose owner is deactivated/erased can't authenticate. `None` if no live token / dead
+/// owner. The caller verifies the secret hash + stamps `last_used_at`.
+pub async fn find_api_token_by_prefix(
+    db: &PgPool,
+    prefix: &str,
+) -> Result<Option<ApiTokenVerifyRow>, AppError> {
+    let row: Option<(Uuid, Uuid, String, String)> = sqlx::query_as(
+        r#"
+        SELECT t.id, t.user_id, t.role::text AS role, t.token_hash
+        FROM identity.api_tokens t
+        JOIN identity.users u ON u.id = t.user_id
+        WHERE t.prefix = $1
+          AND t.revoked_at IS NULL
+          AND u.is_active = TRUE
+          AND u.deleted_at IS NULL
+          AND u.approval_status = 'approved'::identity.approval_status
+        "#,
+    )
+    .bind(prefix)
+    .fetch_optional(db)
+    .await?;
+    Ok(
+        row.map(|(token_id, user_id, role, token_hash)| ApiTokenVerifyRow {
+            token_id,
+            user_id,
+            role,
+            token_hash,
+        }),
+    )
+}
+
+/// Stamp `last_used_at = now()` on a token after a successful verify (best-effort freshness — the
+/// caller logs but does not fail the request if this write hiccups).
+pub async fn touch_api_token(db: &PgPool, token_id: Uuid) -> Result<(), AppError> {
+    sqlx::query("UPDATE identity.api_tokens SET last_used_at = now() WHERE id = $1")
+        .bind(token_id)
+        .execute(db)
+        .await?;
+    Ok(())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// (3) Per-device sessions (#144) — list active families + revoke one family.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One active session (refresh family) for the caller's device list. `device`/`ip` come from the
+/// family's first (login) row; `last_used_at`/`created_at` track recency. The handler stamps
+/// `current` by matching the caller's presented refresh family.
+pub struct SessionRow {
+    pub family_id: Uuid,
+    pub user_agent: Option<String>,
+    pub ip: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub last_used_at: Option<DateTime<Utc>>,
+}
+
+/// List the caller's ACTIVE refresh families (one row per family) as a device list. A family is
+/// "active" if it has at least one non-revoked, unexpired token. `created_at` = the family's first
+/// login; `last_used_at` = its most recent rotation; `user_agent`/`ip` = the login row's context.
+/// Newest-active first.
+// Wide positional row tuple (5 cols) — consistent with the file's other ad-hoc reads.
+#[allow(clippy::type_complexity)]
+pub async fn list_sessions(db: &PgPool, user_id: Uuid) -> Result<Vec<SessionRow>, AppError> {
+    let rows: Vec<(
+        Uuid,
+        Option<String>,
+        Option<String>,
+        DateTime<Utc>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
+        r#"
+        SELECT
+            rt.family_id,
+            -- device/ip from the family's FIRST (login) row
+            (ARRAY_AGG(rt.user_agent ORDER BY rt.created_at ASC))[1]   AS user_agent,
+            (ARRAY_AGG(rt.ip ORDER BY rt.created_at ASC))[1]           AS ip,
+            MIN(rt.created_at)                                         AS created_at,
+            MAX(COALESCE(rt.last_used_at, rt.created_at))              AS last_used_at
+        FROM identity.refresh_tokens rt
+        WHERE rt.user_id = $1
+        GROUP BY rt.family_id
+        HAVING bool_or(rt.revoked = FALSE AND rt.expires_at > now())
+        ORDER BY MAX(COALESCE(rt.last_used_at, rt.created_at)) DESC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(
+            |(family_id, user_agent, ip, created_at, last_used_at)| SessionRow {
+                family_id,
+                user_agent,
+                ip,
+                created_at,
+                last_used_at,
+            },
+        )
+        .collect())
+}
+
+/// Revoke ONE refresh family that BELONGS to `user_id` (per-device "sign out this device", #144).
+/// Ownership-scoped: a family that isn't the caller's (or has no live tokens) revokes nothing →
+/// NotFound, so a user can't revoke another user's session (IDOR-safe). Reuses the family-revoke
+/// primitive but gated on `user_id`.
+pub async fn revoke_own_family(
+    db: &PgPool,
+    user_id: Uuid,
+    family_id: Uuid,
+) -> Result<(), AppError> {
+    let res = sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE \
+         WHERE family_id = $1 AND user_id = $2 AND revoked = FALSE",
+    )
+    .bind(family_id)
+    .bind(user_id)
+    .execute(db)
+    .await?;
+    if res.rows_affected() == 0 {
+        return Err(AppError::NotFound(
+            "Session not found or already signed out".to_string(),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1249,7 +1696,9 @@ mod tests {
         let user_id = Uuid::new_v4();
 
         for i in 0..20 {
-            let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+            let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+                .await
+                .expect("login");
             let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
 
             // Two tasks rotate the very same rotation_id, released together by a barrier.
@@ -1259,7 +1708,14 @@ mod tests {
                 let b = barrier.clone();
                 tokio::spawn(async move {
                     b.wait().await;
-                    rotate(&p, user_id, family_id, rotation_id).await
+                    rotate(
+                        &p,
+                        user_id,
+                        family_id,
+                        rotation_id,
+                        &DeviceContext::default(),
+                    )
+                    .await
                 })
             };
             let (a, b) = tokio::join!(spawn_one(), spawn_one());
@@ -1310,7 +1766,9 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("login");
         let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
 
         // First use: live → Rotate → a successor is minted (the family now has a live token).
@@ -1319,10 +1777,16 @@ mod tests {
             .expect("find")
             .expect("row");
         assert_eq!(decide(&loc.stored, Utc::now()), RotationDecision::Rotate);
-        let successor = rotate(&pool, user_id, family_id, rotation_id)
-            .await
-            .expect("rotate")
-            .expect("successor minted");
+        let successor = rotate(
+            &pool,
+            user_id,
+            family_id,
+            rotation_id,
+            &DeviceContext::default(),
+        )
+        .await
+        .expect("rotate")
+        .expect("successor minted");
         assert_eq!(live_tokens_in_family(&pool, family_id).await, 1);
 
         // Replay the now-spent rotation_id: it must read as revoked → ReuseDetected.
@@ -1373,7 +1837,9 @@ mod tests {
         // DISTINCT created_at so the LRU order is deterministic (oldest = the first one).
         let mut fams: Vec<(Uuid, Uuid)> = Vec::new(); // (rotation_id, family_id)
         for i in 0..MAX_SESSIONS_PER_USER {
-            let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+            let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+                .await
+                .expect("login");
             let (rid, fid) = ids_of(&pool, &opaque).await;
             // family 0 oldest … family 4 newest (minutes ago: 50,40,30,20,10).
             let mins_ago = (MAX_SESSIONS_PER_USER - i) as i32 * 10;
@@ -1395,7 +1861,7 @@ mod tests {
         );
 
         // The cap+1'th login: evict the oldest (fams[0]), keep the rest, add the new one.
-        let new_opaque = create_refresh_family(&pool, user_id)
+        let new_opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
             .await
             .expect("cap+1 login");
         let (_new_rid, new_fid) = ids_of(&pool, &new_opaque).await;
@@ -1425,10 +1891,16 @@ mod tests {
         let survivor_rid = fams[1].0;
         let survivor_fid = fams[1].1;
         assert!(
-            rotate(&pool, user_id, survivor_fid, survivor_rid)
-                .await
-                .expect("rotate survivor")
-                .is_some(),
+            rotate(
+                &pool,
+                user_id,
+                survivor_fid,
+                survivor_rid,
+                &DeviceContext::default()
+            )
+            .await
+            .expect("rotate survivor")
+            .is_some(),
             "a surviving family must still rotate"
         );
 
@@ -1445,7 +1917,9 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("login");
         let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
 
         // Backdate the family's only row so family_started_at (MIN created_at) is past the ceiling.
@@ -1490,16 +1964,18 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("login");
         let (rid0, family_id) = ids_of(&pool, &opaque).await;
 
         // Rotate twice → 3 rows in the family (rid0, rid1 revoked; rid2 live, freshly created).
-        let t1 = rotate(&pool, user_id, family_id, rid0)
+        let t1 = rotate(&pool, user_id, family_id, rid0, &DeviceContext::default())
             .await
             .expect("rotate 1")
             .expect("successor 1");
         let (rid1, _) = token::parse(&t1).expect("parse t1");
-        let t2 = rotate(&pool, user_id, family_id, rid1)
+        let t2 = rotate(&pool, user_id, family_id, rid1, &DeviceContext::default())
             .await
             .expect("rotate 2")
             .expect("successor 2");
@@ -1620,7 +2096,9 @@ mod tests {
         let user_id = seed_user(&pool, "guard", &pw_hash, None).await;
 
         // Open a refresh family so we can prove it gets revoked.
-        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("login");
         let (rid, _) = ids_of(&pool, &opaque).await;
 
         // Wrong current → generic 401, NO write.

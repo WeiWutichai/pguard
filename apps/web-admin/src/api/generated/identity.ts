@@ -56,6 +56,11 @@ export interface paths {
          *     refresh token (new family). Tokens are returned in the body AND set as cookies.
          *     Any failure returns a generic 401 — the response never reveals whether the
          *     account exists.
+         *
+         *     **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the `200`
+         *     body instead carries a `TwoFactorChallenge` (`{ two_factor_required: true, challenge_token }`)
+         *     with NO tokens/cookies. The client completes login at `POST /auth/2fa/verify` with a code.
+         *     Accounts WITHOUT 2FA are unaffected (the `data` is the usual `TokenPair`).
          */
         post: operations["login"];
         delete?: never;
@@ -184,6 +189,199 @@ export interface paths {
         put: operations["changePassword"];
         post?: never;
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/2fa/setup": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Begin TOTP 2FA enrollment (provision — NOT yet enabled,
+         * @description Generates a fresh TOTP secret for the CALLER, seals it at rest (AES-256-GCM under the
+         *     service-held `TOTP_ENC_KEY`), and returns the `otpauth://` provisioning URI (render as a QR)
+         *     plus the base32 `secret` (manual-entry fallback). **2FA is NOT enabled yet** — the client
+         *     must scan the QR and then call `POST /auth/2fa/enable` with a live code. Calling setup again
+         *     before enabling simply re-provisions. `409` if 2FA is already enabled (disable first).
+         */
+        post: operations["setup2fa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/2fa/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enable TOTP 2FA after verifying a live code (#144)
+         * @description Verifies the 6-digit `code` from the authenticator against the provisioning secret from
+         *     `/auth/2fa/setup`, then turns 2FA ON and returns one-time **recovery codes** shown EXACTLY
+         *     ONCE (store them — they are not retrievable again). A wrong code → `401` (nothing changes);
+         *     no provisioning in progress → `409`.
+         */
+        post: operations["enable2fa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/2fa/disable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Disable TOTP 2FA (confirm with a code or password,
+         * @description Turns 2FA OFF for the CALLER after confirming intent via EITHER a live TOTP `code` OR the
+         *     account `password` (SHA-256 hex, same shape as login). Clears the secret + recovery codes.
+         *     A wrong code/password → `401`; neither supplied → `400`. Disabling an already-off account is
+         *     a harmless no-op (`200`).
+         */
+        post: operations["disable2fa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/2fa/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Complete a 2FA login (second step) — issues the token pair (#144)
+         * @description The second login step. When `POST /auth/login` finds 2FA enabled it returns a single-use
+         *     `challenge_token` (NOT a token pair). The client posts that token here together with EITHER a
+         *     TOTP `code` OR a one-time `recovery_code`; on success identity issues the access + refresh
+         *     token pair (also set as cookies), exactly like a normal login. The challenge is single-use
+         *     (replays rejected); a recovery code is single-use (consumed). **Edge-public** (carries the
+         *     challenge token, not an access token). Invalid/expired challenge or wrong code → `401`.
+         */
+        post: operations["verify2fa"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's active sessions (per-device,
+         * @description Lists the caller's ACTIVE refresh families as a device list: `{ family_id, user_agent, ip
+         *     (masked), created_at, last_used_at, current }`. `current` marks the session whose refresh
+         *     token is presented (cookie or `X-Refresh-Token`). `ip` is masked to its first two octets/
+         *     hextets. A family is "active" if it still has a non-revoked, unexpired token.
+         */
+        get: operations["listSessions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/sessions/{family_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke ONE of the caller's sessions (sign out a single device,
+         * @description Revokes a single refresh family that belongs to the CALLER (sign out one device). Ownership-
+         *     scoped — a family that isn't the caller's → `404` (IDOR-safe). The "sign out everywhere"
+         *     endpoint (`POST /auth/revoke-all`) is separate. The revoked device's refresh token can no
+         *     longer rotate; its access token expires naturally (≤15 min).
+         */
+        delete: operations["revokeSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api-tokens": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List the caller's admin API tokens (NEVER the secret, role=admin,
+         * @description Lists the CALLER'S admin API tokens — `{ id, name, prefix, role, created_at, last_used_at,
+         *     revoked }`. **Admin only**. The secret is NEVER returned (only the public prefix). A revoked
+         *     token is still listed (audit) but cannot authenticate.
+         */
+        get: operations["listApiTokens"];
+        put?: never;
+        /**
+         * Create an admin API token — full token returned ONCE (role=admin,
+         * @description Creates a long-lived admin API token for the CALLER. **Admin only** (else `403`). Returns the
+         *     FULL token `pguard_<prefix>_<secret>` **exactly once** — only the SHA-256 hash of the secret
+         *     is stored, so it can never be shown again. The token authenticates as the creator's role
+         *     (admin) and is usable as a `Bearer` for admin API calls (the gateway validates it via
+         *     identity's internal verify endpoint and injects the trusted user). Revoke via DELETE.
+         */
+        post: operations["createApiToken"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/api-tokens/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke one of the caller's admin API tokens (role=admin,
+         * @description Soft-revokes ONE of the caller's OWN admin API tokens by id. **Admin only** + ownership-scoped
+         *     (a token that isn't theirs → `404`, IDOR-safe). The row is kept for audit; a revoked token
+         *     fails verification immediately.
+         */
+        delete: operations["revokeApiToken"];
         options?: never;
         head?: never;
         patch?: never;
@@ -410,6 +608,102 @@ export interface components {
             /** @example ******5678 */
             phone_masked: string;
         };
+        /**
+         * @description TOTP enrollment material (2FA NOT yet enabled). `otpauth_uri` is the `otpauth://totp/...`
+         *     provisioning URI to render as a QR; `secret` is the base32 manual-entry fallback.
+         */
+        Setup2faResponse: {
+            /** @example otpauth://totp/pguard:0812345678?secret=JBSWY3DPEHPK3PXP&issuer=pguard&digits=6&period=30 */
+            otpauth_uri: string;
+            /** @example JBSWY3DPEHPK3PXP */
+            secret: string;
+        };
+        Enable2faRequest: {
+            /**
+             * @description The 6-digit TOTP code from the authenticator app.
+             * @example 123456
+             */
+            code: string;
+        };
+        /** @description One-time recovery codes — shown ONCE, never retrievable again. */
+        Enable2faResponse: {
+            recovery_codes: string[];
+        };
+        /** @description Confirm intent with EITHER a live TOTP `code` OR the account `password` (at least one). */
+        Disable2faRequest: {
+            /** @description A live 6-digit TOTP code. */
+            code?: string | null;
+            /** @description SHA-256 hex of the account PIN (same shape as login's `password`). */
+            password?: string | null;
+        };
+        /**
+         * @description Second login step. Carries the single-use `challenge_token` from login plus EITHER a TOTP
+         *     `code` OR a one-time `recovery_code`.
+         */
+        Verify2faRequest: {
+            /** @description The challenge token returned by login. */
+            challenge_token: string;
+            /** @description A 6-digit TOTP code. */
+            code?: string | null;
+            /** @description A one-time recovery code. */
+            recovery_code?: string | null;
+        };
+        /**
+         * @description Login outcome when 2FA is enabled — NO tokens. The client posts `challenge_token` to
+         *     `POST /auth/2fa/verify` with a code to complete login.
+         */
+        TwoFactorChallenge: {
+            /** @enum {boolean} */
+            two_factor_required: true;
+            challenge_token: string;
+        };
+        CreateApiTokenRequest: {
+            /** @description Human label for the token, e.g. "CI deploy bot". */
+            name: string;
+        };
+        /**
+         * @description The created token. `token` is the FULL bearer (`pguard_<prefix>_<secret>`) shown EXACTLY
+         *     ONCE — store it now; it is not retrievable later. Only the prefix is listed thereafter.
+         */
+        CreateApiTokenResponse: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @example ab2cd3 */
+            prefix: string;
+            /** @example pguard_ab2cd3_v8w9x0secretsecretsecret */
+            token: string;
+        };
+        /** @description One admin API token in the listing — NEVER the secret. */
+        ApiTokenView: {
+            /** Format: uuid */
+            id: string;
+            name: string;
+            /** @example ab2cd3 */
+            prefix: string;
+            role: components["schemas"]["UserRole"];
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            revoked: boolean;
+        };
+        /**
+         * @description One active session (refresh family). `current` marks the caller's own session. `ip` is
+         *     masked (first two octets/hextets kept).
+         */
+        SessionView: {
+            /** Format: uuid */
+            family_id: string;
+            user_agent?: string | null;
+            /** @example 203.0.x.x */
+            ip?: string | null;
+            /** Format: date-time */
+            created_at: string;
+            /** Format: date-time */
+            last_used_at?: string | null;
+            current: boolean;
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -562,7 +856,22 @@ export interface operations {
             };
         };
         responses: {
-            200: components["responses"]["TokenPairOk"];
+            /** @description Either the issued token pair (no 2FA) OR a 2FA challenge (`two_factor_required: true`). */
+            200: {
+                headers: {
+                    /**
+                     * @description On the no-2FA path, httpOnly Secure SameSite=Lax `access_token` + `refresh_token`
+                     *     cookies (absent on the 2FA-challenge path).
+                     */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["TokenPair"] | components["schemas"]["TwoFactorChallenge"];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
         };
     };
@@ -720,6 +1029,228 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    setup2fa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Provisioning URI + base32 secret (2FA still off) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Setup2faResponse"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    enable2fa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Enable2faRequest"];
+            };
+        };
+        responses: {
+            /** @description 2FA enabled; one-time recovery codes (shown once) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Enable2faResponse"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    disable2fa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Disable2faRequest"];
+            };
+        };
+        responses: {
+            /** @description 2FA disabled */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            /** @example false */
+                            two_factor_enabled?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    verify2fa: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Verify2faRequest"];
+            };
+        };
+        responses: {
+            /** @description Tokens issued (same shape + cookies as login) */
+            200: {
+                headers: {
+                    /** @description httpOnly Secure SameSite=Lax `access_token` + `refresh_token` cookies. */
+                    "Set-Cookie"?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["TokenPair"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    listSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's active sessions */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["SessionView"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    revokeSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                family_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EmptyOk"];
+            401: components["responses"]["Unauthorized"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    listApiTokens: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's API tokens (no secrets) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["ApiTokenView"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createApiToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateApiTokenRequest"];
+            };
+        };
+        responses: {
+            /** @description The created token (full secret shown once) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CreateApiTokenResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    revokeApiToken: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["EmptyOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     adminSearchUsers: {

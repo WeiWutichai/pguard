@@ -8,19 +8,28 @@ import 'package:built_value/json_object.dart';
 import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
+import 'package:pguard_identity_api/src/api_util.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response.dart';
 import 'package:pguard_identity_api/src/model/change_password_request.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response.dart';
 import 'package:pguard_identity_api/src/model/delete_me200_response.dart';
+import 'package:pguard_identity_api/src/model/disable2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/disable2fa_request.dart';
+import 'package:pguard_identity_api/src/model/enable2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/enable2fa_request.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
 import 'package:pguard_identity_api/src/model/inline_object.dart';
-import 'package:pguard_identity_api/src/model/inline_object1.dart';
+import 'package:pguard_identity_api/src/model/list_sessions200_response.dart';
+import 'package:pguard_identity_api/src/model/login200_response.dart';
 import 'package:pguard_identity_api/src/model/login_request.dart';
 import 'package:pguard_identity_api/src/model/me200_response.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
+import 'package:pguard_identity_api/src/model/setup2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/update_me_request.dart';
+import 'package:pguard_identity_api/src/model/verify2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/verify2fa_request.dart';
 
 class AuthApi {
 
@@ -289,8 +298,289 @@ class AuthApi {
     );
   }
 
+  /// Disable TOTP 2FA (confirm with a code or password,
+  /// Turns 2FA OFF for the CALLER after confirming intent via EITHER a live TOTP &#x60;code&#x60; OR the account &#x60;password&#x60; (SHA-256 hex, same shape as login). Clears the secret + recovery codes. A wrong code/password → &#x60;401&#x60;; neither supplied → &#x60;400&#x60;. Disabling an already-off account is a harmless no-op (&#x60;200&#x60;). 
+  ///
+  /// Parameters:
+  /// * [disable2faRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Disable2fa200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Disable2fa200Response>> disable2fa({ 
+    required Disable2faRequest disable2faRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/2fa/disable';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(Disable2faRequest);
+      _bodyData = _serializers.serialize(disable2faRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Disable2fa200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Disable2fa200Response),
+      ) as Disable2fa200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Disable2fa200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Enable TOTP 2FA after verifying a live code (#144)
+  /// Verifies the 6-digit &#x60;code&#x60; from the authenticator against the provisioning secret from &#x60;/auth/2fa/setup&#x60;, then turns 2FA ON and returns one-time **recovery codes** shown EXACTLY ONCE (store them — they are not retrievable again). A wrong code → &#x60;401&#x60; (nothing changes); no provisioning in progress → &#x60;409&#x60;. 
+  ///
+  /// Parameters:
+  /// * [enable2faRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Enable2fa200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Enable2fa200Response>> enable2fa({ 
+    required Enable2faRequest enable2faRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/2fa/enable';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(Enable2faRequest);
+      _bodyData = _serializers.serialize(enable2faRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Enable2fa200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Enable2fa200Response),
+      ) as Enable2fa200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Enable2fa200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// List the caller&#39;s active sessions (per-device,
+  /// Lists the caller&#39;s ACTIVE refresh families as a device list: &#x60;{ family_id, user_agent, ip (masked), created_at, last_used_at, current }&#x60;. &#x60;current&#x60; marks the session whose refresh token is presented (cookie or &#x60;X-Refresh-Token&#x60;). &#x60;ip&#x60; is masked to its first two octets/ hextets. A family is \&quot;active\&quot; if it still has a non-revoked, unexpired token. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ListSessions200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ListSessions200Response>> listSessions({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/sessions';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ListSessions200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ListSessions200Response),
+      ) as ListSessions200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ListSessions200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// Authenticate with phone/email + password; issue an access + refresh token
-  /// Looks up the user by &#x60;identifier&#x60; (phone OR email), verifies the password with Argon2 (constant-time, anti-enumeration), then issues an access JWT + a rotating refresh token (new family). Tokens are returned in the body AND set as cookies. Any failure returns a generic 401 — the response never reveals whether the account exists. 
+  /// Looks up the user by &#x60;identifier&#x60; (phone OR email), verifies the password with Argon2 (constant-time, anti-enumeration), then issues an access JWT + a rotating refresh token (new family). Tokens are returned in the body AND set as cookies. Any failure returns a generic 401 — the response never reveals whether the account exists.  **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the &#x60;200&#x60; body instead carries a &#x60;TwoFactorChallenge&#x60; (&#x60;{ two_factor_required: true, challenge_token }&#x60;) with NO tokens/cookies. The client completes login at &#x60;POST /auth/2fa/verify&#x60; with a code. Accounts WITHOUT 2FA are unaffected (the &#x60;data&#x60; is the usual &#x60;TokenPair&#x60;). 
   ///
   /// Parameters:
   /// * [loginRequest] 
@@ -301,9 +591,9 @@ class AuthApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Returns a [Future] containing a [Response] with a [Login200Response] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject>> login({ 
+  Future<Response<Login200Response>> login({ 
     required LoginRequest loginRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -353,14 +643,14 @@ class AuthApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject? _responseData;
+    Login200Response? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject),
-      ) as InlineObject;
+        specifiedType: const FullType(Login200Response),
+      ) as Login200Response;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -372,7 +662,7 @@ class AuthApi {
       );
     }
 
-    return Response<InlineObject>(
+    return Response<Login200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -396,9 +686,9 @@ class AuthApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject1>> logout({ 
+  Future<Response<InlineObject>> logout({ 
     RefreshRequest? refreshRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -454,14 +744,14 @@ class AuthApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject1? _responseData;
+    InlineObject? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject1),
-      ) as InlineObject1;
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -473,7 +763,7 @@ class AuthApi {
       );
     }
 
-    return Response<InlineObject1>(
+    return Response<InlineObject>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -576,9 +866,9 @@ class AuthApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Returns a [Future] containing a [Response] with a [Verify2fa200Response] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject>> refresh({ 
+  Future<Response<Verify2fa200Response>> refresh({ 
     RefreshRequest? refreshRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -628,14 +918,14 @@ class AuthApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject? _responseData;
+    Verify2fa200Response? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject),
-      ) as InlineObject;
+        specifiedType: const FullType(Verify2fa200Response),
+      ) as Verify2fa200Response;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -647,7 +937,7 @@ class AuthApi {
       );
     }
 
-    return Response<InlineObject>(
+    return Response<Verify2fa200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -765,9 +1055,9 @@ class AuthApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject1>> revokeAllSessions({ 
+  Future<Response<InlineObject>> revokeAllSessions({ 
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -802,14 +1092,14 @@ class AuthApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject1? _responseData;
+    InlineObject? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject1),
-      ) as InlineObject1;
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -821,7 +1111,167 @@ class AuthApi {
       );
     }
 
-    return Response<InlineObject1>(
+    return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Revoke ONE of the caller&#39;s sessions (sign out a single device,
+  /// Revokes a single refresh family that belongs to the CALLER (sign out one device). Ownership- scoped — a family that isn&#39;t the caller&#39;s → &#x60;404&#x60; (IDOR-safe). The \&quot;sign out everywhere\&quot; endpoint (&#x60;POST /auth/revoke-all&#x60;) is separate. The revoked device&#39;s refresh token can no longer rotate; its access token expires naturally (≤15 min). 
+  ///
+  /// Parameters:
+  /// * [familyId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InlineObject>> revokeSession({ 
+    required String familyId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/sessions/{family_id}'.replaceAll('{' r'family_id' '}', encodeQueryParameter(_serializers, familyId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'DELETE',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InlineObject? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Begin TOTP 2FA enrollment (provision — NOT yet enabled,
+  /// Generates a fresh TOTP secret for the CALLER, seals it at rest (AES-256-GCM under the service-held &#x60;TOTP_ENC_KEY&#x60;), and returns the &#x60;otpauth://&#x60; provisioning URI (render as a QR) plus the base32 &#x60;secret&#x60; (manual-entry fallback). **2FA is NOT enabled yet** — the client must scan the QR and then call &#x60;POST /auth/2fa/enable&#x60; with a live code. Calling setup again before enabling simply re-provisions. &#x60;409&#x60; if 2FA is already enabled (disable first). 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Setup2fa200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Setup2fa200Response>> setup2fa({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/2fa/setup';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Setup2fa200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Setup2fa200Response),
+      ) as Setup2fa200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Setup2fa200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -923,6 +1373,101 @@ class AuthApi {
     }
 
     return Response<Me200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Complete a 2FA login (second step) — issues the token pair (#144)
+  /// The second login step. When &#x60;POST /auth/login&#x60; finds 2FA enabled it returns a single-use &#x60;challenge_token&#x60; (NOT a token pair). The client posts that token here together with EITHER a TOTP &#x60;code&#x60; OR a one-time &#x60;recovery_code&#x60;; on success identity issues the access + refresh token pair (also set as cookies), exactly like a normal login. The challenge is single-use (replays rejected); a recovery code is single-use (consumed). **Edge-public** (carries the challenge token, not an access token). Invalid/expired challenge or wrong code → &#x60;401&#x60;. 
+  ///
+  /// Parameters:
+  /// * [verify2faRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Verify2fa200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Verify2fa200Response>> verify2fa({ 
+    required Verify2faRequest verify2faRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/2fa/verify';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(Verify2faRequest);
+      _bodyData = _serializers.serialize(verify2faRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Verify2fa200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Verify2fa200Response),
+      ) as Verify2fa200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Verify2fa200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

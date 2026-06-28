@@ -10,7 +10,7 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_identity_api/src/api_util.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
-import 'package:pguard_identity_api/src/model/inline_object1.dart';
+import 'package:pguard_identity_api/src/model/inline_object.dart';
 import 'package:pguard_identity_api/src/model/internal_resolve_user_names200_response.dart';
 import 'package:pguard_identity_api/src/model/resolve_users_request.dart';
 
@@ -135,9 +135,9 @@ class InternalApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject1] as data
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject1>> internalRevokeAll({ 
+  Future<Response<InlineObject>> internalRevokeAll({ 
     required String id,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -173,14 +173,14 @@ class InternalApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject1? _responseData;
+    InlineObject? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject1),
-      ) as InlineObject1;
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -192,7 +192,7 @@ class InternalApi {
       );
     }
 
-    return Response<InlineObject1>(
+    return Response<InlineObject>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

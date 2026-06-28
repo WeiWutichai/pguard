@@ -83,6 +83,15 @@ argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
 subtle = "2"
+# Identity 2FA (#144 admin security): vetted RFC-6238 TOTP (do NOT hand-roll the OTP math).
+# `otpauth` builds the `otpauth://` provisioning URI for the authenticator-app QR.
+totp-rs = { version = "5", features = ["otpauth"] }
+# TOTP-secret encryption-at-rest: the per-user TOTP seed is sealed with AES-256-GCM under the
+# service-held `TOTP_ENC_KEY` so a bare DB dump can't replay 2FA. `aes-gcm` is a vetted RustCrypto
+# AEAD — never roll your own cipher.
+aes-gcm = "0.10"
+# RFC-4648 base32 for the recovery-code display alphabet + TOTP secret encoding.
+data-encoding = "2"
 # AWS SigV4 presigning (chat attachments → MinIO/R2): HMAC-SHA256 over `sha2`. Lets chat sign
 # its own presigned GET/PUT URLs with `reqwest` rather than pulling the heavy aws-sdk-s3 tree.
 hmac = "0.12"
