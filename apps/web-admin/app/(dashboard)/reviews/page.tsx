@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Clock,
@@ -14,6 +14,7 @@ import {
 import type { components } from "@/api/generated/rating";
 import { ratingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 import { cn } from "@/lib/cn";
 import {
   Avatar,
@@ -159,6 +160,17 @@ export default function ReviewsPage() {
     setHasError(false);
     setReloadNonce((n) => n + 1);
   }
+
+  // Batch-resolve every guard + customer id on the page to display names in one call (the contract
+  // exposes only ids on reviews). Falls back to the short id when a name is unavailable.
+  const resolveIds = useMemo(() => {
+    const out: string[] = [];
+    for (const r of reviews) {
+      out.push(r.guard_id, r.customer_id);
+    }
+    return out;
+  }, [reviews]);
+  const { resolve } = useNameResolver(resolveIds, lang);
 
   // Optimistic visibility flip + rollback. On success, refetch so the UNFILTERED stats cards stay
   // truthful (and the row reconciles with the active filter) — stats never come from the list.
@@ -313,19 +325,31 @@ export default function ReviewsPage() {
               </tr>
             </thead>
             <tbody>
-              {reviews.map((r) => (
+              {reviews.map((r) => {
+                const guard = resolve(r.guard_id);
+                const customer = resolve(r.customer_id);
+                return (
                 <Tr key={r.id} onClick={() => setSelected(r)}>
                   <Td>
                     <span className="flex items-center gap-3">
-                      <Avatar>{initials(r.guard_id)}</Avatar>
-                      {/* Contract exposes IDs only (no guard/customer names on this screen). */}
-                      <span className="font-mono text-xs font-semibold text-text-strong">
-                        {r.guard_id}
+                      <Avatar>{initials(guard.name ?? r.guard_id)}</Avatar>
+                      {/* Names resolved via the admin name-resolver; short-id fallback when absent. */}
+                      <span
+                        className={cn(
+                          "text-xs font-semibold text-text-strong",
+                          guard.name ? "" : "font-mono",
+                        )}
+                        title={r.guard_id}
+                      >
+                        {guard.label}
                       </span>
                     </span>
                   </Td>
-                  <Td className="font-mono text-xs text-muted">
-                    {r.customer_id.slice(0, 8)}
+                  <Td
+                    className={cn("text-xs text-muted", customer.name ? "" : "font-mono")}
+                    title={r.customer_id}
+                  >
+                    {customer.label}
                   </Td>
                   <Td>
                     <Stars value={r.overall_rating} />
@@ -346,7 +370,8 @@ export default function ReviewsPage() {
                     />
                   </Td>
                 </Tr>
-              ))}
+                );
+              })}
             </tbody>
           </Table>
         )}
@@ -379,14 +404,20 @@ export default function ReviewsPage() {
         >
           <div className="flex items-center gap-3">
             <Avatar size="lg" className="size-[46px] text-base">
-              {initials(selected.guard_id)}
+              {initials(resolve(selected.guard_id).name ?? selected.guard_id)}
             </Avatar>
             <div className="min-w-0">
-              <div className="truncate font-mono text-[13px] font-semibold text-text-strong">
-                {selected.guard_id}
+              <div
+                className={cn(
+                  "truncate text-[13px] font-semibold text-text-strong",
+                  resolve(selected.guard_id).name ? "" : "font-mono",
+                )}
+                title={selected.guard_id}
+              >
+                {resolve(selected.guard_id).label}
               </div>
-              <div className="text-[12.5px] text-muted">
-                {c.reviewedBy} {selected.customer_id.slice(0, 8)} ·{" "}
+              <div className="text-[12.5px] text-muted" title={selected.customer_id}>
+                {c.reviewedBy} {resolve(selected.customer_id).label} ·{" "}
                 {fullDate(selected.created_at, lang)}
               </div>
             </div>
@@ -416,9 +447,10 @@ export default function ReviewsPage() {
   );
 }
 
-/** Two-character "initials" from the guard UUID — the contract carries IDs, not names. */
-function initials(id: string): string {
-  return id.slice(0, 2).toUpperCase();
+/** Two-character avatar "initials" from the resolved guard name (preferred) — or, when no name is
+ * available, the guard UUID prefix as a stable fallback. */
+function initials(nameOrId: string): string {
+  return nameOrId.slice(0, 2).toUpperCase();
 }
 
 /** Table date per the design: abbreviated day+month (e.g. "3 มิ.ย."). Gregorian calendar so the

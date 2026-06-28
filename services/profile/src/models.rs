@@ -66,6 +66,45 @@ pub struct PublicCustomerProfile {
     pub full_name: Option<String>,
 }
 
+// ----- Admin batch name-resolver (POST /admin/users/resolve) -----
+
+/// Request to resolve a batch of `user_id`s to display names (the admin lists render guard /
+/// customer / admin ids — jobs, reviews, calls, activity log — as raw UUIDs without this).
+/// Admin-only. Bounded by [`RESOLVE_NAMES_LIMIT`] so one page's worth of ids is one round-trip,
+/// never an unbounded scan.
+#[derive(Debug, Deserialize)]
+pub struct ResolveNamesRequest {
+    /// The ids to resolve. Duplicates are de-duplicated server-side; an empty list → empty map.
+    pub ids: Vec<Uuid>,
+}
+
+/// Hard cap on a single resolve request (one admin page never references more ids than this).
+/// A request beyond the cap is rejected (400) rather than silently truncated, so the caller
+/// learns to page rather than getting a partial map it can't tell apart from "unknown ids".
+pub const RESOLVE_NAMES_LIMIT: usize = 500;
+
+/// One resolved identity: a display name (PII reachable ONLY by an admin here) + the role it
+/// was resolved as. NEVER any other PII (phone / bank / address / email). `display_name` is
+/// `None` when the profile row exists but carries no name yet (mid-onboarding); the role is
+/// still authoritative. Keyed by the id in the response map, so the id is not repeated here.
+#[derive(Debug, Serialize)]
+pub struct ResolvedName {
+    /// `guard` | `customer`. (`admin` is never produced here — admins have no profile row /
+    /// stored name; see the handler's fallback + the OpenAPI note.)
+    pub role: String,
+    /// The user's full name, or `null` if the profile row has no name set yet.
+    pub display_name: Option<String>,
+}
+
+/// Raw resolver row (a guard or customer profile, with the role derived from which table the
+/// row came from). `role` is a literal from the UNION query, never user input.
+#[derive(Debug, sqlx::FromRow)]
+pub struct ResolvedNameRow {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub role: String,
+}
+
 /// Response for a guard-document upload / read: the canonical type + a short-lived presigned GET
 /// URL (1h) for the stored image. The raw S3 key is never exposed (only the signed URL).
 #[derive(Debug, Serialize)]

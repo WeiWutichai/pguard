@@ -20,6 +20,7 @@ import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.d
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
@@ -53,6 +54,8 @@ import 'package:pguard_profile_api/src/model/public_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
+import 'package:pguard_profile_api/src/model/resolve_names_request.dart';
+import 'package:pguard_profile_api/src/model/resolved_name.dart';
 import 'package:pguard_profile_api/src/model/set_document_expiry_request.dart';
 import 'package:pguard_profile_api/src/model/set_guard_document_expiry200_response.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
@@ -68,6 +71,7 @@ part 'serializers.g.dart';
   AdminListCustomerProfiles200Response,
   AdminListExpiringDocuments200Response,
   AdminListGuardProfiles200Response,
+  AdminResolveUserNames200Response,
   AdminSetCandidateStage200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
@@ -101,6 +105,8 @@ part 'serializers.g.dart';
   PublicGuardProfile,
   RecruitCandidate,
   RejectRequest,
+  ResolveNamesRequest,
+  ResolvedName,
   SetDocumentExpiryRequest,
   SetGuardDocumentExpiry200Response,
   StageRequest,

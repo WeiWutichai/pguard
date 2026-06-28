@@ -559,6 +559,62 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/users/resolve:
+    post:
+      tags: [Admin]
+      summary: Batch-resolve user_ids to display names (role=admin)
+      description: |
+        Resolve a batch of `user_id`s to display names for the admin lists that otherwise render
+        raw UUIDs — จัดการงาน/jobs (guard_id + customer_id), รีวิว/reviews (guard_id + customer_id),
+        บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only**
+        (role gate at the gateway-routed edge + this service; non-admin → **403**).
+
+        profile OWNS the only stored display names in the system
+        (`guard_profiles.full_name` / `customer_profiles.full_name`), so it answers in ONE query —
+        no cross-service hop. The response is a MAP keyed by id → `{ role, display_name }`:
+          - a guard/customer id resolves to its name + the role derived from which table it is in
+            (`display_name` may be `null` mid-onboarding — the role is still authoritative);
+          - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a
+            genuinely-unknown / deleted id — is simply **OMITTED** from the map. The client renders a
+            fallback (role label + short id) for an omitted id, so an admin's row never blocks a page.
+
+        Returns ONLY `{ role, display_name }` — NEVER any other PII (phone / bank / address / email).
+        Bounded to `RESOLVE_NAMES_LIMIT` (500) ids per call — a larger batch → **400** (page it),
+        not a silent truncation (a partial map is indistinguishable from "these ids are unknown").
+        Duplicate ids are de-duplicated server-side; an empty `ids` list → an empty map (`{}`).
+
+        FOLLOW-UP (flagged, NOT done here): admins have no stored display name anywhere
+        (`identity.users` has only id / phone / email / role — no name column), so admin ids fall
+        back to the role-label. A real admin name (also wanted on the admin-profile screen) needs an
+        identity `display_name` column + an identity internal lookup — a later phase. This does NOT
+        block guard/customer resolution, which is complete.
+      operationId: adminResolveUserNames
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveNamesRequest' }
+      responses:
+        '200':
+          description: |
+            A map keyed by the resolved id. Ids with no profile row (admins, unknown/deleted) are
+            omitted — the client falls back to a role label + short id for those.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        additionalProperties: { $ref: '#/components/schemas/ResolvedName' }
+                        description: id (uuid string) → resolved name. Unknown ids are omitted.
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/documents/expiring:
     get:
       tags: [Admin]
@@ -989,6 +1045,36 @@ components:
       properties:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
+
+    ResolveNamesRequest:
+      type: object
+      description: |
+        A batch of user_ids to resolve to display names (admin lists). Duplicates are
+        de-duplicated server-side; an empty list returns an empty map. Bounded to 500 ids per
+        call (a larger batch → 400 — page the calls).
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          maxItems: 500
+          items: { type: string, format: uuid }
+          description: The user_ids to resolve.
+
+    ResolvedName:
+      type: object
+      description: |
+        One resolved identity for the admin name-resolver: a display name (admin-only PII here) +
+        the role it was resolved as. NEVER any other PII. `display_name` is `null` when the profile
+        row exists but has no name yet (mid-onboarding) — the role is still authoritative. `role` is
+        always `guard` or `customer`; `admin` is NEVER produced (admins have no profile row / stored
+        name, so an admin id is OMITTED from the response map and the client uses a role-label fallback).
+      required: [role]
+      properties:
+        role:
+          type: string
+          enum: [guard, customer]
+          description: The role this id was resolved as (derived from which profile table it is in).
+        display_name: { type: string, nullable: true, description: 'The user''s full name, or null if not set yet.' }
 
     GuardDocumentResponse:
       type: object

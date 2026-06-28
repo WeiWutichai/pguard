@@ -230,6 +230,15 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin batch name-resolver (`POST /admin/users/resolve`): id[] → display names for the
+        // admin lists (jobs/reviews/calls/activity log) that render raw UUIDs. profile owns the
+        // only stored display names (guard/customer full_name); admin authz is profile's own job.
+        prefix: "/admin/users",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin guard-document expiry surface (read). Profile owns the document_expiry table.
         prefix: "/admin/documents",
         suffix: None,
@@ -927,6 +936,17 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/access-audit"));
         assert_eq!(up, Upstream::Profile);
         assert_eq!(fwd, "/admin/access-audit");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_users_resolve_routes_to_profile() {
+        // The admin batch name-resolver (POST) → profile, edge-protected, Api tier. Admin authz
+        // is profile's own job (same pattern as the other /admin/* → profile rules).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/users/resolve"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/admin/users/resolve");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

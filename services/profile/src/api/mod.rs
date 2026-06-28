@@ -28,8 +28,9 @@ use crate::models::{
     CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentExpiry,
     GuardDocumentResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
     MyProfile, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
-    RecruitCandidate, RejectRequest, SetDocumentExpiryRequest, StageRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
+    StageRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
+    RESOLVE_NAMES_LIMIT,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -994,6 +995,60 @@ pub async fn admin_list_access_audit<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(rows)))
 }
 
+// ----- POST /admin/users/resolve — admin batch name resolver -----
+
+/// Resolve a batch of `user_id`s to display names for the admin lists (jobs, reviews, calls,
+/// activity log) that otherwise render raw UUIDs. ADMIN ONLY (else 403, before any DB access).
+/// profile OWNS the only stored display names in the system (`guard_profiles.full_name` /
+/// `customer_profiles.full_name`), so it answers in ONE query — no cross-service hop.
+///
+/// Response is a MAP keyed by id → `{ role, display_name }`. The map is null-safe and
+/// least-privilege:
+///   - a guard/customer id resolves to its name + role (`display_name` may be `null` mid-onboarding);
+///   - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a
+///     genuinely-unknown/deleted id — is simply OMITTED from the map. The client renders a
+///     fallback (role label + short id) for an omitted id, so an admin's row never blocks the page.
+///   - NO other PII is ever returned (phone / bank / address / email stay home).
+///
+/// FOLLOW-UP (flagged, not done here): admins have no stored display name anywhere
+/// (`identity.users` has only id/phone/email/role — no name column). Giving admins a real name
+/// needs an identity column + an identity internal lookup; until then admin ids fall back to the
+/// role-label. This intentionally does NOT block guard/customer resolution, which is complete.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, count = req.ids.len()))]
+pub async fn admin_resolve_names<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<ResolveNamesRequest>,
+) -> Result<Json<ApiResponse<std::collections::HashMap<Uuid, ResolvedName>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    if req.ids.len() > RESOLVE_NAMES_LIMIT {
+        return Err(AppError::BadRequest(format!(
+            "too many ids (max {RESOLVE_NAMES_LIMIT} per request — page the resolve calls)"
+        )));
+    }
+    // De-duplicate before the query (a page can reference the same guard on many rows) so the
+    // bound array — and the round-trip — is the SET of distinct ids, not the raw list.
+    let ids: Vec<Uuid> = {
+        let mut seen = std::collections::HashSet::new();
+        req.ids.into_iter().filter(|id| seen.insert(*id)).collect()
+    };
+    let rows = repo::resolve_names(state.db_read(), &ids).await?;
+    // Build the id → {role, display_name} map. Unmatched ids never appear (null-safe omission).
+    let map: std::collections::HashMap<Uuid, ResolvedName> = rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.user_id,
+                ResolvedName {
+                    role: r.role,
+                    display_name: r.full_name,
+                },
+            )
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(map)))
+}
+
 // ----- GET /internal/guards (service-to-service catalog) -----
 
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
@@ -1350,6 +1405,10 @@ mod tests {
                     get(admin_list_access_audit::<TestDeps>),
                 )
                 .route(
+                    "/admin/users/resolve",
+                    post(admin_resolve_names::<TestDeps>),
+                )
+                .route(
                     "/admin/documents/expiring",
                     get(admin_list_expiring_documents::<TestDeps>),
                 )
@@ -1571,6 +1630,142 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- POST /admin/users/resolve — admin batch name resolver -----
+
+    fn resolve_request(role: &str, ids: &[Uuid]) -> Request<Body> {
+        let body = serde_json::json!({ "ids": ids }).to_string();
+        Request::builder()
+            .method("POST")
+            .uri("/admin/users/resolve")
+            .header("authorization", format!("Bearer {}", token(role)))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn resolve_names_rejects_non_admin_guard() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not resolve arbitrary users' names → 403 at the role gate, BEFORE any DB
+        // access (the closed lazy pool is never touched).
+        let res = app
+            .oneshot(resolve_request(ROLE_GUARD, &[Uuid::new_v4()]))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn resolve_names_rejects_non_admin_customer() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(resolve_request(ROLE_CUSTOMER, &[Uuid::new_v4()]))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer must not resolve other users' names"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_names_admin_with_ids_passes_authz_to_repo() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // An admin with a non-empty id set passes the gate → reaches the repo (500 on the closed
+        // lazy pool). NOT 401/403/400 proves authz + the limit check let it through to the DB.
+        let res = app
+            .oneshot(resolve_request(
+                ROLE_ADMIN,
+                &[Uuid::new_v4(), Uuid::new_v4()],
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "an admin must pass the role gate"
+        );
+        assert_ne!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "a within-limit id set must pass the cap check"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_names_admin_empty_ids_returns_empty_map() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // An empty id list short-circuits in the repo (no query) → 200 with an empty object, so a
+        // page with nothing to resolve never hits the DB. Also proves the happy path serializes a
+        // MAP (`{}`), not an array.
+        let res = app.oneshot(resolve_request(ROLE_ADMIN, &[])).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(
+            json["data"],
+            serde_json::json!({}),
+            "no ids → an empty map (null-safe), never an error"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_names_rejects_over_limit_batch() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // More ids than the cap → 400 (page the calls), BEFORE the DB. Rejecting beats silent
+        // truncation: a partial map is indistinguishable from "these ids are unknown".
+        let ids: Vec<Uuid> = (0..RESOLVE_NAMES_LIMIT + 1)
+            .map(|_| Uuid::new_v4())
+            .collect();
+        let res = app
+            .oneshot(resolve_request(ROLE_ADMIN, &ids))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn resolve_names_rejects_missing_token() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // No bearer token → 401 at the AuthUser extractor (before the role gate).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/users/resolve")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "ids": [Uuid::new_v4()] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

@@ -14,6 +14,7 @@ import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.d
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
@@ -22,6 +23,7 @@ import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
+import 'package:pguard_profile_api/src/model/resolve_names_request.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
 
 class AdminApi {
@@ -804,6 +806,107 @@ class AdminApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Batch-resolve user_ids to display names (role&#x3D;admin)
+  /// Resolve a batch of &#x60;user_id&#x60;s to display names for the admin lists that otherwise render raw UUIDs — จัดการงาน/jobs (guard_id + customer_id), รีวิว/reviews (guard_id + customer_id), บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only** (role gate at the gateway-routed edge + this service; non-admin → **403**).  profile OWNS the only stored display names in the system (&#x60;guard_profiles.full_name&#x60; / &#x60;customer_profiles.full_name&#x60;), so it answers in ONE query — no cross-service hop. The response is a MAP keyed by id → &#x60;{ role, display_name }&#x60;:   - a guard/customer id resolves to its name + the role derived from which table it is in     (&#x60;display_name&#x60; may be &#x60;null&#x60; mid-onboarding — the role is still authoritative);   - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a     genuinely-unknown / deleted id — is simply **OMITTED** from the map. The client renders a     fallback (role label + short id) for an omitted id, so an admin&#39;s row never blocks a page.  Returns ONLY &#x60;{ role, display_name }&#x60; — NEVER any other PII (phone / bank / address / email). Bounded to &#x60;RESOLVE_NAMES_LIMIT&#x60; (500) ids per call — a larger batch → **400** (page it), not a silent truncation (a partial map is indistinguishable from \&quot;these ids are unknown\&quot;). Duplicate ids are de-duplicated server-side; an empty &#x60;ids&#x60; list → an empty map (&#x60;{}&#x60;).  FOLLOW-UP (flagged, NOT done here): admins have no stored display name anywhere (&#x60;identity.users&#x60; has only id / phone / email / role — no name column), so admin ids fall back to the role-label. A real admin name (also wanted on the admin-profile screen) needs an identity &#x60;display_name&#x60; column + an identity internal lookup — a later phase. This does NOT block guard/customer resolution, which is complete. 
+  ///
+  /// Parameters:
+  /// * [resolveNamesRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminResolveUserNames200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminResolveUserNames200Response>> adminResolveUserNames({ 
+    required ResolveNamesRequest resolveNamesRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/users/resolve';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ResolveNamesRequest);
+      _bodyData = _serializers.serialize(resolveNamesRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminResolveUserNames200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminResolveUserNames200Response),
+      ) as AdminResolveUserNames200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminResolveUserNames200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
