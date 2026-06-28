@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Check,
@@ -39,9 +39,13 @@ import {
 } from "@/components/ui";
 
 type GuardProfile = components["schemas"]["GuardProfile"];
+type CustomerProfileAdmin = components["schemas"]["CustomerProfileAdmin"];
 type ApprovalStatus = components["schemas"]["ApprovalStatus"];
 
 const STATUSES: readonly ApprovalStatus[] = ["pending", "approved", "rejected"];
+
+/** Which applicant population is shown — guards or customers (ผู้เรียก รปภ.). */
+type EntityType = "guard" | "customer";
 
 // pending/approved reuse the existing i18n keys (they already equal the design copy);
 // rejected differs (design chip says "ปฏิเสธ", i18n has "ปฏิเสธแล้ว") so it lives in COPY.
@@ -73,13 +77,20 @@ const COPY = {
     kpiRejected: "ปฏิเสธ",
     kpiAvgTime: "เวลาอนุมัติเฉลี่ย",
     awaitingApi: "รอ API",
-    customersGap: "ผู้เรียก รปภ. — รอ API",
+    typeGuards: "เจ้าหน้าที่ รปภ.",
+    typeCustomers: "ผู้เรียก รปภ.",
     statusRejected: "ปฏิเสธ",
     typeGuard: "เจ้าหน้าที่ รปภ.",
+    typeCustomer: "ผู้เรียก รปภ.",
     colApplicant: "ผู้สมัคร",
     colType: "ประเภท",
     colStatus: "สถานะ",
+    colContact: "ติดต่อ",
+    colCompany: "บริษัท",
     view: "ดู",
+    avgEmpty: "—",
+    avgHours: (h: number) => `${h} ชม.`,
+    avgSample: (n: number) => `จาก ${n} รายการ`,
   },
   en: {
     title: "Applicants",
@@ -89,35 +100,49 @@ const COPY = {
     kpiRejected: "Rejected",
     kpiAvgTime: "Avg. approval time",
     awaitingApi: "awaiting API",
-    customersGap: "Customers — awaiting API",
+    typeGuards: "Guards",
+    typeCustomers: "Customers",
     statusRejected: "Rejected",
     typeGuard: "Guard",
+    typeCustomer: "Customer",
     colApplicant: "Applicant",
     colType: "Type",
     colStatus: "Status",
+    colContact: "Contact",
+    colCompany: "Company",
     view: "View",
+    avgEmpty: "—",
+    avgHours: (h: number) => `${h}h`,
+    avgSample: (n: number) => `over ${n} approved`,
   },
 } as const;
 
 // Design paginates the list at 12 rows ("แสดง 1–12 จาก 12 รายการ"). Pagination is
-// CLIENT-SIDE over the already-fetched list — the admin list endpoint has no page param.
+// CLIENT-SIDE over the already-fetched list — the admin list endpoints have no page param.
 const PAGE_SIZE = 12;
 
 export default function ApplicantsPage() {
   const { t, lang } = useLanguage();
   const copy = COPY[lang];
+  const [entity, setEntity] = useState<EntityType>("guard");
   const [status, setStatus] = useState<ApprovalStatus>("pending");
-  const [profiles, setProfiles] = useState<GuardProfile[]>([]);
-  // Per-status counts, cached from each tab's last successful fetch. Tab pills + KPI
-  // values only show a number once that status' data has actually been loaded — counts
-  // for unvisited tabs stay undefined (shown as "—"), never faked.
-  const [counts, setCounts] = useState<Partial<Record<ApprovalStatus, number>>>({});
+  const [guards, setGuards] = useState<GuardProfile[]>([]);
+  const [customers, setCustomers] = useState<CustomerProfileAdmin[]>([]);
+  // Per-(entity,status) counts, cached from each tab's last successful fetch. Tab pills + KPI
+  // values only show a number once that status' data has actually been loaded — counts for
+  // unvisited tabs stay undefined (shown as "—"), never faked.
+  const [counts, setCounts] = useState<
+    Record<EntityType, Partial<Record<ApprovalStatus, number>>>
+  >({ guard: {}, customer: {} });
+  // Avg guard approval turnaround (guard-only metric per contract) — null until loaded.
+  const [avg, setAvg] = useState<components["schemas"]["AvgApprovalTime"] | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [actingId, setActingId] = useState<string | null>(null);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [page, setPage] = useState(1);
-  // The applicant whose full profile is open in the review modal (null = closed).
+  // The guard whose full profile is open in the review modal (null = closed). Customers reuse no
+  // modal here — they're approved/rejected inline (no customer detail modal yet).
   const [selected, setSelected] = useState<GuardProfile | null>(null);
 
   function statusLabel(s: ApprovalStatus): string {
@@ -125,31 +150,65 @@ export default function ApplicantsPage() {
     return key ? t(key) : copy.statusRejected;
   }
 
-  // Fetch + apply the result via a promise callback (NOT synchronously) so the effect that calls
-  // this never sets state during its synchronous phase (react-hooks/set-state-in-effect). The
-  // `alive` guard drops a stale response if the filter changed mid-flight.
-  const fetchInto = useCallback((s: ApprovalStatus, alive: () => boolean) => {
-    return profileApi
-      .GET("/admin/guard-profiles", { params: { query: { approval_status: s } } })
-      .then(({ data, error }) => {
+  // Fetch the current (entity, status) page + apply via a promise callback (NOT synchronously) so
+  // the calling effect never sets state during its synchronous phase (react-hooks/set-state-in-
+  // effect). The `alive` guard drops a stale response if the filter changed mid-flight.
+  const fetchInto = useCallback(
+    (e: EntityType, s: ApprovalStatus, alive: () => boolean) => {
+      const req =
+        e === "guard"
+          ? profileApi
+              .GET("/admin/guard-profiles", { params: { query: { approval_status: s } } })
+              .then(({ data, error }) => ({
+                error,
+                list: (error ? [] : (data?.data ?? [])) as GuardProfile[],
+              }))
+          : profileApi
+              .GET("/admin/customer-profiles", { params: { query: { approval_status: s } } })
+              .then(({ data, error }) => ({
+                error,
+                list: (error ? [] : (data?.data ?? [])) as CustomerProfileAdmin[],
+              }));
+      return req.then(({ error, list }) => {
         if (!alive()) return;
-        const list = error ? [] : (data?.data ?? []);
         setHasError(Boolean(error));
-        setProfiles(list);
-        setCounts((cur) => ({ ...cur, [s]: error ? undefined : list.length }));
+        if (e === "guard") setGuards(list as GuardProfile[]);
+        else setCustomers(list as CustomerProfileAdmin[]);
+        setCounts((cur) => ({
+          ...cur,
+          [e]: { ...cur[e], [s]: error ? undefined : list.length },
+        }));
         setLoading(false);
       });
+    },
+    [],
+  );
+
+  // Avg approval time loads once (guard-only metric, filter-independent). Refreshed on reload.
+  const fetchAvg = useCallback((alive: () => boolean) => {
+    return profileApi.GET("/admin/applicants/avg-approval-time").then(({ data, error }) => {
+      if (!alive()) return;
+      setAvg(error ? null : (data?.data ?? null));
+    });
   }, []);
 
-  // Re-runs on filter change AND on an explicit reload (reloadNonce). The cleanup flips `alive`
-  // false, so a response from a superseded run (filter switched, or a stale retry) is dropped.
+  // Re-runs on entity/status change AND on an explicit reload (reloadNonce). The cleanup flips
+  // `alive` false, so a response from a superseded run (filter switched, stale retry) is dropped.
   useEffect(() => {
     let alive = true;
-    void fetchInto(status, () => alive);
+    void fetchInto(entity, status, () => alive);
+    void fetchAvg(() => alive);
     return () => {
       alive = false;
     };
-  }, [status, reloadNonce, fetchInto]);
+  }, [entity, status, reloadNonce, fetchInto, fetchAvg]);
+
+  function selectEntity(next: EntityType) {
+    if (next === entity) return;
+    setLoading(true);
+    setPage(1);
+    setEntity(next);
+  }
 
   function selectStatus(next: ApprovalStatus) {
     if (next === status) return;
@@ -169,43 +228,79 @@ export default function ApplicantsPage() {
   // optimistic remove (list + cached count), rollback (restore both snapshots) + error banner on
   // failure. This is an event handler, so the synchronous setState calls are fine.
   async function act(userId: string, action: "approve" | "reject") {
-    const snapshot = profiles;
+    const guardSnapshot = guards;
+    const customerSnapshot = customers;
     const countsSnapshot = counts;
     setHasError(false);
     setActingId(userId);
-    setProfiles((cur) => cur.filter((p) => p.user_id !== userId));
-    // Decrement the CURRENT tab's count: approve/reject are only reachable from `pending`
-    // (both the row actions and the modal footer gate on pending), so `status` is the right bucket.
-    setCounts((cur) => ({ ...cur, [status]: Math.max(0, (cur[status] ?? 1) - 1) }));
+    if (entity === "guard") setGuards((cur) => cur.filter((p) => p.user_id !== userId));
+    else setCustomers((cur) => cur.filter((p) => p.user_id !== userId));
+    // Decrement the CURRENT (entity,status) count: approve/reject are only reachable from
+    // `pending`, so `status` is the right bucket.
+    setCounts((cur) => ({
+      ...cur,
+      [entity]: { ...cur[entity], [status]: Math.max(0, (cur[entity][status] ?? 1) - 1) },
+    }));
 
-    const { error } =
-      action === "approve"
-        ? await profileApi.POST("/admin/guard-profiles/{user_id}/approve", {
-            params: { path: { user_id: userId } },
-          })
-        : await profileApi.POST("/admin/guard-profiles/{user_id}/reject", {
-            params: { path: { user_id: userId } },
-            body: {},
-          });
+    const { error } = await runAction(entity, userId, action);
 
     setActingId(null);
     if (error) {
-      setProfiles(snapshot); // rollback
+      setGuards(guardSnapshot); // rollback
+      setCustomers(customerSnapshot);
       setCounts(countsSnapshot);
       setHasError(true);
     }
   }
 
-  // Client-side pagination window, clamped so the optimistic remove of the last row on a
-  // trailing page can never strand the view on an empty page.
-  const total = profiles.length;
+  // Dispatch the approve/reject mutation to the correct entity's endpoints (guard vs customer
+  // mirrors). Reject carries an (empty) body so the optional-reason contract is satisfied.
+  function runAction(e: EntityType, userId: string, action: "approve" | "reject") {
+    if (e === "guard") {
+      return action === "approve"
+        ? profileApi.POST("/admin/guard-profiles/{user_id}/approve", {
+            params: { path: { user_id: userId } },
+          })
+        : profileApi.POST("/admin/guard-profiles/{user_id}/reject", {
+            params: { path: { user_id: userId } },
+            body: {},
+          });
+    }
+    return action === "approve"
+      ? profileApi.POST("/admin/customer-profiles/{user_id}/approve", {
+          params: { path: { user_id: userId } },
+        })
+      : profileApi.POST("/admin/customer-profiles/{user_id}/reject", {
+          params: { path: { user_id: userId } },
+          body: {},
+        });
+  }
+
+  const entityCounts = counts[entity];
+
+  // The rows for the active entity (typed union resolved per branch in render).
+  const total = entity === "guard" ? guards.length : customers.length;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
   const curPage = Math.min(page, pageCount);
-  const pageRows = profiles.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE);
   const from = total === 0 ? 0 : (curPage - 1) * PAGE_SIZE + 1;
   const to = Math.min(curPage * PAGE_SIZE, total);
   const summary =
     lang === "th" ? `แสดง ${from}–${to} จาก ${total} รายการ` : `Showing ${from}–${to} of ${total}`;
+
+  const guardRows = useMemo(
+    () => guards.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE),
+    [guards, curPage],
+  );
+  const customerRows = useMemo(
+    () => customers.slice((curPage - 1) * PAGE_SIZE, curPage * PAGE_SIZE),
+    [customers, curPage],
+  );
+
+  // Avg approval time KPI value (em-dash + sample caption when no approvals yet).
+  const avgValue =
+    avg && avg.avg_hours != null ? copy.avgHours(avg.avg_hours) : copy.avgEmpty;
+  const avgCaption =
+    avg && avg.sample_size > 0 ? copy.avgSample(avg.sample_size) : undefined;
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -217,43 +312,63 @@ export default function ApplicantsPage() {
       </PageIntro>
 
       {/* KPI strip (design: pending / approved total / rejected / avg approval time).
-          Counts come from the loaded lists only; avg approval time has NO endpoint
-          (needs /profile/approvals stats with created_at→approved_at) → honest gap chip. */}
+          Counts come from the active entity's loaded lists; avg approval time comes from the
+          dedicated endpoint (guard-only metric — em-dash + no caption until a guard is approved). */}
       <KpiGrid>
         <KpiCard
           icon={<Clock />}
           label={copy.kpiPending}
-          value={counts.pending == null ? t("common.none") : fmtCappedCount(counts.pending)}
+          value={entityCounts.pending == null ? t("common.none") : fmtCappedCount(entityCounts.pending)}
         />
         <KpiCard
           icon={<CheckCircle2 />}
           label={copy.kpiApproved}
-          value={counts.approved == null ? t("common.none") : fmtCappedCount(counts.approved)}
+          value={entityCounts.approved == null ? t("common.none") : fmtCappedCount(entityCounts.approved)}
         />
         <KpiCard
           icon={<XCircle />}
           label={copy.kpiRejected}
-          value={counts.rejected == null ? t("common.none") : fmtCappedCount(counts.rejected)}
+          value={entityCounts.rejected == null ? t("common.none") : fmtCappedCount(entityCounts.rejected)}
         />
         <KpiCard
           icon={<Timer />}
           label={copy.kpiAvgTime}
-          value={<Badge tone="gray">{copy.awaitingApi}</Badge>}
+          value={<span data-testid="applicants-avg-approval">{avgValue}</span>}
+          caption={avgCaption}
         />
       </KpiGrid>
 
-      {/* Status tabs; pills show counts only once that tab's data has loaded. The design
-          also tabs guard vs CUSTOMER applicants — v2 has no customer-approval endpoint,
-          so the customers tab is an honest gap chip instead of a dead tab. */}
+      {/* Entity tabs — Guards vs Customers (ผู้เรียก รปภ.). The pending count rides each tab's
+          loaded data; switching refetches the active status for that population. */}
+      <Tabs>
+        <Tab
+          active={entity === "guard"}
+          count={counts.guard.pending == null ? undefined : fmtCappedCount(counts.guard.pending)}
+          onClick={() => selectEntity("guard")}
+        >
+          {copy.typeGuards}
+        </Tab>
+        <Tab
+          active={entity === "customer"}
+          count={counts.customer.pending == null ? undefined : fmtCappedCount(counts.customer.pending)}
+          onClick={() => selectEntity("customer")}
+        >
+          {copy.typeCustomers}
+        </Tab>
+      </Tabs>
+
+      {/* Status tabs; pills show counts only once that status' data has loaded for the entity. */}
       <Tabs>
         {STATUSES.map((s) => (
-          <Tab key={s} active={status === s} count={counts[s] == null ? undefined : fmtCappedCount(counts[s])} onClick={() => selectStatus(s)}>
+          <Tab
+            key={s}
+            active={status === s}
+            count={entityCounts[s] == null ? undefined : fmtCappedCount(entityCounts[s])}
+            onClick={() => selectStatus(s)}
+          >
             {statusLabel(s)}
           </Tab>
         ))}
-        <Badge tone="gray" className="ml-1 self-center">
-          {copy.customersGap}
-        </Badge>
       </Tabs>
 
       {hasError && (
@@ -282,7 +397,7 @@ export default function ApplicantsPage() {
             </span>
             <p className="text-sm text-muted">{t("applicants.empty")}</p>
           </div>
-        ) : (
+        ) : entity === "guard" ? (
           <>
             <Table>
               <thead>
@@ -297,7 +412,7 @@ export default function ApplicantsPage() {
                 </tr>
               </thead>
               <tbody>
-                {pageRows.map((p) => (
+                {guardRows.map((p) => (
                   <Tr key={p.user_id} className="cursor-default">
                     <Td>
                       {/* Design `.cell-user`: avatar + name + ID sub. Registration now captures
@@ -387,12 +502,91 @@ export default function ApplicantsPage() {
             </Table>
             <Pagination page={curPage} pageCount={pageCount} onPage={setPage} summary={summary} />
           </>
+        ) : (
+          <>
+            <Table>
+              <thead>
+                <tr>
+                  <Th>{copy.colApplicant}</Th>
+                  <Th>{copy.colType}</Th>
+                  <Th>{copy.colContact}</Th>
+                  <Th>{copy.colCompany}</Th>
+                  <Th>{copy.colStatus}</Th>
+                  <Th className="text-right">{t("applicants.col.actions")}</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerRows.map((p) => (
+                  <Tr key={p.user_id} className="cursor-default">
+                    <Td>
+                      <div className="flex items-center gap-[11px]">
+                        <Avatar>{initialsOf(p.full_name, p.user_id)}</Avatar>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium text-text-strong">
+                            {p.full_name ?? `#${p.user_id.slice(0, 8)}`}
+                          </div>
+                          <div className="font-mono text-xs text-muted">
+                            #{p.user_id.slice(0, 8)}
+                          </div>
+                        </div>
+                      </div>
+                    </Td>
+                    <Td>
+                      <Badge tone="gray">{copy.typeCustomer}</Badge>
+                    </Td>
+                    <Td>
+                      <div>
+                        <div>{p.contact_phone ?? p.email ?? t("common.none")}</div>
+                        {p.contact_phone && p.email && (
+                          <div className="text-xs text-muted">{p.email}</div>
+                        )}
+                      </div>
+                    </Td>
+                    <Td>{p.company_name ?? t("common.none")}</Td>
+                    <Td>
+                      <Badge tone={STATUS_TONE[p.approval_status]} dot={STATUS_DOT[p.approval_status]}>
+                        {statusLabel(p.approval_status)}
+                      </Badge>
+                    </Td>
+                    <Td className="text-right">
+                      <div className="inline-flex gap-2">
+                        {status === "pending" && (
+                          <>
+                            <Button
+                              size="sm"
+                              data-testid={`applicant-approve-${p.user_id}`}
+                              disabled={actingId === p.user_id}
+                              onClick={() => void act(p.user_id, "approve")}
+                            >
+                              <Check className="size-3.5" />
+                              {t("applicants.approve")}
+                            </Button>
+                            <Button
+                              variant="danger-ghost"
+                              size="sm"
+                              data-testid={`applicant-reject-${p.user_id}`}
+                              disabled={actingId === p.user_id}
+                              onClick={() => void act(p.user_id, "reject")}
+                            >
+                              <X className="size-3.5" />
+                              {t("applicants.reject")}
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    </Td>
+                  </Tr>
+                ))}
+              </tbody>
+            </Table>
+            <Pagination page={curPage} pageCount={pageCount} onPage={setPage} summary={summary} />
+          </>
         )}
       </Panel>
 
-      {/* View the applicant's full profile before deciding — reuses the guards detail modal.
+      {/* View the guard applicant's full profile before deciding — reuses the guards detail modal.
           For a pending applicant the modal footer also offers Approve/Reject (decide in place);
-          finalized applicants are view-only. */}
+          finalized applicants are view-only. (Customers have no detail modal yet → inline only.) */}
       {selected && (
         <GuardDetailModal
           guard={selected}

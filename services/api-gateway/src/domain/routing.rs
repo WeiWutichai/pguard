@@ -246,6 +246,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin applicant dashboard signals (pending-count badge + avg approval time). Profile
+        // owns the guard/customer profiles + the approval lifecycle. Admin authz is profile's job.
+        prefix: "/admin/applicants",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin recruitment pipeline (list + stage move). The single prefix also routes the
         // `/candidates/{id}/stage` subpath. Profile owns guard_profiles.recruitment_stage.
         prefix: "/admin/recruitment",
@@ -263,8 +271,24 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin missed/overdue hourly check-ins (dashboard alert card). Booking owns the job
+        // lifecycle + the check-in schedule. Admin authz is the booking service's job.
+        prefix: "/admin/checkins",
+        suffix: None,
+        upstream: Upstream::Booking,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin payment ledger (cross-user, read-only). Admin authz is the payment service's job.
         prefix: "/admin/payments",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin refund queue (dashboard "คิวคืนเงิน" signal — refunds awaiting action /
+        // in-progress + count). Read-only. Admin authz is the payment service's own job.
+        prefix: "/admin/refunds",
         suffix: None,
         upstream: Upstream::Payment,
         tier: Tier::Api,
@@ -932,6 +956,20 @@ mod tests {
     }
 
     #[test]
+    fn admin_applicants_routes_to_profile() {
+        for p in [
+            "/v1/admin/applicants/pending-count",
+            "/v1/admin/applicants/avg-approval-time",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Profile, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} requires a token");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
     fn admin_access_audit_routes_to_profile() {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/access-audit"));
         assert_eq!(up, Upstream::Profile);
@@ -977,6 +1015,32 @@ mod tests {
         assert_eq!(fwd, "/admin/bookings");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_overdue_checkins_routes_to_booking() {
+        // The dashboard missed-check-ins signal. Edge-protected, Api tier; the `/overdue`
+        // subpath routes under the single `/admin/checkins` prefix (suffix: None).
+        for p in ["/v1/admin/checkins", "/v1/admin/checkins/overdue"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Booking, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} is edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
+    }
+
+    #[test]
+    fn admin_refunds_queue_routes_to_payment() {
+        // The dashboard refund-queue signal. Edge-protected, Api tier; the subpath `/queue`
+        // routes under the single `/admin/refunds` prefix (suffix: None).
+        for p in ["/v1/admin/refunds", "/v1/admin/refunds/queue"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Payment, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(!public, "{p} is edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
     }
 
     #[test]

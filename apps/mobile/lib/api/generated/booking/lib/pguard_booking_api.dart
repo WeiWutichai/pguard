@@ -17,6 +17,7 @@ export 'package:pguard_booking_api/src/api/internal_api.dart';
 export 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
 export 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 export 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
+export 'package:pguard_booking_api/src/model/admin_overdue_checkins200_response.dart';
 export 'package:pguard_booking_api/src/model/api_response_envelope.dart';
 export 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 export 'package:pguard_booking_api/src/model/available_guard.dart';
@@ -39,6 +40,8 @@ export 'package:pguard_booking_api/src/model/list_available_guards200_response.d
 export 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 export 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
 export 'package:pguard_booking_api/src/model/list_services200_response.dart';
+export 'package:pguard_booking_api/src/model/overdue_checkin.dart';
+export 'package:pguard_booking_api/src/model/overdue_checkins_response.dart';
 export 'package:pguard_booking_api/src/model/progress_report.dart';
 export 'package:pguard_booking_api/src/model/public_service_item.dart';
 export 'package:pguard_booking_api/src/model/retention_point.dart';

@@ -97,7 +97,7 @@ export default function GuardsPage() {
         !bookings.error && (bookings.data?.data?.length ?? 0) >= ADMIN_LIST_CAP,
       );
       setAvgRating(rev.error ? null : (rev.data?.data?.stats?.average ?? null));
-      setDocsExpiring(docs.error ? null : (docs.data?.data?.length ?? 0));
+      setDocsExpiring(docs.error ? null : (docs.data?.data?.documents.length ?? 0));
       setLoading(false);
     }).catch(() => {
       // A transport-level failure (gateway down/offline) REJECTS Promise.all — don't get stuck on

@@ -172,6 +172,14 @@ pub struct AdminListBookingsQuery {
     pub offset: Option<i64>,
 }
 
+/// Query params for `GET /admin/checkins/overdue` — house limit/offset pagination only (the
+/// predicate is fixed: active jobs with an overdue hourly check-in).
+#[derive(Debug, Deserialize)]
+pub struct OverdueCheckinsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// Body for `POST /admin/bookings/{id}/assign` — the admin's chosen guard for the booking.
 #[derive(Debug, Deserialize)]
 pub struct AssignGuardRequest {
@@ -231,6 +239,35 @@ pub struct CustomerBookingStat {
     pub total: i64,
     pub completed: i64,
     pub cancelled: i64,
+}
+
+/// One active job whose next scheduled hourly check-in is OVERDUE — the dashboard
+/// "เช็คอินที่ขาด" (missed check-ins) signal. A job is in progress when `status = 'arrived'`
+/// AND `work_started_at` is stamped (the proration clock); hour `N` (1-based, ≤ `hours`) opens
+/// at `work_started_at + (N−1)h`. `due_at` is the open time of the EARLIEST owed-but-unfiled
+/// hour (the oldest gap), and `missed_count` is how many owed hours (open time already passed)
+/// have no `progress_reports` row yet — late/out-of-order filing is tolerated, so this counts
+/// every gap, not just the latest.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct OverdueCheckin {
+    pub booking_id: Uuid,
+    /// The assigned guard who owes the check-in (always set — only assigned jobs reach `arrived`).
+    pub guard_id: Uuid,
+    pub customer_id: Uuid,
+    /// Open time of the oldest owed-but-unfiled hour (RFC3339). The check-in is "overdue since".
+    pub due_at: DateTime<Utc>,
+    /// Count of owed hours (open time has passed) with no check-in filed yet.
+    pub missed_count: i64,
+}
+
+/// The overdue-check-ins payload: the list plus a `total` count (number of distinct active jobs
+/// with at least one overdue check-in) for the dashboard alert card. `total` equals `items.len()`
+/// when unpaginated, but is returned explicitly so the card can show the badge without the client
+/// re-counting (mirrors `BookingsReport.total`).
+#[derive(Debug, Serialize)]
+pub struct OverdueCheckinsResponse {
+    pub items: Vec<OverdueCheckin>,
+    pub total: i64,
 }
 
 // ----- Service catalog (admin-managed pricing; standalone, not wired to the charge path) -----

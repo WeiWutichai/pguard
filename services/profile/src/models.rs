@@ -236,16 +236,68 @@ pub struct SetDocumentExpiryRequest {
     pub expiry_date: NaiveDate,
 }
 
-/// One guard-document expiry row (`GET /admin/documents/expiring`). The web-admin client buckets
-/// by `expiry_date` (expired / 7 / 30 / 90 days). Populated by the guard profile submit
-/// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
+/// One guard-document expiry row (`GET /admin/documents/expiring`). `days_left` is computed in
+/// SQL (`expiry_date - current_date`): NEGATIVE = already expired, 0 = due today, positive =
+/// days until it lapses — so the client need not re-derive it from the date. Populated by the
+/// guard profile submit (`POST /profile/guard`, which folds in the registration doc step's
+/// expiry dates). Used both by the owner/admin per-guard list and the admin "expiring" surface.
 #[derive(Debug, Serialize, sqlx::FromRow)]
 pub struct DocumentExpiryRow {
     pub id: Uuid,
     pub guard_id: Uuid,
     pub document_type: String,
     pub expiry_date: NaiveDate,
+    /// `expiry_date - current_date` in days (negative = expired). Computed in SQL.
+    pub days_left: i32,
     pub last_reminded_at: Option<DateTime<Utc>>,
+}
+
+/// Bucket counts for the admin "expiring documents" surface — how many credentials fall in each
+/// urgency band, computed in ONE SQL pass over ALL recorded expiries (independent of the `window`
+/// the list is filtered to). Bands are CUMULATIVE-by-meaning but reported DISJOINT: `expired`
+/// (days_left < 0), `due_7` (0..=7), `due_30` (8..=30), `due_90` (31..=90). A document expiring
+/// beyond 90 days is in none of these.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct ExpiringDocumentBuckets {
+    pub expired: i64,
+    pub due_7: i64,
+    pub due_30: i64,
+    pub due_90: i64,
+}
+
+/// The admin "expiring documents" response (`GET /admin/documents/expiring?window=`): the list
+/// (filtered to the requested window, soonest first) PLUS the urgency-band `buckets` (over all
+/// recorded expiries, so the dashboard pills are window-independent).
+#[derive(Debug, Serialize)]
+pub struct ExpiringDocumentsResponse {
+    pub documents: Vec<DocumentExpiryRow>,
+    pub buckets: ExpiringDocumentBuckets,
+}
+
+/// New-applicants count for the admin dashboard notification card + the ผู้สมัคร page (#132):
+/// how many guards AND customers are awaiting admin approval (`approval_status = 'pending'`).
+/// Both roles now go through the SAME admin-review gate (customers are no longer auto-approved),
+/// so the page's "ผู้เรียก รปภ." (customer) tab is populated from `customers`. `total` is the
+/// dashboard badge; the per-role split drives the two tabs. Computed in ONE SQL round-trip.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PendingApplicantsCount {
+    pub guards: i64,
+    pub customers: i64,
+    pub total: i64,
+}
+
+/// Average guard approval turnaround for the admin dashboard (เวลาอนุมัติเฉลี่ย, #132): the mean
+/// of `reviewed_at - created_at` over APPROVED guards, in seconds + a pre-rounded hours value for
+/// display. `sample_size` is how many approved guards the average is over — `null` average + 0
+/// sample when none have been approved yet (honest empty state, not a fake 0h).
+#[derive(Debug, Serialize)]
+pub struct AvgApprovalTime {
+    /// Mean approval duration in seconds (`null` when no guard has been approved yet).
+    pub avg_seconds: Option<i64>,
+    /// The same value in hours, rounded to 1 decimal (`null` when no sample). Convenience for UI.
+    pub avg_hours: Option<f64>,
+    /// Number of approved guards the average is computed over.
+    pub sample_size: i64,
 }
 
 /// One document's expiry date, folded into the guard-profile submit (the registration doc step).

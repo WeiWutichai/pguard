@@ -86,6 +86,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminDeleteService**](doc/AdminApi.md#admindeleteservice) | **DELETE** /admin/pricing/services/{id} | Deactivate (soft-delete) a catalog service (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListBookings**](doc/AdminApi.md#adminlistbookings) | **GET** /admin/bookings | List ALL bookings cross-user (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListServices**](doc/AdminApi.md#adminlistservices) | **GET** /admin/pricing/services | List the service catalog (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminOverdueCheckins**](doc/AdminApi.md#adminoverduecheckins) | **GET** /admin/checkins/overdue | Active jobs with an overdue hourly check-in (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminUpdateService**](doc/AdminApi.md#adminupdateservice) | **PUT** /admin/pricing/services/{id} | Update a catalog service (role&#x3D;admin)
 [*BookingsApi*](doc/BookingsApi.md) | [**acceptBooking**](doc/BookingsApi.md#acceptbooking) | **POST** /bookings/{id}/accept | Guard accepts a request
 [*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived
@@ -112,6 +113,7 @@ Class | Method | HTTP request | Description
  - [AdminBookingsReport200Response](doc/AdminBookingsReport200Response.md)
  - [AdminCustomerBookingsReport200Response](doc/AdminCustomerBookingsReport200Response.md)
  - [AdminListServices200Response](doc/AdminListServices200Response.md)
+ - [AdminOverdueCheckins200Response](doc/AdminOverdueCheckins200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [AssignGuardRequest](doc/AssignGuardRequest.md)
  - [AvailableGuard](doc/AvailableGuard.md)
@@ -134,6 +136,8 @@ Class | Method | HTTP request | Description
  - [ListBookings200Response](doc/ListBookings200Response.md)
  - [ListProgressReports200Response](doc/ListProgressReports200Response.md)
  - [ListServices200Response](doc/ListServices200Response.md)
+ - [OverdueCheckin](doc/OverdueCheckin.md)
+ - [OverdueCheckinsResponse](doc/OverdueCheckinsResponse.md)
  - [ProgressReport](doc/ProgressReport.md)
  - [PublicServiceItem](doc/PublicServiceItem.md)
  - [RetentionPoint](doc/RetentionPoint.md)

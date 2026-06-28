@@ -293,10 +293,19 @@ pub async fn list_admin_reviews(
     let data = list_q.fetch_all(db).await?;
     let total = count_q.fetch_one(db).await?;
 
-    // Global (unfiltered) stats.
-    let (s_total, s_visible, s_avg): (Option<i64>, Option<i64>, Option<Decimal>) = sqlx::query_as(
-        "SELECT COUNT(*), COUNT(*) FILTER (WHERE is_visible = true), AVG(overall_rating) \
-         FROM rating.guard_reviews",
+    // Global (unfiltered) stats. `this_month` = reviews created in the current calendar month
+    // (UTC) for the รีวิวเดือนนี้ card — computed in the same pass to avoid a second round trip.
+    let (s_total, s_visible, s_avg, s_month): (
+        Option<i64>,
+        Option<i64>,
+        Option<Decimal>,
+        Option<i64>,
+    ) = sqlx::query_as(
+        "SELECT COUNT(*), \
+                    COUNT(*) FILTER (WHERE is_visible = true), \
+                    AVG(overall_rating), \
+                    COUNT(*) FILTER (WHERE created_at >= date_trunc('month', now())) \
+             FROM rating.guard_reviews",
     )
     .fetch_one(db)
     .await?;
@@ -304,6 +313,7 @@ pub async fn list_admin_reviews(
         total: s_total.unwrap_or(0),
         visible: s_visible.unwrap_or(0),
         average: s_avg.map(|d| d.round_dp(2)),
+        this_month: s_month.unwrap_or(0),
     };
 
     Ok(AdminReviewsResponse {

@@ -495,13 +495,20 @@ paths:
       tags: [Admin]
       summary: List customer profiles (role=admin)
       description: |
-        Lists every customer profile, newest first (capped at 200, not paginated). Admin
-        only (else 403). Each row carries `approval_status` (pending/approved/rejected) so the
-        admin can see who is still awaiting review — customers are now admin-approved exactly
-        like guards (no longer auto-approved on first profile insert). Records a PDPA §30
-        read-audit row.
+        Lists customer profiles, newest first (capped at 200, not paginated), optionally filtered
+        by `approval_status`. Admin only (else 403). Each row carries `approval_status`
+        (pending/approved/rejected) so the admin can see who is still awaiting review — customers
+        are now admin-approved exactly like guards (no longer auto-approved on first profile
+        insert). The ผู้สมัคร page's "ผู้เรียก รปภ." (customer) tab passes
+        `?approval_status=pending`. Records a PDPA §30 read-audit row.
       operationId: adminListCustomerProfiles
       security: [{ bearerAuth: [] }]
+      parameters:
+        - name: approval_status
+          in: query
+          required: false
+          description: Filter by status. An unrecognized value returns 400.
+          schema: { $ref: '#/components/schemas/ApprovalStatus' }
       responses:
         '200':
           description: All customer profiles, newest first
@@ -515,6 +522,7 @@ paths:
                       data:
                         type: array
                         items: { $ref: '#/components/schemas/CustomerProfileAdmin' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -618,17 +626,25 @@ paths:
   /admin/documents/expiring:
     get:
       tags: [Admin]
-      summary: List guard documents needing renewal (role=admin)
+      summary: List guard documents needing renewal + urgency buckets (role=admin)
       description: |
-        Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
-        the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
-        403); replica read. Rows are populated by the guard profile submit (`POST /profile/guard`,
-        which folds in the registration doc step's expiry dates).
+        Guard documents expiring within the `window` (days; INCLUDING already-expired), soonest
+        first — each carrying `days_left` (negative = expired). The response also returns
+        window-INDEPENDENT `buckets` (expired / due_7 / due_30 / due_90) for the dashboard pills,
+        so the counts don't change as the admin narrows the list. Admin only (else 403); replica
+        read. Rows are populated by the guard profile submit (`POST /profile/guard`, which folds
+        in the registration doc step's expiry dates) — empty until that capture lands.
       operationId: adminListExpiringDocuments
       security: [{ bearerAuth: [] }]
+      parameters:
+        - name: window
+          in: query
+          required: false
+          description: List filter (days). One of 7, 30, 90 (default 90). Any other value → 400.
+          schema: { type: integer, enum: [7, 30, 90], default: 90 }
       responses:
         '200':
-          description: Expiring guard documents, soonest first
+          description: Expiring guard documents (filtered to the window, soonest first) + buckets
           content:
             application/json:
               schema:
@@ -636,9 +652,60 @@ paths:
                   - $ref: '#/components/schemas/ApiResponseEnvelope'
                   - type: object
                     properties:
-                      data:
-                        type: array
-                        items: { $ref: '#/components/schemas/DocumentExpiry' }
+                      data: { $ref: '#/components/schemas/ExpiringDocumentsResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/applicants/pending-count:
+    get:
+      tags: [Admin]
+      summary: Count guards + customers awaiting approval (role=admin)
+      description: |
+        New-applicants count for the dashboard notification card + the ผู้สมัคร page (#132): how
+        many guards AND customers are pending admin approval (`approval_status = 'pending'`), plus
+        the total. Both roles now share the same admin-review gate (customers are no longer
+        auto-approved), so the per-role split drives the page's two tabs and `total` is the badge.
+        Admin only (else 403); replica read.
+      operationId: adminPendingApplicantsCount
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Pending-applicant counts (guards, customers, total)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PendingApplicantsCount' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/applicants/avg-approval-time:
+    get:
+      tags: [Admin]
+      summary: Average guard approval turnaround (role=admin)
+      description: |
+        เวลาอนุมัติเฉลี่ย (#132): the mean of `reviewed_at - created_at` over APPROVED guards, in
+        seconds + a pre-rounded hours value, with the `sample_size`. `avg_seconds`/`avg_hours` are
+        `null` (and `sample_size` 0) when no guard has been approved yet — an honest empty state,
+        not a fake 0h. `reviewed_at` is the dedicated approval-decision timestamp (never clobbered
+        by a guard self-edit). Admin only (else 403); replica read.
+      operationId: adminAvgApprovalTime
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: Average approval time over approved guards
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/AvgApprovalTime' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -1179,8 +1246,11 @@ components:
 
     DocumentExpiry:
       type: object
-      description: One guard-document expiry row (the admin "expiring documents" surface).
-      required: [id, guard_id, document_type, expiry_date]
+      description: |
+        One guard-document expiry row (the admin "expiring documents" surface + the owner/admin
+        per-guard list). `days_left = expiry_date - current_date` (computed in SQL): negative =
+        already expired, 0 = due today, positive = days until it lapses.
+      required: [id, guard_id, document_type, expiry_date, days_left]
       properties:
         id: { type: string, format: uuid }
         guard_id: { type: string, format: uuid }
@@ -1188,7 +1258,55 @@ components:
           type: string
           enum: [id_card, security_license, training_cert, criminal_check, driver_license]
         expiry_date: { type: string, format: date }
+        days_left: { type: integer, format: int32, description: 'expiry_date − current_date (days; negative = expired).' }
         last_reminded_at: { type: string, format: date-time, nullable: true }
+
+    ExpiringDocumentBuckets:
+      type: object
+      description: |
+        Disjoint urgency-band counts over ALL recorded expiries (window-independent — the
+        dashboard pills don't change as the list filter narrows). Bands by `days_left`:
+        expired (<0), due_7 (0..=7), due_30 (8..=30), due_90 (31..=90).
+      required: [expired, due_7, due_30, due_90]
+      properties:
+        expired: { type: integer, format: int64 }
+        due_7: { type: integer, format: int64 }
+        due_30: { type: integer, format: int64 }
+        due_90: { type: integer, format: int64 }
+
+    ExpiringDocumentsResponse:
+      type: object
+      description: |
+        The admin expiring-documents payload: the `documents` list (filtered to the requested
+        `window`, soonest first) plus the window-independent `buckets`.
+      required: [documents, buckets]
+      properties:
+        documents:
+          type: array
+          items: { $ref: '#/components/schemas/DocumentExpiry' }
+        buckets: { $ref: '#/components/schemas/ExpiringDocumentBuckets' }
+
+    PendingApplicantsCount:
+      type: object
+      description: |
+        Counts of guards + customers awaiting admin approval (the dashboard new-applicants badge +
+        the ผู้สมัคร page tabs). `total = guards + customers`.
+      required: [guards, customers, total]
+      properties:
+        guards: { type: integer, format: int64 }
+        customers: { type: integer, format: int64 }
+        total: { type: integer, format: int64 }
+
+    AvgApprovalTime:
+      type: object
+      description: |
+        Average guard approval turnaround (mean of `reviewed_at − created_at` over APPROVED
+        guards). `avg_seconds`/`avg_hours` are null (and `sample_size` 0) when none approved yet.
+      required: [sample_size]
+      properties:
+        avg_seconds: { type: integer, format: int64, nullable: true, description: 'Mean approval duration in seconds (null when no approvals yet).' }
+        avg_hours: { type: number, format: double, nullable: true, description: 'Same value in hours, rounded to 1 decimal (null when no approvals yet).' }
+        sample_size: { type: integer, format: int64, description: 'Number of approved guards the average is over.' }
 
     DocumentExpiryInput:
       type: object

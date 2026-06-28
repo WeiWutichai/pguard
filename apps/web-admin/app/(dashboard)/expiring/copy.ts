@@ -115,9 +115,3 @@ export const COPY: Record<Lang, ExpiringCopy> = {
     never: "—",
   },
 };
-
-/** Whole days from now until `iso` date (negative = already expired). */
-export function daysUntil(iso: string): number {
-  const ms = new Date(iso + "T00:00:00Z").getTime() - Date.now();
-  return Math.ceil(ms / 86_400_000);
-}

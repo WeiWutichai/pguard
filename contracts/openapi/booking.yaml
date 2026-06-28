@@ -190,6 +190,46 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/checkins/overdue:
+    get:
+      tags: [Admin]
+      summary: Active jobs with an overdue hourly check-in (role=admin)
+      description: |
+        The dashboard "เช็คอินที่ขาด" (missed check-ins) signal. A job is in progress when
+        `status = 'arrived'` AND `work_started_at` is stamped (the proration clock); hour `N`
+        (1-based, ≤ `hours`) opens at `work_started_at + (N−1)h`. Each returned item is an active
+        job with ≥ 1 owed-but-unfiled hour whose open time has already passed: `due_at` is the
+        oldest such gap's open time (overdue-since), `missed_count` is how many gaps (late /
+        out-of-order filing is tolerated, so this counts every gap). `total` is the count of ALL
+        such jobs (independent of the page) for the alert badge. Oldest-overdue first. Admin only
+        (else 403). House limit/offset pagination.
+      operationId: adminOverdueCheckins
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          description: Page size (default 50, max 200).
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200 }
+        - name: offset
+          in: query
+          required: false
+          description: Row offset (default 0).
+          schema: { type: integer, format: int64, minimum: 0 }
+      responses:
+        '200':
+          description: Overdue check-ins (list + total count)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OverdueCheckinsResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/bookings/{id}/assign:
     post:
       tags: [Admin]
@@ -1124,6 +1164,36 @@ components:
         total: { type: integer, format: int64, description: All bookings ever placed by this customer. }
         completed: { type: integer, format: int64, description: Bookings that reached the completed state. }
         cancelled: { type: integer, format: int64, description: "Terminal not-done states (cancelled + declined)." }
+
+    OverdueCheckin:
+      type: object
+      description: An active job whose next scheduled hourly check-in is overdue.
+      required: [booking_id, guard_id, customer_id, due_at, missed_count]
+      properties:
+        booking_id: { type: string, format: uuid }
+        guard_id: { type: string, format: uuid, description: The assigned guard who owes the check-in. }
+        customer_id: { type: string, format: uuid }
+        due_at:
+          type: string
+          format: date-time
+          description: Open time of the oldest owed-but-unfiled hour (overdue-since).
+        missed_count:
+          type: integer
+          format: int64
+          description: Owed hours (open time passed) with no check-in filed yet.
+
+    OverdueCheckinsResponse:
+      type: object
+      description: Overdue-check-ins list plus a total count for the dashboard alert badge.
+      required: [items, total]
+      properties:
+        items:
+          type: array
+          items: { $ref: '#/components/schemas/OverdueCheckin' }
+        total:
+          type: integer
+          format: int64
+          description: All active jobs with an overdue check-in (independent of the page).
 
     ApiResponseEnvelope:
       type: object
