@@ -21,9 +21,10 @@ use crate::booking_client::BookingReader;
 use crate::domain;
 use crate::events;
 use crate::models::{
-    AdminConversationRow, AdminListConversationsQuery, AttachmentResponse, AttachmentRow,
-    ConversationResponse, CreateConversationRequest, EnrichedConversation, IncomingChatMessage,
-    ListMessagesQuery, OutgoingChatMessage, RoleQuery, SetRequestStatusRequest,
+    AdminAttachmentView, AdminCallEvent, AdminConversationRow, AdminEnrichedMessage,
+    AdminListConversationsQuery, AttachmentResponse, AttachmentRow, ConversationResponse,
+    CreateConversationRequest, EnrichedConversation, IncomingChatMessage, ListMessagesQuery,
+    OutgoingChatMessage, RoleQuery, SetRequestStatusRequest,
 };
 use crate::repo;
 use crate::state::{ChatDeps, ChatInternalDeps};
@@ -194,6 +195,134 @@ pub async fn list_messages<S: ChatDeps>(
     let offset = query.offset.unwrap_or(0);
     let messages = repo::list_messages(state.db(), id, limit, offset).await?;
     Ok(Json(ApiResponse::success(messages)))
+}
+
+// ----- GET /admin/conversations/{id}/messages -----
+
+/// ADMIN message audit (read-only). Same newest-first history as `list_messages`, but each row is
+/// ENRICHED into renderable data so the web console shows what was ACTUALLY sent — not the raw
+/// `content` (an attachment UUID for image/video, the pinned call JSON for a `system` line). For
+/// each message it returns a parsed `kind`, the `text` for text rows, a resolved `attachment`
+/// (fresh presigned URL + MIME so the web renders an image thumbnail / video indicator) for
+/// media rows, and a structured `call_event` for a call-summary `system` row. Admin-only (the
+/// edge proves identity, not role — same gate as `admin_list_conversations`). READ-ONLY: no
+/// moderation (Phase D).
+///
+/// Attachments are resolved in ONE batch query (the ids referenced across all media messages),
+/// then each gets a freshly-signed URL — no N+1, and the bucket is never exposed.
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id, conversation_id = %id))]
+pub async fn admin_list_messages<S: ChatDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+    Query(query): Query<ListMessagesQuery>,
+) -> Result<Json<ApiResponse<Vec<AdminEnrichedMessage>>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let limit = query.limit.unwrap_or(DEFAULT_LIMIT);
+    let offset = query.offset.unwrap_or(0);
+    let messages = repo::list_messages(state.db_read(), id, limit, offset).await?;
+
+    // Collect the attachment ids referenced by image/video messages (the id rides in `content`),
+    // resolve them in ONE batch query, and index by id so enrichment is a map lookup (no N+1).
+    let attachment_ids: Vec<Uuid> = messages
+        .iter()
+        .filter(|m| is_media_type(&m.message_type))
+        .filter_map(|m| m.content.as_deref().and_then(|c| c.parse::<Uuid>().ok()))
+        .collect();
+    let attachments = repo::get_attachments_by_ids(state.db_read(), &attachment_ids).await?;
+    let by_id: std::collections::HashMap<Uuid, AttachmentRow> =
+        attachments.into_iter().map(|a| (a.id, a)).collect();
+
+    let enriched = messages
+        .into_iter()
+        .map(|m| enrich_message(m, &by_id, state.s3()))
+        .collect::<Vec<_>>();
+    Ok(Json(ApiResponse::success(enriched)))
+}
+
+const MSG_TYPE_TEXT: &str = "text";
+const MSG_TYPE_IMAGE: &str = "image";
+const MSG_TYPE_VIDEO: &str = "video";
+const MSG_TYPE_SYSTEM: &str = "system";
+
+/// `true` for the media message types whose `content` is an attachment id.
+fn is_media_type(message_type: &str) -> bool {
+    message_type == MSG_TYPE_IMAGE || message_type == MSG_TYPE_VIDEO
+}
+
+/// Enrich one raw message into the admin render model. Resolves media `content` (an attachment id)
+/// to a presigned view via the pre-fetched `by_id` map + a fresh signed URL, and a `system`
+/// call-summary `content` into a structured call event. Pure aside from `s3.download_url` (a
+/// deterministic local signer — no I/O), so the per-row mapping stays cheap.
+fn enrich_message(
+    m: OutgoingChatMessage,
+    by_id: &std::collections::HashMap<Uuid, AttachmentRow>,
+    s3: &crate::s3::S3Client,
+) -> AdminEnrichedMessage {
+    let mut kind = m.message_type.clone();
+    let mut text: Option<String> = None;
+    let mut attachment: Option<AdminAttachmentView> = None;
+    let mut attachment_id: Option<String> = None;
+    let mut call_event: Option<AdminCallEvent> = None;
+
+    match m.message_type.as_str() {
+        MSG_TYPE_TEXT => {
+            text = m.content.clone();
+        }
+        MSG_TYPE_IMAGE | MSG_TYPE_VIDEO => {
+            // The raw id is echoed even if resolution fails (so the admin still sees there WAS an
+            // attachment, not a blank), then resolved to a presigned view when found.
+            attachment_id = m.content.clone();
+            if let Some(att) = m
+                .content
+                .as_deref()
+                .and_then(|c| c.parse::<Uuid>().ok())
+                .and_then(|aid| by_id.get(&aid))
+            {
+                attachment = Some(AdminAttachmentView {
+                    id: att.id,
+                    url: s3.download_url(&att.file_key),
+                    mime_type: att.mime_type.clone(),
+                    file_size: att.file_size,
+                    is_video: domain::is_video_mime(&att.mime_type),
+                });
+            }
+        }
+        MSG_TYPE_SYSTEM => {
+            // A `system` row is a call-summary line when its content is the pinned call JSON;
+            // otherwise it stays a generic `system` kind (future system kinds render plainly).
+            if let Some(parsed) = m.content.as_deref().and_then(domain::parse_call_summary) {
+                kind = "call-event".to_string();
+                call_event = Some(AdminCallEvent {
+                    call_type: parsed.call_type,
+                    outcome: parsed.outcome,
+                    duration_seconds: parsed.duration_seconds,
+                });
+            }
+        }
+        _ => {
+            // Unknown stored type (defensive) — surface as-is so the admin sees the raw kind.
+            kind = "unknown".to_string();
+        }
+    }
+
+    AdminEnrichedMessage {
+        id: m.id,
+        conversation_id: m.conversation_id,
+        sender_id: m.sender_id,
+        sender_role: m.sender_role,
+        message_type: m.message_type,
+        created_at: m.created_at,
+        kind,
+        text,
+        attachment,
+        attachment_id,
+        call_event,
+    }
 }
 
 // ----- PUT /conversations/{id}/read?role= -----
@@ -528,6 +657,10 @@ mod tests {
                 get(admin_list_conversations::<TestDeps>),
             )
             .route(
+                "/admin/conversations/{id}/messages",
+                get(admin_list_messages::<TestDeps>),
+            )
+            .route(
                 "/conversations/{id}/messages",
                 get(list_messages::<TestDeps>),
             )
@@ -610,6 +743,131 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_list_messages_rejects_non_admin() {
+        let Some(deps) = deps(lazy_pool()).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // The enriched audit view is admin-only — a non-admin (even a participant) gets 403 BEFORE
+        // any DB read (the role gate fires first, like admin_list_conversations).
+        let id = Uuid::new_v4();
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/admin/conversations/{id}/messages"))
+            .header(
+                "authorization",
+                format!("Bearer {}", token(Uuid::new_v4(), "guard")),
+            )
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status_of(router(deps), req).await, StatusCode::FORBIDDEN);
+    }
+
+    /// PURE enrichment: `enrich_message` resolves a text row to `text`, a media row to a presigned
+    /// `attachment` view (image vs video by MIME), an unresolved media id to `attachment_id` only,
+    /// and a call-summary `system` row to a structured `call_event` (kind `call-event`).
+    #[test]
+    fn enrich_message_renders_each_kind() {
+        let s3 = s3_stub();
+        let convo = Uuid::new_v4();
+        let sender = Uuid::new_v4();
+
+        let mk = |mtype: &str, content: Option<String>| OutgoingChatMessage {
+            id: Uuid::new_v4(),
+            conversation_id: convo,
+            sender_id: sender,
+            sender_role: Some("customer".to_string()),
+            content,
+            message_type: mtype.to_string(),
+            created_at: chrono::Utc::now(),
+        };
+
+        // Build the attachment index the handler would have batch-fetched.
+        let img_id = Uuid::new_v4();
+        let vid_id = Uuid::new_v4();
+        let mut by_id = std::collections::HashMap::new();
+        by_id.insert(
+            img_id,
+            AttachmentRow {
+                id: img_id,
+                chat_id: convo,
+                uploader_id: sender,
+                file_key: format!("chat/{convo}/a.jpg"),
+                file_url: None,
+                file_size: Some(2048),
+                mime_type: "image/jpeg".to_string(),
+                created_at: chrono::Utc::now(),
+            },
+        );
+        by_id.insert(
+            vid_id,
+            AttachmentRow {
+                id: vid_id,
+                chat_id: convo,
+                uploader_id: sender,
+                file_key: format!("chat/{convo}/b.mp4"),
+                file_url: None,
+                file_size: Some(4096),
+                mime_type: "video/mp4".to_string(),
+                created_at: chrono::Utc::now(),
+            },
+        );
+
+        // text → kind=text, text carried, no attachment/call.
+        let t = enrich_message(mk("text", Some("hello".to_string())), &by_id, &s3);
+        assert_eq!(t.kind, "text");
+        assert_eq!(t.text.as_deref(), Some("hello"));
+        assert!(t.attachment.is_none() && t.call_event.is_none());
+
+        // image → resolved presigned view, is_video=false.
+        let i = enrich_message(mk("image", Some(img_id.to_string())), &by_id, &s3);
+        assert_eq!(i.kind, "image");
+        assert_eq!(
+            i.attachment_id.as_deref(),
+            Some(img_id.to_string().as_str())
+        );
+        let av = i.attachment.expect("image resolves to a view");
+        assert_eq!(av.mime_type, "image/jpeg");
+        assert!(!av.is_video);
+        assert!(av.url.contains(&av.id.to_string()) || av.url.contains("a.jpg"));
+
+        // video → is_video=true.
+        let v = enrich_message(mk("video", Some(vid_id.to_string())), &by_id, &s3);
+        let vv = v.attachment.expect("video resolves to a view");
+        assert!(vv.is_video, "video mime flagged");
+
+        // image referencing an UNKNOWN id → attachment_id echoed, attachment None (not blank).
+        let missing = Uuid::new_v4();
+        let u = enrich_message(mk("image", Some(missing.to_string())), &by_id, &s3);
+        assert_eq!(
+            u.attachment_id.as_deref(),
+            Some(missing.to_string().as_str())
+        );
+        assert!(
+            u.attachment.is_none(),
+            "unresolved id → no view, id still surfaced"
+        );
+
+        // system call-summary → kind=call-event with parsed fields.
+        let summary = crate::domain::CallSummary::from_call("video", "ended", None, true, Some(42));
+        let c = enrich_message(mk("system", Some(summary.to_content())), &by_id, &s3);
+        assert_eq!(c.kind, "call-event");
+        let ce = c.call_event.expect("call summary parses");
+        assert_eq!(ce.call_type, "video");
+        assert_eq!(ce.outcome, "completed");
+        assert_eq!(ce.duration_seconds, Some(42));
+
+        // system NON-call JSON → stays kind=system, no call_event.
+        let sys = enrich_message(
+            mk("system", Some(r#"{"k":"other"}"#.to_string())),
+            &by_id,
+            &s3,
+        );
+        assert_eq!(sys.kind, "system");
+        assert!(sys.call_event.is_none());
     }
 
     /// Build an authoritative booking the stub reader returns for create-conversation.

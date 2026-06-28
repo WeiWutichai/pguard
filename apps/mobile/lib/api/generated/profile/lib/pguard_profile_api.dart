@@ -15,6 +15,7 @@ export 'package:pguard_profile_api/src/api/profile_api.dart';
 
 export 'package:pguard_profile_api/src/model/access_audit_entry.dart';
 export 'package:pguard_profile_api/src/model/admin_avg_approval_time200_response.dart';
+export 'package:pguard_profile_api/src/model/admin_get_org_settings200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_candidates200_response.dart';
 export 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
@@ -54,6 +55,7 @@ export 'package:pguard_profile_api/src/model/list_guard_document_expiries200_res
 export 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 export 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 export 'package:pguard_profile_api/src/model/my_profile.dart';
+export 'package:pguard_profile_api/src/model/org_settings.dart';
 export 'package:pguard_profile_api/src/model/pending_applicants_count.dart';
 export 'package:pguard_profile_api/src/model/public_customer_profile.dart';
 export 'package:pguard_profile_api/src/model/public_guard_profile.dart';
@@ -64,6 +66,7 @@ export 'package:pguard_profile_api/src/model/resolved_name.dart';
 export 'package:pguard_profile_api/src/model/set_document_expiry_request.dart';
 export 'package:pguard_profile_api/src/model/set_guard_document_expiry200_response.dart';
 export 'package:pguard_profile_api/src/model/stage_request.dart';
+export 'package:pguard_profile_api/src/model/update_org_settings_request.dart';
 export 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 export 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
 

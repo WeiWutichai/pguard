@@ -27,6 +27,20 @@ export interface BroadcastCopy {
   audienceName: Record<AudienceKey, string>;
   specificUser: string;
   specificUserGap: string;
+  // Per-user targeting (live via profile lists + notification /notifications/send).
+  perUserHead: string;
+  perUserSearch: string;
+  perUserSearchHint: string;
+  perUserPick: string;
+  perUserCleared: string;
+  perUserNoResults: string;
+  perUserLoading: string;
+  perUserSendBtn: string;
+  perUserSentOk: (name: string) => string;
+  perUserNeedTitleBody: string;
+  perUserScopeNote: string;
+  guardTag: string;
+  customerTag: string;
   titleLabel: string;
   titlePlaceholder: string;
   bodyLabel: string;
@@ -58,6 +72,20 @@ export const COPY: Record<Lang, BroadcastCopy> = {
     audienceName: { all: "ผู้ใช้ทั้งหมด", guards: "เฉพาะเจ้าหน้าที่", customers: "เฉพาะลูกค้า" },
     specificUser: "ผู้ใช้เฉพาะราย",
     specificUserGap: "ส่งรายบุคคลยังไม่มีใน v2 (ต้องมี endpoint ค้นหาผู้ใช้)",
+    perUserHead: "ส่งถึงผู้ใช้รายคน",
+    perUserSearch: "ค้นหาผู้ใช้",
+    perUserSearchHint: "พิมพ์ชื่อเพื่อค้นหาเจ้าหน้าที่หรือลูกค้า",
+    perUserPick: "ผู้รับ",
+    perUserCleared: "ล้าง",
+    perUserNoResults: "ไม่พบผู้ใช้",
+    perUserLoading: "กำลังโหลดรายชื่อผู้ใช้…",
+    perUserSendBtn: "ส่งถึงคนนี้",
+    perUserSentOk: (name) => `ส่งการแจ้งเตือนถึง ${name} แล้ว`,
+    perUserNeedTitleBody: "กรอกหัวข้อและเนื้อหาก่อนส่ง",
+    perUserScopeNote:
+      "ค้นหาจากเจ้าหน้าที่ + ลูกค้า (ผู้รับการแจ้งเตือน) — ไม่รวมแอดมิน · v2 ยังไม่มี endpoint ค้นหาผู้ใช้รวมทุกบทบาท",
+    guardTag: "เจ้าหน้าที่",
+    customerTag: "ลูกค้า",
     titleLabel: "หัวข้อ",
     titlePlaceholder: "เช่น อัปเดตระบบใหม่ 🎉",
     bodyLabel: "เนื้อหา",
@@ -87,6 +115,20 @@ export const COPY: Record<Lang, BroadcastCopy> = {
     audienceName: { all: "All users", guards: "Guards only", customers: "Customers only" },
     specificUser: "Specific user",
     specificUserGap: "Per-user send isn't in v2 yet (needs a user-search endpoint)",
+    perUserHead: "Send to a specific user",
+    perUserSearch: "Search user",
+    perUserSearchHint: "Type a name to find a guard or customer",
+    perUserPick: "Recipient",
+    perUserCleared: "Clear",
+    perUserNoResults: "No matching users",
+    perUserLoading: "Loading users…",
+    perUserSendBtn: "Send to this user",
+    perUserSentOk: (name) => `Notification sent to ${name}`,
+    perUserNeedTitleBody: "Add a title and body before sending",
+    perUserScopeNote:
+      "Searches guards + customers (notification recipients) — excludes admins · v2 has no all-roles user-search endpoint yet",
+    guardTag: "Guard",
+    customerTag: "Customer",
     titleLabel: "Title",
     titlePlaceholder: "e.g. New system update 🎉",
     bodyLabel: "Body",

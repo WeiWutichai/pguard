@@ -611,6 +611,27 @@ pub async fn save_attachment(
     Ok(row)
 }
 
+/// Batch-fetch attachments by id — the admin audit view resolves the attachment referenced by
+/// each image/video message (the id rides in the message's `content`) in ONE query, NOT per-message
+/// (no N+1). The handler then re-signs a fresh URL per row. Admin-gated at the API layer (this is
+/// a cross-conversation read). Unknown/garbage ids simply don't come back (the row is dropped).
+pub async fn get_attachments_by_ids(
+    db: &sqlx::PgPool,
+    ids: &[Uuid],
+) -> Result<Vec<AttachmentRow>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, AttachmentRow>(
+        "SELECT id, chat_id, uploader_id, file_key, file_url, file_size, mime_type, created_at \
+         FROM chat.attachments WHERE id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 /// Fetch an attachment by id (the handler then enforces the participant gate).
 pub async fn get_attachment(
     db: &sqlx::PgPool,

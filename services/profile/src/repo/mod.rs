@@ -23,8 +23,9 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuardRow, PublicCustomerProfile, PublicGuardProfile,
-    RecruitCandidate, ResolvedNameRow, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    GuardProfileResponse, InternalGuardRow, OrgSettingsResponse, PublicCustomerProfile,
+    PublicGuardProfile, RecruitCandidate, ResolvedNameRow, UpdateOrgSettingsRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -1075,6 +1076,50 @@ pub async fn list_access_audit(
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
+}
+
+// ----- Organization (company) profile settings (#143) — single-row store -----
+
+/// Read the single-row org (company) profile. Returns the "unset" default (all `null`) when no
+/// row exists yet — so the admin GET never 404s. Read from the replica.
+pub async fn get_org_settings(db: &PgPool) -> Result<OrgSettingsResponse, AppError> {
+    let row: Option<OrgSettingsResponse> = sqlx::query_as(
+        "SELECT company_name, tax_id, address, updated_at \
+         FROM profile.org_settings WHERE id = TRUE",
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(row.unwrap_or_else(OrgSettingsResponse::unset))
+}
+
+/// Upsert the single-row org (company) profile (PUT). The fixed `id = TRUE` primary key plus
+/// the `CHECK (id)` constraint pins the table to at most one row; `ON CONFLICT (id)` overwrites
+/// it. `updated_by` records the acting admin (no cross-service FK), `updated_at = now()`. All
+/// three business fields are written unconditionally (the handler sends the full object, like
+/// the profile upsert) — returns the stored row for read-back.
+pub async fn upsert_org_settings(
+    db: &PgPool,
+    updated_by: Uuid,
+    req: &UpdateOrgSettingsRequest,
+) -> Result<OrgSettingsResponse, AppError> {
+    let row: OrgSettingsResponse = sqlx::query_as(
+        "INSERT INTO profile.org_settings (id, company_name, tax_id, address, updated_by, updated_at) \
+         VALUES (TRUE, $1, $2, $3, $4, now()) \
+         ON CONFLICT (id) DO UPDATE SET \
+             company_name = EXCLUDED.company_name, \
+             tax_id       = EXCLUDED.tax_id, \
+             address      = EXCLUDED.address, \
+             updated_by   = EXCLUDED.updated_by, \
+             updated_at   = now() \
+         RETURNING company_name, tax_id, address, updated_at",
+    )
+    .bind(req.company_name.as_deref())
+    .bind(req.tax_id.as_deref())
+    .bind(req.address.as_deref())
+    .bind(updated_by)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
 }
 
 /// PDPA §19/§32 data export: the user's OWN profile rows (guard and/or customer). This is

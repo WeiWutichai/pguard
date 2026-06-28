@@ -230,6 +230,15 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin organization (company) profile — company_name/tax_id/address shown on receipts
+        // + in-app (#143, Settings → บริษัท). GET (read) + PUT (upsert). profile owns the
+        // single-row org_settings store; admin authz is the profile service's own job.
+        prefix: "/admin/org-settings",
+        suffix: None,
+        upstream: Upstream::Profile,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin batch name-resolver (`POST /admin/users/resolve`): id[] → display names for the
         // admin lists (jobs/reviews/calls/activity log) that render raw UUIDs. profile owns the
         // only stored display names (guard/customer full_name); admin authz is profile's own job.
@@ -306,6 +315,15 @@ const RULES: &[Rule] = &[
         prefix: "/admin/calls",
         suffix: None,
         upstream: Upstream::Calling,
+        tier: Tier::Api,
+    },
+    Rule {
+        // Admin route playback (#141 ดูเส้นทางย้อนหลัง) — GET /admin/track/replay, by JOB
+        // (booking_id) or by GUARD (guard_id + from/to). Presence owns location history. Admin
+        // authz is the presence service's own job (same pattern as `/admin/calls` → calling).
+        prefix: "/admin/track",
+        suffix: None,
+        upstream: Upstream::Presence,
         tier: Tier::Api,
     },
     Rule {
@@ -990,6 +1008,17 @@ mod tests {
     }
 
     #[test]
+    fn admin_org_settings_routes_to_profile() {
+        // The org (company) profile (GET/PUT) → profile, edge-protected, Api tier. profile owns
+        // the single-row org_settings store; admin authz is profile's own job (#143).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/org-settings"));
+        assert_eq!(up, Upstream::Profile);
+        assert_eq!(fwd, "/admin/org-settings");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
     fn admin_customer_profiles_routes_to_profile() {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/customer-profiles"));
         assert_eq!(up, Upstream::Profile);
@@ -1121,6 +1150,17 @@ mod tests {
         let (up, fwd, public, tier) = proxy(resolve("/v1/admin/calls"));
         assert_eq!(up, Upstream::Calling);
         assert_eq!(fwd, "/admin/calls");
+        assert!(!public, "admin routes are edge-protected");
+        assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_track_replay_routes_to_presence() {
+        // #141 route playback. `resolve` sees the PATH only (the gateway splits the query off and
+        // re-attaches it on forward), so both query-modes resolve via the same path → presence.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/admin/track/replay"));
+        assert_eq!(up, Upstream::Presence);
+        assert_eq!(fwd, "/admin/track/replay");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
     }

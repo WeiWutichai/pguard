@@ -27,10 +27,10 @@ use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
     GuardDocumentResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
-    MyProfile, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
-    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
-    StageRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES,
-    RESOLVE_NAMES_LIMIT,
+    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
+    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
+    SetDocumentExpiryRequest, StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -1003,6 +1003,47 @@ pub async fn admin_list_access_audit<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(rows)))
 }
 
+// ----- GET/PUT /admin/org-settings — organization (company) profile (#143, Settings → บริษัท) -----
+
+/// GET `/admin/org-settings` — the org (company) profile (company_name / tax_id / address) shown
+/// on receipts + in-app. Admin only (else 403). Returns the single stored row, or an all-`null`
+/// "unset" default when nothing has been saved yet (never 404s — the UI renders blank inputs).
+/// Replica read. Reading the company profile is org-wide config, NOT a PII access, so it is not
+/// §30-audited (unlike the guard/customer reads).
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_get_org_settings<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<OrgSettingsResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let settings = repo::get_org_settings(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(settings)))
+}
+
+/// PUT `/admin/org-settings` — set/replace the org (company) profile. Admin only (else 403).
+/// Validates a lenient `tax_id` (8–20 digits, separators allowed — not a checksum) + bounded
+/// lengths for company_name/address, then upserts the single row (records the acting admin in
+/// `updated_by`). Returns the stored row for read-back. Write → primary.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+pub async fn admin_update_org_settings<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<UpdateOrgSettingsRequest>,
+) -> Result<Json<ApiResponse<OrgSettingsResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    validate::validate_text(
+        req.company_name.as_deref(),
+        "company_name",
+        validate::MAX_TEXT_LEN,
+    )
+    .map_err(AppError::BadRequest)?;
+    validate::validate_tax_id(req.tax_id.as_deref()).map_err(AppError::BadRequest)?;
+    validate::validate_text(req.address.as_deref(), "address", validate::MAX_TEXT_LEN)
+        .map_err(AppError::BadRequest)?;
+    let settings = repo::upsert_org_settings(state.db(), user.user_id, &req).await?;
+    Ok(Json(ApiResponse::success(settings)))
+}
+
 // ----- POST /admin/users/resolve — admin batch name resolver -----
 
 /// Resolve a batch of `user_id`s to display names for the admin lists (jobs, reviews, calls,
@@ -1470,6 +1511,11 @@ mod tests {
                     get(admin_list_access_audit::<TestDeps>),
                 )
                 .route(
+                    "/admin/org-settings",
+                    get(admin_get_org_settings::<TestDeps>)
+                        .put(admin_update_org_settings::<TestDeps>),
+                )
+                .route(
                     "/admin/users/resolve",
                     post(admin_resolve_names::<TestDeps>),
                 )
@@ -1698,6 +1744,51 @@ mod tests {
                     .uri("/admin/access-audit")
                     .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_org_settings_get_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A guard must not read the org (company) profile (the role gate short-circuits before DB).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/org-settings")
+                    .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_org_settings_put_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not write the org (company) profile.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/admin/org-settings")
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "company_name": "ACME" }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await

@@ -63,6 +63,8 @@ tags:
     description: Conversation lifecycle + the N+1-free enriched list
   - name: Messages
     description: Message history (newest-first)
+  - name: Admin
+    description: Admin cross-user read-only views (conversation list + enriched message audit)
   - name: Attachments
     description: Image/video upload + presigned download (magic-byte validated)
   - name: Internal
@@ -152,6 +154,41 @@ paths:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/AdminConversation' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/conversations/{id}/messages:
+    get:
+      tags: [Admin]
+      summary: ENRICHED message audit for a conversation (role=admin, read-only)
+      description: |
+        The admin moderation/audit message pane. Same newest-first history as
+        `GET /conversations/{id}/messages`, but each row is ENRICHED into RENDERABLE data so the
+        web console shows what was ACTUALLY sent — not the raw `content` (an attachment UUID for
+        image/video, the pinned call JSON for a `system` line). Each message carries a parsed
+        `kind` (`text` | `image` | `video` | `call-event` | `system` | `unknown`), the `text` for
+        text rows, a resolved `attachment` (fresh presigned URL + MIME so the web renders an image
+        thumbnail / video indicator) for media rows, and a structured `call_event` for a
+        call-summary `system` row. Attachments are resolved in ONE batch query (no N+1) and the
+        bucket is never exposed. Admin only (else 403). READ-ONLY: no moderation actions (Phase D).
+      operationId: adminListMessages
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - { $ref: '#/components/parameters/ConversationId' }
+        - { $ref: '#/components/parameters/Limit' }
+        - { $ref: '#/components/parameters/Offset' }
+      responses:
+        '200':
+          description: Enriched message history (newest-first)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean, example: true }
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/AdminEnrichedMessage' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
@@ -431,6 +468,80 @@ components:
         content: { type: string, nullable: true }
         message_type: { $ref: '#/components/schemas/MessageType' }
         created_at: { type: string, format: date-time }
+
+    AdminEnrichedMessage:
+      type: object
+      description: >-
+        An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per
+        `message_type`: text rows carry `text`; image/video rows resolve to a presigned
+        `attachment` (with the raw `attachment_id` echoed even if resolution fails); a
+        call-summary `system` row parses into a structured `call_event` (and `kind` becomes
+        `call-event`). READ-ONLY (no moderation fields — Phase D).
+      required: [id, conversation_id, sender_id, message_type, kind, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        conversation_id: { type: string, format: uuid }
+        sender_id: { type: string, format: uuid }
+        sender_role: { type: string, nullable: true, description: 'guard | customer' }
+        message_type: { $ref: '#/components/schemas/MessageType' }
+        created_at: { type: string, format: date-time }
+        kind:
+          type: string
+          enum: [text, image, video, call-event, system, unknown]
+          description: >-
+            The parsed render kind the web switches on. Distinct from `message_type`: a `system`
+            row whose content is the pinned call JSON becomes `call-event`.
+        text:
+          type: string
+          nullable: true
+          description: Plain text for a `text` message; null otherwise.
+        attachment:
+          oneOf: [{ $ref: '#/components/schemas/AdminAttachmentView' }]
+          nullable: true
+          description: >-
+            Resolved attachment (fresh presigned URL + MIME) for an image/video message; null for
+            non-media or if the referenced attachment can't be resolved.
+        attachment_id:
+          type: string
+          nullable: true
+          description: >-
+            Raw attachment id carried in a media message's `content` (echoed even if resolution
+            fails, so the admin still sees there WAS an attachment); null for non-media.
+        call_event:
+          oneOf: [{ $ref: '#/components/schemas/AdminCallEvent' }]
+          nullable: true
+          description: Parsed call event for a call-summary `system` row; null otherwise.
+
+    AdminAttachmentView:
+      type: object
+      description: >-
+        The resolvable bits of an attachment for the admin message view — a fresh presigned URL
+        plus the MIME so the web renders an `<img>` thumbnail or a video indicator.
+      required: [id, url, mime_type, is_video]
+      properties:
+        id: { type: string, format: uuid }
+        url:
+          type: string
+          description: Fresh presigned download URL (TTL 1h) — the admin-viewable thumbnail/source.
+        mime_type: { type: string }
+        file_size: { type: integer, nullable: true, description: Bytes. }
+        is_video:
+          type: boolean
+          description: True for video/* (web shows a video indicator vs an image thumbnail).
+
+    AdminCallEvent:
+      type: object
+      description: >-
+        A parsed call-summary `system` message — the structured form of the pinned call JSON so
+        the web renders a real call event instead of raw JSON.
+      required: [call_type, outcome]
+      properties:
+        call_type: { type: string, enum: [audio, video] }
+        outcome: { type: string, enum: [completed, missed, rejected] }
+        duration_seconds:
+          type: integer
+          nullable: true
+          description: Whole seconds for an answered call; null otherwise.
 
     Attachment:
       type: object

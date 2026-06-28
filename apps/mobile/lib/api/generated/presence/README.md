@@ -68,15 +68,17 @@ import 'package:pguard_presence_api/pguard_presence_api.dart';
 
 
 final api = PguardPresenceApi().getLocationsApi();
-final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
-final int limit = 789; // int | Max points (default 100, capped at 1000).
-final int offset = 789; // int | Pagination offset.
+final String bookingId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | By-JOB selector. Derives the window from the booking's assignment. Mutually exclusive with `guard_id`.
+final String guardId = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | By-GUARD selector. Mutually exclusive with `booking_id`.
+final DateTime from = 2013-10-20T19:20:30+01:00; // DateTime | By-GUARD window start (RFC3339, inclusive). Default `to - 24h`. Ignored in by-JOB mode.
+final DateTime to = 2013-10-20T19:20:30+01:00; // DateTime | By-GUARD window end (RFC3339, exclusive). Default now. Ignored in by-JOB mode.
+final int limit = 789; // int | Max points (default 500, capped at 1000).
 
 try {
-    final response = await api.getGuardHistory(id, limit, offset);
+    final response = await api.adminTrackReplay(bookingId, guardId, from, to, limit);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling LocationsApi->getGuardHistory: $e\n");
+    print("Exception when calling LocationsApi->adminTrackReplay: $e\n");
 }
 
 ```
@@ -87,6 +89,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*LocationsApi*](doc/LocationsApi.md) | [**adminTrackReplay**](doc/LocationsApi.md#admintrackreplay) | **GET** /admin/track/replay | Admin route playback — by job (booking) or by guard + time range (#141)
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardHistory**](doc/LocationsApi.md#getguardhistory) | **GET** /guards/{id}/history | Get a guard&#39;s location history (own / active-booking customer / admin)
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardLocation**](doc/LocationsApi.md#getguardlocation) | **GET** /guards/{id}/location | Get a guard&#39;s latest location (own / active-booking customer / admin)
 [*LocationsApi*](doc/LocationsApi.md) | [**internalOnlineGuards**](doc/LocationsApi.md#internalonlineguards) | **GET** /internal/online-guards | Live guard ids (service-to-service)
@@ -103,8 +106,10 @@ Class | Method | HTTP request | Description
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InlineObject2](doc/InlineObject2.md)
+ - [InlineObject3](doc/InlineObject3.md)
  - [InternalOnlineGuards200Response](doc/InternalOnlineGuards200Response.md)
  - [OnlineGuards](doc/OnlineGuards.md)
+ - [TrackReplay](doc/TrackReplay.md)
 
 
 ## Documentation For Authorization

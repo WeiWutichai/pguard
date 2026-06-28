@@ -140,6 +140,49 @@ impl CallSummary {
     }
 }
 
+/// The PARSED form of a stored call-summary `system` message — the structured read of the pinned
+/// `{"k":"call","ct":...,"oc":...,"ds":...}` JSON, so a reader (the admin audit view) renders a
+/// real call event instead of raw JSON. PURE (no I/O); the inverse of [`CallSummary::to_content`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ParsedCallSummary {
+    /// `"audio"` | `"video"` (from `ct`).
+    pub call_type: String,
+    /// `"completed"` | `"missed"` | `"rejected"` (from `oc`).
+    pub outcome: String,
+    /// Whole seconds for an answered call, else `None` (from `ds`).
+    pub duration_seconds: Option<i32>,
+}
+
+/// Try to parse a `system` message's `content` as the pinned call-summary JSON. Returns `Some`
+/// ONLY when the JSON is an object whose discriminator `k == "call"` (the summary kind) — any
+/// other `system` content (a future system kind, or non-JSON) yields `None`, so the caller falls
+/// back to a generic `system` render. Defensive: a missing/garbled `ct`/`oc` still yields a value
+/// (the raw string is carried through) since the row is a known call line; only the `k` gate and
+/// well-formed JSON object are required.
+pub fn parse_call_summary(content: &str) -> Option<ParsedCallSummary> {
+    let v: serde_json::Value = serde_json::from_str(content).ok()?;
+    if v.get("k").and_then(|k| k.as_str()) != Some("call") {
+        return None;
+    }
+    Some(ParsedCallSummary {
+        call_type: v
+            .get("ct")
+            .and_then(|c| c.as_str())
+            .unwrap_or("audio")
+            .to_string(),
+        outcome: v
+            .get("oc")
+            .and_then(|o| o.as_str())
+            .unwrap_or("missed")
+            .to_string(),
+        // `ds` is null for an unanswered call; only an integer carries a duration.
+        duration_seconds: v
+            .get("ds")
+            .and_then(|d| d.as_i64())
+            .and_then(|d| i32::try_from(d).ok()),
+    })
+}
+
 /// Accepted call media types (mirrors calling's `call_type` enum). The summary normalizes an
 /// unknown value to `audio`.
 const VALID_CALL_TYPES: [&str; 2] = ["audio", "video"];
@@ -412,6 +455,51 @@ mod tests {
         let mv: serde_json::Value = serde_json::from_str(&missed).unwrap();
         assert!(mv["ds"].is_null(), "ds is null for an unanswered call");
         assert_eq!(mv["oc"], "missed");
+    }
+
+    // ----- parse_call_summary (inverse of to_content) -----
+
+    #[test]
+    fn parse_call_summary_roundtrips_to_content() {
+        // A completed video call round-trips: to_content → parse_call_summary.
+        let summary = CallSummary::from_call("video", "ended", None, true, Some(90));
+        let parsed = parse_call_summary(&summary.to_content()).expect("parses the pinned shape");
+        assert_eq!(parsed.call_type, "video");
+        assert_eq!(parsed.outcome, "completed");
+        assert_eq!(parsed.duration_seconds, Some(90));
+
+        // A never-answered (missed) audio call: ds is null → None.
+        let missed = CallSummary::from_call("audio", "missed", None, false, None);
+        let pm = parse_call_summary(&missed.to_content()).expect("parses missed");
+        assert_eq!(pm.call_type, "audio");
+        assert_eq!(pm.outcome, "missed");
+        assert_eq!(pm.duration_seconds, None);
+
+        // A rejected call.
+        let rej = CallSummary::from_call("audio", "rejected", Some("declined"), false, None);
+        let pr = parse_call_summary(&rej.to_content()).expect("parses rejected");
+        assert_eq!(pr.outcome, "rejected");
+    }
+
+    #[test]
+    fn parse_call_summary_rejects_non_call_and_garbage() {
+        // Not the call kind → None (a future system kind falls back to a generic system render).
+        assert!(parse_call_summary(r#"{"k":"other","x":1}"#).is_none());
+        // Non-JSON → None.
+        assert!(parse_call_summary("just some text").is_none());
+        // Missing `k` → None.
+        assert!(parse_call_summary(r#"{"ct":"audio","oc":"missed"}"#).is_none());
+        // A JSON array (not an object) → None (no `k`).
+        assert!(parse_call_summary(r#"["call"]"#).is_none());
+    }
+
+    #[test]
+    fn parse_call_summary_is_defensive_on_partial_fields() {
+        // `k` present but `ct`/`oc` missing → defaults (audio/missed), still Some (it IS a call line).
+        let p = parse_call_summary(r#"{"k":"call"}"#).expect("call kind → Some");
+        assert_eq!(p.call_type, "audio");
+        assert_eq!(p.outcome, "missed");
+        assert_eq!(p.duration_seconds, None);
     }
 
     // ----- roles + alignment -----

@@ -1,9 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, Bell, Clock, Loader2, RefreshCw, Send, Shield, Users } from "lucide-react";
+import { AlertTriangle, Bell, Clock, Loader2, RefreshCw, Send, Shield, User, Users, X } from "lucide-react";
 
 import type { components as NotificationComponents } from "@/api/generated/notification";
+import type { components as ProfileComponents } from "@/api/generated/profile";
 import {
   Badge,
   Button,
@@ -14,9 +15,10 @@ import {
   Panel,
   PanelBody,
   PanelHead,
+  SearchField,
   Textarea,
 } from "@/components/ui";
-import { notificationApi } from "@/lib/api";
+import { notificationApi, profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 
 import {
@@ -30,12 +32,19 @@ import {
 
 type Broadcast = NotificationComponents["schemas"]["Broadcast"];
 type AudienceCounts = NotificationComponents["schemas"]["AudienceCounts"];
+type GuardProfile = ProfileComponents["schemas"]["GuardProfile"];
+type CustomerProfileAdmin = ProfileComponents["schemas"]["CustomerProfileAdmin"];
 
 const AUDIENCE_ICON: Record<AudienceKey, ReactNode> = {
   all: <Bell size={18} />,
   guards: <Shield size={18} />,
   customers: <Users size={18} />,
 };
+
+/** One per-user send candidate: a notifiable user (guard or customer) with a display name. */
+type Candidate = { user_id: string; name: string; role: "guard" | "customer" };
+
+const PER_USER_RESULTS = 8; // cap the search dropdown.
 
 export default function BroadcastPage() {
   const { t, lang } = useLanguage();
@@ -55,6 +64,83 @@ export default function BroadcastPage() {
   const [scheduledAt, setScheduledAt] = useState("");
   const [posting, setPosting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
+
+  // per-user send
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidatesLoading, setCandidatesLoading] = useState(true);
+  const [userQuery, setUserQuery] = useState("");
+  const [picked, setPicked] = useState<Candidate | null>(null);
+  const [sendingUser, setSendingUser] = useState(false);
+  const [userFeedback, setUserFeedback] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  // Load the notifiable user directory (guards + customers) for the per-user picker. v2 has no
+  // all-roles user-search endpoint, so we compose the two admin profile lists (which carry
+  // user_id + name) and search them client-side — honest scope: recipients only, no admins.
+  useEffect(() => {
+    let alive = true;
+    Promise.all([
+      profileApi.GET("/admin/guard-profiles", { params: { query: {} } }),
+      profileApi.GET("/admin/customer-profiles", { params: { query: {} } }),
+    ])
+      .then(([gRes, cRes]) => {
+        if (!alive) return;
+        const guards: Candidate[] = (gRes.data?.data ?? []).map((g: GuardProfile) => ({
+          user_id: g.user_id,
+          name: g.full_name?.trim() || g.account_name?.trim() || `#${g.user_id.slice(0, 8)}`,
+          role: "guard" as const,
+        }));
+        const customers: Candidate[] = (cRes.data?.data ?? []).map((cu: CustomerProfileAdmin) => ({
+          user_id: cu.user_id,
+          name: cu.full_name?.trim() || cu.company_name?.trim() || `#${cu.user_id.slice(0, 8)}`,
+          role: "customer" as const,
+        }));
+        setCandidates([...guards, ...customers]);
+        setCandidatesLoading(false);
+      })
+      .catch(() => {
+        if (!alive) return;
+        setCandidatesLoading(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const userMatches = useMemo(() => {
+    const q = userQuery.trim().toLowerCase();
+    if (!q) return [];
+    return candidates
+      .filter((u) => u.name.toLowerCase().includes(q) || u.user_id.toLowerCase().includes(q))
+      .slice(0, PER_USER_RESULTS);
+  }, [candidates, userQuery]);
+
+  async function sendToUser() {
+    if (!picked) return;
+    if (title.trim().length === 0 || body.trim().length === 0) {
+      setUserFeedback({ kind: "err", text: c.perUserNeedTitleBody });
+      return;
+    }
+    setSendingUser(true);
+    setUserFeedback(null);
+    const res = await notificationApi.POST("/notifications/send", {
+      body: {
+        user_id: picked.user_id,
+        title: title.trim(),
+        body: body.trim(),
+        notification_type: "system",
+      },
+    });
+    setSendingUser(false);
+    if (res.error) {
+      setUserFeedback({ kind: "err", text: t("broadcast.error") });
+      return;
+    }
+    setUserFeedback({ kind: "ok", text: c.perUserSentOk(picked.name) });
+    setTitle("");
+    setBody("");
+    setPicked(null);
+    setUserQuery("");
+  }
 
   const fetchInto = useCallback((alive: () => boolean) => {
     return Promise.all([
@@ -191,12 +277,99 @@ export default function BroadcastPage() {
                     </button>
                   );
                 })}
-                {/* Per-user target isn't in the v2 contract — honest gap, never faked. */}
-                <div className="flex items-center gap-2 rounded-xl border border-dashed border-border px-4 py-2.5 text-xs text-muted">
-                  <Badge tone="gray">{t("gap.endpoints")}</Badge>
-                  <span>{c.specificUserGap}</span>
-                </div>
               </div>
+            </Field>
+
+            {/* Per-user send — LIVE: pick a guard/customer, send via /notifications/send. */}
+            <Field label={c.perUserHead} hint={c.perUserScopeNote} className="mb-0">
+              {picked ? (
+                <div className="flex items-center gap-3 rounded-xl border border-brand-int bg-sunken px-4 py-3">
+                  <span className="flex size-9 flex-none items-center justify-center rounded-[11px] bg-brand-int text-white">
+                    <User size={18} />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-semibold text-text-strong">{picked.name}</div>
+                    <div className="text-[11.5px] text-muted">
+                      {picked.role === "guard" ? c.guardTag : c.customerTag} ·{" "}
+                      <span className="font-mono">#{picked.user_id.slice(0, 8)}</span>
+                    </div>
+                  </div>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      setPicked(null);
+                      setUserFeedback(null);
+                    }}
+                  >
+                    <X size={15} />
+                    {c.perUserCleared}
+                  </Button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <SearchField
+                    size="sm"
+                    placeholder={c.perUserSearch}
+                    value={userQuery}
+                    onChange={(e) => setUserQuery(e.target.value)}
+                    aria-label={c.perUserSearch}
+                  />
+                  {userQuery.trim() && (
+                    <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
+                      {candidatesLoading ? (
+                        <div className="flex items-center gap-2 px-4 py-3 text-xs text-muted">
+                          <Loader2 className="size-4 animate-spin" />
+                          {c.perUserLoading}
+                        </div>
+                      ) : userMatches.length === 0 ? (
+                        <div className="px-4 py-3 text-xs text-muted">{c.perUserNoResults}</div>
+                      ) : (
+                        <ul className="max-h-60 overflow-y-auto">
+                          {userMatches.map((u) => (
+                            <li key={`${u.role}-${u.user_id}`}>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setPicked(u);
+                                  setUserFeedback(null);
+                                }}
+                                className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-sunken"
+                              >
+                                <span className="min-w-0 flex-1 truncate text-sm text-text-strong">
+                                  {u.name}
+                                </span>
+                                <Badge tone={u.role === "guard" ? "blue" : "gray"}>
+                                  {u.role === "guard" ? c.guardTag : c.customerTag}
+                                </Badge>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </div>
+                  )}
+                  <p className="mt-1.5 text-xs text-muted">{c.perUserSearchHint}</p>
+                </div>
+              )}
+              {picked && (
+                <div className="mt-3 flex items-center gap-2.5">
+                  {userFeedback && (
+                    <span
+                      className={
+                        "mr-auto text-xs " +
+                        (userFeedback.kind === "ok" ? "text-success" : "text-danger")
+                      }
+                    >
+                      {userFeedback.text}
+                    </span>
+                  )}
+                  <Button size="sm" onClick={sendToUser} disabled={sendingUser}>
+                    {sendingUser ? <Loader2 className="size-4 animate-spin" /> : <Send size={15} />}
+                    {c.perUserSendBtn}
+                  </Button>
+                </div>
+              )}
             </Field>
 
             <Field label={c.titleLabel}>

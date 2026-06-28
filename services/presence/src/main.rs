@@ -122,6 +122,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::guard_location::<AppState>),
         )
         .route("/guards/{id}/history", get(api::guard_history::<AppState>))
+        // Admin route playback (#141 ดูเส้นทางย้อนหลัง) — by JOB (booking_id) or by GUARD
+        // (guard_id + from/to time range). Admin-only (handler-gated); the gateway forwards
+        // `/admin/track/replay` here (it strips the `/v1` prefix, role already validated at edge).
+        .route("/admin/track/replay", get(api::replay::<AppState>))
         // Service-to-service read (service-JWT'd) — booking's discovery filters its
         // approved-guard list down to who is currently LIVE here. Not exposed through the
         // public gateway (the `/internal/` location is blocked at the edge).

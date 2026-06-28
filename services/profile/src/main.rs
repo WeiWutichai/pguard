@@ -172,6 +172,13 @@ async fn main() -> anyhow::Result<()> {
             "/admin/access-audit",
             get(api::admin_list_access_audit::<AppState>),
         )
+        // Organization (company) profile — company_name / tax_id / address shown on receipts +
+        // in-app (#143, Settings → บริษัท). Admin-only GET (read effective) + PUT (upsert).
+        .route(
+            "/admin/org-settings",
+            get(api::admin_get_org_settings::<AppState>)
+                .put(api::admin_update_org_settings::<AppState>),
+        )
         // Admin batch name-resolver: id[] → { id: { role, display_name } } for the admin lists
         // (jobs/reviews/calls/activity log) that otherwise render raw UUIDs. Admin-gated in the
         // handler; profile owns the only stored display names (guard/customer full_name).

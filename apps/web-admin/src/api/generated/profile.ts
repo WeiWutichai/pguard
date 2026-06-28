@@ -326,6 +326,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/org-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the organization (company) profile (role=admin)
+         * @description The org (company) profile — `company_name` / `tax_id` / `address` — shown on RECEIPTS
+         *     and IN-APP (#143, Settings → บริษัท / Company profile). This is org-wide, admin-owned
+         *     config (edited at runtime, no redeploy), so unlike the env-config Settings tabs it has a
+         *     real single-row store owned by the profile service. Admin only (else 403).
+         *
+         *     NEVER 404s: when nothing has been saved yet, every field is `null` and `updated_at` is
+         *     `null` (an "unset" default) — the admin UI renders blank inputs. Reading the company
+         *     profile is org config, not PII, so it is NOT §30 access-audited.
+         */
+        get: operations["adminGetOrgSettings"];
+        /**
+         * Set/replace the organization (company) profile (role=admin)
+         * @description Upsert the single-row org (company) profile. Admin only (else 403). All fields optional
+         *     (the admin saves incrementally). Validates a LENIENT `tax_id` (8–20 digits, spaces/hyphens
+         *     allowed — not a checksum) and bounded `company_name`/`address` lengths (≤ 500 chars); an
+         *     invalid value → 400. The acting admin is recorded server-side (`updated_by`). Returns the
+         *     stored row for read-back.
+         */
+        put: operations["adminUpdateOrgSettings"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users/resolve": {
         parameters: {
             query?: never;
@@ -675,6 +710,31 @@ export interface components {
         RejectRequest: {
             /** @description Optional context for the rejection. */
             reason?: string | null;
+        };
+        /**
+         * @description The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the
+         *     admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens
+         *     allowed — not a checksum); `company_name`/`address` are bounded to 500 chars.
+         */
+        UpdateOrgSettingsRequest: {
+            company_name?: string | null;
+            /** @description 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. */
+            tax_id?: string | null;
+            address?: string | null;
+        };
+        /**
+         * @description The org (company) profile shown on receipts + in-app. Every field is nullable: an
+         *     all-null object (incl. `updated_at`) is the "never saved yet" state returned by GET.
+         */
+        OrgSettings: {
+            company_name?: string | null;
+            tax_id?: string | null;
+            address?: string | null;
+            /**
+             * Format: date-time
+             * @description When last saved; null until first written.
+             */
+            updated_at?: string | null;
         };
         /**
          * @description The lean approved-guard row for internal discovery — deliberately NARROW (no bank/PII;
@@ -1509,6 +1569,59 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminGetOrgSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The org (company) profile (or the all-null unset default) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["OrgSettings"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminUpdateOrgSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateOrgSettingsRequest"];
+            };
+        };
+        responses: {
+            /** @description The stored org (company) profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["OrgSettings"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

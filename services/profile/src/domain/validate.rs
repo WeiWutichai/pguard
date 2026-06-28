@@ -47,6 +47,42 @@ pub fn validate_email(value: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Upper bound for a stored tax id (digits + a few separators). The Thai TIN is 13 digits;
+/// kept generous so a future/foreign format or an entered separator is not rejected.
+pub const MAX_TAX_ID_LEN: usize = 20;
+
+/// Validate an optional tax id — LENIENT by design (admin-entered company TIN, not a checksum):
+/// after stripping spaces/hyphens it must be ALL DIGITS, length in `[8, MAX_TAX_ID_LEN]`. This
+/// catches an obvious typo (letters / empty-after-strip / absurd length) without rejecting a
+/// valid 13-digit Thai TIN entered with or without separators. `None`/empty → Ok (the admin may
+/// save the company name before they have the tax id).
+pub fn validate_tax_id(value: Option<&str>) -> Result<(), String> {
+    match value.map(str::trim) {
+        None | Some("") => Ok(()),
+        Some(v) => {
+            // The RAW value must still fit (a pathologically long separator-laden string is junk).
+            if v.chars().count() > MAX_TAX_ID_LEN {
+                return Err(format!(
+                    "tax_id must be at most {MAX_TAX_ID_LEN} characters"
+                ));
+            }
+            // Only digits, spaces and hyphens are allowed as input characters.
+            if !v
+                .chars()
+                .all(|c| c.is_ascii_digit() || c == ' ' || c == '-')
+            {
+                return Err("tax_id must contain only digits (spaces/hyphens allowed)".to_string());
+            }
+            let digits: String = v.chars().filter(char::is_ascii_digit).collect();
+            if (8..=MAX_TAX_ID_LEN).contains(&digits.len()) {
+                Ok(())
+            } else {
+                Err("tax_id must be 8–20 digits".to_string())
+            }
+        }
+    }
+}
+
 /// Validate an optional Thai phone in national format: at least 10 digits starting with `0`
 /// (mirrors the otp/identity phone shape — separators are ignored, not a carrier lookup).
 /// `None`/empty → Ok (optional field).
@@ -143,5 +179,22 @@ mod tests {
     fn phone_wrong_shape_is_rejected() {
         assert!(validate_thai_phone(Some("12345"), "phone").is_err()); // too short
         assert!(validate_thai_phone(Some("8123456789"), "phone").is_err()); // no leading 0
+    }
+
+    #[test]
+    fn tax_id_none_empty_and_valid_are_ok() {
+        assert!(validate_tax_id(None).is_ok());
+        assert!(validate_tax_id(Some("  ")).is_ok());
+        assert!(validate_tax_id(Some("0123456789012")).is_ok()); // 13-digit Thai TIN
+        assert!(validate_tax_id(Some("0-1234-56789-01-2")).is_ok()); // separators allowed
+        assert!(validate_tax_id(Some("12345678")).is_ok()); // 8 digits (lower bound)
+    }
+
+    #[test]
+    fn tax_id_wrong_shape_is_rejected() {
+        assert!(validate_tax_id(Some("1234567")).is_err()); // 7 digits — too short
+        assert!(validate_tax_id(Some("12AB5678")).is_err()); // letters
+        assert!(validate_tax_id(Some(&"1".repeat(MAX_TAX_ID_LEN + 1))).is_err()); // too long
+        assert!(validate_tax_id(Some("123456789012345678901")).is_err()); // 21 digits
     }
 }

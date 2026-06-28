@@ -24,6 +24,16 @@ export interface ChatCopy {
   customer: string;
   system: string;
   of: string;
+  // Enriched-render labels.
+  imageLabel: string;
+  videoLabel: string;
+  attachmentUnavailable: string;
+  callAudio: string;
+  callVideo: string;
+  callCompleted: string;
+  callMissed: string;
+  callRejected: string;
+  callDuration: (s: string) => string;
 }
 
 export const COPY: Record<Lang, ChatCopy> = {
@@ -47,6 +57,15 @@ export const COPY: Record<Lang, ChatCopy> = {
     customer: "ลูกค้า",
     system: "ระบบ",
     of: "จาก",
+    imageLabel: "รูปภาพ",
+    videoLabel: "วิดีโอ",
+    attachmentUnavailable: "ไฟล์แนบ (เปิดไม่ได้)",
+    callAudio: "สายเสียง",
+    callVideo: "สายวิดีโอ",
+    callCompleted: "รับสาย",
+    callMissed: "ไม่ได้รับสาย",
+    callRejected: "ปฏิเสธสาย",
+    callDuration: (s) => `· ${s}`,
   },
   en: {
     title: "Chat",
@@ -68,6 +87,15 @@ export const COPY: Record<Lang, ChatCopy> = {
     customer: "Customer",
     system: "System",
     of: "of",
+    imageLabel: "Photo",
+    videoLabel: "Video",
+    attachmentUnavailable: "Attachment (unavailable)",
+    callAudio: "Voice call",
+    callVideo: "Video call",
+    callCompleted: "completed",
+    callMissed: "missed",
+    callRejected: "rejected",
+    callDuration: (s) => `· ${s}`,
   },
 };
 

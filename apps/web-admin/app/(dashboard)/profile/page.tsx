@@ -1,10 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { KeyRound, LogOut, ShieldCheck } from "lucide-react";
+import { KeyRound, Loader2, LogOut, ShieldCheck } from "lucide-react";
 
-import { identityApi } from "@/lib/api";
+import type { components } from "@/api/generated/profile";
+import { identityApi, profileApi } from "@/lib/api";
 import { useAuth } from "@/components/auth-provider";
 import { useLanguage } from "@/lib/i18n";
 import {
@@ -20,7 +22,13 @@ import {
   Toggle,
 } from "@/components/ui";
 
+import { COPY as ACTIVITY_COPY, actionText } from "../activity/copy";
 import { COPY } from "./copy";
+
+type AccessAuditEntry = components["schemas"]["AccessAuditEntry"];
+
+/** Cap of self-activity rows shown in the profile card (full log lives at /activity). */
+const SELF_ACTIVITY_LIMIT = 6;
 
 /**
  * Admin profile — account, security & sessions. HONESTY RULE (mirrors settings): the only live
@@ -33,12 +41,51 @@ import { COPY } from "./copy";
 export default function ProfilePage() {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
+  const ac = ACTIVITY_COPY[lang];
   const user = useAuth();
   const router = useRouter();
 
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
+
+  // ---- My recent activity (PDPA §30 data-access audit, filtered to self) ----
+  // The access-audit endpoint has no `accessed_by` server filter, so fetch a recent page and keep
+  // only this admin's own rows. Best-effort enrichment — never blocks the page.
+  const [activity, setActivity] = useState<AccessAuditEntry[]>([]);
+  const [activityLoading, setActivityLoading] = useState(true);
+  const [activityError, setActivityError] = useState(false);
+
+  const loadActivity = useCallback(
+    (alive: () => boolean) =>
+      profileApi
+        .GET("/admin/access-audit", { params: { query: { limit: 200 } } })
+        .then(({ data, error: err }) => {
+          if (!alive()) return;
+          setActivityError(Boolean(err));
+          setActivity(err ? [] : (data?.data ?? []));
+          setActivityLoading(false);
+        })
+        .catch(() => {
+          if (!alive()) return;
+          setActivityError(true);
+          setActivityLoading(false);
+        }),
+    [],
+  );
+
+  useEffect(() => {
+    let alive = true;
+    void loadActivity(() => alive);
+    return () => {
+      alive = false;
+    };
+  }, [loadActivity]);
+
+  const myActivity = useMemo(
+    () => activity.filter((r) => r.accessed_by === user.user_id).slice(0, SELF_ACTIVITY_LIMIT),
+    [activity, user.user_id],
+  );
 
   async function signOutEverywhere() {
     setBusy(true);
@@ -80,11 +127,50 @@ export default function ProfilePage() {
             </PanelBody>
           </Panel>
 
-          {/* My recent activity — no per-admin feed in v2. */}
+          {/* My recent activity — LIVE: PDPA §30 data-access audit filtered to this admin. */}
           <Panel>
-            <PanelHead title={c.activityHead}>{gapChip}</PanelHead>
-            <PanelBody>
-              <p className="text-[12.5px] text-muted">{c.gapActivity}</p>
+            <PanelHead title={c.activityHead} sub={c.activitySub}>
+              <Link href="/activity" className="text-[12.5px] font-medium text-brand-int hover:underline">
+                {c.viewAll}
+              </Link>
+            </PanelHead>
+            <PanelBody className="py-1">
+              {activityLoading ? (
+                <div className="flex items-center gap-2 py-3 text-[12.5px] text-muted">
+                  <Loader2 className="size-4 animate-spin" />
+                  {c.activityLoading}
+                </div>
+              ) : activityError ? (
+                <p className="py-3 text-[12.5px] text-danger" role="alert">
+                  {c.activityError}
+                </p>
+              ) : myActivity.length === 0 ? (
+                <p className="py-3 text-[12.5px] text-muted">{c.activityEmpty}</p>
+              ) : (
+                <ul className="divide-y divide-border">
+                  {myActivity.map((r) => (
+                    <li key={r.id} className="flex items-start gap-2 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-medium text-text-strong">
+                          {actionText(r.action, ac)}
+                        </div>
+                        {r.target ? (
+                          <div className="truncate text-[11.5px] text-muted">{r.target}</div>
+                        ) : null}
+                      </div>
+                      <time className="flex-none font-mono text-[11px] text-faint tabular-nums">
+                        {new Date(r.accessed_at).toLocaleString(lang === "th" ? "th-TH" : "en-GB", {
+                          month: "short",
+                          day: "numeric",
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </time>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <p className="mt-1 pb-1 text-[11px] text-faint">{c.gapActivity}</p>
             </PanelBody>
           </Panel>
         </div>

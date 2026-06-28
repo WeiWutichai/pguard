@@ -170,6 +170,9 @@ async fn process(
         // en_route/arrived (or a non-booking subject) — irrelevant to authz; ack as processed.
         return Ok(());
     };
+    // `active == true` is the `job_accepted` event (the only one that sets active=true): it is the
+    // job-window START anchor; every other projected event is a terminal END anchor (0004).
+    let is_start = active;
 
     let span = tracing::info_span!(
         "presence.project_booking_event",
@@ -180,13 +183,16 @@ async fn process(
     if let Some(tp) = envelope.traceparent.as_deref() {
         observability::set_parent_from_traceparent(&span, tp);
     }
-    project(db, envelope, active).instrument(span).await
+    project(db, envelope, active, is_start)
+        .instrument(span)
+        .await
 }
 
 async fn project(
     db: &sqlx::PgPool,
     envelope: EventEnvelope<BookingPayload>,
     active: bool,
+    is_start: bool,
 ) -> Result<(), AppError> {
     let p = &envelope.payload;
     crate::repo::upsert_assignment(
@@ -195,6 +201,7 @@ async fn project(
         p.customer_id,
         p.guard_id,
         active,
+        is_start,
         envelope.occurred_at,
     )
     .await?;

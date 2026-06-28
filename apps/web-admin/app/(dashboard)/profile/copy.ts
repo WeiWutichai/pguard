@@ -35,6 +35,11 @@ export interface ProfileCopy {
   gapActivity: string;
   gap2fa: string;
   signOutError: string;
+  activitySub: string;
+  activityLoading: string;
+  activityEmpty: string;
+  activityError: string;
+  viewAll: string;
 }
 
 export const COPY: Record<Lang, ProfileCopy> = {
@@ -65,9 +70,14 @@ export const COPY: Record<Lang, ProfileCopy> = {
     gapAccountEdit: "v2 ยังไม่มี endpoint แก้ไขชื่อ/อีเมล/รหัสผ่านของแอดมิน (/auth/me คืนแค่ role + id)",
     gapSessions: "v2 ติดตาม refresh family + jti แต่ยังไม่ได้เปิดเป็นรายการอุปกรณ์/IP",
     gapTokens: "v2 ยังไม่มี personal API token",
-    gapActivity: "v2 ยังไม่มี feed กิจกรรมรายแอดมิน",
+    gapActivity: "แสดงกิจกรรมการเข้าถึงข้อมูล (PDPA §30) ของคุณ — ยังไม่ใช่ฟีดเหตุการณ์ธุรกิจเต็มรูป",
     gap2fa: "v2 ยังไม่มี 2FA",
     signOutError: "เพิกถอนเซสชันไม่สำเร็จ กรุณาลองใหม่",
+    activitySub: "การเข้าถึงข้อมูลล่าสุดของคุณ",
+    activityLoading: "กำลังโหลด…",
+    activityEmpty: "ยังไม่มีกิจกรรม",
+    activityError: "โหลดกิจกรรมไม่สำเร็จ",
+    viewAll: "ดูทั้งหมด",
   },
   en: {
     title: "Admin Profile",
@@ -96,8 +106,13 @@ export const COPY: Record<Lang, ProfileCopy> = {
     gapAccountEdit: "v2 has no admin name/email/password edit endpoint (/auth/me returns role + id only)",
     gapSessions: "v2 tracks refresh families + jti but doesn't yet expose them as a device/IP list",
     gapTokens: "v2 has no personal API tokens yet",
-    gapActivity: "v2 has no per-admin activity feed yet",
+    gapActivity: "Shows your PDPA §30 data-access activity — not the full business-action feed yet",
     gap2fa: "v2 has no 2FA yet",
     signOutError: "Couldn't revoke sessions — please try again",
+    activitySub: "Your recent data access",
+    activityLoading: "Loading…",
+    activityEmpty: "No activity yet",
+    activityError: "Couldn't load activity",
+    viewAll: "View all",
   },
 };
