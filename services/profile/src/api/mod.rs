@@ -23,6 +23,7 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::documents;
 use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
+use crate::identity_client::IdentityResolver;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
     CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
@@ -1083,7 +1084,7 @@ pub async fn admin_resolve_names<S: ProfileDeps>(
     };
     let rows = repo::resolve_names(state.db_read(), &ids).await?;
     // Build the id → {role, display_name} map. Unmatched ids never appear (null-safe omission).
-    let map: std::collections::HashMap<Uuid, ResolvedName> = rows
+    let mut map: std::collections::HashMap<Uuid, ResolvedName> = rows
         .into_iter()
         .map(|r| {
             (
@@ -1095,6 +1096,33 @@ pub async fn admin_resolve_names<S: ProfileDeps>(
             )
         })
         .collect();
+
+    // The ids profile couldn't resolve from its OWN guard/customer tables — almost always admins
+    // (no profile row here) or genuinely-unknown/deleted ids. Ask identity (over service-JWT) for
+    // their {role, display_name} and MERGE the ADMIN entries in, so the web admin lists / Activity
+    // Log show admin names with no extra client call (#142). Best-effort: an identity outage leaves
+    // these omitted (the hook already renders a fallback), never failing the local resolution.
+    let unresolved: Vec<Uuid> = ids
+        .iter()
+        .copied()
+        .filter(|id| !map.contains_key(id))
+        .collect();
+    if !unresolved.is_empty() {
+        let identity_names = state.identity_resolver().resolve(&unresolved).await;
+        for (id, name) in identity_names {
+            // Merge ONLY admins from identity: a guard/customer name is profile's own authoritative
+            // value (already in `map` if it has a row); identity adds the role profile can't store.
+            if name.role == ROLE_ADMIN {
+                map.insert(
+                    id,
+                    ResolvedName {
+                        role: name.role,
+                        display_name: name.display_name,
+                    },
+                );
+            }
+        }
+    }
     Ok(Json(ApiResponse::success(map)))
 }
 
@@ -1394,6 +1422,24 @@ mod tests {
         }
     }
 
+    /// Hermetic identity name-resolver stub — returns a fixed id → {role, display_name} map with no
+    /// network. The admin-resolve role-gate + DB-short-circuit tests never reach it; the merge tests
+    /// (DB-gated) seed it to prove the admin merge.
+    #[derive(Clone, Default)]
+    struct StubResolver {
+        names: std::collections::HashMap<Uuid, crate::identity_client::IdentityName>,
+    }
+    impl crate::identity_client::IdentityResolver for StubResolver {
+        async fn resolve(
+            &self,
+            ids: &[Uuid],
+        ) -> std::collections::HashMap<Uuid, crate::identity_client::IdentityName> {
+            ids.iter()
+                .filter_map(|id| self.names.get(id).map(|n| (*id, n.clone())))
+                .collect()
+        }
+    }
+
     #[derive(Clone)]
     struct TestDeps {
         dec: Arc<DecodingKey>,
@@ -1401,6 +1447,7 @@ mod tests {
         redis: redis::aio::ConnectionManager,
         authz: StubAuthz,
         s3: crate::s3::S3Client,
+        resolver: StubResolver,
     }
 
     /// Dummy S3 client for tests — does no I/O until a presigned URL is actually hit; the
@@ -1430,6 +1477,7 @@ mod tests {
     }
     impl ProfileDeps for TestDeps {
         type Authz = StubAuthz;
+        type Resolver = StubResolver;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
@@ -1438,6 +1486,9 @@ mod tests {
         }
         fn s3(&self) -> &crate::s3::S3Client {
             &self.s3
+        }
+        fn identity_resolver(&self) -> &StubResolver {
+            &self.resolver
         }
     }
 
@@ -1468,6 +1519,7 @@ mod tests {
             redis,
             authz: StubAuthz { allow: false },
             s3: test_s3(),
+            resolver: StubResolver::default(),
         };
         Some(
             Router::new()
@@ -1891,6 +1943,101 @@ mod tests {
         );
     }
 
+    /// The admin name-resolver MERGES admin names from identity (#142): a seeded guard resolves
+    /// locally; an admin id (no profile row here) is filled in from the StubResolver as
+    /// `{ role: admin, display_name }`; a guard id the stub ALSO returns is NOT overwritten (local
+    /// profile wins); an unknown id stays omitted. DB-gated (real pool for resolve_names) + Redis-
+    /// gated (the AuthUser extractor); hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn resolve_names_merges_admin_from_identity() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the admin-merge resolve test");
+            return;
+        };
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let Ok(redis) = shared::redis_client::create_connection_manager(&redis_url).await else {
+            eprintln!("SKIP: could not connect to test Redis");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        // Seed a guard profile (local resolution) — the admin has no profile row by design.
+        let guard_id = Uuid::new_v4();
+        let admin_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO profile.guard_profiles (user_id, full_name) VALUES ($1, $2)")
+            .bind(guard_id)
+            .bind("Guard Local")
+            .execute(&pool)
+            .await
+            .expect("seed guard profile");
+
+        // The stub returns BOTH the admin (to be merged) AND the guard (must NOT overwrite local).
+        let mut names = std::collections::HashMap::new();
+        names.insert(
+            admin_id,
+            crate::identity_client::IdentityName {
+                role: "admin".to_string(),
+                display_name: Some("Boss Admin".to_string()),
+            },
+        );
+        names.insert(
+            guard_id,
+            crate::identity_client::IdentityName {
+                role: "guard".to_string(),
+                display_name: Some("WRONG (identity)".to_string()),
+            },
+        );
+
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db: pool.clone(),
+            redis,
+            authz: StubAuthz { allow: false },
+            s3: test_s3(),
+            resolver: StubResolver { names },
+        };
+        let app = Router::new()
+            .route(
+                "/admin/users/resolve",
+                post(admin_resolve_names::<TestDeps>),
+            )
+            .with_state(deps);
+
+        let unknown = Uuid::new_v4();
+        let res = app
+            .oneshot(resolve_request(ROLE_ADMIN, &[guard_id, admin_id, unknown]))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = &json["data"];
+        // Guard resolved LOCALLY (identity's guard entry is ignored — local wins).
+        assert_eq!(data[guard_id.to_string()]["role"], "guard");
+        assert_eq!(data[guard_id.to_string()]["display_name"], "Guard Local");
+        // Admin merged from identity.
+        assert_eq!(data[admin_id.to_string()]["role"], "admin");
+        assert_eq!(data[admin_id.to_string()]["display_name"], "Boss Admin");
+        // Unknown id stays omitted.
+        assert!(data.get(unknown.to_string()).is_none());
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard_id)
+            .execute(&pool)
+            .await;
+    }
+
     #[tokio::test]
     async fn resolve_names_rejects_over_limit_batch() {
         let Some(app) = router().await else {
@@ -2132,6 +2279,7 @@ mod tests {
             redis,
             authz: StubAuthz { allow },
             s3: test_s3(),
+            resolver: StubResolver::default(),
         };
         Some(
             Router::new()
@@ -2778,6 +2926,7 @@ mod tests {
             redis: redis.clone(),
             authz: StubAuthz { allow: false },
             s3: test_s3(),
+            resolver: StubResolver::default(),
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))
@@ -2936,6 +3085,7 @@ mod tests {
             redis: redis.clone(),
             authz: StubAuthz { allow: false },
             s3: test_s3(),
+            resolver: StubResolver::default(),
         };
         let app = Router::new()
             .route("/profile/guard", post(upsert_guard_profile::<TestDeps>))

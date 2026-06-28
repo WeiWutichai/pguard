@@ -1,8 +1,9 @@
 // Screen-local bilingual copy for the broadcast (ส่งการแจ้งเตือน) screen — admin bulk-send.
 // Backed by notification `/admin/broadcasts` (compose/draft/schedule/list) + `/admin/audience-
-// counts`. The audience is resolved cross-service from profile (service-JWT). The design's
-// "specific user" target + promo/safety notification types are NOT in the v2 contract (the enum
-// is system/booking_*/…; audience is role-level only) → shown as an honest gap, never faked.
+// counts`. The audience is resolved cross-service from profile (service-JWT). The per-user target
+// (#138) is LIVE via the identity admin user-search (GET /admin/users/search — all roles, phone
+// masked) + notification /notifications/send. The design's promo/safety notification types are
+// NOT in the v2 contract (the enum is system/booking_*/…) → those stay out of scope, never faked.
 import type { Lang } from "@/lib/lang";
 
 export const AUDIENCES = ["all", "guards", "customers"] as const;
@@ -25,22 +26,21 @@ export interface BroadcastCopy {
   historyHead: string;
   audienceLabel: string;
   audienceName: Record<AudienceKey, string>;
-  specificUser: string;
-  specificUserGap: string;
-  // Per-user targeting (live via profile lists + notification /notifications/send).
+  // Per-user targeting (live via identity admin user-search + notification /notifications/send).
   perUserHead: string;
   perUserSearch: string;
   perUserSearchHint: string;
-  perUserPick: string;
   perUserCleared: string;
   perUserNoResults: string;
   perUserLoading: string;
+  perUserSearchError: string;
   perUserSendBtn: string;
   perUserSentOk: (name: string) => string;
   perUserNeedTitleBody: string;
   perUserScopeNote: string;
   guardTag: string;
   customerTag: string;
+  adminTag: string;
   titleLabel: string;
   titlePlaceholder: string;
   bodyLabel: string;
@@ -70,22 +70,20 @@ export const COPY: Record<Lang, BroadcastCopy> = {
     historyHead: "ส่งล่าสุด",
     audienceLabel: "กลุ่มเป้าหมาย",
     audienceName: { all: "ผู้ใช้ทั้งหมด", guards: "เฉพาะเจ้าหน้าที่", customers: "เฉพาะลูกค้า" },
-    specificUser: "ผู้ใช้เฉพาะราย",
-    specificUserGap: "ส่งรายบุคคลยังไม่มีใน v2 (ต้องมี endpoint ค้นหาผู้ใช้)",
     perUserHead: "ส่งถึงผู้ใช้รายคน",
     perUserSearch: "ค้นหาผู้ใช้",
-    perUserSearchHint: "พิมพ์ชื่อเพื่อค้นหาเจ้าหน้าที่หรือลูกค้า",
-    perUserPick: "ผู้รับ",
+    perUserSearchHint: "พิมพ์ชื่อ เบอร์โทร หรืออีเมลเพื่อค้นหา",
     perUserCleared: "ล้าง",
     perUserNoResults: "ไม่พบผู้ใช้",
-    perUserLoading: "กำลังโหลดรายชื่อผู้ใช้…",
+    perUserLoading: "กำลังค้นหา…",
+    perUserSearchError: "ค้นหาไม่สำเร็จ กรุณาลองใหม่",
     perUserSendBtn: "ส่งถึงคนนี้",
     perUserSentOk: (name) => `ส่งการแจ้งเตือนถึง ${name} แล้ว`,
     perUserNeedTitleBody: "กรอกหัวข้อและเนื้อหาก่อนส่ง",
-    perUserScopeNote:
-      "ค้นหาจากเจ้าหน้าที่ + ลูกค้า (ผู้รับการแจ้งเตือน) — ไม่รวมแอดมิน · v2 ยังไม่มี endpoint ค้นหาผู้ใช้รวมทุกบทบาท",
+    perUserScopeNote: "ค้นหาผู้ใช้ทุกบทบาท (เจ้าหน้าที่ · ลูกค้า · แอดมิน) ด้วยชื่อ เบอร์โทร หรืออีเมล",
     guardTag: "เจ้าหน้าที่",
     customerTag: "ลูกค้า",
+    adminTag: "แอดมิน",
     titleLabel: "หัวข้อ",
     titlePlaceholder: "เช่น อัปเดตระบบใหม่ 🎉",
     bodyLabel: "เนื้อหา",
@@ -113,22 +111,20 @@ export const COPY: Record<Lang, BroadcastCopy> = {
     historyHead: "Sent history",
     audienceLabel: "Target audience",
     audienceName: { all: "All users", guards: "Guards only", customers: "Customers only" },
-    specificUser: "Specific user",
-    specificUserGap: "Per-user send isn't in v2 yet (needs a user-search endpoint)",
     perUserHead: "Send to a specific user",
     perUserSearch: "Search user",
-    perUserSearchHint: "Type a name to find a guard or customer",
-    perUserPick: "Recipient",
+    perUserSearchHint: "Type a name, phone, or email to search",
     perUserCleared: "Clear",
     perUserNoResults: "No matching users",
-    perUserLoading: "Loading users…",
+    perUserLoading: "Searching…",
+    perUserSearchError: "Search failed — please try again",
     perUserSendBtn: "Send to this user",
     perUserSentOk: (name) => `Notification sent to ${name}`,
     perUserNeedTitleBody: "Add a title and body before sending",
-    perUserScopeNote:
-      "Searches guards + customers (notification recipients) — excludes admins · v2 has no all-roles user-search endpoint yet",
+    perUserScopeNote: "Search users across all roles (guards · customers · admins) by name, phone, or email",
     guardTag: "Guard",
     customerTag: "Customer",
+    adminTag: "Admin",
     titleLabel: "Title",
     titlePlaceholder: "e.g. New system update 🎉",
     bodyLabel: "Body",

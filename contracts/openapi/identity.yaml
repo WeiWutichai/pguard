@@ -36,7 +36,9 @@ servers:
 
 tags:
   - name: Auth
-    description: Login, token refresh, logout, current user
+    description: Login, token refresh, logout, current user, self-profile + password
+  - name: Admin
+    description: Admin-only endpoints (role-gated; routed at the gateway)
   - name: Internal
     description: Service-to-service endpoints (service-JWT only; not exposed publicly)
 
@@ -170,7 +172,7 @@ paths:
       security: [{ bearerAuth: [] }]
       responses:
         '200':
-          description: The authenticated user's id + role
+          description: The authenticated user's id + role + display_name + email
           content:
             application/json:
               schema:
@@ -180,6 +182,35 @@ paths:
                     properties:
                       data: { $ref: '#/components/schemas/Me' }
         '401': { $ref: '#/components/responses/Unauthorized' }
+    put:
+      tags: [Auth]
+      summary: Update the caller's OWN display_name + email (#144 admin self-profile)
+      description: |
+        Self-edit of `display_name` (trimmed, 1–120 chars) + optional `email` (lowercased +
+        shape-checked, UNIQUE). Self only — keyed by the authenticated user; phone/role/password
+        are NEVER changed here (password has its own `PUT /auth/password`). An email already used
+        by another account → `409` with code `EMAIL_TAKEN`. Returns the refreshed self-profile.
+      operationId: updateMe
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateMeRequest' }
+      responses:
+        '200':
+          description: Updated self-profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Me' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/EmailTaken' }
     delete:
       tags: [Auth]
       summary: Erase the authenticated user's account (PDPA §33 right to erasure)
@@ -206,6 +237,81 @@ paths:
                         properties:
                           deleted: { type: boolean, example: true }
         '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/password:
+    put:
+      tags: [Auth]
+      summary: Change the caller's OWN password (#144)
+      description: |
+        Verifies `current_password` against the stored Argon2 hash (a wrong value → a GENERIC 401,
+        no enumeration), then Argon2-stores `new_pin_hash` and force-revokes the user's OTHER
+        sessions (refresh families revoked + `token_revocation_version` bumped, so every other
+        device is rejected at once) and clears THIS browser's auth cookies so the current session
+        re-authenticates with the new PIN. Self only.
+      operationId: changePassword
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePasswordRequest' }
+      responses:
+        '200':
+          description: Password changed; other sessions revoked + this browser's cookies cleared
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          password_changed: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/users/search:
+    get:
+      tags: [Admin]
+      summary: Search users by name / phone / email / id (role=admin, #138 per-user notify)
+      description: |
+        Finds users across ALL roles for the admin per-user-notify picker. Matches `q`
+        case-insensitively against `display_name` / `phone` / `email`, plus an exact id match when
+        `q` is a UUID. **Admin only** (non-admin → 403). Returns `[{ id, role, display_name,
+        phone_masked }]` — the phone is MASKED (last-4) and NO other PII crosses the wire. `limit`
+        is clamped (default 20, max 50). A blank `q` returns an empty list (no full-table dump).
+
+        Routed at the gateway to **identity** (it knows every role + the admin display name) — a
+        more-specific rule than `/admin/users/resolve` → profile.
+      operationId: adminSearchUsers
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: q
+          in: query
+          required: false
+          schema: { type: string }
+          description: Free-text query (name / phone / email / exact id).
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 50, default: 20 }
+      responses:
+        '200':
+          description: Matching users (phone masked)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/UserSearchResult' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   /me/data-export:
     get:
@@ -272,6 +378,44 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /internal/users/names:
+    post:
+      tags: [Internal]
+      summary: Batch-resolve user_ids to { role, display_name } (service-JWT only)
+      description: |
+        Resolve a batch of `user_id`s to `{ role, display_name }` for an internal caller. This is
+        identity's OWN schema, so it answers EVERY role — including ADMINS, who have no profile row
+        (the gap that left admin names blank on the web admin lists / Activity Log #142). The
+        profile service's `POST /admin/users/resolve` resolves guard/customer locally, then calls
+        this for the still-unresolved ids and merges admin names in.
+
+        **Requires a service-JWT** (`serviceAuth`, audience `pguard-internal`); blocked at the
+        public gateway (`/internal/`). Returns a MAP keyed by id; unknown/deleted ids are OMITTED.
+        ONLY `role` + `display_name` — NEVER phone/email. Bounded to 500 ids (a larger batch → 400).
+      operationId: internalResolveUserNames
+      security: [{ serviceAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResolveUsersRequest' }
+      responses:
+        '200':
+          description: |
+            Map keyed by id → `{ role, display_name }`. Ids with no live row are omitted.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        additionalProperties: { $ref: '#/components/schemas/ResolvedUser' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
 components:
   securitySchemes:
     bearerAuth:
@@ -325,6 +469,13 @@ components:
           schema: { $ref: '#/components/schemas/ErrorBody' }
     Conflict:
       description: The phone is already registered in a non-pending state — log in instead
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
+    EmailTaken:
+      description: |
+        The submitted email is already in use by another account (`PUT /auth/me`). Same 409
+        envelope as `Conflict`; the `error.code` is `EMAIL_TAKEN` so the client can branch on it.
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
@@ -407,6 +558,79 @@ components:
       properties:
         user_id: { type: string, format: uuid }
         role: { $ref: '#/components/schemas/UserRole' }
+        display_name:
+          type: string
+          nullable: true
+          description: |
+            The caller's own display name (#144). `null` when unset — notably an admin who has not
+            filled it in yet. Settable via `PUT /auth/me`.
+        email:
+          type: string
+          nullable: true
+          description: The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
+
+    UpdateMeRequest:
+      type: object
+      required: [display_name]
+      properties:
+        display_name:
+          type: string
+          minLength: 1
+          maxLength: 120
+          description: New display name (trimmed; 1–120 characters).
+        email:
+          type: string
+          nullable: true
+          description: |
+            New email — optional (omit / null / "" clears it). Lowercased + shape-checked
+            server-side; UNIQUE across users (a collision → 409 `EMAIL_TAKEN`).
+
+    ChangePasswordRequest:
+      type: object
+      required: [current_password, new_pin_hash]
+      properties:
+        current_password:
+          type: string
+          description: |
+            SHA-256 hex of the CURRENT PIN (same shape/value as login's `password`). Verified
+            server-side; a wrong value → a generic 401 (no enumeration).
+        new_pin_hash:
+          type: string
+          description: SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).
+
+    ResolveUsersRequest:
+      type: object
+      required: [ids]
+      description: |
+        Batch of user_ids to resolve to `{ role, display_name }`. Duplicates are de-duplicated
+        server-side; an empty list → an empty map. Bounded to 500 ids (a larger batch → 400).
+      properties:
+        ids:
+          type: array
+          maxItems: 500
+          items: { type: string, format: uuid }
+
+    ResolvedUser:
+      type: object
+      required: [role]
+      description: |
+        One resolved identity for the internal name-resolver — ONLY `{ role, display_name }`
+        (least-privilege; NEVER phone/email). `display_name` is `null` when none is set.
+      properties:
+        role: { $ref: '#/components/schemas/UserRole' }
+        display_name: { type: string, nullable: true }
+
+    UserSearchResult:
+      type: object
+      required: [id, role, phone_masked]
+      description: |
+        One admin user-search hit (#138). `phone_masked` keeps only the last 4 digits; NO other
+        PII (email/bank/address) is ever returned.
+      properties:
+        id: { type: string, format: uuid }
+        role: { $ref: '#/components/schemas/UserRole' }
+        display_name: { type: string, nullable: true }
+        phone_masked: { type: string, example: '******5678' }
 
     ApiResponseEnvelope:
       type: object

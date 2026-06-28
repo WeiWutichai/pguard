@@ -67,13 +67,15 @@ Please follow the [installation procedure](#installation--usage) and then run th
 import 'package:pguard_identity_api/pguard_identity_api.dart';
 
 
-final api = PguardIdentityApi().getAuthApi();
+final api = PguardIdentityApi().getAdminApi();
+final String q = q_example; // String | Free-text query (name / phone / email / exact id).
+final int limit = 56; // int | 
 
 try {
-    final response = await api.dataExport();
+    final response = await api.adminSearchUsers(q, limit);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AuthApi->dataExport: $e\n");
+    print("Exception when calling AdminApi->adminSearchUsers: $e\n");
 }
 
 ```
@@ -84,6 +86,8 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**adminSearchUsers**](doc/AdminApi.md#adminsearchusers) | **GET** /admin/users/search | Search users by name / phone / email / id (role&#x3D;admin,
+[*AuthApi*](doc/AuthApi.md) | [**changePassword**](doc/AuthApi.md#changepassword) | **PUT** /auth/password | Change the caller&#39;s OWN password (#144)
 [*AuthApi*](doc/AuthApi.md) | [**dataExport**](doc/AuthApi.md#dataexport) | **GET** /me/data-export | Export the authenticated user&#39;s data (PDPA §19 access / §32 portability)
 [*AuthApi*](doc/AuthApi.md) | [**deleteMe**](doc/AuthApi.md#deleteme) | **DELETE** /auth/me | Erase the authenticated user&#39;s account (PDPA §33 right to erasure)
 [*AuthApi*](doc/AuthApi.md) | [**login**](doc/AuthApi.md#login) | **POST** /auth/login | Authenticate with phone/email + password; issue an access + refresh token
@@ -92,12 +96,18 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**refresh**](doc/AuthApi.md#refresh) | **POST** /auth/refresh | Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
 [*AuthApi*](doc/AuthApi.md) | [**register**](doc/AuthApi.md#register) | **POST** /auth/register | Create an account from a verified phone + chosen role (returns 202, NO tokens)
 [*AuthApi*](doc/AuthApi.md) | [**revokeAllSessions**](doc/AuthApi.md#revokeallsessions) | **POST** /auth/revoke-all | Sign out everywhere — revoke ALL of the caller&#39;s own sessions
+[*AuthApi*](doc/AuthApi.md) | [**updateMe**](doc/AuthApi.md#updateme) | **PUT** /auth/me | Update the caller&#39;s OWN display_name + email (#144 admin self-profile)
+[*InternalApi*](doc/InternalApi.md) | [**internalResolveUserNames**](doc/InternalApi.md#internalresolveusernames) | **POST** /internal/users/names | Batch-resolve user_ids to { role, display_name } (service-JWT only)
 [*InternalApi*](doc/InternalApi.md) | [**internalRevokeAll**](doc/InternalApi.md#internalrevokeall) | **POST** /internal/users/{id}/revoke-all | Force-revoke all of a user&#39;s tokens (service-JWT only)
 
 
 ## Documentation For Models
 
+ - [AdminSearchUsers200Response](doc/AdminSearchUsers200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [ChangePassword200Response](doc/ChangePassword200Response.md)
+ - [ChangePassword200ResponseAllOfData](doc/ChangePassword200ResponseAllOfData.md)
+ - [ChangePasswordRequest](doc/ChangePasswordRequest.md)
  - [DataExport200Response](doc/DataExport200Response.md)
  - [DataExport200ResponseAllOfData](doc/DataExport200ResponseAllOfData.md)
  - [DataExport200ResponseAllOfDataMeta](doc/DataExport200ResponseAllOfDataMeta.md)
@@ -107,6 +117,7 @@ Class | Method | HTTP request | Description
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
+ - [InternalResolveUserNames200Response](doc/InternalResolveUserNames200Response.md)
  - [LoginRequest](doc/LoginRequest.md)
  - [Me](doc/Me.md)
  - [Me200Response](doc/Me200Response.md)
@@ -114,8 +125,12 @@ Class | Method | HTTP request | Description
  - [Register202Response](doc/Register202Response.md)
  - [RegisterRequest](doc/RegisterRequest.md)
  - [RegisterResult](doc/RegisterResult.md)
+ - [ResolveUsersRequest](doc/ResolveUsersRequest.md)
+ - [ResolvedUser](doc/ResolvedUser.md)
  - [TokenPair](doc/TokenPair.md)
+ - [UpdateMeRequest](doc/UpdateMeRequest.md)
  - [UserRole](doc/UserRole.md)
+ - [UserSearchResult](doc/UserSearchResult.md)
 
 
 ## Documentation For Authorization

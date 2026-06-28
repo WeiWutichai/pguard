@@ -77,7 +77,9 @@ export function Topbar() {
     }
   }
 
-  const initials = user.role.slice(0, 2).toUpperCase();
+  // Prefer the admin's own display_name (#144, from /auth/me) over the static role label.
+  const displayName = user.display_name?.trim() || t("shell.adminName");
+  const initials = (user.display_name?.trim()?.slice(0, 2) || user.role.slice(0, 2)).toUpperCase();
 
   return (
     <header className="flex h-[62px] flex-none items-center gap-4 border-b border-border bg-surface px-6">
@@ -145,7 +147,7 @@ export function Topbar() {
               </span>
               <div className="min-w-0">
                 <div className="truncate text-sm font-semibold text-text-strong">
-                  {t("shell.adminName")}
+                  {displayName}
                 </div>
                 <div className="truncate text-[11px] text-muted">{user.role}</div>
               </div>

@@ -1,10 +1,12 @@
 "use client";
 
 // Admin display-name resolver — the single client for `POST /admin/users/resolve` (profile),
-// which maps user_ids → { role, display_name } for guards + customers in ONE batch call (no
-// per-row N+1). The endpoint OMITS ids it can't resolve (admins have no stored name; unknown /
-// deleted ids); those fall back to a localized role label + short id. Display names here are
-// admin-only PII — never logged or surfaced outside the admin SPA.
+// which maps user_ids → { role, display_name } in ONE batch call (no per-row N+1). The role enum
+// now spans guard | customer | ADMIN: profile resolves guards/customers from its own tables and
+// MERGES admin names from identity's service-JWT'd /internal/users/names (#142/#138/#144). An id
+// the resolver still can't place (no live row — unknown / deleted) is OMITTED; those fall back to
+// a localized role label + short id. Display names here are admin-only PII — never logged or
+// surfaced outside the admin SPA.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -17,9 +19,10 @@ type ResolvedName = components["schemas"]["ResolvedName"];
 /** Endpoint cap (profile RESOLVE_NAMES_LIMIT): max ids per call. Larger batches are chunked. */
 const RESOLVE_LIMIT = 500;
 
-/** Localized role labels for the fallback (when an id resolves to a profile role but has no name,
- * or is an admin/unknown id the resolver omitted). Mirrors the resolver's `role` enum + an admin
- * label for omitted ids (the flagged identity.display_name follow-up). */
+/** Localized role labels for the fallback (when an id resolves to a role but has no name yet, or
+ * is an unknown id the resolver omitted). Mirrors the resolver's `role` enum — guard | customer |
+ * admin (admins now resolve to a real name via the identity merge; the label is only the no-name
+ * fallback). */
 const ROLE_LABEL: Record<Lang, { guard: string; customer: string; admin: string }> = {
   th: { guard: "เจ้าหน้าที่", customer: "ลูกค้า", admin: "แอดมิน" },
   en: { guard: "Guard", customer: "Customer", admin: "Admin" },
@@ -33,9 +36,9 @@ export function shortId(id: string): string {
 /** What the hook returns per id: the resolved display info, plus the rendered `label` (name, or a
  * role-label + short-id fallback) and a `title` (the full id) for the tooltip. */
 export interface ResolvedDisplay {
-  /** The resolved display name, or null (mid-onboarding, or no profile row → omitted). */
+  /** The resolved display name, or null (mid-onboarding, or no live row → omitted). */
   name: string | null;
-  /** "guard" | "customer" when the resolver returned a row; null for omitted ids (admin/unknown). */
+  /** "guard" | "customer" | "admin" when the resolver returned a row; null for omitted (unknown). */
   role: ResolvedName["role"] | null;
   /** Ready-to-render text: the name when known, else a localized role-label + short id. */
   label: string;
@@ -43,13 +46,14 @@ export interface ResolvedDisplay {
   title: string;
 }
 
-/** How to label an id the resolver OMITTED (no profile row). On the Activity admin column an
- * omitted id is the acting admin → "Admin #id" (the flagged identity.display_name follow-up). On
- * customer/guard columns an omitted id is an unknown/deleted user → bare short id (never "Admin"). */
+/** How to label an id the resolver OMITTED (no live row at all). Admin names now resolve via the
+ * identity merge, so on the Activity admin column an omitted id is an acting admin whose name is
+ * simply unknown/deleted → "Admin #id". On customer/guard columns an omitted id is an
+ * unknown/deleted user → bare short id (never "Admin"). */
 export type OmittedFallback = "admin" | "short-id";
 
 /** A resolved id carries a row; an *attempted-but-omitted* id is recorded as `null` so it is not
- * re-requested every render (the resolver omits admins/unknown — those never gain a row). */
+ * re-requested every render (the resolver omits unknown/deleted ids — those never gain a row). */
 type ResolveState = Record<string, ResolvedName | null>;
 
 /**
@@ -138,8 +142,9 @@ export function useNameResolver(
         const roleLabel = ROLE_LABEL[lang][hit.role];
         return { name: null, role: hit.role, label: `${roleLabel} ${shortId(id)}`, title: id };
       }
-      // Not-yet-fetched, or omitted by the resolver (admin / unknown / deleted) → per-screen
-      // fallback: the admin label on the Activity admin column, else a bare short id.
+      // Not-yet-fetched, or omitted by the resolver (unknown / deleted — admins now resolve via
+      // the identity merge) → per-screen fallback: the admin label on the Activity admin column,
+      // else a bare short id.
       const label =
         omittedFallback === "admin" ? `${ROLE_LABEL[lang].admin} ${shortId(id)}` : shortId(id);
       return { name: null, role: null, label, title: id };

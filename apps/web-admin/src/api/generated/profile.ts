@@ -377,25 +377,24 @@ export interface paths {
          *     บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only**
          *     (role gate at the gateway-routed edge + this service; non-admin → **403**).
          *
-         *     profile OWNS the only stored display names in the system
-         *     (`guard_profiles.full_name` / `customer_profiles.full_name`), so it answers in ONE query —
-         *     no cross-service hop. The response is a MAP keyed by id → `{ role, display_name }`:
+         *     profile OWNS the guard/customer display names (`guard_profiles.full_name` /
+         *     `customer_profiles.full_name`), answered in ONE query. For the ids it CAN'T resolve locally
+         *     (almost always ADMINS — who have no profile row here — or unknown/deleted ids) it then asks
+         *     identity's service-JWT'd `POST /internal/users/names` and MERGES the admin `{ role: admin,
+         *     display_name }` entries into the same map (#142 Activity Log). Best-effort: an identity
+         *     outage degrades to "admin ids omitted" (client fallback) rather than failing the resolve.
+         *
+         *     The response is a MAP keyed by id → `{ role, display_name }`:
          *       - a guard/customer id resolves to its name + the role derived from which table it is in
          *         (`display_name` may be `null` mid-onboarding — the role is still authoritative);
-         *       - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a
-         *         genuinely-unknown / deleted id — is simply **OMITTED** from the map. The client renders a
-         *         fallback (role label + short id) for an omitted id, so an admin's row never blocks a page.
+         *       - an admin id resolves to `{ role: admin, display_name }` merged from identity;
+         *       - an id with NO row in EITHER place (genuinely unknown / deleted) is simply **OMITTED**
+         *         from the map — the client renders a fallback (role label + short id) for it.
          *
          *     Returns ONLY `{ role, display_name }` — NEVER any other PII (phone / bank / address / email).
          *     Bounded to `RESOLVE_NAMES_LIMIT` (500) ids per call — a larger batch → **400** (page it),
          *     not a silent truncation (a partial map is indistinguishable from "these ids are unknown").
          *     Duplicate ids are de-duplicated server-side; an empty `ids` list → an empty map (`{}`).
-         *
-         *     FOLLOW-UP (flagged, NOT done here): admins have no stored display name anywhere
-         *     (`identity.users` has only id / phone / email / role — no name column), so admin ids fall
-         *     back to the role-label. A real admin name (also wanted on the admin-profile screen) needs an
-         *     identity `display_name` column + an identity internal lookup — a later phase. This does NOT
-         *     block guard/customer resolution, which is complete.
          */
         post: operations["adminResolveUserNames"];
         delete?: never;
@@ -781,17 +780,22 @@ export interface components {
         };
         /**
          * @description One resolved identity for the admin name-resolver: a display name (admin-only PII here) +
-         *     the role it was resolved as. NEVER any other PII. `display_name` is `null` when the profile
-         *     row exists but has no name yet (mid-onboarding) — the role is still authoritative. `role` is
-         *     always `guard` or `customer`; `admin` is NEVER produced (admins have no profile row / stored
-         *     name, so an admin id is OMITTED from the response map and the client uses a role-label fallback).
+         *     the role it was resolved as. NEVER any other PII. `display_name` is `null` when the row
+         *     exists but has no name yet (mid-onboarding) — the role is still authoritative.
+         *
+         *     `role` is `guard` / `customer` (from profile's own tables) OR `admin`: profile merges ADMIN
+         *     names from identity's service-JWT'd `POST /internal/users/names` (admins have no profile row
+         *     here — their name lives only in identity). An id with no row in EITHER place (genuinely
+         *     unknown / deleted) is still OMITTED from the response map; the client uses a role-label
+         *     fallback for it.
          */
         ResolvedName: {
             /**
-             * @description The role this id was resolved as (derived from which profile table it is in).
+             * @description The role this id was resolved as — `guard` / `customer` from profile's tables, or
+             *     `admin` merged from identity.
              * @enum {string}
              */
-            role: "guard" | "customer";
+            role: "guard" | "customer" | "admin";
             /** @description The user's full name, or null if not set yet. */
             display_name?: string | null;
         };

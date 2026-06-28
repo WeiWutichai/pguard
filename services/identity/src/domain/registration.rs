@@ -63,6 +63,44 @@ pub fn validate_pin_hash(pin_hash: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Max self-set display name length (`PUT /auth/me`). Wide enough for a full Thai/EN name.
+pub const MAX_DISPLAY_NAME_LEN: usize = 120;
+
+/// Validate + normalize a self-set `display_name` (`PUT /auth/me`): trim, then require 1..=120
+/// CHARACTERS (not bytes — a Thai name is multibyte). Empty-after-trim → BadRequest. Returns the
+/// trimmed value to store.
+pub fn validate_display_name(raw: &str) -> Result<String, AppError> {
+    let trimmed = raw.trim();
+    let len = trimmed.chars().count();
+    if len == 0 {
+        return Err(AppError::BadRequest(
+            "display_name must not be empty".to_string(),
+        ));
+    }
+    if len > MAX_DISPLAY_NAME_LEN {
+        return Err(AppError::BadRequest(format!(
+            "display_name must be at most {MAX_DISPLAY_NAME_LEN} characters"
+        )));
+    }
+    Ok(trimmed.to_string())
+}
+
+/// Validate + normalize an OPTIONAL self-set `email` (`PUT /auth/me`). LOOSE shape (mirrors
+/// profile's `validate_email`: must contain `@` + `.`, length 5..=254) — real verification is out
+/// of scope — then LOWERCASED so the `UNIQUE(email)` constraint is case-insensitive. `None` or
+/// blank → `Ok(None)` (the field is cleared). Returns the lowercased address to store, or `None`.
+pub fn validate_email(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    match raw.map(str::trim) {
+        None | Some("") => Ok(None),
+        Some(v) if v.len() >= 5 && v.len() <= 254 && v.contains('@') && v.contains('.') => {
+            Ok(Some(v.to_lowercase()))
+        }
+        Some(_) => Err(AppError::BadRequest(
+            "email must be a valid address".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +178,42 @@ mod tests {
         assert!(validate_pin_hash(&"a".repeat(63)).is_err()); // too short
         assert!(validate_pin_hash(&"a".repeat(65)).is_err()); // too long
         assert!(validate_pin_hash(&"g".repeat(64)).is_err()); // non-hex
+    }
+
+    #[test]
+    fn display_name_trims_and_bounds() {
+        assert_eq!(validate_display_name("  Somchai  ").unwrap(), "Somchai");
+        // Multibyte Thai name counts CHARACTERS, not bytes.
+        let thai = "สมชาย ใจดี";
+        assert_eq!(validate_display_name(thai).unwrap(), thai);
+        assert!(matches!(
+            validate_display_name("   ").unwrap_err(),
+            AppError::BadRequest(_)
+        ));
+        let too_long = "x".repeat(MAX_DISPLAY_NAME_LEN + 1);
+        assert!(matches!(
+            validate_display_name(&too_long).unwrap_err(),
+            AppError::BadRequest(_)
+        ));
+        // Exactly at the cap is OK.
+        assert!(validate_display_name(&"x".repeat(MAX_DISPLAY_NAME_LEN)).is_ok());
+    }
+
+    #[test]
+    fn email_is_optional_lowercased_and_shape_checked() {
+        assert_eq!(validate_email(None).unwrap(), None);
+        assert_eq!(validate_email(Some("   ")).unwrap(), None);
+        assert_eq!(
+            validate_email(Some("  Admin@Example.COM ")).unwrap(),
+            Some("admin@example.com".to_string())
+        );
+        assert!(matches!(
+            validate_email(Some("nope")).unwrap_err(),
+            AppError::BadRequest(_)
+        ));
+        assert!(matches!(
+            validate_email(Some("a@bcd")).unwrap_err(), // no dot
+            AppError::BadRequest(_)
+        ));
     }
 }

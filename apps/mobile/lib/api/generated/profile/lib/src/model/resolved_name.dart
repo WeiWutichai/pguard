@@ -9,17 +9,17 @@ import 'package:built_value/serializer.dart';
 
 part 'resolved_name.g.dart';
 
-/// One resolved identity for the admin name-resolver: a display name (admin-only PII here) + the role it was resolved as. NEVER any other PII. `display_name` is `null` when the profile row exists but has no name yet (mid-onboarding) — the role is still authoritative. `role` is always `guard` or `customer`; `admin` is NEVER produced (admins have no profile row / stored name, so an admin id is OMITTED from the response map and the client uses a role-label fallback). 
+/// One resolved identity for the admin name-resolver: a display name (admin-only PII here) + the role it was resolved as. NEVER any other PII. `display_name` is `null` when the row exists but has no name yet (mid-onboarding) — the role is still authoritative.  `role` is `guard` / `customer` (from profile's own tables) OR `admin`: profile merges ADMIN names from identity's service-JWT'd `POST /internal/users/names` (admins have no profile row here — their name lives only in identity). An id with no row in EITHER place (genuinely unknown / deleted) is still OMITTED from the response map; the client uses a role-label fallback for it. 
 ///
 /// Properties:
-/// * [role] - The role this id was resolved as (derived from which profile table it is in).
+/// * [role] - The role this id was resolved as — `guard` / `customer` from profile's tables, or `admin` merged from identity. 
 /// * [displayName] - The user's full name, or null if not set yet.
 @BuiltValue()
 abstract class ResolvedName implements Built<ResolvedName, ResolvedNameBuilder> {
-  /// The role this id was resolved as (derived from which profile table it is in).
+  /// The role this id was resolved as — `guard` / `customer` from profile's tables, or `admin` merged from identity. 
   @BuiltValueField(wireName: r'role')
   ResolvedNameRoleEnum get role;
-  // enum roleEnum {  guard,  customer,  };
+  // enum roleEnum {  guard,  customer,  admin,  };
 
   /// The user's full name, or null if not set yet.
   @BuiltValueField(wireName: r'display_name')
@@ -128,12 +128,15 @@ class _$ResolvedNameSerializer implements PrimitiveSerializer<ResolvedName> {
 
 class ResolvedNameRoleEnum extends EnumClass {
 
-  /// The role this id was resolved as (derived from which profile table it is in).
+  /// The role this id was resolved as — `guard` / `customer` from profile's tables, or `admin` merged from identity. 
   @BuiltValueEnumConst(wireName: r'guard')
   static const ResolvedNameRoleEnum guard = _$resolvedNameRoleEnum_guard;
-  /// The role this id was resolved as (derived from which profile table it is in).
+  /// The role this id was resolved as — `guard` / `customer` from profile's tables, or `admin` merged from identity. 
   @BuiltValueEnumConst(wireName: r'customer')
   static const ResolvedNameRoleEnum customer = _$resolvedNameRoleEnum_customer;
+  /// The role this id was resolved as — `guard` / `customer` from profile's tables, or `admin` merged from identity. 
+  @BuiltValueEnumConst(wireName: r'admin')
+  static const ResolvedNameRoleEnum admin = _$resolvedNameRoleEnum_admin;
 
   static Serializer<ResolvedNameRoleEnum> get serializer => _$resolvedNameRoleEnumSerializer;
 

@@ -1,7 +1,7 @@
 //! API layer — thin Axum transport handlers. No business logic beyond orchestration of
 //! `domain` (pure decisions) + `repo` (DB) + JWT/cookie issuance.
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -19,13 +19,24 @@ use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
 use crate::domain::rotation::{decide, RotationDecision};
-use crate::domain::{registration, token};
+use crate::domain::{mask, registration, token};
 use crate::models::{
-    LoginRequest, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
-    ReissueProfileTokenRequest, TokenPair,
+    ChangePasswordRequest, LoginRequest, MeResponse, RefreshRequest, RegisterRequest,
+    RegisterResult, ReissueProfileTokenRequest, ResolveUsersRequest, ResolvedUser, TokenPair,
+    UpdateMeRequest, UserSearchQuery, UserSearchResult,
 };
 use crate::repo;
 use crate::state::{AppState, RegisterDeps, RevokeAllDeps};
+
+/// Hard cap on the admin user-search result count (a picker page never needs more). A larger
+/// requested `limit` is clamped down to this; a non-positive one falls back to the default.
+const USER_SEARCH_MAX_LIMIT: i64 = 50;
+const USER_SEARCH_DEFAULT_LIMIT: i64 = 20;
+/// Hard cap on a single `POST /internal/users/names` batch (one admin page never references more
+/// ids than this). A larger batch → 400 (page it), never a silent truncation.
+const RESOLVE_USERS_LIMIT: usize = 500;
+/// Admin-only role gate label (mirrors profile's `ROLE_ADMIN`).
+const ROLE_ADMIN: &str = "admin";
 
 /// Refresh-cookie lifetime (seconds) — mirrors the 7-day refresh-token TTL in `repo`.
 const REFRESH_COOKIE_MAX_AGE_SECS: i64 = 7 * 24 * 60 * 60;
@@ -437,12 +448,93 @@ fn access_jti_and_ttl(state: &AppState, headers: &HeaderMap) -> Option<(String, 
 
 // ----- GET /auth/me -----
 
+/// The caller's own `{ user_id, role, display_name, email }`. The role still comes from the
+/// validated access token (cheap, authoritative); `display_name` + `email` are read from the DB by
+/// `user_id` (#144 — admins finally carry a human name). A soft-deleted row → 404 (the token check
+/// already rejects an erased account via the `trv` marker, so this is defense-in-depth).
 #[tracing::instrument(skip_all, fields(user = %user.user_id))]
-pub async fn me(user: AuthUser) -> Json<ApiResponse<MeResponse>> {
-    Json(ApiResponse::success(MeResponse {
+pub async fn me(
+    State(state): State<AppState>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<MeResponse>>, AppError> {
+    let profile = repo::self_profile(&state.db, user.user_id).await?;
+    Ok(Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
-        role: user.role,
-    }))
+        // Prefer the freshly-read DB role (authoritative if it changed since the token issued);
+        // falls back identically to the token's role in the common case.
+        role: profile.role,
+        display_name: profile.display_name,
+        email: profile.email,
+    })))
+}
+
+// ----- PUT /auth/me (self-edit display_name + email) -----
+
+/// Update the CALLER'S OWN `display_name` + `email` (#144 admin self-profile). Self-only — keyed by
+/// the authenticated `user.user_id`; phone/role/password are never touched here. `display_name` is
+/// trimmed + bounded (1..=120 chars); `email` is optional, lowercased + shape-checked, and UNIQUE
+/// (a collision → 409 `EMAIL_TAKEN`). Returns the refreshed self-profile.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn update_me(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<UpdateMeRequest>,
+) -> Result<Json<ApiResponse<MeResponse>>, AppError> {
+    let display_name = registration::validate_display_name(&req.display_name)?;
+    let email = registration::validate_email(req.email.as_deref())?;
+    let profile =
+        repo::update_self_profile(&state.db, user.user_id, &display_name, email.as_deref()).await?;
+    Ok(Json(ApiResponse::success(MeResponse {
+        user_id: user.user_id,
+        role: profile.role,
+        display_name: profile.display_name,
+        email: profile.email,
+    })))
+}
+
+// ----- PUT /auth/password (self change-password) -----
+
+/// Change the caller's OWN password (#144). Verifies `current_password` (Argon2, generic 401 on
+/// mismatch — no enumeration), then Argon2-stores `new_pin_hash` and force-revokes the user's
+/// OTHER sessions (refresh families revoked + `trv` bumped, so every other device is rejected at
+/// once) and clears THIS browser's auth cookies so the current session re-authenticates too.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn change_password(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<ChangePasswordRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Shape-check the NEW pin_hash up front (same 64-hex SHA-256 contract as register's pin_hash);
+    // the current password is verified by the repo against the stored Argon2 hash.
+    registration::validate_pin_hash(&req.new_pin_hash)?;
+
+    let new_version = repo::change_password(
+        &state.db,
+        user.user_id,
+        &req.current_password,
+        &req.new_pin_hash,
+    )
+    .await?;
+
+    // Force-revoke the OTHER sessions immediately: publish the new revocation marker so any
+    // outstanding access token (older `trv`) is rejected at once. A persistent marker-write
+    // failure propagates (500) so the client knows revocation isn't fully effective.
+    let mut redis = state.redis_conn.clone();
+    crate::state::mark_user_revoked(&mut redis, user.user_id, new_version).await?;
+
+    // Clear THIS browser's cookies — the caller re-authenticates with the new PIN.
+    let mut headers = HeaderMap::new();
+    append_cookie(&mut headers, &build_clear_cookie(ACCESS_TOKEN_COOKIE, "/"));
+    append_cookie(
+        &mut headers,
+        &build_clear_cookie(REFRESH_TOKEN_COOKIE, REFRESH_COOKIE_PATH),
+    );
+    Ok((
+        headers,
+        Json(ApiResponse::success(
+            serde_json::json!({ "password_changed": true }),
+        )),
+    ))
 }
 
 // ----- DELETE /auth/me (PDPA §33 — right to erasure) -----
@@ -565,6 +657,87 @@ pub async fn internal_revoke_all<S: RevokeAllDeps>(
     Ok(Json(ApiResponse::success(())))
 }
 
+// ----- POST /internal/users/names (service-JWT only) -----
+
+/// Resolve a batch of `user_id`s to `{ role, display_name }` for an internal caller (the profile
+/// service's `/admin/users/resolve` merges admin names from here — closing the Activity Log #142
+/// gap where admins had no name). Service-JWT-gated ([`ServiceCaller`]; blocked at the edge), so it
+/// is never publicly reachable. Returns a MAP keyed by id; unknown/deleted ids are OMITTED. ONLY
+/// `role` + `display_name` — NEVER phone/email. Bounded to `RESOLVE_USERS_LIMIT` ids; a larger
+/// batch → 400 (page it). Generic over [`RevokeAllDeps`] so the service-JWT guard is testable
+/// in isolation (reuses the same `db()` + `HasServiceJwt` seam as `internal_revoke_all`).
+pub async fn internal_resolve_users<S: RevokeAllDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Json(req): Json<ResolveUsersRequest>,
+) -> Result<Json<ApiResponse<std::collections::HashMap<Uuid, ResolvedUser>>>, AppError> {
+    if req.ids.len() > RESOLVE_USERS_LIMIT {
+        return Err(AppError::BadRequest(format!(
+            "too many ids (max {RESOLVE_USERS_LIMIT} per request — page the calls)"
+        )));
+    }
+    tracing::debug!(caller = %caller.service, count = req.ids.len(), "internal resolve-users");
+    // De-duplicate before the query (a page can reference the same admin on many rows).
+    let ids: Vec<Uuid> = {
+        let mut seen = std::collections::HashSet::new();
+        req.ids.into_iter().filter(|id| seen.insert(*id)).collect()
+    };
+    let rows = repo::resolve_users(state.db(), &ids).await?;
+    let map: std::collections::HashMap<Uuid, ResolvedUser> = rows
+        .into_iter()
+        .map(|r| {
+            (
+                r.user_id,
+                ResolvedUser {
+                    role: r.role,
+                    display_name: r.display_name,
+                },
+            )
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(map)))
+}
+
+// ----- GET /admin/users/search (admin-only) -----
+
+/// Search users for the admin per-user-notify picker (#138). ADMIN ONLY (else 403, before any DB
+/// access). Finds users by `display_name` / `phone` / `email` / exact id across ALL roles, returns
+/// `[{ id, role, display_name, phone_masked }]` — the phone is MASKED (last-4) and NO other PII
+/// (email/bank/address never cross the wire). `limit` is clamped to `USER_SEARCH_MAX_LIMIT`. A
+/// blank `q` returns an empty list (no full-table dump).
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_search_users(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Query(q): Query<UserSearchQuery>,
+) -> Result<Json<ApiResponse<Vec<UserSearchResult>>>, AppError> {
+    if user.role != ROLE_ADMIN {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let query = q.q.as_deref().map(str::trim).unwrap_or("");
+    // A blank query must not page the whole user table.
+    if query.is_empty() {
+        return Ok(Json(ApiResponse::success(Vec::new())));
+    }
+    let limit = match q.limit {
+        Some(n) if n > 0 => n.min(USER_SEARCH_MAX_LIMIT),
+        _ => USER_SEARCH_DEFAULT_LIMIT,
+    };
+    let rows = repo::search_users(&state.db, query, limit).await?;
+    let results = rows
+        .into_iter()
+        .map(|r| UserSearchResult {
+            id: r.user_id,
+            role: r.role,
+            display_name: r.display_name,
+            phone_masked: mask::mask_phone(&r.phone),
+        })
+        .collect();
+    Ok(Json(ApiResponse::success(results)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,10 +790,83 @@ mod tests {
                 "/internal/users/{id}/revoke-all",
                 post(internal_revoke_all::<TestDeps>),
             )
+            .route(
+                "/internal/users/names",
+                post(internal_resolve_users::<TestDeps>),
+            )
             .with_state(deps)
     }
 
     const URI: &str = "/internal/users/00000000-0000-0000-0000-000000000001/revoke-all";
+    const NAMES_URI: &str = "/internal/users/names";
+
+    fn names_body(n: usize) -> Body {
+        let ids: Vec<String> = (0..n).map(|_| Uuid::new_v4().to_string()).collect();
+        Body::from(serde_json::json!({ "ids": ids }).to_string())
+    }
+
+    /// The internal name-resolver is service-JWT-gated: no token → 401, before any DB access.
+    #[tokio::test]
+    async fn resolve_users_rejects_missing_token() {
+        let res = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(NAMES_URI)
+                    .header("content-type", "application/json")
+                    .body(names_body(2))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// A valid service-JWT passes the guard; the handler then queries the (unreachable) lazy DB,
+    /// so the status is NOT 401 — proving auth was accepted (mirrors the revoke-all guard test).
+    #[tokio::test]
+    async fn resolve_users_accepts_valid_service_token() {
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let tok = encode_service_jwt("profile", &ek, 60).unwrap();
+        let res = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(NAMES_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(names_body(2))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "valid service token must pass the guard"
+        );
+    }
+
+    /// An over-cap batch is rejected with 400 (page it) — checked AFTER the service-JWT guard but
+    /// BEFORE the DB, so the lazy pool is never touched.
+    #[tokio::test]
+    async fn resolve_users_rejects_over_cap_batch() {
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let tok = encode_service_jwt("profile", &ek, 60).unwrap();
+        let res = router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(NAMES_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(names_body(RESOLVE_USERS_LIMIT + 1))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
 
     #[tokio::test]
     async fn revoke_all_rejects_missing_token() {

@@ -3,76 +3,54 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_identity_api/src/model/user_role.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'me.g.dart';
+part 'update_me_request.g.dart';
 
-/// Me
+/// UpdateMeRequest
 ///
 /// Properties:
-/// * [userId] 
-/// * [role] 
-/// * [displayName] - The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
-/// * [email] - The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
+/// * [displayName] - New display name (trimmed; 1–120 characters).
+/// * [email] - New email — optional (omit / null / \"\" clears it). Lowercased + shape-checked server-side; UNIQUE across users (a collision → 409 `EMAIL_TAKEN`). 
 @BuiltValue()
-abstract class Me implements Built<Me, MeBuilder> {
-  @BuiltValueField(wireName: r'user_id')
-  String get userId;
-
-  @BuiltValueField(wireName: r'role')
-  UserRole get role;
-  // enum roleEnum {  admin,  customer,  guard,  };
-
-  /// The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
+abstract class UpdateMeRequest implements Built<UpdateMeRequest, UpdateMeRequestBuilder> {
+  /// New display name (trimmed; 1–120 characters).
   @BuiltValueField(wireName: r'display_name')
-  String? get displayName;
+  String get displayName;
 
-  /// The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
+  /// New email — optional (omit / null / \"\" clears it). Lowercased + shape-checked server-side; UNIQUE across users (a collision → 409 `EMAIL_TAKEN`). 
   @BuiltValueField(wireName: r'email')
   String? get email;
 
-  Me._();
+  UpdateMeRequest._();
 
-  factory Me([void updates(MeBuilder b)]) = _$Me;
+  factory UpdateMeRequest([void updates(UpdateMeRequestBuilder b)]) = _$UpdateMeRequest;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(MeBuilder b) => b;
+  static void _defaults(UpdateMeRequestBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<Me> get serializer => _$MeSerializer();
+  static Serializer<UpdateMeRequest> get serializer => _$UpdateMeRequestSerializer();
 }
 
-class _$MeSerializer implements PrimitiveSerializer<Me> {
+class _$UpdateMeRequestSerializer implements PrimitiveSerializer<UpdateMeRequest> {
   @override
-  final Iterable<Type> types = const [Me, _$Me];
+  final Iterable<Type> types = const [UpdateMeRequest, _$UpdateMeRequest];
 
   @override
-  final String wireName = r'Me';
+  final String wireName = r'UpdateMeRequest';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    Me object, {
+    UpdateMeRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    yield r'user_id';
+    yield r'display_name';
     yield serializers.serialize(
-      object.userId,
+      object.displayName,
       specifiedType: const FullType(String),
     );
-    yield r'role';
-    yield serializers.serialize(
-      object.role,
-      specifiedType: const FullType(UserRole),
-    );
-    if (object.displayName != null) {
-      yield r'display_name';
-      yield serializers.serialize(
-        object.displayName,
-        specifiedType: const FullType(String),
-      );
-    }
     if (object.email != null) {
       yield r'email';
       yield serializers.serialize(
@@ -85,7 +63,7 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
   @override
   Object serialize(
     Serializers serializers,
-    Me object, {
+    UpdateMeRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -96,27 +74,13 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required MeBuilder result,
+    required UpdateMeRequestBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'user_id':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.userId = valueDes;
-          break;
-        case r'role':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(UserRole),
-          ) as UserRole;
-          result.role = valueDes;
-          break;
         case r'display_name':
           final valueDes = serializers.deserialize(
             value,
@@ -140,12 +104,12 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
   }
 
   @override
-  Me deserialize(
+  UpdateMeRequest deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = MeBuilder();
+    final result = UpdateMeRequestBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

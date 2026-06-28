@@ -7,60 +7,45 @@ import 'package:pguard_identity_api/src/model/user_role.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'me.g.dart';
+part 'resolved_user.g.dart';
 
-/// Me
+/// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }` (least-privilege; NEVER phone/email). `display_name` is `null` when none is set. 
 ///
 /// Properties:
-/// * [userId] 
 /// * [role] 
-/// * [displayName] - The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
-/// * [email] - The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
+/// * [displayName] 
 @BuiltValue()
-abstract class Me implements Built<Me, MeBuilder> {
-  @BuiltValueField(wireName: r'user_id')
-  String get userId;
-
+abstract class ResolvedUser implements Built<ResolvedUser, ResolvedUserBuilder> {
   @BuiltValueField(wireName: r'role')
   UserRole get role;
   // enum roleEnum {  admin,  customer,  guard,  };
 
-  /// The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
   @BuiltValueField(wireName: r'display_name')
   String? get displayName;
 
-  /// The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
-  @BuiltValueField(wireName: r'email')
-  String? get email;
+  ResolvedUser._();
 
-  Me._();
-
-  factory Me([void updates(MeBuilder b)]) = _$Me;
+  factory ResolvedUser([void updates(ResolvedUserBuilder b)]) = _$ResolvedUser;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(MeBuilder b) => b;
+  static void _defaults(ResolvedUserBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<Me> get serializer => _$MeSerializer();
+  static Serializer<ResolvedUser> get serializer => _$ResolvedUserSerializer();
 }
 
-class _$MeSerializer implements PrimitiveSerializer<Me> {
+class _$ResolvedUserSerializer implements PrimitiveSerializer<ResolvedUser> {
   @override
-  final Iterable<Type> types = const [Me, _$Me];
+  final Iterable<Type> types = const [ResolvedUser, _$ResolvedUser];
 
   @override
-  final String wireName = r'Me';
+  final String wireName = r'ResolvedUser';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    Me object, {
+    ResolvedUser object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    yield r'user_id';
-    yield serializers.serialize(
-      object.userId,
-      specifiedType: const FullType(String),
-    );
     yield r'role';
     yield serializers.serialize(
       object.role,
@@ -73,19 +58,12 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
         specifiedType: const FullType(String),
       );
     }
-    if (object.email != null) {
-      yield r'email';
-      yield serializers.serialize(
-        object.email,
-        specifiedType: const FullType(String),
-      );
-    }
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    Me object, {
+    ResolvedUser object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -96,20 +74,13 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required MeBuilder result,
+    required ResolvedUserBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'user_id':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.userId = valueDes;
-          break;
         case r'role':
           final valueDes = serializers.deserialize(
             value,
@@ -124,13 +95,6 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
           ) as String;
           result.displayName = valueDes;
           break;
-        case r'email':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.email = valueDes;
-          break;
         default:
           unhandled.add(key);
           unhandled.add(value);
@@ -140,12 +104,12 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
   }
 
   @override
-  Me deserialize(
+  ResolvedUser deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = MeBuilder();
+    final result = ResolvedUserBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

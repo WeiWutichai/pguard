@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react
 import { AlertTriangle, Bell, Clock, Loader2, RefreshCw, Send, Shield, User, Users, X } from "lucide-react";
 
 import type { components as NotificationComponents } from "@/api/generated/notification";
-import type { components as ProfileComponents } from "@/api/generated/profile";
+import type { components as IdentityComponents } from "@/api/generated/identity";
 import {
   Badge,
   Button,
@@ -18,8 +18,9 @@ import {
   SearchField,
   Textarea,
 } from "@/components/ui";
-import { notificationApi, profileApi } from "@/lib/api";
+import { identityApi, notificationApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { shortId } from "@/lib/use-names";
 
 import {
   type AudienceKey,
@@ -32,8 +33,8 @@ import {
 
 type Broadcast = NotificationComponents["schemas"]["Broadcast"];
 type AudienceCounts = NotificationComponents["schemas"]["AudienceCounts"];
-type GuardProfile = ProfileComponents["schemas"]["GuardProfile"];
-type CustomerProfileAdmin = ProfileComponents["schemas"]["CustomerProfileAdmin"];
+type UserSearchResult = IdentityComponents["schemas"]["UserSearchResult"];
+type UserRole = IdentityComponents["schemas"]["UserRole"];
 
 const AUDIENCE_ICON: Record<AudienceKey, ReactNode> = {
   all: <Bell size={18} />,
@@ -41,10 +42,16 @@ const AUDIENCE_ICON: Record<AudienceKey, ReactNode> = {
   customers: <Users size={18} />,
 };
 
-/** One per-user send candidate: a notifiable user (guard or customer) with a display name. */
-type Candidate = { user_id: string; name: string; role: "guard" | "customer" };
+/** One per-user send candidate, from the identity admin user-search (across ALL roles). */
+type Candidate = {
+  user_id: string;
+  name: string;
+  role: UserRole;
+  phone_masked: string;
+};
 
-const PER_USER_RESULTS = 8; // cap the search dropdown.
+const PER_USER_RESULTS = 8; // server-side limit + dropdown cap.
+const SEARCH_DEBOUNCE_MS = 250; // debounce the live user-search keystrokes.
 
 export default function BroadcastPage() {
   const { t, lang } = useLanguage();
@@ -65,54 +72,77 @@ export default function BroadcastPage() {
   const [posting, setPosting] = useState(false);
   const [feedback, setFeedback] = useState<string | null>(null);
 
-  // per-user send
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [candidatesLoading, setCandidatesLoading] = useState(true);
+  // per-user send — LIVE: server-side identity admin user-search (#138) across ALL roles.
   const [userQuery, setUserQuery] = useState("");
+  const [userMatches, setUserMatches] = useState<Candidate[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState(false);
   const [picked, setPicked] = useState<Candidate | null>(null);
   const [sendingUser, setSendingUser] = useState(false);
   const [userFeedback, setUserFeedback] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  // Load the notifiable user directory (guards + customers) for the per-user picker. v2 has no
-  // all-roles user-search endpoint, so we compose the two admin profile lists (which carry
-  // user_id + name) and search them client-side — honest scope: recipients only, no admins.
+  // Debounced live search against GET /admin/users/search — matches name / phone / email, plus an
+  // exact id match. Returns hits across every role (guard / customer / admin); phone is masked
+  // server-side to last-4. We don't pre-load any directory: each keystroke (debounced) queries.
+  // All setState happens inside the deferred timer (never synchronously in the effect body — the
+  // React-compiler lint), and is gated on `alive` so a superseded keystroke can't clobber state.
   useEffect(() => {
+    const q = userQuery.trim();
     let alive = true;
-    Promise.all([
-      profileApi.GET("/admin/guard-profiles", { params: { query: {} } }),
-      profileApi.GET("/admin/customer-profiles", { params: { query: {} } }),
-    ])
-      .then(([gRes, cRes]) => {
+    if (q.length === 0) {
+      const reset = setTimeout(() => {
         if (!alive) return;
-        const guards: Candidate[] = (gRes.data?.data ?? []).map((g: GuardProfile) => ({
-          user_id: g.user_id,
-          name: g.full_name?.trim() || g.account_name?.trim() || `#${g.user_id.slice(0, 8)}`,
-          role: "guard" as const,
-        }));
-        const customers: Candidate[] = (cRes.data?.data ?? []).map((cu: CustomerProfileAdmin) => ({
-          user_id: cu.user_id,
-          name: cu.full_name?.trim() || cu.company_name?.trim() || `#${cu.user_id.slice(0, 8)}`,
-          role: "customer" as const,
-        }));
-        setCandidates([...guards, ...customers]);
-        setCandidatesLoading(false);
-      })
-      .catch(() => {
-        if (!alive) return;
-        setCandidatesLoading(false);
-      });
+        setUserMatches([]);
+        setSearching(false);
+        setSearchError(false);
+      }, 0);
+      return () => {
+        alive = false;
+        clearTimeout(reset);
+      };
+    }
+    const spin = setTimeout(() => alive && setSearching(true), 0);
+    const handle = setTimeout(() => {
+      identityApi
+        .GET("/admin/users/search", { params: { query: { q, limit: PER_USER_RESULTS } } })
+        .then(({ data, error }) => {
+          if (!alive) return;
+          if (error) {
+            setSearchError(true);
+            setUserMatches([]);
+          } else {
+            setSearchError(false);
+            setUserMatches(
+              (data?.data ?? []).map((u: UserSearchResult) => ({
+                user_id: u.id,
+                name: u.display_name?.trim() || shortId(u.id),
+                role: u.role,
+                phone_masked: u.phone_masked,
+              })),
+            );
+          }
+          setSearching(false);
+        })
+        .catch(() => {
+          if (!alive) return;
+          setSearchError(true);
+          setUserMatches([]);
+          setSearching(false);
+        });
+    }, SEARCH_DEBOUNCE_MS);
     return () => {
       alive = false;
+      clearTimeout(spin);
+      clearTimeout(handle);
     };
-  }, []);
+  }, [userQuery]);
 
-  const userMatches = useMemo(() => {
-    const q = userQuery.trim().toLowerCase();
-    if (!q) return [];
-    return candidates
-      .filter((u) => u.name.toLowerCase().includes(q) || u.user_id.toLowerCase().includes(q))
-      .slice(0, PER_USER_RESULTS);
-  }, [candidates, userQuery]);
+  // Localized role label for a search hit (now spans admin too — the all-roles endpoint).
+  const roleTag = useCallback(
+    (role: UserRole): string =>
+      role === "guard" ? c.guardTag : role === "customer" ? c.customerTag : c.adminTag,
+    [c],
+  );
 
   async function sendToUser() {
     if (!picked) return;
@@ -290,8 +320,14 @@ export default function BroadcastPage() {
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-semibold text-text-strong">{picked.name}</div>
                     <div className="text-[11.5px] text-muted">
-                      {picked.role === "guard" ? c.guardTag : c.customerTag} ·{" "}
-                      <span className="font-mono">#{picked.user_id.slice(0, 8)}</span>
+                      {roleTag(picked.role)} ·{" "}
+                      <span className="font-mono">{shortId(picked.user_id)}</span>
+                      {picked.phone_masked ? (
+                        <>
+                          {" · "}
+                          <span className="font-mono">{picked.phone_masked}</span>
+                        </>
+                      ) : null}
                     </div>
                   </div>
                   <Button
@@ -317,30 +353,44 @@ export default function BroadcastPage() {
                   />
                   {userQuery.trim() && (
                     <div className="absolute z-10 mt-1 w-full overflow-hidden rounded-xl border border-border bg-surface shadow-lg">
-                      {candidatesLoading ? (
+                      {searching ? (
                         <div className="flex items-center gap-2 px-4 py-3 text-xs text-muted">
                           <Loader2 className="size-4 animate-spin" />
                           {c.perUserLoading}
+                        </div>
+                      ) : searchError ? (
+                        <div className="px-4 py-3 text-xs text-danger" role="alert">
+                          {c.perUserSearchError}
                         </div>
                       ) : userMatches.length === 0 ? (
                         <div className="px-4 py-3 text-xs text-muted">{c.perUserNoResults}</div>
                       ) : (
                         <ul className="max-h-60 overflow-y-auto">
                           {userMatches.map((u) => (
-                            <li key={`${u.role}-${u.user_id}`}>
+                            <li key={u.user_id}>
                               <button
                                 type="button"
                                 onClick={() => {
                                   setPicked(u);
+                                  setUserQuery("");
                                   setUserFeedback(null);
                                 }}
                                 className="flex w-full items-center gap-3 px-4 py-2.5 text-left hover:bg-sunken"
                               >
-                                <span className="min-w-0 flex-1 truncate text-sm text-text-strong">
-                                  {u.name}
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-sm text-text-strong">
+                                    {u.name}
+                                  </span>
+                                  {u.phone_masked ? (
+                                    <span className="block font-mono text-[11px] text-faint">
+                                      {u.phone_masked}
+                                    </span>
+                                  ) : null}
                                 </span>
-                                <Badge tone={u.role === "guard" ? "blue" : "gray"}>
-                                  {u.role === "guard" ? c.guardTag : c.customerTag}
+                                <Badge
+                                  tone={u.role === "guard" ? "blue" : u.role === "admin" ? "green" : "gray"}
+                                >
+                                  {roleTag(u.role)}
                                 </Badge>
                               </button>
                             </li>
