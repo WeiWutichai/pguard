@@ -364,7 +364,7 @@ mod tests {
     //!   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
     //!     cargo test -p pguard-presence -- --nocapture
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, SubsecRound};
     use sqlx::postgres::PgPoolOptions;
 
     async fn pool() -> Option<PgPool> {
@@ -595,7 +595,9 @@ mod tests {
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();
         let stranger = Uuid::new_v4();
-        let t0 = Utc::now();
+        // Postgres timestamptz stores microseconds; truncate so a read-back equals t0 exactly
+        // (Utc::now() carries nanoseconds, which PG drops → an == against the round-trip would fail).
+        let t0 = Utc::now().trunc_subsecs(6);
 
         // job_accepted → active link.
         upsert_assignment(&pool, booking, Some(customer), Some(guard), true, true, t0)
@@ -684,7 +686,9 @@ mod tests {
         let booking = Uuid::new_v4();
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();
-        let t0 = Utc::now();
+        // Postgres timestamptz stores microseconds; truncate so a read-back equals t0 exactly
+        // (Utc::now() carries nanoseconds, which PG drops → an == against the round-trip would fail).
+        let t0 = Utc::now().trunc_subsecs(6);
 
         // job_accepted at t0 → started_at = t0, ended_at = NULL (window still open).
         upsert_assignment(&pool, booking, Some(customer), Some(guard), true, true, t0)
