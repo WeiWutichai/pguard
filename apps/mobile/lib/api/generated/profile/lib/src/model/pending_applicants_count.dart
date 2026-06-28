@@ -6,73 +6,61 @@
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'admin_review_stats.g.dart';
+part 'pending_applicants_count.g.dart';
 
-/// Computed on the UNFILTERED dataset.
+/// Counts of guards + customers awaiting admin approval (the dashboard new-applicants badge + the ผู้สมัคร page tabs). `total = guards + customers`. 
 ///
 /// Properties:
+/// * [guards] 
+/// * [customers] 
 /// * [total] 
-/// * [visible] 
-/// * [average] 
-/// * [thisMonth] - Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
 @BuiltValue()
-abstract class AdminReviewStats implements Built<AdminReviewStats, AdminReviewStatsBuilder> {
+abstract class PendingApplicantsCount implements Built<PendingApplicantsCount, PendingApplicantsCountBuilder> {
+  @BuiltValueField(wireName: r'guards')
+  int get guards;
+
+  @BuiltValueField(wireName: r'customers')
+  int get customers;
+
   @BuiltValueField(wireName: r'total')
   int get total;
 
-  @BuiltValueField(wireName: r'visible')
-  int get visible;
+  PendingApplicantsCount._();
 
-  @BuiltValueField(wireName: r'average')
-  String? get average;
-
-  /// Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
-  @BuiltValueField(wireName: r'this_month')
-  int get thisMonth;
-
-  AdminReviewStats._();
-
-  factory AdminReviewStats([void updates(AdminReviewStatsBuilder b)]) = _$AdminReviewStats;
+  factory PendingApplicantsCount([void updates(PendingApplicantsCountBuilder b)]) = _$PendingApplicantsCount;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(AdminReviewStatsBuilder b) => b;
+  static void _defaults(PendingApplicantsCountBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<AdminReviewStats> get serializer => _$AdminReviewStatsSerializer();
+  static Serializer<PendingApplicantsCount> get serializer => _$PendingApplicantsCountSerializer();
 }
 
-class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewStats> {
+class _$PendingApplicantsCountSerializer implements PrimitiveSerializer<PendingApplicantsCount> {
   @override
-  final Iterable<Type> types = const [AdminReviewStats, _$AdminReviewStats];
+  final Iterable<Type> types = const [PendingApplicantsCount, _$PendingApplicantsCount];
 
   @override
-  final String wireName = r'AdminReviewStats';
+  final String wireName = r'PendingApplicantsCount';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    AdminReviewStats object, {
+    PendingApplicantsCount object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
+    yield r'guards';
+    yield serializers.serialize(
+      object.guards,
+      specifiedType: const FullType(int),
+    );
+    yield r'customers';
+    yield serializers.serialize(
+      object.customers,
+      specifiedType: const FullType(int),
+    );
     yield r'total';
     yield serializers.serialize(
       object.total,
-      specifiedType: const FullType(int),
-    );
-    yield r'visible';
-    yield serializers.serialize(
-      object.visible,
-      specifiedType: const FullType(int),
-    );
-    if (object.average != null) {
-      yield r'average';
-      yield serializers.serialize(
-        object.average,
-        specifiedType: const FullType(String),
-      );
-    }
-    yield r'this_month';
-    yield serializers.serialize(
-      object.thisMonth,
       specifiedType: const FullType(int),
     );
   }
@@ -80,7 +68,7 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
   @override
   Object serialize(
     Serializers serializers,
-    AdminReviewStats object, {
+    PendingApplicantsCount object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -91,40 +79,33 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required AdminReviewStatsBuilder result,
+    required PendingApplicantsCountBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
+        case r'guards':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.guards = valueDes;
+          break;
+        case r'customers':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.customers = valueDes;
+          break;
         case r'total':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
           result.total = valueDes;
-          break;
-        case r'visible':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.visible = valueDes;
-          break;
-        case r'average':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.average = valueDes;
-          break;
-        case r'this_month':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.thisMonth = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -135,12 +116,12 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
   }
 
   @override
-  AdminReviewStats deserialize(
+  PendingApplicantsCount deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = AdminReviewStatsBuilder();
+    final result = PendingApplicantsCountBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

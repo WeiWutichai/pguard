@@ -22,7 +22,7 @@ use shared::error::AppError;
 use shared_events::topics;
 use shared_events::EventEnvelope;
 
-use crate::models::{CustomerSpend, PaymentResponse, RevenuePoint};
+use crate::models::{CustomerSpend, PaymentResponse, RefundQueueItem, RevenuePoint};
 
 const PAYMENT_COLUMNS: &str = "id, booking_id, customer_id, guard_id, amount, expected_total, \
      payment_method, status::text AS status, final_amount, refund_amount, actual_hours, \
@@ -111,6 +111,63 @@ pub async fn admin_list_payments(
     }
     let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
     Ok(rows)
+}
+
+// ----- Refund queue (admin dashboard signal) -----
+
+/// The refund-queue projection: a payment whose settle left a refund owed (`refund_status` set).
+/// `amount` is the `refund_amount` (the money to return), `status` is the refund-workflow state.
+/// SELECTs only the five columns the queue card needs (no SELECT *).
+const REFUND_QUEUE_COLUMNS: &str = "id AS payment_id, booking_id, refund_amount AS amount, \
+     refund_status AS status, created_at";
+
+/// Admin refund queue — payments awaiting refund action / in progress (`refund_status` set),
+/// newest first, with an optional refund-state filter (`pending`/`processed`) + limit/offset.
+/// No owner filter — the admin-role gate is the API layer's job. `status` is validated against
+/// the refund-state set in the handler and bound as a param (never interpolated). Index-backed
+/// by `idx_payments_refund_queue (refund_status, created_at DESC) WHERE refund_status IS NOT NULL`.
+pub async fn admin_list_refund_queue(
+    db: &sqlx::PgPool,
+    status: Option<&str>,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<RefundQueueItem>, AppError> {
+    let mut sql = format!(
+        "SELECT {REFUND_QUEUE_COLUMNS} FROM payment.payments WHERE refund_status IS NOT NULL"
+    );
+    if status.is_some() {
+        sql.push_str(" AND refund_status = $1");
+    }
+    sql.push_str(if status.is_some() {
+        " ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+    } else {
+        " ORDER BY created_at DESC LIMIT $1 OFFSET $2"
+    });
+    let mut query = sqlx::query_as::<_, RefundQueueItem>(&sql);
+    if let Some(s) = status {
+        query = query.bind(s);
+    }
+    let rows = query.bind(limit).bind(offset).fetch_all(db).await?;
+    Ok(rows)
+}
+
+/// Total count of refund-queue rows matching the same `status` filter (independent of
+/// limit/offset) — powers the dashboard "คิวคืนเงิน" badge. Same predicate as
+/// [`admin_list_refund_queue`].
+pub async fn admin_count_refund_queue(
+    db: &sqlx::PgPool,
+    status: Option<&str>,
+) -> Result<i64, AppError> {
+    let mut sql =
+        "SELECT count(*)::bigint FROM payment.payments WHERE refund_status IS NOT NULL".to_string();
+    if status.is_some() {
+        sql.push_str(" AND refund_status = $1");
+    }
+    let mut query = sqlx::query_scalar::<_, i64>(&sql);
+    if let Some(s) = status {
+        query = query.bind(s);
+    }
+    Ok(query.fetch_one(db).await?)
 }
 
 // ----- Revenue report (admin analytics) -----
@@ -716,6 +773,130 @@ mod db_tests {
         assert!(b_refunded.is_empty(), "B has no refunded payment");
 
         // cleanup
+        let _ = sqlx::query(
+            "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
+        )
+        .bind(vec![booking_a.to_string(), booking_b.to_string()])
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
+            .bind(vec![booking_a, booking_b])
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: a settle that REFUNDS the overpay lands the payment in the admin refund
+    /// queue (`refund_status='pending'`, `amount` = the refund owed), and the count matches the
+    /// filter. A `status=processed` filter excludes the pending row (proves the filter), and a
+    /// payment with no refund never appears. DATABASE_URL-gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- refund_queue_surfaces_pending --nocapture
+    #[tokio::test]
+    async fn refund_queue_surfaces_pending_refunds() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        // Booking A: pre-pay 2000, work 2h of 4h → refund 1000 owed (refund_status='pending').
+        let booking_a = Uuid::new_v4();
+        let event_a = Uuid::new_v4();
+        let pay_a = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_a,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay A"),
+        );
+        reconcile_on_completion(
+            &pool,
+            event_a,
+            topics::BOOKING_COMPLETED,
+            booking_a,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(7200),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile A");
+
+        // Booking B: pre-pay 2000, work the full 4h → no refund (must NOT appear in the queue).
+        let booking_b = Uuid::new_v4();
+        let event_b = Uuid::new_v4();
+        let pay_b = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_b,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay B"),
+        );
+        reconcile_on_completion(
+            &pool,
+            event_b,
+            topics::BOOKING_COMPLETED,
+            booking_b,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(14400),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile B");
+
+        // pending queue includes A's refund (amount = the owed refund) but not B (no refund).
+        let pending = admin_list_refund_queue(&pool, Some("pending"), 200, 0)
+            .await
+            .expect("list pending");
+        let row_a = pending
+            .iter()
+            .find(|r| r.payment_id == pay_a.id)
+            .expect("A in pending queue");
+        assert_eq!(row_a.booking_id, booking_a);
+        assert_eq!(row_a.amount, dec("1000.00"), "amount = the refund owed");
+        assert_eq!(row_a.status, "pending");
+        assert!(
+            !pending.iter().any(|r| r.payment_id == pay_b.id),
+            "B (no refund) must not be in the queue"
+        );
+
+        // processed filter excludes the pending row (proves the status filter narrows).
+        let processed = admin_list_refund_queue(&pool, Some("processed"), 200, 0)
+            .await
+            .expect("list processed");
+        assert!(
+            !processed.iter().any(|r| r.payment_id == pay_a.id),
+            "a pending refund must not appear under status=processed"
+        );
+
+        // count(pending) ≥ 1 and matches the same predicate as the list.
+        let count = admin_count_refund_queue(&pool, Some("pending"))
+            .await
+            .expect("count pending");
+        assert!(count >= 1, "pending count includes A");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = ANY($1)")
+            .bind(vec![event_a, event_b])
+            .execute(&pool)
+            .await;
         let _ = sqlx::query(
             "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
         )

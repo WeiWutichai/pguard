@@ -25,7 +25,7 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, DocumentExpiryRow, GuardAvatarResponse, GuardDocumentExpiry,
+    CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
     GuardDocumentResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
     MyProfile, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
     RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
@@ -950,26 +950,34 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
 
 // ----- GET /admin/customer-profiles — admin list (cross-user) -----
 
-/// List every customer profile for the admin surface. Admin-only (the edge proves identity,
-/// not role — authz is this service's job). No filter param: customer approval is not stored
-/// in profile (it lives in identity; customers auto-approve on first profile insert), so a
-/// `?approval_status` filter would be meaningless against this table — see the guard list for
-/// the filtered variant. Mirrors [`admin_list_guard_profiles`]: list read on the replica
-/// (C5.3), PDPA §30 read-audit WRITE on the primary. No masking — customer profiles hold no
-/// bank field (`full_name`/`address` are the only PII, returned as-is like the owner read).
+/// List customer profiles for the admin surface, optionally filtered by `?approval_status=`
+/// (pending|approved|rejected) — customers now go through the SAME admin-review gate as guards
+/// (migration 0009; no longer auto-approved), so the ผู้สมัคร page's "ผู้เรียก รปภ." (customer)
+/// tab passes `?approval_status=pending`. Admin-only (the edge proves identity, not role — authz
+/// is this service's job). An unknown filter value → 400. Mirrors [`admin_list_guard_profiles`]:
+/// list read on the replica (C5.3), PDPA §30 read-audit WRITE on the primary. No masking —
+/// customer profiles hold no bank field (`full_name`/`address` are the only PII).
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn admin_list_customer_profiles<S: ProfileDeps>(
     State(state): State<S>,
     user: AuthUser,
+    Query(q): Query<ListQuery>,
 ) -> Result<Json<ApiResponse<Vec<CustomerProfileAdminResponse>>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
-    let profiles = repo::list_customer_profiles(state.db_read()).await?;
-    // PDPA §30: record this admin read of personal data (who accessed what). No filter to log.
+    let status = match q.approval_status.as_deref() {
+        None => None,
+        Some(s) => Some(
+            s.parse::<ApprovalStatus>()
+                .map_err(|_| AppError::BadRequest("invalid approval_status filter".to_string()))?,
+        ),
+    };
+    let profiles = repo::list_customer_profiles(state.db_read(), status).await?;
+    // PDPA §30: record this admin read of personal data (who accessed what — log the filter).
     repo::record_access(
         state.db(),
         user.user_id,
         "admin_list_customer_profiles",
-        None,
+        q.approval_status.as_deref(),
     )
     .await?;
     Ok(Json(ApiResponse::success(profiles)))
@@ -1102,9 +1110,10 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
     Ok(Json(ApiResponse::success(data)))
 }
 
-/// Horizon for the expiring-documents surface: include docs expiring within ~90 days (plus any
-/// already expired). The client buckets into expired / 7 / 30 / 90.
-const DOC_EXPIRY_HORIZON_DAYS: i64 = 90;
+/// Allowed `window` values (days) for the expiring-documents list filter — the same urgency
+/// bands the dashboard pills use. An out-of-set value → 400. Default = 90 (the widest band).
+const DOC_EXPIRY_WINDOWS: [i64; 3] = [7, 30, 90];
+const DOC_EXPIRY_DEFAULT_WINDOW: i64 = 90;
 
 // ----- Recruitment pipeline (admin "recruit" surface) -----
 
@@ -1135,19 +1144,75 @@ pub async fn admin_set_candidate_stage<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(candidate)))
 }
 
-// ----- GET /admin/documents/expiring — guard documents needing renewal (admin) -----
+// ----- GET /admin/documents/expiring?window=7|30|90 — guard docs needing renewal (admin) -----
 
-/// List guard documents expiring within the horizon (incl. already-expired), soonest first.
+/// `?window=7|30|90` filter for the expiring-documents list (days; default 90).
+#[derive(Debug, Deserialize)]
+pub struct ExpiringDocsQuery {
+    pub window: Option<i64>,
+}
+
+/// List guard documents expiring within `window` days (incl. already-expired), soonest first,
+/// each with its `days_left` — PLUS window-independent `buckets` (expired / due_7 / due_30 /
+/// due_90) for the dashboard pills. `window` ∈ {7,30,90} (default 90); any other value → 400.
 /// Admin only (else 403); replica read. Rows are populated by the guard profile submit
 /// (`POST /profile/guard`, which folds in the registration doc step's expiry dates).
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn admin_list_expiring_documents<S: ProfileDeps>(
     State(state): State<S>,
     user: AuthUser,
-) -> Result<Json<ApiResponse<Vec<DocumentExpiryRow>>>, AppError> {
+    Query(q): Query<ExpiringDocsQuery>,
+) -> Result<Json<ApiResponse<ExpiringDocumentsResponse>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
-    let rows = repo::list_expiring_documents(state.db_read(), DOC_EXPIRY_HORIZON_DAYS).await?;
-    Ok(Json(ApiResponse::success(rows)))
+    let window = q.window.unwrap_or(DOC_EXPIRY_DEFAULT_WINDOW);
+    if !DOC_EXPIRY_WINDOWS.contains(&window) {
+        return Err(AppError::BadRequest(
+            "window must be 7, 30 or 90".to_string(),
+        ));
+    }
+    let documents = repo::list_expiring_documents(state.db_read(), window).await?;
+    let buckets = repo::expiring_document_buckets(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(ExpiringDocumentsResponse {
+        documents,
+        buckets,
+    })))
+}
+
+// ----- GET /admin/applicants/pending-count — dashboard new-applicants badge (admin) -----
+
+/// New-applicants count for the dashboard notification card + the ผู้สมัคร page (#132): how many
+/// guards AND customers are pending admin approval, plus the total. Both roles share the same
+/// review gate now (customers no longer auto-approve). Admin only (else 403); replica read.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_pending_applicants_count<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<crate::models::PendingApplicantsCount>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let counts = repo::count_pending_applicants(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(counts)))
+}
+
+// ----- GET /admin/applicants/avg-approval-time — dashboard เวลาอนุมัติเฉลี่ย (admin) -----
+
+/// Average guard approval turnaround (เวลาอนุมัติเฉลี่ย, #132): mean of `reviewed_at -
+/// created_at` over APPROVED guards, in seconds + pre-rounded hours, with the sample size.
+/// `null` average + 0 sample when no guard has been approved yet (honest empty state). Admin
+/// only (else 403); replica read.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_avg_approval_time<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<crate::models::AvgApprovalTime>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let (avg_seconds, sample_size) = repo::avg_approval_time_seconds(state.db_read()).await?;
+    // Round hours to 1 decimal for display; None passes through (no approvals yet).
+    let avg_hours = avg_seconds.map(|s| (s as f64 / 3600.0 * 10.0).round() / 10.0);
+    Ok(Json(ApiResponse::success(crate::models::AvgApprovalTime {
+        avg_seconds,
+        avg_hours,
+        sample_size,
+    })))
 }
 
 // ----- GET /internal/profiles/recipients (broadcast audience for notification) -----
@@ -1411,6 +1476,14 @@ mod tests {
                 .route(
                     "/admin/documents/expiring",
                     get(admin_list_expiring_documents::<TestDeps>),
+                )
+                .route(
+                    "/admin/applicants/pending-count",
+                    get(admin_pending_applicants_count::<TestDeps>),
+                )
+                .route(
+                    "/admin/applicants/avg-approval-time",
+                    get(admin_avg_approval_time::<TestDeps>),
                 )
                 .route(
                     "/admin/recruitment/candidates",
@@ -1833,6 +1906,68 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_pending_applicants_count_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/applicants/pending-count")
+                    .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_avg_approval_time_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/applicants/avg-approval-time")
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_expiring_docs_rejects_bad_window() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // An admin token reaches the handler; an out-of-set window → 400 (before any DB read
+        // beyond the role gate). Validates the window allow-list.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/documents/expiring?window=45")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

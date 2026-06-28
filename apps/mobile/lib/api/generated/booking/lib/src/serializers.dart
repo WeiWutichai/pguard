@@ -17,6 +17,7 @@ import 'package:pguard_booking_api/src/model/date.dart';
 import 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
+import 'package:pguard_booking_api/src/model/admin_overdue_checkins200_response.dart';
 import 'package:pguard_booking_api/src/model/api_response_envelope.dart';
 import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 import 'package:pguard_booking_api/src/model/available_guard.dart';
@@ -39,6 +40,8 @@ import 'package:pguard_booking_api/src/model/list_available_guards200_response.d
 import 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 import 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
 import 'package:pguard_booking_api/src/model/list_services200_response.dart';
+import 'package:pguard_booking_api/src/model/overdue_checkin.dart';
+import 'package:pguard_booking_api/src/model/overdue_checkins_response.dart';
 import 'package:pguard_booking_api/src/model/progress_report.dart';
 import 'package:pguard_booking_api/src/model/public_service_item.dart';
 import 'package:pguard_booking_api/src/model/retention_point.dart';
@@ -53,6 +56,7 @@ part 'serializers.g.dart';
   AdminBookingsReport200Response,
   AdminCustomerBookingsReport200Response,
   AdminListServices200Response,
+  AdminOverdueCheckins200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   AssignGuardRequest,
   AvailableGuard,
@@ -75,6 +79,8 @@ part 'serializers.g.dart';
   ListBookings200Response,
   ListProgressReports200Response,
   ListServices200Response,
+  OverdueCheckin,
+  OverdueCheckinsResponse,
   ProgressReport,
   PublicServiceItem,
   RetentionPoint,

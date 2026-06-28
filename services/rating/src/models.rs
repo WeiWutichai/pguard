@@ -99,6 +99,8 @@ pub struct AdminReviewStats {
     pub total: i64,
     pub visible: i64,
     pub average: Option<Decimal>,
+    /// Reviews created in the current calendar month (server tz, UTC) — the รีวิวเดือนนี้ card.
+    pub this_month: i64,
 }
 
 /// Paginated admin-reviews response (list + total + unfiltered stats).

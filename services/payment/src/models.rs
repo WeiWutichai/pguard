@@ -105,6 +105,38 @@ pub struct InternalBooking {
     pub tip: Decimal,
 }
 
+// ----- Refund queue (admin dashboard signal) -----
+
+/// Query params for `GET /admin/refunds/queue`. `status` optionally narrows to one refund-workflow
+/// state (`pending` = awaiting action, `processed` = done); omitted → both. House limit/offset.
+#[derive(Debug, Deserialize)]
+pub struct RefundQueueQuery {
+    pub status: Option<String>,
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
+/// One refund-queue row — a payment whose settle left a refund owed. `amount` is the
+/// `refund_amount` (the money to return, not the original charge); `status` is the refund-workflow
+/// state (`pending`/`processed`), NOT the payment status (a partial refund stays `completed`).
+/// Exact-decimal `amount` → JSON string (money rule).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct RefundQueueItem {
+    pub payment_id: Uuid,
+    pub booking_id: Uuid,
+    pub amount: Decimal,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// The admin refund-queue response: the matching refund rows (newest first) + the total `count`
+/// of rows matching the same filter (the dashboard "คิวคืนเงิน" badge), independent of limit/offset.
+#[derive(Debug, Serialize)]
+pub struct RefundQueueResponse {
+    pub refunds: Vec<RefundQueueItem>,
+    pub count: i64,
+}
+
 // ----- Customer-spend report (admin analytics) -----
 
 /// One customer's lifetime spend — the sum of their actually-charged (completed) payments'

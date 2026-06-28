@@ -153,6 +153,49 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/refunds/queue:
+    get:
+      tags: [Admin]
+      summary: Refund queue — refunds awaiting action / in-progress (role=admin)
+      description: |
+        The admin refund queue — payments whose completion SETTLE left a refund owed
+        (`refund_status` is set), newest first. Feeds the dashboard "แจ้งเตือน / คิวคืนเงิน" card.
+        Optional `status` filter (`pending` = awaiting action, `processed` = done; omitted → both)
+        + limit/offset. Returns the page of refund rows PLUS the total `count` matching the same
+        filter (the badge count, independent of the page window). Admin only (else 403). READ ONLY:
+        v2 refunds are event-driven (a settle sets `refund_status='pending'`) — there is no manual
+        refund-process action here yet.
+      operationId: adminRefundQueue
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Filter by refund-workflow state. An unrecognized value returns 400.
+          schema: { $ref: '#/components/schemas/RefundStatus' }
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: The refund-queue page + total matching count
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RefundQueueResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/reports/revenue:
     get:
       tags: [Admin]
@@ -393,6 +436,42 @@ components:
           type: string
           description: Lifetime spend — summed effective amount of the customer's completed payments (exact decimal as a string; money rule).
           example: "12400.00"
+
+    RefundStatus:
+      type: string
+      description: Refund-workflow state (NOT the payment status — a partial refund stays `completed`).
+      enum:
+        - pending
+        - processed
+
+    RefundQueueItem:
+      type: object
+      required: [payment_id, booking_id, amount, status, created_at]
+      description: |
+        One refund-queue row — a payment whose settle left a refund owed. `amount` is the refund
+        owed (NOT the original charge); `status` is the refund-workflow state.
+      properties:
+        payment_id: { type: string, format: uuid }
+        booking_id: { type: string, format: uuid }
+        amount:
+          type: string
+          description: The refund owed to the customer (exact decimal as a string; money rule).
+          example: "1000.00"
+        status: { $ref: '#/components/schemas/RefundStatus' }
+        created_at: { type: string, format: date-time }
+
+    RefundQueueResponse:
+      type: object
+      required: [refunds, count]
+      description: The refund-queue page (newest first) + the total count matching the same filter.
+      properties:
+        refunds:
+          type: array
+          items: { $ref: '#/components/schemas/RefundQueueItem' }
+        count:
+          type: integer
+          format: int64
+          description: Total refund rows matching the filter (independent of limit/offset) — the badge count.
 
     ApiResponseEnvelope:
       type: object

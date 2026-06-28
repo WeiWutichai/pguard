@@ -183,6 +183,16 @@ async fn main() -> anyhow::Result<()> {
             "/admin/documents/expiring",
             get(api::admin_list_expiring_documents::<AppState>),
         )
+        // Dashboard new-applicants badge + ผู้สมัคร page (#132): pending guards + customers count.
+        .route(
+            "/admin/applicants/pending-count",
+            get(api::admin_pending_applicants_count::<AppState>),
+        )
+        // Dashboard เวลาอนุมัติเฉลี่ย (#132): avg guard approval turnaround.
+        .route(
+            "/admin/applicants/avg-approval-time",
+            get(api::admin_avg_approval_time::<AppState>),
+        )
         .route(
             "/admin/recruitment/candidates",
             get(api::admin_list_candidates::<AppState>),

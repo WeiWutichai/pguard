@@ -88,23 +88,91 @@ pub async fn set_recruitment_stage(
     }
 }
 
-/// List guard documents expiring within `horizon_days` (INCLUDING already-expired), soonest
-/// first. Bounded; the admin surface buckets them client-side into expired/7/30/90. Reads the
-/// `document_expiry` table (empty until the doc-upload+expiry-capture follow-up populates it).
+/// List guard documents expiring within `window_days` (INCLUDING already-expired), soonest
+/// first, each carrying its SQL-computed `days_left` (`expiry_date - current_date`; negative =
+/// expired). Bounded. Reads the `document_expiry` table (empty until the doc-upload+expiry-
+/// capture follow-up populates it). The companion [`expiring_document_buckets`] gives the
+/// window-independent urgency counts.
 pub async fn list_expiring_documents(
     db: &PgPool,
-    horizon_days: i64,
+    window_days: i64,
 ) -> Result<Vec<DocumentExpiryRow>, AppError> {
     let rows = sqlx::query_as::<_, DocumentExpiryRow>(
-        "SELECT id, guard_id, document_type, expiry_date, last_reminded_at \
+        "SELECT id, guard_id, document_type, expiry_date, \
+                (expiry_date - current_date)::int AS days_left, last_reminded_at \
          FROM profile.document_expiry \
          WHERE expiry_date <= current_date + make_interval(days => $1) \
          ORDER BY expiry_date ASC LIMIT 500",
     )
-    .bind(horizon_days as i32)
+    .bind(window_days as i32)
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+/// Urgency-band counts for the admin "expiring documents" pills — ONE pass over ALL recorded
+/// expiries (window-independent, so the dashboard pills don't change when the list filter does).
+/// Disjoint bands by `days_left = expiry_date - current_date`: expired (<0), 0..=7, 8..=30,
+/// 31..=90. Mirrors booking's `count(*) FILTER (...)` aggregate pattern.
+pub async fn expiring_document_buckets(
+    db: &PgPool,
+) -> Result<crate::models::ExpiringDocumentBuckets, AppError> {
+    let row = sqlx::query_as::<_, crate::models::ExpiringDocumentBuckets>(
+        "SELECT \
+            count(*) FILTER (WHERE expiry_date <  current_date)::bigint AS expired, \
+            count(*) FILTER (WHERE expiry_date >= current_date \
+                               AND expiry_date <= current_date + 7)::bigint  AS due_7, \
+            count(*) FILTER (WHERE expiry_date >  current_date + 7 \
+                               AND expiry_date <= current_date + 30)::bigint AS due_30, \
+            count(*) FILTER (WHERE expiry_date >  current_date + 30 \
+                               AND expiry_date <= current_date + 90)::bigint AS due_90 \
+         FROM profile.document_expiry",
+    )
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+/// Count guards AND customers awaiting admin approval (`approval_status = 'pending'`) for the
+/// dashboard new-applicants card + the ผู้สมัคร page tabs. ONE round-trip via two scalar
+/// subqueries; the `idx_*_approval_status` partial-friendly indexes cover both predicates.
+pub async fn count_pending_applicants(
+    db: &PgPool,
+) -> Result<crate::models::PendingApplicantsCount, AppError> {
+    let (guards, customers): (i64, i64) = sqlx::query_as(
+        "SELECT \
+            (SELECT count(*) FROM profile.guard_profiles \
+                WHERE approval_status = 'pending'::profile.approval_status)::bigint, \
+            (SELECT count(*) FROM profile.customer_profiles \
+                WHERE approval_status = 'pending'::profile.approval_status)::bigint",
+    )
+    .fetch_one(db)
+    .await?;
+    Ok(crate::models::PendingApplicantsCount {
+        guards,
+        customers,
+        total: guards + customers,
+    })
+}
+
+/// Average guard approval turnaround = mean(`reviewed_at - created_at`) over APPROVED guards.
+/// Returns the average in seconds + the sample size. NULL average (None) when no guard has been
+/// approved yet — the handler surfaces that as an honest empty state, not a fake 0. `reviewed_at`
+/// is the dedicated decision timestamp (migration 0010), never clobbered by a guard self-edit.
+pub async fn avg_approval_time_seconds(db: &PgPool) -> Result<(Option<i64>, i64), AppError> {
+    // EXTRACT(EPOCH FROM avg(interval)) → double precision; round + cast to bigint in Rust to
+    // keep the wire shape integral. count(*) over the same filtered set is the sample size.
+    let (avg_secs, sample): (Option<f64>, i64) = sqlx::query_as(
+        "SELECT \
+            extract(epoch FROM avg(reviewed_at - created_at)), \
+            count(*)::bigint \
+         FROM profile.guard_profiles \
+         WHERE approval_status = 'approved'::profile.approval_status \
+           AND reviewed_at IS NOT NULL",
+    )
+    .fetch_one(db)
+    .await?;
+    Ok((avg_secs.map(|s| s.round() as i64), sample))
 }
 
 /// All recorded document expiries for ONE guard (the owner/admin view + edit). Ordered by type for
@@ -114,7 +182,8 @@ pub async fn list_document_expiries(
     guard_id: Uuid,
 ) -> Result<Vec<DocumentExpiryRow>, AppError> {
     let rows = sqlx::query_as::<_, DocumentExpiryRow>(
-        "SELECT id, guard_id, document_type, expiry_date, last_reminded_at \
+        "SELECT id, guard_id, document_type, expiry_date, \
+                (expiry_date - current_date)::int AS days_left, last_reminded_at \
          FROM profile.document_expiry WHERE guard_id = $1 ORDER BY document_type",
     )
     .bind(guard_id)
@@ -137,7 +206,8 @@ pub async fn upsert_document_expiry(
          VALUES ($1, $2, $3) \
          ON CONFLICT (guard_id, document_type) \
          DO UPDATE SET expiry_date = EXCLUDED.expiry_date, updated_at = now() \
-         RETURNING id, guard_id, document_type, expiry_date, last_reminded_at",
+         RETURNING id, guard_id, document_type, expiry_date, \
+                   (expiry_date - current_date)::int AS days_left, last_reminded_at",
     )
     .bind(guard_id)
     .bind(document_type)
@@ -645,10 +715,15 @@ pub async fn set_approval_status(
         )));
     }
 
+    // Stamp `reviewed_at` (the dedicated decision timestamp the avg-approval-time metric reads)
+    // in the SAME write that flips the status — a guard self-edit never touches it, so
+    // `reviewed_at - created_at` stays a faithful approval duration (unlike the generic
+    // `updated_at`). Stamped on reject too (for a future review-SLA), even though the metric
+    // averages only approvals.
     let sql = format!(
         r#"
         UPDATE profile.guard_profiles
-        SET approval_status = $2::profile.approval_status, updated_at = now()
+        SET approval_status = $2::profile.approval_status, reviewed_at = now(), updated_at = now()
         WHERE user_id = $1
         RETURNING {GUARD_COLUMNS}
         "#
@@ -921,25 +996,35 @@ pub async fn get_customer_profile(
     ))
 }
 
-/// List ALL customer profiles for the admin surface (`GET /admin/customer-profiles`).
-/// Cross-user (no owner filter) — the admin-role gate is the API layer's job. Newest first,
-/// capped at 200 (NOT paginated — same documented limitation as the guard admin list).
-/// Carries `approval_status` (read as `::text`, like the guard list) so the admin can see
-/// pending vs approved/rejected customers in the review queue — customers are now
-/// admin-approved (`set_customer_approval`), no longer auto-approved.
+/// List customer profiles for the admin surface (`GET /admin/customer-profiles`), optionally
+/// filtered by `approval_status` (mirrors the guard list — drives the ผู้สมัคร page's customer
+/// pending tab). Cross-user (no owner filter) — the admin-role gate is the API layer's job.
+/// Newest first, capped at 200 (NOT paginated — same documented limitation as the guard admin
+/// list). Carries `approval_status` (read as `::text`) so the admin can see pending vs
+/// approved/rejected customers — customers are now admin-approved (`set_customer_approval`),
+/// no longer auto-approved.
 pub async fn list_customer_profiles(
     db: &PgPool,
+    status: Option<ApprovalStatus>,
 ) -> Result<Vec<CustomerProfileAdminResponse>, AppError> {
     // Columns match `CustomerProfileAdminResponse` field-for-field → decode via `FromRow`
     // (no intermediate tuple). `approval_status` is cast to text + aliased so FromRow binds it
     // by name. No transformation (unlike the guard list's mask step).
-    let rows = sqlx::query_as::<_, CustomerProfileAdminResponse>(
+    let mut sql = String::from(
         "SELECT user_id, full_name, address, company_name, email, contact_phone, created_at, \
                 approval_status::text AS approval_status \
-         FROM profile.customer_profiles ORDER BY created_at DESC LIMIT 200",
-    )
-    .fetch_all(db)
-    .await?;
+         FROM profile.customer_profiles",
+    );
+    if status.is_some() {
+        sql.push_str(" WHERE approval_status = $1::profile.approval_status");
+    }
+    sql.push_str(" ORDER BY created_at DESC LIMIT 200");
+
+    let mut query = sqlx::query_as::<_, CustomerProfileAdminResponse>(&sql);
+    if let Some(s) = &status {
+        query = query.bind(s.to_string());
+    }
+    let rows = query.fetch_all(db).await?;
     Ok(rows)
 }
 
@@ -1442,7 +1527,7 @@ mod db_tests {
         assert_eq!(role, "customer");
 
         // 2a) The status flip is visible to the admin list (now carries approval_status).
-        let listed = list_customer_profiles(&pool).await.expect("list");
+        let listed = list_customer_profiles(&pool, None).await.expect("list");
         let row = listed
             .iter()
             .find(|c| c.user_id == user_id)

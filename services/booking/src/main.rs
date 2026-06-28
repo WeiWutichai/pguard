@@ -182,6 +182,12 @@ async fn main() -> anyhow::Result<()> {
             "/admin/reports/customer-bookings",
             get(api::admin_customer_bookings_report::<AppState>),
         )
+        // Admin missed/overdue hourly check-ins (dashboard alert card). Gateway needs a NEW
+        // `/admin/checkins` prefix rule → Booking (no /admin/* catch-all exists).
+        .route(
+            "/admin/checkins/overdue",
+            get(api::admin_overdue_checkins::<AppState>),
+        )
         // Admin service catalog (pricing) CRUD — standalone, not wired to the charge path.
         // Gateway needs a NEW `/admin/pricing` prefix rule → Booking (covers /{id} too).
         .route(

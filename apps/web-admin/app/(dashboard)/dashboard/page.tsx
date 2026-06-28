@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Banknote,
+  Clock,
   EyeOff,
   Loader2,
   RefreshCw,
@@ -12,12 +13,15 @@ import {
   ShieldCheck,
   Star,
   Target,
+  Undo2,
+  UserPlus,
   Users,
 } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { components as paymentComponents } from "@/api/generated/payment";
 import type { components as presenceComponents } from "@/api/generated/presence";
+import type { components as profileComponents } from "@/api/generated/profile";
 import type { components } from "@/api/generated/rating";
 import { bookingApi, paymentApi, presenceApi, profileApi, ratingApi } from "@/lib/api";
 import {
@@ -32,13 +36,19 @@ import {
 } from "@/components/ui";
 import { useLanguage } from "@/lib/i18n";
 import { fmtBaht, fmtCappedCount } from "@/lib/format";
+import { useNameResolver } from "@/lib/use-names";
 
+import { actionText, COPY as ACTIVITY_COPY } from "../activity/copy";
 import { COPY } from "./copy";
 import { MiniMap } from "./mini-map";
 
 type AdminReview = components["schemas"]["AdminReview"];
 type GuardLocation = presenceComponents["schemas"]["GuardLocation"];
 type RevenuePoint = paymentComponents["schemas"]["RevenuePoint"];
+type AccessAuditEntry = profileComponents["schemas"]["AccessAuditEntry"];
+
+// Recent-activity card shows a short tail of the access-audit feed.
+const ACTIVITY_LIMIT = 8;
 
 // The admin guard-profiles list is capped at 200 by the repo; show "200+" rather than a wrong exact.
 const LIST_CAP = 200;
@@ -66,6 +76,12 @@ interface Metrics {
   reviews: AdminReview[];
   /** The raw presence fixes (same call that produces `online`) — feeds the mini map. */
   locations: GuardLocation[];
+  /** Alerts card signals — null = that sub-call failed (the row is hidden, not shown as 0). */
+  overdueCheckins: number | null;
+  refundQueue: number | null;
+  newApplicants: number | null;
+  /** Recent access-audit tail for the activity card. */
+  activity: AccessAuditEntry[];
 }
 
 const EMPTY: Metrics = {
@@ -81,6 +97,10 @@ const EMPTY: Metrics = {
   revenue7d: [],
   reviews: [],
   locations: [],
+  overdueCheckins: null,
+  refundQueue: null,
+  newApplicants: null,
+  activity: [],
 };
 
 export default function DashboardPage() {
@@ -120,7 +140,14 @@ export default function DashboardPage() {
       bookingApi.GET("/admin/bookings", { params: { query: { limit: LIST_CAP } } }),
       paymentApi.GET("/admin/reports/revenue", { params: { query: { from: startToday } } }),
       paymentApi.GET("/admin/reports/revenue", { params: { query: { from: start7d } } }),
-    ]).then(([pend, appr, rev, online, bookings, revToday, rev7d]) => {
+      // Alerts card signals — overdue check-ins, the pending refund queue, and the combined
+      // new-applicants count. Each is a single, badge-shaped count (use the API's `total`/`count`).
+      bookingApi.GET("/admin/checkins/overdue", { params: { query: { limit: 1 } } }),
+      paymentApi.GET("/admin/refunds/queue", { params: { query: { status: "pending", limit: 1 } } }),
+      profileApi.GET("/admin/applicants/pending-count"),
+      // Recent-activity card — newest-first access-audit tail.
+      profileApi.GET("/admin/access-audit", { params: { query: { limit: ACTIVITY_LIMIT } } }),
+    ]).then(([pend, appr, rev, online, bookings, revToday, rev7d, overdue, refunds, applicants, activity]) => {
       if (!alive()) return;
       const anyErr =
         pend.error ||
@@ -129,7 +156,11 @@ export default function DashboardPage() {
         online.error ||
         bookings.error ||
         revToday.error ||
-        rev7d.error;
+        rev7d.error ||
+        overdue.error ||
+        refunds.error ||
+        applicants.error ||
+        activity.error;
       const stats = rev.data?.data?.stats;
       setHasError(Boolean(anyErr));
       setM({
@@ -152,6 +183,12 @@ export default function DashboardPage() {
         revenue7d: rev7d.error ? [] : (rev7d.data?.data?.series ?? []),
         reviews: rev.error ? [] : (rev.data?.data?.data ?? []),
         locations: online.error ? [] : (online.data?.data ?? []),
+        // Badge counts: `total` (overdue) / `count` (refunds) / `total` (applicants) are
+        // page-independent (we pass limit:1 just to keep the payload tiny).
+        overdueCheckins: overdue.error ? null : (overdue.data?.data?.total ?? 0),
+        refundQueue: refunds.error ? null : (refunds.data?.data?.count ?? 0),
+        newApplicants: applicants.error ? null : (applicants.data?.data?.total ?? 0),
+        activity: activity.error ? [] : (activity.data?.data ?? []),
       });
       setLoading(false);
     })
@@ -279,11 +316,17 @@ export default function DashboardPage() {
               </PanelBody>
             </Panel>
 
-            {/* Alerts — designed panel, but no v2 admin alerts endpoint exists yet. */}
+            {/* Alerts — combines the three actionable admin signals (overdue check-ins, the
+                pending refund queue, new applicants). A null signal (its sub-call failed) is
+                omitted; all-zero shows the empty note. Each row links to the relevant page. */}
             <Panel>
               <PanelHead title={c.alertsTitle} />
               <PanelBody>
-                <GapNote chip={c.awaitingApi} note={c.alertsGap} />
+                <AlertsList
+                  overdueCheckins={m.overdueCheckins}
+                  refundQueue={m.refundQueue}
+                  newApplicants={m.newApplicants}
+                />
               </PanelBody>
             </Panel>
 
@@ -295,11 +338,16 @@ export default function DashboardPage() {
               </PanelBody>
             </Panel>
 
-            {/* Activity feed — no v2 admin event-feed endpoint exists yet. */}
+            {/* Recent activity — newest-first tail of the PDPA §30 access-audit feed (the same
+                endpoint as the /activity page). Honest scope note + a link to the full log. */}
             <Panel>
-              <PanelHead title={c.feedTitle} />
+              <PanelHead title={c.feedTitle}>
+                <Button variant="ghost" size="sm" onClick={() => router.push("/activity")}>
+                  {c.viewAll}
+                </Button>
+              </PanelHead>
               <PanelBody>
-                <GapNote chip={c.awaitingApi} note={c.feedGap} />
+                <ActivityFeed entries={m.activity} />
               </PanelBody>
             </Panel>
 
@@ -314,14 +362,146 @@ export default function DashboardPage() {
 
 
 
-/** Honest API-gap body for a designed panel/cell with no v2 endpoint — chip + what's
- * missing. Never renders fabricated numbers. */
-function GapNote({ chip, note }: { chip: string; note: string }) {
+/** Alerts card body — the three actionable admin signals as tappable rows. A null count means
+ * that sub-call failed → the row is omitted (never shown as a misleading 0). When every loaded
+ * signal is 0 the card shows the empty note. */
+function AlertsList({
+  overdueCheckins,
+  refundQueue,
+  newApplicants,
+}: {
+  overdueCheckins: number | null;
+  refundQueue: number | null;
+  newApplicants: number | null;
+}) {
+  const { lang } = useLanguage();
+  const router = useRouter();
+  const c = COPY[lang];
+
+  const rows: {
+    key: string;
+    icon: ReactNode;
+    label: string;
+    sub: string;
+    count: number;
+    href: "/operations" | "/wallet" | "/applicants";
+    tone: "red" | "amber" | "blue";
+  }[] = [];
+  if (overdueCheckins != null && overdueCheckins > 0) {
+    rows.push({
+      key: "overdue",
+      icon: <Clock className="size-4" />,
+      label: c.alertOverdue(overdueCheckins),
+      sub: c.alertOverdueSub,
+      count: overdueCheckins,
+      href: "/operations",
+      tone: "red",
+    });
+  }
+  if (refundQueue != null && refundQueue > 0) {
+    rows.push({
+      key: "refunds",
+      icon: <Undo2 className="size-4" />,
+      label: c.alertRefunds(refundQueue),
+      sub: c.alertRefundsSub,
+      count: refundQueue,
+      href: "/wallet",
+      tone: "amber",
+    });
+  }
+  if (newApplicants != null && newApplicants > 0) {
+    rows.push({
+      key: "applicants",
+      icon: <UserPlus className="size-4" />,
+      label: c.alertApplicants(newApplicants),
+      sub: c.alertApplicantsSub,
+      count: newApplicants,
+      href: "/applicants",
+      tone: "blue",
+    });
+  }
+
+  if (rows.length === 0) {
+    return (
+      <div className="flex min-h-24 items-center justify-center py-4 text-sm text-muted">
+        {c.alertsEmpty}
+      </div>
+    );
+  }
+
   return (
-    <div className="flex min-h-24 flex-col items-start justify-center gap-2">
-      <Badge tone="gray">{chip}</Badge>
-      <p className="text-sm text-muted">{note}</p>
-    </div>
+    <ul className="divide-y divide-border">
+      {rows.map((r) => (
+        <li key={r.key}>
+          <button
+            type="button"
+            data-testid={`dashboard-alert-${r.key}`}
+            onClick={() => router.push(r.href)}
+            className="flex w-full items-center gap-3 py-2.5 text-left transition-colors hover:bg-sunken"
+          >
+            <span className="flex size-8 flex-none items-center justify-center rounded-full bg-sunken text-faint">
+              {r.icon}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-medium text-text-strong">{r.label}</span>
+              <span className="block truncate text-xs text-muted">{r.sub}</span>
+            </span>
+            <Badge tone={r.tone}>{fmtCappedCount(r.count)}</Badge>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/** Recent-activity card body — the newest-first access-audit tail (PDPA §30). Admin ids resolve
+ * to a name via the shared resolver (admins fall back to "Admin #id"); actions use the shared
+ * activity label map. Honest scope note that this is the data-access trail, not the full feed. */
+function ActivityFeed({ entries }: { entries: AccessAuditEntry[] }) {
+  const { lang } = useLanguage();
+  const c = COPY[lang];
+  const ac = ACTIVITY_COPY[lang];
+
+  const ids = useMemo(() => entries.map((e) => e.accessed_by), [entries]);
+  const { resolve } = useNameResolver(ids, lang, "admin");
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex min-h-24 items-center justify-center py-4 text-sm text-muted">
+        {c.feedEmpty}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <ul className="divide-y divide-border">
+        {entries.map((e) => (
+          <li key={e.id} className="flex items-baseline gap-3 py-2">
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-sm text-text-strong">
+                <span className="font-medium" title={e.accessed_by}>
+                  {resolve(e.accessed_by).label}
+                </span>{" "}
+                <span className="text-muted">{actionText(e.action, ac)}</span>
+              </span>
+              {e.target ? (
+                <span className="block truncate text-xs text-muted">{e.target}</span>
+              ) : null}
+            </span>
+            <span className="flex-none whitespace-nowrap font-mono text-xs text-muted tabular-nums">
+              {new Date(e.accessed_at).toLocaleString(lang === "th" ? "th-TH" : "en-GB", {
+                month: "short",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs text-muted">{c.feedScope}</p>
+    </>
   );
 }
 

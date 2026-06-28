@@ -17,6 +17,7 @@ lib/src/date_serializer.dart
 lib/src/model/admin_bookings_report200_response.dart
 lib/src/model/admin_customer_bookings_report200_response.dart
 lib/src/model/admin_list_services200_response.dart
+lib/src/model/admin_overdue_checkins200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/assign_guard_request.dart
 lib/src/model/available_guard.dart
@@ -40,6 +41,8 @@ lib/src/model/list_available_guards200_response.dart
 lib/src/model/list_bookings200_response.dart
 lib/src/model/list_progress_reports200_response.dart
 lib/src/model/list_services200_response.dart
+lib/src/model/overdue_checkin.dart
+lib/src/model/overdue_checkins_response.dart
 lib/src/model/progress_report.dart
 lib/src/model/public_service_item.dart
 lib/src/model/retention_point.dart

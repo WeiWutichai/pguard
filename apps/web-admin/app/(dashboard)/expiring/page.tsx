@@ -19,45 +19,68 @@ import {
 } from "@/components/ui";
 import { notificationApi, profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 
-import { COPY, type DocType, daysUntil, type WindowKey, WINDOWS } from "./copy";
+import { COPY, type DocType, type WindowKey } from "./copy";
 
 type DocumentExpiry = ProfileComponents["schemas"]["DocumentExpiry"];
+type ExpiringBuckets = ProfileComponents["schemas"]["ExpiringDocumentBuckets"];
+
+// The selectable list windows map to the endpoint's `window` query (days). "expired" has no
+// dedicated window value (the 7-day window already includes the expired band, soonest-first), so
+// it reuses window=7 and the page filters the list to days_left<0 client-side.
+const WINDOW_PARAM: Record<WindowKey, 7 | 30 | 90> = {
+  expired: 7,
+  "7": 7,
+  "30": 30,
+  "90": 90,
+};
 
 export default function ExpiringPage() {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
 
   const [docs, setDocs] = useState<DocumentExpiry[]>([]);
+  // Window-INDEPENDENT bucket counts from the API (disjoint bands) — drive the KPI strip + tab
+  // pills so they don't shift as the list filter narrows. Null until the first load succeeds.
+  const [buckets, setBuckets] = useState<ExpiringBuckets | null>(null);
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
   const [window, setWindow] = useState<WindowKey>("expired");
   const [reminded, setReminded] = useState<Record<string, "sending" | "sent" | "error">>({});
 
-  const fetchInto = useCallback((alive: () => boolean) => {
-    return profileApi
-      .GET("/admin/documents/expiring")
-      .then((res) => {
-        if (!alive()) return;
-        setHasError(Boolean(res.error));
-        setDocs(res.error ? [] : (res.data?.data ?? []));
-        setLoading(false);
-      })
-      .catch(() => {
-        if (!alive()) return;
-        setHasError(true);
-        setLoading(false);
-      });
-  }, []);
+  const fetchInto = useCallback(
+    (w: WindowKey, alive: () => boolean) => {
+      return profileApi
+        .GET("/admin/documents/expiring", {
+          params: { query: { window: WINDOW_PARAM[w] } },
+        })
+        .then((res) => {
+          if (!alive()) return;
+          setHasError(Boolean(res.error));
+          setDocs(res.error ? [] : (res.data?.data?.documents ?? []));
+          // Buckets are window-independent — only overwrite on a clean fetch (keep the last good
+          // counts on error rather than blanking the KPIs).
+          if (!res.error && res.data?.data?.buckets) setBuckets(res.data.data.buckets);
+          setLoading(false);
+        })
+        .catch(() => {
+          if (!alive()) return;
+          setHasError(true);
+          setLoading(false);
+        });
+    },
+    [],
+  );
 
   useEffect(() => {
     let alive = true;
-    void fetchInto(() => alive);
+    void fetchInto(window, () => alive);
     return () => {
       alive = false;
     };
-  }, [reloadNonce, fetchInto]);
+  }, [window, reloadNonce, fetchInto]);
 
   function reload() {
     setLoading(true);
@@ -65,32 +88,22 @@ export default function ExpiringPage() {
     setReloadNonce((n) => n + 1);
   }
 
-  // Bucket counts (a doc falls in the lowest window it qualifies for; KPIs are cumulative
-  // like the design — "within 30" includes "within 7").
-  const counts = useMemo(() => {
-    let expired = 0,
-      w7 = 0,
-      w30 = 0,
-      w90 = 0;
-    for (const d of docs) {
-      const days = daysUntil(d.expiry_date);
-      if (days < 0) expired++;
-      else if (days <= 7) w7++;
-      else if (days <= 30) w30++;
-      else w90++;
-    }
-    return { expired, w7: w7, w30, w90 };
-  }, [docs]);
+  function selectWindow(next: WindowKey) {
+    if (next === window) return;
+    setLoading(true);
+    setWindow(next);
+  }
 
-  const visible = useMemo(() => {
-    return docs.filter((d) => {
-      const days = daysUntil(d.expiry_date);
-      if (window === "expired") return days < 0;
-      if (window === "7") return days >= 0 && days <= 7;
-      if (window === "30") return days >= 0 && days <= 30;
-      return days >= 0 && days <= 90;
-    });
-  }, [docs, window]);
+  // Resolve guard ids → display names (one batch call; short-id fallback when a name is absent).
+  const guardIds = useMemo(() => docs.map((d) => d.guard_id), [docs]);
+  const { resolve } = useNameResolver(guardIds, lang);
+
+  // The endpoint returns the chosen window's docs soonest-first; the "expired" tab reuses the
+  // 7-day window so it can show the already-lapsed band, then narrows client-side to days_left<0.
+  const visible = useMemo(
+    () => (window === "expired" ? docs.filter((d) => d.days_left < 0) : docs),
+    [docs, window],
+  );
 
   async function remind(d: DocumentExpiry) {
     setReminded((m) => ({ ...m, [d.id]: "sending" }));
@@ -109,11 +122,12 @@ export default function ExpiringPage() {
     setReminded((m) => ({ ...m, [d.id]: res.error ? "error" : "sent" }));
   }
 
-  const TABS: { key: WindowKey; label: string; count: number }[] = [
-    { key: "expired", label: c.tabExpired, count: counts.expired },
-    { key: "7", label: c.tab7, count: counts.w7 },
-    { key: "30", label: c.tab30, count: counts.w30 },
-    { key: "90", label: c.tab90, count: counts.w90 },
+  // Tab/KPI counts from the API buckets (window-independent). "—" until the first load.
+  const TABS: { key: WindowKey; label: string; count: number | null }[] = [
+    { key: "expired", label: c.tabExpired, count: buckets?.expired ?? null },
+    { key: "7", label: c.tab7, count: buckets?.due_7 ?? null },
+    { key: "30", label: c.tab30, count: buckets?.due_30 ?? null },
+    { key: "90", label: c.tab90, count: buckets?.due_90 ?? null },
   ];
 
   return (
@@ -136,10 +150,26 @@ export default function ExpiringPage() {
       )}
 
       <KpiGrid>
-        <KpiCard icon={<FileWarning />} label={c.kpiExpired} value={loading ? "…" : String(counts.expired)} />
-        <KpiCard icon={<CalendarClock />} label={c.kpi7} value={loading ? "…" : String(counts.w7)} />
-        <KpiCard icon={<CalendarClock />} label={c.kpi30} value={loading ? "…" : String(counts.w30)} />
-        <KpiCard icon={<CalendarClock />} label={c.kpi90} value={loading ? "…" : String(counts.w90)} />
+        <KpiCard
+          icon={<FileWarning />}
+          label={c.kpiExpired}
+          value={buckets ? String(buckets.expired) : "—"}
+        />
+        <KpiCard
+          icon={<CalendarClock />}
+          label={c.kpi7}
+          value={buckets ? String(buckets.due_7) : "—"}
+        />
+        <KpiCard
+          icon={<CalendarClock />}
+          label={c.kpi30}
+          value={buckets ? String(buckets.due_30) : "—"}
+        />
+        <KpiCard
+          icon={<CalendarClock />}
+          label={c.kpi90}
+          value={buckets ? String(buckets.due_90) : "—"}
+        />
       </KpiGrid>
 
       {/* Expiry dates are captured at guard registration; the document image upload remains a
@@ -151,8 +181,8 @@ export default function ExpiringPage() {
 
       <div className="mb-4 flex flex-wrap items-center gap-2.5">
         {TABS.map((tab) => (
-          <Chip key={tab.key} active={window === tab.key} onClick={() => setWindow(tab.key)}>
-            {tab.label} ({tab.count})
+          <Chip key={tab.key} active={window === tab.key} onClick={() => selectWindow(tab.key)}>
+            {tab.label} {tab.count == null ? "" : `(${tab.count})`}
           </Chip>
         ))}
       </div>
@@ -179,12 +209,24 @@ export default function ExpiringPage() {
             </thead>
             <tbody>
               {visible.map((d) => {
-                const days = daysUntil(d.expiry_date);
+                // days_left from the API (expiry_date − current_date, computed in SQL).
+                const days = d.days_left;
                 const tone = days < 0 ? "red" : days <= 30 ? "amber" : "green";
                 const state = reminded[d.id];
+                const guard = resolve(d.guard_id);
                 return (
                   <Tr key={d.id}>
-                    <Td className="font-mono font-semibold text-text-strong">#{d.guard_id.slice(0, 8)}</Td>
+                    <Td title={d.guard_id}>
+                      <span
+                        className={
+                          guard.name
+                            ? "font-semibold text-text-strong"
+                            : "font-mono font-semibold text-text-strong"
+                        }
+                      >
+                        {guard.label}
+                      </span>
+                    </Td>
                     <Td>{c.docLabel[d.document_type as DocType] ?? d.document_type}</Td>
                     <Td className="font-mono text-muted tabular-nums">
                       {new Date(d.expiry_date + "T00:00:00Z").toLocaleDateString(

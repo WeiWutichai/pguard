@@ -18,7 +18,6 @@ import { useNameResolver } from "@/lib/use-names";
 import { cn } from "@/lib/cn";
 import {
   Avatar,
-  Badge,
   Button,
   Chip,
   KpiCard,
@@ -210,8 +209,7 @@ export default function ReviewsPage() {
         </Button>
       </PageIntro>
 
-      {/* KPI strip — from the API's UNFILTERED stats. "This month" has no backing field in
-          AdminReviewStats (total/visible/average only) → honest gap chip, never a fake number. */}
+      {/* KPI strip — from the API's UNFILTERED stats (total/visible/average + this_month). */}
       <KpiGrid>
         <KpiCard
           icon={<Star />}
@@ -236,10 +234,17 @@ export default function ReviewsPage() {
           label={c.kpiHidden}
           value={stats ? String(hidden) : t("common.none")}
         />
+        {/* รีวิวเดือนนี้ — reviews created this calendar month (UNFILTERED stat). */}
         <KpiCard
           icon={<Clock />}
           label={c.kpiMonth}
-          value={<Badge tone="gray">{c.awaitingApi}</Badge>}
+          value={
+            stats ? (
+              <span data-testid="reviews-stat-month">{stats.this_month.toLocaleString("en-US")}</span>
+            ) : (
+              t("common.none")
+            )
+          }
         />
       </KpiGrid>
 

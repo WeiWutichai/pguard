@@ -219,6 +219,12 @@ export interface components {
             visible: number;
             /** @example 4.20 */
             average?: string | null;
+            /**
+             * Format: int64
+             * @description Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
+             * @example 12
+             */
+            this_month: number;
         };
         RatingSummary: {
             /** Format: uuid */

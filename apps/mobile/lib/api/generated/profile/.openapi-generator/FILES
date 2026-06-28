@@ -14,15 +14,18 @@ lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
 lib/src/model/access_audit_entry.dart
+lib/src/model/admin_avg_approval_time200_response.dart
 lib/src/model/admin_list_access_audit200_response.dart
 lib/src/model/admin_list_candidates200_response.dart
 lib/src/model/admin_list_customer_profiles200_response.dart
 lib/src/model/admin_list_expiring_documents200_response.dart
 lib/src/model/admin_list_guard_profiles200_response.dart
+lib/src/model/admin_pending_applicants_count200_response.dart
 lib/src/model/admin_resolve_user_names200_response.dart
 lib/src/model/admin_set_candidate_stage200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/approval_status.dart
+lib/src/model/avg_approval_time.dart
 lib/src/model/customer_profile.dart
 lib/src/model/customer_profile_admin.dart
 lib/src/model/date.dart
@@ -30,6 +33,8 @@ lib/src/model/document_expiry.dart
 lib/src/model/document_expiry_input.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
+lib/src/model/expiring_document_buckets.dart
+lib/src/model/expiring_documents_response.dart
 lib/src/model/get_guard_avatar200_response.dart
 lib/src/model/get_guard_document200_response.dart
 lib/src/model/get_my_profile200_response.dart
@@ -50,6 +55,7 @@ lib/src/model/list_guard_document_expiries200_response.dart
 lib/src/model/my_customer_profile.dart
 lib/src/model/my_guard_profile.dart
 lib/src/model/my_profile.dart
+lib/src/model/pending_applicants_count.dart
 lib/src/model/public_customer_profile.dart
 lib/src/model/public_guard_profile.dart
 lib/src/model/recruit_candidate.dart

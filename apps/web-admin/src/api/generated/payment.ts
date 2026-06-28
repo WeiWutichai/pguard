@@ -63,6 +63,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/refunds/queue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Refund queue — refunds awaiting action / in-progress (role=admin)
+         * @description The admin refund queue — payments whose completion SETTLE left a refund owed
+         *     (`refund_status` is set), newest first. Feeds the dashboard "แจ้งเตือน / คิวคืนเงิน" card.
+         *     Optional `status` filter (`pending` = awaiting action, `processed` = done; omitted → both)
+         *     + limit/offset. Returns the page of refund rows PLUS the total `count` matching the same
+         *     filter (the badge count, independent of the page window). Admin only (else 403). READ ONLY:
+         *     v2 refunds are event-driven (a settle sets `refund_status='pending'`) — there is no manual
+         *     refund-process action here yet.
+         */
+        get: operations["adminRefundQueue"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/reports/revenue": {
         parameters: {
             query?: never;
@@ -239,6 +265,38 @@ export interface components {
              */
             total: string;
         };
+        /**
+         * @description Refund-workflow state (NOT the payment status — a partial refund stays `completed`).
+         * @enum {string}
+         */
+        RefundStatus: "pending" | "processed";
+        /**
+         * @description One refund-queue row — a payment whose settle left a refund owed. `amount` is the refund
+         *     owed (NOT the original charge); `status` is the refund-workflow state.
+         */
+        RefundQueueItem: {
+            /** Format: uuid */
+            payment_id: string;
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * @description The refund owed to the customer (exact decimal as a string; money rule).
+             * @example 1000.00
+             */
+            amount: string;
+            status: components["schemas"]["RefundStatus"];
+            /** Format: date-time */
+            created_at: string;
+        };
+        /** @description The refund-queue page (newest first) + the total count matching the same filter. */
+        RefundQueueResponse: {
+            refunds: components["schemas"]["RefundQueueItem"][];
+            /**
+             * Format: int64
+             * @description Total refund rows matching the filter (independent of limit/offset) — the badge count.
+             */
+            count: number;
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -386,6 +444,36 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["Payment"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminRefundQueue: {
+        parameters: {
+            query?: {
+                /** @description Filter by refund-workflow state. An unrecognized value returns 400. */
+                status?: components["schemas"]["RefundStatus"];
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The refund-queue page + total matching count */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RefundQueueResponse"];
                     };
                 };
             };

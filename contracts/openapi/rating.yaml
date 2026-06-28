@@ -362,11 +362,16 @@ components:
     AdminReviewStats:
       type: object
       description: Computed on the UNFILTERED dataset.
-      required: [total, visible]
+      required: [total, visible, this_month]
       properties:
         total: { type: integer, format: int64 }
         visible: { type: integer, format: int64 }
         average: { type: string, nullable: true, example: "4.20" }
+        this_month:
+          type: integer
+          format: int64
+          description: Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
+          example: 12
 
     RatingSummary:
       type: object

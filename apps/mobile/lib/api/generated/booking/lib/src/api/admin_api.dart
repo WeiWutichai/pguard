@@ -12,6 +12,7 @@ import 'package:pguard_booking_api/src/api_util.dart';
 import 'package:pguard_booking_api/src/model/admin_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_customer_bookings_report200_response.dart';
 import 'package:pguard_booking_api/src/model/admin_list_services200_response.dart';
+import 'package:pguard_booking_api/src/model/admin_overdue_checkins200_response.dart';
 import 'package:pguard_booking_api/src/model/assign_guard_request.dart';
 import 'package:pguard_booking_api/src/model/booking_status.dart';
 import 'package:pguard_booking_api/src/model/create_service_request.dart';
@@ -651,6 +652,95 @@ class AdminApi {
     }
 
     return Response<AdminListServices200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Active jobs with an overdue hourly check-in (role&#x3D;admin)
+  /// The dashboard \&quot;เช็คอินที่ขาด\&quot; (missed check-ins) signal. A job is in progress when &#x60;status &#x3D; &#39;arrived&#39;&#x60; AND &#x60;work_started_at&#x60; is stamped (the proration clock); hour &#x60;N&#x60; (1-based, ≤ &#x60;hours&#x60;) opens at &#x60;work_started_at + (N−1)h&#x60;. Each returned item is an active job with ≥ 1 owed-but-unfiled hour whose open time has already passed: &#x60;due_at&#x60; is the oldest such gap&#39;s open time (overdue-since), &#x60;missed_count&#x60; is how many gaps (late / out-of-order filing is tolerated, so this counts every gap). &#x60;total&#x60; is the count of ALL such jobs (independent of the page) for the alert badge. Oldest-overdue first. Admin only (else 403). House limit/offset pagination. 
+  ///
+  /// Parameters:
+  /// * [limit] - Page size (default 50, max 200).
+  /// * [offset] - Row offset (default 0).
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminOverdueCheckins200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminOverdueCheckins200Response>> adminOverdueCheckins({ 
+    int? limit,
+    int? offset,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/checkins/overdue';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _queryParameters = <String, dynamic>{
+      if (limit != null) r'limit': encodeQueryParameter(_serializers, limit, const FullType(int)),
+      if (offset != null) r'offset': encodeQueryParameter(_serializers, offset, const FullType(int)),
+    };
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      queryParameters: _queryParameters,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminOverdueCheckins200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminOverdueCheckins200Response),
+      ) as AdminOverdueCheckins200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminOverdueCheckins200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

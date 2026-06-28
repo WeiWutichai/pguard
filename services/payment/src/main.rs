@@ -125,6 +125,13 @@ async fn main() -> anyhow::Result<()> {
         // Admin cross-user payment ledger (admin-role gated in the handler). Needs a NEW
         // gateway `/admin/payments` prefix rule → Payment.
         .route("/admin/payments", get(api::admin_list_payments::<AppState>))
+        // Admin refund queue (dashboard "คิวคืนเงิน" signal — refunds awaiting action /
+        // in-progress + count). Admin-role gated in the handler. Needs a NEW gateway
+        // `/admin/refunds` prefix rule → Payment.
+        .route(
+            "/admin/refunds/queue",
+            get(api::admin_refund_queue::<AppState>),
+        )
         // Admin revenue-trend report (analytics). Needs a NEW gateway `/admin/reports/revenue`
         // prefix rule → Payment (booking owns `/admin/reports/bookings`).
         .route(

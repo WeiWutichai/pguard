@@ -22,8 +22,8 @@ use shared::service_jwt::ServiceCaller;
 use crate::booking_client::BookingReader;
 use crate::domain;
 use crate::models::{
-    AdminListPaymentsQuery, CreatePaymentRequest, CustomerSpend, PaymentResponse, ReportRangeQuery,
-    RevenueReport,
+    AdminListPaymentsQuery, CreatePaymentRequest, CustomerSpend, PaymentResponse, RefundQueueQuery,
+    RefundQueueResponse, ReportRangeQuery, RevenueReport,
 };
 use crate::repo;
 use crate::repo::PrePayOutcome;
@@ -165,6 +165,42 @@ pub async fn admin_list_payments<S: PaymentDeps>(
     let items =
         repo::admin_list_payments(state.db_read(), status, q.customer_id, limit, offset).await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+/// Valid `?status=` filter values for the refund queue (the `refund_status` workflow states).
+const REFUND_STATUSES: &[&str] = &["pending", "processed"];
+
+/// GET /admin/refunds/queue — admin refund queue: payments awaiting refund action / in progress
+/// (`refund_status` set), newest first. Admin only (the edge proves identity, not role). Optional
+/// `status` filter (`pending` = awaiting action, `processed` = done; omitted → both) + limit/offset;
+/// replica read. Returns the page of refunds PLUS the total `count` matching the same filter (the
+/// dashboard "แจ้งเตือน / คิวคืนเงิน" badge — independent of the page window). v2 refunds are
+/// event-driven (a settle sets `refund_status='pending'`); this is the READ surface that surfaces
+/// them — there is intentionally no manual refund-process action here yet.
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
+pub async fn admin_refund_queue<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<RefundQueueQuery>,
+) -> Result<Json<ApiResponse<RefundQueueResponse>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "This action requires the admin role".to_string(),
+        ));
+    }
+    let status = match q.status.as_deref() {
+        None => None,
+        Some(s) if REFUND_STATUSES.contains(&s) => Some(s),
+        Some(_) => return Err(AppError::BadRequest("invalid status filter".to_string())),
+    };
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let refunds = repo::admin_list_refund_queue(state.db_read(), status, limit, offset).await?;
+    let count = repo::admin_count_refund_queue(state.db_read(), status).await?;
+    Ok(Json(ApiResponse::success(RefundQueueResponse {
+        refunds,
+        count,
+    })))
 }
 
 /// Default analytics window when `from`/`to` are omitted, and the hard cap on its length.
@@ -333,6 +369,7 @@ mod tests {
             Router::new()
                 .route("/payments", post(create_payment::<TestDeps>))
                 .route("/admin/payments", get(admin_list_payments::<TestDeps>))
+                .route("/admin/refunds/queue", get(admin_refund_queue::<TestDeps>))
                 .route(
                     "/admin/reports/revenue",
                     get(admin_revenue_report::<TestDeps>),
@@ -480,6 +517,30 @@ mod tests {
                 Request::builder()
                     .method("GET")
                     .uri("/admin/payments")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn admin_refund_queue_rejects_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not read the cross-user refund queue (every customer's owed refunds).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/refunds/queue")
                     .header(
                         "authorization",
                         format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),

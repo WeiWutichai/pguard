@@ -10,11 +10,13 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_payment_api/src/api_util.dart';
 import 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
+import 'package:pguard_payment_api/src/model/admin_refund_queue200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/payment_status.dart';
+import 'package:pguard_payment_api/src/model/refund_status.dart';
 
 class AdminApi {
 
@@ -187,6 +189,98 @@ class AdminApi {
     }
 
     return Response<ListPayments200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Refund queue — refunds awaiting action / in-progress (role&#x3D;admin)
+  /// The admin refund queue — payments whose completion SETTLE left a refund owed (&#x60;refund_status&#x60; is set), newest first. Feeds the dashboard \&quot;แจ้งเตือน / คิวคืนเงิน\&quot; card. Optional &#x60;status&#x60; filter (&#x60;pending&#x60; &#x3D; awaiting action, &#x60;processed&#x60; &#x3D; done; omitted → both) + limit/offset. Returns the page of refund rows PLUS the total &#x60;count&#x60; matching the same filter (the badge count, independent of the page window). Admin only (else 403). READ ONLY: v2 refunds are event-driven (a settle sets &#x60;refund_status&#x3D;&#39;pending&#39;&#x60;) — there is no manual refund-process action here yet. 
+  ///
+  /// Parameters:
+  /// * [status] - Filter by refund-workflow state. An unrecognized value returns 400.
+  /// * [limit] 
+  /// * [offset] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminRefundQueue200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminRefundQueue200Response>> adminRefundQueue({ 
+    RefundStatus? status,
+    int? limit = 50,
+    int? offset = 0,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/refunds/queue';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _queryParameters = <String, dynamic>{
+      if (status != null) r'status': encodeQueryParameter(_serializers, status, const FullType(RefundStatus)),
+      if (limit != null) r'limit': encodeQueryParameter(_serializers, limit, const FullType(int)),
+      if (offset != null) r'offset': encodeQueryParameter(_serializers, offset, const FullType(int)),
+    };
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      queryParameters: _queryParameters,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminRefundQueue200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminRefundQueue200Response),
+      ) as AdminRefundQueue200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminRefundQueue200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

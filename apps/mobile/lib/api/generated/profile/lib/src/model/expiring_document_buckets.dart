@@ -6,73 +6,70 @@
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'admin_review_stats.g.dart';
+part 'expiring_document_buckets.g.dart';
 
-/// Computed on the UNFILTERED dataset.
+/// Disjoint urgency-band counts over ALL recorded expiries (window-independent — the dashboard pills don't change as the list filter narrows). Bands by `days_left`: expired (<0), due_7 (0..=7), due_30 (8..=30), due_90 (31..=90). 
 ///
 /// Properties:
-/// * [total] 
-/// * [visible] 
-/// * [average] 
-/// * [thisMonth] - Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
+/// * [expired] 
+/// * [due7] 
+/// * [due30] 
+/// * [due90] 
 @BuiltValue()
-abstract class AdminReviewStats implements Built<AdminReviewStats, AdminReviewStatsBuilder> {
-  @BuiltValueField(wireName: r'total')
-  int get total;
+abstract class ExpiringDocumentBuckets implements Built<ExpiringDocumentBuckets, ExpiringDocumentBucketsBuilder> {
+  @BuiltValueField(wireName: r'expired')
+  int get expired;
 
-  @BuiltValueField(wireName: r'visible')
-  int get visible;
+  @BuiltValueField(wireName: r'due_7')
+  int get due7;
 
-  @BuiltValueField(wireName: r'average')
-  String? get average;
+  @BuiltValueField(wireName: r'due_30')
+  int get due30;
 
-  /// Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
-  @BuiltValueField(wireName: r'this_month')
-  int get thisMonth;
+  @BuiltValueField(wireName: r'due_90')
+  int get due90;
 
-  AdminReviewStats._();
+  ExpiringDocumentBuckets._();
 
-  factory AdminReviewStats([void updates(AdminReviewStatsBuilder b)]) = _$AdminReviewStats;
+  factory ExpiringDocumentBuckets([void updates(ExpiringDocumentBucketsBuilder b)]) = _$ExpiringDocumentBuckets;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(AdminReviewStatsBuilder b) => b;
+  static void _defaults(ExpiringDocumentBucketsBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<AdminReviewStats> get serializer => _$AdminReviewStatsSerializer();
+  static Serializer<ExpiringDocumentBuckets> get serializer => _$ExpiringDocumentBucketsSerializer();
 }
 
-class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewStats> {
+class _$ExpiringDocumentBucketsSerializer implements PrimitiveSerializer<ExpiringDocumentBuckets> {
   @override
-  final Iterable<Type> types = const [AdminReviewStats, _$AdminReviewStats];
+  final Iterable<Type> types = const [ExpiringDocumentBuckets, _$ExpiringDocumentBuckets];
 
   @override
-  final String wireName = r'AdminReviewStats';
+  final String wireName = r'ExpiringDocumentBuckets';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    AdminReviewStats object, {
+    ExpiringDocumentBuckets object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    yield r'total';
+    yield r'expired';
     yield serializers.serialize(
-      object.total,
+      object.expired,
       specifiedType: const FullType(int),
     );
-    yield r'visible';
+    yield r'due_7';
     yield serializers.serialize(
-      object.visible,
+      object.due7,
       specifiedType: const FullType(int),
     );
-    if (object.average != null) {
-      yield r'average';
-      yield serializers.serialize(
-        object.average,
-        specifiedType: const FullType(String),
-      );
-    }
-    yield r'this_month';
+    yield r'due_30';
     yield serializers.serialize(
-      object.thisMonth,
+      object.due30,
+      specifiedType: const FullType(int),
+    );
+    yield r'due_90';
+    yield serializers.serialize(
+      object.due90,
       specifiedType: const FullType(int),
     );
   }
@@ -80,7 +77,7 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
   @override
   Object serialize(
     Serializers serializers,
-    AdminReviewStats object, {
+    ExpiringDocumentBuckets object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -91,40 +88,40 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required AdminReviewStatsBuilder result,
+    required ExpiringDocumentBucketsBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'total':
+        case r'expired':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
-          result.total = valueDes;
+          result.expired = valueDes;
           break;
-        case r'visible':
+        case r'due_7':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
-          result.visible = valueDes;
+          result.due7 = valueDes;
           break;
-        case r'average':
-          final valueDes = serializers.deserialize(
-            value,
-            specifiedType: const FullType(String),
-          ) as String;
-          result.average = valueDes;
-          break;
-        case r'this_month':
+        case r'due_30':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
-          result.thisMonth = valueDes;
+          result.due30 = valueDes;
+          break;
+        case r'due_90':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.due90 = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -135,12 +132,12 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
   }
 
   @override
-  AdminReviewStats deserialize(
+  ExpiringDocumentBuckets deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = AdminReviewStatsBuilder();
+    final result = ExpiringDocumentBucketsBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

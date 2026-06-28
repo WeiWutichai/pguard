@@ -23,9 +23,9 @@ use crate::domain::state::BookingStatus;
 use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
     CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, InternalBooking,
-    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, ProgressReportResponse,
-    PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
-    ServiceCatalogItem, UpdateServiceRequest,
+    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, OverdueCheckinsQuery,
+    OverdueCheckinsResponse, ProgressReportResponse, PublicServiceItem, ReportRangeQuery,
+    RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -483,6 +483,30 @@ pub async fn admin_customer_bookings_report<S: BookingDeps>(
     require_role(&user, ROLE_ADMIN)?;
     let stats = repo::customer_booking_stats(state.db_read()).await?;
     Ok(Json(ApiResponse::success(stats)))
+}
+
+/// GET /admin/checkins/overdue — active jobs whose next scheduled hourly check-in is OVERDUE
+/// (the dashboard "เช็คอินที่ขาด" / missed-check-ins alert). A job is in progress when
+/// `status = 'arrived'` AND `work_started_at` is stamped; hour `N` opens at
+/// `work_started_at + (N−1)h`. Each row is a job with ≥ 1 owed-but-unfiled past-due hour:
+/// `due_at` is the oldest such gap's open time, `missed_count` how many gaps. `total` is the
+/// count of ALL such jobs (independent of the page) for the alert badge. Admin only (else 403);
+/// list read → replica (pure cross-user aggregation). House limit/offset pagination,
+/// oldest-overdue first.
+#[tracing::instrument(skip(state, query), fields(user = %user.user_id))]
+pub async fn admin_overdue_checkins<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(query): Query<OverdueCheckinsQuery>,
+) -> Result<Json<ApiResponse<OverdueCheckinsResponse>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let (limit, offset) = page(query.limit, query.offset);
+    let items = repo::overdue_checkins(state.db_read(), limit, offset).await?;
+    let total = repo::overdue_checkins_count(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(OverdueCheckinsResponse {
+        items,
+        total,
+    })))
 }
 
 /// POST /admin/bookings/{id}/assign — an admin assigns a guard to an UNASSIGNED `requested`

@@ -100,6 +100,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/checkins/overdue": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Active jobs with an overdue hourly check-in (role=admin)
+         * @description The dashboard "เช็คอินที่ขาด" (missed check-ins) signal. A job is in progress when
+         *     `status = 'arrived'` AND `work_started_at` is stamped (the proration clock); hour `N`
+         *     (1-based, ≤ `hours`) opens at `work_started_at + (N−1)h`. Each returned item is an active
+         *     job with ≥ 1 owed-but-unfiled hour whose open time has already passed: `due_at` is the
+         *     oldest such gap's open time (overdue-since), `missed_count` is how many gaps (late /
+         *     out-of-order filing is tolerated, so this counts every gap). `total` is the count of ALL
+         *     such jobs (independent of the page) for the alert badge. Oldest-overdue first. Admin only
+         *     (else 403). House limit/offset pagination.
+         */
+        get: operations["adminOverdueCheckins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/bookings/{id}/assign": {
         parameters: {
             query?: never;
@@ -877,6 +904,37 @@ export interface components {
              */
             cancelled: number;
         };
+        /** @description An active job whose next scheduled hourly check-in is overdue. */
+        OverdueCheckin: {
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * Format: uuid
+             * @description The assigned guard who owes the check-in.
+             */
+            guard_id: string;
+            /** Format: uuid */
+            customer_id: string;
+            /**
+             * Format: date-time
+             * @description Open time of the oldest owed-but-unfiled hour (overdue-since).
+             */
+            due_at: string;
+            /**
+             * Format: int64
+             * @description Owed hours (open time passed) with no check-in filed yet.
+             */
+            missed_count: number;
+        };
+        /** @description Overdue-check-ins list plus a total count for the dashboard alert badge. */
+        OverdueCheckinsResponse: {
+            items: components["schemas"]["OverdueCheckin"][];
+            /**
+             * Format: int64
+             * @description All active jobs with an overdue check-in (independent of the page).
+             */
+            total: number;
+        };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
             success: boolean;
@@ -1099,6 +1157,35 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["CustomerBookingStat"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminOverdueCheckins: {
+        parameters: {
+            query?: {
+                /** @description Page size (default 50, max 200). */
+                limit?: number;
+                /** @description Row offset (default 0). */
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Overdue check-ins (list + total count) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["OverdueCheckinsResponse"];
                     };
                 };
             };

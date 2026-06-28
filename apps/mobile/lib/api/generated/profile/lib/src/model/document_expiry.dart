@@ -10,13 +10,14 @@ import 'package:built_value/serializer.dart';
 
 part 'document_expiry.g.dart';
 
-/// One guard-document expiry row (the admin \"expiring documents\" surface).
+/// One guard-document expiry row (the admin \"expiring documents\" surface + the owner/admin per-guard list). `days_left = expiry_date - current_date` (computed in SQL): negative = already expired, 0 = due today, positive = days until it lapses. 
 ///
 /// Properties:
 /// * [id] 
 /// * [guardId] 
 /// * [documentType] 
 /// * [expiryDate] 
+/// * [daysLeft] - expiry_date − current_date (days; negative = expired).
 /// * [lastRemindedAt] 
 @BuiltValue()
 abstract class DocumentExpiry implements Built<DocumentExpiry, DocumentExpiryBuilder> {
@@ -32,6 +33,10 @@ abstract class DocumentExpiry implements Built<DocumentExpiry, DocumentExpiryBui
 
   @BuiltValueField(wireName: r'expiry_date')
   Date get expiryDate;
+
+  /// expiry_date − current_date (days; negative = expired).
+  @BuiltValueField(wireName: r'days_left')
+  int get daysLeft;
 
   @BuiltValueField(wireName: r'last_reminded_at')
   DateTime? get lastRemindedAt;
@@ -78,6 +83,11 @@ class _$DocumentExpirySerializer implements PrimitiveSerializer<DocumentExpiry> 
     yield serializers.serialize(
       object.expiryDate,
       specifiedType: const FullType(Date),
+    );
+    yield r'days_left';
+    yield serializers.serialize(
+      object.daysLeft,
+      specifiedType: const FullType(int),
     );
     if (object.lastRemindedAt != null) {
       yield r'last_reminded_at';
@@ -136,6 +146,13 @@ class _$DocumentExpirySerializer implements PrimitiveSerializer<DocumentExpiry> 
             specifiedType: const FullType(Date),
           ) as Date;
           result.expiryDate = valueDes;
+          break;
+        case r'days_left':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.daysLeft = valueDes;
           break;
         case r'last_reminded_at':
           final valueDes = serializers.deserialize(

@@ -287,11 +287,12 @@ export interface paths {
         };
         /**
          * List customer profiles (role=admin)
-         * @description Lists every customer profile, newest first (capped at 200, not paginated). Admin
-         *     only (else 403). Each row carries `approval_status` (pending/approved/rejected) so the
-         *     admin can see who is still awaiting review — customers are now admin-approved exactly
-         *     like guards (no longer auto-approved on first profile insert). Records a PDPA §30
-         *     read-audit row.
+         * @description Lists customer profiles, newest first (capped at 200, not paginated), optionally filtered
+         *     by `approval_status`. Admin only (else 403). Each row carries `approval_status`
+         *     (pending/approved/rejected) so the admin can see who is still awaiting review — customers
+         *     are now admin-approved exactly like guards (no longer auto-approved on first profile
+         *     insert). The ผู้สมัคร page's "ผู้เรียก รปภ." (customer) tab passes
+         *     `?approval_status=pending`. Records a PDPA §30 read-audit row.
          */
         get: operations["adminListCustomerProfiles"];
         put?: never;
@@ -376,13 +377,63 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * List guard documents needing renewal (role=admin)
-         * @description Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first —
-         *     the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else
-         *     403); replica read. Rows are populated by the guard profile submit (`POST /profile/guard`,
-         *     which folds in the registration doc step's expiry dates).
+         * List guard documents needing renewal + urgency buckets (role=admin)
+         * @description Guard documents expiring within the `window` (days; INCLUDING already-expired), soonest
+         *     first — each carrying `days_left` (negative = expired). The response also returns
+         *     window-INDEPENDENT `buckets` (expired / due_7 / due_30 / due_90) for the dashboard pills,
+         *     so the counts don't change as the admin narrows the list. Admin only (else 403); replica
+         *     read. Rows are populated by the guard profile submit (`POST /profile/guard`, which folds
+         *     in the registration doc step's expiry dates) — empty until that capture lands.
          */
         get: operations["adminListExpiringDocuments"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/applicants/pending-count": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Count guards + customers awaiting approval (role=admin)
+         * @description New-applicants count for the dashboard notification card + the ผู้สมัคร page (#132): how
+         *     many guards AND customers are pending admin approval (`approval_status = 'pending'`), plus
+         *     the total. Both roles now share the same admin-review gate (customers are no longer
+         *     auto-approved), so the per-role split drives the page's two tabs and `total` is the badge.
+         *     Admin only (else 403); replica read.
+         */
+        get: operations["adminPendingApplicantsCount"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/applicants/avg-approval-time": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Average guard approval turnaround (role=admin)
+         * @description เวลาอนุมัติเฉลี่ย (#132): the mean of `reviewed_at - created_at` over APPROVED guards, in
+         *     seconds + a pre-rounded hours value, with the `sample_size`. `avg_seconds`/`avg_hours` are
+         *     `null` (and `sample_size` 0) when no guard has been approved yet — an honest empty state,
+         *     not a fake 0h. `reviewed_at` is the dedicated approval-decision timestamp (never clobbered
+         *     by a guard self-edit). Admin only (else 403); replica read.
+         */
+        get: operations["adminAvgApprovalTime"];
         put?: never;
         post?: never;
         delete?: never;
@@ -780,7 +831,11 @@ export interface components {
             /** Format: date-time */
             accessed_at: string;
         };
-        /** @description One guard-document expiry row (the admin "expiring documents" surface). */
+        /**
+         * @description One guard-document expiry row (the admin "expiring documents" surface + the owner/admin
+         *     per-guard list). `days_left = expiry_date - current_date` (computed in SQL): negative =
+         *     already expired, 0 = due today, positive = days until it lapses.
+         */
         DocumentExpiry: {
             /** Format: uuid */
             id: string;
@@ -790,8 +845,69 @@ export interface components {
             document_type: "id_card" | "security_license" | "training_cert" | "criminal_check" | "driver_license";
             /** Format: date */
             expiry_date: string;
+            /**
+             * Format: int32
+             * @description expiry_date − current_date (days; negative = expired).
+             */
+            days_left: number;
             /** Format: date-time */
             last_reminded_at?: string | null;
+        };
+        /**
+         * @description Disjoint urgency-band counts over ALL recorded expiries (window-independent — the
+         *     dashboard pills don't change as the list filter narrows). Bands by `days_left`:
+         *     expired (<0), due_7 (0..=7), due_30 (8..=30), due_90 (31..=90).
+         */
+        ExpiringDocumentBuckets: {
+            /** Format: int64 */
+            expired: number;
+            /** Format: int64 */
+            due_7: number;
+            /** Format: int64 */
+            due_30: number;
+            /** Format: int64 */
+            due_90: number;
+        };
+        /**
+         * @description The admin expiring-documents payload: the `documents` list (filtered to the requested
+         *     `window`, soonest first) plus the window-independent `buckets`.
+         */
+        ExpiringDocumentsResponse: {
+            documents: components["schemas"]["DocumentExpiry"][];
+            buckets: components["schemas"]["ExpiringDocumentBuckets"];
+        };
+        /**
+         * @description Counts of guards + customers awaiting admin approval (the dashboard new-applicants badge +
+         *     the ผู้สมัคร page tabs). `total = guards + customers`.
+         */
+        PendingApplicantsCount: {
+            /** Format: int64 */
+            guards: number;
+            /** Format: int64 */
+            customers: number;
+            /** Format: int64 */
+            total: number;
+        };
+        /**
+         * @description Average guard approval turnaround (mean of `reviewed_at − created_at` over APPROVED
+         *     guards). `avg_seconds`/`avg_hours` are null (and `sample_size` 0) when none approved yet.
+         */
+        AvgApprovalTime: {
+            /**
+             * Format: int64
+             * @description Mean approval duration in seconds (null when no approvals yet).
+             */
+            avg_seconds?: number | null;
+            /**
+             * Format: double
+             * @description Same value in hours, rounded to 1 decimal (null when no approvals yet).
+             */
+            avg_hours?: number | null;
+            /**
+             * Format: int64
+             * @description Number of approved guards the average is over.
+             */
+            sample_size: number;
         };
         /**
          * @description One document's expiry date, folded into the guard-profile submit (the registration doc
@@ -1342,7 +1458,10 @@ export interface operations {
     };
     adminListCustomerProfiles: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Filter by status. An unrecognized value returns 400. */
+                approval_status?: components["schemas"]["ApprovalStatus"];
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -1360,6 +1479,7 @@ export interface operations {
                     };
                 };
             };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };
@@ -1430,6 +1550,34 @@ export interface operations {
     };
     adminListExpiringDocuments: {
         parameters: {
+            query?: {
+                /** @description List filter (days). One of 7, 30, 90 (default 90). Any other value → 400. */
+                window?: 7 | 30 | 90;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Expiring guard documents (filtered to the window, soonest first) + buckets */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["ExpiringDocumentsResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminPendingApplicantsCount: {
+        parameters: {
             query?: never;
             header?: never;
             path?: never;
@@ -1437,14 +1585,38 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Expiring guard documents, soonest first */
+            /** @description Pending-applicant counts (guards, customers, total) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
-                        data?: components["schemas"]["DocumentExpiry"][];
+                        data?: components["schemas"]["PendingApplicantsCount"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminAvgApprovalTime: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Average approval time over approved guards */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["AvgApprovalTime"];
                     };
                 };
             };

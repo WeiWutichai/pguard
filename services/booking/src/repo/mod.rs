@@ -24,8 +24,8 @@ use crate::domain::{
 };
 use crate::models::{
     BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
-    InternalBooking, NewProgressReport, ProgressReportRow, PublicServiceItem, ServiceCatalogItem,
-    UpdateServiceRequest, UtilizationCell,
+    InternalBooking, NewProgressReport, OverdueCheckin, ProgressReportRow, PublicServiceItem,
+    ServiceCatalogItem, UpdateServiceRequest, UtilizationCell,
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
@@ -266,6 +266,79 @@ pub async fn customer_booking_stats(
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+/// Active jobs with an OVERDUE hourly check-in — the admin dashboard "missed check-ins" signal.
+///
+/// A job is in progress when `status = 'arrived'` AND `work_started_at` is stamped (the
+/// proration clock; mirrors [`crate::domain::progress::validate_check_in`]). Hour `N` (1-based,
+/// ≤ `hours`) opens at `work_started_at + (N−1)h`. For each active job we expand its owed hours
+/// `1..=hours` via `generate_series`, anti-join the filed `progress_reports`, and keep the hours
+/// whose open time has already passed (`now()`) but were never filed. `due_at` is the open time
+/// of the OLDEST such gap; `missed_count` counts every gap (late/out-of-order filing is
+/// tolerated). Only jobs with ≥ 1 overdue hour are returned, oldest-overdue first (the most
+/// urgent at the top). `limit`/`offset` paginate (house convention). Replica read.
+///
+/// `generate_series(1, b.hours)` is bounded by the DB CHECK `hours BETWEEN 1 AND 168`, so the
+/// per-job expansion can never blow up. The anti-join uses the `uq_progress_reports_booking_hour`
+/// unique index on `(booking_id, hour_number)`.
+pub async fn overdue_checkins(
+    db: &sqlx::PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<OverdueCheckin>, AppError> {
+    let rows = sqlx::query_as::<_, OverdueCheckin>(
+        r#"
+        SELECT b.id          AS booking_id,
+               b.guard_id    AS guard_id,
+               b.customer_id AS customer_id,
+               b.work_started_at + make_interval(hours => (MIN(h.n)::int - 1)) AS due_at,
+               COUNT(*)      AS missed_count
+        FROM booking.bookings b
+        CROSS JOIN LATERAL generate_series(1, b.hours) AS h(n)
+        LEFT JOIN booking.progress_reports pr
+               ON pr.booking_id = b.id AND pr.hour_number = h.n
+        WHERE b.status = 'arrived'::booking.booking_status
+          AND b.work_started_at IS NOT NULL
+          AND b.guard_id IS NOT NULL
+          AND pr.id IS NULL
+          AND b.work_started_at + make_interval(hours => (h.n::int - 1)) <= now()
+        GROUP BY b.id, b.guard_id, b.customer_id, b.work_started_at
+        ORDER BY due_at ASC
+        LIMIT $1 OFFSET $2
+        "#,
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Count of distinct active jobs that have ≥ 1 overdue check-in (the dashboard alert badge).
+/// Same predicate as [`overdue_checkins`] but counts jobs, not gaps — `EXISTS` short-circuits
+/// on the first owed-but-unfiled past-due hour per job (no per-job expansion of every hour).
+pub async fn overdue_checkins_count(db: &sqlx::PgPool) -> Result<i64, AppError> {
+    let count: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM booking.bookings b
+        WHERE b.status = 'arrived'::booking.booking_status
+          AND b.work_started_at IS NOT NULL
+          AND b.guard_id IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM generate_series(1, b.hours) AS h(n)
+              LEFT JOIN booking.progress_reports pr
+                     ON pr.booking_id = b.id AND pr.hour_number = h.n
+              WHERE pr.id IS NULL
+                AND b.work_started_at + make_interval(hours => (h.n::int - 1)) <= now()
+          )
+        "#,
+    )
+    .fetch_one(db)
+    .await?;
+    Ok(count)
 }
 
 // ----- Service catalog (admin pricing; standalone — not read by the charge path) -----
@@ -2409,6 +2482,75 @@ mod db_tests {
         .await
         .expect("count");
         assert_eq!(count, 1, "failed check-ins must enqueue no events");
+
+        cleanup_booking(&pool, booking_id).await;
+    }
+
+    /// Overdue-check-ins admin signal against Postgres: a started 4-hour job whose
+    /// `work_started_at` is backdated 3h15m has hours 1-4 OPEN (1@-3h15, 2@-2h15, 3@-1h15,
+    /// 4@-0h15). Filing hour 1 leaves 3 gaps → `missed_count = 3`, `due_at` = hour-2's open
+    /// time (the oldest gap, ≈ −2h15). The count query agrees (1 job). A NOT-started job and a
+    /// fully-filed one do not appear. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn overdue_checkins_lists_unfiled_past_due_hours() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, customer_id, guard_id) = started_booking(&pool).await;
+        let correlation = Uuid::new_v4();
+
+        // Backdate the proration clock so hours 1-4 have all opened (4-hour job).
+        sqlx::query(
+            "UPDATE booking.bookings SET work_started_at = now() - interval '3 hours 15 minutes' \
+             WHERE id = $1",
+        )
+        .bind(booking_id)
+        .execute(&pool)
+        .await
+        .expect("backdate work_started_at");
+
+        // File ONLY hour 1 — hours 2,3,4 are now owed-but-unfiled past-due gaps.
+        create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect("hour-1 check-in");
+
+        let items = overdue_checkins(&pool, 50, 0).await.expect("overdue list");
+        let row = items
+            .iter()
+            .find(|r| r.booking_id == booking_id)
+            .expect("our job is overdue");
+        assert_eq!(row.guard_id, guard_id);
+        assert_eq!(row.customer_id, customer_id);
+        assert_eq!(row.missed_count, 3, "hours 2,3,4 are unfiled past-due");
+        // due_at = oldest gap = hour 2 opens at work_started_at + 1h ≈ now − 2h15m.
+        let since = Utc::now() - row.due_at;
+        assert!(
+            since.num_minutes() >= 130 && since.num_minutes() <= 140,
+            "due_at is hour-2's open time (~135m ago), got {}m",
+            since.num_minutes()
+        );
+
+        let count = overdue_checkins_count(&pool).await.expect("overdue count");
+        assert!(count >= 1, "the count query sees our overdue job");
+
+        // Fill the remaining hours → the job drops off both the list and the count delta.
+        for h in [2, 3, 4] {
+            create_progress_report(&pool, booking_id, guard_id, &report(h), correlation)
+                .await
+                .unwrap_or_else(|e| panic!("hour-{h} check-in: {e:?}"));
+        }
+        let after = overdue_checkins(&pool, 50, 0).await.expect("overdue list");
+        assert!(
+            !after.iter().any(|r| r.booking_id == booking_id),
+            "a fully-filed job is no longer overdue"
+        );
 
         cleanup_booking(&pool, booking_id).await;
     }
