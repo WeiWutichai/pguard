@@ -158,7 +158,7 @@ class AuthController extends _$AuthController {
           error: isThai ? 'กรุณาโหลดแคปต์ชาใหม่' : 'Reload the captcha');
       return false;
     }
-    return _guard(() async {
+    final ok = await _guard(() async {
       await ref.read(pguardApiProvider).post('/otp/request', data: {
         // Canonical national `0XXXXXXXXX` — isValidPhone passed, so this is non-null.
         'phone': normalizeThaiPhone(state.phone) ?? state.phone,
@@ -179,6 +179,29 @@ class AuthController extends _$AuthController {
       );
       return true;
     });
+    if (!ok) {
+      // The otp service BURNS the captcha (Redis GETDEL) on EVERY /otp/request — whether the answer
+      // was right, wrong, or a later step (rate-limit/cooldown) failed. So the challenge we just
+      // submitted is now gone; retrying with the SAME challenge_id would fail the captcha even with a
+      // correct answer (this is why "the right answer didn't go through" on a second try). Fetch a
+      // fresh question — keeping the error visible — so the next attempt has a usable challenge.
+      await _refreshChallengeKeepingError();
+    }
+    return ok;
+  }
+
+  /// Fetch a fresh captcha WITHOUT clearing the current error — used after a failed [sendOtp] so the
+  /// user still sees WHY it failed but gets a new, un-burned question to retry with. Best-effort: on
+  /// failure (e.g. offline) the old error stays and the user can tap "Reload question".
+  Future<void> _refreshChallengeKeepingError() async {
+    try {
+      final data = await ref.read(pguardApiProvider).get('/otp/challenge');
+      state = state.copyWith(
+        challenge: OtpChallenge.fromJson(data as Map<String, dynamic>),
+      );
+    } catch (_) {
+      // Leave the existing error in place.
+    }
   }
 
   /// `POST /otp/verify` — confirm the SMS code, then advance to the PIN step. Capture the

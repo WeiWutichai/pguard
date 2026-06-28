@@ -18,6 +18,10 @@ pub struct Limits {
     /// its own per-IP budget and can't be starved by challenge/request churn (carrier-NAT). More
     /// generous than send because verify is cheap and the otp service caps attempts per code.
     pub otp_verify_per_min: u32,
+    /// OTP CHALLENGE: max `GET /otp/challenge` per 60s window. Generous — minting a captcha is cheap
+    /// (no SMS) and reloaded routinely, so it has its OWN per-IP budget and never burns the SMS-send
+    /// window of [`Self::otp_per_min`]. See [`crate::domain::routing::Tier::OtpChallenge`].
+    pub otp_challenge_per_min: u32,
     /// Auth: max requests per 1s window (v1 `auth_limit 5r/s`).
     pub auth_per_sec: u32,
     /// Api: max requests per 1s window (v1 `api_limit 30r/s`).
@@ -29,6 +33,7 @@ impl Default for Limits {
         Self {
             otp_per_min: 10,
             otp_verify_per_min: 30,
+            otp_challenge_per_min: 30,
             auth_per_sec: 5,
             api_per_sec: 30,
         }
@@ -54,6 +59,10 @@ impl Limits {
             Tier::OtpVerify => Window {
                 seconds: 60,
                 max: self.otp_verify_per_min,
+            },
+            Tier::OtpChallenge => Window {
+                seconds: 60,
+                max: self.otp_challenge_per_min,
             },
             Tier::Auth => Window {
                 seconds: 1,
@@ -143,6 +152,7 @@ mod tests {
         let l = Limits::default();
         assert_eq!(l.otp_per_min, 10);
         assert_eq!(l.otp_verify_per_min, 30);
+        assert_eq!(l.otp_challenge_per_min, 30);
         assert_eq!(l.auth_per_sec, 5);
         assert_eq!(l.api_per_sec, 30);
     }
@@ -164,6 +174,13 @@ mod tests {
                 max: 30
             }
         );
+        assert_eq!(
+            l.window_for(Tier::OtpChallenge),
+            Window {
+                seconds: 60,
+                max: 30
+            }
+        );
         assert_eq!(l.window_for(Tier::Auth), Window { seconds: 1, max: 5 });
         assert_eq!(
             l.window_for(Tier::Api),
@@ -179,10 +196,12 @@ mod tests {
         let l = Limits {
             otp_per_min: 3,
             otp_verify_per_min: 7,
+            otp_challenge_per_min: 5,
             auth_per_sec: 2,
             api_per_sec: 100,
         };
         assert_eq!(l.window_for(Tier::Otp).max, 3);
+        assert_eq!(l.window_for(Tier::OtpChallenge).max, 5);
         assert_eq!(l.window_for(Tier::OtpVerify).max, 7);
         assert_eq!(l.window_for(Tier::Auth).max, 2);
         assert_eq!(l.window_for(Tier::Api).max, 100);

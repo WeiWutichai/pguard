@@ -77,6 +77,44 @@ void main() {
         reason: 'PIN persisted locally for offline unlock');
   });
 
+  test(
+      'a failed /otp/request reloads a FRESH challenge (the old one is burned) and keeps the error',
+      () async {
+    // The otp service GETDELs the captcha on EVERY /otp/request, so a retry with the same
+    // challenge_id would fail the captcha even with a correct answer. After a failure the controller
+    // must fetch a new question while leaving the error message visible.
+    final store = InMemoryStore();
+    var challengeHits = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        challengeHits++;
+        return {
+          'challenge_id': 'ch$challengeHits',
+          'question': '1 + 1 = ?',
+          'expires_in': 180,
+        };
+      },
+      onPost: (path, _) async {
+        expect(path, '/otp/request');
+        throw const ApiException(message: 'Rate limit exceeded', statusCode: 429);
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+    expect(c.read(authControllerProvider).challenge?.challengeId, 'ch1');
+
+    expect(await ctrl.sendOtp('2'), isFalse);
+    final st = c.read(authControllerProvider);
+    expect(st.error, 'Rate limit exceeded', reason: 'the failure reason stays visible');
+    expect(st.challenge?.challengeId, 'ch2',
+        reason: 'the burned ch1 is replaced by a fresh, usable challenge for the retry');
+    expect(st.step, isNot(AuthStep.otp));
+  });
+
   test('invalid Thai phone is rejected before any network call', () async {
     final store = InMemoryStore();
     final api = FakeApi(

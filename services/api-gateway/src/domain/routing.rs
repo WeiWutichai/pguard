@@ -24,6 +24,13 @@ pub enum Tier {
     /// cheap (no SMS) and the otp service already caps verify attempts per code, so this tier is
     /// generous. See `domain::ratelimit::Limits::otp_verify_per_min`.
     OtpVerify,
+    /// OTP CHALLENGE (`GET /otp/challenge`) — minting a math captcha is CHEAP (no SMS), and a
+    /// legitimate user reloads it routinely (typo, expiry, app reopen, and an auto-reload after a
+    /// failed request burns the single-use challenge). Split from [`Tier::Otp`] so challenge-load
+    /// churn never eats the SMS-send budget — sharing the 10/min `/otp/request` window locked users
+    /// out of even FETCHING a question. Generous per-IP; the captcha keys self-expire (EX 180). See
+    /// `domain::ratelimit::Limits::otp_challenge_per_min`.
+    OtpChallenge,
     /// General API (v1 `api_limit`, ~30r/s).
     Api,
 }
@@ -351,6 +358,15 @@ const RULES: &[Rule] = &[
         suffix: None,
         upstream: Upstream::Otp,
         tier: Tier::OtpVerify,
+    },
+    Rule {
+        // More specific than `/otp/` (longest-prefix wins) so FETCHING a captcha question gets its
+        // OWN generous bucket — it's cheap (no SMS) and reloaded often, so it must NOT share the
+        // 10/min SMS-send window with `/otp/request` (that locked users out of loading a question).
+        prefix: "/otp/challenge",
+        suffix: None,
+        upstream: Upstream::Otp,
+        tier: Tier::OtpChallenge,
     },
     Rule {
         prefix: "/otp/",
@@ -827,20 +843,30 @@ mod tests {
     }
 
     #[test]
-    fn otp_routes_to_otp_otp_tier() {
-        // challenge + request share the SMS-cost Otp tier...
-        for p in ["/v1/otp/request", "/v1/otp/challenge"] {
-            let (up, fwd, public, tier) = proxy(resolve(p));
-            assert_eq!(up, Upstream::Otp, "{p}");
-            assert_eq!(fwd, p.strip_prefix("/v1").unwrap(), "{p}");
-            assert!(public, "{p}");
-            assert_eq!(tier, Tier::Otp, "{p}");
-        }
+    fn otp_request_uses_the_sms_send_tier() {
+        // The SMS-SENDING path keeps the tight SMS-cost Otp tier...
+        let (up, fwd, public, tier) = proxy(resolve("/v1/otp/request"));
+        assert_eq!(up, Upstream::Otp);
+        assert_eq!(fwd, "/otp/request");
+        assert!(public);
+        assert_eq!(tier, Tier::Otp);
+    }
+
+    #[test]
+    fn otp_challenge_gets_its_own_generous_tier() {
+        // ...but FETCHING a captcha question is split onto its own tier (longest-prefix wins over
+        // `/otp/`) so reloading a question can't burn the SMS-send budget (the bug that locked
+        // users out of even loading a captcha).
+        let (up, fwd, public, tier) = proxy(resolve("/v1/otp/challenge"));
+        assert_eq!(up, Upstream::Otp);
+        assert_eq!(fwd, "/otp/challenge");
+        assert!(public);
+        assert_eq!(tier, Tier::OtpChallenge);
     }
 
     #[test]
     fn otp_verify_gets_its_own_tier() {
-        // ...but verify is split onto its own tier (longest-prefix wins over `/otp/`) so
+        // ...and verify is split onto its own tier (longest-prefix wins over `/otp/`) so
         // request/challenge churn on a shared per-IP bucket can't starve a real verification.
         let (up, fwd, public, tier) = proxy(resolve("/v1/otp/verify"));
         assert_eq!(up, Upstream::Otp);

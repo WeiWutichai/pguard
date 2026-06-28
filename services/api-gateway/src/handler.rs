@@ -321,6 +321,7 @@ mod tests {
             limits: crate::domain::ratelimit::Limits {
                 otp_per_min: 10_000,
                 otp_verify_per_min: 10_000,
+                otp_challenge_per_min: 10_000,
                 auth_per_sec: 10_000,
                 api_per_sec: 10_000,
             },

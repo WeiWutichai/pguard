@@ -82,8 +82,11 @@ fn tier_tag(tier: Tier) -> &'static str {
         Tier::Auth => "auth",
         Tier::Otp => "otp",
         // Distinct tag → distinct Redis key, so verify counts in its own window (never shares
-        // the `otp` send/challenge bucket).
+        // the `otp` send bucket).
         Tier::OtpVerify => "otpv",
+        // Distinct tag → its own window, so reloading a captcha question never burns the `otp`
+        // SMS-send bucket (the bug that locked users out of fetching a question).
+        Tier::OtpChallenge => "otpc",
         Tier::Api => "api",
     }
 }
@@ -157,6 +160,7 @@ mod tests {
         let limits = Limits {
             otp_per_min: 2,
             otp_verify_per_min: 2,
+            otp_challenge_per_min: 2,
             auth_per_sec: 5,
             api_per_sec: 30,
         };
