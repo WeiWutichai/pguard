@@ -48,6 +48,7 @@ export function BookingDetailModal({
   booking,
   customerName,
   customerPhone,
+  guardName,
   approvedGuards,
   onClose,
   onAssigned,
@@ -56,6 +57,8 @@ export function BookingDetailModal({
   customerName: string | null;
   /** Optional — the bookings page enriches it from the customer directory; other callers omit it. */
   customerPhone?: string | null;
+  /** Optional — the bookings page resolves the assigned guard's name; other callers omit it. */
+  guardName?: string | null;
   approvedGuards: GuardProfile[];
   onClose: () => void;
   onAssigned: () => void;
@@ -152,9 +155,18 @@ export function BookingDetailModal({
           {c.assignedGuard}
         </div>
         {booking.guard_id ? (
-          <div className="mt-1.5 font-mono text-sm text-text-strong">
-            #{booking.guard_id.slice(0, 8)}
-          </div>
+          guardName ? (
+            <div className="mt-1.5 text-sm font-semibold text-text-strong" title={booking.guard_id}>
+              {guardName}
+            </div>
+          ) : (
+            <div
+              className="mt-1.5 font-mono text-sm text-text-strong"
+              title={booking.guard_id}
+            >
+              #{booking.guard_id.slice(0, 8)}
+            </div>
+          )
         ) : assignable ? (
           <div className="mt-2">
             <p className="mb-2 text-[12.5px] text-muted">{c.noGuardYet}</p>

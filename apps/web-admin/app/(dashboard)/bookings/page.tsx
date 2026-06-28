@@ -20,6 +20,7 @@ import {
 } from "@/components/ui";
 import { bookingApi, profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 import { fmtCappedCount } from "@/lib/format";
 
 import { BookingDetailModal } from "./booking-detail-modal";
@@ -103,17 +104,31 @@ export default function BookingsPage() {
     setReloadNonce((n) => n + 1);
   }
 
+  // Batch-resolve every customer + guard id on the page to real display names in one call (the
+  // resolver answers both roles). Customer/guard columns prefer this over the raw UUID slice; the
+  // customer-directory enrichment above still backs the modal phone + a name source for search.
+  const resolveIds = useMemo(() => {
+    const out: string[] = [];
+    for (const b of bookings) {
+      out.push(b.customer_id);
+      if (b.guard_id) out.push(b.guard_id);
+    }
+    return out;
+  }, [bookings]);
+  const { resolve } = useNameResolver(resolveIds, lang);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return bookings.filter((b) => {
       if (statusFilter !== "all" && b.status !== statusFilter) return false;
       if (!q) return true;
-      const name = customerNames[b.customer_id] ?? "";
-      return [b.id, b.customer_id, name, b.address]
+      const name = resolve(b.customer_id).name ?? customerNames[b.customer_id] ?? "";
+      const guardName = b.guard_id ? (resolve(b.guard_id).name ?? "") : "";
+      return [b.id, b.customer_id, b.guard_id ?? "", name, guardName, b.address]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q));
     });
-  }, [bookings, statusFilter, query, customerNames]);
+  }, [bookings, statusFilter, query, customerNames, resolve]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -225,10 +240,25 @@ export default function BookingsPage() {
                       <Td className="font-mono font-semibold text-text-strong">
                         #{b.id.slice(0, 8)}
                       </Td>
-                      <Td>{customerNames[b.customer_id] ?? `ID #${b.customer_id.slice(0, 8)}`}</Td>
+                      <Td>
+                        {(() => {
+                          const r = resolve(b.customer_id);
+                          const label = r.name ?? customerNames[b.customer_id] ?? r.label;
+                          return <span title={b.customer_id}>{label}</span>;
+                        })()}
+                      </Td>
                       <Td>
                         {b.guard_id ? (
-                          <span className="font-mono text-muted">#{b.guard_id.slice(0, 8)}</span>
+                          (() => {
+                            const r = resolve(b.guard_id);
+                            return r.name ? (
+                              <span title={b.guard_id}>{r.name}</span>
+                            ) : (
+                              <span className="font-mono text-muted" title={b.guard_id}>
+                                {r.label}
+                              </span>
+                            );
+                          })()
                         ) : canAssign ? (
                           <Button
                             variant="secondary"
@@ -271,8 +301,11 @@ export default function BookingsPage() {
       {selected && (
         <BookingDetailModal
           booking={selected}
-          customerName={customerNames[selected.customer_id] ?? null}
+          customerName={
+            resolve(selected.customer_id).name ?? customerNames[selected.customer_id] ?? null
+          }
           customerPhone={customerPhones[selected.customer_id] ?? null}
+          guardName={selected.guard_id ? resolve(selected.guard_id).name : null}
           approvedGuards={approvedGuards}
           onClose={() => setSelected(null)}
           onAssigned={() => {

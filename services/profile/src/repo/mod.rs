@@ -24,7 +24,7 @@ use shared_events::{topics, EventEnvelope};
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
     GuardProfileResponse, InternalGuardRow, PublicCustomerProfile, PublicGuardProfile,
-    RecruitCandidate, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    RecruitCandidate, ResolvedNameRow, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -426,6 +426,33 @@ pub async fn get_public_customer_profile(
     .fetch_optional(db)
     .await?;
     Ok(row)
+}
+
+/// Resolve a batch of `user_id`s to `{ user_id, full_name, role }` for the admin name-resolver
+/// (`POST /admin/users/resolve`). UNIONs the two profile tables profile OWNS — a hit in
+/// `guard_profiles` is role `guard`, a hit in `customer_profiles` is role `customer` (a user is
+/// exactly one, so no id collides across the two). Ids with NO row (admins — who have no profile
+/// row / stored name — and genuinely-unknown/deleted ids) simply DON'T come back: the handler
+/// omits them, which is null-safe (the client falls back to id/role-label). Lean projection —
+/// only the name + the derived role, NEVER bank/address/phone PII (least-privilege). `role` is
+/// a SQL literal, not user input; the ids are a single bound array (`= ANY($1)`), never
+/// interpolated. NO approval filter (UNLIKE the customer-facing `get_public_guard_profile`): an
+/// admin must see the name of a guard on a job even before the guard is approved.
+pub async fn resolve_names(db: &PgPool, ids: &[Uuid]) -> Result<Vec<ResolvedNameRow>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows = sqlx::query_as::<_, ResolvedNameRow>(
+        "SELECT user_id, full_name, 'guard' AS role \
+           FROM profile.guard_profiles WHERE user_id = ANY($1) \
+         UNION ALL \
+         SELECT user_id, full_name, 'customer' AS role \
+           FROM profile.customer_profiles WHERE user_id = ANY($1)",
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 // ----- Guard document image keys (S3 object paths) -----
@@ -1641,6 +1668,89 @@ mod db_tests {
 
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// An empty id set short-circuits BEFORE any query — so it's safe even with an unusable pool
+    /// (the lazy pool to a closed port is never connected). Hermetic (no DATABASE_URL needed).
+    #[tokio::test]
+    async fn resolve_names_empty_ids_short_circuits() {
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let out = resolve_names(&pool, &[]).await.expect("empty resolve");
+        assert!(out.is_empty(), "no ids → no rows, no query");
+    }
+
+    /// Real-Postgres roundtrip: seed one guard + one customer, resolve a batch that also contains
+    /// an UNKNOWN id, and assert the derived role + name come back and the unknown id is OMITTED
+    /// (null-safe). Proves the UNION-across-both-profile-tables query + role-derivation.
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-profile -- resolve_names_roundtrip --nocapture
+    #[tokio::test]
+    async fn resolve_names_roundtrip() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let guard_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let unknown_id = Uuid::new_v4();
+
+        upsert_guard_profile(
+            &pool,
+            guard_id,
+            &UpsertGuardProfileRequest {
+                full_name: Some("Somchai Guard".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed guard");
+        upsert_customer_profile(
+            &pool,
+            customer_id,
+            &UpsertCustomerProfileRequest {
+                full_name: Some("Malee Customer".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed customer");
+
+        let rows = resolve_names(&pool, &[guard_id, customer_id, unknown_id])
+            .await
+            .expect("resolve");
+
+        // The unknown id is omitted; exactly the two seeded ids come back.
+        assert_eq!(rows.len(), 2, "unknown id is omitted (null-safe)");
+        let g = rows
+            .iter()
+            .find(|r| r.user_id == guard_id)
+            .expect("guard row");
+        assert_eq!(g.role, "guard");
+        assert_eq!(g.full_name.as_deref(), Some("Somchai Guard"));
+        let c = rows
+            .iter()
+            .find(|r| r.user_id == customer_id)
+            .expect("customer row");
+        assert_eq!(c.role, "customer");
+        assert_eq!(c.full_name.as_deref(), Some("Malee Customer"));
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(customer_id)
             .execute(&pool)
             .await;
     }

@@ -172,6 +172,13 @@ async fn main() -> anyhow::Result<()> {
             "/admin/access-audit",
             get(api::admin_list_access_audit::<AppState>),
         )
+        // Admin batch name-resolver: id[] → { id: { role, display_name } } for the admin lists
+        // (jobs/reviews/calls/activity log) that otherwise render raw UUIDs. Admin-gated in the
+        // handler; profile owns the only stored display names (guard/customer full_name).
+        .route(
+            "/admin/users/resolve",
+            post(api::admin_resolve_names::<AppState>),
+        )
         .route(
             "/admin/documents/expiring",
             get(api::admin_list_expiring_documents::<AppState>),

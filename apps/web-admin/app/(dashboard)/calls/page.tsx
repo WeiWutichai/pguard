@@ -19,8 +19,9 @@ import {
   Th,
   Tr,
 } from "@/components/ui";
-import { callingApi, profileApi } from "@/lib/api";
+import { callingApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 
 import { CALL_STATUSES, CALL_TONE, type CallStatusKey, COPY, fmtDuration } from "./copy";
 
@@ -33,7 +34,6 @@ export default function CallsPage() {
   const c = COPY[lang];
 
   const [calls, setCalls] = useState<Call[]>([]);
-  const [names, setNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [hasError, setHasError] = useState(false);
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -42,19 +42,12 @@ export default function CallsPage() {
   const [page, setPage] = useState(1);
 
   const fetchInto = useCallback((alive: () => boolean) => {
-    return Promise.all([
-      callingApi.GET("/admin/calls", { params: { query: {} } }),
-      profileApi.GET("/admin/customer-profiles"),
-    ])
-      .then(([callRes, cRes]) => {
+    return callingApi
+      .GET("/admin/calls", { params: { query: {} } })
+      .then((callRes) => {
         if (!alive()) return;
         setHasError(Boolean(callRes.error));
         setCalls(callRes.error ? [] : (callRes.data?.data ?? []));
-        const m: Record<string, string> = {};
-        for (const cust of cRes.data?.data ?? []) {
-          if (cust.full_name) m[cust.user_id] = cust.full_name;
-        }
-        setNames(m);
         setLoading(false);
       })
       .catch(() => {
@@ -94,18 +87,26 @@ export default function CallsPage() {
     return { total: calls.length, ended, missed, avg: durN ? Math.round(durSum / durN) : 0 };
   }, [calls]);
 
-  const who = (id: string) => names[id] ?? `#${id.slice(0, 8)}`;
+  // Batch-resolve both sides of every call (caller + callee — a mix of guards + customers) to real
+  // display names in one call; the short id remains the fallback/tooltip.
+  const resolveIds = useMemo(() => {
+    const out: string[] = [];
+    for (const call of calls) {
+      out.push(call.caller_id, call.callee_id);
+    }
+    return out;
+  }, [calls]);
+  const { resolve } = useNameResolver(resolveIds, lang);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return calls.filter((call) => {
       if (statusFilter !== "all" && call.status !== statusFilter) return false;
       if (!q) return true;
-      return [call.id, who(call.caller_id), who(call.callee_id)]
+      return [call.id, resolve(call.caller_id).label, resolve(call.callee_id).label]
         .some((v) => v.toLowerCase().includes(q));
     });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [calls, statusFilter, query, names]);
+  }, [calls, statusFilter, query, resolve]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -214,8 +215,8 @@ export default function CallsPage() {
                       <Td className="font-mono font-semibold text-text-strong">
                         #{call.id.slice(0, 8)}
                       </Td>
-                      <Td>{who(call.caller_id)}</Td>
-                      <Td>{who(call.callee_id)}</Td>
+                      <Td title={call.caller_id}>{resolve(call.caller_id).label}</Td>
+                      <Td title={call.callee_id}>{resolve(call.callee_id).label}</Td>
                       <Td>
                         <Badge tone="gray">
                           {call.call_type === "video" ? c.typeVideo : c.typeAudio}

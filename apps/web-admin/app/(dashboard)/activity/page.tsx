@@ -18,6 +18,7 @@ import {
 } from "@/components/ui";
 import { profileApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 
 import { actionText, COPY } from "./copy";
 
@@ -61,15 +62,21 @@ export default function ActivityPage() {
     setReloadNonce((n) => n + 1);
   }
 
+  // Resolve the acting admin id → display name. Admins have no stored name yet (the flagged
+  // identity.display_name follow-up), so the resolver OMITS them and we fall back to "Admin #id";
+  // once a guard/customer ever appears here it resolves to their real name.
+  const resolveIds = useMemo(() => rows.map((r) => r.accessed_by), [rows]);
+  const { resolve } = useNameResolver(resolveIds, lang, "admin");
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) =>
-      [r.action, r.target ?? "", r.accessed_by, actionText(r.action, c)].some((v) =>
-        v.toLowerCase().includes(q),
+      [r.action, r.target ?? "", r.accessed_by, resolve(r.accessed_by).label, actionText(r.action, c)].some(
+        (v) => v.toLowerCase().includes(q),
       ),
     );
-  }, [rows, query, c]);
+  }, [rows, query, c, resolve]);
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, pageCount);
@@ -148,7 +155,9 @@ export default function ActivityPage() {
                         minute: "2-digit",
                       })}
                     </Td>
-                    <Td className="font-mono text-muted">#{r.accessed_by.slice(0, 8)}</Td>
+                    <Td className="text-muted" title={r.accessed_by}>
+                      {resolve(r.accessed_by).label}
+                    </Td>
                     <Td className="font-medium text-text-strong">{actionText(r.action, c)}</Td>
                     <Td className="text-muted">{r.target ?? t("common.none")}</Td>
                   </Tr>
