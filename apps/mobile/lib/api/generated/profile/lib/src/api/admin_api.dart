@@ -9,11 +9,13 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
+import 'package:pguard_profile_api/src/model/admin_avg_approval_time200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_pending_applicants_count200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
@@ -185,6 +187,85 @@ class AdminApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Average guard approval turnaround (role&#x3D;admin)
+  /// เวลาอนุมัติเฉลี่ย (#132): the mean of &#x60;reviewed_at - created_at&#x60; over APPROVED guards, in seconds + a pre-rounded hours value, with the &#x60;sample_size&#x60;. &#x60;avg_seconds&#x60;/&#x60;avg_hours&#x60; are &#x60;null&#x60; (and &#x60;sample_size&#x60; 0) when no guard has been approved yet — an honest empty state, not a fake 0h. &#x60;reviewed_at&#x60; is the dedicated approval-decision timestamp (never clobbered by a guard self-edit). Admin only (else 403); replica read. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminAvgApprovalTime200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminAvgApprovalTime200Response>> adminAvgApprovalTime({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/applicants/avg-approval-time';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminAvgApprovalTime200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminAvgApprovalTime200Response),
+      ) as AdminAvgApprovalTime200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminAvgApprovalTime200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -368,9 +449,10 @@ class AdminApi {
   }
 
   /// List customer profiles (role&#x3D;admin)
-  /// Lists every customer profile, newest first (capped at 200, not paginated). Admin only (else 403). Each row carries &#x60;approval_status&#x60; (pending/approved/rejected) so the admin can see who is still awaiting review — customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert). Records a PDPA §30 read-audit row. 
+  /// Lists customer profiles, newest first (capped at 200, not paginated), optionally filtered by &#x60;approval_status&#x60;. Admin only (else 403). Each row carries &#x60;approval_status&#x60; (pending/approved/rejected) so the admin can see who is still awaiting review — customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert). The ผู้สมัคร page&#39;s \&quot;ผู้เรียก รปภ.\&quot; (customer) tab passes &#x60;?approval_status&#x3D;pending&#x60;. Records a PDPA §30 read-audit row. 
   ///
   /// Parameters:
+  /// * [approvalStatus] - Filter by status. An unrecognized value returns 400.
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -381,6 +463,7 @@ class AdminApi {
   /// Returns a [Future] containing a [Response] with a [AdminListCustomerProfiles200Response] as data
   /// Throws [DioException] if API call or serialization fails
   Future<Response<AdminListCustomerProfiles200Response>> adminListCustomerProfiles({ 
+    ApprovalStatus? approvalStatus,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -407,9 +490,14 @@ class AdminApi {
       validateStatus: validateStatus,
     );
 
+    final _queryParameters = <String, dynamic>{
+      if (approvalStatus != null) r'approval_status': encodeQueryParameter(_serializers, approvalStatus, const FullType(ApprovalStatus)),
+    };
+
     final _response = await _dio.request<Object>(
       _path,
       options: _options,
+      queryParameters: _queryParameters,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
       onReceiveProgress: onReceiveProgress,
@@ -446,10 +534,11 @@ class AdminApi {
     );
   }
 
-  /// List guard documents needing renewal (role&#x3D;admin)
-  /// Guard documents expiring within ~90 days (INCLUDING already-expired), soonest first — the admin buckets them into expired / 7 / 30 / 90 days client-side. Admin only (else 403); replica read. Rows are populated by the guard profile submit (&#x60;POST /profile/guard&#x60;, which folds in the registration doc step&#39;s expiry dates). 
+  /// List guard documents needing renewal + urgency buckets (role&#x3D;admin)
+  /// Guard documents expiring within the &#x60;window&#x60; (days; INCLUDING already-expired), soonest first — each carrying &#x60;days_left&#x60; (negative &#x3D; expired). The response also returns window-INDEPENDENT &#x60;buckets&#x60; (expired / due_7 / due_30 / due_90) for the dashboard pills, so the counts don&#39;t change as the admin narrows the list. Admin only (else 403); replica read. Rows are populated by the guard profile submit (&#x60;POST /profile/guard&#x60;, which folds in the registration doc step&#39;s expiry dates) — empty until that capture lands. 
   ///
   /// Parameters:
+  /// * [window] - List filter (days). One of 7, 30, 90 (default 90). Any other value → 400.
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -460,6 +549,7 @@ class AdminApi {
   /// Returns a [Future] containing a [Response] with a [AdminListExpiringDocuments200Response] as data
   /// Throws [DioException] if API call or serialization fails
   Future<Response<AdminListExpiringDocuments200Response>> adminListExpiringDocuments({ 
+    int? window = 90,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -486,9 +576,14 @@ class AdminApi {
       validateStatus: validateStatus,
     );
 
+    final _queryParameters = <String, dynamic>{
+      if (window != null) r'window': encodeQueryParameter(_serializers, window, const FullType(int)),
+    };
+
     final _response = await _dio.request<Object>(
       _path,
       options: _options,
+      queryParameters: _queryParameters,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
       onReceiveProgress: onReceiveProgress,
@@ -600,6 +695,85 @@ class AdminApi {
     }
 
     return Response<AdminListGuardProfiles200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Count guards + customers awaiting approval (role&#x3D;admin)
+  /// New-applicants count for the dashboard notification card + the ผู้สมัคร page (#132): how many guards AND customers are pending admin approval (&#x60;approval_status &#x3D; &#39;pending&#39;&#x60;), plus the total. Both roles now share the same admin-review gate (customers are no longer auto-approved), so the per-role split drives the page&#39;s two tabs and &#x60;total&#x60; is the badge. Admin only (else 403); replica read. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminPendingApplicantsCount200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminPendingApplicantsCount200Response>> adminPendingApplicantsCount({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/applicants/pending-count';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminPendingApplicantsCount200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminPendingApplicantsCount200Response),
+      ) as AdminPendingApplicantsCount200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminPendingApplicantsCount200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

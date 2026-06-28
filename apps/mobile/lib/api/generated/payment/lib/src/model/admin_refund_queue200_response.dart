@@ -3,52 +3,52 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
-import 'package:pguard_profile_api/src/model/expiring_documents_response.dart';
+import 'package:pguard_payment_api/src/model/refund_queue_response.dart';
+import 'package:pguard_payment_api/src/model/api_response_envelope.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'admin_list_expiring_documents200_response.g.dart';
+part 'admin_refund_queue200_response.g.dart';
 
-/// AdminListExpiringDocuments200Response
+/// AdminRefundQueue200Response
 ///
 /// Properties:
 /// * [success] 
 /// * [error] 
 /// * [data] 
 @BuiltValue()
-abstract class AdminListExpiringDocuments200Response implements ApiResponseEnvelope, Built<AdminListExpiringDocuments200Response, AdminListExpiringDocuments200ResponseBuilder> {
+abstract class AdminRefundQueue200Response implements ApiResponseEnvelope, Built<AdminRefundQueue200Response, AdminRefundQueue200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  ExpiringDocumentsResponse? get data;
+  RefundQueueResponse? get data;
 
-  AdminListExpiringDocuments200Response._();
+  AdminRefundQueue200Response._();
 
-  factory AdminListExpiringDocuments200Response([void updates(AdminListExpiringDocuments200ResponseBuilder b)]) = _$AdminListExpiringDocuments200Response;
+  factory AdminRefundQueue200Response([void updates(AdminRefundQueue200ResponseBuilder b)]) = _$AdminRefundQueue200Response;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(AdminListExpiringDocuments200ResponseBuilder b) => b;
+  static void _defaults(AdminRefundQueue200ResponseBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<AdminListExpiringDocuments200Response> get serializer => _$AdminListExpiringDocuments200ResponseSerializer();
+  static Serializer<AdminRefundQueue200Response> get serializer => _$AdminRefundQueue200ResponseSerializer();
 }
 
-class _$AdminListExpiringDocuments200ResponseSerializer implements PrimitiveSerializer<AdminListExpiringDocuments200Response> {
+class _$AdminRefundQueue200ResponseSerializer implements PrimitiveSerializer<AdminRefundQueue200Response> {
   @override
-  final Iterable<Type> types = const [AdminListExpiringDocuments200Response, _$AdminListExpiringDocuments200Response];
+  final Iterable<Type> types = const [AdminRefundQueue200Response, _$AdminRefundQueue200Response];
 
   @override
-  final String wireName = r'AdminListExpiringDocuments200Response';
+  final String wireName = r'AdminRefundQueue200Response';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    AdminListExpiringDocuments200Response object, {
+    AdminRefundQueue200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     if (object.data != null) {
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType(ExpiringDocumentsResponse),
+        specifiedType: const FullType(RefundQueueResponse),
       );
     }
     if (object.error != null) {
@@ -68,7 +68,7 @@ class _$AdminListExpiringDocuments200ResponseSerializer implements PrimitiveSeri
   @override
   Object serialize(
     Serializers serializers,
-    AdminListExpiringDocuments200Response object, {
+    AdminRefundQueue200Response object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -79,7 +79,7 @@ class _$AdminListExpiringDocuments200ResponseSerializer implements PrimitiveSeri
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required AdminListExpiringDocuments200ResponseBuilder result,
+    required AdminRefundQueue200ResponseBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -89,8 +89,8 @@ class _$AdminListExpiringDocuments200ResponseSerializer implements PrimitiveSeri
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(ExpiringDocumentsResponse),
-          ) as ExpiringDocumentsResponse;
+            specifiedType: const FullType(RefundQueueResponse),
+          ) as RefundQueueResponse;
           result.data.replace(valueDes);
           break;
         case r'error':
@@ -116,12 +116,12 @@ class _$AdminListExpiringDocuments200ResponseSerializer implements PrimitiveSeri
   }
 
   @override
-  AdminListExpiringDocuments200Response deserialize(
+  AdminRefundQueue200Response deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = AdminListExpiringDocuments200ResponseBuilder();
+    final result = AdminRefundQueue200ResponseBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

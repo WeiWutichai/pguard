@@ -15,21 +15,26 @@ import 'package:pguard_profile_api/src/date_serializer.dart';
 import 'package:pguard_profile_api/src/model/date.dart';
 
 import 'package:pguard_profile_api/src/model/access_audit_entry.dart';
+import 'package:pguard_profile_api/src/model/admin_avg_approval_time200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_pending_applicants_count200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
+import 'package:pguard_profile_api/src/model/avg_approval_time.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/document_expiry.dart';
 import 'package:pguard_profile_api/src/model/document_expiry_input.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
+import 'package:pguard_profile_api/src/model/expiring_document_buckets.dart';
+import 'package:pguard_profile_api/src/model/expiring_documents_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -50,6 +55,7 @@ import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_res
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/my_profile.dart';
+import 'package:pguard_profile_api/src/model/pending_applicants_count.dart';
 import 'package:pguard_profile_api/src/model/public_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/public_guard_profile.dart';
 import 'package:pguard_profile_api/src/model/recruit_candidate.dart';
@@ -66,21 +72,26 @@ part 'serializers.g.dart';
 
 @SerializersFor([
   AccessAuditEntry,
+  AdminAvgApprovalTime200Response,
   AdminListAccessAudit200Response,
   AdminListCandidates200Response,
   AdminListCustomerProfiles200Response,
   AdminListExpiringDocuments200Response,
   AdminListGuardProfiles200Response,
+  AdminPendingApplicantsCount200Response,
   AdminResolveUserNames200Response,
   AdminSetCandidateStage200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
+  AvgApprovalTime,
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
   DocumentExpiry,
   DocumentExpiryInput,
   ErrorBody,
   ErrorDetail,
+  ExpiringDocumentBuckets,
+  ExpiringDocumentsResponse,
   GetGuardAvatar200Response,
   GetGuardDocument200Response,
   GetMyProfile200Response,
@@ -101,6 +112,7 @@ part 'serializers.g.dart';
   MyCustomerProfile,
   MyGuardProfile,
   MyProfile,
+  PendingApplicantsCount,
   PublicCustomerProfile,
   PublicGuardProfile,
   RecruitCandidate,

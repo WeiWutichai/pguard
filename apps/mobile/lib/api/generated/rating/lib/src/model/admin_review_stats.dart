@@ -14,6 +14,7 @@ part 'admin_review_stats.g.dart';
 /// * [total] 
 /// * [visible] 
 /// * [average] 
+/// * [thisMonth] - Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
 @BuiltValue()
 abstract class AdminReviewStats implements Built<AdminReviewStats, AdminReviewStatsBuilder> {
   @BuiltValueField(wireName: r'total')
@@ -24,6 +25,10 @@ abstract class AdminReviewStats implements Built<AdminReviewStats, AdminReviewSt
 
   @BuiltValueField(wireName: r'average')
   String? get average;
+
+  /// Reviews created in the current calendar month (UTC) — the รีวิวเดือนนี้ card.
+  @BuiltValueField(wireName: r'this_month')
+  int get thisMonth;
 
   AdminReviewStats._();
 
@@ -65,6 +70,11 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
         specifiedType: const FullType(String),
       );
     }
+    yield r'this_month';
+    yield serializers.serialize(
+      object.thisMonth,
+      specifiedType: const FullType(int),
+    );
   }
 
   @override
@@ -108,6 +118,13 @@ class _$AdminReviewStatsSerializer implements PrimitiveSerializer<AdminReviewSta
             specifiedType: const FullType(String),
           ) as String;
           result.average = valueDes;
+          break;
+        case r'this_month':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.thisMonth = valueDes;
           break;
         default:
           unhandled.add(key);

@@ -99,6 +99,7 @@ Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
 [*AdminApi*](doc/AdminApi.md) | [**adminCustomerSpendReport**](doc/AdminApi.md#admincustomerspendreport) | **GET** /admin/reports/customer-spend | Per-customer lifetime-spend report (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListPayments**](doc/AdminApi.md#adminlistpayments) | **GET** /admin/payments | List ALL payments cross-user (role&#x3D;admin, read-only ledger)
+[*AdminApi*](doc/AdminApi.md) | [**adminRefundQueue**](doc/AdminApi.md#adminrefundqueue) | **GET** /admin/refunds/queue | Refund queue — refunds awaiting action / in-progress (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminRevenueReport**](doc/AdminApi.md#adminrevenuereport) | **GET** /admin/reports/revenue | Revenue-trend analytics (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | PRE-PAY a booking&#39;s estimate (createPayment)
@@ -109,6 +110,7 @@ Class | Method | HTTP request | Description
 ## Documentation For Models
 
  - [AdminCustomerSpendReport200Response](doc/AdminCustomerSpendReport200Response.md)
+ - [AdminRefundQueue200Response](doc/AdminRefundQueue200Response.md)
  - [AdminRevenueReport200Response](doc/AdminRevenueReport200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [CreatePaymentRequest](doc/CreatePaymentRequest.md)
@@ -120,6 +122,9 @@ Class | Method | HTTP request | Description
  - [ListPayments200Response](doc/ListPayments200Response.md)
  - [Payment](doc/Payment.md)
  - [PaymentStatus](doc/PaymentStatus.md)
+ - [RefundQueueItem](doc/RefundQueueItem.md)
+ - [RefundQueueResponse](doc/RefundQueueResponse.md)
+ - [RefundStatus](doc/RefundStatus.md)
  - [RevenuePoint](doc/RevenuePoint.md)
  - [RevenueReport](doc/RevenueReport.md)
 
