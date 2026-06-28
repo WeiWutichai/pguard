@@ -314,6 +314,10 @@ jobs:
           JWT_SECRET: ci
           SERVICE_JWT_SECRET: ci
           EVENT_SIGNING_SECRET: ci
+          # 2FA TOTP secret-sealing key (added by Phase D-2; ${VAR:?} fail-fast in compose). The
+          # compose `config` check only needs it non-empty — the 32-byte length is enforced at
+          # identity startup. Dummy 64-hex for the drift check.
+          TOTP_ENC_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
           CORS_ALLOWED_ORIGINS: https://admin.example.test
           MINIO_ROOT_USER: ci
           MINIO_ROOT_PASSWORD: ci
