@@ -16,7 +16,7 @@ mod repo;
 mod state;
 
 use anyhow::Context;
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
@@ -121,12 +121,25 @@ async fn main() -> anyhow::Result<()> {
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))
-        .route("/auth/me", get(api::me).delete(api::delete_me))
+        .route(
+            "/auth/me",
+            get(api::me).put(api::update_me).delete(api::delete_me),
+        )
+        .route("/auth/password", put(api::change_password))
         .route("/auth/revoke-all", post(api::revoke_all_sessions))
         .route("/me/data-export", get(api::data_export))
+        // Admin user search (#138 per-user notify) — admin-gated in the handler. The gateway routes
+        // `/admin/users/search` → identity (a more-specific rule than `/admin/users` → profile).
+        .route("/admin/users/search", get(api::admin_search_users))
         .route(
             "/internal/users/{id}/revoke-all",
             post(api::internal_revoke_all::<AppState>),
+        )
+        // Internal batch id → {role, display_name} resolver (service-JWT only; blocked at the edge).
+        // The profile resolver merges admin names from here (#142 Activity Log).
+        .route(
+            "/internal/users/names",
+            post(api::internal_resolve_users::<AppState>),
         )
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())

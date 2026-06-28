@@ -12,7 +12,7 @@ use uuid::Uuid;
 use shared::error::AppError;
 
 use crate::domain::GpsUpdate;
-use crate::models::{GuardLocationRow, HistoryRow};
+use crate::models::{AssignmentWindowRow, GuardLocationRow, HistoryRow};
 
 /// Max rows deleted per statement — bounds each transaction so a large backlog catch-up never
 /// locks an unbounded set in one go (this is a high-volume sensitive store).
@@ -222,6 +222,57 @@ pub async fn history(
     Ok(rows)
 }
 
+/// The GPS track for a guard within an explicit `[from, to)` time window, OLDEST-first (a route
+/// replay plays forward in time). Used by both replay modes: the by-guard+from/to playback and
+/// the by-booking playback (after the window is derived from the assignment). `limit` is clamped
+/// to [1, 1000] (the 500-point playback cap is applied by the caller via this bound). Served by
+/// the `idx_location_history_user_time` btree on `(user_id, recorded_at DESC)` (0001) — the index
+/// also satisfies the ASC order by a backwards scan.
+///
+/// Half-open `[from, to)`: `recorded_at >= from AND recorded_at < to`, so back-to-back job windows
+/// (one job's `ended_at` == the next's `started_at`) never double-count the boundary point.
+pub async fn history_between(
+    db: &PgPool,
+    guard_id: Uuid,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+    limit: i64,
+) -> Result<Vec<HistoryRow>, AppError> {
+    let limit = limit.clamp(1, HISTORY_MAX_LIMIT);
+    let rows = sqlx::query_as::<_, HistoryRow>(
+        "SELECT latitude, longitude, accuracy_m, recorded_at \
+         FROM presence.location_history \
+         WHERE user_id = $1 AND recorded_at >= $2 AND recorded_at < $3 \
+         ORDER BY recorded_at ASC LIMIT $4",
+    )
+    .bind(guard_id)
+    .bind(from)
+    .bind(to)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// The job-window anchors for a booking, from the event-derived read-model (0004): the assigned
+/// `guard_id`, the `started_at` (accept), and the `ended_at` (terminal, NULL while still active).
+/// `NotFound` if the booking was never projected (e.g. an old booking that predates 0004, or an
+/// unknown id) — the by-booking replay then 404s rather than guessing a window. Returns the raw
+/// `Option`s so the handler can apply the "open window ends at now()" rule + flag a missing start.
+pub async fn assignment_window(
+    db: &PgPool,
+    booking_id: Uuid,
+) -> Result<AssignmentWindowRow, AppError> {
+    sqlx::query_as::<_, AssignmentWindowRow>(
+        "SELECT guard_id, started_at, ended_at \
+         FROM presence.guard_assignments WHERE booking_id = $1",
+    )
+    .bind(booking_id)
+    .fetch_optional(db)
+    .await?
+    .ok_or_else(|| AppError::NotFound("No assignment recorded for this booking".to_string()))
+}
+
 // =============================================================================
 // Event-derived IDOR read-model (`guard_assignments`).
 // =============================================================================
@@ -252,30 +303,55 @@ pub async fn has_active_booking(
 /// equal-or-older redelivered/reordered event is ignored, so at-least-once delivery (even an
 /// exact-same-timestamp redelivery of an accept after a completion) can never reactivate a
 /// finished booking. `COALESCE` keeps known ids when a terminal event omits them.
+///
+/// The job-window anchors (`started_at`/`ended_at`, 0004) are projected ALONGSIDE the authz
+/// flip so the admin by-booking replay can derive the window from this same read-model:
+///   * `is_start = true` (the `job_accepted` event) stamps `started_at` first-wins —
+///     `LEAST(existing, new)` so an at-least-once redelivery never moves the start forward, and a
+///     reordered terminal-before-accept still records the earliest accept time. `ended_at` is
+///     untouched by an accept.
+///   * `is_start = false` (a terminal event) stamps `ended_at` last-wins (`GREATEST`) so the end
+///     reflects the latest terminal seen. `started_at` is untouched by a terminal event.
+///
+/// The window columns are advanced INDEPENDENTLY of the `updated_at` last-writer guard above so a
+/// terminal event that arrives after the accept (the normal order) still records `ended_at` even
+/// though it also flips `active=false` under the same `WHERE updated_at >` clause.
 pub async fn upsert_assignment(
     db: &PgPool,
     booking_id: Uuid,
     customer_id: Option<Uuid>,
     guard_id: Option<Uuid>,
     active: bool,
+    is_start: bool,
     occurred_at: DateTime<Utc>,
 ) -> Result<(), AppError> {
+    // The accept event seeds `started_at`; a terminal event seeds `ended_at`. The other column is
+    // NULL in the INSERT row and left untouched on UPDATE (COALESCE keeps the stored value).
+    let (start_seed, end_seed) = if is_start {
+        (Some(occurred_at), None)
+    } else {
+        (None, Some(occurred_at))
+    };
     sqlx::query(
         "INSERT INTO presence.guard_assignments \
-             (booking_id, customer_id, guard_id, active, updated_at) \
-         VALUES ($1, $2, $3, $4, $5) \
+             (booking_id, customer_id, guard_id, active, updated_at, started_at, ended_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) \
          ON CONFLICT (booking_id) DO UPDATE SET \
              customer_id = COALESCE(EXCLUDED.customer_id, presence.guard_assignments.customer_id), \
              guard_id    = COALESCE(EXCLUDED.guard_id, presence.guard_assignments.guard_id), \
-             active      = EXCLUDED.active, \
-             updated_at  = EXCLUDED.updated_at \
-         WHERE EXCLUDED.updated_at > presence.guard_assignments.updated_at",
+             active      = CASE WHEN EXCLUDED.updated_at > presence.guard_assignments.updated_at \
+                                THEN EXCLUDED.active ELSE presence.guard_assignments.active END, \
+             updated_at  = GREATEST(EXCLUDED.updated_at, presence.guard_assignments.updated_at), \
+             started_at  = LEAST(EXCLUDED.started_at, presence.guard_assignments.started_at), \
+             ended_at    = GREATEST(EXCLUDED.ended_at, presence.guard_assignments.ended_at)",
     )
     .bind(booking_id)
     .bind(customer_id)
     .bind(guard_id)
     .bind(active)
     .bind(occurred_at)
+    .bind(start_seed)
+    .bind(end_seed)
     .execute(db)
     .await?;
     Ok(())
@@ -288,7 +364,7 @@ mod tests {
     //!   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
     //!     cargo test -p pguard-presence -- --nocapture
     use super::*;
-    use chrono::Duration;
+    use chrono::{Duration, SubsecRound};
     use sqlx::postgres::PgPoolOptions;
 
     async fn pool() -> Option<PgPool> {
@@ -519,10 +595,12 @@ mod tests {
         let customer = Uuid::new_v4();
         let guard = Uuid::new_v4();
         let stranger = Uuid::new_v4();
-        let t0 = Utc::now();
+        // Postgres timestamptz stores microseconds; truncate so a read-back equals t0 exactly
+        // (Utc::now() carries nanoseconds, which PG drops → an == against the round-trip would fail).
+        let t0 = Utc::now().trunc_subsecs(6);
 
         // job_accepted → active link.
-        upsert_assignment(&pool, booking, Some(customer), Some(guard), true, t0)
+        upsert_assignment(&pool, booking, Some(customer), Some(guard), true, true, t0)
             .await
             .expect("accept");
         assert!(has_active_booking(&pool, customer, guard)
@@ -540,6 +618,7 @@ mod tests {
             Some(customer),
             Some(guard),
             true,
+            true,
             t0 - Duration::seconds(5),
         )
         .await
@@ -554,6 +633,7 @@ mod tests {
             booking,
             None,
             None,
+            false,
             false,
             t0 + Duration::seconds(10),
         )
@@ -573,6 +653,7 @@ mod tests {
             Some(customer),
             Some(guard),
             true,
+            true,
             t0 + Duration::seconds(1),
         )
         .await
@@ -586,6 +667,118 @@ mod tests {
 
         let _ = sqlx::query("DELETE FROM presence.guard_assignments WHERE booking_id = $1")
             .bind(booking)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The job-window projection (0004) + the two replay reads:
+    ///   * `upsert_assignment` stamps `started_at` (accept) + `ended_at` (terminal), first-/last-
+    ///     wins so a redelivery never moves them.
+    ///   * `assignment_window` returns those anchors for the by-booking replay.
+    ///   * `history_between` returns only the points inside the half-open `[from, to)` window,
+    ///     oldest-first — the time-range filter for both replay modes.
+    #[tokio::test]
+    async fn window_projection_and_replay_reads() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the replay window test");
+            return;
+        };
+        let booking = Uuid::new_v4();
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        // Postgres timestamptz stores microseconds; truncate so a read-back equals t0 exactly
+        // (Utc::now() carries nanoseconds, which PG drops → an == against the round-trip would fail).
+        let t0 = Utc::now().trunc_subsecs(6);
+
+        // job_accepted at t0 → started_at = t0, ended_at = NULL (window still open).
+        upsert_assignment(&pool, booking, Some(customer), Some(guard), true, true, t0)
+            .await
+            .expect("accept");
+        let w = assignment_window(&pool, booking).await.expect("window");
+        assert_eq!(w.guard_id, Some(guard));
+        assert_eq!(w.started_at, Some(t0));
+        assert!(w.ended_at.is_none(), "active job has no end yet");
+
+        // A redelivered LATER accept must NOT move started_at forward (first-wins).
+        upsert_assignment(
+            &pool,
+            booking,
+            Some(customer),
+            Some(guard),
+            true,
+            true,
+            t0 + Duration::seconds(30),
+        )
+        .await
+        .expect("accept redelivery");
+        let w = assignment_window(&pool, booking).await.expect("window2");
+        assert_eq!(w.started_at, Some(t0), "started_at is first-wins (LEAST)");
+
+        // Seed five history points: two BEFORE the job, three DURING (t0..t0+3h).
+        for (mins, lat) in [
+            (-60i64, 13.70), // before accept
+            (-1, 13.71),     // just before accept
+            (10, 13.72),     // during
+            (60, 13.73),     // during
+            (170, 13.74),    // during (< 3h)
+        ] {
+            insert_history(&pool, guard, t0 + Duration::minutes(mins), &fix(lat, 100.5))
+                .await
+                .expect("seed history");
+        }
+
+        // completed at t0+3h → ended_at = t0+3h, active=false.
+        let t_end = t0 + Duration::hours(3);
+        upsert_assignment(&pool, booking, None, None, false, false, t_end)
+            .await
+            .expect("complete");
+        let w = assignment_window(&pool, booking).await.expect("window3");
+        assert_eq!(w.ended_at, Some(t_end), "terminal stamps ended_at");
+        assert_eq!(w.started_at, Some(t0), "terminal leaves started_at");
+
+        // The by-booking window read [t0, t0+3h) returns the 3 DURING points, oldest-first.
+        let pts = history_between(&pool, guard, t0, t_end, 500)
+            .await
+            .expect("between");
+        assert_eq!(pts.len(), 3, "only the 3 in-window points");
+        assert!(
+            pts[0].recorded_at < pts[1].recorded_at && pts[1].recorded_at < pts[2].recorded_at,
+            "oldest-first"
+        );
+        assert_eq!(pts[0].latitude, 13.72, "first in-window point");
+
+        // A redelivered (older) terminal must NOT move ended_at backward (GREATEST).
+        upsert_assignment(
+            &pool,
+            booking,
+            None,
+            None,
+            false,
+            false,
+            t0 + Duration::hours(1),
+        )
+        .await
+        .expect("stale terminal");
+        let w = assignment_window(&pool, booking).await.expect("window4");
+        assert_eq!(w.ended_at, Some(t_end), "ended_at is last-wins (GREATEST)");
+
+        // The limit caps the points (proves the 500-cap path; clamp to 2 here).
+        let capped = history_between(&pool, guard, t0, t_end, 2)
+            .await
+            .expect("capped");
+        assert_eq!(capped.len(), 2, "limit caps the window read");
+
+        // assignment_window for an unknown booking → NotFound (by-booking replay then 404s).
+        let missing = assignment_window(&pool, Uuid::new_v4()).await;
+        assert!(matches!(missing, Err(AppError::NotFound(_))));
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM presence.guard_assignments WHERE booking_id = $1")
+            .bind(booking)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM presence.location_history WHERE user_id = $1")
+            .bind(guard)
             .execute(&pool)
             .await;
     }

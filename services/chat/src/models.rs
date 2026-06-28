@@ -142,6 +142,64 @@ pub struct OutgoingChatMessage {
     pub created_at: DateTime<Utc>,
 }
 
+/// An ADMIN-ENRICHED message (`GET /admin/conversations/{id}/messages`). Unlike
+/// [`OutgoingChatMessage`] (which returns `content` RAW — an attachment UUID for image/video, the
+/// pinned call JSON for a `system` line — and leaves rendering to the mobile client), this read
+/// model resolves `content` into RENDERABLE data so the web admin console can show the real thing
+/// (an image thumbnail, a video indicator, a parsed call event, plain text) WITHOUT a second
+/// round-trip per message. READ-ONLY (moderation is Phase D). All raw fields are carried through
+/// so the web can fall back / show metadata; the enrichment adds `kind` + the per-kind fields.
+#[derive(Debug, Serialize)]
+pub struct AdminEnrichedMessage {
+    pub id: Uuid,
+    pub conversation_id: Uuid,
+    pub sender_id: Uuid,
+    pub sender_role: Option<String>,
+    pub message_type: String,
+    pub created_at: DateTime<Utc>,
+    /// The PARSED render kind the web switches on: `text` | `image` | `video` | `call-event` |
+    /// `system` (unrecognized system JSON) | `unknown`. Distinct from `message_type` (the stored
+    /// enum) because a `system` row is further parsed into `call-event` when its content is the
+    /// pinned call summary.
+    pub kind: String,
+    /// Plain text for a `text` message (the raw `content`); `null` otherwise.
+    pub text: Option<String>,
+    /// Resolved attachment for an `image`/`video` message (fresh presigned URL, admin-gated).
+    /// `null` for non-media or if the referenced attachment can't be resolved (the raw id is
+    /// then surfaced via `attachment_id` so the admin still sees there WAS an attachment).
+    pub attachment: Option<AdminAttachmentView>,
+    /// The raw attachment id carried in a media message's `content` (echoed even if resolution
+    /// fails, so the admin isn't shown a blank). `null` for non-media.
+    pub attachment_id: Option<String>,
+    /// Parsed call event for a `system` call-summary line; `null` otherwise.
+    pub call_event: Option<AdminCallEvent>,
+}
+
+/// The resolvable bits of an attachment for the admin message view — a fresh presigned URL plus
+/// the MIME so the web can render an `<img>` thumbnail or a video indicator. Reuses the chat
+/// attachment storage download URL (`S3Client::download_url`), admin-gated by the endpoint.
+#[derive(Debug, Serialize)]
+pub struct AdminAttachmentView {
+    pub id: Uuid,
+    /// Fresh presigned download URL (TTL 1h) — the admin-viewable thumbnail/source.
+    pub url: String,
+    pub mime_type: String,
+    pub file_size: Option<i32>,
+    /// `true` for `video/*` — lets the web show a video indicator vs an image thumbnail.
+    pub is_video: bool,
+}
+
+/// A parsed call-summary `system` message — the structured form of the pinned
+/// `{"k":"call","ct":...,"oc":...,"ds":...}` JSON so the web renders a real call event instead
+/// of raw JSON. `call_type` = audio|video, `outcome` = completed|missed|rejected, `duration_seconds`
+/// = whole seconds for an answered call (else null).
+#[derive(Debug, Serialize)]
+pub struct AdminCallEvent {
+    pub call_type: String,
+    pub outcome: String,
+    pub duration_seconds: Option<i32>,
+}
+
 /// An attachment as returned to clients (with a fresh presigned `file_url`).
 #[derive(Debug, Serialize)]
 pub struct AttachmentResponse {

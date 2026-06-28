@@ -62,9 +62,9 @@ export default function ActivityPage() {
     setReloadNonce((n) => n + 1);
   }
 
-  // Resolve the acting admin id → display name. Admins have no stored name yet (the flagged
-  // identity.display_name follow-up), so the resolver OMITS them and we fall back to "Admin #id";
-  // once a guard/customer ever appears here it resolves to their real name.
+  // Resolve the acting admin id → display name. The profile resolver now MERGES admin names from
+  // identity (#142), so an admin who has set a display_name resolves to it; only an admin with no
+  // name yet (or an unknown/deleted id the resolver omits) falls back to "Admin #id".
   const resolveIds = useMemo(() => rows.map((r) => r.accessed_by), [rows]);
   const { resolve } = useNameResolver(resolveIds, lang, "admin");
 

@@ -99,6 +99,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminApproveCustomer**](doc/AdminApi.md#adminapprovecustomer) | **POST** /admin/customer-profiles/{user_id}/approve | Approve a pending customer profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminApproveGuard**](doc/AdminApi.md#adminapproveguard) | **POST** /admin/guard-profiles/{user_id}/approve | Approve a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminAvgApprovalTime**](doc/AdminApi.md#adminavgapprovaltime) | **GET** /admin/applicants/avg-approval-time | Average guard approval turnaround (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminGetOrgSettings**](doc/AdminApi.md#admingetorgsettings) | **GET** /admin/org-settings | Read the organization (company) profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListAccessAudit**](doc/AdminApi.md#adminlistaccessaudit) | **GET** /admin/access-audit | List the PDPA §30 data-access audit trail (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListCandidates**](doc/AdminApi.md#adminlistcandidates) | **GET** /admin/recruitment/candidates | List guards as recruitment-pipeline candidates (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminListCustomerProfiles**](doc/AdminApi.md#adminlistcustomerprofiles) | **GET** /admin/customer-profiles | List customer profiles (role&#x3D;admin)
@@ -109,6 +110,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminRejectGuard**](doc/AdminApi.md#adminrejectguard) | **POST** /admin/guard-profiles/{user_id}/reject | Reject a pending guard profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminResolveUserNames**](doc/AdminApi.md#adminresolveusernames) | **POST** /admin/users/resolve | Batch-resolve user_ids to display names (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminSetCandidateStage**](doc/AdminApi.md#adminsetcandidatestage) | **PUT** /admin/recruitment/candidates/{user_id}/stage | Move a pending candidate to a pipeline stage (role&#x3D;admin)
+[*AdminApi*](doc/AdminApi.md) | [**adminUpdateOrgSettings**](doc/AdminApi.md#adminupdateorgsettings) | **PUT** /admin/org-settings | Set/replace the organization (company) profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
@@ -129,6 +131,7 @@ Class | Method | HTTP request | Description
 
  - [AccessAuditEntry](doc/AccessAuditEntry.md)
  - [AdminAvgApprovalTime200Response](doc/AdminAvgApprovalTime200Response.md)
+ - [AdminGetOrgSettings200Response](doc/AdminGetOrgSettings200Response.md)
  - [AdminListAccessAudit200Response](doc/AdminListAccessAudit200Response.md)
  - [AdminListCandidates200Response](doc/AdminListCandidates200Response.md)
  - [AdminListCustomerProfiles200Response](doc/AdminListCustomerProfiles200Response.md)
@@ -168,6 +171,7 @@ Class | Method | HTTP request | Description
  - [MyCustomerProfile](doc/MyCustomerProfile.md)
  - [MyGuardProfile](doc/MyGuardProfile.md)
  - [MyProfile](doc/MyProfile.md)
+ - [OrgSettings](doc/OrgSettings.md)
  - [PendingApplicantsCount](doc/PendingApplicantsCount.md)
  - [PublicCustomerProfile](doc/PublicCustomerProfile.md)
  - [PublicGuardProfile](doc/PublicGuardProfile.md)
@@ -178,6 +182,7 @@ Class | Method | HTTP request | Description
  - [SetDocumentExpiryRequest](doc/SetDocumentExpiryRequest.md)
  - [SetGuardDocumentExpiry200Response](doc/SetGuardDocumentExpiry200Response.md)
  - [StageRequest](doc/StageRequest.md)
+ - [UpdateOrgSettingsRequest](doc/UpdateOrgSettingsRequest.md)
  - [UpsertCustomerProfileRequest](doc/UpsertCustomerProfileRequest.md)
  - [UpsertGuardProfileRequest](doc/UpsertGuardProfileRequest.md)
 

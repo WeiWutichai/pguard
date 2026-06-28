@@ -69,6 +69,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/track/replay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Admin route playback — by job (booking) or by guard + time range (#141)
+         * @description **Admin only.** Returns a guard's GPS track, OLDEST-first (a replay plays forward in
+         *     time), in ONE of two mutually-exclusive modes (provide exactly one selector → else `400`):
+         *
+         *       - **by JOB** — `?booking_id=<uuid>`. The window is derived SERVER-SIDE from the
+         *         event-projected assignment: `started_at` = the `job_accepted` event, `ended_at` = the
+         *         terminal event (`completed`/`cancelled`/`declined`), or `now()` while the job is still
+         *         active (`window_open=true`). The guard is the one the booking was assigned to.
+         *         `guard_id`/`from`/`to` are ignored. `404` if the booking was never projected (unknown
+         *         id, or a booking with no recorded start/guard).
+         *       - **by GUARD** — `?guard_id=<uuid>&from=&to=`. That guard's track in the half-open
+         *         `[from, to)` window. `from`/`to` are optional (default: the last 24h ending now); the
+         *         span is clamped to 90 days (the retention horizon).
+         *
+         *     `limit` caps the points (default **500** — the #141 cap; hard max **1000**). `truncated`
+         *     is `true` when the window holds at least `limit` points (narrow the window or raise `limit`
+         *     to the cap to see the rest). Each point carries its `recorded_at` timestamp.
+         *
+         *     **Per-point speed/heading are NOT returned** — `per_point_speed_heading_available` is
+         *     always `false`. The append-only `location_history` store keeps only lat/lng/accuracy + time;
+         *     heading/speed are live-only signals (never historized). Flagged, not fabricated.
+         *
+         *     Reads from the read replica (heavy history scan; admin authz enforced first).
+         */
+        get: operations["adminTrackReplay"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/online-guards": {
         parameters: {
             query?: never;
@@ -138,6 +179,41 @@ export interface components {
             /** Format: date-time */
             recorded_at: string;
         };
+        TrackReplay: {
+            /**
+             * Format: uuid
+             * @description The guard whose track this is (resolved from the booking in by-JOB mode).
+             */
+            guard_id: string;
+            /**
+             * Format: uuid
+             * @description Present only in by-JOB mode — the booking the window was derived from.
+             */
+            booking_id?: string;
+            /**
+             * Format: date-time
+             * @description Window start (inclusive).
+             */
+            from: string;
+            /**
+             * Format: date-time
+             * @description Window end (exclusive).
+             */
+            to: string;
+            /** @description by-JOB only — true when the job is still active (no terminal event yet), so `to` was clamped to the request time. Always false in by-GUARD mode. */
+            window_open: boolean;
+            /** @description The GPS track, OLDEST-first. Each point carries its `recorded_at`. */
+            points: components["schemas"]["HistoryPoint"][];
+            /**
+             * Format: int64
+             * @description The applied point cap (default 500, hard max 1000).
+             */
+            limit: number;
+            /** @description True when the window holds at least `limit` points (page/narrow to see more). */
+            truncated: boolean;
+            /** @description Always false — `location_history` does not store per-point speed/heading (live-only signals, never historized). A FLAG, not a fabrication. */
+            per_point_speed_heading_available: boolean;
+        };
         OnlineGuards: {
             /** @description Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII. */
             guard_ids: string[];
@@ -188,6 +264,26 @@ export interface components {
                 "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                     data?: components["schemas"]["HistoryPoint"][];
                 };
+            };
+        };
+        /** @description A guard's GPS track for the replay (oldest-first) */
+        TrackReplayOk: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                    data?: components["schemas"]["TrackReplay"];
+                };
+            };
+        };
+        /** @description Invalid request (e.g. neither or both of booking_id/guard_id supplied) */
+        BadRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
             };
         };
         /** @description Missing or invalid authentication */
@@ -280,6 +376,33 @@ export interface operations {
             200: components["responses"]["HistoryOk"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    adminTrackReplay: {
+        parameters: {
+            query?: {
+                /** @description By-JOB selector. Derives the window from the booking's assignment. Mutually exclusive with `guard_id`. */
+                booking_id?: string;
+                /** @description By-GUARD selector. Mutually exclusive with `booking_id`. */
+                guard_id?: string;
+                /** @description By-GUARD window start (RFC3339, inclusive). Default `to - 24h`. Ignored in by-JOB mode. */
+                from?: string;
+                /** @description By-GUARD window end (RFC3339, exclusive). Default now. Ignored in by-JOB mode. */
+                to?: string;
+                /** @description Max points (default 500, capped at 1000). */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["TrackReplayOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     internalOnlineGuards: {

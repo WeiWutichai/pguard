@@ -567,6 +567,65 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/org-settings:
+    get:
+      tags: [Admin]
+      summary: Read the organization (company) profile (role=admin)
+      description: |
+        The org (company) profile — `company_name` / `tax_id` / `address` — shown on RECEIPTS
+        and IN-APP (#143, Settings → บริษัท / Company profile). This is org-wide, admin-owned
+        config (edited at runtime, no redeploy), so unlike the env-config Settings tabs it has a
+        real single-row store owned by the profile service. Admin only (else 403).
+
+        NEVER 404s: when nothing has been saved yet, every field is `null` and `updated_at` is
+        `null` (an "unset" default) — the admin UI renders blank inputs. Reading the company
+        profile is org config, not PII, so it is NOT §30 access-audited.
+      operationId: adminGetOrgSettings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The org (company) profile (or the all-null unset default)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OrgSettings' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Admin]
+      summary: Set/replace the organization (company) profile (role=admin)
+      description: |
+        Upsert the single-row org (company) profile. Admin only (else 403). All fields optional
+        (the admin saves incrementally). Validates a LENIENT `tax_id` (8–20 digits, spaces/hyphens
+        allowed — not a checksum) and bounded `company_name`/`address` lengths (≤ 500 chars); an
+        invalid value → 400. The acting admin is recorded server-side (`updated_by`). Returns the
+        stored row for read-back.
+      operationId: adminUpdateOrgSettings
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdateOrgSettingsRequest' }
+      responses:
+        '200':
+          description: The stored org (company) profile
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/OrgSettings' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/users/resolve:
     post:
       tags: [Admin]
@@ -577,25 +636,24 @@ paths:
         บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only**
         (role gate at the gateway-routed edge + this service; non-admin → **403**).
 
-        profile OWNS the only stored display names in the system
-        (`guard_profiles.full_name` / `customer_profiles.full_name`), so it answers in ONE query —
-        no cross-service hop. The response is a MAP keyed by id → `{ role, display_name }`:
+        profile OWNS the guard/customer display names (`guard_profiles.full_name` /
+        `customer_profiles.full_name`), answered in ONE query. For the ids it CAN'T resolve locally
+        (almost always ADMINS — who have no profile row here — or unknown/deleted ids) it then asks
+        identity's service-JWT'd `POST /internal/users/names` and MERGES the admin `{ role: admin,
+        display_name }` entries into the same map (#142 Activity Log). Best-effort: an identity
+        outage degrades to "admin ids omitted" (client fallback) rather than failing the resolve.
+
+        The response is a MAP keyed by id → `{ role, display_name }`:
           - a guard/customer id resolves to its name + the role derived from which table it is in
             (`display_name` may be `null` mid-onboarding — the role is still authoritative);
-          - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a
-            genuinely-unknown / deleted id — is simply **OMITTED** from the map. The client renders a
-            fallback (role label + short id) for an omitted id, so an admin's row never blocks a page.
+          - an admin id resolves to `{ role: admin, display_name }` merged from identity;
+          - an id with NO row in EITHER place (genuinely unknown / deleted) is simply **OMITTED**
+            from the map — the client renders a fallback (role label + short id) for it.
 
         Returns ONLY `{ role, display_name }` — NEVER any other PII (phone / bank / address / email).
         Bounded to `RESOLVE_NAMES_LIMIT` (500) ids per call — a larger batch → **400** (page it),
         not a silent truncation (a partial map is indistinguishable from "these ids are unknown").
         Duplicate ids are de-duplicated server-side; an empty `ids` list → an empty map (`{}`).
-
-        FOLLOW-UP (flagged, NOT done here): admins have no stored display name anywhere
-        (`identity.users` has only id / phone / email / role — no name column), so admin ids fall
-        back to the role-label. A real admin name (also wanted on the admin-profile screen) needs an
-        identity `display_name` column + an identity internal lookup — a later phase. This does NOT
-        block guard/customer resolution, which is complete.
       operationId: adminResolveUserNames
       security: [{ bearerAuth: [] }]
       requestBody:
@@ -1078,6 +1136,28 @@ components:
       properties:
         reason: { type: string, nullable: true, description: 'Optional context for the rejection.' }
 
+    UpdateOrgSettingsRequest:
+      type: object
+      description: |
+        The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the
+        admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens
+        allowed — not a checksum); `company_name`/`address` are bounded to 500 chars.
+      properties:
+        company_name: { type: string, nullable: true, maxLength: 500 }
+        tax_id: { type: string, nullable: true, description: '8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits.' }
+        address: { type: string, nullable: true, maxLength: 500 }
+
+    OrgSettings:
+      type: object
+      description: |
+        The org (company) profile shown on receipts + in-app. Every field is nullable: an
+        all-null object (incl. `updated_at`) is the "never saved yet" state returned by GET.
+      properties:
+        company_name: { type: string, nullable: true }
+        tax_id: { type: string, nullable: true }
+        address: { type: string, nullable: true }
+        updated_at: { type: string, format: date-time, nullable: true, description: 'When last saved; null until first written.' }
+
     InternalGuard:
       type: object
       description: |
@@ -1131,16 +1211,22 @@ components:
       type: object
       description: |
         One resolved identity for the admin name-resolver: a display name (admin-only PII here) +
-        the role it was resolved as. NEVER any other PII. `display_name` is `null` when the profile
-        row exists but has no name yet (mid-onboarding) — the role is still authoritative. `role` is
-        always `guard` or `customer`; `admin` is NEVER produced (admins have no profile row / stored
-        name, so an admin id is OMITTED from the response map and the client uses a role-label fallback).
+        the role it was resolved as. NEVER any other PII. `display_name` is `null` when the row
+        exists but has no name yet (mid-onboarding) — the role is still authoritative.
+
+        `role` is `guard` / `customer` (from profile's own tables) OR `admin`: profile merges ADMIN
+        names from identity's service-JWT'd `POST /internal/users/names` (admins have no profile row
+        here — their name lives only in identity). An id with no row in EITHER place (genuinely
+        unknown / deleted) is still OMITTED from the response map; the client uses a role-label
+        fallback for it.
       required: [role]
       properties:
         role:
           type: string
-          enum: [guard, customer]
-          description: The role this id was resolved as (derived from which profile table it is in).
+          enum: [guard, customer, admin]
+          description: |
+            The role this id was resolved as — `guard` / `customer` from profile's tables, or
+            `admin` merged from identity.
         display_name: { type: string, nullable: true, description: 'The user''s full name, or null if not set yet.' }
 
     GuardDocumentResponse:

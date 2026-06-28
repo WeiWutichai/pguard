@@ -5,7 +5,7 @@ import createClient from "openapi-fetch";
 
 import type { components, paths as IdentityPaths } from "@/api/generated/identity";
 
-/** The authenticated principal (`GET /auth/me` → `{ user_id, role }`). */
+/** The authenticated principal (`GET /auth/me` → `{ user_id, role, display_name?, email? }`). */
 export type Me = components["schemas"]["Me"];
 
 /** Server-reachable gateway base (internal DNS in prod). The generated path is `/auth/me`, so we

@@ -16,8 +16,12 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/admin_attachment_view.dart
+lib/src/model/admin_call_event.dart
 lib/src/model/admin_conversation.dart
+lib/src/model/admin_enriched_message.dart
 lib/src/model/admin_list_conversations200_response.dart
+lib/src/model/admin_list_messages200_response.dart
 lib/src/model/attachment.dart
 lib/src/model/conversation_response.dart
 lib/src/model/create_conversation_request.dart

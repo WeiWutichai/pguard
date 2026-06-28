@@ -21,6 +21,22 @@ pub struct HistoryQuery {
     pub offset: Option<i64>,
 }
 
+/// `GET /admin/track/replay` — admin route playback (#141 ดูเส้นทางย้อนหลัง). EITHER mode:
+///   * by JOB:  `?booking_id=<uuid>` — the GPS track during that booking's window (the window is
+///     derived server-side from the event-projected assignment; `guard_id`/`from`/`to` ignored).
+///   * by GUARD: `?guard_id=<uuid>&from=<rfc3339>&to=<rfc3339>` — that guard's track in the
+///     `[from, to)` window. `from`/`to` are optional and default to the last 24h ending now.
+///
+/// `limit` caps the returned points (default 500, hard cap 1000); see [`crate::api::replay`].
+#[derive(Debug, Default, Deserialize)]
+pub struct ReplayQuery {
+    pub booking_id: Option<Uuid>,
+    pub guard_id: Option<Uuid>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+}
+
 // ----- REST response DTOs -----
 
 /// A guard's current position + liveness, returned by `/locations` (bulk) and
@@ -46,6 +62,37 @@ pub struct HistoryPoint {
     pub lng: f64,
     pub accuracy: Option<f32>,
     pub recorded_at: DateTime<Utc>,
+}
+
+/// `GET /admin/track/replay` response — the resolved guard, the resolved `[from, to)` window, the
+/// ordered (oldest-first) GPS track, and the cap metadata. `truncated` is true when the cap was
+/// hit (more points exist in the window than were returned) so the caller can page or narrow.
+///
+/// `speed`/`heading` are DELIBERATELY ABSENT from each point: the append-only `location_history`
+/// store keeps only lat/lng/accuracy + time (0001) — heading/speed are live-only signals on
+/// `guard_locations`, never historized. `per_point_speed_heading_available = false` flags this so
+/// a client never assumes they were dropped (they were never stored — not fabricated here).
+#[derive(Debug, Serialize)]
+pub struct TrackReplay {
+    pub guard_id: Uuid,
+    /// Set only for the by-booking mode (echoes which booking the window was derived from).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub booking_id: Option<Uuid>,
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
+    /// For the by-booking mode: true when the job is still active (no terminal event yet), so
+    /// `to` was clamped to the request time rather than a real `ended_at`. Always false for the
+    /// by-guard mode (the window is the requested `[from, to)`).
+    pub window_open: bool,
+    pub points: Vec<HistoryPoint>,
+    /// The applied cap (default 500, hard max 1000) — number of points the response can hold.
+    pub limit: i64,
+    /// True when `points.len() == limit` (the window holds at least this many points; there may
+    /// be more — narrow the window or raise `limit` up to the cap to see the rest).
+    pub truncated: bool,
+    /// Always false — `location_history` does not store per-point speed/heading (see above). FLAG,
+    /// not a fabrication.
+    pub per_point_speed_heading_available: bool,
 }
 
 /// `GET /internal/online-guards` — the live guard ids only (service-JWT'd; consumed by
@@ -90,6 +137,17 @@ impl From<HistoryRow> for HistoryPoint {
             recorded_at: r.recorded_at,
         }
     }
+}
+
+/// The job-window projection of a `presence.guard_assignments` row (0004): which guard ran the
+/// booking and the accept→terminal window. `guard_id`/`started_at` are NULL for a row projected
+/// before the guard/accept was known (e.g. a terminal-before-accept reorder, or a pre-0004 row);
+/// the by-booking replay handler treats a missing `guard_id`/`started_at` as un-replayable.
+#[derive(Debug, sqlx::FromRow)]
+pub struct AssignmentWindowRow {
+    pub guard_id: Option<Uuid>,
+    pub started_at: Option<DateTime<Utc>>,
+    pub ended_at: Option<DateTime<Utc>>,
 }
 
 // ----- Redis pub/sub live-position event -----

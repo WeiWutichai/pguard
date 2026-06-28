@@ -142,7 +142,14 @@ export interface paths {
         };
         /** Current authenticated user */
         get: operations["me"];
-        put?: never;
+        /**
+         * Update the caller's OWN display_name + email (#144 admin self-profile)
+         * @description Self-edit of `display_name` (trimmed, 1–120 chars) + optional `email` (lowercased +
+         *     shape-checked, UNIQUE). Self only — keyed by the authenticated user; phone/role/password
+         *     are NEVER changed here (password has its own `PUT /auth/password`). An email already used
+         *     by another account → `409` with code `EMAIL_TAKEN`. Returns the refreshed self-profile.
+         */
+        put: operations["updateMe"];
         post?: never;
         /**
          * Erase the authenticated user's account (PDPA §33 right to erasure)
@@ -153,6 +160,57 @@ export interface paths {
          *     rejected at once), and clears the auth cookies. Irreversible.
          */
         delete: operations["deleteMe"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Change the caller's OWN password (#144)
+         * @description Verifies `current_password` against the stored Argon2 hash (a wrong value → a GENERIC 401,
+         *     no enumeration), then Argon2-stores `new_pin_hash` and force-revokes the user's OTHER
+         *     sessions (refresh families revoked + `token_revocation_version` bumped, so every other
+         *     device is rejected at once) and clears THIS browser's auth cookies so the current session
+         *     re-authenticates with the new PIN. Self only.
+         */
+        put: operations["changePassword"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Search users by name / phone / email / id (role=admin,
+         * @description Finds users across ALL roles for the admin per-user-notify picker. Matches `q`
+         *     case-insensitively against `display_name` / `phone` / `email`, plus an exact id match when
+         *     `q` is a UUID. **Admin only** (non-admin → 403). Returns `[{ id, role, display_name,
+         *     phone_masked }]` — the phone is MASKED (last-4) and NO other PII crosses the wire. `limit`
+         *     is clamped (default 20, max 50). A blank `q` returns an empty list (no full-table dump).
+         *
+         *     Routed at the gateway to **identity** (it knows every role + the admin display name) — a
+         *     more-specific rule than `/admin/users/resolve` → profile.
+         */
+        get: operations["adminSearchUsers"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -201,6 +259,34 @@ export interface paths {
          *     routed through the public gateway.
          */
         post: operations["internalRevokeAll"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/users/names": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch-resolve user_ids to { role, display_name } (service-JWT only)
+         * @description Resolve a batch of `user_id`s to `{ role, display_name }` for an internal caller. This is
+         *     identity's OWN schema, so it answers EVERY role — including ADMINS, who have no profile row
+         *     (the gap that left admin names blank on the web admin lists / Activity Log #142). The
+         *     profile service's `POST /admin/users/resolve` resolves guard/customer locally, then calls
+         *     this for the still-unresolved ids and merges admin names in.
+         *
+         *     **Requires a service-JWT** (`serviceAuth`, audience `pguard-internal`); blocked at the
+         *     public gateway (`/internal/`). Returns a MAP keyed by id; unknown/deleted ids are OMITTED.
+         *     ONLY `role` + `display_name` — NEVER phone/email. Bounded to 500 ids (a larger batch → 400).
+         */
+        post: operations["internalResolveUserNames"];
         delete?: never;
         options?: never;
         head?: never;
@@ -271,6 +357,58 @@ export interface components {
             /** Format: uuid */
             user_id: string;
             role: components["schemas"]["UserRole"];
+            /**
+             * @description The caller's own display name (#144). `null` when unset — notably an admin who has not
+             *     filled it in yet. Settable via `PUT /auth/me`.
+             */
+            display_name?: string | null;
+            /** @description The caller's own email, or `null` if unset. Settable via `PUT /auth/me`. */
+            email?: string | null;
+        };
+        UpdateMeRequest: {
+            /** @description New display name (trimmed; 1–120 characters). */
+            display_name: string;
+            /**
+             * @description New email — optional (omit / null / "" clears it). Lowercased + shape-checked
+             *     server-side; UNIQUE across users (a collision → 409 `EMAIL_TAKEN`).
+             */
+            email?: string | null;
+        };
+        ChangePasswordRequest: {
+            /**
+             * @description SHA-256 hex of the CURRENT PIN (same shape/value as login's `password`). Verified
+             *     server-side; a wrong value → a generic 401 (no enumeration).
+             */
+            current_password: string;
+            /** @description SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`). */
+            new_pin_hash: string;
+        };
+        /**
+         * @description Batch of user_ids to resolve to `{ role, display_name }`. Duplicates are de-duplicated
+         *     server-side; an empty list → an empty map. Bounded to 500 ids (a larger batch → 400).
+         */
+        ResolveUsersRequest: {
+            ids: string[];
+        };
+        /**
+         * @description One resolved identity for the internal name-resolver — ONLY `{ role, display_name }`
+         *     (least-privilege; NEVER phone/email). `display_name` is `null` when none is set.
+         */
+        ResolvedUser: {
+            role: components["schemas"]["UserRole"];
+            display_name?: string | null;
+        };
+        /**
+         * @description One admin user-search hit (#138). `phone_masked` keeps only the last 4 digits; NO other
+         *     PII (email/bank/address) is ever returned.
+         */
+        UserSearchResult: {
+            /** Format: uuid */
+            id: string;
+            role: components["schemas"]["UserRole"];
+            display_name?: string | null;
+            /** @example ******5678 */
+            phone_masked: string;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -341,6 +479,18 @@ export interface components {
         };
         /** @description The phone is already registered in a non-pending state — log in instead */
         Conflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /**
+         * @description The submitted email is already in use by another account (`PUT /auth/me`). Same 409
+         *     envelope as `Conflict`; the `error.code` is `EMAIL_TAKEN` so the client can branch on it.
+         */
+        EmailTaken: {
             headers: {
                 [name: string]: unknown;
             };
@@ -472,7 +622,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The authenticated user's id + role */
+            /** @description The authenticated user's id + role + display_name + email */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -484,6 +634,35 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    updateMe: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateMeRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated self-profile */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Me"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["EmailTaken"];
         };
     };
     deleteMe: {
@@ -510,6 +689,65 @@ export interface operations {
                 };
             };
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    changePassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Password changed; other sessions revoked + this browser's cookies cleared */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            /** @example true */
+                            password_changed?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    adminSearchUsers: {
+        parameters: {
+            query?: {
+                /** @description Free-text query (name / phone / email / exact id). */
+                q?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Matching users (phone masked) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["UserSearchResult"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     dataExport: {
@@ -566,6 +804,36 @@ export interface operations {
             200: components["responses"]["EmptyOk"];
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    internalResolveUserNames: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveUsersRequest"];
+            };
+        };
+        responses: {
+            /** @description Map keyed by id → `{ role, display_name }`. Ids with no live row are omitted. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            [key: string]: components["schemas"]["ResolvedUser"];
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
         };
     };
 }

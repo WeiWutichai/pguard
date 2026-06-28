@@ -18,9 +18,21 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain;
 use crate::models::{
     GuardLocation, GuardLocationRow, HistoryPoint, HistoryQuery, LocationsQuery, OnlineGuards,
+    ReplayQuery, TrackReplay,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, PresenceDeps, PresenceInternalDeps};
+
+/// Default playback point cap when the client omits `limit` (the #141 "last ≤500 points" rule),
+/// and the hard ceiling regardless of the requested `limit` (mirrors `repo::HISTORY_MAX_LIMIT`).
+const REPLAY_DEFAULT_LIMIT: i64 = 500;
+const REPLAY_MAX_LIMIT: i64 = 1_000;
+/// Default look-back for the by-guard playback when `from`/`to` are omitted: the last 24h ending
+/// now. A by-job playback ignores this (its window is derived from the booking's assignment).
+const REPLAY_DEFAULT_LOOKBACK_HOURS: i64 = 24;
+/// Hard cap on the by-guard `[from, to)` span — bounds the index scan on the high-volume,
+/// sensitive `location_history` store (PDPA), mirroring the 90-day retention horizon.
+const REPLAY_MAX_SPAN_DAYS: i64 = 90;
 
 /// GET /locations — bulk live guard locations. **Admin only** (a customer can NEVER pull bulk).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, role = %user.role))]
@@ -73,6 +85,138 @@ pub async fn guard_history<S: PresenceDeps>(
         .map(HistoryPoint::from)
         .collect();
     Ok(Json(ApiResponse::success(history)))
+}
+
+/// GET /admin/track/replay — **admin only** route playback (#141 ดูเส้นทางย้อนหลัง). Returns a
+/// guard's GPS track, OLDEST-first (a replay plays forward in time), in ONE of two modes:
+///
+///  * **by JOB** — `?booking_id=<uuid>`. The window is derived SERVER-SIDE from the event-
+///    projected assignment (`started_at` = the `job_accepted`, `ended_at` = the terminal event, or
+///    `now()` while the job is still active). The guard is the one the booking was assigned to.
+///    `guard_id`/`from`/`to` are ignored in this mode. `404` if the booking was never projected
+///    (unknown id or a booking that predates the 0004 window columns).
+///  * **by GUARD** — `?guard_id=<uuid>&from=&to=`. That guard's track in the half-open
+///    `[from, to)` window. `from`/`to` are optional (default: the last 24h ending now); the span
+///    is clamped to 90 days (the retention horizon). This is the existing by-guard playback PLUS
+///    the new time-range filter.
+///
+/// `limit` caps the points (default 500 — the #141 cap; hard max 1000); `truncated` flags a window
+/// with at least `limit` points (page or narrow to see the rest). Each point carries its
+/// `recorded_at` timestamp. Per-point speed/heading are NOT returned and
+/// `per_point_speed_heading_available` is `false`: `location_history` never stores them (0001) —
+/// flagged, never fabricated.
+///
+/// Exactly one selector must be supplied: `booking_id` XOR `guard_id` (else `400`). Admin authz is
+/// presence's own job here (the gateway forwards the validated role; the public edge requires a
+/// token) — a guard/customer receives `403`, same as the bulk `/locations` read.
+#[tracing::instrument(skip(state, q), fields(user = %user.user_id, role = %user.role))]
+pub async fn replay<S: PresenceDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<ReplayQuery>,
+) -> Result<Json<ApiResponse<TrackReplay>>, AppError> {
+    if user.role != "admin" {
+        return Err(AppError::Forbidden(
+            "Only admins can replay a guard's route".to_string(),
+        ));
+    }
+    let limit = q
+        .limit
+        .unwrap_or(REPLAY_DEFAULT_LIMIT)
+        .clamp(1, REPLAY_MAX_LIMIT);
+
+    // Exactly one selector: booking_id XOR guard_id.
+    match (q.booking_id, q.guard_id) {
+        (Some(_), Some(_)) => Err(AppError::BadRequest(
+            "Provide either booking_id OR guard_id, not both".to_string(),
+        )),
+        (None, None) => Err(AppError::BadRequest(
+            "Provide booking_id (by-job) or guard_id+from+to (by-guard)".to_string(),
+        )),
+        (Some(booking_id), None) => replay_by_booking(&state, booking_id, limit).await,
+        (None, Some(guard_id)) => replay_by_guard(&state, guard_id, q.from, q.to, limit).await,
+    }
+}
+
+/// By-JOB playback: derive the `[started_at, ended_at|now())` window from the booking's projected
+/// assignment, then read the assigned guard's track in that window. A still-active job has no
+/// `ended_at` → the window is left-open to `now()` and `window_open = true`.
+async fn replay_by_booking<S: PresenceDeps>(
+    state: &S,
+    booking_id: Uuid,
+    limit: i64,
+) -> Result<Json<ApiResponse<TrackReplay>>, AppError> {
+    let win = repo::assignment_window(state.db(), booking_id).await?;
+    let (Some(guard_id), Some(from)) = (win.guard_id, win.started_at) else {
+        // Projected but missing the guard/accept anchor (e.g. a terminal-before-accept reorder, or
+        // a pre-0004 row): no derivable window → 404 rather than guessing.
+        return Err(AppError::NotFound(
+            "This booking has no replayable job window (no recorded start/guard)".to_string(),
+        ));
+    };
+    let window_open = win.ended_at.is_none();
+    let to = win.ended_at.unwrap_or_else(Utc::now);
+    // Guard against a degenerate window (end before start from a clock skew / reorder): clamp.
+    let to = to.max(from);
+    // Heavy history read → read replica (C5.3); authz (admin) already enforced above.
+    let rows = repo::history_between(state.db_read(), guard_id, from, to, limit).await?;
+    Ok(Json(ApiResponse::success(build_replay(
+        guard_id,
+        Some(booking_id),
+        from,
+        to,
+        window_open,
+        rows,
+        limit,
+    ))))
+}
+
+/// By-GUARD playback: that guard's track in the requested `[from, to)` window (default last 24h),
+/// the span clamped to the retention horizon. `window_open` is always false (the window IS the
+/// requested range, not derived).
+async fn replay_by_guard<S: PresenceDeps>(
+    state: &S,
+    guard_id: Uuid,
+    from: Option<chrono::DateTime<Utc>>,
+    to: Option<chrono::DateTime<Utc>>,
+    limit: i64,
+) -> Result<Json<ApiResponse<TrackReplay>>, AppError> {
+    let to = to.unwrap_or_else(Utc::now);
+    let from = from.unwrap_or_else(|| to - chrono::Duration::hours(REPLAY_DEFAULT_LOOKBACK_HOURS));
+    // Clamp the span: `from` no earlier than `to - 90d`, and never after `to` (degenerate range).
+    let earliest = to - chrono::Duration::days(REPLAY_MAX_SPAN_DAYS);
+    let from = from.max(earliest).min(to);
+    let rows = repo::history_between(state.db_read(), guard_id, from, to, limit).await?;
+    Ok(Json(ApiResponse::success(build_replay(
+        guard_id, None, from, to, false, rows, limit,
+    ))))
+}
+
+/// Assemble the [`TrackReplay`] DTO from the read rows. `truncated` is true when the cap was hit
+/// (the window holds at least `limit` points). `per_point_speed_heading_available` is hard-`false`
+/// — `location_history` stores no per-point speed/heading (0001); flagged, not fabricated.
+fn build_replay(
+    guard_id: Uuid,
+    booking_id: Option<Uuid>,
+    from: chrono::DateTime<Utc>,
+    to: chrono::DateTime<Utc>,
+    window_open: bool,
+    rows: Vec<crate::models::HistoryRow>,
+    limit: i64,
+) -> TrackReplay {
+    let points: Vec<HistoryPoint> = rows.into_iter().map(HistoryPoint::from).collect();
+    let truncated = points.len() as i64 >= limit;
+    TrackReplay {
+        guard_id,
+        booking_id,
+        from,
+        to,
+        window_open,
+        points,
+        limit,
+        truncated,
+        per_point_speed_heading_available: false,
+    }
 }
 
 /// GET /internal/online-guards — the ids of guards who are currently LIVE (`is_online` AND a
@@ -231,6 +375,7 @@ mod tests {
                 .route("/locations", get(list_locations::<TestDeps>))
                 .route("/guards/{id}/location", get(guard_location::<TestDeps>))
                 .route("/guards/{id}/history", get(guard_history::<TestDeps>))
+                .route("/admin/track/replay", get(replay::<TestDeps>))
                 .with_state(deps),
         )
     }
@@ -356,6 +501,96 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a guard reading its OWN location must pass the gate"
         );
+    }
+
+    // ----- /admin/track/replay: admin-only + booking_id XOR guard_id selector -----
+
+    #[tokio::test]
+    async fn replay_requires_admin() {
+        let Some(app) = router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // customer → 403 (even with a valid selector); allow_booking is irrelevant (admin gate
+        // runs first).
+        let uri = format!("/admin/track/replay?booking_id={}", Uuid::new_v4());
+        assert_eq!(
+            get_status(app, &uri, Some(&token(Uuid::new_v4(), "customer"))).await,
+            StatusCode::FORBIDDEN
+        );
+        let Some(app) = router(true).await else {
+            return;
+        };
+        assert_eq!(
+            get_status(app, &uri, Some(&token(Uuid::new_v4(), "guard"))).await,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_missing_token() {
+        let Some(app) = router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(
+            get_status(app, "/admin/track/replay", None).await,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_requires_exactly_one_selector() {
+        // no selector → 400
+        let Some(app) = router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(
+            get_status(
+                app,
+                "/admin/track/replay",
+                Some(&token(Uuid::new_v4(), "admin"))
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        // both selectors → 400
+        let Some(app) = router(true).await else {
+            return;
+        };
+        let uri = format!(
+            "/admin/track/replay?booking_id={}&guard_id={}",
+            Uuid::new_v4(),
+            Uuid::new_v4()
+        );
+        assert_eq!(
+            get_status(app, &uri, Some(&token(Uuid::new_v4(), "admin"))).await,
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_admin_with_selector_passes_gate_to_db() {
+        // A valid admin + a single selector passes authz + validation and reaches the (lazy,
+        // invalid) DB → the failure is NOT 403/400/401, proving the gate + selector check let it
+        // through. Holds for BOTH modes.
+        for uri in [
+            format!("/admin/track/replay?guard_id={}", Uuid::new_v4()),
+            format!("/admin/track/replay?booking_id={}", Uuid::new_v4()),
+        ] {
+            let Some(app) = router(true).await else {
+                eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+                return;
+            };
+            let status = get_status(app, &uri, Some(&token(Uuid::new_v4(), "admin"))).await;
+            assert!(
+                status != StatusCode::FORBIDDEN
+                    && status != StatusCode::BAD_REQUEST
+                    && status != StatusCode::UNAUTHORIZED,
+                "admin + single selector must pass the gate (got {status} for {uri})"
+            );
+        }
     }
 
     // ----- /internal/online-guards: service-JWT guard (no Redis/DB needed for rejection) -----

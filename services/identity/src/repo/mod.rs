@@ -633,6 +633,273 @@ pub async fn export_user(db: &PgPool, user_id: Uuid) -> Result<serde_json::Value
     }))
 }
 
+// ----- Self-profile (GET/PUT /auth/me + PUT /auth/password) -----
+
+/// The `(role, display_name, email)` row both self-profile reads return — named so the read +
+/// update share one shape (and to satisfy clippy's type-complexity lint on the update's Result).
+type SelfProfileRow = (String, Option<String>, Option<String>);
+
+/// The caller's own self-profile fields for `GET /auth/me` (their own data → un-redacted).
+/// `display_name`/`email` are nullable (an admin may not have filled them; a customer/guard
+/// never sets email here). `None` (NotFound) when the row is gone/soft-deleted.
+#[derive(Debug)]
+pub struct SelfProfile {
+    pub role: String,
+    pub display_name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Read the caller's own `{ role, display_name, email }` for `GET /auth/me`. Scoped strictly to
+/// `user_id`; a soft-deleted row is treated as absent so an erased account never surfaces a name.
+pub async fn self_profile(db: &PgPool, user_id: Uuid) -> Result<SelfProfile, AppError> {
+    let row: Option<SelfProfileRow> = sqlx::query_as(
+        r#"
+        SELECT role::text AS role, display_name, email
+        FROM identity.users
+        WHERE id = $1 AND deleted_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let (role, display_name, email) =
+        row.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    Ok(SelfProfile {
+        role,
+        display_name,
+        email,
+    })
+}
+
+/// Update the CALLER'S OWN `display_name` + `email` (`PUT /auth/me`). Self-only — `user_id` is the
+/// authenticated caller, and phone/role/password are NEVER touched here. Both args are already
+/// trimmed + validated (display_name 1..=120; email lowercased + shape-checked) by the handler.
+/// `email` is stored as `Some(lowercased)` or `None` (cleared). A `email` collision with another
+/// user trips the `UNIQUE(email)` constraint (23505) → [`AppError::ConflictCode`] with code
+/// `EMAIL_TAKEN`, so the handler returns a 409 the client can branch on. Soft-deleted rows are
+/// excluded (an erased account cannot be edited). Returns the refreshed self-profile.
+pub async fn update_self_profile(
+    db: &PgPool,
+    user_id: Uuid,
+    display_name: &str,
+    email: Option<&str>,
+) -> Result<SelfProfile, AppError> {
+    let row: Result<Option<SelfProfileRow>, sqlx::Error> = sqlx::query_as(
+        r#"
+        UPDATE identity.users
+        SET display_name = $2, email = $3, updated_at = now()
+        WHERE id = $1 AND deleted_at IS NULL
+        RETURNING role::text AS role, display_name, email
+        "#,
+    )
+    .bind(user_id)
+    .bind(display_name)
+    .bind(email)
+    .fetch_optional(db)
+    .await;
+
+    let row = match row {
+        Ok(r) => r,
+        // 23505 on the only UNIQUE column we write here (email) → another account already holds it.
+        Err(sqlx::Error::Database(d)) if d.code().as_deref() == Some("23505") => {
+            return Err(AppError::ConflictCode {
+                code: "EMAIL_TAKEN",
+                message: "That email address is already in use.".to_string(),
+            });
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let (role, display_name, email) =
+        row.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+    Ok(SelfProfile {
+        role,
+        display_name,
+        email,
+    })
+}
+
+/// Change the caller's OWN password (`PUT /auth/password`): verify `current_password` against the
+/// stored Argon2 hash (constant-time), then Argon2-hash `new_pin_hash` and store it — all so the
+/// new hash is only written when the current one verifies. The two client-supplied values are
+/// SHA-256 hex digests (same shape as login's `password`), Argon2'd here like register's pin_hash.
+/// On a wrong current password returns a GENERIC 401 (no enumeration, mirrors login). Returns the
+/// new `token_revocation_version` to bump so the caller can force-revoke the user's OTHER sessions
+/// (the handler revokes the refresh families + publishes the Redis marker). Soft-deleted rows are
+/// excluded. `skip(db, current_password, new_pin_hash)`: never log either secret.
+#[tracing::instrument(skip(db, current_password, new_pin_hash), fields(user_id = %user_id))]
+pub async fn change_password(
+    db: &PgPool,
+    user_id: Uuid,
+    current_password: &str,
+    new_pin_hash: &str,
+) -> Result<i32, AppError> {
+    let mut tx = db.begin().await?;
+
+    // Lock the row + read the current hash + revocation version under the tx.
+    let row: Option<(String, i32)> = sqlx::query_as(
+        "SELECT password_hash, token_revocation_version FROM identity.users \
+         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (current_hash, current_version) = match row {
+        Some(r) => r,
+        None => {
+            tx.rollback().await?;
+            return Err(AppError::NotFound("User not found".to_string()));
+        }
+    };
+
+    // Verify the presented current password (Argon2, constant-time, off-runtime).
+    let presented = current_password.to_string();
+    let ok =
+        tokio::task::spawn_blocking(move || password::verify_secret(&presented, &current_hash))
+            .await
+            .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??;
+    if !ok {
+        tx.rollback().await?;
+        // Generic 401 — same as login; never reveal whether the account/current password matched.
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+
+    // Hash the new pin_hash (CPU-bound → spawn_blocking) and store it. Bump the revocation version
+    // in the SAME write so the other-sessions kill below is consistent with the new credential.
+    let new_pin = new_pin_hash.to_string();
+    let new_hash = tokio::task::spawn_blocking(move || password::hash_secret(&new_pin))
+        .await
+        .map_err(|e| AppError::Internal(format!("hash task failed: {e}")))??;
+    let new_version = revocation::next_revocation_version(current_version);
+
+    sqlx::query(
+        "UPDATE identity.users \
+         SET password_hash = $2, token_revocation_version = $3, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(&new_hash)
+    .bind(new_version)
+    .execute(&mut *tx)
+    .await?;
+
+    // Revoke every outstanding refresh family — the caller's OTHER sessions can no longer rotate.
+    sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    tracing::info!(
+        new_version,
+        "password changed (other sessions force-revoked)"
+    );
+    Ok(new_version)
+}
+
+// ----- Internal name resolution (POST /internal/users/names) + admin search -----
+
+/// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }` (least-
+/// privilege; never phone/email). `display_name` is `None` when the account has no name set yet.
+pub struct ResolvedUser {
+    pub user_id: Uuid,
+    pub role: String,
+    pub display_name: Option<String>,
+}
+
+/// Resolve a batch of `user_id`s to `{ role, display_name }` (`POST /internal/users/names`). This
+/// is identity's OWN schema, so it answers EVERY role — including admins, who have no profile row
+/// (the gap the profile resolver fills by merging this). Soft-deleted rows are excluded; unknown
+/// ids simply don't come back (the caller omits them). Lean projection — NEVER phone/email. The
+/// ids are a single bound array (`= ANY($1)`), never interpolated. Empty input short-circuits.
+pub async fn resolve_users(db: &PgPool, ids: &[Uuid]) -> Result<Vec<ResolvedUser>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT id, role::text AS role, display_name
+        FROM identity.users
+        WHERE id = ANY($1) AND deleted_at IS NULL
+        "#,
+    )
+    .bind(ids)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, role, display_name)| ResolvedUser {
+            user_id,
+            role,
+            display_name,
+        })
+        .collect())
+}
+
+/// One row of the admin user search (`GET /admin/users/search`) — `phone` is the RAW stored value
+/// (the handler masks it before it crosses the wire; the repo stays a pure DB read).
+pub struct UserSearchRow {
+    pub user_id: Uuid,
+    pub role: String,
+    pub display_name: Option<String>,
+    pub phone: String,
+}
+
+/// Search users for the admin per-user-notify picker (`GET /admin/users/search`). Matches `q`
+/// case-insensitively against `display_name`, `phone`, OR `email` (trigram GIN-backed for name +
+/// phone), and ALSO returns an exact id match when `q` parses as a UUID — so an admin can paste an
+/// id straight from a list. Across ALL roles (admin/guard/customer). Soft-deleted rows excluded.
+/// `limit` is already clamped by the handler. The RAW phone is returned for the handler to mask.
+pub async fn search_users(
+    db: &PgPool,
+    q: &str,
+    limit: i64,
+) -> Result<Vec<UserSearchRow>, AppError> {
+    // A substring (ILIKE '%q%') pattern for name/phone/email; the literal '%'/'_' in `q` are
+    // escaped so they match literally (defensive — `q` is admin-entered, bound as a parameter).
+    let pattern = format!(
+        "%{}%",
+        q.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    // An exact id match if `q` is a UUID (paste-an-id ergonomics); else a never-matching nil so
+    // the OR arm is inert. Bound as a parameter, never interpolated.
+    let id_match: Option<Uuid> = Uuid::parse_str(q.trim()).ok();
+
+    let rows: Vec<(Uuid, String, Option<String>, String)> = sqlx::query_as(
+        r#"
+        SELECT id, role::text AS role, display_name, phone
+        FROM identity.users
+        WHERE deleted_at IS NULL
+          AND (
+                display_name ILIKE $1 ESCAPE '\'
+             OR phone        ILIKE $1 ESCAPE '\'
+             OR email        ILIKE $1 ESCAPE '\'
+             OR id = $2
+          )
+        ORDER BY display_name NULLS LAST, created_at DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(&pattern)
+    .bind(id_match)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(user_id, role, display_name, phone)| UserSearchRow {
+            user_id,
+            role,
+            display_name,
+            phone,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1259,5 +1526,202 @@ mod tests {
         );
 
         cleanup_user(&pool, user_id).await;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────────
+    // Self-profile + admin name resolution / search (#144 / #142 / #138). DB-gated on
+    // DATABASE_URL (migrated identity 0001..0005); hermetic SKIP otherwise.
+    // ─────────────────────────────────────────────────────────────────────────────
+
+    /// Seed an APPROVED account of `role` with a random phone + the given (already-Argon2'd) hash,
+    /// optionally with a display_name. Returns its id.
+    async fn seed_user(
+        pool: &PgPool,
+        role: &str,
+        pw_hash: &str,
+        display_name: Option<&str>,
+    ) -> Uuid {
+        let user_id = Uuid::new_v4();
+        let phone = format!("0{}", &user_id.simple().to_string()[..9]);
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, display_name, approval_status) \
+             VALUES ($1, $2, $3, $4::identity.user_role, $5, 'approved'::identity.approval_status)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(pw_hash)
+        .bind(role)
+        .bind(display_name)
+        .execute(pool)
+        .await
+        .expect("seed user");
+        user_id
+    }
+
+    /// self_profile returns {role, display_name, email}; update_self_profile writes both; a
+    /// duplicate email trips the UNIQUE constraint → ConflictCode(EMAIL_TAKEN). DB-gated.
+    #[tokio::test]
+    async fn self_profile_read_update_and_email_conflict() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the self-profile test");
+            return;
+        };
+        let pw = password::hash_secret("x").expect("hash");
+        let admin = seed_user(&pool, "admin", &pw, None).await;
+        let other = seed_user(&pool, "admin", &pw, None).await;
+
+        // Read before any name/email is set.
+        let p = self_profile(&pool, admin).await.expect("read");
+        assert_eq!(p.role, "admin");
+        assert_eq!(p.display_name, None);
+        assert_eq!(p.email, None);
+
+        // Update the name + email.
+        let updated = update_self_profile(&pool, admin, "Boss Admin", Some("boss@example.com"))
+            .await
+            .expect("update");
+        assert_eq!(updated.display_name.as_deref(), Some("Boss Admin"));
+        assert_eq!(updated.email.as_deref(), Some("boss@example.com"));
+
+        // The OTHER admin claiming the SAME email → EMAIL_TAKEN (409).
+        let err = update_self_profile(&pool, other, "Other", Some("boss@example.com"))
+            .await
+            .expect_err("duplicate email must conflict");
+        assert!(
+            matches!(
+                err,
+                AppError::ConflictCode {
+                    code: "EMAIL_TAKEN",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
+            .bind(vec![admin, other])
+            .execute(&pool)
+            .await;
+    }
+
+    /// change_password verifies the current password (wrong → Unauthorized, no write), then stores
+    /// the new hash, bumps trv, and revokes the user's refresh families. DB-gated.
+    #[tokio::test]
+    async fn change_password_verifies_current_and_revokes_sessions() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the change-password test");
+            return;
+        };
+        // The two client values are SHA-256-hex-shaped; the repo Argon2's them. Use distinct hex
+        // digests for "current" and "new".
+        let current = "a".repeat(64);
+        let new = "b".repeat(64);
+        let pw_hash = password::hash_secret(&current).expect("hash");
+        let user_id = seed_user(&pool, "guard", &pw_hash, None).await;
+
+        // Open a refresh family so we can prove it gets revoked.
+        let opaque = create_refresh_family(&pool, user_id).await.expect("login");
+        let (rid, _) = ids_of(&pool, &opaque).await;
+
+        // Wrong current → generic 401, NO write.
+        let wrong = change_password(&pool, user_id, &"c".repeat(64), &new).await;
+        assert!(
+            matches!(wrong, Err(AppError::Unauthorized(_))),
+            "got {wrong:?}"
+        );
+        assert_eq!(
+            live_tokens_in_family(
+                &pool,
+                find_refresh_by_rotation(&pool, rid)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .family_id
+            )
+            .await,
+            1,
+            "a failed change must not revoke sessions"
+        );
+
+        // Correct current → succeeds; old credentials no longer verify; new ones do; family revoked.
+        let new_version = change_password(&pool, user_id, &current, &new)
+            .await
+            .expect("change");
+        assert!(new_version > 0, "trv bumped");
+        assert!(
+            verify_credentials(&pool, &phone_of(&pool, user_id).await, &current)
+                .await
+                .is_err(),
+            "old password rejected after change"
+        );
+        assert!(
+            verify_credentials(&pool, &phone_of(&pool, user_id).await, &new)
+                .await
+                .is_ok(),
+            "new password accepted"
+        );
+        let loc = find_refresh_by_rotation(&pool, rid).await.unwrap().unwrap();
+        assert_eq!(
+            live_tokens_in_family(&pool, loc.family_id).await,
+            0,
+            "change_password revokes the user's other sessions"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Read a user's phone (test helper for the change-password verify checks).
+    async fn phone_of(pool: &PgPool, user_id: Uuid) -> String {
+        let (phone,): (String,) = sqlx::query_as("SELECT phone FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("read phone");
+        phone
+    }
+
+    /// resolve_users answers EVERY role (incl. admin), omits unknown/deleted ids, and returns only
+    /// {role, display_name}. search_users finds by name + masks nothing (raw phone for the handler
+    /// to mask). DB-gated.
+    #[tokio::test]
+    async fn resolve_and_search_users() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the resolve/search test");
+            return;
+        };
+        let pw = password::hash_secret("x").expect("hash");
+        let marker = format!("ZZ{}", &Uuid::new_v4().simple().to_string()[..8]);
+        let admin = seed_user(&pool, "admin", &pw, Some(&format!("{marker} Admin"))).await;
+        let guard = seed_user(&pool, "guard", &pw, Some(&format!("{marker} Guard"))).await;
+
+        // resolve_users: both roles come back (admin is the gap the profile resolver fills); an
+        // unknown id is omitted.
+        let unknown = Uuid::new_v4();
+        let resolved = resolve_users(&pool, &[admin, guard, unknown])
+            .await
+            .expect("resolve");
+        assert_eq!(resolved.len(), 2, "unknown id omitted");
+        let admin_row = resolved.iter().find(|r| r.user_id == admin).expect("admin");
+        assert_eq!(admin_row.role, "admin");
+        assert_eq!(
+            admin_row.display_name.as_deref(),
+            Some(format!("{marker} Admin").as_str())
+        );
+
+        // search_users by the unique marker finds both (across roles); raw phone is returned.
+        let hits = search_users(&pool, &marker, 10).await.expect("search");
+        assert_eq!(hits.len(), 2, "search finds both by display_name");
+        assert!(hits.iter().all(|h| !h.phone.is_empty()));
+        // Empty input to resolve short-circuits.
+        assert!(resolve_users(&pool, &[]).await.expect("empty").is_empty());
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = ANY($1)")
+            .bind(vec![admin, guard])
+            .execute(&pool)
+            .await;
     }
 }

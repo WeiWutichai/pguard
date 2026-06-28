@@ -104,6 +104,68 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/track/replay:
+    get:
+      tags: [Locations]
+      summary: Admin route playback — by job (booking) or by guard + time range (#141)
+      description: |
+        **Admin only.** Returns a guard's GPS track, OLDEST-first (a replay plays forward in
+        time), in ONE of two mutually-exclusive modes (provide exactly one selector → else `400`):
+
+          - **by JOB** — `?booking_id=<uuid>`. The window is derived SERVER-SIDE from the
+            event-projected assignment: `started_at` = the `job_accepted` event, `ended_at` = the
+            terminal event (`completed`/`cancelled`/`declined`), or `now()` while the job is still
+            active (`window_open=true`). The guard is the one the booking was assigned to.
+            `guard_id`/`from`/`to` are ignored. `404` if the booking was never projected (unknown
+            id, or a booking with no recorded start/guard).
+          - **by GUARD** — `?guard_id=<uuid>&from=&to=`. That guard's track in the half-open
+            `[from, to)` window. `from`/`to` are optional (default: the last 24h ending now); the
+            span is clamped to 90 days (the retention horizon).
+
+        `limit` caps the points (default **500** — the #141 cap; hard max **1000**). `truncated`
+        is `true` when the window holds at least `limit` points (narrow the window or raise `limit`
+        to the cap to see the rest). Each point carries its `recorded_at` timestamp.
+
+        **Per-point speed/heading are NOT returned** — `per_point_speed_heading_available` is
+        always `false`. The append-only `location_history` store keeps only lat/lng/accuracy + time;
+        heading/speed are live-only signals (never historized). Flagged, not fabricated.
+
+        Reads from the read replica (heavy history scan; admin authz enforced first).
+      operationId: adminTrackReplay
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: booking_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: By-JOB selector. Derives the window from the booking's assignment. Mutually exclusive with `guard_id`.
+        - name: guard_id
+          in: query
+          required: false
+          schema: { type: string, format: uuid }
+          description: By-GUARD selector. Mutually exclusive with `booking_id`.
+        - name: from
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: By-GUARD window start (RFC3339, inclusive). Default `to - 24h`. Ignored in by-JOB mode.
+        - name: to
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: By-GUARD window end (RFC3339, exclusive). Default now. Ignored in by-JOB mode.
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, default: 500, minimum: 1, maximum: 1000 }
+          description: Max points (default 500, capped at 1000).
+      responses:
+        '200': { $ref: '#/components/responses/TrackReplayOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /internal/online-guards:
     get:
       tags: [Locations]
@@ -186,6 +248,19 @@ components:
                   data:
                     type: array
                     items: { $ref: '#/components/schemas/HistoryPoint' }
+    TrackReplayOk:
+      description: A guard's GPS track for the replay (oldest-first)
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/ApiResponseEnvelope'
+              - type: object
+                properties:
+                  data: { $ref: '#/components/schemas/TrackReplay' }
+    BadRequest:
+      description: Invalid request (e.g. neither or both of booking_id/guard_id supplied)
+      content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
     Unauthorized:
       description: Missing or invalid authentication
       content: { application/json: { schema: { $ref: '#/components/schemas/ErrorBody' } } }
@@ -221,6 +296,42 @@ components:
         lng: { type: number, format: double }
         accuracy: { type: number, format: float, nullable: true }
         recorded_at: { type: string, format: date-time }
+
+    TrackReplay:
+      type: object
+      required: [guard_id, from, to, window_open, points, limit, truncated, per_point_speed_heading_available]
+      properties:
+        guard_id:
+          type: string
+          format: uuid
+          description: The guard whose track this is (resolved from the booking in by-JOB mode).
+        booking_id:
+          type: string
+          format: uuid
+          description: Present only in by-JOB mode — the booking the window was derived from.
+        from: { type: string, format: date-time, description: Window start (inclusive). }
+        to: { type: string, format: date-time, description: Window end (exclusive). }
+        window_open:
+          type: boolean
+          description: >
+            by-JOB only — true when the job is still active (no terminal event yet), so `to` was
+            clamped to the request time. Always false in by-GUARD mode.
+        points:
+          type: array
+          description: The GPS track, OLDEST-first. Each point carries its `recorded_at`.
+          items: { $ref: '#/components/schemas/HistoryPoint' }
+        limit:
+          type: integer
+          format: int64
+          description: The applied point cap (default 500, hard max 1000).
+        truncated:
+          type: boolean
+          description: True when the window holds at least `limit` points (page/narrow to see more).
+        per_point_speed_heading_available:
+          type: boolean
+          description: >
+            Always false — `location_history` does not store per-point speed/heading (live-only
+            signals, never historized). A FLAG, not a fabrication.
 
     OnlineGuards:
       type: object

@@ -60,6 +60,34 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/conversations/{id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * ENRICHED message audit for a conversation (role=admin, read-only)
+         * @description The admin moderation/audit message pane. Same newest-first history as
+         *     `GET /conversations/{id}/messages`, but each row is ENRICHED into RENDERABLE data so the
+         *     web console shows what was ACTUALLY sent — not the raw `content` (an attachment UUID for
+         *     image/video, the pinned call JSON for a `system` line). Each message carries a parsed
+         *     `kind` (`text` | `image` | `video` | `call-event` | `system` | `unknown`), the `text` for
+         *     text rows, a resolved `attachment` (fresh presigned URL + MIME so the web renders an image
+         *     thumbnail / video indicator) for media rows, and a structured `call_event` for a
+         *     call-summary `system` row. Attachments are resolved in ONE batch query (no N+1) and the
+         *     bucket is never exposed. Admin only (else 403). READ-ONLY: no moderation actions (Phase D).
+         */
+        get: operations["adminListMessages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/conversations/{id}/messages": {
         parameters: {
             query?: never;
@@ -270,6 +298,54 @@ export interface components {
             message_type: components["schemas"]["MessageType"];
             /** Format: date-time */
             created_at: string;
+        };
+        /** @description An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). READ-ONLY (no moderation fields — Phase D). */
+        AdminEnrichedMessage: {
+            /** Format: uuid */
+            id: string;
+            /** Format: uuid */
+            conversation_id: string;
+            /** Format: uuid */
+            sender_id: string;
+            /** @description guard | customer */
+            sender_role?: string | null;
+            message_type: components["schemas"]["MessageType"];
+            /** Format: date-time */
+            created_at: string;
+            /**
+             * @description The parsed render kind the web switches on. Distinct from `message_type`: a `system` row whose content is the pinned call JSON becomes `call-event`.
+             * @enum {string}
+             */
+            kind: "text" | "image" | "video" | "call-event" | "system" | "unknown";
+            /** @description Plain text for a `text` message; null otherwise. */
+            text?: string | null;
+            /** @description Resolved attachment (fresh presigned URL + MIME) for an image/video message; null for non-media or if the referenced attachment can't be resolved. */
+            attachment?: components["schemas"]["AdminAttachmentView"] | null;
+            /** @description Raw attachment id carried in a media message's `content` (echoed even if resolution fails, so the admin still sees there WAS an attachment); null for non-media. */
+            attachment_id?: string | null;
+            /** @description Parsed call event for a call-summary `system` row; null otherwise. */
+            call_event?: components["schemas"]["AdminCallEvent"] | null;
+        };
+        /** @description The resolvable bits of an attachment for the admin message view — a fresh presigned URL plus the MIME so the web renders an `<img>` thumbnail or a video indicator. */
+        AdminAttachmentView: {
+            /** Format: uuid */
+            id: string;
+            /** @description Fresh presigned download URL (TTL 1h) — the admin-viewable thumbnail/source. */
+            url: string;
+            mime_type: string;
+            /** @description Bytes. */
+            file_size?: number | null;
+            /** @description True for video/* (web shows a video indicator vs an image thumbnail). */
+            is_video: boolean;
+        };
+        /** @description A parsed call-summary `system` message — the structured form of the pinned call JSON so the web renders a real call event instead of raw JSON. */
+        AdminCallEvent: {
+            /** @enum {string} */
+            call_type: "audio" | "video";
+            /** @enum {string} */
+            outcome: "completed" | "missed" | "rejected";
+            /** @description Whole seconds for an answered call; null otherwise. */
+            duration_seconds?: number | null;
         };
         Attachment: {
             /** Format: uuid */
@@ -487,6 +563,40 @@ export interface operations {
                         /** @example true */
                         success?: boolean;
                         data?: components["schemas"]["AdminConversation"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    adminListMessages: {
+        parameters: {
+            query?: {
+                /** @description Page size (default 50, max 200). */
+                limit?: components["parameters"]["Limit"];
+                /** @description Rows to skip (default 0). */
+                offset?: components["parameters"]["Offset"];
+            };
+            header?: never;
+            path: {
+                /** @description Conversation UUID. */
+                id: components["parameters"]["ConversationId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Enriched message history (newest-first) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @example true */
+                        success?: boolean;
+                        data?: components["schemas"]["AdminEnrichedMessage"][];
                     };
                 };
             };

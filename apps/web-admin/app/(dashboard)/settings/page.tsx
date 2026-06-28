@@ -1,10 +1,10 @@
 "use client";
 
-import { useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { LogOut, Plus } from "lucide-react";
+import { Loader2, LogOut, Plus, Save } from "lucide-react";
 
-import { identityApi } from "@/lib/api";
+import { identityApi, profileApi } from "@/lib/api";
 import { useAuth } from "@/components/auth-provider";
 import { useLanguage } from "@/lib/i18n";
 import { cn } from "@/lib/cn";
@@ -17,7 +17,7 @@ import {
   Panel,
   PanelBody,
   PanelHead,
-  Select,
+  Textarea,
   Toggle,
 } from "@/components/ui";
 
@@ -25,12 +25,13 @@ import { COPY } from "./copy";
 
 /**
  * Settings — rebuilt to the hi-fi mockup (sticky set-nav rail + paneled sections with
- * Field/Toggle rows). HONESTY RULE: every designed section here (company profile, payment
- * gateways, SMS/FCM, storage & security, team & roles) has NO backing v2 admin-settings
- * API — each renders its designed structure with a gray "รอ API / Awaiting API" chip and
- * disabled controls, never fake values. The only live logic is preserved from the previous
- * page: account/session info from /auth/me, the TH/EN language toggle (locale cookie), and
- * the cookie-revoking logout.
+ * Field/Toggle rows). LIVE now: the COMPANY PROFILE form is wired to profile
+ * GET/PUT /admin/org-settings (load + save), plus the account/session card, the TH/EN
+ * language toggle (locale cookie), and the cookie-revoking logout.
+ * HONESTY RULE (the rest): SMS/FCM + Storage/Security are deploy-time env/secret config with
+ * no editable endpoint (and secrets are never surfaced) → a "managed via env" note. Payment
+ * channels + Team/roles need stores that don't exist in v2 yet → honest gap notes. None fakes
+ * a value.
  */
 export default function SettingsPage() {
   const { lang, setLang, t } = useLanguage();
@@ -39,6 +40,71 @@ export default function SettingsPage() {
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState("account");
+
+  // ---- Company profile (live: GET/PUT /admin/org-settings) ----
+  const [companyName, setCompanyName] = useState("");
+  const [taxId, setTaxId] = useState("");
+  const [address, setAddress] = useState("");
+  const [orgUpdatedAt, setOrgUpdatedAt] = useState<string | null>(null);
+  const [orgLoading, setOrgLoading] = useState(true);
+  const [orgLoadError, setOrgLoadError] = useState(false);
+  const [orgSaving, setOrgSaving] = useState(false);
+  const [orgFeedback, setOrgFeedback] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
+
+  const loadOrg = useCallback((alive: () => boolean) => {
+    return profileApi
+      .GET("/admin/org-settings")
+      .then(({ data, error }) => {
+        if (!alive()) return;
+        if (error || !data?.data) {
+          setOrgLoadError(Boolean(error));
+          setOrgLoading(false);
+          return;
+        }
+        setCompanyName(data.data.company_name ?? "");
+        setTaxId(data.data.tax_id ?? "");
+        setAddress(data.data.address ?? "");
+        setOrgUpdatedAt(data.data.updated_at ?? null);
+        setOrgLoadError(false);
+        setOrgLoading(false);
+      })
+      .catch(() => {
+        if (!alive()) return;
+        setOrgLoadError(true);
+        setOrgLoading(false);
+      });
+  }, []);
+
+  useEffect(() => {
+    let alive = true;
+    void loadOrg(() => alive);
+    return () => {
+      alive = false;
+    };
+  }, [loadOrg]);
+
+  async function saveOrg() {
+    setOrgSaving(true);
+    setOrgFeedback(null);
+    // Send blanks as null so an emptied field clears (the backend treats all fields optional).
+    const res = await profileApi.PUT("/admin/org-settings", {
+      body: {
+        company_name: companyName.trim() || null,
+        tax_id: taxId.trim() || null,
+        address: address.trim() || null,
+      },
+    });
+    setOrgSaving(false);
+    if (res.error || !res.data?.data) {
+      setOrgFeedback({ kind: "err", text: c.companySaveError });
+      return;
+    }
+    setCompanyName(res.data.data.company_name ?? "");
+    setTaxId(res.data.data.tax_id ?? "");
+    setAddress(res.data.data.address ?? "");
+    setOrgUpdatedAt(res.data.data.updated_at ?? null);
+    setOrgFeedback({ kind: "ok", text: c.companySaved });
+  }
 
   async function logout() {
     setBusy(true);
@@ -126,29 +192,87 @@ export default function SettingsPage() {
             </Panel>
           </section>
 
-          {/* Company profile — no /v1 admin settings endpoint → structure + gap chip. */}
+          {/* Company profile — LIVE via profile GET/PUT /admin/org-settings. */}
           <section id="company" className="scroll-mt-5">
             <Panel>
               <PanelHead title={c.companyTitle} sub={c.companySub}>
-                {gapChip}
+                {orgUpdatedAt ? (
+                  <span className="text-[11.5px] text-muted">
+                    {c.lastSaved}:{" "}
+                    {new Date(orgUpdatedAt).toLocaleString(lang === "th" ? "th-TH" : "en-GB", {
+                      dateStyle: "medium",
+                      timeStyle: "short",
+                    })}
+                  </span>
+                ) : null}
               </PanelHead>
               <PanelBody>
-                <div className="grid gap-x-4 sm:grid-cols-2">
-                  <Field label={c.companyName}>
-                    <Input disabled aria-label={c.companyName} />
-                  </Field>
-                  <Field label={c.taxId}>
-                    <Input disabled aria-label={c.taxId} />
-                  </Field>
-                </div>
-                <Field label={c.address} className="mb-0">
-                  <Input disabled aria-label={c.address} />
-                </Field>
+                {orgLoading ? (
+                  <div className="flex items-center gap-2 py-2 text-sm text-muted">
+                    <Loader2 className="size-4 animate-spin" />
+                    {c.companyLoading}
+                  </div>
+                ) : (
+                  <>
+                    {orgLoadError && (
+                      <p role="alert" className="mb-3 text-sm text-danger">
+                        {c.companyLoadError}
+                      </p>
+                    )}
+                    <div className="grid gap-x-4 sm:grid-cols-2">
+                      <Field label={c.companyName}>
+                        <Input
+                          value={companyName}
+                          onChange={(e) => setCompanyName(e.target.value)}
+                          placeholder={c.companyNamePlaceholder}
+                          maxLength={500}
+                          aria-label={c.companyName}
+                        />
+                      </Field>
+                      <Field label={c.taxId} hint={c.taxIdHint}>
+                        <Input
+                          value={taxId}
+                          onChange={(e) => setTaxId(e.target.value)}
+                          inputMode="numeric"
+                          maxLength={20}
+                          aria-label={c.taxId}
+                        />
+                      </Field>
+                    </div>
+                    <Field label={c.address} className="mb-0">
+                      <Textarea
+                        rows={2}
+                        value={address}
+                        onChange={(e) => setAddress(e.target.value)}
+                        placeholder={c.addressPlaceholder}
+                        maxLength={500}
+                        aria-label={c.address}
+                      />
+                    </Field>
+                  </>
+                )}
               </PanelBody>
+              <div className="flex items-center justify-end gap-2.5 border-t border-border px-5 py-3.5">
+                {orgFeedback && (
+                  <span
+                    className={cn(
+                      "mr-auto text-xs",
+                      orgFeedback.kind === "ok" ? "text-success" : "text-danger",
+                    )}
+                  >
+                    {orgFeedback.text}
+                  </span>
+                )}
+                <Button size="sm" onClick={saveOrg} disabled={orgLoading || orgSaving}>
+                  {orgSaving ? <Loader2 className="size-4 animate-spin" /> : <Save size={15} />}
+                  {c.save}
+                </Button>
+              </div>
             </Panel>
           </section>
 
-          {/* Payment gateways — no payment-config admin endpoint → disabled toggles. */}
+          {/* Payment gateways — toggling channels needs a payment-service config store that
+              doesn't exist in v2 yet → disabled toggles + honest gap note (never faked ON). */}
           <section id="payments" className="scroll-mt-5">
             <Panel>
               <PanelHead title={c.payTitle} sub={c.paySub}>
@@ -166,78 +290,33 @@ export default function SettingsPage() {
                 <KvRow label={c.payWallet} sub={c.payWalletSub} end>
                   <Toggle checked={false} disabled onChange={noop} aria-label={c.payWallet} />
                 </KvRow>
+                <ManagedNote text={c.payFutureNote} chip={gapChip} />
               </PanelBody>
             </Panel>
           </section>
 
-          {/* SMS & notifications — provider/secret config has no v2 API (secrets are never
-              exposed via API anyway) → disabled select + empty masked field. */}
+          {/* SMS & notifications — provider name is service env; the FCM key is a SECRET that is
+              never surfaced via API. No editable store by design → "managed via env" note. */}
           <section id="sms" className="scroll-mt-5">
             <Panel>
               <PanelHead title={c.smsTitle} sub={c.smsSub}>
-                {gapChip}
+                <Badge tone="gray">{c.managedEnv}</Badge>
               </PanelHead>
-              <PanelBody className="py-1">
-                <KvRow label={c.smsProvider} sub={c.smsProviderSub}>
-                  <Select disabled aria-label={c.smsProvider} defaultValue="" className="max-w-60">
-                    <option value="">—</option>
-                    <option>INET (สหไอที)</option>
-                    <option>Twilio</option>
-                    <option>ThaiBulkSMS</option>
-                  </Select>
-                </KvRow>
-                <KvRow label={c.fcmKey} sub={c.fcmKeySub}>
-                  <Input type="password" disabled aria-label={c.fcmKey} className="max-w-[300px]" />
-                </KvRow>
+              <PanelBody>
+                <p className="text-[12.5px] text-muted">{c.smsManagedNote}</p>
               </PanelBody>
             </Panel>
           </section>
 
-          {/* Storage & security — bucket/JWT/OTP TTL/rate-limit/CORS are deploy-time env
-              config with no admin endpoint → designed controls, disabled, no fake values. */}
+          {/* Storage & security — bucket/JWT/OTP TTL/rate-limit/CORS are deploy-time env config
+              loaded fail-fast at startup; secrets are never surfaced → "managed via env" note. */}
           <section id="storage" className="scroll-mt-5">
             <Panel>
               <PanelHead title={c.storageTitle} sub={c.storageSub}>
-                {gapChip}
+                <Badge tone="gray">{c.managedEnv}</Badge>
               </PanelHead>
-              <PanelBody className="py-1">
-                <KvRow label={c.bucket}>
-                  <Input disabled aria-label={c.bucket} className="max-w-[300px]" />
-                </KvRow>
-                <KvRow label={c.jwtExpiry}>
-                  <PillSelect
-                    aria-label={c.jwtExpiry}
-                    value={null}
-                    disabled
-                    options={[
-                      { value: "15m", label: "15m" },
-                      { value: "1h", label: "1h" },
-                      { value: "24h", label: "24h" },
-                    ]}
-                  />
-                </KvRow>
-                <KvRow label={c.otpTtl}>
-                  <PillSelect
-                    aria-label={c.otpTtl}
-                    value={null}
-                    disabled
-                    options={[
-                      { value: "5 min", label: "5 min" },
-                      { value: "10 min", label: "10 min" },
-                    ]}
-                  />
-                </KvRow>
-                <KvRow label={c.rateLimit} sub={c.rateLimitSub}>
-                  <Input
-                    disabled
-                    inputMode="numeric"
-                    aria-label={c.rateLimit}
-                    className="max-w-[120px]"
-                  />
-                </KvRow>
-                <KvRow label={c.cors}>
-                  <Input disabled aria-label={c.cors} className="max-w-[300px]" />
-                </KvRow>
+              <PanelBody>
+                <p className="text-[12.5px] text-muted">{c.storageManagedNote}</p>
               </PanelBody>
             </Panel>
           </section>
@@ -259,15 +338,8 @@ export default function SettingsPage() {
             </Panel>
           </section>
 
-          {/* Footer actions — designed Cancel/Save pair; disabled until a settings API
-              exists (nothing on this page is saveable; the language toggle applies live). */}
-          <div className="flex items-center justify-end gap-2.5 pt-0.5">
-            {gapChip}
-            <Button variant="secondary" disabled>
-              {c.cancel}
-            </Button>
-            <Button disabled>{c.save}</Button>
-          </div>
+          {/* No global footer Save/Cancel: the only saveable section (Company) saves inline;
+              every other section is env-managed or a documented gap. */}
         </div>
       </div>
     </div>
@@ -275,6 +347,16 @@ export default function SettingsPage() {
 }
 
 function noop() {}
+
+/** A small inline "managed via env / future store" note row under a gap-chipped section. */
+function ManagedNote({ text, chip }: { text: string; chip: ReactNode }) {
+  return (
+    <div className="mt-2 flex items-start gap-2 border-t border-border pt-3 text-[12px] text-muted">
+      {chip}
+      <span>{text}</span>
+    </div>
+  );
+}
 
 /** Design's `.kv` row — 200px label column (13.5px/600 + 11.5px muted sub) | control. */
 function KvRow({

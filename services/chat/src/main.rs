@@ -166,12 +166,18 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .route("/conversations", post(api::create_conversation::<AppState>))
         .route("/conversations", get(api::list_conversations::<AppState>))
-        // Admin cross-user conversation list (admin-role gated). Distinct prefix from
-        // /conversations; the gateway routes it via a new /admin/conversations rule. The admin
-        // message pane reuses /conversations/{id}/messages (admin bypasses the participant gate).
+        // Admin cross-user conversation list + the ENRICHED message audit (both admin-role gated).
+        // Distinct /admin/conversations prefix; the gateway routes both via the /admin/conversations
+        // rule (prefix match covers the /{id}/messages subpath). The audit endpoint returns
+        // RENDERABLE data (parsed kind, presigned media URL, structured call event) — distinct from
+        // the participant /conversations/{id}/messages which returns raw `content` for the mobile app.
         .route(
             "/admin/conversations",
             get(api::admin_list_conversations::<AppState>),
+        )
+        .route(
+            "/admin/conversations/{id}/messages",
+            get(api::admin_list_messages::<AppState>),
         )
         .route(
             "/conversations/{id}/messages",

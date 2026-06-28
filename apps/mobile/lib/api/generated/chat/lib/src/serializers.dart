@@ -14,8 +14,12 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_chat_api/src/date_serializer.dart';
 import 'package:pguard_chat_api/src/model/date.dart';
 
+import 'package:pguard_chat_api/src/model/admin_attachment_view.dart';
+import 'package:pguard_chat_api/src/model/admin_call_event.dart';
 import 'package:pguard_chat_api/src/model/admin_conversation.dart';
+import 'package:pguard_chat_api/src/model/admin_enriched_message.dart';
 import 'package:pguard_chat_api/src/model/admin_list_conversations200_response.dart';
+import 'package:pguard_chat_api/src/model/admin_list_messages200_response.dart';
 import 'package:pguard_chat_api/src/model/attachment.dart';
 import 'package:pguard_chat_api/src/model/conversation_response.dart';
 import 'package:pguard_chat_api/src/model/create_conversation_request.dart';
@@ -35,8 +39,12 @@ import 'package:pguard_chat_api/src/model/set_request_status_request.dart';
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AdminAttachmentView,
+  AdminCallEvent,
   AdminConversation,
+  AdminEnrichedMessage,
   AdminListConversations200Response,
+  AdminListMessages200Response,
   Attachment,
   ConversationResponse,
   CreateConversationRequest,

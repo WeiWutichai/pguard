@@ -140,11 +140,12 @@ export function Sidebar() {
 
       <div className="flex items-center gap-2.5 border-t border-border p-3">
         <span className="flex size-[34px] flex-none items-center justify-center rounded-full bg-green-100 font-latin text-[13px] font-semibold text-green-800 dark:bg-green-800 dark:text-green-100">
-          {user.role.slice(0, 2).toUpperCase()}
+          {(user.display_name?.trim()?.slice(0, 2) || user.role.slice(0, 2)).toUpperCase()}
         </span>
         <div className="min-w-0 flex-1">
+          {/* Prefer the admin's own display_name (#144, from /auth/me) over the static label. */}
           <div className="truncate text-[13px] font-semibold text-text-strong">
-            {t("shell.adminName")}
+            {user.display_name?.trim() || t("shell.adminName")}
           </div>
           <div className="truncate text-[11px] text-muted">{user.role}</div>
         </div>

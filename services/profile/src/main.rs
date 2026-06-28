@@ -11,6 +11,7 @@
 mod api;
 mod domain;
 mod events;
+mod identity_client;
 mod models;
 mod repo;
 mod s3;
@@ -82,6 +83,23 @@ async fn main() -> anyhow::Result<()> {
         s3_config.secret_key,
     );
 
+    // --- identity name-resolver client (admin name-resolver merges admin names from identity's
+    //     service-JWT'd /internal/users/names; admins have no profile row here). Short timeouts —
+    //     it is best-effort, so a slow/absent identity degrades to "admin ids omitted", not a hang.
+    let identity_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_millis(500))
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .context("build identity-resolver HTTP client")?;
+    let identity_url =
+        std::env::var("IDENTITY_URL").unwrap_or_else(|_| "http://localhost:3001".to_string());
+    let identity_resolver = identity_client::HttpIdentityResolver::new(
+        identity_http,
+        identity_url,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+    );
+
     let state = AppState {
         db,
         db_read,
@@ -90,6 +108,7 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config,
         booking_authz,
         s3,
+        identity_resolver,
     };
 
     let nats_url =
@@ -171,6 +190,13 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/admin/access-audit",
             get(api::admin_list_access_audit::<AppState>),
+        )
+        // Organization (company) profile — company_name / tax_id / address shown on receipts +
+        // in-app (#143, Settings → บริษัท). Admin-only GET (read effective) + PUT (upsert).
+        .route(
+            "/admin/org-settings",
+            get(api::admin_get_org_settings::<AppState>)
+                .put(api::admin_update_org_settings::<AppState>),
         )
         // Admin batch name-resolver: id[] → { id: { role, display_name } } for the admin lists
         // (jobs/reviews/calls/activity log) that otherwise render raw UUIDs. Admin-gated in the

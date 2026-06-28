@@ -14,6 +14,8 @@ part 'me.g.dart';
 /// Properties:
 /// * [userId] 
 /// * [role] 
+/// * [displayName] - The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
+/// * [email] - The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
 @BuiltValue()
 abstract class Me implements Built<Me, MeBuilder> {
   @BuiltValueField(wireName: r'user_id')
@@ -22,6 +24,14 @@ abstract class Me implements Built<Me, MeBuilder> {
   @BuiltValueField(wireName: r'role')
   UserRole get role;
   // enum roleEnum {  admin,  customer,  guard,  };
+
+  /// The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
+  @BuiltValueField(wireName: r'display_name')
+  String? get displayName;
+
+  /// The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
+  @BuiltValueField(wireName: r'email')
+  String? get email;
 
   Me._();
 
@@ -56,6 +66,20 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
       object.role,
       specifiedType: const FullType(UserRole),
     );
+    if (object.displayName != null) {
+      yield r'display_name';
+      yield serializers.serialize(
+        object.displayName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.email != null) {
+      yield r'email';
+      yield serializers.serialize(
+        object.email,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
@@ -92,6 +116,20 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
             specifiedType: const FullType(UserRole),
           ) as UserRole;
           result.role = valueDes;
+          break;
+        case r'display_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.displayName = valueDes;
+          break;
+        case r'email':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.email = valueDes;
           break;
         default:
           unhandled.add(key);

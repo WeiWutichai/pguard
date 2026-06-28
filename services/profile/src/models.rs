@@ -403,3 +403,40 @@ pub enum MyProfile {
     Guard(GuardProfileResponse),
     Customer(CustomerProfileResponse),
 }
+
+// ----- Organization (company) profile settings (#143, Admin Settings → "บริษัท") -----
+
+/// `PUT /admin/org-settings` body — the company profile shown on receipts + in-app. All fields
+/// OPTIONAL (the admin saves incrementally); the handler validates lengths + a lenient `tax_id`
+/// format before the single-row upsert.
+#[derive(Debug, Deserialize)]
+pub struct UpdateOrgSettingsRequest {
+    pub company_name: Option<String>,
+    pub tax_id: Option<String>,
+    pub address: Option<String>,
+}
+
+/// The org (company) profile as returned to an admin (`GET`/`PUT /admin/org-settings`). When no
+/// row has been saved yet every field is `null` and `updated_at` is `null` (honest "unset" state
+/// — the admin UI shows blank inputs), so the GET never 404s.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct OrgSettingsResponse {
+    pub company_name: Option<String>,
+    pub tax_id: Option<String>,
+    pub address: Option<String>,
+    /// When the company profile was last saved (`null` until first written).
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl OrgSettingsResponse {
+    /// The "never saved yet" default — all fields blank. Returned by GET when the single row
+    /// does not exist, so the admin UI renders empty inputs instead of an error.
+    pub fn unset() -> Self {
+        Self {
+            company_name: None,
+            tax_id: None,
+            address: None,
+            updated_at: None,
+        }
+    }
+}

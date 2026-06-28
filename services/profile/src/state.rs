@@ -9,6 +9,7 @@ use shared::config::{JwtConfig, ServiceJwtConfig};
 use shared::error::AppError;
 use shared::service_jwt::HasServiceJwt;
 
+use crate::identity_client::{HttpIdentityResolver, IdentityResolver};
 use crate::repo;
 use crate::s3::S3Client;
 
@@ -56,6 +57,9 @@ pub struct AppState {
     pub booking_authz: DbBookingAuthz,
     /// S3/MinIO presigner for guard-document images (upload + presigned download).
     pub s3: S3Client,
+    /// Service-JWT'd client to identity's `/internal/users/names` — the admin name-resolver merges
+    /// admin names (which live ONLY in identity) for ids it can't resolve from its own profiles.
+    pub identity_resolver: HttpIdentityResolver,
 }
 
 impl HasJwtSecret for AppState {
@@ -84,6 +88,9 @@ pub trait ProfileDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     /// The IDOR authz reader (associated type → static dispatch; the public guard-profile
     /// handler's customer gate calls it). A test stub makes the gate hermetic.
     type Authz: BookingAuthz;
+    /// The identity name-resolver (associated type → static dispatch; the admin name-resolver
+    /// merges admin names from identity). A test stub makes the merge hermetic.
+    type Resolver: IdentityResolver;
 
     fn db(&self) -> &PgPool;
     /// Read-replica pool for admin list reads (C5.3). Defaults to primary (test doubles +
@@ -94,10 +101,13 @@ pub trait ProfileDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     fn booking_authz(&self) -> &Self::Authz;
     /// S3 presigner for guard-document upload/download (mirrors booking's `BookingDeps::s3()`).
     fn s3(&self) -> &S3Client;
+    /// The identity resolver — used by `admin_resolve_names` to fill in admin names.
+    fn identity_resolver(&self) -> &Self::Resolver;
 }
 
 impl ProfileDeps for AppState {
     type Authz = DbBookingAuthz;
+    type Resolver = HttpIdentityResolver;
 
     fn db(&self) -> &PgPool {
         &self.db
@@ -110,6 +120,9 @@ impl ProfileDeps for AppState {
     }
     fn s3(&self) -> &S3Client {
         &self.s3
+    }
+    fn identity_resolver(&self) -> &Self::Resolver {
+        &self.identity_resolver
     }
 }
 

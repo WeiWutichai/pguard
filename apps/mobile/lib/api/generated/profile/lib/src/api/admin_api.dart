@@ -10,6 +10,7 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
 import 'package:pguard_profile_api/src/model/admin_avg_approval_time200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_get_org_settings200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_access_audit200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
@@ -27,6 +28,7 @@ import 'package:pguard_profile_api/src/model/internal_list_guards200_response.da
 import 'package:pguard_profile_api/src/model/reject_request.dart';
 import 'package:pguard_profile_api/src/model/resolve_names_request.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
+import 'package:pguard_profile_api/src/model/update_org_settings_request.dart';
 
 class AdminApi {
 
@@ -266,6 +268,85 @@ class AdminApi {
     }
 
     return Response<AdminAvgApprovalTime200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Read the organization (company) profile (role&#x3D;admin)
+  /// The org (company) profile — &#x60;company_name&#x60; / &#x60;tax_id&#x60; / &#x60;address&#x60; — shown on RECEIPTS and IN-APP (#143, Settings → บริษัท / Company profile). This is org-wide, admin-owned config (edited at runtime, no redeploy), so unlike the env-config Settings tabs it has a real single-row store owned by the profile service. Admin only (else 403).  NEVER 404s: when nothing has been saved yet, every field is &#x60;null&#x60; and &#x60;updated_at&#x60; is &#x60;null&#x60; (an \&quot;unset\&quot; default) — the admin UI renders blank inputs. Reading the company profile is org config, not PII, so it is NOT §30 access-audited. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminGetOrgSettings200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminGetOrgSettings200Response>> adminGetOrgSettings({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/org-settings';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminGetOrgSettings200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminGetOrgSettings200Response),
+      ) as AdminGetOrgSettings200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminGetOrgSettings200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -992,7 +1073,7 @@ class AdminApi {
   }
 
   /// Batch-resolve user_ids to display names (role&#x3D;admin)
-  /// Resolve a batch of &#x60;user_id&#x60;s to display names for the admin lists that otherwise render raw UUIDs — จัดการงาน/jobs (guard_id + customer_id), รีวิว/reviews (guard_id + customer_id), บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only** (role gate at the gateway-routed edge + this service; non-admin → **403**).  profile OWNS the only stored display names in the system (&#x60;guard_profiles.full_name&#x60; / &#x60;customer_profiles.full_name&#x60;), so it answers in ONE query — no cross-service hop. The response is a MAP keyed by id → &#x60;{ role, display_name }&#x60;:   - a guard/customer id resolves to its name + the role derived from which table it is in     (&#x60;display_name&#x60; may be &#x60;null&#x60; mid-onboarding — the role is still authoritative);   - an id with NO profile row — an **admin** (admins have no profile row / stored name) or a     genuinely-unknown / deleted id — is simply **OMITTED** from the map. The client renders a     fallback (role label + short id) for an omitted id, so an admin&#39;s row never blocks a page.  Returns ONLY &#x60;{ role, display_name }&#x60; — NEVER any other PII (phone / bank / address / email). Bounded to &#x60;RESOLVE_NAMES_LIMIT&#x60; (500) ids per call — a larger batch → **400** (page it), not a silent truncation (a partial map is indistinguishable from \&quot;these ids are unknown\&quot;). Duplicate ids are de-duplicated server-side; an empty &#x60;ids&#x60; list → an empty map (&#x60;{}&#x60;).  FOLLOW-UP (flagged, NOT done here): admins have no stored display name anywhere (&#x60;identity.users&#x60; has only id / phone / email / role — no name column), so admin ids fall back to the role-label. A real admin name (also wanted on the admin-profile screen) needs an identity &#x60;display_name&#x60; column + an identity internal lookup — a later phase. This does NOT block guard/customer resolution, which is complete. 
+  /// Resolve a batch of &#x60;user_id&#x60;s to display names for the admin lists that otherwise render raw UUIDs — จัดการงาน/jobs (guard_id + customer_id), รีวิว/reviews (guard_id + customer_id), บันทึกการโทร/calls (caller + callee), and the Activity Log (admin user_id). **Admin only** (role gate at the gateway-routed edge + this service; non-admin → **403**).  profile OWNS the guard/customer display names (&#x60;guard_profiles.full_name&#x60; / &#x60;customer_profiles.full_name&#x60;), answered in ONE query. For the ids it CAN&#39;T resolve locally (almost always ADMINS — who have no profile row here — or unknown/deleted ids) it then asks identity&#39;s service-JWT&#39;d &#x60;POST /internal/users/names&#x60; and MERGES the admin &#x60;{ role: admin, display_name }&#x60; entries into the same map (#142 Activity Log). Best-effort: an identity outage degrades to \&quot;admin ids omitted\&quot; (client fallback) rather than failing the resolve.  The response is a MAP keyed by id → &#x60;{ role, display_name }&#x60;:   - a guard/customer id resolves to its name + the role derived from which table it is in     (&#x60;display_name&#x60; may be &#x60;null&#x60; mid-onboarding — the role is still authoritative);   - an admin id resolves to &#x60;{ role: admin, display_name }&#x60; merged from identity;   - an id with NO row in EITHER place (genuinely unknown / deleted) is simply **OMITTED**     from the map — the client renders a fallback (role label + short id) for it.  Returns ONLY &#x60;{ role, display_name }&#x60; — NEVER any other PII (phone / bank / address / email). Bounded to &#x60;RESOLVE_NAMES_LIMIT&#x60; (500) ids per call — a larger batch → **400** (page it), not a silent truncation (a partial map is indistinguishable from \&quot;these ids are unknown\&quot;). Duplicate ids are de-duplicated server-side; an empty &#x60;ids&#x60; list → an empty map (&#x60;{}&#x60;). 
   ///
   /// Parameters:
   /// * [resolveNamesRequest] 
@@ -1184,6 +1265,107 @@ class AdminApi {
     }
 
     return Response<AdminSetCandidateStage200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Set/replace the organization (company) profile (role&#x3D;admin)
+  /// Upsert the single-row org (company) profile. Admin only (else 403). All fields optional (the admin saves incrementally). Validates a LENIENT &#x60;tax_id&#x60; (8–20 digits, spaces/hyphens allowed — not a checksum) and bounded &#x60;company_name&#x60;/&#x60;address&#x60; lengths (≤ 500 chars); an invalid value → 400. The acting admin is recorded server-side (&#x60;updated_by&#x60;). Returns the stored row for read-back. 
+  ///
+  /// Parameters:
+  /// * [updateOrgSettingsRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminGetOrgSettings200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminGetOrgSettings200Response>> adminUpdateOrgSettings({ 
+    required UpdateOrgSettingsRequest updateOrgSettingsRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/org-settings';
+    final _options = Options(
+      method: r'PUT',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(UpdateOrgSettingsRequest);
+      _bodyData = _serializers.serialize(updateOrgSettingsRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminGetOrgSettings200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminGetOrgSettings200Response),
+      ) as AdminGetOrgSettings200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminGetOrgSettings200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

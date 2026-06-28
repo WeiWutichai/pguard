@@ -8,6 +8,8 @@ import 'package:built_value/json_object.dart';
 import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
+import 'package:pguard_identity_api/src/model/change_password200_response.dart';
+import 'package:pguard_identity_api/src/model/change_password_request.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response.dart';
 import 'package:pguard_identity_api/src/model/delete_me200_response.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
@@ -18,6 +20,7 @@ import 'package:pguard_identity_api/src/model/me200_response.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
+import 'package:pguard_identity_api/src/model/update_me_request.dart';
 
 class AuthApi {
 
@@ -26,6 +29,107 @@ class AuthApi {
   final Serializers _serializers;
 
   const AuthApi(this._dio, this._serializers);
+
+  /// Change the caller&#39;s OWN password (#144)
+  /// Verifies &#x60;current_password&#x60; against the stored Argon2 hash (a wrong value → a GENERIC 401, no enumeration), then Argon2-stores &#x60;new_pin_hash&#x60; and force-revokes the user&#39;s OTHER sessions (refresh families revoked + &#x60;token_revocation_version&#x60; bumped, so every other device is rejected at once) and clears THIS browser&#39;s auth cookies so the current session re-authenticates with the new PIN. Self only. 
+  ///
+  /// Parameters:
+  /// * [changePasswordRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ChangePassword200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ChangePassword200Response>> changePassword({ 
+    required ChangePasswordRequest changePasswordRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/password';
+    final _options = Options(
+      method: r'PUT',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ChangePasswordRequest);
+      _bodyData = _serializers.serialize(changePasswordRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ChangePassword200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ChangePassword200Response),
+      ) as ChangePassword200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ChangePassword200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// Export the authenticated user&#39;s data (PDPA §19 access / §32 portability)
   /// Aggregates the caller&#39;s data from every owning service (identity fields + profile + bookings + payments + reviews) into one machine-readable JSON envelope. identity owns no business data — it fans out over service-JWT to each owner&#39;s internal export. **Best-effort:** a downstream that&#39;s unavailable is reported as &#x60;\&quot;error\&quot;&#x60; in &#x60;_meta.sections&#x60; rather than failing the whole export, so the user still receives what is retrievable. &#x60;chat&#x60; + GPS &#x60;location_history&#x60; are follow-up sections. 
@@ -718,6 +822,107 @@ class AuthApi {
     }
 
     return Response<InlineObject1>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Update the caller&#39;s OWN display_name + email (#144 admin self-profile)
+  /// Self-edit of &#x60;display_name&#x60; (trimmed, 1–120 chars) + optional &#x60;email&#x60; (lowercased + shape-checked, UNIQUE). Self only — keyed by the authenticated user; phone/role/password are NEVER changed here (password has its own &#x60;PUT /auth/password&#x60;). An email already used by another account → &#x60;409&#x60; with code &#x60;EMAIL_TAKEN&#x60;. Returns the refreshed self-profile. 
+  ///
+  /// Parameters:
+  /// * [updateMeRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Me200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Me200Response>> updateMe({ 
+    required UpdateMeRequest updateMeRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/me';
+    final _options = Options(
+      method: r'PUT',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(UpdateMeRequest);
+      _bodyData = _serializers.serialize(updateMeRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Me200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Me200Response),
+      ) as Me200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Me200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
