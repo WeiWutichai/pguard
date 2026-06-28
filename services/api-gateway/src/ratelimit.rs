@@ -134,6 +134,8 @@ mod tests {
         assert_eq!(tier_tag(Tier::Auth), "auth");
         assert_eq!(tier_tag(Tier::Otp), "otp");
         assert_eq!(tier_tag(Tier::OtpVerify), "otpv");
+        // Distinct from "otp" — the captcha-mint bucket must never collide with the SMS-send one.
+        assert_eq!(tier_tag(Tier::OtpChallenge), "otpc");
         assert_eq!(tier_tag(Tier::Api), "api");
     }
 
@@ -188,6 +190,17 @@ mod tests {
                 RateDecision::Allow
             ),
             "verify MUST NOT be starved by send-tier exhaustion"
+        );
+
+        // Loading a captcha question is ALSO on its own counter → still allowed despite the
+        // send-bucket exhaustion. This is the bug we fixed: a user must be able to FETCH a question
+        // even after the SMS-send window is spent.
+        assert!(
+            matches!(
+                check(&mut redis, &limits, Tier::OtpChallenge, ip).await,
+                RateDecision::Allow
+            ),
+            "challenge fetch MUST NOT be starved by send-tier exhaustion"
         );
     }
 
