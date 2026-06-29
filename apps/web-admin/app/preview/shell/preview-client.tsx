@@ -29,11 +29,15 @@ import {
   Tr,
 } from "@/components/ui";
 
-const SAMPLE_USER = {
+const SAMPLE_USER: {
+  user_id: string;
+  role: "admin";
+  roles: ("admin" | "customer" | "guard")[];
+} = {
   user_id: "00000000-0000-0000-0000-000000000000",
   role: "admin",
   roles: ["admin"],
-} as const;
+};
 
 // Static dot classes (a `bg-status-${x}` template literal would escape Tailwind's scanner).
 const STATUS_DOT = {
