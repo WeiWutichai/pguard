@@ -32,6 +32,7 @@ import {
 const SAMPLE_USER = {
   user_id: "00000000-0000-0000-0000-000000000000",
   role: "admin",
+  roles: ["admin"],
 } as const;
 
 // Static dot classes (a `bg-status-${x}` template literal would escape Tailwind's scanner).
