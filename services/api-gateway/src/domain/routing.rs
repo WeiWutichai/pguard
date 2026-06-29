@@ -917,6 +917,23 @@ mod tests {
     }
 
     #[test]
+    fn auth_switch_role_and_enroll_role_are_protected() {
+        // Multi-role (Option A): switching the active role + enrolling a new role both act on the
+        // logged-in user, so they MUST be token-protected (NOT public). They fall under the
+        // `/auth/` → identity rule, Auth tier, and are absent from PUBLIC_PATHS.
+        for p in ["/v1/auth/switch-role", "/v1/auth/roles"] {
+            let (up, fwd, public, tier) = proxy(resolve(p));
+            assert_eq!(up, Upstream::Identity, "{p}");
+            assert_eq!(fwd, p.strip_prefix("/v1").unwrap());
+            assert!(
+                !public,
+                "{p} requires a token (no privilege escalation at the edge)"
+            );
+            assert_eq!(tier, Tier::Auth);
+        }
+    }
+
+    #[test]
     fn auth_me_is_protected() {
         let (up, fwd, public, tier) = proxy(resolve("/v1/auth/me"));
         assert_eq!(up, Upstream::Identity);

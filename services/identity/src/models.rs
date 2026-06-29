@@ -219,11 +219,48 @@ pub struct TokenPair {
 #[derive(Debug, Serialize)]
 pub struct MeResponse {
     pub user_id: Uuid,
+    /// The single ACTIVE role — the role embedded in the caller's current access token (the one
+    /// they logged in / switched into). Unchanged shape for backward compat.
     pub role: String,
+    /// The SET of APPROVED roles this account holds (multi-role, Option A). For a single-role
+    /// user this is exactly `[role]`; for a dual-role user it carries both so the app can offer a
+    /// role switch (`POST /auth/switch-role`). Always contains the active `role`.
+    pub roles: Vec<String>,
     /// The caller's own display name, or `null` if not set (an admin who hasn't filled it).
     pub display_name: Option<String>,
     /// The caller's own email, or `null` if not set.
     pub email: Option<String>,
+}
+
+/// Login success body (no-2FA path). Extends [`TokenPair`] with `available_roles` so the app can
+/// show a role picker when the account holds >1 role. BACKWARD COMPAT: a single-role user gets
+/// the SAME token fields plus `available_roles: [their_role]` — every existing field is present
+/// and unchanged, so an old client that ignores `available_roles` is unaffected. The active token
+/// is minted with the user's registration/primary `role` (login behaviour is unchanged); the app
+/// may then `POST /auth/switch-role` to mint a token for another enrolled role.
+#[derive(Debug, Serialize)]
+pub struct LoginTokenPair {
+    #[serde(flatten)]
+    pub tokens: TokenPair,
+    /// The APPROVED roles this account holds (from `user_roles`). `[role]` for a single-role user.
+    pub available_roles: Vec<String>,
+}
+
+/// Switch the caller's ACTIVE role (`POST /auth/switch-role`). The target `role` MUST be in the
+/// caller's enrolled (`user_roles`) set — a role they are not enrolled in is rejected with 409
+/// `ROLE_NOT_ENROLLED` and NO token is minted (the critical anti-escalation gate).
+#[derive(Debug, Deserialize)]
+pub struct SwitchRoleRequest {
+    pub role: String,
+}
+
+/// Enrol the logged-in user in a NEW role they don't yet hold (`POST /auth/roles`). Returns a
+/// single-use `profile_token` scoped to `(this user_id, role)` so the app can submit that role's
+/// profile form → a PENDING second profile for the SAME user_id. The role enters `user_roles`
+/// only on approval — this does NOT grant the role.
+#[derive(Debug, Deserialize)]
+pub struct EnrollRoleRequest {
+    pub role: String,
 }
 
 /// Result of a successful registration (HTTP 202). Carries NO access/refresh token — a

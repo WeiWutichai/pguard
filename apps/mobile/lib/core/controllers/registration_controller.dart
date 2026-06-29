@@ -85,7 +85,32 @@ class RegistrationController extends _$RegistrationController {
   String? _pin;
   String? _profileToken;
 
+  /// True while running the ADD-ROLE flow (an already-authenticated user enrolling a SECOND role
+  /// via `POST /auth/roles`). The profile-form submit then must NOT write the cold-start pending
+  /// markers or flip the session to `pendingApproval` (that would knock the user out of their
+  /// CURRENT role) — the new role is simply pending admin approval in the background.
+  bool _isAddRole = false;
+
   static const PinHasher _hasher = PinHasher();
+
+  /// Enter the ADD-ROLE flow (from [RoleSwitchController.enrol]): the logged-in user is enrolling a
+  /// NEW [role]; [profileToken] (from `POST /auth/roles`) authorizes the one profile write. The
+  /// existing `/auth/register/{role}` profile form drives the rest; on submit the new role is
+  /// PENDING approval while the user stays in their current role.
+  Future<void> beginAddRole({
+    required RegistrationRole role,
+    required String profileToken,
+  }) async {
+    _isAddRole = true;
+    _profileToken = profileToken;
+    _phone = null;
+    _phoneVerifiedToken = null;
+    _pin = null;
+    // Persist (secure) so a backgrounded add-role flow survives a brief app restart and the profile
+    // submit can still present the token — mirrors how `register()` stashes its profile_token.
+    await ref.read(appStoreProvider).saveProfileToken(profileToken);
+    state = RegistrationState(role: role);
+  }
 
   /// Snapshot the auth-flow credentials once the PIN is set (called from the PIN screen) AND
   /// persist them so a cold start before role-select can resume here (Option A) and still
@@ -101,6 +126,7 @@ class RegistrationController extends _$RegistrationController {
     _phone = phone;
     _phoneVerifiedToken = phoneVerifiedToken;
     _pin = pin;
+    _isAddRole = false; // a fresh first-role registration, not an add-role
     final store = ref.read(appStoreProvider);
     final prefs = ref.read(prefsStoreProvider);
     await store.savePhone(phone);
@@ -503,15 +529,23 @@ class RegistrationController extends _$RegistrationController {
       return null;
     }
     try {
-      // The single-use profile_token is the Bearer (no session exists yet).
+      // The single-use profile_token is the Bearer. For a first-role registration there is no
+      // session yet; for an ADD-ROLE the user IS authenticated but the purpose-scoped token (not the
+      // session token) still authorizes this one write, so `bearer:` is correct in both cases.
       final resp =
           await ref.read(pguardApiProvider).post(path, data: data, bearer: token);
-      // Now that the profile is submitted, persist the pending flag + MASKED summary (prefs,
-      // non-sensitive) so a cold start resumes the pending screen with the submitted summary.
-      final prefs = ref.read(prefsStoreProvider);
-      await prefs.setString(kRegPendingRoleKey, summary.role.wire);
-      await prefs.setString(kRegSummaryKey, jsonEncode(summary.toJson()));
+      // First-role registration: persist the pending flag + MASKED summary (prefs, non-sensitive) so
+      // a cold start resumes the pending screen with the submitted summary.
+      // ADD-ROLE: the user stays in their CURRENT (approved) role — the new role is just pending in
+      // the background. Writing the cold-start pending markers here would TRAP them on the pending
+      // screen on the next cold start, so skip them; just surface the submitted confirmation.
+      if (!_isAddRole) {
+        final prefs = ref.read(prefsStoreProvider);
+        await prefs.setString(kRegPendingRoleKey, summary.role.wire);
+        await prefs.setString(kRegSummaryKey, jsonEncode(summary.toJson()));
+      }
       _profileToken = null; // consumed single-use
+      _isAddRole = false; // the add-role write is done
       state = state.copyWith(busy: false, submitted: summary);
       return resp is Map<String, dynamic> ? resp : <String, dynamic>{};
     } on ApiException catch (e) {

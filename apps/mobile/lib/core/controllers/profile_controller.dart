@@ -1,5 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../models/auth_models.dart';
 import '../models/profile.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
@@ -17,7 +18,13 @@ class ProfileController extends _$ProfileController {
   @override
   Future<UserProfile> build() async {
     final api = ref.read(pguardApiProvider);
+    final session = ref.read(sessionProvider.notifier);
     final me = await api.get('/auth/me') as Map<String, dynamic>;
+    // `/auth/me` carries the enrolled-role SET (`roles`) — push it into the session so a role
+    // approved AFTER login (the new role joins `user_roles`) starts showing up in the mode picker /
+    // switch affordance without a fresh login. No-op when `roles` is absent/empty.
+    final roles = AuthUser.rolesFromJson(me['roles']);
+    if (roles.isNotEmpty) session.refreshRoles(roles);
     Map<String, dynamic>? profile;
     try {
       profile = await api.get('/profile/me') as Map<String, dynamic>?;

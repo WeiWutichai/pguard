@@ -3,6 +3,7 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:built_collection/built_collection.dart';
 import 'package:pguard_identity_api/src/model/user_role.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
@@ -14,6 +15,7 @@ part 'me.g.dart';
 /// Properties:
 /// * [userId] 
 /// * [role] 
+/// * [roles] - The SET of APPROVED roles this account holds (multi-role, Option A). For a single-role user this is exactly `[role]`; for a dual-role user it carries both so the app can offer a role switch (`POST /auth/switch-role`). Always contains the active `role`. 
 /// * [displayName] - The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
 /// * [email] - The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
 @BuiltValue()
@@ -24,6 +26,10 @@ abstract class Me implements Built<Me, MeBuilder> {
   @BuiltValueField(wireName: r'role')
   UserRole get role;
   // enum roleEnum {  admin,  customer,  guard,  };
+
+  /// The SET of APPROVED roles this account holds (multi-role, Option A). For a single-role user this is exactly `[role]`; for a dual-role user it carries both so the app can offer a role switch (`POST /auth/switch-role`). Always contains the active `role`. 
+  @BuiltValueField(wireName: r'roles')
+  BuiltList<UserRole> get roles;
 
   /// The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
   @BuiltValueField(wireName: r'display_name')
@@ -65,6 +71,11 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
     yield serializers.serialize(
       object.role,
       specifiedType: const FullType(UserRole),
+    );
+    yield r'roles';
+    yield serializers.serialize(
+      object.roles,
+      specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
     );
     if (object.displayName != null) {
       yield r'display_name';
@@ -116,6 +127,13 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
             specifiedType: const FullType(UserRole),
           ) as UserRole;
           result.role = valueDes;
+          break;
+        case r'roles':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
+          ) as BuiltList<UserRole>;
+          result.roles.replace(valueDes);
           break;
         case r'display_name':
           final valueDes = serializers.deserialize(

@@ -41,19 +41,62 @@ class OtpChallenge {
       );
 }
 
-/// The authenticated principal from `GET /auth/me`.
+/// The authenticated principal. [role] is the ACTIVE role (from the access token); [roles] is the
+/// ENROLLED set (the account's approved roles) — `[role]` for a single-role account, both roles
+/// for a dual-role account. The enrolled set comes from login's `available_roles` / `GET /auth/me`'s
+/// `roles`; it drives the post-login mode picker and the in-app role switch (one phone = one account
+/// that can be BOTH guard + customer).
 class AuthUser {
-  const AuthUser({required this.userId, required this.role});
+  const AuthUser({
+    required this.userId,
+    required this.role,
+    List<String>? roles,
+  }) : roles = roles ?? const [];
 
   final String userId;
   final String role; // "customer" | "guard" | "admin"
+
+  /// The enrolled/approved roles. Always includes [role]; >1 entry means the account can switch
+  /// modes. Never null (an empty list is treated as "just the active role" by [enrolledRoles]).
+  final List<String> roles;
 
   bool get isCustomer => role == 'customer';
   bool get isGuard => role == 'guard';
   bool get isAdmin => role == 'admin';
 
+  /// The enrolled set, guaranteed to contain the active [role] even if the server list was empty
+  /// or stale (defensive — the active role is always switchable-back-to).
+  List<String> get enrolledRoles =>
+      roles.contains(role) ? roles : [role, ...roles];
+
+  /// The account holds more than one approved role → offer the mode picker / switch affordance.
+  bool get hasMultipleRoles => enrolledRoles.length > 1;
+
+  bool isEnrolledIn(String r) => enrolledRoles.contains(r);
+
+  /// Copy with a new active [role] (e.g. after a successful switch-role), keeping the enrolled set.
+  AuthUser withActiveRole(String role) =>
+      AuthUser(userId: userId, role: role, roles: roles);
+
+  /// Copy with an updated enrolled set (e.g. after `GET /auth/me`), keeping the active role.
+  AuthUser withRoles(List<String> roles) =>
+      AuthUser(userId: userId, role: role, roles: roles);
+
+  /// Normalize a roles JSON array (`available_roles` / `roles`) to a clean, de-duplicated list of
+  /// non-empty role strings. Tolerates a missing/non-list value (→ empty).
+  static List<String> rolesFromJson(dynamic raw) {
+    if (raw is! List) return const [];
+    final seen = <String>{};
+    final out = <String>[];
+    for (final e in raw) {
+      if (e is String && e.isNotEmpty && seen.add(e)) out.add(e);
+    }
+    return out;
+  }
+
   factory AuthUser.fromJson(Map<String, dynamic> json) => AuthUser(
         userId: (json['user_id'] ?? json['sub'] ?? '') as String,
         role: (json['role'] ?? '') as String,
+        roles: rolesFromJson(json['roles'] ?? json['available_roles']),
       );
 }

@@ -22,11 +22,11 @@ use crate::domain::rotation::{decide, RotationDecision};
 use crate::domain::{mask, registration, token, twofactor};
 use crate::models::{
     ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest, CreateApiTokenResponse,
-    Disable2faRequest, Enable2faRequest, Enable2faResponse, LoginRequest, MeResponse,
-    RefreshRequest, RegisterRequest, RegisterResult, ReissueProfileTokenRequest,
-    ResolveUsersRequest, ResolvedUser, SessionView, Setup2faResponse, TokenPair,
-    TwoFactorChallenge, UpdateMeRequest, UserSearchQuery, UserSearchResult, Verify2faRequest,
-    VerifyApiTokenRequest, VerifyApiTokenResponse,
+    Disable2faRequest, Enable2faRequest, Enable2faResponse, EnrollRoleRequest, LoginRequest,
+    LoginTokenPair, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
+    ReissueProfileTokenRequest, ResolveUsersRequest, ResolvedUser, SessionView, Setup2faResponse,
+    SwitchRoleRequest, TokenPair, TwoFactorChallenge, UpdateMeRequest, UserSearchQuery,
+    UserSearchResult, Verify2faRequest, VerifyApiTokenRequest, VerifyApiTokenResponse,
 };
 use crate::repo;
 use crate::repo::DeviceContext;
@@ -90,6 +90,14 @@ fn two_factor_jti_ttl_secs() -> u64 {
 /// Build the response that carries the token pair both in the JSON body (mobile/API) and
 /// as httpOnly Secure SameSite=Lax cookies (web).
 fn token_response(pair: TokenPair, access_max_age_secs: i64) -> impl IntoResponse {
+    let (headers, _) = token_cookie_headers(&pair, access_max_age_secs);
+    (headers, Json(ApiResponse::success(pair)))
+}
+
+/// Build the auth Set-Cookie headers for a freshly-issued token pair (access cookie at `/`,
+/// refresh cookie scoped to `/auth`). Returns the headers + the pair's access TTL so callers
+/// that wrap the pair in a richer body (login's `available_roles`) reuse the identical cookies.
+fn token_cookie_headers(pair: &TokenPair, access_max_age_secs: i64) -> (HeaderMap, i64) {
     let mut headers = HeaderMap::new();
     append_cookie(
         &mut headers,
@@ -109,7 +117,7 @@ fn token_response(pair: TokenPair, access_max_age_secs: i64) -> impl IntoRespons
             REFRESH_COOKIE_PATH,
         ),
     );
-    (headers, Json(ApiResponse::success(pair)))
+    (headers, access_max_age_secs)
 }
 
 fn append_cookie(headers: &mut HeaderMap, cookie: &str) {
@@ -173,9 +181,13 @@ pub async fn login(
     .into_response())
 }
 
-/// Mint the access token + a new refresh family and build the token response (body + cookies),
-/// stamping the login device context. Shared by `login` (no-2FA path) and `verify_2fa` (the
-/// second factor succeeded), so both issue tokens identically.
+/// Mint the access token (for `role`) plus a new refresh family and build the LOGIN response
+/// (body and cookies), stamping the login device context. Shared by `login` (no-2FA path) and
+/// `verify_2fa` (the second factor succeeded), so both issue tokens identically. The body is a
+/// `LoginTokenPair`: the usual `TokenPair` fields PLUS `available_roles` (the account's enrolled
+/// `user_roles` set) so a multi-role app can offer a role switch. The access token's active role
+/// is the supplied `role` (the registration/primary role on login) — unchanged minting
+/// behaviour; `available_roles` is additive and backward-compatible.
 async fn issue_login_tokens(
     state: &AppState,
     user_id: Uuid,
@@ -199,7 +211,16 @@ async fn issue_login_tokens(
         expires_in: state.jwt_config.expiry_minutes * 60,
         token_type: "Bearer",
     };
-    Ok(token_response(pair, state.jwt_config.expiry_minutes * 60).into_response())
+    // The enrolled-role set for the picker. A single-role user → `[role]` (identical to the
+    // single-role world); a dual-role user → both. Always contains the active `role`.
+    let available_roles = repo::list_user_roles(&state.db, user_id).await?;
+
+    let (cookie_headers, _) = token_cookie_headers(&pair, state.jwt_config.expiry_minutes * 60);
+    let body = LoginTokenPair {
+        tokens: pair,
+        available_roles,
+    };
+    Ok((cookie_headers, Json(ApiResponse::success(body))).into_response())
 }
 
 // ----- POST /auth/register -----
@@ -553,11 +574,16 @@ pub async fn me(
     user: AuthUser,
 ) -> Result<Json<ApiResponse<MeResponse>>, AppError> {
     let profile = repo::self_profile(&state.db, user.user_id).await?;
+    // The multi-role set (Option A). For a single-role user this is exactly `[role]`; for a
+    // dual-role user it carries both so the app can offer a role switch. The ACTIVE `role`
+    // below is still the token's role (authoritative for this session).
+    let roles = repo::list_user_roles(&state.db, user.user_id).await?;
     Ok(Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
         // Prefer the freshly-read DB role (authoritative if it changed since the token issued);
         // falls back identically to the token's role in the common case.
         role: profile.role,
+        roles,
         display_name: profile.display_name,
         email: profile.email,
     })))
@@ -579,9 +605,11 @@ pub async fn update_me(
     let email = registration::validate_email(req.email.as_deref())?;
     let profile =
         repo::update_self_profile(&state.db, user.user_id, &display_name, email.as_deref()).await?;
+    let roles = repo::list_user_roles(&state.db, user.user_id).await?;
     Ok(Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
         role: profile.role,
+        roles,
         display_name: profile.display_name,
         email: profile.email,
     })))
@@ -727,6 +755,125 @@ pub async fn revoke_all_sessions(
     Ok((
         headers,
         Json(ApiResponse::success(serde_json::json!({ "revoked": true }))),
+    ))
+}
+
+// ===================== Multi-role (Option A) =====================
+
+// ----- POST /auth/switch-role (authenticated self) -----
+
+/// Switch the caller's ACTIVE role and mint a NEW access+refresh token pair stamped with that
+/// role. THE CRITICAL SECURITY GATE: the target `role` MUST be in the caller's APPROVED
+/// `user_roles` set — checked via `repo::user_has_role` BEFORE any token is minted. A role the
+/// user is not enrolled in → 409 `ROLE_NOT_ENROLLED` and NO token is issued (no privilege
+/// escalation: a customer can never mint a guard token unless they hold an approved guard
+/// profile, and vice-versa). On success a fresh refresh FAMILY is created (like a normal login —
+/// the old family is left intact so the user's other sessions keep their prior role until they
+/// expire/refresh), and the pair is returned in the body + as cookies. `admin` can never be a
+/// switch target because it can never enter `user_roles` (no self-assignment at registration and
+/// no admin profile route to approve). `skip_all`: never log tokens.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn switch_role(
+    State(state): State<AppState>,
+    user: AuthUser,
+    headers: HeaderMap,
+    Json(req): Json<SwitchRoleRequest>,
+) -> Result<axum::response::Response, AppError> {
+    // Normalize + reject structurally-impossible targets (unknown role → BadRequest; admin →
+    // Forbidden) BEFORE the enrolment check, so the 409 is reserved for a real "valid role you
+    // simply aren't enrolled in" — not a typo or an escalation attempt.
+    let role = registration::validate_registration_role(&req.role)?;
+    let role = role.to_string();
+
+    // THE gate: only an ENROLLED role can be switched into. A non-enrolled role mints NOTHING.
+    if !repo::user_has_role(&state.db, user.user_id, &role).await? {
+        return Err(AppError::ConflictCode {
+            code: "ROLE_NOT_ENROLLED",
+            message: "You are not enrolled in that role. Register it first.".to_string(),
+        });
+    }
+
+    // Re-read the current revocation version for the new token (the account must still be live).
+    let trv = repo::user_trv_if_active(&state.db, user.user_id)
+        .await?
+        .ok_or_else(|| AppError::Unauthorized("Account is no longer eligible".to_string()))?;
+
+    let (access_token, _jti) = encode_jwt_with_key(
+        user.user_id,
+        &role,
+        trv as i64,
+        &state.jwt_config.encoding_key,
+        state.jwt_config.expiry_minutes,
+    )?;
+    let refresh_token =
+        repo::create_refresh_family(&state.db, user.user_id, &device_context(&headers)).await?;
+
+    let pair = TokenPair {
+        access_token,
+        refresh_token,
+        expires_in: state.jwt_config.expiry_minutes * 60,
+        token_type: "Bearer",
+    };
+    tracing::info!(role = %role, "active role switched (new token pair minted)");
+    Ok(token_response(pair, state.jwt_config.expiry_minutes * 60).into_response())
+}
+
+// ----- POST /auth/roles (authenticated self — enroll a NEW role) -----
+
+/// Enroll the logged-in user in a NEW role they don't yet hold. Returns a single-use
+/// `profile_token` scoped to `(this user_id, the new role)` — the SAME shape register issues — so
+/// the app can submit that role's profile form (`POST /profile/{guard,customer}`), creating a
+/// PENDING second profile for the SAME user_id. The role enters `user_roles` (becomes switchable)
+/// ONLY on admin approval (the `user.approved` event path). This endpoint does NOT grant the role.
+///
+/// 409 if the caller is ALREADY enrolled in `role` (it's in `user_roles`). A role with a still-
+/// pending profile is NOT a hard error here: re-issuing the `profile_token` is idempotent (the
+/// profile upsert refreshes the existing pending row), and identity does not synchronously couple
+/// to profile to probe pending state (no cross-service read in the request path). `admin` is
+/// rejected (Forbidden) — no profile route, never self-assignable. `skip_all`: never log tokens.
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn enroll_role(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<EnrollRoleRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // Validate the target (unknown → BadRequest; admin → Forbidden — no self-assignment, no
+    // profile route). Only guard/customer reach the enrolment path.
+    let role = registration::validate_registration_role(&req.role)?;
+
+    // Already enrolled (approved) → 409. The role is live/switchable already; nothing to do.
+    if repo::user_has_role(&state.db, user.user_id, &role.to_string()).await? {
+        return Err(AppError::ConflictCode {
+            code: "ROLE_ALREADY_ENROLLED",
+            message: "You already hold that role.".to_string(),
+        });
+    }
+
+    // Mint the single-use profile_token for THIS user_id + the new role's onboarding route, and
+    // record its jti so the profile service can GETDEL it once (identical scheme to register
+    // step 6). The token's `sub` is the EXISTING user_id, so the pending profile is created for
+    // the SAME account — the profile tables allow one guard_profile AND one customer_profile per
+    // user_id, so a second-role profile coexists with the first.
+    let purpose = registration::profile_purpose_for_role(&role)?;
+    let (profile_token, profile_jti) = encode_profile_token(
+        user.user_id,
+        purpose,
+        &state.jwt_config.encoding_key,
+        PROFILE_TOKEN_TTL_MINUTES,
+    )?;
+    let ttl_secs = (PROFILE_TOKEN_TTL_MINUTES * 60 + PROFILE_JTI_SKEW_BUFFER_SECS) as u64;
+    let mut redis = state.redis_conn.clone();
+    redis
+        .set_ex::<_, _, ()>(format!("profile_jti:{profile_jti}"), "valid", ttl_secs)
+        .await?;
+
+    tracing::info!(role = %role, "new role enrollment started (pending second profile)");
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::success(RegisterResult {
+            user_id: user.user_id,
+            profile_token,
+        })),
     ))
 }
 
@@ -1752,5 +1899,374 @@ mod tests {
             .bind(user_id)
             .execute(&pool)
             .await;
+    }
+}
+
+// ===================== Multi-role (Option A) HTTP tests =====================
+//
+// End-to-end against REAL infra (Postgres + Redis): the switch-role + enroll-role + /me + login
+// surface over the concrete AppState, exercising the FULL handler (AuthUser extraction → the
+// `user_roles` gate → token/profile_token mint). Gated on DATABASE_URL + a test Redis; hermetic
+// SKIP when either is absent. The CRITICAL security assertion lives here: a switch to a role the
+// caller is NOT enrolled in returns 409 and mints NO token.
+#[cfg(test)]
+mod multi_role_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use axum::routing::{get, post};
+    use axum::Router;
+    use shared::auth::encode_jwt_with_key;
+    use shared::config::{JwtConfig, ServiceJwtConfig};
+    use sqlx::postgres::PgPoolOptions;
+    use std::time::Duration;
+    use tower::ServiceExt;
+
+    const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-multi-role-http-test!!";
+
+    /// Build a real AppState wired to the given pool + redis, with HS256 keys derived from SECRET
+    /// (so a token we mint here authenticates against this same state).
+    fn state(db: sqlx::PgPool, redis: redis::aio::ConnectionManager) -> AppState {
+        AppState {
+            db,
+            redis_conn: redis,
+            jwt_config: JwtConfig {
+                secret: SECRET.to_string(),
+                expiry_minutes: 15,
+                encoding_key: jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                decoding_key: jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes()),
+            },
+            service_jwt_config: ServiceJwtConfig {
+                encoding_key: jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                decoding_key: jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes()),
+                ttl_secs: 60,
+            },
+            export_client: crate::export_client::ExportClient::new(
+                reqwest::Client::new(),
+                jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                60,
+                vec![],
+            ),
+            totp_enc_key: [0u8; 32],
+        }
+    }
+
+    fn router(st: AppState) -> Router {
+        Router::new()
+            .route("/auth/switch-role", post(switch_role))
+            .route("/auth/roles", post(enroll_role))
+            .route("/auth/me", get(me))
+            .with_state(st)
+    }
+
+    /// Mint a real access token for `(user_id, role)` so AuthUser extraction succeeds.
+    fn access_token(user_id: Uuid, role: &str) -> String {
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        encode_jwt_with_key(user_id, role, 0, &ek, 15).unwrap().0
+    }
+
+    async fn infra() -> Option<(sqlx::PgPool, redis::aio::ConnectionManager)> {
+        let db_url = std::env::var("DATABASE_URL").ok()?;
+        let redis_url = std::env::var("TEST_REDIS_URL")
+            .or_else(|_| std::env::var("REDIS_CACHE_URL"))
+            .ok()?;
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .ok()?;
+        let redis = shared::redis_client::create_connection_manager(&redis_url)
+            .await
+            .ok()?;
+        Some((pool, redis))
+    }
+
+    /// Seed an APPROVED user with `role` as the primary role + enrol `roles` into user_roles.
+    async fn seed_user(pool: &sqlx::PgPool, primary: &str, roles: &[&str]) -> Uuid {
+        let user_id = Uuid::new_v4();
+        let phone = format!("0{}", &user_id.simple().to_string()[..9]);
+        let pw = crate::domain::password::hash_secret("x").unwrap();
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, $3, $4::identity.user_role, 'approved'::identity.approval_status)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(&pw)
+        .bind(primary)
+        .execute(pool)
+        .await
+        .expect("seed user");
+        for r in roles {
+            repo::add_user_role(pool, user_id, r).await.expect("enrol");
+        }
+        user_id
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, user_id: Uuid) {
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await;
+    }
+
+    fn json_post(uri: &str, bearer: &str, body: serde_json::Value) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    }
+
+    /// THE critical anti-escalation test: a customer-only user switching to `guard` (a role they
+    /// are NOT enrolled in) gets 409 ROLE_NOT_ENROLLED and the response carries NO token (no
+    /// access_token in the body, no Set-Cookie). A token is minted ONLY for an enrolled role.
+    #[tokio::test]
+    async fn switch_role_to_non_enrolled_is_409_and_mints_no_token() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Customer with ONLY the customer role enrolled.
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        let app = router(state(pool.clone(), redis));
+        let tok = access_token(user_id, "customer");
+
+        let res = app
+            .oneshot(json_post(
+                "/auth/switch-role",
+                &tok,
+                serde_json::json!({ "role": "guard" }),
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            res.status(),
+            StatusCode::CONFLICT,
+            "switching to a non-enrolled role must be 409 (no escalation)"
+        );
+        assert!(
+            res.headers().get(header::SET_COOKIE).is_none(),
+            "a rejected switch must NOT set auth cookies"
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["error"]["code"], "ROLE_NOT_ENROLLED",
+            "the 409 carries the ROLE_NOT_ENROLLED code"
+        );
+        // CRUCIAL: no token of any kind is present.
+        assert!(
+            json["data"].get("access_token").is_none(),
+            "no access token minted for a non-enrolled role"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// A switch to an ENROLLED role mints a NEW token pair whose active role is the target — and
+    /// sets the auth cookies (like login). Proves the happy path issues the right role.
+    #[tokio::test]
+    async fn switch_role_to_enrolled_role_mints_token_with_that_active_role() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Dual-role user (registered as customer, also approved as guard).
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let app = router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        let res = app
+            .oneshot(json_post(
+                "/auth/switch-role",
+                &tok,
+                serde_json::json!({ "role": "guard" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "enrolled switch is 200");
+        assert!(
+            res.headers().get(header::SET_COOKIE).is_some(),
+            "a successful switch sets auth cookies"
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let access = json["data"]["access_token"].as_str().expect("access token");
+        // Decode the minted token; its role claim must be the switch target (guard).
+        let dk = jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes());
+        let claims = shared::auth::decode_jwt_with_key(access, &dk).expect("decode");
+        assert_eq!(
+            claims.role, "guard",
+            "minted token carries the switched role"
+        );
+        assert_eq!(claims.sub, user_id);
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// `GET /auth/me` returns the multi-role `roles` set alongside the single active `role`. For a
+    /// dual-role user both roles appear; the active `role` is the DB primary role.
+    #[tokio::test]
+    async fn me_returns_the_roles_set() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let app = router(state(pool.clone(), redis));
+        let tok = access_token(user_id, "customer");
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/me")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["data"]["role"], "customer",
+            "active role is the primary"
+        );
+        let mut roles: Vec<String> = json["data"]["roles"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect();
+        roles.sort();
+        assert_eq!(roles, vec!["customer".to_string(), "guard".to_string()]);
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// `POST /auth/roles` for a NEW role returns 202 + a single-use profile_token and does NOT
+    /// grant the role (the role stays OUT of user_roles until approval). Re-enrolling an
+    /// ALREADY-held role → 409 ROLE_ALREADY_ENROLLED.
+    #[tokio::test]
+    async fn enroll_role_issues_profile_token_without_granting_then_409_if_held() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Customer-only user enrolling a guard role.
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        let app = router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        let res = app
+            .clone()
+            .oneshot(json_post(
+                "/auth/roles",
+                &tok,
+                serde_json::json!({ "role": "guard" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::ACCEPTED, "enroll returns 202");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            json["data"]["profile_token"].is_string(),
+            "a profile_token for the new role is returned"
+        );
+        assert_eq!(
+            json["data"]["user_id"].as_str().unwrap(),
+            user_id.to_string(),
+            "the profile_token is scoped to the SAME user_id"
+        );
+
+        // The role is NOT granted yet — it must NOT be in user_roles.
+        assert!(
+            !repo::user_has_role(&pool, user_id, "guard").await.unwrap(),
+            "enrolling does NOT grant the role until approval"
+        );
+
+        // Re-enrolling an already-held role (customer) → 409 ROLE_ALREADY_ENROLLED.
+        let res2 = app
+            .oneshot(json_post(
+                "/auth/roles",
+                &tok,
+                serde_json::json!({ "role": "customer" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::CONFLICT);
+        let bytes2 = axum::body::to_bytes(res2.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json2: serde_json::Value = serde_json::from_slice(&bytes2).unwrap();
+        assert_eq!(json2["error"]["code"], "ROLE_ALREADY_ENROLLED");
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// Backward-compat: a single-role user's `/auth/me` returns exactly `[their_role]` and a
+    /// switch to their OWN (only) role is a valid 200 (idempotent re-mint), while a switch to the
+    /// other role 409s — i.e. nothing about a single-role account changed except the additive set.
+    #[tokio::test]
+    async fn single_role_user_is_backward_compatible() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let app = router(state(pool.clone(), redis));
+        let tok = access_token(user_id, "guard");
+
+        // /me → exactly [guard].
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/me")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            json["data"]["roles"].as_array().unwrap().len(),
+            1,
+            "a single-role user has exactly one enrolled role"
+        );
+        assert_eq!(json["data"]["roles"][0], "guard");
+
+        // A switch to the OTHER (non-enrolled) role 409s — no escalation for single-role users.
+        let res2 = app
+            .oneshot(json_post(
+                "/auth/switch-role",
+                &tok,
+                serde_json::json!({ "role": "customer" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::CONFLICT);
+
+        cleanup(&pool, user_id).await;
     }
 }

@@ -95,6 +95,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**deleteMe**](doc/AuthApi.md#deleteme) | **DELETE** /auth/me | Erase the authenticated user&#39;s account (PDPA §33 right to erasure)
 [*AuthApi*](doc/AuthApi.md) | [**disable2fa**](doc/AuthApi.md#disable2fa) | **POST** /auth/2fa/disable | Disable TOTP 2FA (confirm with a code or password,
 [*AuthApi*](doc/AuthApi.md) | [**enable2fa**](doc/AuthApi.md#enable2fa) | **POST** /auth/2fa/enable | Enable TOTP 2FA after verifying a live code (#144)
+[*AuthApi*](doc/AuthApi.md) | [**enrollRole**](doc/AuthApi.md#enrollrole) | **POST** /auth/roles | Enroll the logged-in user in a NEW role (multi-role, Option A)
 [*AuthApi*](doc/AuthApi.md) | [**listSessions**](doc/AuthApi.md#listsessions) | **GET** /auth/sessions | List the caller&#39;s active sessions (per-device,
 [*AuthApi*](doc/AuthApi.md) | [**login**](doc/AuthApi.md#login) | **POST** /auth/login | Authenticate with phone/email + password; issue an access + refresh token
 [*AuthApi*](doc/AuthApi.md) | [**logout**](doc/AuthApi.md#logout) | **POST** /auth/logout | Log out — blocklist the access jti and revoke the refresh family
@@ -104,6 +105,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**revokeAllSessions**](doc/AuthApi.md#revokeallsessions) | **POST** /auth/revoke-all | Sign out everywhere — revoke ALL of the caller&#39;s own sessions
 [*AuthApi*](doc/AuthApi.md) | [**revokeSession**](doc/AuthApi.md#revokesession) | **DELETE** /auth/sessions/{family_id} | Revoke ONE of the caller&#39;s sessions (sign out a single device,
 [*AuthApi*](doc/AuthApi.md) | [**setup2fa**](doc/AuthApi.md#setup2fa) | **POST** /auth/2fa/setup | Begin TOTP 2FA enrollment (provision — NOT yet enabled,
+[*AuthApi*](doc/AuthApi.md) | [**switchRole**](doc/AuthApi.md#switchrole) | **POST** /auth/switch-role | Switch the caller&#39;s ACTIVE role (multi-role, Option A)
 [*AuthApi*](doc/AuthApi.md) | [**updateMe**](doc/AuthApi.md#updateme) | **PUT** /auth/me | Update the caller&#39;s OWN display_name + email (#144 admin self-profile)
 [*AuthApi*](doc/AuthApi.md) | [**verify2fa**](doc/AuthApi.md#verify2fa) | **POST** /auth/2fa/verify | Complete a 2FA login (second step) — issues the token pair (#144)
 [*InternalApi*](doc/InternalApi.md) | [**internalResolveUserNames**](doc/InternalApi.md#internalresolveusernames) | **POST** /internal/users/names | Batch-resolve user_ids to { role, display_name } (service-JWT only)
@@ -132,6 +134,7 @@ Class | Method | HTTP request | Description
  - [Enable2fa200Response](doc/Enable2fa200Response.md)
  - [Enable2faRequest](doc/Enable2faRequest.md)
  - [Enable2faResponse](doc/Enable2faResponse.md)
+ - [EnrollRoleRequest](doc/EnrollRoleRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [InlineObject](doc/InlineObject.md)
@@ -141,6 +144,7 @@ Class | Method | HTTP request | Description
  - [Login200Response](doc/Login200Response.md)
  - [Login200ResponseAllOfData](doc/Login200ResponseAllOfData.md)
  - [LoginRequest](doc/LoginRequest.md)
+ - [LoginTokenPair](doc/LoginTokenPair.md)
  - [Me](doc/Me.md)
  - [Me200Response](doc/Me200Response.md)
  - [RefreshRequest](doc/RefreshRequest.md)
@@ -152,6 +156,7 @@ Class | Method | HTTP request | Description
  - [SessionView](doc/SessionView.md)
  - [Setup2fa200Response](doc/Setup2fa200Response.md)
  - [Setup2faResponse](doc/Setup2faResponse.md)
+ - [SwitchRoleRequest](doc/SwitchRoleRequest.md)
  - [TokenPair](doc/TokenPair.md)
  - [TwoFactorChallenge](doc/TwoFactorChallenge.md)
  - [UpdateMeRequest](doc/UpdateMeRequest.md)

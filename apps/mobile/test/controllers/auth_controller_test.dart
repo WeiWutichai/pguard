@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/auth_controller.dart';
+import 'package:pguard_mobile/core/controllers/session_controller.dart';
+import 'package:pguard_mobile/core/models/registration.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 
@@ -206,6 +208,66 @@ void main() {
     expect(sentRequestPhone, '0812345678',
         reason: 'backend otp.validate_thai_phone needs the leading 0');
     expect(sentVerifyPhone, '0812345678');
+  });
+
+  test(
+      'login parses available_roles into the session (dual-role → mode picker eligible)',
+      () async {
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(FakeApi(onPost: (path, _) async {
+        expect(path, '/auth/login');
+        return {
+          'access_token':
+              fakeJwt({'sub': 'u1', 'role': 'customer', 'exp': 9999999999}),
+          'refresh_token': 'r1',
+          'expires_in': 3600,
+          // Multi-role (Option A): the account holds BOTH approved roles.
+          'available_roles': ['customer', 'guard'],
+        };
+      })),
+      appStoreProvider.overrideWithValue(store),
+      prefsStoreProvider.overrideWithValue(prefs),
+    ]);
+    addTearDown(c.dispose);
+
+    final ok = await c
+        .read(authControllerProvider.notifier)
+        .loginWithPin(phone: '0812345678', pin: '135790');
+    expect(ok, isTrue);
+
+    final user = c.read(sessionProvider).user!;
+    expect(user.role, 'customer', reason: 'active role from the access token');
+    expect(user.isEnrolledIn('guard'), isTrue);
+    expect(user.hasMultipleRoles, isTrue);
+    // Persisted (non-sensitive) so a cold start lands on the picker.
+    expect(prefs.values[kEnrolledRolesKey], 'customer,guard');
+  });
+
+  test('a single-role login defaults available_roles to [active role]', () async {
+    final store = InMemoryStore();
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(FakeApi(onPost: (path, _) async {
+        return {
+          'access_token':
+              fakeJwt({'sub': 'u9', 'role': 'guard', 'exp': 9999999999}),
+          'refresh_token': 'r9',
+          'expires_in': 3600,
+          // No available_roles field (older shape) → fall back to [active].
+        };
+      })),
+      appStoreProvider.overrideWithValue(store),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    ]);
+    addTearDown(c.dispose);
+
+    await c
+        .read(authControllerProvider.notifier)
+        .loginWithPin(phone: '0812345678', pin: '135790');
+    final user = c.read(sessionProvider).user!;
+    expect(user.enrolledRoles, ['guard']);
+    expect(user.hasMultipleRoles, isFalse);
   });
 
   test('login failure surfaces the server message and stores no tokens',

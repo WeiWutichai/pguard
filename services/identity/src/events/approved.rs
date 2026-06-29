@@ -34,12 +34,15 @@ const DURABLE: &str = "identity-user-approved";
 /// Backoff between reconnect attempts when NATS is down or the stream ends.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The `user.approved` payload identity needs. Only `user_id` drives the flip; `role` is
-/// informational metadata (profile sets it from the route). A missing `user_id` fails the
-/// parse → the message is treated as poison (dropped + logged), never silently ignored.
+/// The `user.approved` payload identity needs. `user_id` drives the approval flip; `role`
+/// (set by profile from the approving route — `guard` / `customer`) is the role to ENROL into
+/// `user_roles` (the multi-role switchable set). A missing `user_id` OR `role` fails the parse
+/// → the message is treated as poison (dropped + logged), never silently ignored — so a role
+/// is never enrolled from a malformed event.
 #[derive(Debug, Deserialize)]
 struct ApprovedPayload {
     user_id: Uuid,
+    role: String,
 }
 
 /// Run the `user.approved` consumer FOREVER: (re)connect to NATS, drain, and on any
@@ -180,12 +183,17 @@ async fn apply(state: &AppState, envelope: EventEnvelope<ApprovedPayload>) -> Re
         envelope.event_id,
         &envelope.event_type,
         envelope.payload.user_id,
+        &envelope.payload.role,
     )
     .await?;
 
     match outcome {
         ApprovedOutcome::Applied => {
-            tracing::info!(user_id = %envelope.payload.user_id, "account approved → login enabled")
+            tracing::info!(
+                user_id = %envelope.payload.user_id,
+                role = %envelope.payload.role,
+                "account approved → login enabled + role enrolled"
+            )
         }
         ApprovedOutcome::Duplicate => tracing::debug!("duplicate user.approved event; skipped"),
         ApprovedOutcome::UserNotFound => {

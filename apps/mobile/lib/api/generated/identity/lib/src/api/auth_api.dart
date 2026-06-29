@@ -17,6 +17,7 @@ import 'package:pguard_identity_api/src/model/disable2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/disable2fa_request.dart';
 import 'package:pguard_identity_api/src/model/enable2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/enable2fa_request.dart';
+import 'package:pguard_identity_api/src/model/enroll_role_request.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
 import 'package:pguard_identity_api/src/model/inline_object.dart';
 import 'package:pguard_identity_api/src/model/list_sessions200_response.dart';
@@ -27,6 +28,7 @@ import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
 import 'package:pguard_identity_api/src/model/setup2fa200_response.dart';
+import 'package:pguard_identity_api/src/model/switch_role_request.dart';
 import 'package:pguard_identity_api/src/model/update_me_request.dart';
 import 'package:pguard_identity_api/src/model/verify2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/verify2fa_request.dart';
@@ -500,6 +502,107 @@ class AuthApi {
     );
   }
 
+  /// Enroll the logged-in user in a NEW role (multi-role, Option A)
+  /// Starts enrollment of a role the caller does NOT yet hold (e.g. a customer adding a guard role). Returns a single-use &#x60;profile_token&#x60; scoped to &#x60;(this user_id, role)&#x60; — the SAME shape register issues — so the app submits that role&#39;s profile form at &#x60;POST /profile/{guard,customer}&#x60;, creating a PENDING second profile for the SAME account. The role enters the switchable set (&#x60;user_roles&#x60;) ONLY on admin approval; this endpoint does NOT grant the role. &#x60;409&#x60; with code &#x60;ROLE_ALREADY_ENROLLED&#x60; if the caller already holds the role; unknown role → &#x60;400&#x60;; &#x60;admin&#x60; → &#x60;403&#x60;. 
+  ///
+  /// Parameters:
+  /// * [enrollRoleRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Register202Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Register202Response>> enrollRole({ 
+    required EnrollRoleRequest enrollRoleRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/roles';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(EnrollRoleRequest);
+      _bodyData = _serializers.serialize(enrollRoleRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Register202Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Register202Response),
+      ) as Register202Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Register202Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// List the caller&#39;s active sessions (per-device,
   /// Lists the caller&#39;s ACTIVE refresh families as a device list: &#x60;{ family_id, user_agent, ip (masked), created_at, last_used_at, current }&#x60;. &#x60;current&#x60; marks the session whose refresh token is presented (cookie or &#x60;X-Refresh-Token&#x60;). &#x60;ip&#x60; is masked to its first two octets/ hextets. A family is \&quot;active\&quot; if it still has a non-revoked, unexpired token. 
   ///
@@ -580,7 +683,7 @@ class AuthApi {
   }
 
   /// Authenticate with phone/email + password; issue an access + refresh token
-  /// Looks up the user by &#x60;identifier&#x60; (phone OR email), verifies the password with Argon2 (constant-time, anti-enumeration), then issues an access JWT + a rotating refresh token (new family). Tokens are returned in the body AND set as cookies. Any failure returns a generic 401 — the response never reveals whether the account exists.  **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the &#x60;200&#x60; body instead carries a &#x60;TwoFactorChallenge&#x60; (&#x60;{ two_factor_required: true, challenge_token }&#x60;) with NO tokens/cookies. The client completes login at &#x60;POST /auth/2fa/verify&#x60; with a code. Accounts WITHOUT 2FA are unaffected (the &#x60;data&#x60; is the usual &#x60;TokenPair&#x60;). 
+  /// Looks up the user by &#x60;identifier&#x60; (phone OR email), verifies the password with Argon2 (constant-time, anti-enumeration), then issues an access JWT + a rotating refresh token (new family). Tokens are returned in the body AND set as cookies. Any failure returns a generic 401 — the response never reveals whether the account exists.  **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the &#x60;200&#x60; body instead carries a &#x60;TwoFactorChallenge&#x60; (&#x60;{ two_factor_required: true, challenge_token }&#x60;) with NO tokens/cookies. The client completes login at &#x60;POST /auth/2fa/verify&#x60; with a code. Accounts WITHOUT 2FA are unaffected (the &#x60;data&#x60; is the usual token pair).  **Multi-role (Option A):** the no-2FA &#x60;data&#x60; is a &#x60;LoginTokenPair&#x60; — the usual &#x60;TokenPair&#x60; fields PLUS &#x60;available_roles&#x60; (the account&#39;s approved roles). BACKWARD COMPATIBLE: a single-role user gets &#x60;available_roles: [their_role]&#x60; and the access token is minted with their registration/primary role exactly as before. When &#x60;available_roles&#x60; has &gt;1 entry the app can show a role picker and call &#x60;POST /auth/switch-role&#x60;. 
   ///
   /// Parameters:
   /// * [loginRequest] 
@@ -1272,6 +1375,107 @@ class AuthApi {
     }
 
     return Response<Setup2fa200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Switch the caller&#39;s ACTIVE role (multi-role, Option A)
+  /// Mints a NEW access + refresh token pair whose active role is &#x60;role&#x60;. THE security gate: &#x60;role&#x60; MUST be in the caller&#39;s APPROVED roles (&#x60;user_roles&#x60; — the set surfaced by &#x60;GET /auth/me&#x60; &#x60;roles&#x60; and login&#39;s &#x60;available_roles&#x60;). A role the caller is NOT enrolled in → &#x60;409&#x60; with code &#x60;ROLE_NOT_ENROLLED&#x60; and NO token is minted (no privilege escalation — a customer cannot mint a guard token unless they hold an approved guard profile). An unknown role → &#x60;400&#x60;; &#x60;admin&#x60; → &#x60;403&#x60; (never self-assignable). On success the tokens are returned in the body AND set as cookies (a fresh refresh family, like login). 
+  ///
+  /// Parameters:
+  /// * [switchRoleRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Verify2fa200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Verify2fa200Response>> switchRole({ 
+    required SwitchRoleRequest switchRoleRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/switch-role';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(SwitchRoleRequest);
+      _bodyData = _serializers.serialize(switchRoleRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Verify2fa200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Verify2fa200Response),
+      ) as Verify2fa200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Verify2fa200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

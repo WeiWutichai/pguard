@@ -135,6 +135,11 @@ async fn main() -> anyhow::Result<()> {
         )
         .route("/auth/password", put(api::change_password))
         .route("/auth/revoke-all", post(api::revoke_all_sessions))
+        // Multi-role (Option A): switch the active role (mint a token for an ENROLLED role) +
+        // enroll a NEW role (mint a profile_token → pending second profile). Both are
+        // authenticated self (bearer/cookie+CSRF), token-protected — NOT public.
+        .route("/auth/switch-role", post(api::switch_role))
+        .route("/auth/roles", post(api::enroll_role))
         // 2FA (#144): setup (provision) / enable / disable are self + bearer-gated; verify is the
         // edge-public second login step (carries a purpose challenge token, not an access token).
         .route("/auth/2fa/setup", post(api::setup_2fa))

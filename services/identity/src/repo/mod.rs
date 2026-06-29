@@ -200,17 +200,120 @@ pub enum ApprovedOutcome {
     UserNotFound,
 }
 
-/// Flip the user's OWN `approval_status` to `approved`, driven by the `user.approved` event
-/// that profile emits on admin approval. **Idempotent by `event_id`**: the claim into
-/// `processed_events` + the `users` update happen in ONE transaction, so a redelivered event
-/// (JetStream at-least-once) is a safe no-op. This is identity writing its OWN schema — the
-/// event is the only coupling to profile (no cross-schema write in either direction).
-#[tracing::instrument(skip(db), fields(event_id = %event_id, user_id = %user_id))]
+// ─────────────────────────────────────────────────────────────────────────────
+// Multi-role (Option A: one phone = one account holding BOTH roles) — `user_roles`
+// is the SET of APPROVED roles a user has. `users.role` stays as the registration/
+// primary role for backward compat (every existing JWT carries it; login mints it).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The set of APPROVED roles a user holds, ascending by enrolment time (the registration
+/// role — backfilled — sorts first as the oldest). Used by `GET /auth/me` (`roles`) and
+/// `POST /auth/login` (`available_roles`, so the app can show a role picker when >1).
+///
+/// BACKWARD COMPAT: a single-role user (every pre-migration account, backfilled by 0007)
+/// returns exactly `[their_role]`, so the shape is identical to a single-role world.
+pub async fn list_user_roles(db: &PgPool, user_id: Uuid) -> Result<Vec<String>, AppError> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"
+        SELECT role::text AS role
+        FROM identity.user_roles
+        WHERE user_id = $1
+        ORDER BY created_at ASC, role ASC
+        "#,
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(r,)| r).collect())
+}
+
+/// THE security gate for `POST /auth/switch-role`: is `role` in the caller's APPROVED
+/// `user_roles` set? A switch token is minted ONLY when this returns `true` — a role the
+/// user is not enrolled in can never be switched to (no privilege escalation). A PK probe
+/// on `(user_id, role)`. An unknown role string simply never matches (no row) → `false`.
+pub async fn user_has_role(db: &PgPool, user_id: Uuid, role: &str) -> Result<bool, AppError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT 1
+        FROM identity.user_roles
+        WHERE user_id = $1 AND role = $2::identity.user_role
+        "#,
+    )
+    .bind(user_id)
+    .bind(role)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
+}
+
+/// Add `(user_id, role)` to `user_roles` IDEMPOTENTLY (`ON CONFLICT DO NOTHING`). Driven by
+/// the `user.approved` event when a profile (the registration role OR a later second role)
+/// is approved — that is the ONLY way a role enters the enrolled set. Returns `true` if a
+/// NEW row was inserted (a freshly-enrolled role), `false` if it was already present
+/// (redelivery / already enrolled). Caller must scope this to a live (non-deleted) user.
+///
+/// Generic over the SQLx executor so it runs BOTH standalone (`&PgPool`) AND inside the
+/// approval transaction (`&mut *tx`) — the approval flip + this enrolment commit atomically,
+/// with no duplicated INSERT SQL.
+pub async fn add_user_role<'e, E>(executor: E, user_id: Uuid, role: &str) -> Result<bool, AppError>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Postgres>,
+{
+    let res = sqlx::query(
+        r#"
+        INSERT INTO identity.user_roles (user_id, role)
+        VALUES ($1, $2::identity.user_role)
+        ON CONFLICT (user_id, role) DO NOTHING
+        "#,
+    )
+    .bind(user_id)
+    .bind(role)
+    .execute(executor)
+    .await?;
+    Ok(res.rows_affected() == 1)
+}
+
+/// Re-read a live, ACTIVE user's `token_revocation_version` to mint a fresh token pair for a
+/// role switch (`POST /auth/switch-role`). Unlike [`user_auth_meta`] this does NOT re-derive
+/// the role from `users.role` — the switch target comes from the caller's enrolled set (checked
+/// separately via [`user_has_role`]) — it only confirms the account is still live/active and
+/// returns the current `trv`. `None` if the user is gone/deactivated (defense-in-depth: a token
+/// is never minted for an erased account). Note `approval_status` is NOT re-checked here because
+/// enrolment in `user_roles` already implies an approved profile for that role.
+pub async fn user_trv_if_active(db: &PgPool, user_id: Uuid) -> Result<Option<i32>, AppError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        r#"
+        SELECT token_revocation_version
+        FROM identity.users
+        WHERE id = $1 AND is_active = TRUE AND deleted_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.map(|(v,)| v))
+}
+
+/// Flip the user's OWN `approval_status` to `approved` AND enrol the approved `role` into
+/// `user_roles`, driven by the `user.approved` event that profile emits on admin approval.
+/// **Idempotent by `event_id`**: the claim into `processed_events` + the `users` update + the
+/// `user_roles` upsert happen in ONE transaction, so a redelivered event (JetStream
+/// at-least-once) is a safe no-op. This is identity writing its OWN schema — the event is the
+/// only coupling to profile (no cross-schema write in either direction).
+///
+/// MULTI-ROLE (Option A): the `role` carried by the event is the role whose profile was just
+/// approved — the registration role on a first approval, OR a SECOND role enrolled via
+/// `POST /auth/roles`. Enrolling it here (`ON CONFLICT DO NOTHING`) is the ONLY path that adds
+/// a role to the switchable set, so a role becomes usable strictly AFTER approval. The
+/// `user_roles` insert is skipped on the UserNotFound path (a forged/stale event for a missing
+/// user must not create a dangling role row).
+#[tracing::instrument(skip(db), fields(event_id = %event_id, user_id = %user_id, role = %role))]
 pub async fn approve_user_on_event(
     db: &PgPool,
     event_id: Uuid,
     event_type: &str,
     user_id: Uuid,
+    role: &str,
 ) -> Result<ApprovedOutcome, AppError> {
     let mut tx = db.begin().await?;
 
@@ -239,6 +342,16 @@ pub async fn approve_user_on_event(
     .bind(user_id)
     .execute(&mut *tx)
     .await?;
+
+    // 3) Enrol the approved role into the switchable set (idempotent). ONLY for a live account
+    //    that the flip matched — never for the UserNotFound path, so a forged/stale event can't
+    //    seed a role for a missing/erased user. `ON CONFLICT DO NOTHING` absorbs a redelivery or
+    //    an already-enrolled role (e.g. the backfilled registration role). A role string that
+    //    is not a valid enum value would error the tx — but profile only ever emits guard/
+    //    customer (the route determines it), so this is a defended-against impossibility.
+    if res.rows_affected() == 1 {
+        add_user_role(&mut *tx, user_id, role).await?;
+    }
 
     // Commit the claim even when 0 rows matched (UserNotFound). This is deliberate: in the real
     // flow the identity row ALWAYS predates an approval (register → profile submit → admin
@@ -1542,11 +1655,12 @@ mod tests {
     }
 
     /// DB-gated consumer idempotency: `approve_user_on_event` flips a pending account to
-    /// `approved` AND records the `event_id`; a redelivery of the SAME event_id is a no-op
-    /// (`Duplicate`); an event for an unknown user records the id but reports `UserNotFound`.
-    /// Gated on `DATABASE_URL` (identity 0001+0003+0004).
+    /// `approved`, ENROLLS the approved role into `user_roles`, AND records the `event_id`; a
+    /// redelivery of the SAME event_id is a no-op (`Duplicate`); an event for an unknown user
+    /// records the id but reports `UserNotFound` and enrolls NO role. Gated on `DATABASE_URL`
+    /// (identity 0001+0003+0004+0007).
     #[tokio::test]
-    async fn approve_user_on_event_flips_and_is_idempotent() {
+    async fn approve_user_on_event_flips_enrolls_role_and_is_idempotent() {
         let Ok(db_url) = std::env::var("DATABASE_URL") else {
             eprintln!("SKIP: DATABASE_URL required for the approval-consumer test");
             return;
@@ -1557,7 +1671,8 @@ mod tests {
             .await
             .expect("connect real Postgres");
 
-        // Seed a PENDING guard (as register would).
+        // Seed a PENDING guard (as register would). NOTE: no user_roles row yet — the role is
+        // enrolled by the approval, NOT at registration (only the backfill seeds existing users).
         let user_id = Uuid::new_v4();
         let phone = format!("0{}", &user_id.simple().to_string()[..9]);
         let pw = password::hash_secret("x").expect("hash");
@@ -1575,8 +1690,14 @@ mod tests {
         let event_id = Uuid::new_v4();
         let topic = "pguard.events.user.approved";
 
-        // 1) First delivery → Applied; the column flips to approved.
-        let outcome = approve_user_on_event(&pool, event_id, topic, user_id)
+        // Precondition: the role is NOT yet enrolled (approval grants it, registration doesn't).
+        assert!(
+            !user_has_role(&pool, user_id, "guard").await.expect("has?"),
+            "a pending registration role must NOT be enrolled before approval"
+        );
+
+        // 1) First delivery → Applied; the column flips to approved AND guard is enrolled.
+        let outcome = approve_user_on_event(&pool, event_id, topic, user_id, "guard")
             .await
             .expect("apply");
         assert_eq!(outcome, ApprovedOutcome::Applied);
@@ -1587,24 +1708,117 @@ mod tests {
                 .await
                 .expect("read status");
         assert_eq!(status, "approved", "consumer flips approval_status");
+        assert!(
+            user_has_role(&pool, user_id, "guard").await.expect("has?"),
+            "approval enrolls the role into user_roles"
+        );
+        assert_eq!(
+            list_user_roles(&pool, user_id).await.expect("roles"),
+            vec!["guard".to_string()],
+            "exactly the approved role is enrolled"
+        );
 
-        // 2) Redelivery of the SAME event_id → Duplicate (idempotent no-op).
-        let again = approve_user_on_event(&pool, event_id, topic, user_id)
+        // 2) Redelivery of the SAME event_id → Duplicate (idempotent no-op); still exactly [guard].
+        let again = approve_user_on_event(&pool, event_id, topic, user_id, "guard")
             .await
             .expect("redeliver");
         assert_eq!(again, ApprovedOutcome::Duplicate);
+        assert_eq!(
+            list_user_roles(&pool, user_id).await.expect("roles"),
+            vec!["guard".to_string()],
+            "redelivery does not double-enroll"
+        );
 
-        // 3) A different event for an unknown user → UserNotFound (id still recorded).
-        let outcome = approve_user_on_event(&pool, Uuid::new_v4(), topic, Uuid::new_v4())
+        // 3) A SECOND-role approval (customer) for the SAME user → Applied; user now holds BOTH.
+        let event2 = Uuid::new_v4();
+        let outcome2 = approve_user_on_event(&pool, event2, topic, user_id, "customer")
+            .await
+            .expect("apply second role");
+        assert_eq!(outcome2, ApprovedOutcome::Applied);
+        let mut roles = list_user_roles(&pool, user_id).await.expect("roles");
+        roles.sort();
+        assert_eq!(
+            roles,
+            vec!["customer".to_string(), "guard".to_string()],
+            "a second approved role joins the switchable set (dual-role)"
+        );
+
+        // 4) An event for an unknown user → UserNotFound (id recorded, but NO role row created).
+        let ghost = Uuid::new_v4();
+        let outcome = approve_user_on_event(&pool, Uuid::new_v4(), topic, ghost, "guard")
             .await
             .expect("unknown user");
         assert_eq!(outcome, ApprovedOutcome::UserNotFound);
+        assert!(
+            list_user_roles(&pool, ghost)
+                .await
+                .expect("roles")
+                .is_empty(),
+            "a forged/stale event for a missing user enrolls NO role"
+        );
 
-        // cleanup
-        let _ = sqlx::query("DELETE FROM identity.processed_events WHERE event_id = $1")
-            .bind(event_id)
+        // cleanup (user_roles cascades on the user delete).
+        let _ = sqlx::query("DELETE FROM identity.processed_events WHERE event_id = ANY($1)")
+            .bind(vec![event_id, event2])
             .execute(&pool)
             .await;
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// DB-gated unit cover for the multi-role primitives: `add_user_role` is idempotent and
+    /// `user_has_role` is the exact membership probe the switch-role security gate relies on
+    /// (a role NOT in the set → `false`, so no token can be minted). `user_trv_if_active` returns
+    /// the live trv. Gated on `DATABASE_URL` (identity 0001+0007).
+    #[tokio::test]
+    async fn user_roles_primitives_enroll_probe_and_trv() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the user_roles primitives test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let phone = format!("0{}", &user_id.simple().to_string()[..9]);
+        let pw = password::hash_secret("x").expect("hash");
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, $3, 'customer', 'approved'::identity.approval_status)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(&pw)
+        .execute(&pool)
+        .await
+        .expect("seed user");
+
+        // Not-yet-enrolled: the switch-role gate would reject (no escalation).
+        assert!(!user_has_role(&pool, user_id, "guard").await.expect("has?"));
+
+        // First enrol → true (new row); second → false (idempotent, already present).
+        assert!(add_user_role(&pool, user_id, "guard").await.expect("add"));
+        assert!(!add_user_role(&pool, user_id, "guard").await.expect("add2"));
+        assert!(user_has_role(&pool, user_id, "guard").await.expect("has?"));
+
+        // trv of a live, active account is readable (defaults to 0 at creation).
+        assert_eq!(
+            user_trv_if_active(&pool, user_id).await.expect("trv"),
+            Some(0)
+        );
+        // An unknown user → None (a switch would 401, never mint a token).
+        assert_eq!(
+            user_trv_if_active(&pool, Uuid::new_v4())
+                .await
+                .expect("trv none"),
+            None
+        );
+
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)

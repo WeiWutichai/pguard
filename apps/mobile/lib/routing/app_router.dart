@@ -65,32 +65,8 @@ GoRouter appRouter(AppRouterRef ref) {
   return GoRouter(
     refreshListenable: refresh,
     initialLocation: '/splash',
-    redirect: (context, state) {
-      final session = ref.read(sessionProvider);
-      final loc = state.matchedLocation;
-      switch (session.status) {
-        case SessionStatus.unknown:
-          return loc == '/splash' ? null : '/splash';
-        case SessionStatus.unauthenticated:
-          return loc.startsWith('/auth') ? null : '/auth/phone';
-        case SessionStatus.onboardingRole:
-          // First segment done (phone→OTP→PIN) but role not chosen: resume at role-select.
-          // Allow any /auth/* so the live flow can still go role→profile; bounce elsewhere
-          // (e.g. /splash on cold start) to /auth/role.
-          return loc.startsWith('/auth') ? null : '/auth/role';
-        case SessionStatus.pendingApproval:
-          // Registered, not yet approved: stay anywhere in the registration sub-flow
-          // (role/profile/pending live under /auth); anything else → the pending screen.
-          return loc.startsWith('/auth') ? null : '/auth/pending';
-        case SessionStatus.locked:
-          return loc == '/lock' ? null : '/lock';
-        case SessionStatus.authenticated:
-          if (loc == '/splash' || loc == '/lock' || loc.startsWith('/auth')) {
-            return _homeFor(session.user);
-          }
-          return null;
-      }
-    },
+    redirect: (context, state) =>
+        sessionRedirect(ref.read(sessionProvider), state.matchedLocation),
     routes: [
       GoRoute(path: '/splash', builder: (_, __) => const SplashScreen()),
       GoRoute(
@@ -289,3 +265,53 @@ GoRouter appRouter(AppRouterRef ref) {
 
 String _homeFor(AuthUser? user) =>
     user?.isGuard == true ? '/home/guard' : '/home/customer';
+
+/// The session-gate redirect, extracted PURE so it is unit-testable without mounting screens.
+/// Returns the location to redirect TO, or `null` to allow [loc] as-is. Enforces splash → auth →
+/// lock → role dashboard, PLUS the multi-role rules (one phone = one account that can be BOTH guard
+/// + customer):
+///  - a dual-role login auto-lands on the mode picker (`/auth/role`); a single-role login goes home;
+///  - an authenticated user may OPEN the mode picker to switch modes (it is NOT bounced back home);
+///  - the add-role flow's profile form / pending screen run under /auth WHILE authenticated;
+///  - after a switch, the (now-changed) active role drives [_homeFor].
+String? sessionRedirect(SessionState session, String loc) {
+  switch (session.status) {
+    case SessionStatus.unknown:
+      return loc == '/splash' ? null : '/splash';
+    case SessionStatus.unauthenticated:
+      return loc.startsWith('/auth') ? null : '/auth/phone';
+    case SessionStatus.onboardingRole:
+      // First segment done (phone→OTP→PIN) but role not chosen: resume at role-select.
+      // Allow any /auth/* so the live flow can still go role→profile; bounce elsewhere
+      // (e.g. /splash on cold start) to /auth/role.
+      return loc.startsWith('/auth') ? null : '/auth/role';
+    case SessionStatus.pendingApproval:
+      // Registered, not yet approved: stay anywhere in the registration sub-flow
+      // (role/profile/pending live under /auth); anything else → the pending screen.
+      return loc.startsWith('/auth') ? null : '/auth/pending';
+    case SessionStatus.locked:
+      return loc == '/lock' ? null : '/lock';
+    case SessionStatus.authenticated:
+      final user = session.user;
+      // The mode picker (`/auth/role`) is reachable WHILE authenticated — it's how a dual-role
+      // account switches modes / goes back to role-select without logging out. Allow a multi-role
+      // user to stay on it (post-login auto-land OR an explicit switch tap); a single-role user has
+      // nothing to pick, so send them home instead of a one-option picker.
+      if (loc == '/auth/role') {
+        return user?.hasMultipleRoles == true ? null : _homeFor(user);
+      }
+      // The add-role flow's profile form + pending screen run under /auth/* WHILE authenticated (the
+      // user is enrolling a 2nd role in the background) — allow them so the form isn't bounced
+      // straight to home. Everything else under /auth (and splash/lock) is a stale entry point: land
+      // on the mode picker for a dual-role account, else the single role's home.
+      if (loc == '/auth/register/guard' ||
+          loc == '/auth/register/customer' ||
+          loc == '/auth/pending') {
+        return null;
+      }
+      if (loc == '/splash' || loc == '/lock' || loc.startsWith('/auth')) {
+        return user?.hasMultipleRoles == true ? '/auth/role' : _homeFor(user);
+      }
+      return null;
+  }
+}
