@@ -63,6 +63,12 @@ const String kRegSummaryKey = 'pg_reg_summary';
 const String kRegOnboardingStageKey = 'pg_reg_onboarding_stage';
 const String kRegOnboardingStageRole = 'role';
 
+/// The account's ENROLLED roles, persisted (SharedPreferences — just role labels, non-sensitive)
+/// as a comma-separated list at login so a cold start knows "this account has >1 role" and can land
+/// on the mode picker instead of forcing one home. Refreshed by `GET /auth/me` and on switch/enrol;
+/// cleared on logout. Read by the session controller's cold-start classifier.
+const String kEnrolledRolesKey = 'pg_enrolled_roles';
+
 /// Mask a bank account number to its last 4 digits for LOCAL persistence/display (PDPA). The full
 /// number is sent only to the backend (`account_number`, which the server stores and re-masks on
 /// reads). Pure → unit-tested.

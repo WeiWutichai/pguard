@@ -84,9 +84,22 @@ class Session extends _$Session {
     }
     final access = await store.readAccessToken();
     if (_disposed || state.status != SessionStatus.unknown) return;
+    // The enrolled roles were persisted (non-sensitive) at login so a cold start can land on the
+    // mode picker when the account holds >1 role. The access token's `role` is still the ACTIVE one.
+    // Best-effort: a prefs read failure degrades to "only the active role known" — the live session
+    // still works (the active role is the fallback) and the next `GET /auth/me` refreshes the set.
+    List<String> enrolled;
+    try {
+      enrolled = _parseRoles(await prefs.getString(kEnrolledRolesKey));
+    } catch (_) {
+      enrolled = const [];
+    }
+    if (_disposed || state.status != SessionStatus.unknown) return;
     final user = access != null
         ? AuthUser(
-            userId: Jwt.subject(access) ?? '', role: Jwt.role(access) ?? '')
+            userId: Jwt.subject(access) ?? '',
+            role: Jwt.role(access) ?? '',
+            roles: enrolled)
         : null;
     // A configured PIN means a cold start must be unlocked before use.
     final hasPin = await store.hasPin();
@@ -101,9 +114,32 @@ class Session extends _$Session {
   void onPendingApproval() =>
       state = const SessionState(SessionStatus.pendingApproval);
 
-  /// After a successful login (tokens already persisted).
-  void onLoggedIn(AuthUser user) =>
-      state = SessionState(SessionStatus.authenticated, user: user);
+  /// After a successful login (tokens already persisted). Persists the enrolled-role set
+  /// (non-sensitive) so a cold start can land on the mode picker for a dual-role account.
+  void onLoggedIn(AuthUser user) {
+    _persistRoles(user.enrolledRoles);
+    state = SessionState(SessionStatus.authenticated, user: user);
+  }
+
+  /// After a successful `POST /auth/switch-role` (the new token pair is already persisted by the
+  /// caller). Swaps the ACTIVE role while keeping the enrolled set, so the router redirects to the
+  /// new role's home WITHOUT logging out. No prefs write — the enrolled set is unchanged.
+  void switchActiveRole(String role) {
+    final user = state.user;
+    if (user == null) return;
+    state = SessionState(SessionStatus.authenticated,
+        user: user.withActiveRole(role));
+  }
+
+  /// Refresh the enrolled-role set from `GET /auth/me` (it may have grown after an admin approved a
+  /// newly-enrolled role). Persists it and re-emits so the homes/picker see the updated set.
+  void refreshRoles(List<String> roles) {
+    final user = state.user;
+    if (user == null || state.status != SessionStatus.authenticated) return;
+    _persistRoles(user.withRoles(roles).enrolledRoles);
+    state = SessionState(SessionStatus.authenticated,
+        user: user.withRoles(roles));
+  }
 
   /// After clearing the PIN gate on cold start.
   void onUnlocked() =>
@@ -129,6 +165,9 @@ class Session extends _$Session {
     final prefs = ref.read(prefsStoreProvider);
     await prefs.remove(kRegPendingRoleKey);
     await prefs.remove(kRegSummaryKey);
+    // Drop the persisted enrolled-role set so a logged-out device doesn't carry one account's roles
+    // into the next user's cold-start classification.
+    await prefs.remove(kEnrolledRolesKey);
     // Drop the onboarding-resume marker + raw PIN too, so a logged-out device never resumes a
     // half-finished registration (and no raw PIN lingers). clearSession() already removed the
     // onboarding PIN, but remove the prefs marker here.
@@ -138,5 +177,25 @@ class Session extends _$Session {
     // user's phone/token lingering.
     ref.read(authControllerProvider.notifier).reset();
     state = const SessionState(SessionStatus.unauthenticated);
+  }
+
+  /// Persist the enrolled roles as a comma-separated label list (non-sensitive → prefs).
+  /// Fire-and-forget: the in-memory state is the source of truth for the live session; this is only
+  /// the cold-start hint, so a slow write never blocks the redirect. Errors are swallowed (a failed
+  /// hint write just means a future cold start re-derives the set from the access token + /auth/me).
+  void _persistRoles(List<String> roles) {
+    ref
+        .read(prefsStoreProvider)
+        .setString(kEnrolledRolesKey, roles.join(','))
+        .catchError((_) {});
+  }
+
+  /// Parse the persisted comma-separated enrolled-role list (null/empty → empty list).
+  static List<String> _parseRoles(String? raw) {
+    if (raw == null || raw.isEmpty) return const [];
+    return [
+      for (final r in raw.split(','))
+        if (r.isNotEmpty) r,
+    ];
   }
 }

@@ -5,23 +5,209 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
+import '../../../core/controllers/role_switch_controller.dart';
+import '../../../core/controllers/session_controller.dart';
+import '../../../core/models/auth_models.dart';
 import '../../../core/models/registration.dart';
 import '../../profile/widgets/lang_segmented.dart';
 
-/// Step 4 (after PIN): choose `guard` or `customer`. The tap registers the account
-/// (`POST /auth/register`, role-at-register) — on 202 we go to the matching profile form; a 409
-/// ("already registered") logs the returning user in and the router redirects to their dashboard.
+/// Role chooser — TWO modes, switched by the session status:
+///
+///  - **Onboarding** (unauthenticated / onboardingRole, the original flow): tap a role to register
+///    the account (`POST /auth/register`) — on 202 go to the matching profile form; a 409
+///    ("already registered") logs the returning user in and the router redirects to their dashboard.
+///
+///  - **Mode picker** (AUTHENTICATED, one phone = one account that can be BOTH guard + customer): the
+///    "เลือกโหมด" screen. Each role is marked ENROLLED or not. Tapping an enrolled role calls
+///    `POST /auth/switch-role` and routes to that role's home WITHOUT logging out; tapping a
+///    not-yet-enrolled role starts the ADD-ROLE flow (`POST /auth/roles` → that role's profile form
+///    → pending). A back/close returns to the CURRENT role's home (never strands the user).
 ///
 /// Design (stitch role-chooser): a top-right TH|EN toggle, a hero illustration (guard + protected
-/// home), the centered "คุณคือใคร?" headline + subtitle, then two `.role-card`s — Guard FIRST with
-/// a green-900 shield tile ("เจ้าหน้าที่ รปภ."), then "จ้าง รปภ" with an amber person-search tile —
-/// each a border-only card with a 56×56 icon tile + trailing chevron, and a copyright footer.
+/// home), the centered headline + subtitle, then two `.role-card`s — Guard FIRST with a green-900
+/// shield tile, then "จ้าง รปภ" with an amber person-search tile — each a border-only card with a
+/// 56×56 icon tile + trailing chevron, and a copyright footer.
 class RoleSelectionScreen extends ConsumerWidget {
   const RoleSelectionScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final session = ref.watch(sessionProvider);
+    // AUTHENTICATED → the in-app mode picker (switch / add role, no logout). Otherwise the original
+    // onboarding registration chooser.
+    final picker = session.status == SessionStatus.authenticated;
+
+    if (picker) {
+      return _ModePicker(user: session.user, isThai: isThai);
+    }
+    return _OnboardingChooser(isThai: isThai);
+  }
+}
+
+/// The AUTHENTICATED mode picker ("เลือกโหมด"). Drives [RoleSwitchController]: an enrolled role →
+/// switch-role → that home; a not-yet-enrolled role → add-role profile flow. A back/close returns to
+/// the current role's home.
+class _ModePicker extends ConsumerWidget {
+  const _ModePicker({required this.user, required this.isThai});
+
+  final AuthUser? user;
+  final bool isThai;
+
+  String _homeFor(String role) =>
+      role == 'guard' ? '/home/guard' : '/home/customer';
+
+  Future<void> _tap(
+      BuildContext context, WidgetRef ref, RegistrationRole role) async {
+    final outcome =
+        await ref.read(roleSwitchControllerProvider.notifier).choose(role);
+    if (!context.mounted) return;
+    switch (outcome) {
+      case RoleActionOutcome.switched:
+        // Active role swapped (no logout); route to the new role's home.
+        context.go(_homeFor(role.wire));
+      case RoleActionOutcome.needsProfile:
+        // Add-role: the registration controller holds the profile_token; open that role's form.
+        context.push(role.isGuard
+            ? '/auth/register/guard'
+            : '/auth/register/customer');
+      case RoleActionOutcome.error:
+        break; // state.error is rendered below
+    }
+  }
+
+  void _close(BuildContext context) {
+    // Never strand the user: go back to their CURRENT role's home.
+    context.go(_homeFor(user?.role ?? 'customer'));
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state = ref.watch(roleSwitchControllerProvider);
+    final activeRole = user?.role;
+    bool enrolled(RegistrationRole r) => user?.isEnrolledIn(r.wire) == true;
+
+    return PopScope(
+      // Intercept the system back so it returns to the current home (not the auth stack).
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _close(context);
+      },
+      child: Scaffold(
+        backgroundColor: PgTokens.colorBg,
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.symmetric(horizontal: PgTokens.space6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const SizedBox(height: PgTokens.space3),
+                Row(
+                  children: [
+                    // A close affordance back to the current home (so "switch mode" is escapable).
+                    IconButton(
+                      onPressed: state.busy ? null : () => _close(context),
+                      icon: const Icon(Icons.close),
+                      tooltip: isThai ? 'ปิด' : 'Close',
+                      color: PgTokens.colorTextMuted,
+                    ),
+                    const Spacer(),
+                    LangSegmented(
+                      value: ref.watch(localeControllerProvider),
+                      onChanged: (l) => ref
+                          .read(localeControllerProvider.notifier)
+                          .setLocale(l),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: PgTokens.space2),
+                Image.asset('assets/images/role_hero.png',
+                    height: 180, fit: BoxFit.contain),
+                const SizedBox(height: PgTokens.space5),
+                Text(
+                  isThai ? 'เลือกโหมด' : 'Choose mode',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 28,
+                    fontWeight: FontWeight.w700,
+                    color: PgTokens.colorTextStrong,
+                  ),
+                ),
+                const SizedBox(height: PgTokens.space2),
+                Text(
+                  isThai
+                      ? 'สลับระหว่างเจ้าหน้าที่และลูกค้า'
+                      : 'Switch between guard and customer',
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(color: PgTokens.colorTextMuted),
+                ),
+                const SizedBox(height: PgTokens.space6),
+                _RoleCard(
+                  icon: Icons.shield_outlined,
+                  iconBg: PgTokens.colorGreen900,
+                  iconFg: Colors.white,
+                  title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard',
+                  desc: _modeDesc(RegistrationRole.guard),
+                  enabled: !state.busy,
+                  loading: state.busy &&
+                      state.pendingRole == RegistrationRole.guard,
+                  active: activeRole == 'guard',
+                  enrolled: enrolled(RegistrationRole.guard),
+                  isThai: isThai,
+                  onTap: () => _tap(context, ref, RegistrationRole.guard),
+                ),
+                const SizedBox(height: 14),
+                _RoleCard(
+                  icon: Icons.person_search_outlined,
+                  iconBg: PgTokens.colorAmber100,
+                  iconFg: PgTokens.colorAmber700,
+                  title: isThai ? 'จ้าง รปภ' : 'Hire a Guard',
+                  desc: _modeDesc(RegistrationRole.customer),
+                  enabled: !state.busy,
+                  loading: state.busy &&
+                      state.pendingRole == RegistrationRole.customer,
+                  active: activeRole == 'customer',
+                  enrolled: enrolled(RegistrationRole.customer),
+                  isThai: isThai,
+                  onTap: () => _tap(context, ref, RegistrationRole.customer),
+                ),
+                const SizedBox(height: PgTokens.space6),
+                if (state.error != null && !state.busy)
+                  Text(
+                    state.error!,
+                    style: const TextStyle(color: PgTokens.colorDanger),
+                    textAlign: TextAlign.center,
+                  ),
+                const SizedBox(height: PgTokens.space5),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _modeDesc(RegistrationRole role) {
+    if (user?.role == role.wire) {
+      return isThai ? 'โหมดปัจจุบัน' : 'Current mode';
+    }
+    if (user?.isEnrolledIn(role.wire) == true) {
+      return isThai ? 'แตะเพื่อสลับไปโหมดนี้' : 'Tap to switch to this mode';
+    }
+    return isThai
+        ? 'แตะเพื่อเพิ่มบทบาทนี้ (รออนุมัติ)'
+        : 'Tap to add this role (pending approval)';
+  }
+}
+
+/// The original onboarding registration chooser (unchanged behavior — single-role path).
+class _OnboardingChooser extends ConsumerWidget {
+  const _OnboardingChooser({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
     final state = ref.watch(registrationControllerProvider);
     final ctrl = ref.read(registrationControllerProvider.notifier);
 
@@ -85,6 +271,7 @@ class RoleSelectionScreen extends ConsumerWidget {
                     ? 'สำหรับเจ้าหน้าที่เพื่อเข้าใช้งานระบบ'
                     : 'For guards to access the system',
                 enabled: !state.busy,
+                isThai: isThai,
                 onTap: () => choose(RegistrationRole.guard),
               ),
               const SizedBox(height: 14),
@@ -98,6 +285,7 @@ class RoleSelectionScreen extends ConsumerWidget {
                     ? 'จ้างเจ้าหน้าที่รักษาความปลอดภัยระดับมืออาชีพ'
                     : 'Hire professional security guards',
                 enabled: !state.busy,
+                isThai: isThai,
                 onTap: () => choose(RegistrationRole.customer),
               ),
               const SizedBox(height: PgTokens.space6),
@@ -132,7 +320,8 @@ class RoleSelectionScreen extends ConsumerWidget {
 }
 
 /// `.role-card`: a border-only card (1.5px, radius 20, padding 22, gap 16) with a 56×56 colored
-/// icon tile (radius 16) + title (.rt 18/w600) and description (.rd 13/muted). No chevron.
+/// icon tile (radius 16) + title (.rt 18/w600) and description (.rd 13/muted). In the mode picker it
+/// can also show an "active"/"enrolled" badge and a per-card spinner while switching.
 class _RoleCard extends StatelessWidget {
   const _RoleCard({
     required this.icon,
@@ -142,6 +331,10 @@ class _RoleCard extends StatelessWidget {
     required this.desc,
     required this.enabled,
     required this.onTap,
+    required this.isThai,
+    this.loading = false,
+    this.active = false,
+    this.enrolled = false,
   });
 
   final IconData icon;
@@ -151,6 +344,16 @@ class _RoleCard extends StatelessWidget {
   final String desc;
   final bool enabled;
   final VoidCallback onTap;
+  final bool isThai;
+
+  /// Mode-picker only: a per-card spinner while this role's switch/add is in flight.
+  final bool loading;
+
+  /// Mode-picker only: this is the currently-active role (badge "ปัจจุบัน").
+  final bool active;
+
+  /// Mode-picker only: the account is enrolled in this role (badge "พร้อมใช้").
+  final bool enrolled;
 
   @override
   Widget build(BuildContext context) {
@@ -163,7 +366,10 @@ class _RoleCard extends StatelessWidget {
           padding: const EdgeInsets.all(22),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(20),
-            border: Border.all(color: PgTokens.colorBorder, width: 1.5),
+            border: Border.all(
+              color: active ? PgTokens.colorPrimary : PgTokens.colorBorder,
+              width: active ? 2 : 1.5,
+            ),
           ),
           child: Row(
             children: [
@@ -181,11 +387,32 @@ class _RoleCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(title,
-                        style: const TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                            color: PgTokens.colorTextStrong)),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(title,
+                              style: const TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.w600,
+                                  color: PgTokens.colorTextStrong)),
+                        ),
+                        if (active) ...[
+                          const SizedBox(width: 8),
+                          _Badge(
+                            label: isThai ? 'ปัจจุบัน' : 'Current',
+                            fg: PgTokens.colorPrimary,
+                            bg: PgTokens.colorGreen100,
+                          ),
+                        ] else if (enrolled) ...[
+                          const SizedBox(width: 8),
+                          _Badge(
+                            label: isThai ? 'พร้อมใช้' : 'Ready',
+                            fg: PgTokens.colorTextMuted,
+                            bg: PgTokens.colorSunken,
+                          ),
+                        ],
+                      ],
+                    ),
                     const SizedBox(height: 3),
                     Text(desc,
                         style: const TextStyle(
@@ -196,12 +423,42 @@ class _RoleCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              const Icon(Icons.chevron_right,
-                  color: PgTokens.colorTextFaint, size: 22),
+              if (loading)
+                const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              else
+                Icon(enrolled || active ? Icons.chevron_right : Icons.add,
+                    color: PgTokens.colorTextFaint, size: 22),
             ],
           ),
         ),
       ),
+    );
+  }
+}
+
+class _Badge extends StatelessWidget {
+  const _Badge({required this.label, required this.fg, required this.bg});
+
+  final String label;
+  final Color fg;
+  final Color bg;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: PgTokens.space2, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusFull),
+      ),
+      child: Text(label,
+          style:
+              TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: fg)),
     );
   }
 }

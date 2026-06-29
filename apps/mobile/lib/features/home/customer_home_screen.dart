@@ -16,6 +16,7 @@ import '../../core/models/service_catalog.dart';
 import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../auth/widgets/switch_mode_action.dart';
 import '../booking/widgets/service_package_card.dart';
 import '../chat/chat_routes.dart';
 import '../chat/widgets/chat_unread_badge.dart';
@@ -98,6 +99,8 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen>
         trailing: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // Dual-role accounts only (self-hides otherwise): jump to the mode picker, no logout.
+            const SwitchModeAction(),
             const NotificationBell(),
             ChatUnreadBadge(
               acting: ChatRole.customer,

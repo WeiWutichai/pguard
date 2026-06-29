@@ -7,6 +7,7 @@ import '../../core/controllers/customer_avatar_controller.dart';
 import '../../core/controllers/guard_avatar_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/media/document_picker.dart';
 import '../../core/models/profile.dart';
 import '../../core/network/api_exception.dart';
@@ -14,6 +15,7 @@ import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import '../auth/widgets/switch_mode_action.dart';
 import 'widgets/lang_segmented.dart';
 
 /// Profile + settings: identity header (avatar/name/role/approval), personal-info entry (→ edit),
@@ -107,6 +109,12 @@ class ProfileScreen extends ConsumerWidget {
                         isThai ? 'คำถามที่พบบ่อย · ติดต่อเรา' : 'FAQ & contact',
                     onTap: () => context.push('/help'),
                   ),
+                  // Dual-role accounts: jump to the mode picker (no logout). The tile self-hides for
+                  // single-role accounts — but _SettingsGroup would still draw a divider around an
+                  // empty box, so it's only added here when the account actually holds >1 role.
+                  if (ref.watch(sessionProvider.select(
+                      (s) => s.user?.hasMultipleRoles ?? false)))
+                    const SwitchModeTile(),
                   _ReadonlyRow(
                     icon: Icons.phone_outlined,
                     label: isThai ? 'เบอร์โทร (ใช้เข้าสู่ระบบ)' : 'Phone',

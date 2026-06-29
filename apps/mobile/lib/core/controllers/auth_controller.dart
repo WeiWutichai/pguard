@@ -237,7 +237,8 @@ class AuthController extends _$AuthController {
           'identifier': phone,
           'password': const PinHasher().pinHash(pin),
         });
-        final tokens = TokenPair.fromJson(data as Map<String, dynamic>);
+        final map = data as Map<String, dynamic>;
+        final tokens = TokenPair.fromJson(map);
         final store = ref.read(appStoreProvider);
         await store.saveTokens(
             access: tokens.accessToken, refresh: tokens.refreshToken);
@@ -247,9 +248,15 @@ class AuthController extends _$AuthController {
         // Persist the PIN locally too, so returning cold starts unlock OFFLINE via the lock
         // screen (PinService) without a round-trip. The PIN/hash never leaves the device.
         await ref.read(pinServiceProvider).setup(pin);
+        // Multi-role (Option A): the login `data` carries `available_roles` (the account's approved
+        // roles). A single-role user gets `[their_role]`; a dual-role user gets both so the router
+        // can land on the mode picker. The access token's `role` claim is the ACTIVE role.
+        final activeRole = Jwt.role(tokens.accessToken) ?? 'customer';
+        final available = AuthUser.rolesFromJson(map['available_roles']);
         final user = AuthUser(
           userId: Jwt.subject(tokens.accessToken) ?? '',
-          role: Jwt.role(tokens.accessToken) ?? 'customer',
+          role: activeRole,
+          roles: available.isEmpty ? [activeRole] : available,
         );
         ref.read(sessionProvider.notifier).onLoggedIn(user);
         return true;
