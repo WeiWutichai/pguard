@@ -171,6 +171,15 @@ async fn main() -> anyhow::Result<()> {
                 .get(api::get_guard_avatar::<AppState>)
                 .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
         )
+        // Customer self-uploaded avatar — the MIRROR of the guard avatar route above (own-only
+        // write, owner-or-admin read, presigned). Same 12 MiB image body cap on THIS route only;
+        // the gateway carves the same Large cap for /profile/customer/{id}/avatar.
+        .route(
+            "/profile/customer/{user_id}/avatar",
+            post(api::upload_customer_avatar::<AppState>)
+                .get(api::get_customer_avatar::<AppState>)
+                .layer(DefaultBodyLimit::max(api::MAX_DOCUMENT_BODY_BYTES)),
+        )
         .route(
             "/profile/guard/{user_id}/document-expiries",
             get(api::list_guard_document_expiries::<AppState>),

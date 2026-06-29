@@ -23,7 +23,7 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuardRow, OrgSettingsResponse, PublicCustomerProfile,
+    GuardProfileResponse, InternalGuardRow, OrgSettingsResponse, PublicCustomerProfileRow,
     PublicGuardProfile, RecruitCandidate, ResolvedNameRow, UpdateOrgSettingsRequest,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
@@ -481,7 +481,8 @@ pub async fn get_public_guard_profile(
 /// Fetch the guard-facing customer MINI-profile for the assigned guard's job sheet
 /// (`GET /customers/{id}/public`). The mirror of [`get_public_guard_profile`] for the other
 /// direction. Returns `None` (→ 404) when the customer has no profile row. Lean projection
-/// (user_id + full_name) — NEVER the address/company/email/phone PII. UNLIKE the guard read,
+/// (user_id + full_name + the raw `avatar_key`, which the handler presigns) — NEVER the
+/// address/company/email/phone PII. UNLIKE the guard read,
 /// there is NO approval filter: a customer's name must be visible to their guard regardless of
 /// the customer's own admin-approval state (a booking only exists for an approved customer
 /// anyway). The IDOR gate (the caller must be the guard ASSIGNED to an active booking with this
@@ -489,9 +490,9 @@ pub async fn get_public_guard_profile(
 pub async fn get_public_customer_profile(
     db: &PgPool,
     customer_id: Uuid,
-) -> Result<Option<PublicCustomerProfile>, AppError> {
-    let row = sqlx::query_as::<_, PublicCustomerProfile>(
-        "SELECT user_id, full_name FROM profile.customer_profiles WHERE user_id = $1",
+) -> Result<Option<PublicCustomerProfileRow>, AppError> {
+    let row = sqlx::query_as::<_, PublicCustomerProfileRow>(
+        "SELECT user_id, full_name, avatar_key FROM profile.customer_profiles WHERE user_id = $1",
     )
     .bind(customer_id)
     .fetch_optional(db)
@@ -561,6 +562,52 @@ pub async fn get_document_key(
     column: &'static str,
 ) -> Result<Option<String>, AppError> {
     let sql = format!("SELECT {column} FROM profile.guard_profiles WHERE user_id = $1");
+    let row: Option<(Option<String>,)> = sqlx::query_as(&sql)
+        .bind(user_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(row.and_then(|(key,)| key))
+}
+
+// ----- Customer avatar image key (S3 object path) -----
+//
+// The customer side mirrors the guard `update_document_key`/`get_document_key` pair but targets
+// `profile.customer_profiles`. A customer has exactly ONE image column (`avatar_key`) — no
+// credential docs — so there is no `key_column_for` allowlist here: the handler passes the fixed
+// `AVATAR_KEY_COLUMN` `&'static str` (never client-controlled), the only dynamic-column `format!`.
+
+/// Write the S3 object key for the customer's avatar into its `avatar_key` column. `column` MUST be
+/// the fixed `AVATAR_KEY_COLUMN` `&'static str` (never user input); the key is a bound parameter.
+/// 404 when the customer has no profile row yet (they must submit their profile first).
+pub async fn update_customer_document_key(
+    db: &PgPool,
+    user_id: Uuid,
+    column: &'static str,
+    key: &str,
+) -> Result<(), AppError> {
+    let sql = format!(
+        "UPDATE profile.customer_profiles SET {column} = $2, updated_at = now() WHERE user_id = $1"
+    );
+    let n = sqlx::query(&sql)
+        .bind(user_id)
+        .bind(key)
+        .execute(db)
+        .await?
+        .rows_affected();
+    if n == 0 {
+        return Err(AppError::NotFound("Customer profile not found".to_string()));
+    }
+    Ok(())
+}
+
+/// Read the S3 object key stored in the customer's `avatar_key` column. `column` MUST be the fixed
+/// `AVATAR_KEY_COLUMN`. `None` when the column is NULL (not uploaded) or no profile exists.
+pub async fn get_customer_document_key(
+    db: &PgPool,
+    user_id: Uuid,
+    column: &'static str,
+) -> Result<Option<String>, AppError> {
+    let sql = format!("SELECT {column} FROM profile.customer_profiles WHERE user_id = $1");
     let row: Option<(Option<String>,)> = sqlx::query_as(&sql)
         .bind(user_id)
         .fetch_optional(db)

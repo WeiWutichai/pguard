@@ -56,14 +56,38 @@ pub struct PublicGuardProfile {
 
 /// The lean, GUARD-facing customer mini-profile (`GET /customers/{id}/public`) — the mirror of
 /// [`PublicGuardProfile`] for the OTHER direction. The assigned guard's job sheet needs to address
-/// the customer by name (not a raw id), so this exposes ONLY `{ user_id, full_name }`. NEVER the
-/// address / company / email / phone (least-privilege; those stay owner/admin-only). `full_name`
-/// is PII reachable by a non-owner ONLY under the same active-booking IDOR gate the guard-profile
-/// read uses — here flipped so it is the ASSIGNED GUARD (not the customer) who may read it.
-#[derive(Debug, Serialize, sqlx::FromRow)]
+/// the customer by name (not a raw id) + show their photo, so this exposes ONLY
+/// `{ user_id, full_name, avatar_url }`. NEVER the address / company / email / phone
+/// (least-privilege; those stay owner/admin-only). `full_name` is PII reachable by a non-owner
+/// ONLY under the same active-booking IDOR gate the guard-profile read uses — here flipped so it is
+/// the ASSIGNED GUARD (not the customer) who may read it. `avatar_url` is a short-lived presigned
+/// GET URL (the raw S3 key is never on the wire — the handler presigns the `avatar_key`), `None`
+/// when the customer has not set an avatar — the same exposure the customer makes of the guard's
+/// avatar via `GET /guards/{id}/public` / discovery, mirrored.
+#[derive(Debug, Serialize)]
 pub struct PublicCustomerProfile {
     pub user_id: Uuid,
     pub full_name: Option<String>,
+    pub avatar_url: Option<String>,
+}
+
+/// The raw `get_public_customer_profile` repo row — DB columns only, including the unsigned
+/// `avatar_key` (an S3 object key, NEVER serialized to a caller). The handler presigns `avatar_key`
+/// into [`PublicCustomerProfile::avatar_url`]; keeping the raw key off the wire shape means the
+/// presign decision lives in exactly one place (the handler), like the guard avatar path.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct PublicCustomerProfileRow {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub avatar_key: Option<String>,
+}
+
+/// The result of a customer avatar upload/read: a short-lived (1h) presigned GET URL for the stored
+/// profile picture. The raw S3 key is never exposed (only the signed URL). Mirrors
+/// [`GuardAvatarResponse`].
+#[derive(Debug, Serialize)]
+pub struct CustomerAvatarResponse {
+    pub avatar_url: String,
 }
 
 // ----- Admin batch name-resolver (POST /admin/users/resolve) -----

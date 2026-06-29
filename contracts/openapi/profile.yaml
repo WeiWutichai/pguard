@@ -393,6 +393,81 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /profile/customer/{user_id}/avatar:
+    post:
+      tags: [Profile]
+      summary: Upload the customer's own profile picture
+      description: |
+        Upload/replace the customer's avatar (JPEG/PNG/WEBP, ≤10 MiB). The MIRROR of
+        `POST /profile/guard/{user_id}/avatar` for the customer side. Auth: logged-in **customer,
+        own avatar only** (`{user_id}` must equal the caller — no admin bypass on write). Image is
+        magic-byte validated (declared MIME must match the content), stored in private S3 under a
+        server-generated key, and the key written to `customer_profiles.avatar_key`. Returns a
+        short-lived (1h) presigned GET URL — the raw key is never exposed.
+      operationId: uploadCustomerAvatar
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          description: The customer's user_id (must equal the caller).
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The avatar image (JPEG/PNG/WEBP, ≤10 MiB).
+      responses:
+        '200':
+          description: Uploaded; returns a presigned download URL
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/CustomerAvatarResponse' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '413': { description: Payload too large (image exceeds the 12 MiB body cap) }
+    get:
+      tags: [Profile]
+      summary: A presigned URL for the customer's avatar
+      description: |
+        Returns a short-lived presigned GET URL for the stored avatar. Read auth is
+        **owner-or-admin**. 404 when no avatar is set or the customer has no profile.
+      operationId: getCustomerAvatar
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: A presigned download URL for the avatar
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/CustomerAvatarResponse' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /profile/guard/{user_id}/document-expiries:
     get:
       tags: [Profile]
@@ -1185,13 +1260,16 @@ components:
       type: object
       description: |
         The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the
-        other direction. NARROW by design: only the customer's name (so the assigned guard's job
-        sheet can address them by name); NEVER the address/company/email/phone PII. `full_name` is
-        reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`).
+        other direction. NARROW by design: only the customer's name + photo (so the assigned guard's
+        job sheet can address them by name and show their face); NEVER the address/company/email/phone
+        PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see
+        `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key
+        is never on the wire), `null` when the customer has not set an avatar.
       required: [user_id]
       properties:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
+        avatar_url: { type: string, nullable: true, description: 'Presigned GET URL for the customer''s avatar (expires in ~1h), or null when unset.' }
 
     ResolveNamesRequest:
       type: object
@@ -1244,6 +1322,15 @@ components:
       description: |
         The result of a guard avatar upload/read: a short-lived (1h) presigned GET URL for the
         stored profile picture. The raw S3 key is NEVER exposed.
+      required: [avatar_url]
+      properties:
+        avatar_url: { type: string, description: 'Presigned GET URL (expires in ~1h).' }
+
+    CustomerAvatarResponse:
+      type: object
+      description: |
+        The result of a customer avatar upload/read: a short-lived (1h) presigned GET URL for the
+        stored profile picture. The MIRROR of `GuardAvatarResponse`. The raw S3 key is NEVER exposed.
       required: [avatar_url]
       properties:
         avatar_url: { type: string, description: 'Presigned GET URL (expires in ~1h).' }

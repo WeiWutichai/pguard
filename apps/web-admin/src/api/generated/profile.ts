@@ -213,6 +213,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/profile/customer/{user_id}/avatar": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * A presigned URL for the customer's avatar
+         * @description Returns a short-lived presigned GET URL for the stored avatar. Read auth is
+         *     **owner-or-admin**. 404 when no avatar is set or the customer has no profile.
+         */
+        get: operations["getCustomerAvatar"];
+        put?: never;
+        /**
+         * Upload the customer's own profile picture
+         * @description Upload/replace the customer's avatar (JPEG/PNG/WEBP, ≤10 MiB). The MIRROR of
+         *     `POST /profile/guard/{user_id}/avatar` for the customer side. Auth: logged-in **customer,
+         *     own avatar only** (`{user_id}` must equal the caller — no admin bypass on write). Image is
+         *     magic-byte validated (declared MIME must match the content), stored in private S3 under a
+         *     server-generated key, and the key written to `customer_profiles.avatar_key`. Returns a
+         *     short-lived (1h) presigned GET URL — the raw key is never exposed.
+         */
+        post: operations["uploadCustomerAvatar"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/profile/guard/{user_id}/document-expiries": {
         parameters: {
             query?: never;
@@ -760,14 +790,18 @@ export interface components {
         };
         /**
          * @description The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the
-         *     other direction. NARROW by design: only the customer's name (so the assigned guard's job
-         *     sheet can address them by name); NEVER the address/company/email/phone PII. `full_name` is
-         *     reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`).
+         *     other direction. NARROW by design: only the customer's name + photo (so the assigned guard's
+         *     job sheet can address them by name and show their face); NEVER the address/company/email/phone
+         *     PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see
+         *     `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key
+         *     is never on the wire), `null` when the customer has not set an avatar.
          */
         PublicCustomerProfile: {
             /** Format: uuid */
             user_id: string;
             full_name?: string | null;
+            /** @description Presigned GET URL for the customer's avatar (expires in ~1h), or null when unset. */
+            avatar_url?: string | null;
         };
         /**
          * @description A batch of user_ids to resolve to display names (admin lists). Duplicates are
@@ -813,6 +847,14 @@ export interface components {
          *     stored profile picture. The raw S3 key is NEVER exposed.
          */
         GuardAvatarResponse: {
+            /** @description Presigned GET URL (expires in ~1h). */
+            avatar_url: string;
+        };
+        /**
+         * @description The result of a customer avatar upload/read: a short-lived (1h) presigned GET URL for the
+         *     stored profile picture. The MIRROR of `GuardAvatarResponse`. The raw S3 key is NEVER exposed.
+         */
+        CustomerAvatarResponse: {
             /** @description Presigned GET URL (expires in ~1h). */
             avatar_url: string;
         };
@@ -1419,6 +1461,79 @@ export interface operations {
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
                         data?: components["schemas"]["GuardAvatarResponse"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description Payload too large (image exceeds the 12 MiB body cap) */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getCustomerAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A presigned download URL for the avatar */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerAvatarResponse"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    uploadCustomerAvatar: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The customer's user_id (must equal the caller). */
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description The avatar image (JPEG/PNG/WEBP, ≤10 MiB).
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Uploaded; returns a presigned download URL */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["CustomerAvatarResponse"];
                     };
                 };
             };

@@ -27,6 +27,7 @@ lib/src/model/admin_set_candidate_stage200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/approval_status.dart
 lib/src/model/avg_approval_time.dart
+lib/src/model/customer_avatar_response.dart
 lib/src/model/customer_profile.dart
 lib/src/model/customer_profile_admin.dart
 lib/src/model/date.dart
@@ -36,6 +37,7 @@ lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
 lib/src/model/expiring_document_buckets.dart
 lib/src/model/expiring_documents_response.dart
+lib/src/model/get_customer_avatar200_response.dart
 lib/src/model/get_guard_avatar200_response.dart
 lib/src/model/get_guard_document200_response.dart
 lib/src/model/get_my_profile200_response.dart

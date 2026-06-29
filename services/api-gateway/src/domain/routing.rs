@@ -654,6 +654,7 @@ fn has_encoded_separator(path: &str) -> bool {
 ///   - `POST /attachments`                  — chat image attachment → [`BodyCap::Chat`] (30 MiB)
 ///   - `/bookings/{id}/progress-reports`    — guard hourly check-in photo → [`BodyCap::Large`] (12 MiB)
 ///   - `/profile/guard/{id}/documents`·`/avatar` — credential image / avatar → [`BodyCap::Large`]
+///   - `/profile/customer/{id}/avatar`      — customer avatar → [`BodyCap::Large`]
 ///
 /// Method-agnostic (the edge resolves on path only): the sibling GET on each path carries no
 /// request body, so the larger cap is irrelevant to it; and both backends re-validate the
@@ -695,6 +696,16 @@ fn body_cap_for(stripped: &str) -> BodyCap {
                     || tail == "avatar"
                     || tail.starts_with("avatar/"))
             {
+                return BodyCap::Large;
+            }
+        }
+    }
+    // `/profile/customer/{user_id}/avatar` (customer profile picture — the MIRROR of the guard
+    // avatar): one non-empty `{user_id}` segment, then `avatar` at a boundary (so `…/avatarx` does
+    // NOT match). Customers have NO credential `documents`, so only `avatar` is carved here.
+    if let Some(rest) = stripped.strip_prefix("/profile/customer/") {
+        if let Some((id, tail)) = rest.split_once('/') {
+            if !id.is_empty() && (tail == "avatar" || tail.starts_with("avatar/")) {
                 return BodyCap::Large;
             }
         }
@@ -1624,6 +1635,43 @@ mod tests {
             BodyCap::Default,
             "avatar suffix not at a boundary"
         );
+    }
+
+    #[test]
+    fn profile_customer_avatar_large_cap_routes_to_profile_protected() {
+        // Customer avatar upload — the MIRROR of the guard avatar: Large cap, routed to profile,
+        // token-gated (access-token only; NOT edge-public — there is no registration purpose token
+        // for the customer avatar, unlike guard documents).
+        let av = resolve("/v1/profile/customer/abc-123/avatar");
+        let (up, fwd, public, _) = proxy(av.clone());
+        assert_eq!(
+            up,
+            Upstream::Profile,
+            "customer avatar → profile (via /profile/ prefix)"
+        );
+        assert_eq!(fwd, "/profile/customer/abc-123/avatar");
+        assert!(
+            !public,
+            "customer avatar upload requires a token (not public)"
+        );
+        assert_eq!(
+            body_cap(av),
+            BodyCap::Large,
+            "POST /profile/customer/{{id}}/avatar (customer profile picture)"
+        );
+        // Boundary precision — a near-miss keeps the 1 MiB default and an empty {id} does NOT carve.
+        assert_eq!(
+            body_cap(resolve("/v1/profile/customer/abc/avatarx")),
+            BodyCap::Default,
+            "avatar suffix not at a boundary"
+        );
+        assert_eq!(
+            body_cap(resolve("/v1/profile/customer//avatar")),
+            BodyCap::Default,
+            "empty {{user_id}} segment → default cap"
+        );
+        // The customer profile submit (no {id}/avatar) is unaffected — default cap, still public.
+        assert_eq!(body_cap(resolve("/v1/profile/customer")), BodyCap::Default);
     }
 
     #[test]

@@ -10,6 +10,7 @@ import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
+import 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -31,6 +32,87 @@ class ProfileApi {
   final Serializers _serializers;
 
   const ProfileApi(this._dio, this._serializers);
+
+  /// A presigned URL for the customer&#39;s avatar
+  /// Returns a short-lived presigned GET URL for the stored avatar. Read auth is **owner-or-admin**. 404 when no avatar is set or the customer has no profile. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetCustomerAvatar200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetCustomerAvatar200Response>> getCustomerAvatar({ 
+    required String userId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/profile/customer/{user_id}/avatar'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetCustomerAvatar200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetCustomerAvatar200Response),
+      ) as GetCustomerAvatar200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetCustomerAvatar200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// A presigned URL for the guard&#39;s avatar
   /// Returns a short-lived presigned GET URL for the stored avatar. Read auth is **owner-or-admin**. 404 when no avatar is set or the guard has no profile. 
@@ -716,6 +798,110 @@ class ProfileApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Upload the customer&#39;s own profile picture
+  /// Upload/replace the customer&#39;s avatar (JPEG/PNG/WEBP, ≤10 MiB). The MIRROR of &#x60;POST /profile/guard/{user_id}/avatar&#x60; for the customer side. Auth: logged-in **customer, own avatar only** (&#x60;{user_id}&#x60; must equal the caller — no admin bypass on write). Image is magic-byte validated (declared MIME must match the content), stored in private S3 under a server-generated key, and the key written to &#x60;customer_profiles.avatar_key&#x60;. Returns a short-lived (1h) presigned GET URL — the raw key is never exposed. 
+  ///
+  /// Parameters:
+  /// * [userId] - The customer's user_id (must equal the caller).
+  /// * [file] - The avatar image (JPEG/PNG/WEBP, ≤10 MiB).
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetCustomerAvatar200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetCustomerAvatar200Response>> uploadCustomerAvatar({ 
+    required String userId,
+    required MultipartFile file,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/profile/customer/{user_id}/avatar'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'multipart/form-data',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      _bodyData = FormData.fromMap(<String, dynamic>{
+        r'file': file,
+      });
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetCustomerAvatar200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetCustomerAvatar200Response),
+      ) as GetCustomerAvatar200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetCustomerAvatar200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

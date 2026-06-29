@@ -113,6 +113,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminUpdateOrgSettings**](doc/AdminApi.md#adminupdateorgsettings) | **PUT** /admin/org-settings | Set/replace the organization (company) profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
+[*ProfileApi*](doc/ProfileApi.md) | [**getCustomerAvatar**](doc/ProfileApi.md#getcustomeravatar) | **GET** /profile/customer/{user_id}/avatar | A presigned URL for the customer&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
 [*ProfileApi*](doc/ProfileApi.md) | [**getMyProfile**](doc/ProfileApi.md#getmyprofile) | **GET** /profile/me | The caller&#39;s own profile (account number MASKED)
@@ -121,6 +122,7 @@ Class | Method | HTTP request | Description
 [*ProfileApi*](doc/ProfileApi.md) | [**listGuardDocumentExpiries**](doc/ProfileApi.md#listguarddocumentexpiries) | **GET** /profile/guard/{user_id}/document-expiries | The guard&#39;s recorded credential expiry dates
 [*ProfileApi*](doc/ProfileApi.md) | [**setGuardDocumentExpiry**](doc/ProfileApi.md#setguarddocumentexpiry) | **PUT** /profile/guard/{user_id}/document-expiry | Set/replace one credential&#39;s expiry date
 [*ProfileApi*](doc/ProfileApi.md) | [**updateGuardProfile**](doc/ProfileApi.md#updateguardprofile) | **PUT** /profile/guard | Update the caller&#39;s EXISTING guard profile (role&#x3D;guard)
+[*ProfileApi*](doc/ProfileApi.md) | [**uploadCustomerAvatar**](doc/ProfileApi.md#uploadcustomeravatar) | **POST** /profile/customer/{user_id}/avatar | Upload the customer&#39;s own profile picture
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardAvatar**](doc/ProfileApi.md#uploadguardavatar) | **POST** /profile/guard/{user_id}/avatar | Upload the guard&#39;s own profile picture
 [*ProfileApi*](doc/ProfileApi.md) | [**uploadGuardDocument**](doc/ProfileApi.md#uploadguarddocument) | **POST** /profile/guard/{user_id}/documents | Upload one of a guard&#39;s credential images
 [*ProfileApi*](doc/ProfileApi.md) | [**upsertCustomerProfile**](doc/ProfileApi.md#upsertcustomerprofile) | **POST** /profile/customer | Create or update the caller&#39;s customer profile (profile_token OR logged-in customer)
@@ -143,6 +145,7 @@ Class | Method | HTTP request | Description
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [ApprovalStatus](doc/ApprovalStatus.md)
  - [AvgApprovalTime](doc/AvgApprovalTime.md)
+ - [CustomerAvatarResponse](doc/CustomerAvatarResponse.md)
  - [CustomerProfile](doc/CustomerProfile.md)
  - [CustomerProfileAdmin](doc/CustomerProfileAdmin.md)
  - [DocumentExpiry](doc/DocumentExpiry.md)
@@ -151,6 +154,7 @@ Class | Method | HTTP request | Description
  - [ErrorDetail](doc/ErrorDetail.md)
  - [ExpiringDocumentBuckets](doc/ExpiringDocumentBuckets.md)
  - [ExpiringDocumentsResponse](doc/ExpiringDocumentsResponse.md)
+ - [GetCustomerAvatar200Response](doc/GetCustomerAvatar200Response.md)
  - [GetGuardAvatar200Response](doc/GetGuardAvatar200Response.md)
  - [GetGuardDocument200Response](doc/GetGuardDocument200Response.md)
  - [GetMyProfile200Response](doc/GetMyProfile200Response.md)
