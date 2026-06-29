@@ -402,6 +402,10 @@ services:
       NATS_USER: profile
       NATS_PASSWORD: ${NATS_PROFILE_PASSWORD:?NATS_PROFILE_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
+      # Identity service host — the admin name-resolver merges admin display names by calling
+      # identity's internal /internal/users/names over the service-JWT (best-effort). Without this
+      # the merge silently degrades (admin ids show as #id in the Activity Log). Cluster DNS host.
+      IDENTITY_URL: http://identity:3001
       # Guard credential-document object store (MinIO/R2). profile signs its own SigV4
       # presigned URLs (ported chat/booking pattern) — REQUIRED at startup (S3Config::from_env
       # fail-fast). Same private bucket/creds as booking + chat.
