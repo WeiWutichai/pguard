@@ -60,7 +60,13 @@ export interface paths {
          *     **2FA (#144):** if the account has TOTP enabled, the password is NOT enough — the `200`
          *     body instead carries a `TwoFactorChallenge` (`{ two_factor_required: true, challenge_token }`)
          *     with NO tokens/cookies. The client completes login at `POST /auth/2fa/verify` with a code.
-         *     Accounts WITHOUT 2FA are unaffected (the `data` is the usual `TokenPair`).
+         *     Accounts WITHOUT 2FA are unaffected (the `data` is the usual token pair).
+         *
+         *     **Multi-role (Option A):** the no-2FA `data` is a `LoginTokenPair` — the usual `TokenPair`
+         *     fields PLUS `available_roles` (the account's approved roles). BACKWARD COMPATIBLE: a
+         *     single-role user gets `available_roles: [their_role]` and the access token is minted with
+         *     their registration/primary role exactly as before. When `available_roles` has >1 entry the
+         *     app can show a role picker and call `POST /auth/switch-role`.
          */
         post: operations["login"];
         delete?: never;
@@ -132,6 +138,58 @@ export interface paths {
          *     `DELETE /auth/me` which also soft-deletes + redacts.
          */
         post: operations["revokeAllSessions"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/switch-role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Switch the caller's ACTIVE role (multi-role, Option A)
+         * @description Mints a NEW access + refresh token pair whose active role is `role`. THE security gate:
+         *     `role` MUST be in the caller's APPROVED roles (`user_roles` — the set surfaced by
+         *     `GET /auth/me` `roles` and login's `available_roles`). A role the caller is NOT enrolled
+         *     in → `409` with code `ROLE_NOT_ENROLLED` and NO token is minted (no privilege escalation —
+         *     a customer cannot mint a guard token unless they hold an approved guard profile). An
+         *     unknown role → `400`; `admin` → `403` (never self-assignable). On success the tokens are
+         *     returned in the body AND set as cookies (a fresh refresh family, like login).
+         */
+        post: operations["switchRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/roles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Enroll the logged-in user in a NEW role (multi-role, Option A)
+         * @description Starts enrollment of a role the caller does NOT yet hold (e.g. a customer adding a guard
+         *     role). Returns a single-use `profile_token` scoped to `(this user_id, role)` — the SAME
+         *     shape register issues — so the app submits that role's profile form at
+         *     `POST /profile/{guard,customer}`, creating a PENDING second profile for the SAME account.
+         *     The role enters the switchable set (`user_roles`) ONLY on admin approval; this endpoint
+         *     does NOT grant the role. `409` with code `ROLE_ALREADY_ENROLLED` if the caller already
+         *     holds the role; unknown role → `400`; `admin` → `403`.
+         */
+        post: operations["enrollRole"];
         delete?: never;
         options?: never;
         head?: never;
@@ -551,10 +609,56 @@ export interface components {
             /** @enum {string} */
             token_type: "Bearer";
         };
+        /**
+         * @description The `data` of a successful no-2FA login (multi-role, Option A): the usual `TokenPair`
+         *     fields PLUS `available_roles`. BACKWARD COMPATIBLE — a single-role user sees every
+         *     `TokenPair` field unchanged plus `available_roles: [their_role]`; the access token is
+         *     minted with the registration/primary role exactly as before.
+         */
+        LoginTokenPair: {
+            /** @description Short-lived access JWT (HS256). */
+            access_token: string;
+            /** @description Single-use rotating refresh token. */
+            refresh_token: string;
+            /**
+             * Format: int64
+             * @description Access-token lifetime
+             */
+            expires_in: number;
+            /** @enum {string} */
+            token_type: "Bearer";
+            /**
+             * @description The account's APPROVED roles (`user_roles`). `[role]` for a single-role user; both
+             *     for a dual-role user (the app can then offer `POST /auth/switch-role`).
+             */
+            available_roles: components["schemas"]["UserRole"][];
+        };
+        SwitchRoleRequest: {
+            /**
+             * @description The role to switch the active session into. MUST be one the caller is enrolled in
+             *     (in `available_roles` / `GET /auth/me` `roles`) — otherwise `409 ROLE_NOT_ENROLLED`.
+             * @enum {string}
+             */
+            role: "guard" | "customer";
+        };
+        EnrollRoleRequest: {
+            /**
+             * @description The NEW role to enroll (must NOT already be held). Returns a `profile_token` for that
+             *     role's profile submission; the role is granted only after admin approval.
+             * @enum {string}
+             */
+            role: "guard" | "customer";
+        };
         Me: {
             /** Format: uuid */
             user_id: string;
             role: components["schemas"]["UserRole"];
+            /**
+             * @description The SET of APPROVED roles this account holds (multi-role, Option A). For a single-role
+             *     user this is exactly `[role]`; for a dual-role user it carries both so the app can
+             *     offer a role switch (`POST /auth/switch-role`). Always contains the active `role`.
+             */
+            roles: components["schemas"]["UserRole"][];
             /**
              * @description The caller's own display name (#144). `null` when unset — notably an admin who has not
              *     filled it in yet. Settable via `PUT /auth/me`.
@@ -792,6 +896,32 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
+        /**
+         * @description `POST /auth/switch-role`: the requested role is valid but the caller is NOT enrolled in it
+         *     (it is not in their `user_roles`). NO token is minted (no privilege escalation). Same 409
+         *     envelope as `Conflict`; the `error.code` is `ROLE_NOT_ENROLLED` so the client can offer to
+         *     register the role.
+         */
+        RoleNotEnrolled: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /**
+         * @description `POST /auth/roles`: the caller already holds the requested role (it is in their
+         *     `user_roles`). Same 409 envelope as `Conflict`; the `error.code` is `ROLE_ALREADY_ENROLLED`.
+         */
+        RoleAlreadyEnrolled: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description Resource not found */
         NotFound: {
             headers: {
@@ -856,7 +986,10 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Either the issued token pair (no 2FA) OR a 2FA challenge (`two_factor_required: true`). */
+            /**
+             * @description Either the issued token pair + available_roles (no 2FA) OR a 2FA challenge
+             *     (`two_factor_required: true`).
+             */
             200: {
                 headers: {
                     /**
@@ -868,7 +1001,7 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
-                        data?: components["schemas"]["TokenPair"] | components["schemas"]["TwoFactorChallenge"];
+                        data?: components["schemas"]["LoginTokenPair"] | components["schemas"]["TwoFactorChallenge"];
                     };
                 };
             };
@@ -920,6 +1053,59 @@ export interface operations {
         responses: {
             200: components["responses"]["EmptyOk"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    switchRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SwitchRoleRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["TokenPairOk"];
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["RoleNotEnrolled"];
+        };
+    };
+    enrollRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EnrollRoleRequest"];
+            };
+        };
+        responses: {
+            /**
+             * @description Enrollment started — a single-use `profile_token` for the new role's profile
+             *     submission. NO access/refresh token; the role is not granted until approved.
+             */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RegisterResult"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["RoleAlreadyEnrolled"];
         };
     };
     me: {

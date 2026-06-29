@@ -35,6 +35,7 @@ lib/src/model/disable2fa_request.dart
 lib/src/model/enable2fa200_response.dart
 lib/src/model/enable2fa_request.dart
 lib/src/model/enable2fa_response.dart
+lib/src/model/enroll_role_request.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
 lib/src/model/inline_object.dart
@@ -44,6 +45,7 @@ lib/src/model/list_sessions200_response.dart
 lib/src/model/login200_response.dart
 lib/src/model/login200_response_all_of_data.dart
 lib/src/model/login_request.dart
+lib/src/model/login_token_pair.dart
 lib/src/model/me.dart
 lib/src/model/me200_response.dart
 lib/src/model/refresh_request.dart
@@ -55,6 +57,7 @@ lib/src/model/resolved_user.dart
 lib/src/model/session_view.dart
 lib/src/model/setup2fa200_response.dart
 lib/src/model/setup2fa_response.dart
+lib/src/model/switch_role_request.dart
 lib/src/model/token_pair.dart
 lib/src/model/two_factor_challenge.dart
 lib/src/model/update_me_request.dart

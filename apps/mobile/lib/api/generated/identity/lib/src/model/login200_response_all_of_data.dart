@@ -3,9 +3,10 @@
 //
 
 // ignore_for_file: unused_element
-import 'package:pguard_identity_api/src/model/token_pair.dart';
 import 'package:built_collection/built_collection.dart';
 import 'package:pguard_identity_api/src/model/two_factor_challenge.dart';
+import 'package:pguard_identity_api/src/model/login_token_pair.dart';
+import 'package:pguard_identity_api/src/model/user_role.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 import 'package:one_of/one_of.dart';
@@ -19,11 +20,12 @@ part 'login200_response_all_of_data.g.dart';
 /// * [refreshToken] - Single-use rotating refresh token.
 /// * [expiresIn] - Access-token lifetime
 /// * [tokenType] 
+/// * [availableRoles] - The account's APPROVED roles (`user_roles`). `[role]` for a single-role user; both for a dual-role user (the app can then offer `POST /auth/switch-role`). 
 /// * [twoFactorRequired] 
 /// * [challengeToken] 
 @BuiltValue()
 abstract class Login200ResponseAllOfData implements Built<Login200ResponseAllOfData, Login200ResponseAllOfDataBuilder> {
-  /// One Of [TokenPair], [TwoFactorChallenge]
+  /// One Of [LoginTokenPair], [TwoFactorChallenge]
   OneOf get oneOf;
 
   Login200ResponseAllOfData._();
@@ -69,7 +71,7 @@ class _$Login200ResponseAllOfDataSerializer implements PrimitiveSerializer<Login
   }) {
     final result = Login200ResponseAllOfDataBuilder();
     Object? oneOfDataSrc;
-    final targetType = const FullType(OneOf, [FullType(TokenPair), FullType(TwoFactorChallenge), ]);
+    final targetType = const FullType(OneOf, [FullType(LoginTokenPair), FullType(TwoFactorChallenge), ]);
     oneOfDataSrc = serialized;
     result.oneOf = serializers.deserialize(oneOfDataSrc, specifiedType: targetType) as OneOf;
     return result.build();

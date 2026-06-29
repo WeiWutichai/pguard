@@ -34,6 +34,7 @@ import 'package:pguard_identity_api/src/model/disable2fa_request.dart';
 import 'package:pguard_identity_api/src/model/enable2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/enable2fa_request.dart';
 import 'package:pguard_identity_api/src/model/enable2fa_response.dart';
+import 'package:pguard_identity_api/src/model/enroll_role_request.dart';
 import 'package:pguard_identity_api/src/model/error_body.dart';
 import 'package:pguard_identity_api/src/model/error_detail.dart';
 import 'package:pguard_identity_api/src/model/inline_object.dart';
@@ -43,6 +44,7 @@ import 'package:pguard_identity_api/src/model/list_sessions200_response.dart';
 import 'package:pguard_identity_api/src/model/login200_response.dart';
 import 'package:pguard_identity_api/src/model/login200_response_all_of_data.dart';
 import 'package:pguard_identity_api/src/model/login_request.dart';
+import 'package:pguard_identity_api/src/model/login_token_pair.dart';
 import 'package:pguard_identity_api/src/model/me.dart';
 import 'package:pguard_identity_api/src/model/me200_response.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
@@ -54,6 +56,7 @@ import 'package:pguard_identity_api/src/model/resolved_user.dart';
 import 'package:pguard_identity_api/src/model/session_view.dart';
 import 'package:pguard_identity_api/src/model/setup2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/setup2fa_response.dart';
+import 'package:pguard_identity_api/src/model/switch_role_request.dart';
 import 'package:pguard_identity_api/src/model/token_pair.dart';
 import 'package:pguard_identity_api/src/model/two_factor_challenge.dart';
 import 'package:pguard_identity_api/src/model/update_me_request.dart';
@@ -85,6 +88,7 @@ part 'serializers.g.dart';
   Enable2fa200Response,
   Enable2faRequest,
   Enable2faResponse,
+  EnrollRoleRequest,
   ErrorBody,
   ErrorDetail,
   InlineObject,
@@ -94,6 +98,7 @@ part 'serializers.g.dart';
   Login200Response,
   Login200ResponseAllOfData,
   LoginRequest,
+  LoginTokenPair,
   Me,
   Me200Response,
   RefreshRequest,
@@ -105,6 +110,7 @@ part 'serializers.g.dart';
   SessionView,
   Setup2fa200Response,
   Setup2faResponse,
+  SwitchRoleRequest,
   TokenPair,
   TwoFactorChallenge,
   UpdateMeRequest,
