@@ -38,7 +38,7 @@ abstract class LoginTokenPair implements Built<LoginTokenPair, LoginTokenPairBui
 
   /// The account's APPROVED roles (`user_roles`). `[role]` for a single-role user; both for a dual-role user (the app can then offer `POST /auth/switch-role`). 
   @BuiltValueField(wireName: r'available_roles')
-  BuiltList<UserRole> get availableRoles;
+  BuiltList<UserRole>? get availableRoles;
 
   LoginTokenPair._();
 
@@ -83,11 +83,13 @@ class _$LoginTokenPairSerializer implements PrimitiveSerializer<LoginTokenPair> 
       object.tokenType,
       specifiedType: const FullType(LoginTokenPairTokenTypeEnum),
     );
-    yield r'available_roles';
-    yield serializers.serialize(
-      object.availableRoles,
-      specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
-    );
+    if (object.availableRoles != null) {
+      yield r'available_roles';
+      yield serializers.serialize(
+        object.availableRoles,
+        specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
+      );
+    }
   }
 
   @override

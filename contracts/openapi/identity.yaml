@@ -912,7 +912,10 @@ components:
 
     LoginTokenPair:
       type: object
-      required: [access_token, refresh_token, expires_in, token_type, available_roles]
+      # `available_roles` is OPTIONAL (additive) — the server always sends it, but keeping it out of
+      # `required` keeps the field backward-compatible: an old/minimal TokenPair body still validates
+      # against the login response, and a single-role client that ignores it is unaffected.
+      required: [access_token, refresh_token, expires_in, token_type]
       description: |
         The `data` of a successful no-2FA login (multi-role, Option A): the usual `TokenPair`
         fields PLUS `available_roles`. BACKWARD COMPATIBLE — a single-role user sees every

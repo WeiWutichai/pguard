@@ -631,7 +631,7 @@ export interface components {
              * @description The account's APPROVED roles (`user_roles`). `[role]` for a single-role user; both
              *     for a dual-role user (the app can then offer `POST /auth/switch-role`).
              */
-            available_roles: components["schemas"]["UserRole"][];
+            available_roles?: components["schemas"]["UserRole"][];
         };
         SwitchRoleRequest: {
             /**
