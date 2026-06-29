@@ -25,12 +25,13 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::identity_client::IdentityResolver;
 use crate::models::{
-    AccessAuditRow, AdminListAccessAuditQuery, CustomerProfileAdminResponse,
-    CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
-    GuardDocumentResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
-    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
-    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
-    SetDocumentExpiryRequest, StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    AccessAuditRow, AdminListAccessAuditQuery, CustomerAvatarResponse,
+    CustomerProfileAdminResponse, CustomerProfileResponse, ExpiringDocumentsResponse,
+    GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentResponse, GuardProfileResponse,
+    GuardProfileSubmitResponse, InternalGuard, MyProfile, OrgSettingsResponse,
+    PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
+    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
+    StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
     UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
 };
 use crate::repo;
@@ -514,12 +515,15 @@ async fn authorize_customer_profile_read<S: ProfileDeps>(
     }
 }
 
-/// GET /customers/{id}/public — the assigned GUARD reads the customer's MINI-profile (name only)
-/// so the job sheet can address the customer by their REAL NAME instead of a raw id. The mirror of
-/// [`get_public_guard_profile`]: IDOR-gated (see [`authorize_customer_profile_read`]) — a guard may
-/// read it ONLY for a customer on their active booking (else 403, no existence probe). Returns ONLY
-/// `{ user_id, full_name }` — never the customer's address/company/email/phone PII. 404 when the
-/// customer has no profile row. Read on the replica (the authz read-model is on the primary).
+/// GET /customers/{id}/public — the assigned GUARD reads the customer's MINI-profile (name + photo)
+/// so the job sheet can address the customer by their REAL NAME instead of a raw id, and show their
+/// face. The mirror of [`get_public_guard_profile`]: IDOR-gated (see
+/// [`authorize_customer_profile_read`]) — a guard may read it ONLY for a customer on their active
+/// booking (else 403, no existence probe). Returns ONLY `{ user_id, full_name, avatar_url }` — never
+/// the customer's address/company/email/phone PII. `avatar_url` is the raw `avatar_key` presigned
+/// into a short-lived GET URL HERE (one place; the key never leaves profile), `None` when unset.
+/// 404 when the customer has no profile row. Read on the replica (the authz read-model is on the
+/// primary).
 #[tracing::instrument(skip(state), fields(user = %user.user_id, customer = %customer_id))]
 pub async fn get_public_customer_profile<S: ProfileDeps>(
     State(state): State<S>,
@@ -527,10 +531,19 @@ pub async fn get_public_customer_profile<S: ProfileDeps>(
     Path(customer_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<PublicCustomerProfile>>, AppError> {
     authorize_customer_profile_read(&state, &user, customer_id).await?;
-    let profile = repo::get_public_customer_profile(state.db_read(), customer_id)
+    let row = repo::get_public_customer_profile(state.db_read(), customer_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Customer not found".to_string()))?;
-    Ok(Json(ApiResponse::success(profile)))
+    // Presign the avatar key here (one place, like the guard avatar / internal-guard path) so the
+    // raw S3 key never crosses the wire; null key → no URL.
+    Ok(Json(ApiResponse::success(PublicCustomerProfile {
+        user_id: row.user_id,
+        full_name: row.full_name,
+        avatar_url: row
+            .avatar_key
+            .as_deref()
+            .map(|k| state.s3().download_url(k)),
+    })))
 }
 
 // ----- POST/GET /profile/guard/{user_id}/documents — guard credential image upload/read -----
@@ -812,6 +825,90 @@ pub async fn get_guard_avatar<S: ProfileDeps>(
         .await?
         .ok_or_else(|| AppError::NotFound("Avatar not set".to_string()))?;
     Ok(Json(ApiResponse::success(GuardAvatarResponse {
+        avatar_url: state.s3().download_url(&key),
+    })))
+}
+
+// ----- POST/GET /profile/customer/{user_id}/avatar — customer self-uploaded profile picture -----
+//
+// The exact MIRROR of the guard avatar pair above (own-only write, owner-or-admin read, the same
+// magic-byte image gate, private S3 key, presigned short-lived GET) for the CUSTOMER side. The
+// guard variant writes `profile.guard_profiles.avatar_key`; this writes
+// `profile.customer_profiles.avatar_key` (the `*_customer_*` repo helpers). The fixed
+// [`AVATAR_KEY_COLUMN`] `&'static str` is shared (both tables name the column `avatar_key`).
+
+/// POST `/profile/customer/{user_id}/avatar` — a customer uploads/replaces their OWN profile
+/// picture. Auth: logged-in customer, **own avatar only** (no admin bypass on write). Image
+/// magic-byte validated (JPEG/PNG/WEBP ≤10 MiB, same gate as the guard avatar / credential docs),
+/// stored under a server-generated UUID key, the key written to `customer_profiles.avatar_key`.
+/// Returns a short-lived presigned GET URL.
+#[tracing::instrument(skip(state, multipart), fields(user = %user.user_id, target = %user_id))]
+pub async fn upload_customer_avatar<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+    multipart: Multipart,
+) -> Result<Json<ApiResponse<CustomerAvatarResponse>>, AppError> {
+    require_role(&user, ROLE_CUSTOMER)?;
+    // IDOR: a customer sets ONLY their own avatar (path id must equal the caller).
+    if user_id != user.user_id {
+        return Err(AppError::Forbidden(
+            "You can only upload your own avatar".to_string(),
+        ));
+    }
+
+    let (declared_mime, bytes) = parse_avatar_form(multipart).await?;
+
+    // Validate the image (size BEFORE magic bytes; declared must match detected) — shares the
+    // credential-doc validator (image-only allowlist).
+    let canonical_mime = documents::validate_document_upload(&declared_mime, bytes.len(), &bytes)?;
+    let ext = documents::mime_to_extension(canonical_mime);
+    // Key MUST stay within RFC-3986 unreserved chars (UUID + fixed prefix + whitelisted ext) — see
+    // the guard avatar note (the staging edge re-canonicalizes the presigned path).
+    let key = format!("profile/{user_id}/avatar/{}.{ext}", Uuid::new_v4());
+
+    state.s3().upload(&key, bytes, canonical_mime).await?;
+
+    // Persist the key (customer-table writer); compensate on DB failure so the object doesn't orphan.
+    if let Err(e) =
+        repo::update_customer_document_key(state.db(), user_id, AVATAR_KEY_COLUMN, &key).await
+    {
+        state.s3().delete_best_effort(&key).await;
+        return Err(e);
+    }
+
+    Ok(Json(ApiResponse::success(CustomerAvatarResponse {
+        avatar_url: state.s3().download_url(&key),
+    })))
+}
+
+/// GET `/profile/customer/{user_id}/avatar` — a presigned URL for the stored avatar. Read auth is
+/// OWNER-OR-ADMIN; 404 when no avatar is set (key NULL) or the customer has no profile.
+#[tracing::instrument(skip(state), fields(user = %user.user_id, target = %user_id))]
+pub async fn get_customer_avatar<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<CustomerAvatarResponse>>, AppError> {
+    if user.role != ROLE_ADMIN && user.user_id != user_id {
+        return Err(AppError::Forbidden(
+            "You can only read your own avatar".to_string(),
+        ));
+    }
+    // PDPA §30: record an admin reading another customer's avatar (fail-loud).
+    if user.role == ROLE_ADMIN && user.user_id != user_id {
+        repo::record_access(
+            state.db(),
+            user.user_id,
+            "admin_read_customer_avatar",
+            Some(&user_id.to_string()),
+        )
+        .await?;
+    }
+    let key = repo::get_customer_document_key(state.db_read(), user_id, AVATAR_KEY_COLUMN)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Avatar not set".to_string()))?;
+    Ok(Json(ApiResponse::success(CustomerAvatarResponse {
         avatar_url: state.s3().download_url(&key),
     })))
 }
@@ -1541,6 +1638,10 @@ mod tests {
                 .route(
                     "/profile/guard/{user_id}/avatar",
                     post(upload_guard_avatar::<TestDeps>).get(get_guard_avatar::<TestDeps>),
+                )
+                .route(
+                    "/profile/customer/{user_id}/avatar",
+                    post(upload_customer_avatar::<TestDeps>).get(get_customer_avatar::<TestDeps>),
                 )
                 .route(
                     "/profile/guard/{user_id}/document-expiries",
@@ -2562,6 +2663,35 @@ mod tests {
             .unwrap()
     }
 
+    /// Build a `multipart/form-data` POST carrying a single `file` part (declared content-type +
+    /// raw bytes) so the handler proceeds PAST the gate into the magic-byte image validator. Used to
+    /// prove a declared-image-but-non-image body is rejected (400).
+    fn multipart_post_file(
+        uri: &str,
+        token: &str,
+        declared_mime: &str,
+        bytes: &[u8],
+    ) -> Request<Body> {
+        const B: &str = "TESTBOUNDARY";
+        let mut body: Vec<u8> = Vec::new();
+        body.extend_from_slice(
+            format!(
+                "--{B}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"a.png\"\r\n\
+                 Content-Type: {declared_mime}\r\n\r\n"
+            )
+            .as_bytes(),
+        );
+        body.extend_from_slice(bytes);
+        body.extend_from_slice(format!("\r\n--{B}--\r\n").as_bytes());
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", format!("multipart/form-data; boundary={B}"))
+            .body(Body::from(body))
+            .unwrap()
+    }
+
     #[tokio::test]
     async fn document_upload_rejects_missing_token() {
         let Some(app) = router().await else {
@@ -2754,6 +2884,145 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- customer avatar (the MIRROR of the guard avatar gates: own-only write, owner-or-admin
+    // read). A customer may write/read ONLY their OWN avatar; never a guard's or another customer's.
+
+    #[tokio::test]
+    async fn customer_avatar_upload_rejects_guard_role() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Only a CUSTOMER may upload to the customer avatar route (guard token → 403).
+        let (tok, uid) = token_with_id(ROLE_GUARD);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/customer/{uid}/avatar"),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "only a customer may upload a customer avatar"
+        );
+    }
+
+    #[tokio::test]
+    async fn customer_avatar_upload_idor_rejects_other_customer() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer uploading to a DIFFERENT customer's avatar path → 403 (own-only, no admin bypass).
+        let (tok, _uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/customer/{}/avatar", Uuid::new_v4()),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer must not set another customer's avatar"
+        );
+    }
+
+    #[tokio::test]
+    async fn customer_avatar_upload_self_passes_role_and_idor() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Own path + customer role pass the gate → the handler proceeds to parse, where the missing
+        // file is a 400 (NOT 401/403). Proves the role + IDOR gate let the owner through.
+        let (tok, uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/customer/{uid}/avatar"),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "file is required");
+    }
+
+    #[tokio::test]
+    async fn customer_avatar_upload_rejects_non_image_magic_bytes() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // Own path + customer role pass the gate, a `file` part IS present, but the bytes are NOT a
+        // real image (declared image/png, body is plain text) → the magic-byte validator rejects it
+        // with a 400 (NOT 401/403/500). Proves the customer avatar shares the image-only gate.
+        let (tok, uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post_file(
+                &format!("/profile/customer/{uid}/avatar"),
+                &tok,
+                "image/png",
+                b"this is definitely not a png",
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "non-image bytes must be rejected by the magic-byte gate"
+        );
+    }
+
+    #[tokio::test]
+    async fn customer_avatar_get_rejects_other_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer reading ANOTHER customer's avatar → 403 (read is owner-or-admin).
+        let (tok, _uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/profile/customer/{}/avatar", Uuid::new_v4()),
+                &tok,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn customer_avatar_write_rejects_guard_target_path() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer cannot use the guard avatar route to write a guard's avatar — the guard route
+        // is role-gated to ROLE_GUARD, so a customer token → 403 (cross-role write is closed).
+        let (tok, _uid) = token_with_id(ROLE_CUSTOMER);
+        let res = app
+            .oneshot(multipart_post(
+                &format!("/profile/guard/{}/avatar", Uuid::new_v4()),
+                &tok,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a customer must not write a guard's avatar"
+        );
     }
 
     // ----- registration doc-upload token (pre-approval): guard uploads BEFORE admin review -----

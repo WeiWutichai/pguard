@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/customer_avatar_controller.dart';
 import '../../core/controllers/guard_avatar_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
@@ -214,11 +215,10 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // Guards can upload/replace their own profile picture; customers see initials only
-        // (no customer avatar endpoint yet).
-        profile.isGuard
-            ? _GuardAvatarEditable(initials: profile.initials)
-            : _InitialsAvatar(initials: profile.initials),
+        // Both roles can upload/replace their own profile picture; the editable avatar reads the
+        // role-matching controller (guard → /profile/guard/{id}/avatar, customer →
+        // /profile/customer/{id}/avatar), falling back to initials before a photo is set / on error.
+        _EditableAvatar(initials: profile.initials, isGuard: profile.isGuard),
         const SizedBox(height: PgTokens.space3),
         Text(profile.displayName,
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
@@ -266,14 +266,18 @@ class _InitialsAvatar extends StatelessWidget {
   }
 }
 
-/// The guard's editable avatar: their uploaded profile picture (presigned URL) over an initials
-/// fallback, with a camera badge and tap-to-upload (camera/gallery → own-only multipart). A spinner
-/// overlays while uploading; the previous image stays visible underneath. Honest: shows initials
-/// (never a fake image) until one is uploaded or if the presigned URL fails to load.
-class _GuardAvatarEditable extends ConsumerWidget {
-  const _GuardAvatarEditable({required this.initials});
+/// The caller's editable avatar (works for BOTH roles): their uploaded profile picture (presigned
+/// URL) over an initials fallback, with a camera badge and tap-to-upload (camera/gallery → own-only
+/// multipart). A spinner overlays while uploading; the previous image stays visible underneath.
+/// Honest: shows initials (never a fake image) until one is uploaded or if the presigned URL fails
+/// to load. [isGuard] only selects which own-only controller/endpoint to drive — the guard avatar
+/// (`/profile/guard/{id}/avatar`) or the customer avatar (`/profile/customer/{id}/avatar`); the UI
+/// is identical.
+class _EditableAvatar extends ConsumerWidget {
+  const _EditableAvatar({required this.initials, required this.isGuard});
 
   final String initials;
+  final bool isGuard;
 
   Future<void> _pickAndUpload(
       BuildContext context, WidgetRef ref, bool isThai) async {
@@ -301,8 +305,11 @@ class _GuardAvatarEditable extends ConsumerWidget {
     final path = await ref.read(documentPickerProvider).pick(source);
     if (path == null) return;
     if (!context.mounted) return;
-    final err =
-        await ref.read(guardAvatarControllerProvider.notifier).upload(path);
+    final err = isGuard
+        ? await ref.read(guardAvatarControllerProvider.notifier).upload(path)
+        : await ref
+            .read(customerAvatarControllerProvider.notifier)
+            .upload(path);
     if (err != null && context.mounted) {
       ScaffoldMessenger.of(context)
           .showSnackBar(SnackBar(content: Text(err)));
@@ -312,7 +319,9 @@ class _GuardAvatarEditable extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    final async = ref.watch(guardAvatarControllerProvider);
+    final async = isGuard
+        ? ref.watch(guardAvatarControllerProvider)
+        : ref.watch(customerAvatarControllerProvider);
     final url = async.valueOrNull;
     final uploading = async.isLoading;
 

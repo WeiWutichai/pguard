@@ -27,6 +27,7 @@ export 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_respon
 export 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 export 'package:pguard_profile_api/src/model/approval_status.dart';
 export 'package:pguard_profile_api/src/model/avg_approval_time.dart';
+export 'package:pguard_profile_api/src/model/customer_avatar_response.dart';
 export 'package:pguard_profile_api/src/model/customer_profile.dart';
 export 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 export 'package:pguard_profile_api/src/model/document_expiry.dart';
@@ -35,6 +36,7 @@ export 'package:pguard_profile_api/src/model/error_body.dart';
 export 'package:pguard_profile_api/src/model/error_detail.dart';
 export 'package:pguard_profile_api/src/model/expiring_document_buckets.dart';
 export 'package:pguard_profile_api/src/model/expiring_documents_response.dart';
+export 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dart';
 export 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 export 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 export 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';

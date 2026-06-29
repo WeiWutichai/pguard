@@ -28,6 +28,7 @@ import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_respon
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/avg_approval_time.dart';
+import 'package:pguard_profile_api/src/model/customer_avatar_response.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/document_expiry.dart';
@@ -36,6 +37,7 @@ import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/error_detail.dart';
 import 'package:pguard_profile_api/src/model/expiring_document_buckets.dart';
 import 'package:pguard_profile_api/src/model/expiring_documents_response.dart';
+import 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
@@ -88,6 +90,7 @@ part 'serializers.g.dart';
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
   AvgApprovalTime,
+  CustomerAvatarResponse,
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
   DocumentExpiry,
@@ -96,6 +99,7 @@ part 'serializers.g.dart';
   ErrorDetail,
   ExpiringDocumentBuckets,
   ExpiringDocumentsResponse,
+  GetCustomerAvatar200Response,
   GetGuardAvatar200Response,
   GetGuardDocument200Response,
   GetMyProfile200Response,

@@ -8,11 +8,12 @@ import 'package:built_value/serializer.dart';
 
 part 'public_customer_profile.g.dart';
 
-/// The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the other direction. NARROW by design: only the customer's name (so the assigned guard's job sheet can address them by name); NEVER the address/company/email/phone PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`). 
+/// The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the other direction. NARROW by design: only the customer's name + photo (so the assigned guard's job sheet can address them by name and show their face); NEVER the address/company/email/phone PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key is never on the wire), `null` when the customer has not set an avatar. 
 ///
 /// Properties:
 /// * [userId] 
 /// * [fullName] 
+/// * [avatarUrl] - Presigned GET URL for the customer's avatar (expires in ~1h), or null when unset.
 @BuiltValue()
 abstract class PublicCustomerProfile implements Built<PublicCustomerProfile, PublicCustomerProfileBuilder> {
   @BuiltValueField(wireName: r'user_id')
@@ -20,6 +21,10 @@ abstract class PublicCustomerProfile implements Built<PublicCustomerProfile, Pub
 
   @BuiltValueField(wireName: r'full_name')
   String? get fullName;
+
+  /// Presigned GET URL for the customer's avatar (expires in ~1h), or null when unset.
+  @BuiltValueField(wireName: r'avatar_url')
+  String? get avatarUrl;
 
   PublicCustomerProfile._();
 
@@ -53,6 +58,13 @@ class _$PublicCustomerProfileSerializer implements PrimitiveSerializer<PublicCus
       yield r'full_name';
       yield serializers.serialize(
         object.fullName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.avatarUrl != null) {
+      yield r'avatar_url';
+      yield serializers.serialize(
+        object.avatarUrl,
         specifiedType: const FullType(String),
       );
     }
@@ -92,6 +104,13 @@ class _$PublicCustomerProfileSerializer implements PrimitiveSerializer<PublicCus
             specifiedType: const FullType(String),
           ) as String;
           result.fullName = valueDes;
+          break;
+        case r'avatar_url':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.avatarUrl = valueDes;
           break;
         default:
           unhandled.add(key);
