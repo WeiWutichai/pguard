@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/chat_launcher.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/guard_route_controller.dart';
@@ -73,6 +74,22 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
       (_, next) => _syncStreamingLease(next.valueOrNull?.booking.status),
       fireImmediately: true,
     );
+    // Live cancellation: the active-job controller has no WS of its own (it re-fetches only on
+    // resume), so subscribe to the booking-status feed and fold a terminal transition the guard
+    // didn't drive — chiefly the CUSTOMER cancelling — into the active-job state the instant it
+    // lands. Without this a cancelled job would keep showing its working chrome until the guard
+    // backgrounded + resumed. The fold is idempotent (a no-op when the status already matches).
+    ref.listenManual(
+      bookingStatusControllerProvider(widget.bookingId),
+      (_, next) {
+        final status = next.valueOrNull?.status;
+        if (status != null && BookingLifecycle.isTerminal(status)) {
+          ref
+              .read(activeJobControllerProvider(widget.bookingId).notifier)
+              .applyExternalStatus(status);
+        }
+      },
+    );
   }
 
   @override
@@ -134,7 +151,7 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
     final state = async.valueOrNull;
     final booking = state?.booking;
     final stage = state == null ? null : stageOf(state);
-    final header = _headerFor(stage, isThai);
+    final header = _headerFor(stage, isThai, status: booking?.status);
     final myUserId = ref.watch(sessionProvider).user?.userId;
 
     return Scaffold(
@@ -210,7 +227,17 @@ JobStage stageOf(ActiveJobState s) {
 /// travelling) maps to G2; the at-location-not-started stage maps to G3. Falls back to the
 /// generic active-job header while loading / after completion.
 ({String title, String subtitle, Color background}) _headerFor(
-    JobStage? stage, bool isThai) {
+    JobStage? stage, bool isThai,
+    {BookingStatus? status}) {
+  // A negative terminal (the customer CANCELLED, or a decline) reads as cancelled — not the generic
+  // "Active job" header — so the whole screen is unambiguous, matching the cancelled bottom bar.
+  if (status != null && BookingLifecycle.isNegativeTerminal(status)) {
+    return (
+      title: isThai ? 'งานถูกยกเลิก' : 'Job cancelled',
+      subtitle: isThai ? 'งานนี้ถูกยกเลิกแล้ว' : 'This job was cancelled',
+      background: PgTokens.colorDanger,
+    );
+  }
   switch (stage) {
     case JobStage.enRoute:
     case JobStage.arrived:
@@ -969,6 +996,13 @@ class _TransitionBar extends ConsumerWidget {
           ],
         ));
       case JobStage.done:
+        // A NEGATIVE terminal (the customer CANCELLED, or the job was declined) is NOT a completion
+        // — render a distinct cancelled banner + a prominent "back to jobs" primary so the guard is
+        // never trapped on a dead job with only chat/call/details. The success "Job completed" view
+        // below is reserved for an actual `completed`.
+        if (BookingLifecycle.isNegativeTerminal(state.booking.status)) {
+          return bar(_CancelledBar(bookingId: bookingId, state: state));
+        }
         // #99a + #99c: the completed view is NOT a dead-end and is NOT a rating CTA (rating is
         // customer-only, #97). The guard gets a neutral completion state + the receipt + a clear
         // path back to take new jobs.
@@ -1023,6 +1057,81 @@ class _TransitionBar extends ConsumerWidget {
           ],
         ));
     }
+  }
+}
+
+/// FIX #2 — the terminal bottom bar shown when the job is CANCELLED (or declined) out from under the
+/// guard, chiefly by the CUSTOMER cancelling mid-job. A clear cancelled banner + a PROMINENT primary
+/// "กลับไปรับงานใหม่ / Back to jobs" that returns the guard to the job pool so they are never trapped
+/// on a dead job. Navigates to the guard home AND invalidates [guardJobsControllerProvider] so the
+/// pool re-fetches (the just-cancelled job drops out of the active list — see
+/// [GuardJobsController.active]). Chat/details stay available as secondary actions for any follow-up.
+class _CancelledBar extends ConsumerWidget {
+  const _CancelledBar({required this.bookingId, required this.state});
+
+  final String bookingId;
+  final ActiveJobState state;
+
+  /// Return the guard to the job pool. Invalidate the jobs list FIRST so the screen we land on
+  /// rebuilds from a fresh `GET /bookings` (the cancelled job is no longer in [active]).
+  void _backToJobs(BuildContext context, WidgetRef ref) {
+    ref.invalidate(guardJobsControllerProvider);
+    context.go('/home/guard');
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // The unambiguous cancelled banner — danger-toned so it can't be mistaken for completion.
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(PgTokens.space3),
+          decoration: BoxDecoration(
+            color: PgTokens.colorDangerBg,
+            borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.cancel_outlined,
+                  size: 18, color: PgTokens.colorDanger),
+              const SizedBox(width: PgTokens.space2),
+              Expanded(
+                child: Text(
+                  isThai ? 'งานนี้ถูกยกเลิกแล้ว' : 'This job was cancelled',
+                  style: const TextStyle(
+                      fontSize: 13.5,
+                      fontWeight: FontWeight.w700,
+                      color: PgTokens.colorDanger),
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: PgTokens.space3),
+        // The PROMINENT primary: get the guard back to the job pool.
+        PgPrimaryButton(
+          label: isThai ? 'กลับไปรับงานใหม่' : 'Back to jobs',
+          onPressed: () => _backToJobs(context, ref),
+        ),
+        const SizedBox(height: PgTokens.space1),
+        // Chat + details stay available as SECONDARY actions for any follow-up the guard needs.
+        _ChatCustomerButton(booking: state.booking),
+        PgGhostButton(
+          label: isThai ? 'ดูรายละเอียดงาน' : 'Job details',
+          onPressed: () => showBookingDetailsSheet(
+            context,
+            booking: state.booking,
+            totalSatang: state.booking.displayTotalSatang,
+            isThai: isThai,
+            showCustomer: true,
+          ),
+        ),
+      ],
+    );
   }
 }
 

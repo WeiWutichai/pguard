@@ -293,11 +293,11 @@ class _Sheet extends ConsumerWidget {
     // It is only readable once this guard is ASSIGNED (active booking) — so an UNACCEPTED offer
     // (`requested`) degrades to null (403 not-yet-assigned) and falls back to the short `#id` ref,
     // which is exactly the right privacy behaviour (no name leak before the guard takes the job).
-    final customerName = ref
+    final customerProfile = ref
         .watch(customerPublicProfileProvider(booking.customerId))
-        .valueOrNull
-        ?.fullName
-        ?.trim();
+        .valueOrNull;
+    final customerName = customerProfile?.fullName?.trim();
+    final customerAvatarUrl = customerProfile?.avatarUrl;
     final customerShortRef = booking.customerId.length >= 8
         ? '#${booking.customerId.substring(0, 8)}'
         : '#${booking.customerId}';
@@ -312,6 +312,9 @@ class _Sheet extends ConsumerWidget {
         icon: Icons.person_outline,
         label: isThai ? 'ลูกค้า' : 'Customer',
         value: customerValue,
+        // #163: the customer's real PHOTO once this guard is assigned (presigned, IDOR-gated), else
+        // the person glyph.
+        leadingImageUrl: customerAvatarUrl,
       ),
       _DetailRow(
         icon: Icons.calendar_today_outlined,
@@ -465,12 +468,27 @@ class _DetailRow extends StatelessWidget {
       {required this.icon,
       required this.label,
       required this.value,
-      this.trailing});
+      this.trailing,
+      this.leadingImageUrl});
 
   final IconData icon;
   final String label;
   final String value;
   final Widget? trailing;
+
+  /// When set, the leading 40px tile shows this presigned photo (rounded) instead of [icon],
+  /// falling back to [icon] while it loads or on error. Used for the customer's avatar.
+  final String? leadingImageUrl;
+
+  Widget _iconTile() => Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: PgTokens.colorGreen50,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(icon, size: 18, color: PgTokens.colorGreen700),
+      );
 
   @override
   Widget build(BuildContext context) {
@@ -478,15 +496,21 @@ class _DetailRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       child: Row(
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: PgTokens.colorGreen50,
+          if (leadingImageUrl == null)
+            _iconTile()
+          else
+            ClipRRect(
               borderRadius: BorderRadius.circular(12),
+              child: Image.network(
+                leadingImageUrl!,
+                width: 40,
+                height: 40,
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => _iconTile(),
+                loadingBuilder: (context, child, progress) =>
+                    progress == null ? child : _iconTile(),
+              ),
             ),
-            child: Icon(icon, size: 18, color: PgTokens.colorGreen700),
-          ),
           const SizedBox(width: 13),
           Expanded(
             child: Column(

@@ -581,29 +581,43 @@ class _GuardCard extends ConsumerWidget {
     // read the live map uses) rather than a generic role label. Enrichment only — while it loads
     // or if it degrades (403/404/5xx → null), we fall back to the role label, never a fabricated
     // name. Watched only when a guard is assigned.
-    final name = assigned
-        ? ref
-            .watch(guardPublicProfileProvider(guardId))
-            .valueOrNull
-            ?.fullName
-            ?.trim()
+    final profile = assigned
+        ? ref.watch(guardPublicProfileProvider(guardId)).valueOrNull
         : null;
+    final name = profile?.fullName?.trim();
+    final avatarUrl = profile?.avatarUrl;
     final title = !assigned
         ? (isThai ? 'กำลังค้นหาเจ้าหน้าที่' : 'Finding a guard')
         : (name != null && name.isNotEmpty)
             ? name
             : (isThai ? 'เจ้าหน้าที่รักษาความปลอดภัย' : 'Security guard');
+    // #163: the assigned guard's real PHOTO (the same IDOR-gated /guards/{id}/public read), falling
+    // back to the shield while it loads or if it 404s/errors — never a broken-image box.
+    final Widget guardAvatar = CircleAvatar(
+      radius: 21,
+      backgroundColor: PgTokens.colorGreen100,
+      child: Icon(
+        assigned ? Icons.shield_outlined : Icons.search,
+        color: PgTokens.colorGreen800,
+        size: 20,
+      ),
+    );
     return Row(
       children: [
-        CircleAvatar(
-          radius: 21,
-          backgroundColor: PgTokens.colorGreen100,
-          child: Icon(
-            assigned ? Icons.shield_outlined : Icons.search,
-            color: PgTokens.colorGreen800,
-            size: 20,
+        if (avatarUrl == null)
+          guardAvatar
+        else
+          ClipOval(
+            child: Image.network(
+              avatarUrl,
+              width: 42,
+              height: 42,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => guardAvatar,
+              loadingBuilder: (context, child, progress) =>
+                  progress == null ? child : guardAvatar,
+            ),
           ),
-        ),
         const SizedBox(width: PgTokens.space3),
         Expanded(
           child: Column(

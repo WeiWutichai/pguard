@@ -3,13 +3,15 @@
 // customer may read it only while they have an ACTIVE booking with that guard (server-enforced
 // IDOR gate) and only for an approved guard. Pure (no Flutter) → unit-testable.
 
-/// Lean guard identity for the tracking card: name + experience. NEVER bank/address/PII — the
-/// contract returns only these fields. No photo (no avatar storage yet → initials/icon fallback).
+/// Lean guard identity for the tracking card: name + experience + photo. NEVER bank/address/PII —
+/// the contract returns only these fields. [avatarUrl] is a short-lived presigned URL (or `null`
+/// when the guard set no photo → initials/shield fallback).
 class GuardPublicProfile {
   const GuardPublicProfile({
     required this.guardId,
     this.fullName,
     this.yearsOfExperience,
+    this.avatarUrl,
   });
 
   final String guardId;
@@ -21,6 +23,9 @@ class GuardPublicProfile {
   /// Years of experience (`null` when unset).
   final int? yearsOfExperience;
 
+  /// Presigned GET URL for the guard's photo (expires ~1h), `null` when unset → initials/shield.
+  final String? avatarUrl;
+
   factory GuardPublicProfile.fromJson(Map<String, dynamic> json) =>
       GuardPublicProfile(
         guardId: json['user_id'] as String,
@@ -28,6 +33,9 @@ class GuardPublicProfile {
             ? null
             : (json['full_name'] as String).trim(),
         yearsOfExperience: (json['years_of_experience'] as num?)?.toInt(),
+        avatarUrl: (json['avatar_url'] as String?)?.trim().isEmpty ?? true
+            ? null
+            : (json['avatar_url'] as String).trim(),
       );
 
   /// Defensive parse; `null` when the body is not a well-formed profile (degrades to no name).

@@ -215,6 +215,31 @@ void main() {
         reason: 'the active screen the guard navigates to builds fresh, not stale');
   });
 
+  test(
+      'active() EXCLUDES terminal jobs (cancelled/completed/declined) so a job the '
+      'customer cancelled never lingers in the Active tab and traps the guard', () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [
+              bookingJson('b1', 'accepted'),
+              bookingJson('b2', 'cancelled'),
+              bookingJson('b3', 'declined'),
+              bookingJson('b4', 'completed'),
+            ]
+          : const <Map<String, dynamic>>[],
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(GuardJobsController.active(list).map((b) => b.id), ['b1'],
+        reason: 'only the in-progress job; cancelled/declined/completed are excluded');
+    expect(GuardJobsController.completed(list).map((b) => b.id), ['b4']);
+  });
+
   test('accept surfaces the server error message (and does not throw)', () async {
     final api = FakeApi(
       onGet: (path, _) async =>

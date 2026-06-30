@@ -24,7 +24,7 @@ use shared_events::{topics, EventEnvelope};
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
     GuardProfileResponse, InternalGuardRow, OrgSettingsResponse, PublicCustomerProfileRow,
-    PublicGuardProfile, RecruitCandidate, ResolvedNameRow, UpdateOrgSettingsRequest,
+    PublicGuardProfileRow, RecruitCandidate, ResolvedNameRow, UpdateOrgSettingsRequest,
     UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
@@ -467,9 +467,11 @@ pub async fn get_guard_profile(
 pub async fn get_public_guard_profile(
     db: &PgPool,
     guard_id: Uuid,
-) -> Result<Option<PublicGuardProfile>, AppError> {
-    let row = sqlx::query_as::<_, PublicGuardProfile>(
-        "SELECT user_id, full_name, years_of_experience FROM profile.guard_profiles \
+) -> Result<Option<PublicGuardProfileRow>, AppError> {
+    // Lean projection incl. the raw `avatar_key` (the handler presigns it into `avatar_url`; the key
+    // never crosses the wire) — mirrors the customer-public read.
+    let row = sqlx::query_as::<_, PublicGuardProfileRow>(
+        "SELECT user_id, full_name, years_of_experience, avatar_key FROM profile.guard_profiles \
          WHERE user_id = $1 AND approval_status = 'approved'::profile.approval_status",
     )
     .bind(guard_id)

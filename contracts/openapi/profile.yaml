@@ -1247,14 +1247,17 @@ components:
       type: object
       description: |
         The lean, customer-facing guard mini-profile for the live-tracking map. NARROW by design —
-        only what identifies the assigned guard (name + experience); NEVER bank/address/DOB/
+        only what identifies the assigned guard (name + experience + photo); NEVER bank/address/DOB/
         emergency-contact PII. `full_name` is reachable by a non-owner ONLY under the active-booking
-        IDOR gate (see `GET /guards/{id}/public`). Photo deferred (no avatar storage yet).
+        IDOR gate (see `GET /guards/{id}/public`). `avatar_url` is a short-lived presigned GET URL
+        (the raw S3 key is never on the wire), `null` when the guard has not set a photo — the same
+        exposure discovery makes of the chosen guard.
       required: [user_id]
       properties:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
         years_of_experience: { type: integer, format: int32, nullable: true }
+        avatar_url: { type: string, nullable: true, description: 'Presigned GET URL for the guard''s avatar (expires in ~1h), or null when unset.' }
 
     PublicCustomerProfile:
       type: object

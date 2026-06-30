@@ -45,13 +45,18 @@ class GuardJobsController extends _$GuardJobsController {
   static List<Booking> incoming(List<Booking> all) =>
       all.where((b) => b.status == BookingStatus.requested).toList();
 
-  /// Jobs the guard has taken and is/should be working.
+  /// Jobs the guard has taken and is/should be working. Terminal states
+  /// (`cancelled`/`completed`/`declined`) are explicitly excluded via
+  /// [BookingLifecycle.isTerminal] so a job the customer just CANCELLED can never linger in the
+  /// active tab and trap the guard there — the whitelist below already omits them, but the guard
+  /// makes the intent unmissable and defends against a future status being added to the whitelist.
   static List<Booking> active(List<Booking> all) => all
       .where((b) =>
-          b.status == BookingStatus.accepted ||
-          b.status == BookingStatus.enRoute ||
-          b.status == BookingStatus.arrived ||
-          b.status == BookingStatus.pendingCompletion)
+          !BookingLifecycle.isTerminal(b.status) &&
+          (b.status == BookingStatus.accepted ||
+              b.status == BookingStatus.enRoute ||
+              b.status == BookingStatus.arrived ||
+              b.status == BookingStatus.pendingCompletion))
       .toList();
 
   /// Jobs the guard has finished (the "เสร็จ / Done" tab).

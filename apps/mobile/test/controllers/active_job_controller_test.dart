@@ -235,6 +235,41 @@ void main() {
   });
 
   test(
+      'applyExternalStatus folds a WS-pushed cancellation into state (the customer '
+      'cancels while the guard is on the active-job screen) — idempotent', () async {
+    // The active-job controller has no WS of its own; the screen pumps a terminal transition it
+    // observes on the booking-status feed (chiefly the customer cancelling) into this method so the
+    // screen flips to the cancelled terminal live, not only after a background+resume re-fetch.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('b1', 'en_route')
+          : const <Map<String, dynamic>>[],
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    await c.read(activeJobControllerProvider('b1').future);
+    final ctrl = c.read(activeJobControllerProvider('b1').notifier);
+    BookingStatus status() =>
+        c.read(activeJobControllerProvider('b1')).value!.booking.status;
+    expect(status(), BookingStatus.enRoute);
+
+    ctrl.applyExternalStatus(BookingStatus.cancelled);
+    expect(status(), BookingStatus.cancelled,
+        reason: 'the screen now renders the cancelled terminal banner + back-to-jobs');
+
+    // Idempotent: a duplicate WS frame for the same status doesn't churn / re-emit a change.
+    final before = c.read(activeJobControllerProvider('b1')).value;
+    ctrl.applyExternalStatus(BookingStatus.cancelled);
+    expect(identical(c.read(activeJobControllerProvider('b1')).value, before), isTrue);
+    // No mutating API call was made — folding a status is purely local.
+    expect(api.calls.where((s) => s.startsWith('PUT')), isEmpty);
+  });
+
+  test(
       'build hydrates completedCheckIns + startedAt from the check-in trail '
       '(resumes the working panel after an app restart)', () async {
     final api = FakeApi(
