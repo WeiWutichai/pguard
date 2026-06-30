@@ -8,8 +8,9 @@ import '../../../core/controllers/session_controller.dart';
 
 /// A header "switch mode / back to role-select" action (CLAUDE.md: shared widget, no copy-paste).
 /// Opens the mode picker (`/auth/role`) WITHOUT logging out — the router lets an authenticated user
-/// stay on it. Only rendered when the account holds >1 role (a single-role user has nothing to
-/// switch to), so it's a no-op affordance otherwise.
+/// stay on it. Shown for EVERY authenticated user: a multi-role account switches between modes, a
+/// SINGLE-role account uses it to ENROL the second role (the only path to "one phone, two roles" —
+/// hiding it for single-role was a catch-22 that made adding a 2nd role unreachable).
 class SwitchModeAction extends ConsumerWidget {
   const SwitchModeAction({super.key, this.light = false});
 
@@ -19,30 +20,33 @@ class SwitchModeAction extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    final multiRole = ref.watch(
-        sessionProvider.select((s) => s.user?.hasMultipleRoles ?? false));
-    if (!multiRole) return const SizedBox.shrink();
+    final user = ref.watch(sessionProvider.select((s) => s.user));
+    if (user == null) return const SizedBox.shrink();
+    final multiRole = user.hasMultipleRoles;
     return IconButton(
-      icon: Icon(Icons.swap_horiz,
+      icon: Icon(multiRole ? Icons.swap_horiz : Icons.add_circle_outline,
           color: light ? PgTokens.colorTextStrong : Colors.white, size: 22),
-      tooltip: isThai ? 'สลับโหมด' : 'Switch mode',
+      tooltip: isThai
+          ? (multiRole ? 'สลับโหมด' : 'เพิ่มบทบาท')
+          : (multiRole ? 'Switch mode' : 'Add role'),
       // push (not go) so the picker sits over the home; the picker's own close/back returns here.
       onPressed: () => context.push('/auth/role'),
     );
   }
 }
 
-/// A settings-list row variant of the switch-mode affordance, for the profile screen. Self-hides
-/// when the account is single-role (returns an empty box). Tapping opens the mode picker.
+/// A settings-list row variant of the switch-mode affordance, for the profile screen. Shown for
+/// every authenticated user — multi-role to switch, single-role to ENROL the second role. Tapping
+/// opens the mode picker.
 class SwitchModeTile extends ConsumerWidget {
   const SwitchModeTile({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    final multiRole = ref.watch(
-        sessionProvider.select((s) => s.user?.hasMultipleRoles ?? false));
-    if (!multiRole) return const SizedBox.shrink();
+    final user = ref.watch(sessionProvider.select((s) => s.user));
+    if (user == null) return const SizedBox.shrink();
+    final multiRole = user.hasMultipleRoles;
     return InkWell(
       onTap: () => context.push('/auth/role'),
       child: Padding(
@@ -65,13 +69,20 @@ class SwitchModeTile extends ConsumerWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(isThai ? 'สลับโหมด' : 'Switch mode',
+                  Text(
+                      isThai
+                          ? (multiRole ? 'สลับโหมด' : 'เพิ่มบทบาท')
+                          : (multiRole ? 'Switch mode' : 'Add role'),
                       style: const TextStyle(
                           fontSize: 14.5, fontWeight: FontWeight.w600)),
                   Text(
                       isThai
-                          ? 'เจ้าหน้าที่ · ลูกค้า'
-                          : 'Guard · Customer',
+                          ? (multiRole
+                              ? 'เจ้าหน้าที่ · ลูกค้า'
+                              : 'ใช้ได้ทั้งเจ้าหน้าที่และลูกค้าในเบอร์เดียว')
+                          : (multiRole
+                              ? 'Guard · Customer'
+                              : 'Use both roles on one number'),
                       style: const TextStyle(
                           fontSize: 11.5, color: PgTokens.colorTextMuted)),
                 ],

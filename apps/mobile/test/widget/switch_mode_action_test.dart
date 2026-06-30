@@ -42,10 +42,14 @@ Future<ProviderContainer> _pump(WidgetTester tester, AuthUser user) async {
 }
 
 void main() {
-  testWidgets('the switch action self-hides for a single-role account',
+  testWidgets(
+      'a single-role account SHOWS an "add role" action (the only path to a 2nd role)',
       (tester) async {
     await _pump(tester,
         const AuthUser(userId: 'u1', role: 'guard', roles: ['guard']));
+    // It must NOT hide — that was a catch-22 (no way to reach the add-role flow). It renders the
+    // add-mode glyph (not the switch glyph), opening the picker to enrol the second role.
+    expect(find.byIcon(Icons.add_circle_outline), findsOneWidget);
     expect(find.byIcon(Icons.swap_horiz), findsNothing);
   });
 
