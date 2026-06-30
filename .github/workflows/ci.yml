@@ -321,6 +321,13 @@ jobs:
           CORS_ALLOWED_ORIGINS: https://admin.example.test
           MINIO_ROOT_USER: ci
           MINIO_ROOT_PASSWORD: ci
+          # Payment REAL-money path (Slip2Go). Wired as ${VAR:-default} in the payment block (NOT
+          # ${VAR:?required}) so the stack starts under the simulated default WITHOUT the secret —
+          # these dummies are just for the drift check's clarity (compose resolves without them too).
+          PAYMENT_PROVIDER: simulated
+          RECEIVING_ACCOUNT: ci
+          SLIP2GO_API_SECRET: ci
+          SLIP2GO_BASE_URL: https://connect.slip2go.com/api
           GRAFANA_ADMIN_PASSWORD: ci
           INET_SMS_USERNAME: ci
           INET_SMS_PASSWORD: ci

@@ -14,5 +14,6 @@
 
 pub mod pricing;
 pub mod proration;
+pub mod slip;
 
 pub use pricing::{expected_total, is_payable_status, reconcile, Reconciliation};

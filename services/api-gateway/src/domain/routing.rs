@@ -655,6 +655,7 @@ fn has_encoded_separator(path: &str) -> bool {
 ///   - `/bookings/{id}/progress-reports`    — guard hourly check-in photo → [`BodyCap::Large`] (12 MiB)
 ///   - `/profile/guard/{id}/documents`·`/avatar` — credential image / avatar → [`BodyCap::Large`]
 ///   - `/profile/customer/{id}/avatar`      — customer avatar → [`BodyCap::Large`]
+///   - `/payments/{id}/slip`                — Slip2Go transfer-slip image → [`BodyCap::Large`]
 ///
 /// Method-agnostic (the edge resolves on path only): the sibling GET on each path carries no
 /// request body, so the larger cap is irrelevant to it; and both backends re-validate the
@@ -706,6 +707,18 @@ fn body_cap_for(stripped: &str) -> BodyCap {
     if let Some(rest) = stripped.strip_prefix("/profile/customer/") {
         if let Some((id, tail)) = rest.split_once('/') {
             if !id.is_empty() && (tail == "avatar" || tail.starts_with("avatar/")) {
+                return BodyCap::Large;
+            }
+        }
+    }
+    // `/payments/{booking_id}/slip` (REAL money path — the customer uploads a transfer-slip image
+    // for Slip2Go verification): one non-empty `{booking_id}` segment, then `slip` at a boundary
+    // (so `…/slipx` does NOT match). A slip is a single phone-photo image → the same Large (12 MiB)
+    // carve-out as the guard credential/avatar uploads; the payment service re-validates (own
+    // DefaultBodyLimit + magic-byte/size check + own-only).
+    if let Some(rest) = stripped.strip_prefix("/payments/") {
+        if let Some((id, tail)) = rest.split_once('/') {
+            if !id.is_empty() && (tail == "slip" || tail.starts_with("slip/")) {
                 return BodyCap::Large;
             }
         }
@@ -1443,6 +1456,37 @@ mod tests {
         let (up2, fwd2, _, _) = proxy(resolve("/v1/payments/abc/complete"));
         assert_eq!(up2, Upstream::Payment);
         assert_eq!(fwd2, "/payments/abc/complete");
+    }
+
+    #[test]
+    fn payments_slip_upload_large_cap_routes_to_payment_protected() {
+        // REAL money path: POST /payments/{booking_id}/slip (the Slip2Go transfer-slip image) gets
+        // the Large (12 MiB) carve-out — the 1 MiB default would 413 a phone-photo slip — routed to
+        // payment (via the /payments/ rule), token-gated. Mirrors the avatar/documents carve-outs.
+        let s = resolve("/v1/payments/abc-123/slip");
+        let (up, fwd, public, _) = proxy(s.clone());
+        assert_eq!(up, Upstream::Payment, "slip upload → payment");
+        assert_eq!(fwd, "/payments/abc-123/slip");
+        assert!(!public, "slip upload requires a token");
+        assert_eq!(
+            body_cap(s),
+            BodyCap::Large,
+            "POST /payments/{{id}}/slip (transfer-slip image) → 12 MiB"
+        );
+        // Boundary precision — a near-miss keeps the 1 MiB default; an empty {id} does NOT carve.
+        assert_eq!(
+            body_cap(resolve("/v1/payments/abc/slipx")),
+            BodyCap::Default,
+            "slip suffix not at a boundary"
+        );
+        assert_eq!(
+            body_cap(resolve("/v1/payments//slip")),
+            BodyCap::Default,
+            "empty {{booking_id}} segment → default cap"
+        );
+        // The plain payment routes are unaffected — default cap.
+        assert_eq!(body_cap(resolve("/v1/payments")), BodyCap::Default);
+        assert_eq!(body_cap(resolve("/v1/payments/abc-123")), BodyCap::Default);
     }
 
     // ----- /internal block (the security-critical case) -----
