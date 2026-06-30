@@ -12,6 +12,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import 'widgets/promptpay_slip_panel.dart';
 
 /// THE PRE-PAY step. The instant a guard ACCEPTS, the customer lands here to pay the ESTIMATE
 /// (`base_fee × booked-hours × guard_count + tip`) — the figure is READ from the authoritative
@@ -98,6 +99,11 @@ class _Body extends ConsumerWidget {
         const SizedBox(height: PgTokens.space4),
         if (paid)
           _PaidPanel(booking: booking)
+        else if (payState.slipRequired)
+          // The provider requires a transfer slip (PAYMENT_PROVIDER=slip2go): `POST /payments`
+          // came back 409 SLIP_REQUIRED, so there is no auto-charge — render the PromptPay QR +
+          // slip-upload flow. (The simulated default never sets this; the one-tap path is below.)
+          PromptPaySlipPanel(bookingId: bookingId, booking: booking)
         else
           _PayPanel(
             bookingId: bookingId,

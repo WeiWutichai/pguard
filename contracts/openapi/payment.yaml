@@ -275,6 +275,57 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /payments/{id}/promptpay:
+    get:
+      tags: [Payments]
+      summary: PromptPay transfer instructions for a booking (where to pay)
+      description: |
+        Tells the customer WHERE and HOW MUCH to transfer so they can pay the booking by PromptPay
+        and then settle via `POST /payments/{id}/slip`. `{id}` is the BOOKING id. Own-only (the
+        booking's customer) → else 403; the booking must be in a payable state (post-accept,
+        pre-complete) → else 409.
+
+        Returns the **server-computed estimate** (`base_fee × hours × guard_count + tip` — the SAME
+        amount the slip/pre-pay handlers charge; the client never computes it), our **receiving
+        account** formatted for display, and the authoritative **EMVCo PromptPay `qr_payload`**.
+
+        The `qr_payload` is generated **server-side, in ONE authoritative place**, from
+        `RECEIVING_ACCOUNT` + the estimate — a standard PromptPay/EMVCo merchant-presented QR
+        (Payload-Format `00`, Point-of-Initiation `01`, Merchant-Account `29` with the PromptPay
+        AID `A000000677010111` + the proxy phone/national-id from `RECEIVING_ACCOUNT`, amount tag
+        `54`, currency `53`=764 THB, country `58`=TH, CRC `63`). The mobile renders it as a QR and
+        MUST NOT rebuild its own — so the amount + receiver can never drift from the server.
+
+        **Only valid under `PAYMENT_PROVIDER=slip2go`.** Under the simulated default this returns
+        409 `SLIP_DISABLED` (there is nowhere to transfer — the client uses `POST /payments`).
+        `RECEIVING_ACCOUNT` must be a PromptPay-addressable id (a mobile phone or a national/tax id);
+        a plain bank account number cannot be encoded as a PromptPay QR (→ server config error).
+
+        No DB write and no Slip2Go call — purely informational.
+      operationId: getPromptPay
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The booking id to pay.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The PromptPay transfer instructions (amount + receiving account + QR payload)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PromptPayInfo' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /payments/{id}/slip:
     post:
       tags: [Payments]
@@ -436,6 +487,34 @@ components:
         the authoritative booking (never sent by the client).
       properties:
         booking_id: { type: string, format: uuid }
+
+    PromptPayInfo:
+      type: object
+      required: [amount, amount_satang, receiving_account, qr_payload]
+      description: |
+        PromptPay transfer instructions for a booking. `qr_payload` is the authoritative EMVCo
+        PromptPay QR string, generated server-side from `RECEIVING_ACCOUNT` + the estimate — the
+        client renders it as a QR and never rebuilds it.
+      properties:
+        amount:
+          type: string
+          description: The server-side estimate to transfer (exact decimal as a string; money rule).
+          example: "2000.00"
+        amount_satang:
+          type: integer
+          format: int64
+          description: The estimate in satang (the smallest THB unit, ×100) — a convenience field.
+          example: 200000
+        receiving_account:
+          type: string
+          description: OUR receiving PromptPay account, formatted for human display.
+          example: "081-234-5678"
+        qr_payload:
+          type: string
+          description: |
+            The authoritative EMVCo PromptPay QR payload (render as a QR; do NOT rebuild). Encodes
+            the PromptPay AID + our proxy + the amount + currency THB + country TH + CRC.
+          example: "00020101021229370016A000000677010111011300668123456785303764540720.005802TH6304ABCD"
 
     PaymentStatus:
       type: string
