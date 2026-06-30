@@ -13,6 +13,7 @@
 //! - [`proration`] — `compute_proration` (ported verbatim from v1), reused by `post_pay_charge`.
 
 pub mod pricing;
+pub mod promptpay;
 pub mod proration;
 pub mod slip;
 

@@ -151,6 +151,47 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/payments/{id}/promptpay": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * PromptPay transfer instructions for a booking (where to pay)
+         * @description Tells the customer WHERE and HOW MUCH to transfer so they can pay the booking by PromptPay
+         *     and then settle via `POST /payments/{id}/slip`. `{id}` is the BOOKING id. Own-only (the
+         *     booking's customer) → else 403; the booking must be in a payable state (post-accept,
+         *     pre-complete) → else 409.
+         *
+         *     Returns the **server-computed estimate** (`base_fee × hours × guard_count + tip` — the SAME
+         *     amount the slip/pre-pay handlers charge; the client never computes it), our **receiving
+         *     account** formatted for display, and the authoritative **EMVCo PromptPay `qr_payload`**.
+         *
+         *     The `qr_payload` is generated **server-side, in ONE authoritative place**, from
+         *     `RECEIVING_ACCOUNT` + the estimate — a standard PromptPay/EMVCo merchant-presented QR
+         *     (Payload-Format `00`, Point-of-Initiation `01`, Merchant-Account `29` with the PromptPay
+         *     AID `A000000677010111` + the proxy phone/national-id from `RECEIVING_ACCOUNT`, amount tag
+         *     `54`, currency `53`=764 THB, country `58`=TH, CRC `63`). The mobile renders it as a QR and
+         *     MUST NOT rebuild its own — so the amount + receiver can never drift from the server.
+         *
+         *     **Only valid under `PAYMENT_PROVIDER=slip2go`.** Under the simulated default this returns
+         *     409 `SLIP_DISABLED` (there is nowhere to transfer — the client uses `POST /payments`).
+         *     `RECEIVING_ACCOUNT` must be a PromptPay-addressable id (a mobile phone or a national/tax id);
+         *     a plain bank account number cannot be encoded as a PromptPay QR (→ server config error).
+         *
+         *     No DB write and no Slip2Go call — purely informational.
+         */
+        get: operations["getPromptPay"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/payments/{id}/slip": {
         parameters: {
             query?: never;
@@ -224,6 +265,35 @@ export interface components {
         CreatePaymentRequest: {
             /** Format: uuid */
             booking_id: string;
+        };
+        /**
+         * @description PromptPay transfer instructions for a booking. `qr_payload` is the authoritative EMVCo
+         *     PromptPay QR string, generated server-side from `RECEIVING_ACCOUNT` + the estimate — the
+         *     client renders it as a QR and never rebuilds it.
+         */
+        PromptPayInfo: {
+            /**
+             * @description The server-side estimate to transfer (exact decimal as a string; money rule).
+             * @example 2000.00
+             */
+            amount: string;
+            /**
+             * Format: int64
+             * @description The estimate in satang (the smallest THB unit, ×100) — a convenience field.
+             * @example 200000
+             */
+            amount_satang: number;
+            /**
+             * @description OUR receiving PromptPay account, formatted for human display.
+             * @example 081-234-5678
+             */
+            receiving_account: string;
+            /**
+             * @description The authoritative EMVCo PromptPay QR payload (render as a QR; do NOT rebuild). Encodes
+             *     the PromptPay AID + our proxy + the amount + currency THB + country TH + CRC.
+             * @example 00020101021229370016A000000677010111011300668123456785303764540720.005802TH6304ABCD
+             */
+            qr_payload: string;
         };
         /**
          * @description Payment lifecycle status.
@@ -608,6 +678,35 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    getPromptPay: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The booking id to pay. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The PromptPay transfer instructions (amount + receiving account + QR payload) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PromptPayInfo"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     payWithSlip: {

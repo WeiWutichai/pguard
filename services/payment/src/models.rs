@@ -61,6 +61,29 @@ pub struct PaymentResponse {
     pub updated_at: DateTime<Utc>,
 }
 
+// ----- PromptPay QR (customer payment screen) -----
+
+/// `GET /payments/{id}/promptpay` response — everything the mobile needs to render the PromptPay
+/// transfer screen. The `qr_payload` is the authoritative EMVCo string built SERVER-SIDE from our
+/// `RECEIVING_ACCOUNT` + the server estimate (one place — the client never composes its own), so
+/// the amount + receiver can never drift. Only meaningful under `PAYMENT_PROVIDER=slip2go`.
+///
+/// `amount` is the same exact-decimal estimate (`base_fee × hours × guards + tip`) the slip /
+/// prepay handlers charge → JSON string (money rule). `amount_satang` is that amount in the
+/// smallest unit (×100, integer) as a convenience for clients that price in satang — derived
+/// from the same Decimal, never an f64.
+#[derive(Debug, Serialize)]
+pub struct PromptPayResponse {
+    /// The server-side estimate the customer must transfer (exact decimal → JSON string).
+    pub amount: Decimal,
+    /// The estimate in satang (the smallest THB unit, ×100) as an integer — a convenience field.
+    pub amount_satang: i64,
+    /// OUR receiving PromptPay account, formatted for human display (e.g. `081-234-5678`).
+    pub receiving_account: String,
+    /// The authoritative EMVCo PromptPay QR string — render this as a QR; do NOT rebuild it.
+    pub qr_payload: String,
+}
+
 // ----- Revenue report (admin analytics) -----
 
 /// One day's net revenue point. `revenue` is net of refunds (Decimal → JSON string, money

@@ -13,6 +13,7 @@ import 'media/chat_attachment_service.dart';
 import 'media/chat_media_picker.dart';
 import 'media/document_picker.dart';
 import 'media/photo_capture.dart';
+import 'media/slip_picker.dart';
 import 'network/api_client.dart';
 import 'network/check_in_service.dart';
 import 'network/sockets/booking_status_socket.dart';
@@ -169,3 +170,8 @@ PhotoCaptureService photoCaptureService(PhotoCaptureServiceRef ref) =>
 @Riverpod(keepAlive: true)
 DocumentPicker documentPicker(DocumentPickerRef ref) =>
     ImagePickerDocumentPicker();
+
+/// Picks the customer's PromptPay transfer-SLIP image (gallery/camera) via the REAL `image_picker`
+/// plugin. Tests override this with a fake so the slip-pay flow is exercisable without channels.
+@Riverpod(keepAlive: true)
+SlipPicker slipPicker(SlipPickerRef ref) => ImagePickerSlipPicker();

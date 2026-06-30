@@ -11,6 +11,7 @@ import 'package:dio/dio.dart';
 import 'package:pguard_payment_api/src/api_util.dart';
 import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
+import 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 
@@ -193,6 +194,87 @@ class PaymentsApi {
     }
 
     return Response<PayWithSlip200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// PromptPay transfer instructions for a booking (where to pay)
+  /// Tells the customer WHERE and HOW MUCH to transfer so they can pay the booking by PromptPay and then settle via &#x60;POST /payments/{id}/slip&#x60;. &#x60;{id}&#x60; is the BOOKING id. Own-only (the booking&#39;s customer) → else 403; the booking must be in a payable state (post-accept, pre-complete) → else 409.  Returns the **server-computed estimate** (&#x60;base_fee × hours × guard_count + tip&#x60; — the SAME amount the slip/pre-pay handlers charge; the client never computes it), our **receiving account** formatted for display, and the authoritative **EMVCo PromptPay &#x60;qr_payload&#x60;**.  The &#x60;qr_payload&#x60; is generated **server-side, in ONE authoritative place**, from &#x60;RECEIVING_ACCOUNT&#x60; + the estimate — a standard PromptPay/EMVCo merchant-presented QR (Payload-Format &#x60;00&#x60;, Point-of-Initiation &#x60;01&#x60;, Merchant-Account &#x60;29&#x60; with the PromptPay AID &#x60;A000000677010111&#x60; + the proxy phone/national-id from &#x60;RECEIVING_ACCOUNT&#x60;, amount tag &#x60;54&#x60;, currency &#x60;53&#x60;&#x3D;764 THB, country &#x60;58&#x60;&#x3D;TH, CRC &#x60;63&#x60;). The mobile renders it as a QR and MUST NOT rebuild its own — so the amount + receiver can never drift from the server.  **Only valid under &#x60;PAYMENT_PROVIDER&#x3D;slip2go&#x60;.** Under the simulated default this returns 409 &#x60;SLIP_DISABLED&#x60; (there is nowhere to transfer — the client uses &#x60;POST /payments&#x60;). &#x60;RECEIVING_ACCOUNT&#x60; must be a PromptPay-addressable id (a mobile phone or a national/tax id); a plain bank account number cannot be encoded as a PromptPay QR (→ server config error).  No DB write and no Slip2Go call — purely informational. 
+  ///
+  /// Parameters:
+  /// * [id] - The booking id to pay.
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetPromptPay200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetPromptPay200Response>> getPromptPay({ 
+    required String id,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/payments/{id}/promptpay'.replaceAll('{' r'id' '}', encodeQueryParameter(_serializers, id, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetPromptPay200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetPromptPay200Response),
+      ) as GetPromptPay200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetPromptPay200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
