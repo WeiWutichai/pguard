@@ -21,21 +21,28 @@
 
 mod api;
 mod booking_client;
+mod config;
 mod domain;
 mod events;
 mod models;
 mod repo;
+mod s3;
+mod slip2go_client;
 mod state;
 
 use anyhow::Context;
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::{Json, Router};
 
-use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
+use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, S3Config, ServiceJwtConfig};
 use shared::db::{create_pool, create_read_pool};
 use shared::redis_client::create_connection_manager;
 
 use crate::booking_client::HttpBookingReader;
+use crate::config::SlipPaymentConfig;
+use crate::s3::S3Client;
+use crate::slip2go_client::HttpSlipVerifier;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "payment";
@@ -76,6 +83,30 @@ async fn main() -> anyhow::Result<()> {
         service_jwt_config.ttl_secs,
     );
 
+    // --- REAL money path (Slip2Go) config + clients. The feature flag (PAYMENT_PROVIDER) defaults
+    //     to `simulated`, so the service starts WITHOUT the Slip2Go secret / S3 / receiving account
+    //     — the slip path simply fails gracefully if hit. Under `slip2go` the receiving account is
+    //     required (fail-fast in SlipPaymentConfig::from_env); S3 + the secret are required to
+    //     actually settle a slip (S3Config::from_env fails fast when slip2go is on).
+    let slip_config = SlipPaymentConfig::from_env()?;
+
+    let slip2go_base_url = std::env::var("SLIP2GO_BASE_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "https://connect.slip2go.com/api".to_string());
+    let slip2go_secret = std::env::var("SLIP2GO_API_SECRET").ok();
+    let slip_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .context("build Slip2Go HTTP client")?;
+    let slip_verifier = HttpSlipVerifier::new(slip_http, slip2go_base_url, slip2go_secret);
+
+    // S3 for the private slip-image store (PDPA — like guard documents). Required only under
+    // slip2go; under the simulated default, an absent S3 config is tolerated (the slip path is off)
+    // so dev/CI run with the simulated gateway need no MinIO env.
+    let s3 = build_s3_client(slip_config.provider.is_slip2go())?;
+
     let state = AppState {
         db: db.clone(),
         db_read,
@@ -83,6 +114,9 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_decoding_key: service_jwt_config.decoding_key.clone(),
         booking_reader,
+        slip_verifier,
+        s3,
+        slip_config,
     };
 
     // --- background outbox relay (publishes payment.* events) ---
@@ -122,6 +156,14 @@ async fn main() -> anyhow::Result<()> {
             post(api::create_payment::<AppState>).get(api::list_payments::<AppState>),
         )
         .route("/payments/{id}", get(api::get_payment::<AppState>))
+        // REAL money path: pay a booking with a Slip2Go-verified transfer slip. Own-only (the
+        // booking's customer); multipart `file` (the slip image). 12 MiB body cap on THIS route
+        // only (images); the gateway carves a matching Large cap for /payments/{id}/slip.
+        .route(
+            "/payments/{id}/slip",
+            post(api::pay_with_slip::<AppState>)
+                .layer(DefaultBodyLimit::max(api::MAX_SLIP_BODY_BYTES)),
+        )
         // Admin cross-user payment ledger (admin-role gated in the handler). Needs a NEW
         // gateway `/admin/payments` prefix rule → Payment.
         .route("/admin/payments", get(api::admin_list_payments::<AppState>))
@@ -169,4 +211,45 @@ async fn healthz() -> Json<serde_json::Value> {
         "service": SERVICE_NAME,
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+/// Build the S3 client for the private slip-image store. Under `slip2go` the S3 env
+/// (`S3_ENDPOINT`/`S3_ACCESS_KEY`/`S3_SECRET_KEY`/`S3_BUCKET`) is REQUIRED (fail-fast). Under the
+/// simulated default the slip path is off, so an absent S3 config is tolerated — we build a client
+/// from empty defaults that is never invoked (mirrors the Slip2Go secret being optional). Region +
+/// public URL are read ad-hoc, exactly like profile/booking.
+fn build_s3_client(required: bool) -> anyhow::Result<S3Client> {
+    let s3_config = match S3Config::from_env() {
+        Ok(c) => c,
+        Err(e) if !required => {
+            tracing::info!(
+                "S3 not configured ({e}); slip path off under PAYMENT_PROVIDER=simulated"
+            );
+            S3Config {
+                endpoint: String::new(),
+                access_key: String::new(),
+                secret_key: String::new(),
+                bucket: String::new(),
+            }
+        }
+        Err(e) => return Err(anyhow::anyhow!(e)),
+    };
+    let s3_region = std::env::var("S3_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let s3_public_url = std::env::var("S3_PUBLIC_URL")
+        .ok()
+        .filter(|s| !s.trim().is_empty());
+    let s3_http = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(2))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .context("build S3 HTTP client")?;
+    Ok(S3Client::new(
+        s3_http,
+        s3_config.endpoint,
+        s3_public_url,
+        s3_config.bucket,
+        s3_region,
+        s3_config.access_key,
+        s3_config.secret_key,
+    ))
 }

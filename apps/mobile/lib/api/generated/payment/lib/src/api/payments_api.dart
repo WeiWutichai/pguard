@@ -11,8 +11,8 @@ import 'package:dio/dio.dart';
 import 'package:pguard_payment_api/src/api_util.dart';
 import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
-import 'package:pguard_payment_api/src/model/inline_object.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
+import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 
 class PaymentsApi {
 
@@ -34,9 +34,9 @@ class PaymentsApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Returns a [Future] containing a [Response] with a [PayWithSlip200Response] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject>> createPayment({ 
+  Future<Response<PayWithSlip200Response>> createPayment({ 
     required CreatePaymentRequest createPaymentRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -92,14 +92,14 @@ class PaymentsApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject? _responseData;
+    PayWithSlip200Response? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject),
-      ) as InlineObject;
+        specifiedType: const FullType(PayWithSlip200Response),
+      ) as PayWithSlip200Response;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -111,7 +111,7 @@ class PaymentsApi {
       );
     }
 
-    return Response<InlineObject>(
+    return Response<PayWithSlip200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -135,9 +135,9 @@ class PaymentsApi {
   /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
   /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
   ///
-  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Returns a [Future] containing a [Response] with a [PayWithSlip200Response] as data
   /// Throws [DioException] if API call or serialization fails
-  Future<Response<InlineObject>> getPayment({ 
+  Future<Response<PayWithSlip200Response>> getPayment({ 
     required String id,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
@@ -173,14 +173,14 @@ class PaymentsApi {
       onReceiveProgress: onReceiveProgress,
     );
 
-    InlineObject? _responseData;
+    PayWithSlip200Response? _responseData;
 
     try {
       final rawResponse = _response.data;
       _responseData = rawResponse == null ? null : _serializers.deserialize(
         rawResponse,
-        specifiedType: const FullType(InlineObject),
-      ) as InlineObject;
+        specifiedType: const FullType(PayWithSlip200Response),
+      ) as PayWithSlip200Response;
 
     } catch (error, stackTrace) {
       throw DioException(
@@ -192,7 +192,7 @@ class PaymentsApi {
       );
     }
 
-    return Response<InlineObject>(
+    return Response<PayWithSlip200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
@@ -272,6 +272,110 @@ class PaymentsApi {
     }
 
     return Response<ListPayments200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Pay a booking with a Slip2Go-verified transfer slip (REAL money path)
+  /// THE MONEY PATH (real). &#x60;{id}&#x60; is the BOOKING id. The customer transfers to OUR PromptPay/bank account, then uploads the transfer SLIP image here. The payment service verifies the slip with **Slip2Go** (&#x60;POST /verify-slip/qr-image/info&#x60;) — confirming it is genuine, paid to OUR account (&#x60;checkReceiver&#x60;), and for at least the server-computed estimate (&#x60;checkAmount: gte&#x60;) — then RE-VALIDATES on our side (amount ≥ estimate, receiver &#x3D;&#x3D; our account) and stamps the payment paid (&#x60;payment_method&#x3D;promptpay_slip&#x60;), emitting the SAME &#x60;payment.completed&#x60; event that gates en_route (no new event).  Available only when the service runs with &#x60;PAYMENT_PROVIDER&#x3D;slip2go&#x60;; under the simulated default this returns 409 &#x60;SLIP_DISABLED&#x60;. Own-only (the booking&#39;s customer) → else 403.  **Anti-fraud / dedupe guarantee:** a verified slip&#39;s &#x60;transRef&#x60; and Slip2Go &#x60;referenceId&#x60; are stored under a UNIQUE constraint, so ONE slip can NEVER pay two bookings (a reused slip → 409 &#x60;SLIP_DUPLICATE&#x60;). **Idempotent:** re-submitting the SAME accepted slip returns the existing payment (200), no double-charge.  Failure modes carry a machine-readable &#x60;error.code&#x60; (branch on it, not the message): &#x60;SLIP_VERIFY_FAILED&#x60; (Slip2Go rejected it), &#x60;SLIP_AMOUNT_TOO_LOW&#x60; (underpay), &#x60;SLIP_WRONG_RECEIVER&#x60; (paid to another account), &#x60;SLIP_DUPLICATE&#x60; (already used), &#x60;SLIP_DISABLED&#x60; (provider not slip2go). 
+  ///
+  /// Parameters:
+  /// * [id] - The booking id to settle.
+  /// * [file] - The transfer-slip image (JPEG/PNG/WEBP, ≤ 10 MB).
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [PayWithSlip200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<PayWithSlip200Response>> payWithSlip({ 
+    required String id,
+    required MultipartFile file,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/payments/{id}/slip'.replaceAll('{' r'id' '}', encodeQueryParameter(_serializers, id, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'multipart/form-data',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      _bodyData = FormData.fromMap(<String, dynamic>{
+        r'file': file,
+      });
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    PayWithSlip200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(PayWithSlip200Response),
+      ) as PayWithSlip200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<PayWithSlip200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

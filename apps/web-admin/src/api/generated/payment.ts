@@ -151,6 +151,45 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/payments/{id}/slip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pay a booking with a Slip2Go-verified transfer slip (REAL money path)
+         * @description THE MONEY PATH (real). `{id}` is the BOOKING id. The customer transfers to OUR
+         *     PromptPay/bank account, then uploads the transfer SLIP image here. The payment service
+         *     verifies the slip with **Slip2Go** (`POST /verify-slip/qr-image/info`) — confirming it is
+         *     genuine, paid to OUR account (`checkReceiver`), and for at least the server-computed
+         *     estimate (`checkAmount: gte`) — then RE-VALIDATES on our side (amount ≥ estimate, receiver
+         *     == our account) and stamps the payment paid (`payment_method=promptpay_slip`), emitting the
+         *     SAME `payment.completed` event that gates en_route (no new event).
+         *
+         *     Available only when the service runs with `PAYMENT_PROVIDER=slip2go`; under the simulated
+         *     default this returns 409 `SLIP_DISABLED`. Own-only (the booking's customer) → else 403.
+         *
+         *     **Anti-fraud / dedupe guarantee:** a verified slip's `transRef` and Slip2Go `referenceId`
+         *     are stored under a UNIQUE constraint, so ONE slip can NEVER pay two bookings (a reused slip
+         *     → 409 `SLIP_DUPLICATE`). **Idempotent:** re-submitting the SAME accepted slip returns the
+         *     existing payment (200), no double-charge.
+         *
+         *     Failure modes carry a machine-readable `error.code` (branch on it, not the message):
+         *     `SLIP_VERIFY_FAILED` (Slip2Go rejected it), `SLIP_AMOUNT_TOO_LOW` (underpay),
+         *     `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (already used),
+         *     `SLIP_DISABLED` (provider not slip2go).
+         */
+        post: operations["payWithSlip"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/users/{user_id}/export": {
         parameters: {
             query?: never;
@@ -210,6 +249,10 @@ export interface components {
              * @example 2000.00
              */
             expected_total?: string | null;
+            /**
+             * @description How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
+             * @example promptpay_slip
+             */
             payment_method?: string | null;
             status: components["schemas"]["PaymentStatus"];
             /** @description The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded). */
@@ -361,6 +404,21 @@ export interface components {
         };
         /** @description Booking is not in a payable state (or already paid) */
         Conflict: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /**
+         * @description The slip could not settle the booking. `error.code` is one of: `SLIP_VERIFY_FAILED`
+         *     (Slip2Go rejected the slip), `SLIP_AMOUNT_TOO_LOW` (the slip is below the estimate),
+         *     `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (the slip was already
+         *     used for a payment), `SLIP_DISABLED` (the service is not running the slip provider), or
+         *     the booking is not in a payable state.
+         */
+        SlipRejected: {
             headers: {
                 [name: string]: unknown;
             };
@@ -550,6 +608,46 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    payWithSlip: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The booking id to settle. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description The transfer-slip image (JPEG/PNG/WEBP, ≤ 10 MB).
+                     */
+                    file: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Slip verified → booking paid (or an idempotent re-submit of an accepted slip) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Payment"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["SlipRejected"];
         };
     };
     internalExportUser: {

@@ -20,7 +20,12 @@ chrono = { workspace = true }
 rust_decimal = { workspace = true }     # money — Decimal everywhere, never f64
 jsonwebtoken = { workspace = true }     # DecodingKey (HasJwtSecret) + inbound service-JWT verify
 async-nats = { workspace = true }       # transactional-outbox relay → JetStream publish
-reqwest = { workspace = true }          # PRE-PAY reads booking's /internal/bookings/{id} (service-JWT'd)
+# PRE-PAY reads booking's /internal/bookings/{id} (service-JWT'd); the slip path POSTs the slip
+# image multipart to Slip2Go + PUTs it to S3 → needs the `multipart` feature on top of the
+# workspace default (json + rustls-tls).
+reqwest = { workspace = true, features = ["multipart"] }
+sha2 = { workspace = true }             # SigV4 canonical-request + signing-key hashing (slip S3 store)
+hmac = { workspace = true }             # SigV4 HMAC-SHA256 chain (slip S3 store)
 futures = { workspace = true }
 tracing = { workspace = true }
 anyhow = { workspace = true }

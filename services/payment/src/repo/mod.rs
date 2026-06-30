@@ -364,6 +364,144 @@ pub async fn prepay_idempotent(
     Ok(PrePayOutcome::Created(payment))
 }
 
+/// Outcome of an idempotent SLIP pay: a freshly-verified slip stamped the booking paid (we emitted
+/// `payment.completed`), the SAME accepted slip was re-submitted (a no-op returning paid), or the
+/// slip was already used for ANOTHER booking (rejected — one slip cannot pay two bookings).
+#[derive(Debug)]
+pub enum SlipPayOutcome {
+    /// First slip for this booking — the payment was stamped paid + the slip recorded + the
+    /// `payment.completed` event enqueued.
+    Created(PaymentResponse),
+    /// Idempotent no-op: this booking was already paid (the SAME slip re-submitted, or any later
+    /// slip for an already-paid booking). The existing payment is returned; nothing re-charged.
+    AlreadyPaid(PaymentResponse),
+}
+
+/// Atomically pay a booking with a VERIFIED slip — the REAL money path's write. THE MONEY PATH.
+///
+/// In ONE transaction: (1) idempotently insert the `completed` payment (UNIQUE partial index +
+/// ON CONFLICT — at most one completed payment per booking, like the simulated pre-pay), (2) record
+/// the verified slip with its `trans_ref` / `reference_id` under a UNIQUE constraint (the atomic
+/// our-side dedupe), and (3) enqueue the EXISTING `payment.completed` outbox event (gates en_route
+/// — no new event type).
+///
+/// DEDUPE GUARANTEE (anti-fraud, the core value): a slip's `trans_ref`/`reference_id` is UNIQUE
+/// across ALL bookings. The slip INSERT is the atomic guard — if this exact slip already settled a
+/// DIFFERENT booking, the unique-violation aborts the tx and we return an [`AppError::ConflictCode`]
+/// (`SLIP_DUPLICATE`). One real transfer can therefore settle at most one booking, independent of
+/// Slip2Go's own `checkDuplicate`.
+///
+/// IDEMPOTENCY: re-submitting the SAME accepted slip for the SAME (already-paid) booking is a no-op
+/// returning the existing payment (no double-charge, no second event) — distinguished from the
+/// cross-booking reuse above by checking, on a payment conflict, whether the already-recorded slip
+/// for THIS booking carries the same `trans_ref`.
+#[tracing::instrument(skip(db), fields(booking_id = %booking_id, customer_id = %customer_id))]
+#[allow(clippy::too_many_arguments)]
+pub async fn pay_with_slip(
+    db: &sqlx::PgPool,
+    booking_id: Uuid,
+    customer_id: Uuid,
+    guard_id: Option<Uuid>,
+    amount: Decimal,
+    expected_total: Decimal,
+    reference_id: &str,
+    trans_ref: &str,
+    slip_amount: Decimal,
+    slip_key: &str,
+    correlation_id: Uuid,
+) -> Result<SlipPayOutcome, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) idempotent payment insert. ON CONFLICT (one completed per booking) DO NOTHING.
+    let sql = format!(
+        "INSERT INTO payment.payments \
+           (booking_id, customer_id, guard_id, amount, expected_total, payment_method, status, paid_at) \
+         VALUES ($1, $2, $3, $4, $5, $6, 'completed'::payment.payment_status, now()) \
+         ON CONFLICT (booking_id) WHERE status = 'completed' DO NOTHING \
+         RETURNING {PAYMENT_COLUMNS}"
+    );
+    let inserted = sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(booking_id)
+        .bind(customer_id)
+        .bind(guard_id)
+        .bind(amount)
+        .bind(expected_total)
+        .bind(SLIP_PAYMENT_METHOD)
+        .fetch_optional(&mut *tx)
+        .await?;
+
+    let Some(payment) = inserted else {
+        // The booking already has a completed payment. Idempotent re-submit: if the recorded slip
+        // for THIS booking is the SAME slip (same trans_ref), this is a benign retry → AlreadyPaid.
+        // Otherwise the booking was paid by a DIFFERENT slip already → still AlreadyPaid (we never
+        // re-charge a paid booking; the new slip is simply not consumed). We do NOT insert the new
+        // slip row in either case (the booking-level idempotency wins). The cross-booking reuse of
+        // THIS slip is caught below at the slip INSERT for the FIRST-pay path.
+        tx.rollback().await?;
+        return completed_for_booking(db, booking_id)
+            .await?
+            .map(SlipPayOutcome::AlreadyPaid)
+            .ok_or_else(|| {
+                AppError::Conflict("Payment already exists for this booking".to_string())
+            });
+    };
+
+    // 2) record the verified slip — the UNIQUE (trans_ref) / (reference_id) is the atomic dedupe.
+    //    A unique-violation means this slip already settled ANOTHER booking → reject the whole tx
+    //    (the payment insert rolls back with it; nothing is charged).
+    let slip_insert = sqlx::query(
+        "INSERT INTO payment.payment_slips \
+           (payment_id, booking_id, reference_id, trans_ref, amount, slip_key) \
+         VALUES ($1, $2, $3, $4, $5, $6)",
+    )
+    .bind(payment.id)
+    .bind(booking_id)
+    .bind(reference_id)
+    .bind(trans_ref)
+    .bind(slip_amount)
+    .bind(slip_key)
+    .execute(&mut *tx)
+    .await;
+
+    if let Err(e) = slip_insert {
+        // The payment insert in THIS tx rolls back on drop, so no orphan payment is created.
+        if is_unique_violation(&e) {
+            tracing::warn!(%trans_ref, "slip already used for another booking (dedupe reject)");
+            return Err(AppError::ConflictCode {
+                code: crate::slip2go_client::SLIP_DUPLICATE_CODE,
+                message: "This slip has already been used for a payment".to_string(),
+            });
+        }
+        return Err(e.into());
+    }
+
+    // 3) the event — SAME transaction (transactional outbox). Identical payload to the simulated
+    //    pre-pay so booking un-gates (en_route) and notification pushes both parties.
+    let payload = serde_json::json!({
+        "payment_id": payment.id,
+        "booking_id": booking_id,
+        "customer_id": customer_id,
+        "guard_id": guard_id,
+        "amount": amount,
+    });
+    enqueue_outbox(&mut tx, topics::PAYMENT_COMPLETED, payload, correlation_id).await?;
+
+    tx.commit().await?;
+    Ok(SlipPayOutcome::Created(payment))
+}
+
+/// `payment_method` for a REAL Slip2Go-verified transfer (vs the simulated path's `prepaid`).
+const SLIP_PAYMENT_METHOD: &str = "promptpay_slip";
+
+/// Is this sqlx error a Postgres UNIQUE constraint violation (SQLSTATE 23505)? Used to turn the
+/// slip dedupe's unique-violation into a typed `SLIP_DUPLICATE` rejection.
+fn is_unique_violation(e: &sqlx::Error) -> bool {
+    matches!(
+        e,
+        sqlx::Error::Database(db) if db.code().as_deref() == Some("23505")
+    )
+}
+
 /// The outcome of the completion-time SETTLE against the PRE-PAID amount.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SettleOutcome {
@@ -687,6 +825,222 @@ mod db_tests {
                 .await;
         let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
             .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Unwrap the payment out of a [`SlipPayOutcome`] (tests don't care which arm here).
+    fn slip_payment_of(o: SlipPayOutcome) -> PaymentResponse {
+        match o {
+            SlipPayOutcome::Created(p) | SlipPayOutcome::AlreadyPaid(p) => p,
+        }
+    }
+
+    /// Real-Postgres: a VERIFIED slip stamps the booking paid (method=promptpay_slip), records the
+    /// slip + its trans_ref/reference_id, and emits exactly ONE `payment.completed`. Re-submitting
+    /// the SAME accepted slip is an idempotent no-op (AlreadyPaid; same payment id; still one
+    /// event). DATABASE_URL-gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- slip_pay_is_idempotent --nocapture
+    #[tokio::test]
+    async fn slip_pay_settles_and_is_idempotent() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let guard_id = Some(Uuid::new_v4());
+        let reference_id = Uuid::new_v4().to_string();
+        let trans_ref = format!("TR-{}", Uuid::new_v4());
+
+        let first = slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_id,
+                customer_id,
+                guard_id,
+                dec("2000.00"),
+                dec("2000.00"),
+                &reference_id,
+                &trans_ref,
+                dec("2000.00"),
+                "payment/x/slips/a.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("first slip pay"),
+        );
+        assert_eq!(first.status, "completed");
+        assert_eq!(first.payment_method.as_deref(), Some("promptpay_slip"));
+        assert_eq!(first.amount, dec("2000.00"));
+
+        // The slip row was recorded with the trans_ref.
+        let slip_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.payment_slips WHERE trans_ref = $1 AND payment_id = $2",
+        )
+        .bind(&trans_ref)
+        .bind(first.id)
+        .fetch_one(&pool)
+        .await
+        .expect("count slips");
+        assert_eq!(slip_count, 1, "the verified slip is recorded once");
+
+        // Re-submit the SAME accepted slip → AlreadyPaid, same payment, no second charge/event.
+        let again = pay_with_slip(
+            &pool,
+            booking_id,
+            customer_id,
+            guard_id,
+            dec("2000.00"),
+            dec("2000.00"),
+            &reference_id,
+            &trans_ref,
+            dec("2000.00"),
+            "payment/x/slips/b.jpg",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("re-submit same slip");
+        assert!(
+            matches!(again, SlipPayOutcome::AlreadyPaid(_)),
+            "re-submitting the same accepted slip is a no-op"
+        );
+        assert_eq!(slip_payment_of(again).id, first.id, "same payment returned");
+
+        // exactly one payment.completed event for this booking.
+        let events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_COMPLETED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count events");
+        assert_eq!(events, 1, "exactly one completed event (no double-emit)");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.payment_slips WHERE payment_id = $1")
+            .bind(first.id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: the DEDUPE GUARANTEE — one slip can NEVER pay two bookings. The SAME
+    /// trans_ref used for a SECOND, different booking is rejected by the UNIQUE constraint
+    /// (typed SLIP_DUPLICATE), and that second booking ends up with NO payment row. DATABASE_URL-
+    /// gated. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///     cargo test -p pguard-payment -- slip_dedupe_across_bookings --nocapture
+    #[tokio::test]
+    async fn slip_cannot_pay_two_bookings_dedupe() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_a = Uuid::new_v4();
+        let booking_b = Uuid::new_v4();
+        let trans_ref = format!("TR-{}", Uuid::new_v4());
+        let ref_a = Uuid::new_v4().to_string();
+        let ref_b = Uuid::new_v4().to_string();
+
+        // Booking A pays with the slip — fine.
+        let pay_a = slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_a,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                &ref_a,
+                &trans_ref,
+                dec("2000.00"),
+                "payment/a/slips/a.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("A pays"),
+        );
+
+        // Booking B tries to reuse the SAME trans_ref (a different reference_id) → SLIP_DUPLICATE.
+        let dup = pay_with_slip(
+            &pool,
+            booking_b,
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            dec("2000.00"),
+            dec("2000.00"),
+            &ref_b,
+            &trans_ref, // REUSED
+            dec("2000.00"),
+            "payment/b/slips/b.jpg",
+            Uuid::new_v4(),
+        )
+        .await;
+        match dup {
+            Err(AppError::ConflictCode { code, .. }) => {
+                assert_eq!(code, crate::slip2go_client::SLIP_DUPLICATE_CODE)
+            }
+            other => panic!("expected SLIP_DUPLICATE, got {other:?}"),
+        }
+
+        // Booking B got NO payment row (the tx rolled back the payment insert too).
+        let b_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM payment.payments WHERE booking_id = $1")
+                .bind(booking_b)
+                .fetch_one(&pool)
+                .await
+                .expect("count B");
+        assert_eq!(
+            b_count, 0,
+            "the reused slip created NO payment for booking B"
+        );
+
+        // The reference_id UNIQUE is ALSO a guard: reusing ref_a on booking B (fresh trans_ref)
+        // is likewise rejected.
+        let dup_ref = pay_with_slip(
+            &pool,
+            booking_b,
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            dec("2000.00"),
+            dec("2000.00"),
+            &ref_a, // REUSED reference_id
+            &format!("TR-{}", Uuid::new_v4()),
+            dec("2000.00"),
+            "payment/b/slips/c.jpg",
+            Uuid::new_v4(),
+        )
+        .await;
+        assert!(
+            matches!(dup_ref, Err(AppError::ConflictCode { code, .. }) if code == crate::slip2go_client::SLIP_DUPLICATE_CODE),
+            "a reused reference_id is also rejected"
+        );
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.payment_slips WHERE payment_id = $1")
+            .bind(pay_a.id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
+        )
+        .bind(vec![booking_a.to_string(), booking_b.to_string()])
+        .execute(&pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
+            .bind(vec![booking_a, booking_b])
             .execute(&pool)
             .await;
     }

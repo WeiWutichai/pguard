@@ -8,6 +8,9 @@ use shared::config::JwtConfig;
 use shared::service_jwt::HasServiceJwt;
 
 use crate::booking_client::{BookingReader, HttpBookingReader};
+use crate::config::SlipPaymentConfig;
+use crate::s3::S3Client;
+use crate::slip2go_client::{HttpSlipVerifier, SlipVerifier};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,6 +26,12 @@ pub struct AppState {
     /// The booking-reader (MINTS a service-JWT + GETs booking's `/internal/bookings/{id}`) —
     /// the authoritative source for the PRE-PAY estimate + ownership/payability authz.
     pub booking_reader: HttpBookingReader,
+    /// Slip2Go verifier (REAL money path). Verifies an uploaded transfer slip is genuine.
+    pub slip_verifier: HttpSlipVerifier,
+    /// S3 presigner for the private slip-image store (PDPA — like guard documents).
+    pub s3: S3Client,
+    /// Feature flag + receiving account for the slip path (`PAYMENT_PROVIDER`, `RECEIVING_ACCOUNT`).
+    pub slip_config: SlipPaymentConfig,
 }
 
 impl HasJwtSecret for AppState {
@@ -72,6 +81,9 @@ impl PaymentInternalDeps for AppState {
 /// + verify ownership/payability, so this seam carries a `BookingReader`.
 pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     type Reader: BookingReader;
+    /// The Slip2Go verifier (associated type → static dispatch, native `async fn`) so the slip
+    /// endpoint is stub-testable with NO real API calls — mirrors `Reader`.
+    type Verifier: SlipVerifier;
 
     fn db(&self) -> &PgPool;
     /// Read-replica pool for the payment list read (C5.3). Defaults to primary; the single
@@ -80,10 +92,17 @@ pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
         self.db()
     }
     fn booking_reader(&self) -> &Self::Reader;
+    /// The Slip2Go verifier (REAL money path — `POST /payments/{id}/slip`).
+    fn slip_verifier(&self) -> &Self::Verifier;
+    /// The private S3 store for slip images.
+    fn s3(&self) -> &S3Client;
+    /// The slip-path config (feature flag + receiving account).
+    fn slip_config(&self) -> &SlipPaymentConfig;
 }
 
 impl PaymentDeps for AppState {
     type Reader = HttpBookingReader;
+    type Verifier = HttpSlipVerifier;
 
     fn db(&self) -> &PgPool {
         &self.db
@@ -93,5 +112,14 @@ impl PaymentDeps for AppState {
     }
     fn booking_reader(&self) -> &Self::Reader {
         &self.booking_reader
+    }
+    fn slip_verifier(&self) -> &Self::Verifier {
+        &self.slip_verifier
+    }
+    fn s3(&self) -> &S3Client {
+        &self.s3
+    }
+    fn slip_config(&self) -> &SlipPaymentConfig {
+        &self.slip_config
     }
 }

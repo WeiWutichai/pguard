@@ -19,7 +19,7 @@ part 'payment.g.dart';
 /// * [guardId] 
 /// * [amount] - Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
 /// * [expectedTotal] - Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
-/// * [paymentMethod] 
+/// * [paymentMethod] - How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
 /// * [status] 
 /// * [finalAmount] - The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).
 /// * [refundAmount] - The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed).
@@ -50,6 +50,7 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   @BuiltValueField(wireName: r'expected_total')
   String? get expectedTotal;
 
+  /// How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
   @BuiltValueField(wireName: r'payment_method')
   String? get paymentMethod;
 

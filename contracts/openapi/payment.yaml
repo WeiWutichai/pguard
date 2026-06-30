@@ -275,6 +275,68 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /payments/{id}/slip:
+    post:
+      tags: [Payments]
+      summary: Pay a booking with a Slip2Go-verified transfer slip (REAL money path)
+      description: |
+        THE MONEY PATH (real). `{id}` is the BOOKING id. The customer transfers to OUR
+        PromptPay/bank account, then uploads the transfer SLIP image here. The payment service
+        verifies the slip with **Slip2Go** (`POST /verify-slip/qr-image/info`) — confirming it is
+        genuine, paid to OUR account (`checkReceiver`), and for at least the server-computed
+        estimate (`checkAmount: gte`) — then RE-VALIDATES on our side (amount ≥ estimate, receiver
+        == our account) and stamps the payment paid (`payment_method=promptpay_slip`), emitting the
+        SAME `payment.completed` event that gates en_route (no new event).
+
+        Available only when the service runs with `PAYMENT_PROVIDER=slip2go`; under the simulated
+        default this returns 409 `SLIP_DISABLED`. Own-only (the booking's customer) → else 403.
+
+        **Anti-fraud / dedupe guarantee:** a verified slip's `transRef` and Slip2Go `referenceId`
+        are stored under a UNIQUE constraint, so ONE slip can NEVER pay two bookings (a reused slip
+        → 409 `SLIP_DUPLICATE`). **Idempotent:** re-submitting the SAME accepted slip returns the
+        existing payment (200), no double-charge.
+
+        Failure modes carry a machine-readable `error.code` (branch on it, not the message):
+        `SLIP_VERIFY_FAILED` (Slip2Go rejected it), `SLIP_AMOUNT_TOO_LOW` (underpay),
+        `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (already used),
+        `SLIP_DISABLED` (provider not slip2go).
+      operationId: payWithSlip
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The booking id to settle.
+          schema: { type: string, format: uuid }
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+                  description: The transfer-slip image (JPEG/PNG/WEBP, ≤ 10 MB).
+      responses:
+        '200':
+          description: Slip verified → booking paid (or an idempotent re-submit of an accepted slip)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Payment' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/SlipRejected' }
+
   /internal/users/{user_id}/export:
     get:
       tags: [Admin]
@@ -354,6 +416,16 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
+    SlipRejected:
+      description: |
+        The slip could not settle the booking. `error.code` is one of: `SLIP_VERIFY_FAILED`
+        (Slip2Go rejected the slip), `SLIP_AMOUNT_TOO_LOW` (the slip is below the estimate),
+        `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (the slip was already
+        used for a payment), `SLIP_DISABLED` (the service is not running the slip provider), or
+        the booking is not in a payable state.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
 
   schemas:
     CreatePaymentRequest:
@@ -387,7 +459,11 @@ components:
           nullable: true
           description: Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
           example: "2000.00"
-        payment_method: { type: string, nullable: true }
+        payment_method:
+          type: string
+          nullable: true
+          description: 'How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).'
+          example: promptpay_slip
         status: { $ref: '#/components/schemas/PaymentStatus' }
         final_amount: { type: string, nullable: true, description: 'The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).' }
         refund_amount: { type: string, nullable: true, description: 'The overpay returned to the customer on the SETTLE when actual hours < pre-paid (null when none owed).' }

@@ -22,9 +22,9 @@ import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
-import 'package:pguard_payment_api/src/model/inline_object.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
+import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 import 'package:pguard_payment_api/src/model/payment.dart';
 import 'package:pguard_payment_api/src/model/payment_status.dart';
 import 'package:pguard_payment_api/src/model/refund_queue_item.dart';
@@ -44,9 +44,9 @@ part 'serializers.g.dart';
   CustomerSpend,
   ErrorBody,
   ErrorDetail,
-  InlineObject,
   InternalExportUser200Response,
   ListPayments200Response,
+  PayWithSlip200Response,
   Payment,
   PaymentStatus,
   RefundQueueItem,
