@@ -35,9 +35,18 @@ void main() {
       expect(sessionRedirect(s, '/auth/role'), isNull);
     });
 
-    test('a single-role user on /auth/role is sent home (no one-option picker)', () {
+    test('a single-role user may ALSO open /auth/role (to enrol a 2nd role)', () {
+      // Was bounced home (a catch-22 — the add-role flow was unreachable). Now allowed: a single-role
+      // user taps the "เพิ่มบทบาท / Add role" affordance to reach the picker and enrol the 2nd role.
       final s = authed('customer', ['customer']);
-      expect(sessionRedirect(s, '/auth/role'), '/home/customer');
+      expect(sessionRedirect(s, '/auth/role'), isNull);
+    });
+
+    test('a single-role login still AUTO-lands on its home (not the picker)', () {
+      // Only an EXPLICIT open of /auth/role is allowed; the post-login auto-redirect from a stale
+      // entry still sends a single-role account straight home (no forced one-option picker).
+      final s = authed('customer', ['customer']);
+      expect(sessionRedirect(s, '/splash'), '/home/customer');
     });
   });
 

@@ -293,12 +293,14 @@ String? sessionRedirect(SessionState session, String loc) {
       return loc == '/lock' ? null : '/lock';
     case SessionStatus.authenticated:
       final user = session.user;
-      // The mode picker (`/auth/role`) is reachable WHILE authenticated — it's how a dual-role
-      // account switches modes / goes back to role-select without logging out. Allow a multi-role
-      // user to stay on it (post-login auto-land OR an explicit switch tap); a single-role user has
-      // nothing to pick, so send them home instead of a one-option picker.
+      // The mode picker (`/auth/role`) is reachable WHILE authenticated — it's how an account
+      // switches modes / goes back to role-select without logging out, AND how a single-role
+      // account ENROLS its second role. Allow ANY authenticated user who explicitly opens it (a
+      // multi-role auto-land or either-role switch tap). The post-login AUTO-redirect below still
+      // only sends MULTI-role accounts here; single-role accounts land on their home and reach the
+      // picker on demand via the "เพิ่มบทบาท / Add role" affordance.
       if (loc == '/auth/role') {
-        return user?.hasMultipleRoles == true ? null : _homeFor(user);
+        return null;
       }
       // The add-role flow's profile form + pending screen run under /auth/* WHILE authenticated (the
       // user is enrolling a 2nd role in the background) — allow them so the form isn't bounced
