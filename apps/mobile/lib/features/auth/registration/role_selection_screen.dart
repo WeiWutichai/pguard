@@ -218,8 +218,19 @@ class _OnboardingChooser extends ConsumerWidget {
       if (outcome == RegisterOutcome.needsProfile) {
         context.push(
             role.isGuard ? '/auth/register/guard' : '/auth/register/customer');
+        return;
       }
-      // loggedIn → the session is authenticated; the router redirects to the dashboard.
+      if (outcome == RegisterOutcome.loggedIn) {
+        // The phone already has an account (409 → logged in). If the user picked a role this account
+        // does NOT hold yet (e.g. a guard-only phone where they tapped "customer"), DON'T silently
+        // drop them on the existing role's home — send them to the mode picker so they can ENROL the
+        // role they asked for. If the account already holds the picked role, the router lands them on
+        // the right home as usual.
+        final user = ref.read(sessionProvider).user;
+        if (user != null && !user.isEnrolledIn(role.wire)) {
+          context.go('/auth/role');
+        }
+      }
       // error → state.error is rendered below; the user can retry.
     }
 

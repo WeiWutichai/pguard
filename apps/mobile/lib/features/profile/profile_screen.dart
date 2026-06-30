@@ -109,11 +109,12 @@ class ProfileScreen extends ConsumerWidget {
                         isThai ? 'คำถามที่พบบ่อย · ติดต่อเรา' : 'FAQ & contact',
                     onTap: () => context.push('/help'),
                   ),
-                  // Dual-role accounts: jump to the mode picker (no logout). The tile self-hides for
-                  // single-role accounts — but _SettingsGroup would still draw a divider around an
-                  // empty box, so it's only added here when the account actually holds >1 role.
-                  if (ref.watch(sessionProvider.select(
-                      (s) => s.user?.hasMultipleRoles ?? false)))
+                  // The mode picker (no logout) — a clear, labelled path to role-selection in the
+                  // settings, for EVERY authenticated account: dual-role to SWITCH, single-role to
+                  // ENROL a second role ("เพิ่มบทบาท"). Shown whenever a user is signed in (the tile
+                  // self-hides only when there is no user), so a single-role account always has an
+                  // obvious "go to role-select" entry, not just the small header icon.
+                  if (ref.watch(sessionProvider.select((s) => s.user != null)))
                     const SwitchModeTile(),
                   _ReadonlyRow(
                     icon: Icons.phone_outlined,
