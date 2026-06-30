@@ -2,7 +2,7 @@
 /// screen drives a 1-second display ticker; this computes what to show. (This is a UI
 /// countdown, NOT the booking-status path — that is WebSocket push with zero polling.)
 class ResendPolicy {
-  const ResendPolicy({this.cooldown = const Duration(seconds: 60)});
+  const ResendPolicy({this.cooldown = const Duration(seconds: 120)});
 
   final Duration cooldown;
 
