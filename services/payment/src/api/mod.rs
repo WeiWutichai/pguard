@@ -1324,8 +1324,8 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let data = &json["data"];
         assert_eq!(
-            data["amount"], "2000.00",
-            "exact estimate as a money string"
+            data["amount"], "2000",
+            "exact estimate as a money string (raw Decimal serde-str, like the prepay path — the QR's tag-54 carries the 2-dp form)"
         );
         assert_eq!(data["amount_satang"], 200000, "estimate in satang");
         assert_eq!(
