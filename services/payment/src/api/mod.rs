@@ -22,10 +22,11 @@ use shared::service_jwt::ServiceCaller;
 use crate::booking_client::BookingReader;
 use crate::config::PaymentProvider;
 use crate::domain;
+use crate::domain::promptpay as promptpay_domain;
 use crate::domain::slip as slip_domain;
 use crate::models::{
-    AdminListPaymentsQuery, CreatePaymentRequest, CustomerSpend, PaymentResponse, RefundQueueQuery,
-    RefundQueueResponse, ReportRangeQuery, RevenueReport,
+    AdminListPaymentsQuery, CreatePaymentRequest, CustomerSpend, PaymentResponse,
+    PromptPayResponse, RefundQueueQuery, RefundQueueResponse, ReportRangeQuery, RevenueReport,
 };
 use crate::repo;
 use crate::repo::{PrePayOutcome, SlipPayOutcome};
@@ -317,6 +318,84 @@ async fn parse_slip_form(mut multipart: Multipart) -> Result<(String, Vec<u8>), 
     let file = file.ok_or_else(|| AppError::BadRequest("file is required".to_string()))?;
     let declared_mime = declared_mime.unwrap_or_else(|| "application/octet-stream".to_string());
     Ok((declared_mime, file))
+}
+
+/// GET /payments/{id}/promptpay — the PromptPay transfer instructions for a booking. `{id}` is the
+/// BOOKING id. OWN-ONLY (the booking's customer). Returns the server-side estimate (the amount to
+/// transfer), our receiving account (formatted for display), and the authoritative EMVCo PromptPay
+/// `qr_payload` the mobile renders as a QR. THE MONEY PATH (read — tells the customer where to pay).
+///
+/// Discipline (CLAUDE.md — never trust the client; money is server-computed):
+///  1. role=customer; feature flag = slip2go (else 409 SLIP_DISABLED — the PromptPay/slip path is
+///     off; under the simulated default there is nowhere to transfer, the client uses POST /payments).
+///  2. Verify against the authoritative booking (service-JWT'd internal read): the caller must be
+///     the booking's customer AND the booking must be in a payable state.
+///  3. The amount is the SAME server-computed estimate the slip + prepay handlers use
+///     (`domain::expected_total` — `base_fee × hours × guards + tip`), exact `Decimal`.
+///  4. The `qr_payload` is built SERVER-SIDE (`domain::promptpay`) from `RECEIVING_ACCOUNT` + that
+///     estimate — the ONE authoritative place; the client never composes a payload. If
+///     `RECEIVING_ACCOUNT` is not a PromptPay-addressable proxy (a phone or national/tax id), this
+///     is a server config error (a bank account cannot be a PromptPay QR).
+///
+/// No DB write, no Slip2Go call — purely informational (the customer pays in their bank app, then
+/// settles via `POST /payments/{id}/slip`).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+pub async fn get_promptpay<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<PromptPayResponse>>, AppError> {
+    if user.role != "customer" {
+        return Err(AppError::Forbidden(
+            "Only customers can pay for a booking".to_string(),
+        ));
+    }
+    // Feature flag: PromptPay/slip is only live under PAYMENT_PROVIDER=slip2go. Under the simulated
+    // default there is nowhere to transfer (the client uses POST /payments) → a clear typed 409.
+    if state.slip_config().provider != PaymentProvider::Slip2Go {
+        return Err(AppError::ConflictCode {
+            code: "SLIP_DISABLED",
+            message: "Slip payment is not enabled".to_string(),
+        });
+    }
+
+    // (1) authoritative verification — trust the booking, not the body. OWN-ONLY.
+    let booking = state.booking_reader().get_booking(id).await?;
+    if booking.customer_id != user.user_id {
+        // Generic 403 — never reveal whether the booking exists / belongs to someone else.
+        return Err(AppError::Forbidden(
+            "You can only pay for your own booking".to_string(),
+        ));
+    }
+    if !domain::is_payable_status(&booking.status) {
+        return Err(AppError::Conflict(
+            "This booking is not awaiting payment".to_string(),
+        ));
+    }
+
+    // (2) SERVER-computed estimate — the SAME one the slip + prepay handlers charge.
+    let estimate = domain::expected_total(
+        booking.base_fee,
+        booking.hours,
+        booking.guard_count,
+        booking.tip,
+    );
+
+    // (3) authoritative EMVCo PromptPay payload built server-side from OUR account + the estimate.
+    let receiving_account = &state.slip_config().receiving_account;
+    let qr_payload = promptpay_domain::build_promptpay_payload(receiving_account, estimate)?;
+
+    // Amount in satang (×100), exact (never an f64): the estimate is 2-dp money, so ×100 is whole.
+    let amount_satang = (estimate.round_dp(2) * Decimal::from(100))
+        .to_i64()
+        .ok_or_else(|| AppError::Internal("amount out of range".to_string()))?;
+
+    Ok(Json(ApiResponse::success(PromptPayResponse {
+        amount: estimate,
+        amount_satang,
+        receiving_account: promptpay_domain::format_account_for_display(receiving_account),
+        qr_payload,
+    })))
 }
 
 /// GET /payments/{id} — fetch one payment the caller owns (or admin).
@@ -687,6 +766,7 @@ mod tests {
         Some(
             Router::new()
                 .route("/payments", post(create_payment::<TestDeps>))
+                .route("/payments/{id}/promptpay", get(get_promptpay::<TestDeps>))
                 .route("/payments/{id}/slip", post(pay_with_slip::<TestDeps>))
                 .route("/admin/payments", get(admin_list_payments::<TestDeps>))
                 .route("/admin/refunds/queue", get(admin_refund_queue::<TestDeps>))
@@ -1097,6 +1177,167 @@ mod tests {
             StatusCode::INTERNAL_SERVER_ERROR,
             "all gates + verify + re-validation passed; the flow reached the S3/DB settle"
         );
+    }
+
+    // ----- GET /payments/{id}/promptpay (where-to-pay read): authz + feature flag + payload -----
+
+    /// The slip2go config with a PromptPay-addressable receiving account (a mobile number) so the
+    /// QR payload can be built. The plain slip tests keep using `1234567890` (receiver-match only).
+    fn promptpay_config() -> SlipPaymentConfig {
+        SlipPaymentConfig {
+            provider: PaymentProvider::Slip2Go,
+            receiving_account: "0812345678".to_string(),
+        }
+    }
+
+    /// GET the promptpay route over a custom booking + provider config, returning (status, the JSON
+    /// body). Hermetic — no booking HTTP (StubReader), no DB/S3/Slip2Go reached on the success path.
+    async fn run_promptpay(
+        booking: Option<InternalBooking>,
+        cfg: SlipPaymentConfig,
+        tok: Option<&str>,
+        booking_id: Uuid,
+    ) -> Option<(StatusCode, serde_json::Value)> {
+        let app = build_router(booking, StubVerifier::ok(sample_verified("tr1")), cfg).await?;
+        let mut b = Request::builder()
+            .method("GET")
+            .uri(format!("/payments/{booking_id}/promptpay"));
+        if let Some(t) = tok {
+            b = b.header("authorization", format!("Bearer {t}"));
+        }
+        let res = app.oneshot(b.body(Body::empty()).unwrap()).await.unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 64 * 1024)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default();
+        Some((status, json))
+    }
+
+    #[tokio::test]
+    async fn promptpay_rejects_missing_token() {
+        let Some((status, _)) = run_promptpay(
+            Some(payable_booking(Uuid::new_v4())),
+            promptpay_config(),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn promptpay_rejects_non_customer() {
+        let Some((status, _)) = run_promptpay(
+            Some(payable_booking(Uuid::new_v4())),
+            promptpay_config(),
+            Some(&customer_token(Uuid::new_v4(), "guard")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn promptpay_own_only_rejects_other_customers_booking() {
+        // Caller is a customer, but the authoritative booking belongs to a DIFFERENT customer → 403.
+        let Some((status, _)) = run_promptpay(
+            Some(payable_booking(Uuid::new_v4())), // owned by someone else
+            promptpay_config(),
+            Some(&customer_token(Uuid::new_v4(), "customer")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn promptpay_disabled_under_simulated_provider() {
+        // Under the simulated default there is nowhere to transfer → typed 409 SLIP_DISABLED.
+        let me = Uuid::new_v4();
+        let Some((status, json)) = run_promptpay(
+            Some(payable_booking(me)),
+            sim_config(),
+            Some(&customer_token(me, "customer")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(json["error"]["code"], "SLIP_DISABLED");
+    }
+
+    #[tokio::test]
+    async fn promptpay_rejects_non_payable_booking() {
+        // Owner matches, but the booking has no guard yet (not payable) → 409, before pricing.
+        let me = Uuid::new_v4();
+        let mut booking = payable_booking(me);
+        booking.status = "requested".to_string();
+        booking.guard_id = None;
+        let Some((status, _)) = run_promptpay(
+            Some(booking),
+            promptpay_config(),
+            Some(&customer_token(me, "customer")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn promptpay_returns_server_estimate_account_and_valid_qr() {
+        // Happy path: the booking prices 500×4×1 + 0 = 2000.00. The response carries that exact
+        // amount (string), 200000 satang, the display-formatted account, and a QR payload that
+        // contains the PromptPay AID + the 2000.00 amount field — proving the QR is built
+        // SERVER-SIDE from the estimate (no DB/S3/Slip2Go touched).
+        let me = Uuid::new_v4();
+        let Some((status, json)) = run_promptpay(
+            Some(payable_booking(me)),
+            promptpay_config(),
+            Some(&customer_token(me, "customer")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_eq!(status, StatusCode::OK);
+        let data = &json["data"];
+        assert_eq!(
+            data["amount"], "2000",
+            "exact estimate as a money string (raw Decimal serde-str, like the prepay path — the QR's tag-54 carries the 2-dp form)"
+        );
+        assert_eq!(data["amount_satang"], 200000, "estimate in satang");
+        assert_eq!(
+            data["receiving_account"], "081-234-5678",
+            "account formatted for display"
+        );
+        let qr = data["qr_payload"].as_str().expect("qr_payload string");
+        assert!(
+            qr.contains(crate::domain::promptpay::PROMPTPAY_AID),
+            "QR carries the PromptPay AID"
+        );
+        assert!(qr.contains("54072000.00"), "QR amount field = the estimate");
     }
 
     #[test]

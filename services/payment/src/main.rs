@@ -156,6 +156,14 @@ async fn main() -> anyhow::Result<()> {
             post(api::create_payment::<AppState>).get(api::list_payments::<AppState>),
         )
         .route("/payments/{id}", get(api::get_payment::<AppState>))
+        // PromptPay transfer instructions for a booking (the customer's "where do I pay?" read):
+        // the server estimate + our receiving account + the authoritative EMVCo QR payload. Own-only
+        // (the booking's customer); only meaningful under PAYMENT_PROVIDER=slip2go. Served under the
+        // existing gateway `/payments/` prefix → Payment.
+        .route(
+            "/payments/{id}/promptpay",
+            get(api::get_promptpay::<AppState>),
+        )
         // REAL money path: pay a booking with a Slip2Go-verified transfer slip. Own-only (the
         // booking's customer); multipart `file` (the slip image). 12 MiB body cap on THIS route
         // only (images); the gateway carves a matching Large cap for /payments/{id}/slip.

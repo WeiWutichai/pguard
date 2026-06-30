@@ -9,6 +9,7 @@ import 'package:pguard_mobile/core/media/chat_attachment_service.dart';
 import 'package:pguard_mobile/core/media/chat_media_picker.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
+import 'package:pguard_mobile/core/media/slip_picker.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/models/call.dart';
@@ -418,6 +419,21 @@ class FakeDocumentPicker implements DocumentPicker {
 
   @override
   Future<String?> pick(DocSource source) async {
+    picks.add(source);
+    return path;
+  }
+}
+
+/// Fake [SlipPicker] — records the requested sources and returns a canned path (or null to
+/// simulate the user cancelling). Stands in for the real `image_picker` in the slip-pay tests.
+class FakeSlipPicker implements SlipPicker {
+  FakeSlipPicker({this.path = '/tmp/slip.jpg'});
+
+  String? path;
+  final List<SlipSource> picks = [];
+
+  @override
+  Future<String?> pick(SlipSource source) async {
     picks.add(source);
     return path;
   }

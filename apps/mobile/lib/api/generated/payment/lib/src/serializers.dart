@@ -22,11 +22,13 @@ import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
+import 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 import 'package:pguard_payment_api/src/model/payment.dart';
 import 'package:pguard_payment_api/src/model/payment_status.dart';
+import 'package:pguard_payment_api/src/model/prompt_pay_info.dart';
 import 'package:pguard_payment_api/src/model/refund_queue_item.dart';
 import 'package:pguard_payment_api/src/model/refund_queue_response.dart';
 import 'package:pguard_payment_api/src/model/refund_status.dart';
@@ -44,11 +46,13 @@ part 'serializers.g.dart';
   CustomerSpend,
   ErrorBody,
   ErrorDetail,
+  GetPromptPay200Response,
   InternalExportUser200Response,
   ListPayments200Response,
   PayWithSlip200Response,
   Payment,
   PaymentStatus,
+  PromptPayInfo,
   RefundQueueItem,
   RefundQueueResponse,
   RefundStatus,

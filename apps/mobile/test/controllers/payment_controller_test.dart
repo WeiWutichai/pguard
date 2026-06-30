@@ -146,4 +146,46 @@ void main() {
     // A different booking is untouched.
     expect(c.read(paymentControllerProvider('b2')).isPaid, isFalse);
   });
+
+  test(
+      'a 409 SLIP_REQUIRED flips slipRequired (NOT an error, NOT paid) so the '
+      'screen switches to the PromptPay slip flow', () async {
+    final api = FakeApi(
+      onPost: (_, __) async => throw const ApiException(
+          message: 'Slip payment required',
+          code: 'SLIP_REQUIRED',
+          statusCode: 409),
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final ok =
+        await c.read(paymentControllerProvider('b1').notifier).createPayment();
+    expect(ok, isFalse, reason: 'not paid via the simulated path');
+
+    final s = c.read(paymentControllerProvider('b1'));
+    expect(s.slipRequired, isTrue);
+    expect(s.isPaid, isFalse);
+    expect(s.error, isNull, reason: 'SLIP_REQUIRED is a flow switch, not an error');
+  });
+
+  test('the SIMULATED path is unchanged: a normal completed payment never sets slipRequired',
+      () async {
+    final api = FakeApi(onPost: (_, __) async => paymentJson('completed'));
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    expect(
+        await c.read(paymentControllerProvider('b1').notifier).createPayment(),
+        isTrue);
+    final s = c.read(paymentControllerProvider('b1'));
+    expect(s.isPaid, isTrue);
+    expect(s.slipRequired, isFalse);
+  });
 }

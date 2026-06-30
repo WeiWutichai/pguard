@@ -24,6 +24,7 @@ class PaymentState {
     this.busy = false,
     this.payment,
     this.error,
+    this.slipRequired = false,
   });
 
   /// In-flight `POST /payments`.
@@ -36,6 +37,12 @@ class PaymentState {
   /// Localized failure message for the last attempt, else `null`.
   final String? error;
 
+  /// `true` when `POST /payments` came back `409 SLIP_REQUIRED` — the provider is `slip2go`, so
+  /// there is no auto-charge: the customer must transfer via PromptPay and upload a slip. The
+  /// screen switches to the slip flow ([SlipPaymentController] / the PromptPay panel). Under the
+  /// simulated default this stays `false` and the existing one-tap pay path is unchanged.
+  final bool slipRequired;
+
   /// Whether the pre-pay charge has cleared (the screen flips to "waiting for the guard").
   bool get isPaid => payment != null;
 
@@ -43,11 +50,13 @@ class PaymentState {
     bool? busy,
     Payment? payment,
     Object? error = _unset,
+    bool? slipRequired,
   }) =>
       PaymentState(
         busy: busy ?? this.busy,
         payment: payment ?? this.payment,
         error: identical(error, _unset) ? this.error : error as String?,
+        slipRequired: slipRequired ?? this.slipRequired,
       );
 }
 
@@ -88,6 +97,13 @@ class PaymentController extends _$PaymentController {
       }
       return true;
     } on ApiException catch (e) {
+      // The provider requires a transfer slip (PAYMENT_PROVIDER=slip2go): there is no auto-charge.
+      // Flip to the slip flow instead of surfacing this as an error — the screen renders the
+      // PromptPay QR + slip upload. (Branch on the CODE, not the message.)
+      if (e.code == 'SLIP_REQUIRED') {
+        state = state.copyWith(busy: false, slipRequired: true, error: null);
+        return false;
+      }
       state = state.copyWith(busy: false, error: e.message);
       return false;
     } catch (_) {

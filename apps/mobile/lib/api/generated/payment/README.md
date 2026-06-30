@@ -104,6 +104,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | PRE-PAY a booking&#39;s estimate (createPayment)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)
+[*PaymentsApi*](doc/PaymentsApi.md) | [**getPromptPay**](doc/PaymentsApi.md#getpromptpay) | **GET** /payments/{id}/promptpay | PromptPay transfer instructions for a booking (where to pay)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**listPayments**](doc/PaymentsApi.md#listpayments) | **GET** /payments | List the caller&#39;s payments
 [*PaymentsApi*](doc/PaymentsApi.md) | [**payWithSlip**](doc/PaymentsApi.md#paywithslip) | **POST** /payments/{id}/slip | Pay a booking with a Slip2Go-verified transfer slip (REAL money path)
 
@@ -118,11 +119,13 @@ Class | Method | HTTP request | Description
  - [CustomerSpend](doc/CustomerSpend.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
+ - [GetPromptPay200Response](doc/GetPromptPay200Response.md)
  - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListPayments200Response](doc/ListPayments200Response.md)
  - [PayWithSlip200Response](doc/PayWithSlip200Response.md)
  - [Payment](doc/Payment.md)
  - [PaymentStatus](doc/PaymentStatus.md)
+ - [PromptPayInfo](doc/PromptPayInfo.md)
  - [RefundQueueItem](doc/RefundQueueItem.md)
  - [RefundQueueResponse](doc/RefundQueueResponse.md)
  - [RefundStatus](doc/RefundStatus.md)
