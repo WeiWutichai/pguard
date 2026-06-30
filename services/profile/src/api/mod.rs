@@ -467,10 +467,20 @@ pub async fn get_public_guard_profile<S: ProfileDeps>(
     Path(guard_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<PublicGuardProfile>>, AppError> {
     authorize_guard_profile_read(&state, &user, guard_id).await?;
-    let profile = repo::get_public_guard_profile(state.db_read(), guard_id)
+    let row = repo::get_public_guard_profile(state.db_read(), guard_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))?;
-    Ok(Json(ApiResponse::success(profile)))
+    // Presign the avatar key here (one place, like the customer-public / internal-guard path) so the
+    // raw S3 key never crosses the wire; null key → no URL.
+    Ok(Json(ApiResponse::success(PublicGuardProfile {
+        user_id: row.user_id,
+        full_name: row.full_name,
+        years_of_experience: row.years_of_experience,
+        avatar_url: row
+            .avatar_key
+            .as_deref()
+            .map(|k| state.s3().download_url(k)),
+    })))
 }
 
 // ----- GET /customers/{id}/public — guard-readable customer mini-profile (assigned guard's job) -----

@@ -45,13 +45,26 @@ pub struct InternalGuardRow {
 /// identify the assigned guard: name + experience. NEVER bank/address/DOB/emergency-contact PII
 /// (least-privilege; those stay owner/admin-only). `full_name` is the new exposure — reachable
 /// ONLY by a customer with an ACTIVE booking with this guard (or the guard themselves / an admin),
-/// and ONLY for an `approved` guard (the repo filters; un-approved → 404). Photo is deferred (no
-/// avatar storage exists yet).
-#[derive(Debug, Serialize, sqlx::FromRow)]
+/// and ONLY for an `approved` guard (the repo filters; un-approved → 404). `avatar_url` is the
+/// guard's self-uploaded photo: a short-lived presigned GET URL (the raw `avatar_key` never crosses
+/// the wire — the handler presigns it, one place), `None` when the guard set no photo — the same
+/// exposure discovery already makes of the chosen guard, mirrored onto the live-tracking card.
+#[derive(Debug, Serialize)]
 pub struct PublicGuardProfile {
     pub user_id: Uuid,
     pub full_name: Option<String>,
     pub years_of_experience: Option<i32>,
+    pub avatar_url: Option<String>,
+}
+
+/// FromRow projection for [`PublicGuardProfile`] — carries the raw `avatar_key` the handler presigns
+/// into `avatar_url` (the key never leaves the service), mirroring [`PublicCustomerProfileRow`].
+#[derive(Debug, sqlx::FromRow)]
+pub struct PublicGuardProfileRow {
+    pub user_id: Uuid,
+    pub full_name: Option<String>,
+    pub years_of_experience: Option<i32>,
+    pub avatar_key: Option<String>,
 }
 
 /// The lean, GUARD-facing customer mini-profile (`GET /customers/{id}/public`) — the mirror of

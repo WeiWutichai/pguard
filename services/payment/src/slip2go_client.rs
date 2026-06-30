@@ -173,6 +173,10 @@ fn interpret(envelope: SlipEnvelope) -> Result<VerifiedSlip, AppError> {
         } else {
             envelope.message
         };
+        // Diagnostic (no image/secret/PII): a "ตรวจไม่พบการโอน" on the device is otherwise opaque —
+        // log Slip2Go's verdict so duplicate vs wrong-receiver vs unreadable-QR vs not-found is
+        // debuggable from the payment logs. The code/message are Slip2Go's, not customer data.
+        tracing::warn!(slip2go_code = %envelope.code, "slip rejected by Slip2Go: {msg}");
         return Err(AppError::ConflictCode {
             code: SLIP_VERIFY_FAILED_CODE,
             message: msg,

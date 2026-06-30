@@ -39,6 +39,12 @@ dependencies:
   # Image capture/selection for guard registration document photos (real picker; camera/gallery).
   image_picker: ^1.1.2
 
+  # Share/save the rendered PromptPay QR to a banking app (capture the QR RepaintBoundary → PNG in a
+  # temp dir → OS share sheet). path_provider was already a transitive dep (image_picker etc.); both
+  # are pinned here so the share button can import them directly.
+  share_plus: ^10.1.4
+  path_provider: ^2.1.5
+
   # WebRTC voice/video — P2P RTCPeerConnection; signaling rides the calling /ws/call SDP/ICE relay
   # (the mediasoup SFU control plane is service-JWT internal-only, so no mediasoup client is used).
   flutter_webrtc: ^0.12.5

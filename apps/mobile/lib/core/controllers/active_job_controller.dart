@@ -166,6 +166,27 @@ class ActiveJobController extends _$ActiveJobController {
     );
   }
 
+  /// Fold an EXTERNALLY-observed status into the active-job state — used when the live
+  /// booking-status WebSocket pushes a transition this controller didn't drive itself (notably the
+  /// CUSTOMER cancelling the job while the guard sits on the active-job screen). The active-job
+  /// controller has no WS of its own (it re-fetches only on resume), so without this a cancellation
+  /// would not surface until the guard backgrounded + resumed the app. Idempotent: a no-op when the
+  /// status already matches, so a duplicate WS frame can't churn state. Clears any stale `busy`/
+  /// `error` so the screen lands cleanly on the new terminal state.
+  void applyExternalStatus(BookingStatus status) {
+    final current = state.valueOrNull;
+    if (current == null || current.booking.status == status) return;
+    state = AsyncData(current.copyWith(
+      booking: current.booking.applyEvent(BookingStatusEvent(
+        bookingId: current.booking.id,
+        status: status,
+        occurredAt: DateTime.now().toUtc(),
+      )),
+      busy: false,
+      error: null,
+    ));
+  }
+
   /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws after accepting
   /// (accepted → declined). Valid pre-arrival; the screen returns to the dashboard on success.
   Future<bool> withdraw() => _transition('decline');

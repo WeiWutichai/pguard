@@ -1,7 +1,13 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/slip_payment_controller.dart';
@@ -61,7 +67,7 @@ class PromptPaySlipPanel extends ConsumerWidget {
 
 /// The transfer card: QR + amount + receiving account, the slip CTA, and (while verifying) the
 /// "กำลังตรวจสอบสลิป…" state. A typed 409 error renders inline above the CTA.
-class _TransferPanel extends ConsumerWidget {
+class _TransferPanel extends ConsumerStatefulWidget {
   const _TransferPanel({
     required this.bookingId,
     required this.state,
@@ -73,7 +79,57 @@ class _TransferPanel extends ConsumerWidget {
   final bool isThai;
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_TransferPanel> createState() => _TransferPanelState();
+}
+
+class _TransferPanelState extends ConsumerState<_TransferPanel> {
+  /// Stable key wrapping the rendered QR so its layer can be captured to a PNG for sharing. Held in
+  /// state (not rebuilt) so the boundary survives the panel's rebuilds (e.g. ready ↔ verifying).
+  final GlobalKey _qrBoundaryKey = GlobalKey();
+
+  /// Capture the rendered QR [RepaintBoundary] to a PNG in a temp file and hand it to the OS share
+  /// sheet, so the customer can save it / open it in a banking app and scan-from-gallery. Guards
+  /// against a missing boundary (panel not laid out) and re-checks `mounted` across each await.
+  Future<void> _shareQr(int? amountSatang) async {
+    final isThai = widget.isThai;
+    final messenger = ScaffoldMessenger.of(context);
+    String err() => isThai ? 'บันทึก/แชร์ QR ไม่สำเร็จ' : 'Could not save / share the QR';
+    try {
+      final boundary = _qrBoundaryKey.currentContext?.findRenderObject()
+          as RenderRepaintBoundary?;
+      if (boundary == null) {
+        messenger.showSnackBar(SnackBar(content: Text(err())));
+        return;
+      }
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+      if (!mounted) return;
+      if (bytes == null) {
+        messenger.showSnackBar(SnackBar(content: Text(err())));
+        return;
+      }
+      final dir = await getTemporaryDirectory();
+      final file = File(
+          '${dir.path}/promptpay_qr_${DateTime.now().millisecondsSinceEpoch}.png');
+      await file.writeAsBytes(bytes.buffer.asUint8List());
+      if (!mounted) return;
+      final amount =
+          amountSatang != null ? Money.format(amountSatang, decimals: true) : '';
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: 'PromptPay – ฿$amount'.trimRight(),
+      );
+    } catch (_) {
+      if (mounted) {
+        messenger.showSnackBar(SnackBar(content: Text(err())));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = widget.state;
+    final isThai = widget.isThai;
     final info = state.info;
     final verifying = state.phase == SlipPhase.verifying;
     final amountText = info != null
@@ -101,15 +157,44 @@ class _TransferPanel extends ConsumerWidget {
               ),
               const SizedBox(height: PgTokens.space4),
               Center(
-                child: Container(
-                  padding: const EdgeInsets.all(PgTokens.space3),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-                    border: Border.all(color: PgTokens.colorBorder),
+                // Wrap the QR in a keyed RepaintBoundary so its layer can be captured to a PNG and
+                // shared/saved (the white padding is included → a clean scannable image with a quiet
+                // zone). The QR encoding stays pure inside [QrView].
+                child: RepaintBoundary(
+                  key: _qrBoundaryKey,
+                  child: Container(
+                    padding: const EdgeInsets.all(PgTokens.space3),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+                      border: Border.all(color: PgTokens.colorBorder),
+                    ),
+                    child: QrView(data: info?.qrPayload ?? '', size: 224),
                   ),
-                  child: QrView(data: info?.qrPayload ?? '', size: 224),
                 ),
+              ),
+              const SizedBox(height: PgTokens.space3),
+              // Save / share the QR image so the customer can open a banking app and scan from the
+              // gallery. Secondary (outlined) styling so it never competes with the primary
+              // "ฉันโอนแล้ว / อัปโหลดสลิป" CTA below. Disabled until the QR payload has loaded.
+              OutlinedButton.icon(
+                onPressed: (info != null && info.qrPayload.isNotEmpty)
+                    ? () => _shareQr(info.amountSatang)
+                    : null,
+                icon: const Icon(Icons.ios_share, size: 18),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: PgTokens.colorGreen800,
+                  side: const BorderSide(color: PgTokens.colorGreen800),
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+                  ),
+                  textStyle: const TextStyle(
+                      fontFamily: 'IBMPlexSansThai',
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600),
+                ),
+                label: Text(isThai ? 'บันทึก / แชร์ QR' : 'Save / Share QR'),
               ),
               const SizedBox(height: PgTokens.space4),
               _InfoRow(
@@ -168,13 +253,14 @@ class _TransferPanel extends ConsumerWidget {
             ListTile(
               leading: const Icon(Icons.photo_library_outlined,
                   color: PgTokens.colorGreen800),
-              title: Text(isThai ? 'เลือกจากคลังรูป' : 'Choose from gallery'),
+              title: Text(
+                  widget.isThai ? 'เลือกจากคลังรูป' : 'Choose from gallery'),
               onTap: () => Navigator.of(ctx).pop(SlipSource.gallery),
             ),
             ListTile(
               leading: const Icon(Icons.photo_camera_outlined,
                   color: PgTokens.colorGreen800),
-              title: Text(isThai ? 'ถ่ายรูปสลิป' : 'Take a photo'),
+              title: Text(widget.isThai ? 'ถ่ายรูปสลิป' : 'Take a photo'),
               onTap: () => Navigator.of(ctx).pop(SlipSource.camera),
             ),
             const SizedBox(height: PgTokens.space2),
@@ -184,7 +270,7 @@ class _TransferPanel extends ConsumerWidget {
     );
     if (source == null) return;
     await ref
-        .read(slipPaymentControllerProvider(bookingId).notifier)
+        .read(slipPaymentControllerProvider(widget.bookingId).notifier)
         .pickAndUpload(source);
   }
 }
