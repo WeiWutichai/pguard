@@ -140,4 +140,51 @@ void main() {
       expect(prefs.values[kEnrolledRolesKey], isNull);
     });
   });
+
+  group('returning device (logout → PIN login, no OTP)', () {
+    test('logout keeps a remembered device (phone + PIN) → returning', () async {
+      final store = InMemoryStore()
+        ..refresh = 'r' // a live session → starts locked
+        ..phone = '0812345678'
+        ..pinHash = 'h';
+      final c = container(store, FakePrefsStore());
+      expect(await resolved(c), SessionStatus.locked);
+      await c.read(sessionProvider.notifier).logout();
+      expect(c.read(sessionProvider).status, SessionStatus.returning);
+      // The login identifier is retained (clearSession drops it) so the PIN-login knows who to
+      // log in; the local PIN is left in place for that login.
+      expect(store.phone, '0812345678');
+      expect(store.pinHash, isNotNull);
+    });
+
+    test('logout(forgetDevice: true) wipes the device → unauthenticated',
+        () async {
+      final store = InMemoryStore()
+        ..refresh = 'r'
+        ..phone = '0812345678'
+        ..pinHash = 'h';
+      final c = container(store, FakePrefsStore());
+      await resolved(c);
+      await c.read(sessionProvider.notifier).logout(forgetDevice: true);
+      expect(c.read(sessionProvider).status, SessionStatus.unauthenticated);
+      expect(store.phone, isNull);
+      expect(store.pinHash, isNull,
+          reason: 'a full sign-out wipes the local PIN too');
+    });
+
+    test('cold start with a remembered PIN + phone (no tokens) → returning',
+        () async {
+      final store = InMemoryStore()
+        ..phone = '0812345678'
+        ..pinHash = 'h'; // no refresh token
+      expect(await resolved(container(store, FakePrefsStore())),
+          SessionStatus.returning);
+    });
+
+    test('cold start with a PIN but NO phone → unauthenticated', () async {
+      final store = InMemoryStore()..pinHash = 'h'; // no phone, no refresh
+      expect(await resolved(container(store, FakePrefsStore())),
+          SessionStatus.unauthenticated);
+    });
+  });
 }

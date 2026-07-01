@@ -134,6 +134,9 @@ async fn main() -> anyhow::Result<()> {
             get(api::me).put(api::update_me).delete(api::delete_me),
         )
         .route("/auth/password", put(api::change_password))
+        // Forgot-PIN reset: edge-public (carries a single-use phone_verified_token in the body, not
+        // an access token — like /auth/register). identity validates the token internally.
+        .route("/auth/reset-pin", post(api::reset_pin))
         .route("/auth/revoke-all", post(api::revoke_all_sessions))
         // Multi-role (Option A): switch the active role (mint a token for an ENROLLED role) +
         // enroll a NEW role (mint a profile_token → pending second profile). Both are

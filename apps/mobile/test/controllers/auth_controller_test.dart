@@ -80,6 +80,69 @@ void main() {
   });
 
   test(
+      'forgot-PIN: startReset marks the run, resetPin POSTs /auth/reset-pin then logs in',
+      () async {
+    final store = InMemoryStore();
+    final calls = <String>[];
+    final api = FakeApi(
+      onPost: (path, data) async {
+        calls.add(path);
+        switch (path) {
+          case '/otp/verify':
+            return {'phone_verified_token': 'PVT'};
+          case '/auth/reset-pin':
+            final m = data as Map<String, dynamic>;
+            expect(m['phone_verified_token'], 'PVT',
+                reason: 'the just-verified token authorises the reset');
+            expect(m['new_pin_hash'], isA<String>());
+            expect(m.containsKey('phone'), isFalse,
+                reason: 'phone comes from the token, never the body');
+            return <String, dynamic>{'pin_reset': true};
+          case '/auth/login':
+            expect((data as Map<String, dynamic>)['identifier'], '0812345678');
+            return {
+              'access_token':
+                  fakeJwt({'sub': 'u1', 'role': 'guard', 'exp': 9999999999}),
+              'refresh_token': 'r-new',
+              'expires_in': 900,
+              'available_roles': ['guard'],
+            };
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+    );
+    final c = container(api: api, store: store);
+    c.listen(sessionProvider, (_, __) {});
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    ctrl.startReset('0812345678');
+    expect(c.read(authControllerProvider).reset, isTrue,
+        reason: 'the run is a reset, not a registration');
+    expect(c.read(authControllerProvider).phone, '0812345678');
+
+    // OTP verify captures the phone-verified token (as the OTP screen does).
+    expect(await ctrl.verifyOtp('123456'), isTrue);
+
+    // Reset the PIN → POST /auth/reset-pin, then log in with the NEW PIN → session authenticated.
+    expect(await ctrl.resetPin(newPin: '654321'), isTrue);
+    expect(calls, ['/otp/verify', '/auth/reset-pin', '/auth/login']);
+    expect(store.refresh, 'r-new', reason: 'logged in with the new PIN post-reset');
+    expect(store.pinHash, isNotNull, reason: 'new PIN persisted locally');
+    expect(c.read(sessionProvider).status, SessionStatus.authenticated);
+  });
+
+  test('resetPin with no verified token surfaces an error and posts nothing',
+      () async {
+    final api = FakeApi(onPost: (_, __) async => throw StateError('no call'));
+    final c = container(api: api, store: InMemoryStore());
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.startReset('0812345678'); // no verifyOtp → no phone_verified_token
+    expect(await ctrl.resetPin(newPin: '654321'), isFalse);
+    expect(c.read(authControllerProvider).error, isNotNull);
+  });
+
+  test(
       'a failed /otp/request reloads a FRESH challenge (the old one is burned) and keeps the error',
       () async {
     // The otp service GETDELs the captcha on EVERY /otp/request, so a retry with the same

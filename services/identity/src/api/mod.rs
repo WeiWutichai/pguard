@@ -24,9 +24,10 @@ use crate::models::{
     ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest, CreateApiTokenResponse,
     Disable2faRequest, Enable2faRequest, Enable2faResponse, EnrollRoleRequest, LoginRequest,
     LoginTokenPair, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
-    ReissueProfileTokenRequest, ResolveUsersRequest, ResolvedUser, SessionView, Setup2faResponse,
-    SwitchRoleRequest, TokenPair, TwoFactorChallenge, UpdateMeRequest, UserSearchQuery,
-    UserSearchResult, Verify2faRequest, VerifyApiTokenRequest, VerifyApiTokenResponse,
+    ReissueProfileTokenRequest, ResetPinRequest, ResolveUsersRequest, ResolvedUser, SessionView,
+    Setup2faResponse, SwitchRoleRequest, TokenPair, TwoFactorChallenge, UpdateMeRequest,
+    UserSearchQuery, UserSearchResult, Verify2faRequest, VerifyApiTokenRequest,
+    VerifyApiTokenResponse,
 };
 use crate::repo;
 use crate::repo::DeviceContext;
@@ -658,6 +659,63 @@ pub async fn change_password(
             serde_json::json!({ "password_changed": true }),
         )),
     ))
+}
+
+// ----- POST /auth/reset-pin (forgot-PIN reset via OTP) -----
+
+/// Reset a FORGOTTEN PIN. Authorized ENTIRELY by a single-use `phone_verified_token` from the OTP
+/// flow — the phone comes from that token, NEVER the body — so a caller can only reset the PIN of a
+/// phone they just proved they own (received the SMS for). No current PIN is required (they forgot
+/// it). On success: store the new Argon2 hash, bump the revocation version + revoke every refresh
+/// family (a reset kills ALL sessions), then force-revoke outstanding access tokens via the Redis
+/// `trv` marker. Edge-public (carries the purpose token in the body, not an access token).
+/// `skip_all`: never log the token, the pin_hash, or the phone (PII).
+#[tracing::instrument(skip_all)]
+pub async fn reset_pin(
+    State(state): State<AppState>,
+    Json(req): Json<ResetPinRequest>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    // 1) Shape-check the NEW pin_hash up front (same 64-hex SHA-256 contract as register's pin_hash).
+    registration::validate_pin_hash(&req.new_pin_hash)?;
+
+    // 2) Verify the phone-verified token (signature + purpose + expiry). The phone is FROM the token,
+    //    never the body — this is the whole authorization for the reset.
+    let (phone, jti) =
+        decode_phone_verify_token(&req.phone_verified_token, &state.jwt_config.decoding_key)?;
+    let phone = registration::validate_thai_phone(&phone)?;
+
+    // 3) Claim the single-use jti FIRST (GETDEL). Unlike register (whose account UPSERT is
+    //    idempotent, so it defers the claim to stay retryable), a PIN reset is a NON-idempotent
+    //    credential change — claim before mutating so a reused/forged/expired token can NEVER drive
+    //    a second reset. A missing "valid" marker → reject before touching the account.
+    let mut redis = state.redis_conn.clone();
+    let jti_status: Option<String> = redis::cmd("GETDEL")
+        .arg(format!("phone_verify_jti:{jti}"))
+        .query_async(&mut redis)
+        .await?;
+    if jti_status.as_deref() != Some("valid") {
+        return Err(AppError::BadRequest(
+            "Phone verification token is invalid, expired, or already used".to_string(),
+        ));
+    }
+
+    // 4) Reset the PIN of the account holding the token's phone (new Argon2 hash + bump trv + revoke
+    //    all refresh families). `None` = no active account for that phone → they should register.
+    let Some((user_id, new_version)) =
+        repo::reset_password_by_phone(&state.db, &phone, &req.new_pin_hash).await?
+    else {
+        return Err(AppError::BadRequest(
+            "No account found for this phone — please register".to_string(),
+        ));
+    };
+
+    // 5) Force-revoke outstanding ACCESS tokens at once (any older `trv` is rejected) — a persistent
+    //    marker-write failure propagates (500) so the client knows the revocation isn't yet effective.
+    crate::state::mark_user_revoked(&mut redis, user_id, new_version).await?;
+
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "pin_reset": true }),
+    )))
 }
 
 // ----- DELETE /auth/me (PDPA §33 — right to erasure) -----

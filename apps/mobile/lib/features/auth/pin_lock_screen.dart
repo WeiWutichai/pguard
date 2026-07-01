@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/pin_service.dart';
 import '../../core/controllers/resend_policy.dart';
@@ -181,10 +183,13 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
       ),
     );
     if (!mounted) return;
-    await ref.read(sessionProvider.notifier).logout();
+    // The wipe already cleared the local PIN — forget the device fully so it starts fresh at OTP.
+    await ref.read(sessionProvider.notifier).logout(forgetDevice: true);
   }
 
-  /// "ลืม PIN?" — confirm, then sign out to re-authenticate by phone/OTP (existing plumbing).
+  /// "ลืม PIN?" — confirm, then RESET the PIN via OTP: verify the phone again and set a new PIN
+  /// (`POST /auth/reset-pin`), keeping the account. Falls back to a full sign-out only if the device
+  /// somehow has no remembered phone.
   Future<void> _forgotPin() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final confirmed = await showDialog<bool>(
@@ -197,8 +202,8 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
             style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
         content: Text(
           isThai
-              ? 'ต้องออกจากระบบและยืนยันเบอร์โทรอีกครั้งเพื่อตั้ง PIN ใหม่'
-              : 'Sign out and verify your phone again to set a new PIN',
+              ? 'ยืนยันเบอร์โทรด้วย OTP อีกครั้ง เพื่อตั้งรหัส PIN ใหม่'
+              : 'Verify your phone with an OTP again to set a new PIN',
           style:
               const TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
         ),
@@ -209,14 +214,25 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
           ),
           TextButton(
             onPressed: () => Navigator.of(dialogContext).pop(true),
-            style: TextButton.styleFrom(foregroundColor: PgTokens.colorDanger),
-            child: Text(isThai ? 'ออกจากระบบ' : 'Sign out'),
+            child: Text(isThai ? 'ตั้ง PIN ใหม่' : 'Reset PIN'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
-    await ref.read(sessionProvider.notifier).logout();
+    final phone = await ref.read(appStoreProvider).readPhone();
+    if (!mounted) return;
+    if (phone == null) {
+      // No remembered phone → can't target the reset; fall back to a full sign-out.
+      await ref.read(sessionProvider.notifier).logout(forgetDevice: true);
+      return;
+    }
+    // Seed the reset run + move out of `locked` (into `returning`, which permits /auth/*), then
+    // jump into the captcha → OTP → new-PIN flow. resetPin then logs in with the new PIN.
+    ref.read(authControllerProvider.notifier).startReset(phone);
+    ref.read(sessionProvider.notifier).beginPinReset();
+    if (!mounted) return;
+    context.go('/auth/captcha');
   }
 
   @override

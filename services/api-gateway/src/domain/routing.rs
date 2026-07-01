@@ -616,6 +616,10 @@ const PUBLIC_PATHS: &[&str] = &[
     // internally. Like `/auth/register`, the edge access-token validator can't decode it, so it must
     // be edge-public.
     "/auth/register/reissue",
+    // Forgot-PIN reset: carries a single-use `phone_verified_token` (otp-issued purpose JWT) in the
+    // BODY, NOT an access token — the edge validator can't decode it, so it must be edge-public;
+    // identity validates the token (signature + purpose + expiry + single-use) internally.
+    "/auth/reset-pin",
     // Initial profile submission is DUAL-AUTH: the client presents a purpose-scoped
     // `profile_token` (not an access token) as Bearer, which the profile service validates
     // itself (or an `AuthUser` for later updates). The edge access-token validator cannot
@@ -917,6 +921,24 @@ mod tests {
         // …but the authenticated profile read stays protected.
         let (_, _, public, _) = proxy(resolve("/v1/profile/me"));
         assert!(!public, "/profile/me requires a token");
+    }
+
+    #[test]
+    fn auth_reset_pin_is_public() {
+        // Forgot-PIN reset carries a single-use phone_verified_token in the body (no access token),
+        // so it MUST be edge-public (like /auth/register) or the reset is rejected 401 at the edge;
+        // identity validates the token internally. Under /auth/ → identity, Auth tier.
+        let (up, fwd, public, tier) = proxy(resolve("/v1/auth/reset-pin"));
+        assert_eq!(up, Upstream::Identity);
+        assert_eq!(fwd, "/auth/reset-pin");
+        assert!(
+            public,
+            "/auth/reset-pin must be public (body-carried purpose token)"
+        );
+        assert_eq!(tier, Tier::Auth);
+        // Near-miss stays protected (no accidental wildcard).
+        let (_, _, public2, _) = proxy(resolve("/v1/auth/reset-pin/extra"));
+        assert!(!public2, "/auth/reset-pin/extra must NOT be public");
     }
 
     #[test]
