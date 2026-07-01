@@ -91,6 +91,14 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
       appBar: PGuardHeader(
         title: isThai ? 'งานดำเนินอยู่' : 'Live job status',
         showBack: true,
+        // FROZEN-BACK GUARD: this screen is usually the navigator ROOT — the booking flow
+        // (guard_discovery), payment success and the PromptPay panel all `context.go` HERE, which
+        // REPLACES the stack. The default header back (`maybePop`) then has nothing to pop and
+        // silently does nothing, so once a guard cancelled the job the customer was stranded on the
+        // dead live screen and had to force-close the app. Pop when there IS a stack; otherwise fall
+        // back to the customer home so back is never a no-op.
+        onBack: () =>
+            context.canPop() ? context.pop() : context.go('/home/customer'),
         live: true,
         background: PgTokens.colorGreen800,
       ),

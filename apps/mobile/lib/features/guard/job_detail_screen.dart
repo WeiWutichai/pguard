@@ -46,7 +46,10 @@ class JobDetailScreen extends ConsumerWidget {
       _snack(context, err);
     } else {
       _snack(context, isThai ? 'รับงานสำเร็จ' : 'Job accepted');
-      context.go('/guard/active/$bookingId');
+      // Root on the guard home then push the active-job screen, so back (header chevron + Android
+      // system back) returns to the dashboard instead of a dead lone-root screen with nothing to pop.
+      context.go('/home/guard');
+      context.push('/guard/active/$bookingId');
     }
   }
 

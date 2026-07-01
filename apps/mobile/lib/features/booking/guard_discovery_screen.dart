@@ -44,7 +44,14 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     final ok = await ref.read(bookingFlowControllerProvider.notifier).createBooking();
     if (!ok || !mounted) return;
     final id = ref.read(bookingFlowControllerProvider).booking?.id;
-    if (id != null) context.go('/booking/$id/live');
+    // Build a POPPABLE stack (home → live) rather than a bare `context.go` that replaces the whole
+    // booking-flow chain with just the live screen: a lone-root live screen leaves back (both the
+    // header chevron and Android system back) with nothing to pop, which stranded the customer on a
+    // guard-cancelled job. Rooting on home means back lands on the dashboard, not a dead end.
+    if (id != null) {
+      context.go('/home/customer');
+      context.push('/booking/$id/live');
+    }
   }
 
   @override

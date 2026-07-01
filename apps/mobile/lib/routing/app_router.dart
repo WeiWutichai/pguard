@@ -266,6 +266,15 @@ GoRouter appRouter(AppRouterRef ref) {
 String _homeFor(AuthUser? user) =>
     user?.isGuard == true ? '/home/guard' : '/home/customer';
 
+/// NOTE — KEEP THIS SYNCHRONOUS. Several navigations build a poppable stack with a synchronous
+/// `context.go('/home/...')` immediately followed by `context.push(<leaf>)` (guard_discovery,
+/// payment, promptpay_slip, job_detail, and active_job `_backToJobs`). That pattern only yields the
+/// intended `[home, leaf]` stack because `go()` applies to `currentConfiguration` synchronously —
+/// which holds ONLY while this redirect returns a plain `String?` (making the route parse a
+/// `SynchronousFuture`). If this is ever made `async`, `go()` defers, the following `push()` builds
+/// on the stale stack, and the deferred `go()` then replaces it — silently re-introducing the
+/// "frozen back / must force-close" bug at every one of those call sites. Revisit them first.
+///
 /// The session-gate redirect, extracted PURE so it is unit-testable without mounting screens.
 /// Returns the location to redirect TO, or `null` to allow [loc] as-is. Enforces splash → auth →
 /// lock → role dashboard, PLUS the multi-role rules (one phone = one account that can be BOTH guard
