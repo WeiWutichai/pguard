@@ -355,7 +355,12 @@ class _SlipPaidPanel extends StatelessWidget {
             const SizedBox(height: PgTokens.space4),
             PgPrimaryButton(
               label: isThai ? 'ดูสถานะงาน' : 'View live status',
-              onPressed: () => context.go('/booking/${booking!.id}/live'),
+              // Root on home then push live so back returns to the dashboard — a bare `go` made the
+              // live screen a lone root with nothing to pop (stranded the customer on a dead job).
+              onPressed: () {
+                context.go('/home/customer');
+                context.push('/booking/${booking!.id}/live');
+              },
             ),
           ],
         ],

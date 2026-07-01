@@ -160,6 +160,13 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
         title: header.title,
         subtitle: header.subtitle,
         showBack: true,
+        // FROZEN-BACK GUARD: the guard reaches this screen via `context.go('/guard/active/{id}')`
+        // (job-detail accept), which REPLACES the stack — so the default header back (`maybePop`)
+        // had nothing to pop and silently did nothing, stranding the guard on the live/terminal job
+        // until they force-closed the app. Pop when there is a stack; otherwise return to the guard
+        // home. (The in-body cancelled/awaiting/done bars keep their own explicit escapes too.)
+        onBack: () =>
+            context.canPop() ? context.pop() : context.go('/home/guard'),
         // Design: only the G4 Working header carries the LIVE indicator.
         live: stage == JobStage.working,
         background: header.background,

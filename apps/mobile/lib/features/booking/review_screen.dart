@@ -185,6 +185,12 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       appBar: PGuardHeader(
         title: isThai ? 'ให้คะแนน' : 'Rate',
         showBack: true,
+        // FROZEN-BACK GUARD (same class as live/active): this is a deep-linkable top-level route
+        // (`/booking/:id/review`) also reached via a pushReplacement chain (live → summary → review),
+        // so it can be the navigator ROOT with nothing for the default `maybePop` to pop. Fall back to
+        // the customer home so back is never a no-op. Submit already lands on home the same way.
+        onBack: () =>
+            context.canPop() ? context.pop() : context.go('/home/customer'),
         background: PgTokens.colorGreen800,
       ),
       body: SafeArea(

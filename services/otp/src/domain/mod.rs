@@ -11,7 +11,9 @@ mod lockout;
 mod otp;
 
 pub use captcha::generate_captcha;
-pub use lockout::{existing_lock_decision, lockout_decision, ActiveLock, LockoutDecision};
+pub use lockout::{
+    existing_lock_decision, lockout_decision, ActiveLock, LockoutDecision, BURST_WINDOW_SECS,
+};
 pub use otp::{
     format_otp_message, generate_otp, hashes_match, sha256_hex, to_international_format,
     validate_thai_phone,

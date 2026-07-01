@@ -351,7 +351,12 @@ class _PaidPanel extends ConsumerWidget {
           const SizedBox(height: PgTokens.space4),
           PgPrimaryButton(
             label: isThai ? 'ดูสถานะงาน' : 'View live status',
-            onPressed: () => context.go('/booking/${booking.id}/live'),
+            // Root on home then push live so back (header chevron + Android system back) returns to
+            // the dashboard — a bare `go` here made the live screen a lone root with nothing to pop.
+            onPressed: () {
+              context.go('/home/customer');
+              context.push('/booking/${booking.id}/live');
+            },
           ),
         ],
       ),
