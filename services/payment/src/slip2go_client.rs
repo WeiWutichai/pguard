@@ -58,6 +58,13 @@ pub struct VerifiedSlip {
 pub struct SlipConditions {
     /// Our receiving account number — `checkReceiver:[{accountNumber}]` (verify money went to us).
     pub receiver_account: String,
+    /// The Slip2Go account TYPE for our receiver, when known — sent with `accountNumber` so Slip2Go
+    /// matches it as the RIGHT kind of identifier. Our `RECEIVING_ACCOUNT` is a PromptPay PROXY (a
+    /// phone / national-id), NOT a bank account: WITHOUT a type Slip2Go treats the bare number as a
+    /// bank account and returns 200401 "Recipient Account Not Match" against the slip's PromptPay
+    /// receiver. A mobile proxy is `"02001"` (PromptPay MSISDN, per the Slip2Go docs). `None` → omit
+    /// `accountType` (let Slip2Go infer — the pre-fix behaviour).
+    pub receiver_account_type: Option<String>,
     /// The server-computed estimate as a plain string — `checkAmount:{type:"gte", amount}`
     /// (accept overpay, reject underpay).
     pub min_amount: String,
@@ -248,8 +255,19 @@ impl HttpSlipVerifier {
     /// Build the `payload` JSON Slip2Go's multipart expects: our receiver + a `gte` amount +
     /// `checkDuplicate`. `amount` is a STRING (no `0`/comma), per the API.
     fn payload_json(conditions: &SlipConditions) -> String {
+        // The receiver condition: the account number, plus its account TYPE when we know it. The
+        // type is REQUIRED for a PromptPay proxy (our RECEIVING_ACCOUNT) — without it Slip2Go treats
+        // the number as a bank account and 200401s against the slip's PromptPay receiver.
+        let mut receiver = serde_json::Map::new();
+        if let Some(account_type) = &conditions.receiver_account_type {
+            receiver.insert("accountType".into(), serde_json::json!(account_type));
+        }
+        receiver.insert(
+            "accountNumber".into(),
+            serde_json::json!(conditions.receiver_account),
+        );
         serde_json::json!({
-            "checkReceiver": [ { "accountNumber": conditions.receiver_account } ],
+            "checkReceiver": [ receiver ],
             "checkAmount": { "type": "gte", "amount": conditions.min_amount },
             "checkDuplicate": true,
         })
@@ -435,15 +453,32 @@ mod tests {
     #[test]
     fn payload_json_has_gte_amount_receiver_and_dedupe() {
         let conds = SlipConditions {
-            receiver_account: "1234567890".to_string(),
+            receiver_account: "0863208235".to_string(),
+            receiver_account_type: Some("02001".to_string()),
             min_amount: "2000.00".to_string(),
         };
         let v: serde_json::Value =
             serde_json::from_str(&HttpSlipVerifier::payload_json(&conds)).unwrap();
-        assert_eq!(v["checkReceiver"][0]["accountNumber"], "1234567890");
+        assert_eq!(v["checkReceiver"][0]["accountNumber"], "0863208235");
+        // The PromptPay MSISDN type is sent so Slip2Go matches the proxy, not a bank account.
+        assert_eq!(v["checkReceiver"][0]["accountType"], "02001");
         assert_eq!(v["checkAmount"]["type"], "gte");
         assert_eq!(v["checkAmount"]["amount"], "2000.00"); // STRING, not a number
         assert_eq!(v["checkDuplicate"], true);
+    }
+
+    #[test]
+    fn payload_json_omits_account_type_when_unknown() {
+        // No type → the accountType key is absent (Slip2Go infers); accountNumber still present.
+        let conds = SlipConditions {
+            receiver_account: "1234567890".to_string(),
+            receiver_account_type: None,
+            min_amount: "500.00".to_string(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&HttpSlipVerifier::payload_json(&conds)).unwrap();
+        assert_eq!(v["checkReceiver"][0]["accountNumber"], "1234567890");
+        assert!(v["checkReceiver"][0].get("accountType").is_none());
     }
 
     #[tokio::test]
@@ -457,6 +492,7 @@ mod tests {
         );
         let conds = SlipConditions {
             receiver_account: "1234567890".to_string(),
+            receiver_account_type: None,
             min_amount: "2000.00".to_string(),
         };
         let err = verifier

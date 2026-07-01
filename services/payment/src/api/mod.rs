@@ -197,8 +197,19 @@ pub async fn pay_with_slip<S: PaymentDeps>(
 
     // (4) verify with Slip2Go: our receiving account + a `gte` estimate + checkDuplicate. The
     //     amount is a plain string (no comma/0-pad), per the API.
+    // Our RECEIVING_ACCOUNT is a PromptPay PROXY, so tell Slip2Go the account TYPE — without it
+    // Slip2Go treats the bare number as a bank account and returns 200401 "Recipient Account Not
+    // Match" against the slip's PromptPay receiver (even for a correct payment via our QR). A mobile
+    // proxy is Slip2Go type "02001" (PromptPay MSISDN, per the docs). National-id PromptPay has no
+    // documented type code yet → None (omit; add it when a national-id receiver is configured).
+    let receiver_account_type =
+        match promptpay_domain::classify_proxy(&state.slip_config().receiving_account) {
+            Some(promptpay_domain::PromptPayProxy::Mobile) => Some("02001".to_string()),
+            _ => None,
+        };
     let conditions = SlipConditions {
         receiver_account: state.slip_config().receiving_account.clone(),
+        receiver_account_type,
         min_amount: estimate.to_string(),
     };
     let verified = state
