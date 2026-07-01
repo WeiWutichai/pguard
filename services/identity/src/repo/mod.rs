@@ -954,6 +954,72 @@ pub async fn change_password(
     Ok(new_version)
 }
 
+/// Reset the PIN of an EXISTING account BY PHONE — the "forgot PIN" flow, driven by a verified OTP
+/// token (the phone comes from that token, NEVER the request body). No current-PIN verify: phone
+/// ownership + the single-use token ARE the authorization. Stores the new Argon2 hash, bumps the
+/// revocation version, and revokes ALL refresh families in ONE tx — so a reset kills EVERY existing
+/// session (exactly like [`change_password`], minus the current-password check). Returns
+/// `(user_id, new_revocation_version)`, or `None` when no ACTIVE (non-deleted) account holds the
+/// phone — the caller maps `None` to a generic error (the OTP token already gates enumeration).
+pub async fn reset_password_by_phone(
+    db: &PgPool,
+    phone: &str,
+    new_pin_hash: &str,
+) -> Result<Option<(Uuid, i32)>, AppError> {
+    let mut tx = db.begin().await?;
+
+    // Lock the row + read the current revocation version. Only a live (active, non-deleted) account
+    // is resettable — a deactivated/erased account can never be re-credentialed by a stray token.
+    let row: Option<(Uuid, i32)> = sqlx::query_as(
+        "SELECT id, token_revocation_version FROM identity.users \
+         WHERE phone = $1 AND is_active = TRUE AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(phone)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (user_id, current_version) = match row {
+        Some(r) => r,
+        None => {
+            tx.rollback().await?;
+            return Ok(None);
+        }
+    };
+
+    // Hash the new pin_hash (CPU-bound → spawn_blocking) and store it, bumping the revocation version
+    // in the SAME write so the session kill below is consistent with the new credential.
+    let new_pin = new_pin_hash.to_string();
+    let new_hash = tokio::task::spawn_blocking(move || password::hash_secret(&new_pin))
+        .await
+        .map_err(|e| AppError::Internal(format!("hash task failed: {e}")))??;
+    let new_version = revocation::next_revocation_version(current_version);
+
+    sqlx::query(
+        "UPDATE identity.users \
+         SET password_hash = $2, token_revocation_version = $3, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(&new_hash)
+    .bind(new_version)
+    .execute(&mut *tx)
+    .await?;
+
+    // Revoke EVERY outstanding refresh family — a forgotten-PIN reset invalidates all prior sessions.
+    sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    tracing::info!(
+        new_version,
+        "pin reset by phone (all sessions force-revoked)"
+    );
+    Ok(Some((user_id, new_version)))
+}
+
 // ----- Internal name resolution (POST /internal/users/names) + admin search -----
 
 /// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }` (least-
@@ -2357,6 +2423,64 @@ mod tests {
             live_tokens_in_family(&pool, loc.family_id).await,
             0,
             "change_password revokes the user's other sessions"
+        );
+
+        cleanup_user(&pool, user_id).await;
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// reset_password_by_phone finds the account BY PHONE, stores the new hash WITHOUT a current-PIN
+    /// check, bumps trv, and revokes the user's refresh families; an unknown phone → None. DB-gated.
+    #[tokio::test]
+    async fn reset_password_by_phone_resets_and_revokes_sessions() {
+        let Some(pool) = gated_pool().await else {
+            eprintln!("SKIP: DATABASE_URL required for the reset-pin test");
+            return;
+        };
+        let current = "a".repeat(64);
+        let new = "b".repeat(64);
+        let pw_hash = password::hash_secret(&current).expect("hash");
+        let user_id = seed_user(&pool, "guard", &pw_hash, None).await;
+        let phone = phone_of(&pool, user_id).await;
+
+        // Open a refresh family so we can prove the reset revokes it.
+        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("login");
+        let (rid, _) = ids_of(&pool, &opaque).await;
+
+        // Unknown phone → None (resets nothing; the caller maps this to a generic error).
+        assert!(
+            reset_password_by_phone(&pool, "0000000000", &new)
+                .await
+                .expect("query")
+                .is_none(),
+            "an unknown phone resets nothing"
+        );
+
+        // Reset by the account's phone → Some; NO current PIN required; old rejected, new accepted.
+        let (reset_user, new_version) = reset_password_by_phone(&pool, &phone, &new)
+            .await
+            .expect("reset")
+            .expect("account found");
+        assert_eq!(reset_user, user_id);
+        assert!(new_version > 0, "trv bumped");
+        assert!(
+            verify_credentials(&pool, &phone, &current).await.is_err(),
+            "the OLD PIN is rejected after a reset"
+        );
+        assert!(
+            verify_credentials(&pool, &phone, &new).await.is_ok(),
+            "the NEW PIN is accepted"
+        );
+        let loc = find_refresh_by_rotation(&pool, rid).await.unwrap().unwrap();
+        assert_eq!(
+            live_tokens_in_family(&pool, loc.family_id).await,
+            0,
+            "reset_password_by_phone force-revokes all sessions"
         );
 
         cleanup_user(&pool, user_id).await;

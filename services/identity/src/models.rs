@@ -56,6 +56,17 @@ pub struct ChangePasswordRequest {
     pub new_pin_hash: String,
 }
 
+/// Reset a FORGOTTEN PIN (`POST /auth/reset-pin`). The phone is taken from the single-use
+/// `phone_verified_token` (otp-issued) — NEVER from the body — so a caller can only reset the PIN
+/// of a phone they just proved they own. `new_pin_hash` is the SHA-256 hex of the new PIN (same
+/// shape as register's `pin_hash`), Argon2'd server-side. Unlike `PUT /auth/password` this needs NO
+/// current PIN (the user forgot it): phone ownership + the single-use token ARE the authorization.
+#[derive(Debug, Deserialize)]
+pub struct ResetPinRequest {
+    pub phone_verified_token: String,
+    pub new_pin_hash: String,
+}
+
 /// Batch id → name resolution over the service-JWT'd `POST /internal/users/names`.
 #[derive(Debug, Deserialize)]
 pub struct ResolveUsersRequest {
