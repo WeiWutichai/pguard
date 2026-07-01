@@ -42,9 +42,13 @@ pub struct VerifiedSlip {
     pub trans_ref: String,
     /// The verified transfer amount (exact decimal). Asserted `>= estimate` (overpay accepted).
     pub amount: rust_decimal::Decimal,
-    /// The receiver account number Slip2Go read off the slip — asserted `== RECEIVING_ACCOUNT`.
-    /// `None` when the slip omitted/obscured it (treated as a receiver mismatch by the handler).
-    pub receiver_account: Option<String>,
+    /// EVERY receiver identifier Slip2Go read off the slip — the BANK account AND the PromptPay
+    /// PROXY (phone / national-id). Both are kept because `RECEIVING_ACCOUNT` may be a PromptPay
+    /// proxy (e.g. a phone) while the slip's bank account is a DIFFERENT number (and vice versa): a
+    /// payment via our PromptPay QR lands with the PROXY matching but the underlying bank account
+    /// not. The handler accepts the slip if ANY identifier matches `RECEIVING_ACCOUNT`. Empty when
+    /// the slip carried neither (treated as a receiver mismatch by the handler).
+    pub receiver_accounts: Vec<String>,
 }
 
 /// The verification conditions we send Slip2Go (the `payload`). The server runs these for us; we
@@ -151,14 +155,28 @@ struct SlipAccountRef {
 }
 
 impl SlipData {
-    /// Flatten the nested receiver account → the plain account number (bank account preferred,
-    /// else the PromptPay proxy id). `None` when the slip carried neither.
-    fn receiver_account(&self) -> Option<String> {
-        let acct = self.receiver.as_ref()?.account.as_ref()?;
-        acct.bank
-            .as_ref()
-            .and_then(|b| b.account.clone())
-            .or_else(|| acct.proxy.as_ref().and_then(|p| p.account.clone()))
+    /// EVERY receiver identifier on the slip — the bank account AND the PromptPay proxy id — with
+    /// blank/duplicate values dropped. A PromptPay QR payment lands with the proxy == our account
+    /// but the bank account a DIFFERENT number, so both are needed for the receiver match (the old
+    /// bank-preferred flatten silently rejected legitimate PromptPay payments). Empty when neither.
+    fn receiver_accounts(&self) -> Vec<String> {
+        let Some(acct) = self.receiver.as_ref().and_then(|r| r.account.as_ref()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for candidate in [
+            acct.bank.as_ref().and_then(|b| b.account.clone()),
+            acct.proxy.as_ref().and_then(|p| p.account.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let trimmed = candidate.trim().to_string();
+            if !trimmed.is_empty() && !out.contains(&trimmed) {
+                out.push(trimmed);
+            }
+        }
+        out
     }
 }
 
@@ -185,12 +203,12 @@ fn interpret(envelope: SlipEnvelope) -> Result<VerifiedSlip, AppError> {
     let data = envelope
         .data
         .ok_or_else(|| AppError::Internal("Slip verification returned no data".to_string()))?;
-    let receiver_account = data.receiver_account();
+    let receiver_accounts = data.receiver_accounts();
     Ok(VerifiedSlip {
         reference_id: data.reference_id,
         trans_ref: data.trans_ref,
         amount: data.amount,
-        receiver_account,
+        receiver_accounts,
     })
 }
 
@@ -327,12 +345,36 @@ mod tests {
         assert_eq!(v.reference_id, "11111111-1111-1111-1111-111111111111");
         assert_eq!(v.trans_ref, "0140315796");
         assert_eq!(v.amount, dec("2000.0"));
-        assert_eq!(v.receiver_account.as_deref(), Some("1234567890"));
+        assert_eq!(v.receiver_accounts, vec!["1234567890".to_string()]);
+    }
+
+    #[test]
+    fn interpret_success_keeps_both_bank_and_proxy() {
+        // A PromptPay QR payment: the slip carries BOTH the underlying bank account AND the proxy
+        // (phone). Both must survive so the handler can match RECEIVING_ACCOUNT against EITHER —
+        // the proxy is what equals our configured account; the bank account is a different number.
+        let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
+            "code": "200000",
+            "data": {
+                "referenceId": "r", "transRef": "t", "amount": 100,
+                "receiver": { "account": {
+                    "bank": { "account": "1234567890" },
+                    "proxy": { "type": "MSISDN", "account": "0863208235" }
+                } }
+            }
+        }))
+        .unwrap();
+        let v = interpret(envelope).unwrap();
+        assert_eq!(
+            v.receiver_accounts,
+            vec!["1234567890".to_string(), "0863208235".to_string()]
+        );
     }
 
     #[test]
     fn interpret_success_falls_back_to_proxy_account() {
-        // No bank account, but a PromptPay proxy id (e.g. a phone number) → use the proxy.
+        // No bank account, but a PromptPay proxy id (e.g. a phone number) → the proxy is the only
+        // receiver identifier.
         let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
             "code": "200000",
             "data": {
@@ -342,7 +384,7 @@ mod tests {
         }))
         .unwrap();
         let v = interpret(envelope).unwrap();
-        assert_eq!(v.receiver_account.as_deref(), Some("0812345678"));
+        assert_eq!(v.receiver_accounts, vec!["0812345678".to_string()]);
     }
 
     #[test]
@@ -387,7 +429,7 @@ mod tests {
         }))
         .unwrap();
         let v = interpret(envelope).unwrap();
-        assert!(v.receiver_account.is_none());
+        assert!(v.receiver_accounts.is_empty());
     }
 
     #[test]

@@ -217,12 +217,16 @@ pub async fn pay_with_slip<S: PaymentDeps>(
             ),
         });
     }
-    //     receiver == OUR account (reject a slip paid to any other account / a missing receiver).
+    //     receiver == OUR account. A slip carries MORE than one receiver identifier — the bank
+    //     account AND the PromptPay proxy (phone/national-id). A payment via OUR PromptPay QR
+    //     matches on the PROXY (== RECEIVING_ACCOUNT) while the underlying bank account is a
+    //     different number, so accept the slip if ANY identifier matches; reject a slip paid to a
+    //     wholly different account, or one with no receiver at all.
+    let receiving = &state.slip_config().receiving_account;
     let receiver_ok = verified
-        .receiver_account
-        .as_deref()
-        .map(|r| accounts_match(r, &state.slip_config().receiving_account))
-        .unwrap_or(false);
+        .receiver_accounts
+        .iter()
+        .any(|r| accounts_match(r, receiving));
     if !receiver_ok {
         return Err(AppError::ConflictCode {
             code: SLIP_WRONG_RECEIVER_CODE,
@@ -735,7 +739,7 @@ mod tests {
             reference_id: Uuid::new_v4().to_string(),
             trans_ref: trans_ref.to_string(),
             amount: "2000.00".parse().unwrap(),
-            receiver_account: Some("1234567890".to_string()),
+            receiver_accounts: vec!["1234567890".to_string()],
         }
     }
 
@@ -1089,7 +1093,7 @@ mod tests {
         // receiver check rejects with SLIP_WRONG_RECEIVER (before any S3/DB write).
         let me = Uuid::new_v4();
         let mut v = sample_verified("tr-wrong");
-        v.receiver_account = Some("9999999999".to_string());
+        v.receiver_accounts = vec!["9999999999".to_string()];
         let Some((status, code)) = run_slip(
             Some(payable_booking(me)),
             StubVerifier::ok(v),
@@ -1112,7 +1116,7 @@ mod tests {
         // the money came to us) → SLIP_WRONG_RECEIVER.
         let me = Uuid::new_v4();
         let mut v = sample_verified("tr-noreceiver");
-        v.receiver_account = None;
+        v.receiver_accounts = Vec::new();
         let Some((status, code)) = run_slip(
             Some(payable_booking(me)),
             StubVerifier::ok(v),
@@ -1127,6 +1131,40 @@ mod tests {
         };
         assert_eq!(status, StatusCode::CONFLICT);
         assert_eq!(code, SLIP_WRONG_RECEIVER_CODE);
+    }
+
+    #[tokio::test]
+    async fn slip_promptpay_proxy_match_passes_receiver_gate() {
+        // THE PromptPay case (RECEIVING_ACCOUNT is a phone/proxy): the slip carries a bank account
+        // that does NOT equal our account PLUS the proxy that DOES. The bank-only match would have
+        // rejected this legitimate payment as SLIP_WRONG_RECEIVER; matching ANY identifier lets it
+        // through. Proven by reaching the settle (500 from the dead S3/DB), NOT a 409 wrong-receiver.
+        let me = Uuid::new_v4();
+        let mut v = sample_verified("tr-proxy");
+        // slip2go_config()'s receiving_account is `1234567890`; the bank account differs, the proxy
+        // matches — the fixed receiver gate accepts on the proxy.
+        v.receiver_accounts = vec!["9999999999".to_string(), "1234567890".to_string()];
+        let Some((status, code)) = run_slip(
+            Some(payable_booking(me)),
+            StubVerifier::ok(v),
+            slip2go_config(),
+            Some(&customer_token(me, "customer")),
+            Uuid::new_v4(),
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        assert_ne!(
+            code, SLIP_WRONG_RECEIVER_CODE,
+            "a proxy match must NOT be rejected as wrong-receiver"
+        );
+        assert_eq!(
+            status,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "receiver gate passed on the proxy → flow reached the S3/DB settle"
+        );
     }
 
     #[tokio::test]
