@@ -15,6 +15,7 @@ import '../features/chat/chat_screen.dart';
 import '../features/auth/phone_entry_screen.dart';
 import '../features/auth/pin_entry_screen.dart';
 import '../features/auth/pin_lock_screen.dart';
+import '../features/auth/returning_login_screen.dart';
 import '../features/auth/registration/customer_registration_screen.dart';
 import '../features/auth/registration/guard_registration_screen.dart';
 import '../features/auth/registration/registration_pending_screen.dart';
@@ -92,6 +93,10 @@ GoRouter appRouter(AppRouterRef ref) {
           path: '/auth/pending',
           builder: (_, __) => const RegistrationPendingScreen()),
       GoRoute(path: '/lock', builder: (_, __) => const PinLockScreen()),
+      // Returning-user PIN login (SessionStatus.returning): a remembered device (phone + local PIN,
+      // no tokens) re-authenticates by PIN instead of redoing OTP + a new PIN.
+      GoRoute(
+          path: '/login/pin', builder: (_, __) => const ReturningLoginScreen()),
       // System screens: location-permission rationale + denied recovery, and Help/FAQ.
       // `forGuard` (via extra) defaults the rationale's scope radio (guards → Always).
       GoRoute(
@@ -300,6 +305,11 @@ String? sessionRedirect(SessionState session, String loc) {
       return loc.startsWith('/auth') ? null : '/auth/pending';
     case SessionStatus.locked:
       return loc == '/lock' ? null : '/lock';
+    case SessionStatus.returning:
+      // Remembered device (login phone + local PIN, but NO tokens): PIN login mints a fresh token
+      // pair. Allow the PIN-login screen AND the /auth/* OTP flow (reset-PIN / sign in as a
+      // different account) to run from here; bounce anything else to the PIN-login screen.
+      return (loc == '/login/pin' || loc.startsWith('/auth')) ? null : '/login/pin';
     case SessionStatus.authenticated:
       final user = session.user;
       // The mode picker (`/auth/role`) is reachable WHILE authenticated — it's how an account
@@ -320,7 +330,10 @@ String? sessionRedirect(SessionState session, String loc) {
           loc == '/auth/pending') {
         return null;
       }
-      if (loc == '/splash' || loc == '/lock' || loc.startsWith('/auth')) {
+      if (loc == '/splash' ||
+          loc == '/lock' ||
+          loc == '/login/pin' ||
+          loc.startsWith('/auth')) {
         return user?.hasMultipleRoles == true ? '/auth/role' : _homeFor(user);
       }
       return null;

@@ -28,6 +28,14 @@ enum SessionStatus {
   /// Session exists but a PIN gate must be cleared first (cold start).
   locked,
 
+  /// Signed OUT but the device still REMEMBERS the account (a local PIN + the login phone), e.g.
+  /// after a normal logout. There are NO tokens — the user re-authenticates by entering their PIN
+  /// (mints a fresh token pair via `POST /auth/login`), NOT by redoing OTP + a brand-new PIN. This
+  /// is distinct from [locked] (which presumes tokens exist and unlocks OFFLINE) and from
+  /// [unauthenticated] (a truly fresh device with no remembered account). "Use a different account"
+  /// / "forgot PIN" drop from here to [unauthenticated].
+  returning,
+
   /// Fully signed in — route to the role dashboard.
   authenticated,
 }
@@ -77,8 +85,18 @@ class Session extends _$Session {
       }
       final onboarding = await prefs.getString(kRegOnboardingStageKey);
       if (_disposed || state.status != SessionStatus.unknown) return;
-      state = SessionState(onboarding != null
-          ? SessionStatus.onboardingRole
+      if (onboarding != null) {
+        state = const SessionState(SessionStatus.onboardingRole);
+        return;
+      }
+      // A REMEMBERED device (local PIN + login phone, but no tokens — logged out earlier) resumes at
+      // the PIN-login screen (mint fresh tokens), NOT the full OTP registration. A truly fresh device
+      // (no PIN / no phone) → unauthenticated.
+      final hasPin = await store.hasPin();
+      final phone = hasPin ? await store.readPhone() : null;
+      if (_disposed || state.status != SessionStatus.unknown) return;
+      state = SessionState((hasPin && phone != null)
+          ? SessionStatus.returning
           : SessionStatus.unauthenticated);
       return;
     }
@@ -150,6 +168,12 @@ class Session extends _$Session {
   void onOnboardingExpired() =>
       state = const SessionState(SessionStatus.unauthenticated);
 
+  /// Leave the current gated screen (locked / returning) to run the OTP-based PIN RESET flow, which
+  /// lives under /auth/*. `returning` permits /auth/* (and /login/pin), so the captcha → OTP → new-PIN
+  /// reset can run; it ends in a fresh login → authenticated. Safe from `locked` too — a forgotten
+  /// PIN can't unlock offline anyway, and the reset mints new tokens that supersede the stored ones.
+  void beginPinReset() => state = const SessionState(SessionStatus.returning);
+
   /// Re-lock without dropping tokens (e.g., on app resume).
   void lock() {
     if (state.status == SessionStatus.authenticated) {
@@ -157,8 +181,25 @@ class Session extends _$Session {
     }
   }
 
-  Future<void> logout() async {
-    await ref.read(appStoreProvider).clearSession();
+  /// Sign out. By DEFAULT the device is REMEMBERED: the login phone is kept (re-saved — clearSession
+  /// drops it) and the local PIN is left in place, so the session lands on [SessionStatus.returning]
+  /// → the user gets back in with just their PIN (no OTP, no new PIN). Pass [forgetDevice] = true for
+  /// a FULL sign-out ("use a different account" / a forgotten PIN) — the phone is dropped and the
+  /// local PIN wiped, so the device is a fresh [SessionStatus.unauthenticated] → the OTP flow.
+  Future<void> logout({bool forgetDevice = false}) async {
+    final store = ref.read(appStoreProvider);
+    // Capture the login identifier BEFORE clearing storage — a remembered device re-authenticates
+    // by PIN, which needs the phone.
+    final phone = await store.readPhone();
+    final hasPin = !forgetDevice && await store.hasPin();
+    if (forgetDevice) {
+      // Full teardown: tokens + phone + the local PIN (hash/salt/lockout) + biometric flag — a truly
+      // fresh device, so the remembered-device classification can't re-trigger.
+      await store.wipe();
+    } else {
+      // Keep the local PIN so the remembered device can re-login by PIN.
+      await store.clearSession();
+    }
     // Also clear any pending-registration prefs so a stale flag can't strand a cold start on the
     // pending screen after logout (independent of which login path ran). clearSession() already
     // drops the secure-storage registration tokens.
@@ -176,7 +217,14 @@ class Session extends _$Session {
     // phone-verified token) here — otherwise a next registration would start with the previous
     // user's phone/token lingering.
     ref.read(authControllerProvider.notifier).reset();
-    state = const SessionState(SessionStatus.unauthenticated);
+    if (hasPin && phone != null) {
+      // Remembered device: re-persist the phone (clearSession dropped it) and land on the PIN-login
+      // screen. The local PIN is untouched, so the returning login can proceed offline-then-online.
+      await store.savePhone(phone);
+      state = const SessionState(SessionStatus.returning);
+    } else {
+      state = const SessionState(SessionStatus.unauthenticated);
+    }
   }
 
   /// Persist the enrolled roles as a comma-separated label list (non-sensitive → prefs).

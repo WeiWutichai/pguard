@@ -25,6 +25,7 @@ class AuthFlowState {
     this.otpSentAt,
     this.otpRequestCount = 0,
     this.phoneVerifiedToken,
+    this.reset = false,
     this.busy = false,
     this.error,
   });
@@ -33,6 +34,11 @@ class AuthFlowState {
   final String phone;
   final OtpChallenge? challenge;
   final DateTime? otpSentAt;
+
+  /// True when this OTP run is a FORGOT-PIN RESET (started via [AuthController.startReset]), not a
+  /// registration: the phone is pre-filled and, after OTP verify, the PIN screen exchanges the
+  /// verified token for a NEW PIN via `POST /auth/reset-pin` instead of registering a new account.
+  final bool reset;
 
   /// How many OTP SMS have been requested this flow (display state for the design's
   /// "พยายาม 1/5 / attempt 1/5" resend counter — the server enforces the real limit).
@@ -51,6 +57,7 @@ class AuthFlowState {
     DateTime? otpSentAt,
     int? otpRequestCount,
     String? phoneVerifiedToken,
+    bool? reset,
     bool? busy,
     Object? error = _unset,
   }) {
@@ -61,6 +68,7 @@ class AuthFlowState {
       otpSentAt: otpSentAt ?? this.otpSentAt,
       otpRequestCount: otpRequestCount ?? this.otpRequestCount,
       phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
+      reset: reset ?? this.reset,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
     );
@@ -231,35 +239,71 @@ class AuthController extends _$AuthController {
   /// state. On success, persist the token pair + phone + local PIN and flip the session to
   /// authenticated (router lands on the role dashboard).
   Future<bool> loginWithPin({required String phone, required String pin}) =>
-      _guard(() async {
-        final data =
-            await ref.read(pguardApiProvider).post('/auth/login', data: {
-          'identifier': phone,
-          'password': const PinHasher().pinHash(pin),
+      _guard(() => _performLogin(phone: phone, pin: pin));
+
+  /// The login CORE (no [_guard] — callers wrap it). POSTs `/auth/login`, persists the token pair +
+  /// phone + local PIN, and flips the session to authenticated. Shared by [loginWithPin] and
+  /// [resetPin] (which logs in with the just-reset PIN) so the persistence + session flip never drift.
+  Future<bool> _performLogin(
+      {required String phone, required String pin}) async {
+    final data = await ref.read(pguardApiProvider).post('/auth/login', data: {
+      'identifier': phone,
+      'password': const PinHasher().pinHash(pin),
+    });
+    final map = data as Map<String, dynamic>;
+    final tokens = TokenPair.fromJson(map);
+    final store = ref.read(appStoreProvider);
+    await store.saveTokens(
+        access: tokens.accessToken, refresh: tokens.refreshToken);
+    // Persist the verified phone (PII, secure storage) so the profile can show it read-only
+    // — it is the login identifier and is not returned by any API.
+    await store.savePhone(phone);
+    // Persist the PIN locally too, so returning cold starts unlock OFFLINE via the lock
+    // screen (PinService) without a round-trip. The PIN/hash never leaves the device.
+    await ref.read(pinServiceProvider).setup(pin);
+    // Multi-role (Option A): the login `data` carries `available_roles` (the account's approved
+    // roles). A single-role user gets `[their_role]`; a dual-role user gets both so the router
+    // can land on the mode picker. The access token's `role` claim is the ACTIVE role.
+    final activeRole = Jwt.role(tokens.accessToken) ?? 'customer';
+    final available = AuthUser.rolesFromJson(map['available_roles']);
+    final user = AuthUser(
+      userId: Jwt.subject(tokens.accessToken) ?? '',
+      role: activeRole,
+      roles: available.isEmpty ? [activeRole] : available,
+    );
+    ref.read(sessionProvider.notifier).onLoggedIn(user);
+    return true;
+  }
+
+  /// Start a FORGOT-PIN RESET run for a known [phone] (the remembered device's number): reset the
+  /// flow to the phone step with [AuthFlowState.reset] set, so the SAME captcha → OTP screens run
+  /// but the PIN screen resets the PIN (via [resetPin]) instead of registering. The caller navigates
+  /// into the captcha step and moves the session to a state that permits the /auth/* flow.
+  void startReset(String phone) =>
+      state = const AuthFlowState().copyWith(phone: phone, reset: true);
+
+  /// `POST /auth/reset-pin` — the forgot-PIN reset. Exchanges the single-use `phone_verified_token`
+  /// (from the just-completed OTP verify) for the NEW PIN, then logs in with it so the session flips
+  /// to authenticated (the router lands on the dashboard). One [_guard]-wrapped op: the nested
+  /// [_performLogin] shares this guard (never a second in-flight call).
+  Future<bool> resetPin({required String newPin}) => _guard(() async {
+        final token = state.phoneVerifiedToken;
+        final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+        if (token == null) {
+          state = state.copyWith(
+              error: isThai
+                  ? 'การยืนยันหมดอายุ กรุณาขอ OTP ใหม่'
+                  : 'Verification expired — request a new OTP');
+          return false;
+        }
+        final phone = normalizeThaiPhone(state.phone) ?? state.phone;
+        await ref.read(pguardApiProvider).post('/auth/reset-pin', data: {
+          'phone_verified_token': token,
+          'new_pin_hash': const PinHasher().pinHash(newPin),
         });
-        final map = data as Map<String, dynamic>;
-        final tokens = TokenPair.fromJson(map);
-        final store = ref.read(appStoreProvider);
-        await store.saveTokens(
-            access: tokens.accessToken, refresh: tokens.refreshToken);
-        // Persist the verified phone (PII, secure storage) so the profile can show it read-only
-        // — it is the login identifier and is not returned by any API.
-        await store.savePhone(phone);
-        // Persist the PIN locally too, so returning cold starts unlock OFFLINE via the lock
-        // screen (PinService) without a round-trip. The PIN/hash never leaves the device.
-        await ref.read(pinServiceProvider).setup(pin);
-        // Multi-role (Option A): the login `data` carries `available_roles` (the account's approved
-        // roles). A single-role user gets `[their_role]`; a dual-role user gets both so the router
-        // can land on the mode picker. The access token's `role` claim is the ACTIVE role.
-        final activeRole = Jwt.role(tokens.accessToken) ?? 'customer';
-        final available = AuthUser.rolesFromJson(map['available_roles']);
-        final user = AuthUser(
-          userId: Jwt.subject(tokens.accessToken) ?? '',
-          role: activeRole,
-          roles: available.isEmpty ? [activeRole] : available,
-        );
-        ref.read(sessionProvider.notifier).onLoggedIn(user);
-        return true;
+        // The token is now consumed server-side; log in with the new PIN to mint tokens + flip
+        // the session (reuses the exact persistence + session-flip path as a normal login).
+        return _performLogin(phone: phone, pin: newPin);
       });
 
   Future<bool> _guard(Future<bool> Function() op) async {

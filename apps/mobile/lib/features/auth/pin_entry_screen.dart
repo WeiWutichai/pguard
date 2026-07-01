@@ -61,6 +61,28 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
       return;
     }
     final auth = ref.read(authControllerProvider);
+    // FORGOT-PIN RESET: exchange the just-verified OTP token for THIS new PIN (POST /auth/reset-pin)
+    // then log in — NOT a registration (no role / profile step). On success the session flips to
+    // authenticated and the router redirects; on failure surface the reason and let the user retry.
+    if (auth.reset) {
+      final newPin = _pin;
+      final ok =
+          await ref.read(authControllerProvider.notifier).resetPin(newPin: newPin);
+      if (!mounted) return;
+      if (!ok) {
+        final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(ref.read(authControllerProvider).error ??
+              (isThai ? 'ตั้ง PIN ใหม่ไม่สำเร็จ' : 'Could not reset the PIN')),
+        ));
+        setState(() {
+          _pin = '';
+          _firstPin = null;
+          _mismatch = false;
+        });
+      }
+      return;
+    }
     // Persist the resume state (phone + raw PIN + marker) BEFORE navigating, so a kill at the
     // role screen resumes here instead of bouncing to phone entry. Awaited (a few keychain
     // writes) so the marker is durable before the user can act.
@@ -102,6 +124,7 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final isReset = ref.watch(authControllerProvider).reset;
     return PopScope(
       canPop: !_confirming,
       onPopInvokedWithResult: (didPop, _) {
@@ -126,7 +149,9 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
                       ? (isThai
                           ? 'ยืนยันรหัส PIN อีกครั้ง'
                           : 'Re-enter your PIN')
-                      : 'ตั้งรหัส PIN 6 หลัก',
+                      : isReset
+                          ? (isThai ? 'ตั้งรหัส PIN ใหม่' : 'Set a new PIN')
+                          : 'ตั้งรหัส PIN 6 หลัก',
                   subtitle: _confirming
                       ? (isThai ? 'เพื่อความถูกต้อง' : 'To confirm it matches')
                       : (isThai

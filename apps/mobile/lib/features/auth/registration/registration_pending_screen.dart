@@ -3,10 +3,12 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
+import '../../../core/controllers/session_controller.dart';
 import '../../../core/models/registration.dart';
 import '../../../core/providers.dart';
 import '../../../widgets/auth_head.dart';
@@ -61,15 +63,24 @@ class _RegistrationPendingScreenState
         ? await ctrl.checkStatus()
         : await _checkWithReenteredPin(ctrl);
     if (!mounted || approved == null) return;
-    // approved == true → session is now authenticated; the router redirects automatically.
-    if (!approved) {
-      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text(
-          isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
-        ),
-      ));
+    if (approved) {
+      // The login just flipped the session to authenticated — but the router's authenticated
+      // branch KEEPS `/auth/pending` in place (a carve-out for the add-role background flow), so it
+      // won't auto-redirect a first-role approval off this screen (the user otherwise had to
+      // force-close + reopen the app to get in). Navigate explicitly to the SAME destination the
+      // router picks for a fresh login (mode picker for multi-role, else the role home).
+      final user = ref.read(sessionProvider).user;
+      context.go(user?.hasMultipleRoles == true
+          ? '/auth/role'
+          : (user?.isGuard == true ? '/home/guard' : '/home/customer'));
+      return;
     }
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(
+        isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
+      ),
+    ));
   }
 
   /// Cold start: the in-memory PIN is gone, so re-enter it to attempt the approved-login.
