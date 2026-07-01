@@ -139,8 +139,30 @@ pub async fn request(
             .await?;
     }
 
-    // 6. Tiered-lockout decision (PURE).
-    match domain::lockout_decision(daily_count, state.otp_config.daily_otp_limit as i64) {
+    // 5b. Short-window BURST counter (rolling BURST_WINDOW_SECS) — SEPARATE from the 24h daily cap
+    //     above. The burst tier keys off THIS count, not the daily total: keying it on the daily
+    //     count made a phone re-trip the 10-min lock on EVERY request for the rest of the day after
+    //     just BURST_THRESHOLD requests (stuck behind a "try again in 10 minutes" message that never
+    //     cleared). The short window self-resets, so a legit user recovers after one cool-off while
+    //     the 24h daily cap still bounds sustained abuse. Same "set EXPIRE only when TTL < 0" rule
+    //     so the window is NOT refreshed by each INCR.
+    let burst_key = format!("otp_burst:{phone}");
+    let burst_count: i64 = conn.incr(&burst_key, 1).await?;
+    let burst_ttl: i64 = redis::cmd("TTL")
+        .arg(&burst_key)
+        .query_async(&mut conn)
+        .await?;
+    if burst_ttl < 0 {
+        conn.expire::<_, ()>(&burst_key, domain::BURST_WINDOW_SECS as i64)
+            .await?;
+    }
+
+    // 6. Tiered-lockout decision (PURE). Burst trips on the short-window count; admin on the daily.
+    match domain::lockout_decision(
+        burst_count,
+        daily_count,
+        state.otp_config.daily_otp_limit as i64,
+    ) {
         LockoutDecision::Allow => {}
         LockoutDecision::TripAdminLock { lock_secs } => {
             conn.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await?;
@@ -175,6 +197,7 @@ pub async fn request(
         let compensation: Result<(), redis::RedisError> = redis::pipe()
             .atomic()
             .decr(&daily_key, 1)
+            .decr(&burst_key, 1)
             .del(&rate_key)
             .query_async(&mut conn)
             .await;
@@ -241,6 +264,7 @@ pub async fn verify(
     let mut conn = state.redis_conn.clone();
     let _: Result<(), redis::RedisError> = redis::cmd("DEL")
         .arg(format!("otp_daily:{phone}"))
+        .arg(format!("otp_burst:{phone}"))
         .arg(format!("otp_lock:{phone}"))
         .query_async(&mut conn)
         .await;
@@ -426,10 +450,12 @@ mod tests {
         let daily_key = format!("otp_daily:{phone}");
         let rate_key = format!("otp_rate:{phone}");
         let lock_key = format!("otp_lock:{phone}");
+        let burst_key = format!("otp_burst:{phone}");
         let _: Result<(), redis::RedisError> = redis::cmd("DEL")
             .arg(&daily_key)
             .arg(&rate_key)
             .arg(&lock_key)
+            .arg(&burst_key)
             .query_async(&mut conn)
             .await;
 
@@ -481,12 +507,18 @@ mod tests {
             !rate_exists,
             "otp_rate cooldown must be cleared after SMS failure"
         );
+        let burst: Option<i64> = conn.get(&burst_key).await.unwrap();
+        assert!(
+            burst.unwrap_or(0) <= 0,
+            "otp_burst must be reverted after SMS failure, got {burst:?}"
+        );
 
         // Cleanup.
         let _: Result<(), redis::RedisError> = redis::cmd("DEL")
             .arg(&daily_key)
             .arg(&rate_key)
             .arg(&lock_key)
+            .arg(&burst_key)
             .query_async(&mut conn)
             .await;
     }

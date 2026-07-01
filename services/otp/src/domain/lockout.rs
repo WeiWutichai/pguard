@@ -6,14 +6,20 @@
 //! Two independent decisions:
 //!   - [`existing_lock_decision`] — given the TTL of an already-set `otp_lock:{phone}`,
 //!     which tier (burst vs admin-contact) is active, or none.
-//!   - [`lockout_decision`] — given the daily request count after INCR, whether to allow
-//!     the request, or trip a new burst/admin lock.
+//!   - [`lockout_decision`] — given the short-window burst count AND the 24h daily count after
+//!     INCR, whether to allow the request, or trip a new burst/admin lock.
 
-/// Below this many daily requests no lock trips; at this count the burst lock trips.
+/// Below this many requests IN THE BURST WINDOW no burst lock trips; at this count it trips.
 pub const BURST_THRESHOLD: i64 = 3;
 /// Burst lock duration (10 min). Also the TTL discriminator: a live lock with TTL
 /// ≤ this is the burst tier; longer is the admin-contact tier.
 pub const BURST_LOCK_SECS: u64 = 600;
+/// The rolling window (10 min) over which burst requests are counted — SEPARATE from the 24h
+/// daily counter. Keying the burst trip on the 24h count made a phone re-trip the 10-min lock on
+/// EVERY request for the rest of the day after just [`BURST_THRESHOLD`] requests (a day-long
+/// lockout hidden behind a "try again in 10 minutes" message). A short rolling window self-resets,
+/// so a legit user recovers after one cool-off while the daily cap still bounds sustained abuse.
+pub const BURST_WINDOW_SECS: u64 = 600;
 /// Admin-contact lock duration (24h) — once tripped, no further SMS is sent.
 pub const ADMIN_LOCK_SECS: u64 = 86_400;
 
@@ -54,14 +60,18 @@ pub enum LockoutDecision {
     TripBurstLock { lock_secs: u64 },
 }
 
-/// Decide what to do for a request whose post-INCR daily count is `daily_count`, against
-/// the configured `daily_limit`. Admin tier is checked first so we don't waste SMS quota.
-pub fn lockout_decision(daily_count: i64, daily_limit: i64) -> LockoutDecision {
+/// Decide what to do for a request, given the post-INCR `burst_count` over the last
+/// [`BURST_WINDOW_SECS`] and the post-INCR `daily_count` over 24h, against the configured
+/// `daily_limit`. Admin tier is checked FIRST (against the daily total) so we don't waste SMS
+/// quota; the burst tier is driven by the SHORT-window count — NOT the daily total — so it
+/// self-resets and never becomes a day-long lock. Passing the daily count as the burst count
+/// (the old signature) is exactly the bug this fix removes.
+pub fn lockout_decision(burst_count: i64, daily_count: i64, daily_limit: i64) -> LockoutDecision {
     if daily_count >= daily_limit {
         LockoutDecision::TripAdminLock {
             lock_secs: ADMIN_LOCK_SECS,
         }
-    } else if daily_count >= BURST_THRESHOLD {
+    } else if burst_count >= BURST_THRESHOLD {
         LockoutDecision::TripBurstLock {
             lock_secs: BURST_LOCK_SECS,
         }
@@ -120,14 +130,16 @@ mod tests {
 
     #[test]
     fn allows_below_burst_threshold() {
-        assert_eq!(lockout_decision(1, 10), LockoutDecision::Allow);
-        assert_eq!(lockout_decision(2, 10), LockoutDecision::Allow);
+        // (burst_count, daily_count, daily_limit)
+        assert_eq!(lockout_decision(1, 1, 10), LockoutDecision::Allow);
+        assert_eq!(lockout_decision(2, 2, 10), LockoutDecision::Allow);
     }
 
     #[test]
     fn trips_burst_at_threshold() {
+        // Burst trips on the SHORT-WINDOW count crossing the threshold (daily still below limit).
         assert_eq!(
-            lockout_decision(BURST_THRESHOLD, 10),
+            lockout_decision(BURST_THRESHOLD, BURST_THRESHOLD, 10),
             LockoutDecision::TripBurstLock {
                 lock_secs: BURST_LOCK_SECS
             }
@@ -135,9 +147,20 @@ mod tests {
     }
 
     #[test]
+    fn burst_does_not_trip_from_the_daily_count_alone() {
+        // THE regression: a high 24h daily count with a FRESH burst window (count 1, e.g. the first
+        // request after a burst lock expired) must be ALLOWED — the old code keyed the burst trip
+        // on the daily count, so daily=9 re-tripped the 10-min lock forever, locking the phone for
+        // the whole day. Now only the short-window count trips burst.
+        assert_eq!(lockout_decision(1, 9, 10), LockoutDecision::Allow);
+        assert_eq!(lockout_decision(2, 8, 10), LockoutDecision::Allow);
+    }
+
+    #[test]
     fn trips_admin_at_daily_limit() {
+        // Admin tier is the 24h total hitting the limit — regardless of the burst window (0 here).
         assert_eq!(
-            lockout_decision(10, 10),
+            lockout_decision(0, 10, 10),
             LockoutDecision::TripAdminLock {
                 lock_secs: ADMIN_LOCK_SECS
             }
@@ -148,7 +171,7 @@ mod tests {
     fn admin_tier_takes_precedence_over_burst() {
         // Both thresholds crossed: admin tier wins (don't waste SMS quota).
         assert_eq!(
-            lockout_decision(100, 10),
+            lockout_decision(100, 100, 10),
             LockoutDecision::TripAdminLock {
                 lock_secs: ADMIN_LOCK_SECS
             }
