@@ -11,8 +11,8 @@ use uuid::Uuid;
 use shared::auth::{
     build_clear_cookie, build_cookie, decode_jwt_with_key, decode_phone_verify_token,
     decode_profile_token, encode_jwt_with_key, encode_profile_token, extract_cookie_value,
-    AuthUser, ACCESS_TOKEN_COOKIE, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
-    REFRESH_TOKEN_COOKIE,
+    phone_verify_jti_key, AuthUser, ACCESS_TOKEN_COOKIE, PHONE_VERIFY_PURPOSE, PIN_RESET_PURPOSE,
+    PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD, REFRESH_TOKEN_COOKIE,
 };
 use shared::error::AppError;
 use shared::models::ApiResponse;
@@ -250,9 +250,13 @@ pub async fn register<S: RegisterDeps>(
     registration::validate_pin_hash(&req.pin_hash)?;
 
     // 2) Verify the phone-verified token (signature + purpose + expiry). The phone comes
-    //    from the token, never from the body.
-    let (phone, jti) =
-        decode_phone_verify_token(&req.phone_verified_token, state.jwt_decoding_key())?;
+    //    from the token, never from the body. Register accepts ONLY the `phone_verify`
+    //    purpose — a token minted for the forgot-PIN reset flow is rejected here.
+    let (phone, jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        state.jwt_decoding_key(),
+        PHONE_VERIFY_PURPOSE,
+    )?;
 
     // 3) Defensive re-validation/normalization of the token's phone (otp validated it at
     //    issuance; identity never trusts a value off the wire). Done BEFORE the GETDEL so a
@@ -276,7 +280,7 @@ pub async fn register<S: RegisterDeps>(
     //    UPSERT failure leaves the client free to retry with the same token.
     let mut redis = state.redis();
     let jti_status: Option<String> = redis::cmd("GETDEL")
-        .arg(format!("phone_verify_jti:{jti}"))
+        .arg(phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti))
         .query_async(&mut redis)
         .await?;
     if jti_status.as_deref() != Some("valid") {
@@ -679,9 +683,14 @@ pub async fn reset_pin(
     registration::validate_pin_hash(&req.new_pin_hash)?;
 
     // 2) Verify the phone-verified token (signature + purpose + expiry). The phone is FROM the token,
-    //    never the body — this is the whole authorization for the reset.
-    let (phone, jti) =
-        decode_phone_verify_token(&req.phone_verified_token, &state.jwt_config.decoding_key)?;
+    //    never the body — this is the whole authorization for the reset. Only the `pin_reset`
+    //    purpose is accepted — a register-flow (`phone_verify`) token can NEVER drive a
+    //    credential reset (purpose isolation on top of single-use).
+    let (phone, jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        &state.jwt_config.decoding_key,
+        PIN_RESET_PURPOSE,
+    )?;
     let phone = registration::validate_thai_phone(&phone)?;
 
     // 3) Claim the single-use jti FIRST (GETDEL). Unlike register (whose account UPSERT is
@@ -690,7 +699,7 @@ pub async fn reset_pin(
     //    a second reset. A missing "valid" marker → reject before touching the account.
     let mut redis = state.redis_conn.clone();
     let jti_status: Option<String> = redis::cmd("GETDEL")
-        .arg(format!("phone_verify_jti:{jti}"))
+        .arg(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti))
         .query_async(&mut redis)
         .await?;
     if jti_status.as_deref() != Some("valid") {
@@ -1814,7 +1823,8 @@ mod tests {
         };
         let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
         // Valid signature + purpose, but the jti is NOT in Redis → GETDEL returns nil.
-        let (token, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (token, _jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let res = post_register(app, register_body(&token, "guard")).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
@@ -1839,7 +1849,8 @@ mod tests {
             return;
         };
         let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
-        let (tok, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (tok, _jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let res = app.oneshot(post_reissue(&tok, "customer")).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
@@ -1888,10 +1899,15 @@ mod tests {
                 .take(9)
                 .collect::<String>()
         );
-        let (token, jti) = encode_phone_verify_token(&phone, &ek, 10).unwrap();
+        let (token, jti) =
+            encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         // Store the jti "valid" so the single-use GETDEL succeeds.
         let _: () = redis
-            .set_ex(format!("phone_verify_jti:{jti}"), "valid", 600)
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti),
+                "valid",
+                600,
+            )
             .await
             .expect("seed jti");
 
@@ -1940,9 +1956,14 @@ mod tests {
         .execute(&pool)
         .await
         .expect("approve");
-        let (token3, jti3) = encode_phone_verify_token(&phone, &ek, 10).unwrap();
+        let (token3, jti3) =
+            encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let _: () = redis
-            .set_ex(format!("phone_verify_jti:{jti3}"), "valid", 600)
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti3),
+                "valid",
+                600,
+            )
             .await
             .expect("seed jti3");
         let res3 = post_register(app, register_body(&token3, "guard")).await;

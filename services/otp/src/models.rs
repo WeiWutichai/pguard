@@ -14,11 +14,16 @@ pub struct RequestOtpRequest {
     pub answer: String,
 }
 
-/// `POST /otp/verify` body.
+/// `POST /otp/verify` body. `purpose` selects which flow the issued token is scoped to:
+/// omitted / `"phone_verify"` → registration (the default keeps older clients working),
+/// `"pin_reset"` → forgot-PIN reset. Any other value is rejected before the code is
+/// checked (never burn an OTP attempt on a malformed request).
 #[derive(Debug, Deserialize)]
 pub struct VerifyOtpRequest {
     pub phone: String,
     pub code: String,
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
 // ----- Responses -----

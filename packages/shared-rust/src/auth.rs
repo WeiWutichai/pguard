@@ -106,16 +106,25 @@ pub fn decode_jwt_with_key(token: &str, key: &DecodingKey) -> Result<JwtClaims, 
 // it (the Redis bookkeeping lives in the services, not here — these helpers only
 // mint/verify the JWT itself).
 //
-// The phone-verify half is ISSUED by otp (`/otp/verify`) and CONSUMED by identity
-// (`/auth/register`); the profile half is ISSUED by identity's register response
+// The phone-verify half is ISSUED by otp (`/otp/verify`, purpose chosen by the flow)
+// and CONSUMED by identity (`/auth/register` expects `phone_verify`, `/auth/reset-pin`
+// expects `pin_reset`); the profile half is ISSUED by identity's register response
 // and CONSUMED by profile (`POST /profile/{guard,customer}`). Keeping both schemes
 // here is the single source of truth for the claim shapes — the issuer and the
 // consumer live in different service crates, so a divergent local copy would let
 // one mint a token the other cannot decode.
 
-/// Purpose marker for the phone-verified token (otp → identity). Consumers MUST
-/// check `purpose == PHONE_VERIFY_PURPOSE`.
+/// Purpose marker for the phone-verified token minted for REGISTRATION
+/// (otp `/otp/verify` → identity `/auth/register`). Consumers MUST pass the purpose
+/// they expect to [`decode_phone_verify_token`] — a token minted for one purpose is
+/// rejected on the other flow (same isolation as the profile tokens below).
 pub const PHONE_VERIFY_PURPOSE: &str = "phone_verify";
+/// Purpose marker for the phone-verified token minted for a FORGOT-PIN RESET
+/// (otp `/otp/verify` with `purpose: "pin_reset"` → identity `/auth/reset-pin`).
+/// Distinct from [`PHONE_VERIFY_PURPOSE`] so a token obtained through the register
+/// flow can never drive a credential reset, and vice-versa (defense-in-depth on top
+/// of single-use).
+pub const PIN_RESET_PURPOSE: &str = "pin_reset";
 
 /// Profile-token purpose for a GUARD registration (identity → profile `/profile/guard`).
 pub const PROFILE_PURPOSE_GUARD: &str = "guard_profile";
@@ -152,10 +161,13 @@ pub struct PhoneVerifyClaims {
     pub iat: i64,
 }
 
-/// Encode a phone-verification JWT with a unique `jti`. Returns `(token, jti)` so the
-/// caller (otp) can store the jti in Redis "valid" for the consumer's single-use GETDEL.
+/// Encode a phone-verification JWT with a unique `jti`, scoped to `purpose`
+/// ([`PHONE_VERIFY_PURPOSE`] for register, [`PIN_RESET_PURPOSE`] for a forgot-PIN reset).
+/// Returns `(token, jti)` so the caller (otp) can store the jti in Redis "valid" (under
+/// [`phone_verify_jti_key`]) for the consumer's single-use GETDEL.
 pub fn encode_phone_verify_token(
     phone: &str,
+    purpose: &str,
     key: &EncodingKey,
     expiry_minutes: i64,
 ) -> Result<(String, String), AppError> {
@@ -163,7 +175,7 @@ pub fn encode_phone_verify_token(
     let jti = Uuid::new_v4().to_string();
     let claims = PhoneVerifyClaims {
         phone: phone.to_string(),
-        purpose: PHONE_VERIFY_PURPOSE.to_string(),
+        purpose: purpose.to_string(),
         jti: jti.clone(),
         exp: (now + chrono::TimeDelta::minutes(expiry_minutes)).timestamp(),
         iat: now.timestamp(),
@@ -173,21 +185,35 @@ pub fn encode_phone_verify_token(
     Ok((token, jti))
 }
 
-/// Decode + verify a phone-verification JWT (signature, expiry, `purpose`). Returns
-/// `(phone, jti)`; the caller then enforces single-use by `GETDEL`-ing the jti in Redis.
-/// A wrong-purpose token (e.g. a profile token) is rejected so the schemes can't be crossed.
+/// Decode + verify a phone-verification JWT (signature, expiry, `purpose`) against the
+/// purpose the CONSUMING route expects ([`PHONE_VERIFY_PURPOSE`] on `/auth/register`,
+/// [`PIN_RESET_PURPOSE`] on `/auth/reset-pin`). Returns `(phone, jti)`; the caller then
+/// enforces single-use by `GETDEL`-ing the jti in Redis. A wrong-purpose token (a profile
+/// token, or a register token presented to the reset route) is rejected so the schemes
+/// can't be crossed.
 pub fn decode_phone_verify_token(
     token: &str,
     key: &DecodingKey,
+    expected_purpose: &str,
 ) -> Result<(String, String), AppError> {
     let data = jsonwebtoken::decode::<PhoneVerifyClaims>(token, key, &purpose_token_validation())
         .map_err(|e| AppError::Unauthorized(format!("Invalid phone verify token: {e}")))?;
-    if data.claims.purpose != PHONE_VERIFY_PURPOSE {
+    if data.claims.purpose != expected_purpose {
         return Err(AppError::Unauthorized(
             "Invalid phone verify token".to_string(),
         ));
     }
     Ok((data.claims.phone, data.claims.jti))
+}
+
+/// Redis key holding the single-use "valid" marker for a phone-verify-family jti. The
+/// PURPOSE is part of the key (`phone_verify_jti:{jti}` / `pin_reset_jti:{jti}`), so the
+/// issuer and the consumer must agree on BOTH the token purpose and the marker key — a
+/// cross-purpose replay misses the marker even before the purpose check. The
+/// `phone_verify` spelling is unchanged from before purposes were split, so in-flight
+/// registration tokens survive a rolling deploy.
+pub fn phone_verify_jti_key(purpose: &str, jti: &str) -> String {
+    format!("{purpose}_jti:{jti}")
 }
 
 /// Claims for the short-lived, single-use profile-submission JWT. `sub` is the user id
@@ -479,8 +505,10 @@ mod tests {
     fn phone_verify_token_round_trips_phone_and_jti() {
         let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
         let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
-        let (token, jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
-        let (phone, decoded_jti) = decode_phone_verify_token(&token, &dk).unwrap();
+        let (token, jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let (phone, decoded_jti) =
+            decode_phone_verify_token(&token, &dk, PHONE_VERIFY_PURPOSE).unwrap();
         assert_eq!(phone, "0812345678");
         assert_eq!(
             decoded_jti, jti,
@@ -491,19 +519,52 @@ mod tests {
     #[test]
     fn phone_verify_token_each_issuance_has_unique_jti() {
         let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
-        let (_, j1) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
-        let (_, j2) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (_, j1) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let (_, j2) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         assert_ne!(j1, j2, "jti must be unique per issuance (single-use)");
     }
 
     #[test]
     fn phone_verify_token_rejects_wrong_secret() {
         let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
-        let (token, _) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (token, _) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let wrong = DecodingKey::from_secret(
             b"another-secret-key-at-least-64-chars-long-for-the-negative-test!!",
         );
-        assert!(decode_phone_verify_token(&token, &wrong).is_err());
+        assert!(decode_phone_verify_token(&token, &wrong, PHONE_VERIFY_PURPOSE).is_err());
+    }
+
+    #[test]
+    fn phone_verify_token_purpose_isolation_register_vs_pin_reset() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        // A REGISTER-purpose token must be rejected by the reset consumer…
+        let (register_tok, _) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        assert!(decode_phone_verify_token(&register_tok, &dk, PIN_RESET_PURPOSE).is_err());
+        // …and a PIN-RESET token by the register consumer.
+        let (reset_tok, _) =
+            encode_phone_verify_token("0812345678", PIN_RESET_PURPOSE, &ek, 10).unwrap();
+        assert!(decode_phone_verify_token(&reset_tok, &dk, PHONE_VERIFY_PURPOSE).is_err());
+        // The matching purposes still decode.
+        assert!(decode_phone_verify_token(&reset_tok, &dk, PIN_RESET_PURPOSE).is_ok());
+    }
+
+    #[test]
+    fn phone_verify_jti_key_is_purpose_scoped_and_backward_compatible() {
+        // The register spelling must stay EXACTLY `phone_verify_jti:` — in-flight tokens
+        // issued before the purpose split are stored under that key.
+        assert_eq!(
+            phone_verify_jti_key(PHONE_VERIFY_PURPOSE, "abc"),
+            "phone_verify_jti:abc"
+        );
+        assert_eq!(
+            phone_verify_jti_key(PIN_RESET_PURPOSE, "abc"),
+            "pin_reset_jti:abc"
+        );
     }
 
     // ----- profile token (identity → profile), with purpose isolation -----

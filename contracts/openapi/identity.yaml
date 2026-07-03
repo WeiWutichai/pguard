@@ -366,6 +366,43 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/reset-pin:
+    post:
+      tags: [Auth]
+      summary: Reset a FORGOTTEN PIN via the OTP flow (edge-public)
+      description: |
+        Authorized ENTIRELY by a single-use `phone_verified_token` minted by
+        `POST /otp/verify` with `purpose: "pin_reset"` — the phone comes from that token,
+        NEVER the body, so a caller can only reset the PIN of a phone they just proved
+        they own. A registration-purpose (`phone_verify`) token is REJECTED (purpose
+        isolation on top of single-use). No current PIN is required (it was forgotten).
+        On success the new Argon2 hash is stored, EVERY session is force-revoked
+        (`token_revocation_version` bumped + all refresh families revoked), and the reset
+        is recorded in `identity.credential_audit`. Edge-public: no bearer token — the
+        purpose token in the body is the sole credential.
+      operationId: resetPin
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ResetPinRequest' }
+      responses:
+        '200':
+          description: PIN reset; every existing session revoked — log in with the new PIN
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          pin_reset: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /auth/2fa/setup:
     post:
       tags: [Auth]
@@ -1004,6 +1041,20 @@ components:
           description: |
             SHA-256 hex of the CURRENT PIN (same shape/value as login's `password`). Verified
             server-side; a wrong value → a generic 401 (no enumeration).
+        new_pin_hash:
+          type: string
+          description: SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).
+
+    ResetPinRequest:
+      type: object
+      required: [phone_verified_token, new_pin_hash]
+      properties:
+        phone_verified_token:
+          type: string
+          description: |
+            Single-use JWT from `POST /otp/verify` with `purpose: "pin_reset"`. Carries the
+            verified phone (the body has NO phone field). A `phone_verify`-purpose
+            (registration) token is rejected.
         new_pin_hash:
           type: string
           description: SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).

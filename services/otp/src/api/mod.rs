@@ -236,6 +236,17 @@ pub async fn verify(
         return Err(AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()));
     }
 
+    // Resolve the token purpose UP FRONT (before any Redis/DB side effect) so an unknown
+    // purpose never consumes a verify attempt or burns the code. Omitted = registration —
+    // the pre-purpose clients (and the register flow) send no field.
+    let purpose = match req.purpose.as_deref() {
+        None | Some(shared::auth::PHONE_VERIFY_PURPOSE) => shared::auth::PHONE_VERIFY_PURPOSE,
+        Some(shared::auth::PIN_RESET_PURPOSE) => shared::auth::PIN_RESET_PURPOSE,
+        Some(_) => {
+            return Err(AppError::BadRequest("Unknown token purpose".to_string()));
+        }
+    };
+
     // Atomically find + increment-attempts on the latest live code.
     let row = repo::claim_for_verify(&state.db, &phone)
         .await?
@@ -269,17 +280,23 @@ pub async fn verify(
         .query_async(&mut conn)
         .await;
 
-    // Issue the single-use phone-verified JWT (purpose "phone_verify", carries phone +
-    // jti + exp). Store the jti in Redis "valid" with a small skew buffer for later
-    // single-use GETDEL by profile/identity.
+    // Issue the single-use phone-verified JWT scoped to the resolved purpose (carries
+    // phone + jti + exp). Store the jti in Redis "valid" under the PURPOSE-scoped key
+    // (with a small skew buffer) for later single-use GETDEL by the matching identity
+    // route — a register token can never satisfy the reset route's marker, or vice-versa.
     let (token, jti) = encode_phone_verify_token(
         &phone,
+        purpose,
         &state.jwt_config.encoding_key,
         state.otp_config.phone_verify_ttl_minutes,
     )?;
     let ttl_secs = (state.otp_config.phone_verify_ttl_minutes * 60 + JTI_SKEW_BUFFER_SECS) as u64;
-    conn.set_ex::<_, _, ()>(format!("phone_verify_jti:{jti}"), "valid", ttl_secs)
-        .await?;
+    conn.set_ex::<_, _, ()>(
+        shared::auth::phone_verify_jti_key(purpose, &jti),
+        "valid",
+        ttl_secs,
+    )
+    .await?;
 
     Ok(Json(ApiResponse::success(VerifyOtpResponse {
         phone_verified_token: token,

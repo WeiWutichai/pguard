@@ -16,8 +16,10 @@ info:
          The response is GENERIC and never reveals whether the phone is registered.
       3. `POST /otp/verify`    — atomically increment attempts, enforce max-attempts,
          constant-time compare the SHA-256 of the submitted code, then issue a
-         **single-use** phone-verified JWT (purpose `phone_verify`; its jti is tracked in
-         Redis for later GETDEL by profile/identity).
+         **single-use** phone-verified JWT scoped to the requested `purpose`
+         (`phone_verify` for registration — the default — or `pin_reset` for the
+         forgot-PIN reset; its jti is tracked in Redis under a purpose-scoped key for
+         later GETDEL by the matching identity route).
 
     Security posture (v1 audit / security-reviewer §3): OTP codes stored hashed only;
     constant-time compare; atomic SET NX EX cooldown; daily cap with TTL recovery; atomic
@@ -99,7 +101,10 @@ paths:
       description: |
         Atomically increments the latest live code's attempts, enforces max-attempts,
         constant-time compares the submitted code, and on success returns a single-use
-        phone-verified JWT (purpose `phone_verify`). Failure responses are generic.
+        phone-verified JWT scoped to the requested `purpose` (default `phone_verify`;
+        `pin_reset` for the forgot-PIN flow — consumed ONLY by `POST /auth/reset-pin`).
+        An unknown `purpose` is rejected BEFORE the code is checked (no attempt burned).
+        Failure responses are generic.
       operationId: verifyOtp
       requestBody:
         required: true
@@ -174,6 +179,13 @@ components:
       properties:
         phone: { type: string, example: "0812345678" }
         code: { type: string, description: The OTP code (digits), example: "123456" }
+        purpose:
+          type: string
+          enum: [phone_verify, pin_reset]
+          description: >-
+            Which flow the issued token is scoped to. Omitted → `phone_verify`
+            (registration). `pin_reset` → forgot-PIN reset; the token is then accepted
+            ONLY by `POST /auth/reset-pin` (and a registration token is rejected there).
 
     VerifyOtpResult:
       type: object
@@ -181,7 +193,10 @@ components:
       properties:
         phone_verified_token:
           type: string
-          description: Single-use JWT (purpose phone_verify) exchanged by profile/identity to finish registration
+          description: >-
+            Single-use JWT scoped to the requested purpose — `phone_verify` tokens are
+            exchanged by identity/profile to finish registration; `pin_reset` tokens by
+            `POST /auth/reset-pin` to reset a forgotten PIN
         expires_in: { type: integer, format: int64, description: Token validity in seconds }
 
     ApiResponseEnvelope:

@@ -214,13 +214,16 @@ class AuthController extends _$AuthController {
 
   /// `POST /otp/verify` — confirm the SMS code, then advance to the PIN step. Capture the
   /// single-use `phone_verified_token` (state + secure storage) — it is exchanged at
-  /// `POST /auth/register` after the PIN + role are chosen.
+  /// `POST /auth/register` after the PIN + role are chosen, or at `POST /auth/reset-pin`
+  /// on a forgot-PIN run. A reset run asks for a `pin_reset`-purpose token — the server
+  /// rejects it on /auth/register and vice-versa, so the two flows can't be crossed.
   Future<bool> verifyOtp(String code) => _guard(() async {
         final data =
             await ref.read(pguardApiProvider).post('/otp/verify', data: {
           // Same canonical national form the OTP was requested with.
           'phone': normalizeThaiPhone(state.phone) ?? state.phone,
           'code': code,
+          if (state.reset) 'purpose': 'pin_reset',
         });
         final token = (data is Map<String, dynamic>)
             ? data['phone_verified_token'] as String?

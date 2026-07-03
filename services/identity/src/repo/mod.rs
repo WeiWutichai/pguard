@@ -946,6 +946,10 @@ pub async fn change_password(
     .execute(&mut *tx)
     .await?;
 
+    // Audit the credential change in the SAME tx — a change_password either happens WITH its
+    // audit row or not at all (parity with reset_password_by_phone; security-review follow-up).
+    record_credential_event(&mut tx, user_id, "password_changed", None).await?;
+
     tx.commit().await?;
     tracing::info!(
         new_version,
@@ -1012,12 +1016,36 @@ pub async fn reset_password_by_phone(
     .execute(&mut *tx)
     .await?;
 
+    // Audit the reset in the SAME tx (actor = the account itself — the reset is authorized by
+    // phone ownership, there is no separate caller identity). `via_otp` records the channel.
+    record_credential_event(&mut tx, user_id, "pin_reset", Some("via_otp")).await?;
+
     tx.commit().await?;
     tracing::info!(
         new_version,
         "pin reset by phone (all sessions force-revoked)"
     );
     Ok(Some((user_id, new_version)))
+}
+
+/// Append a row to `identity.credential_audit` INSIDE the caller's transaction — credential
+/// changes (`password_changed`, `pin_reset`) commit atomically with their audit trail (PDPA
+/// parity with profile's `access_audit`; the table is append-only, nothing here updates it).
+async fn record_credential_event(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    user_id: Uuid,
+    action: &str,
+    detail: Option<&str>,
+) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO identity.credential_audit (user_id, action, detail) VALUES ($1, $2, $3)",
+    )
+    .bind(user_id)
+    .bind(action)
+    .bind(detail)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
 }
 
 // ----- Internal name resolution (POST /internal/users/names) + admin search -----
@@ -1956,6 +1984,10 @@ mod tests {
             .bind(user_id)
             .execute(pool)
             .await;
+        let _ = sqlx::query("DELETE FROM identity.credential_audit WHERE user_id = $1")
+            .bind(user_id)
+            .execute(pool)
+            .await;
     }
 
     /// H1 — concurrent refresh of the SAME token mints EXACTLY ONE successor (no double-spend), and
@@ -2424,6 +2456,11 @@ mod tests {
             0,
             "change_password revokes the user's other sessions"
         );
+        assert_eq!(
+            credential_audit_rows(&pool, user_id, "password_changed").await,
+            1,
+            "the change is audited (and the earlier FAILED attempt is not)"
+        );
 
         cleanup_user(&pool, user_id).await;
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
@@ -2482,12 +2519,30 @@ mod tests {
             0,
             "reset_password_by_phone force-revokes all sessions"
         );
+        assert_eq!(
+            credential_audit_rows(&pool, user_id, "pin_reset").await,
+            1,
+            "the reset is audited (the unknown-phone attempt wrote nothing)"
+        );
 
         cleanup_user(&pool, user_id).await;
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)
             .await;
+    }
+
+    /// Count `identity.credential_audit` rows for a user+action (audit-trail assertions).
+    async fn credential_audit_rows(pool: &PgPool, user_id: Uuid, action: &str) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM identity.credential_audit WHERE user_id = $1 AND action = $2",
+        )
+        .bind(user_id)
+        .bind(action)
+        .fetch_one(pool)
+        .await
+        .expect("count audit rows");
+        n
     }
 
     /// Read a user's phone (test helper for the change-password verify checks).
