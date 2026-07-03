@@ -84,6 +84,37 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
+    get:
+      tags: [Reviews]
+      summary: The caller's OWN review of this assignment, if any (customer only)
+      description: |
+        Returns the CALLER's own review for this assignment (booking), so the client can gate
+        the "rate the guard" entry — once reviewed it shows a "rated" state instead of re-opening
+        the rating form (avoiding a duplicate submit that would 409). Self-scoped by the caller's
+        `customer_id`: you only ever read YOUR review, never another customer's, so there is no
+        booking-owner read. **404** when the caller has not reviewed this assignment.
+      operationId: getOwnReview
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: The assignment / booking id.
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The caller's review of this assignment
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/Review' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /guards/{id}/ratings:
     get:

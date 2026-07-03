@@ -23,6 +23,7 @@ import 'package:pguard_rating_api/src/model/error_body.dart';
 import 'package:pguard_rating_api/src/model/error_detail.dart';
 import 'package:pguard_rating_api/src/model/get_guard_ratings200_response.dart';
 import 'package:pguard_rating_api/src/model/get_internal_rating_summary200_response.dart';
+import 'package:pguard_rating_api/src/model/get_own_review200_response.dart';
 import 'package:pguard_rating_api/src/model/guard_ratings.dart';
 import 'package:pguard_rating_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_rating_api/src/model/list_admin_reviews200_response.dart';
@@ -46,6 +47,7 @@ part 'serializers.g.dart';
   ErrorDetail,
   GetGuardRatings200Response,
   GetInternalRatingSummary200Response,
+  GetOwnReview200Response,
   GuardRatings,
   InternalExportUser200Response,
   ListAdminReviews200Response,

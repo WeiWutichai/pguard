@@ -11,7 +11,15 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /**
+         * The caller's OWN review of this assignment, if any (customer only)
+         * @description Returns the CALLER's own review for this assignment (booking), so the client can gate
+         *     the "rate the guard" entry — once reviewed it shows a "rated" state instead of re-opening
+         *     the rating form (avoiding a duplicate submit that would 409). Self-scoped by the caller's
+         *     `customer_id`: you only ever read YOUR review, never another customer's, so there is no
+         *     booking-owner read. **404** when the caller has not reviewed this assignment.
+         */
+        get: operations["getOwnReview"];
         put?: never;
         /**
          * Submit a review for a completed assignment (customer only)
@@ -302,6 +310,34 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    getOwnReview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The assignment / booking id. */
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller's review of this assignment */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["Review"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
     submitReview: {
         parameters: {
             query?: never;

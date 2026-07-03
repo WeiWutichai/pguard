@@ -97,7 +97,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/healthz", get(healthz))
         .route(
             "/assignments/{id}/review",
-            post(api::submit_review::<AppState>),
+            post(api::submit_review::<AppState>).get(api::get_own_review::<AppState>),
         )
         .route("/guards/{id}/ratings", get(api::guard_ratings::<AppState>))
         .route("/admin/reviews", get(api::list_admin_reviews::<AppState>))
