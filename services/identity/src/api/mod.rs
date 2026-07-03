@@ -11,8 +11,8 @@ use uuid::Uuid;
 use shared::auth::{
     build_clear_cookie, build_cookie, decode_jwt_with_key, decode_phone_verify_token,
     decode_profile_token, encode_jwt_with_key, encode_profile_token, extract_cookie_value,
-    AuthUser, ACCESS_TOKEN_COOKIE, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
-    REFRESH_TOKEN_COOKIE,
+    phone_verify_jti_key, AuthUser, ACCESS_TOKEN_COOKIE, PHONE_VERIFY_PURPOSE, PIN_RESET_PURPOSE,
+    PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD, REFRESH_TOKEN_COOKIE,
 };
 use shared::error::AppError;
 use shared::models::ApiResponse;
@@ -250,9 +250,13 @@ pub async fn register<S: RegisterDeps>(
     registration::validate_pin_hash(&req.pin_hash)?;
 
     // 2) Verify the phone-verified token (signature + purpose + expiry). The phone comes
-    //    from the token, never from the body.
-    let (phone, jti) =
-        decode_phone_verify_token(&req.phone_verified_token, state.jwt_decoding_key())?;
+    //    from the token, never from the body. Register accepts ONLY the `phone_verify`
+    //    purpose — a token minted for the forgot-PIN reset flow is rejected here.
+    let (phone, jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        state.jwt_decoding_key(),
+        PHONE_VERIFY_PURPOSE,
+    )?;
 
     // 3) Defensive re-validation/normalization of the token's phone (otp validated it at
     //    issuance; identity never trusts a value off the wire). Done BEFORE the GETDEL so a
@@ -276,7 +280,7 @@ pub async fn register<S: RegisterDeps>(
     //    UPSERT failure leaves the client free to retry with the same token.
     let mut redis = state.redis();
     let jti_status: Option<String> = redis::cmd("GETDEL")
-        .arg(format!("phone_verify_jti:{jti}"))
+        .arg(phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti))
         .query_async(&mut redis)
         .await?;
     if jti_status.as_deref() != Some("valid") {
@@ -679,18 +683,36 @@ pub async fn reset_pin(
     registration::validate_pin_hash(&req.new_pin_hash)?;
 
     // 2) Verify the phone-verified token (signature + purpose + expiry). The phone is FROM the token,
-    //    never the body — this is the whole authorization for the reset.
-    let (phone, jti) =
-        decode_phone_verify_token(&req.phone_verified_token, &state.jwt_config.decoding_key)?;
+    //    never the body — this is the whole authorization for the reset. Only the `pin_reset`
+    //    purpose is accepted — a register-flow (`phone_verify`) token can NEVER drive a
+    //    credential reset (purpose isolation on top of single-use).
+    let (phone, jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        &state.jwt_config.decoding_key,
+        PIN_RESET_PURPOSE,
+    )?;
     let phone = registration::validate_thai_phone(&phone)?;
 
-    // 3) Claim the single-use jti FIRST (GETDEL). Unlike register (whose account UPSERT is
-    //    idempotent, so it defers the claim to stay retryable), a PIN reset is a NON-idempotent
-    //    credential change — claim before mutating so a reused/forged/expired token can NEVER drive
-    //    a second reset. A missing "valid" marker → reject before touching the account.
+    // 3) Cheap existence probe BEFORE the single-use claim: a phone with no live account can
+    //    never be reset, so don't burn the token on it (a deactivated-account user would
+    //    otherwise consume a full OTP round per attempt — self-DoS on the daily quota). Same
+    //    generic message as the post-lock miss; enumeration stays gated by the OTP token
+    //    itself (only the phone's owner can hold one). Advisory only — the authoritative
+    //    locked re-check still runs inside the reset transaction.
+    if !repo::active_account_exists_by_phone(&state.db, &phone).await? {
+        return Err(AppError::BadRequest(
+            "No account found for this phone — please register".to_string(),
+        ));
+    }
+
+    // 4) Claim the single-use jti (GETDEL) BEFORE mutating. Unlike register (whose account
+    //    UPSERT is idempotent, so it defers the claim to stay retryable), a PIN reset is a
+    //    NON-idempotent credential change — claim before mutating so a reused/forged/expired
+    //    token can NEVER drive a second reset. A missing "valid" marker → reject before
+    //    touching the account.
     let mut redis = state.redis_conn.clone();
     let jti_status: Option<String> = redis::cmd("GETDEL")
-        .arg(format!("phone_verify_jti:{jti}"))
+        .arg(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti))
         .query_async(&mut redis)
         .await?;
     if jti_status.as_deref() != Some("valid") {
@@ -699,8 +721,9 @@ pub async fn reset_pin(
         ));
     }
 
-    // 4) Reset the PIN of the account holding the token's phone (new Argon2 hash + bump trv + revoke
-    //    all refresh families). `None` = no active account for that phone → they should register.
+    // 5) Reset the PIN of the account holding the token's phone (new Argon2 hash + bump trv + revoke
+    //    all refresh families). `None` = no active account for that phone (deactivated between the
+    //    probe and the lock — rare race) → they should register.
     let Some((user_id, new_version)) =
         repo::reset_password_by_phone(&state.db, &phone, &req.new_pin_hash).await?
     else {
@@ -709,7 +732,7 @@ pub async fn reset_pin(
         ));
     };
 
-    // 5) Force-revoke outstanding ACCESS tokens at once (any older `trv` is rejected) — a persistent
+    // 6) Force-revoke outstanding ACCESS tokens at once (any older `trv` is rejected) — a persistent
     //    marker-write failure propagates (500) so the client knows the revocation isn't yet effective.
     crate::state::mark_user_revoked(&mut redis, user_id, new_version).await?;
 
@@ -1814,7 +1837,8 @@ mod tests {
         };
         let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
         // Valid signature + purpose, but the jti is NOT in Redis → GETDEL returns nil.
-        let (token, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (token, _jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let res = post_register(app, register_body(&token, "guard")).await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
@@ -1839,7 +1863,8 @@ mod tests {
             return;
         };
         let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
-        let (tok, _jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (tok, _jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let res = app.oneshot(post_reissue(&tok, "customer")).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
@@ -1888,10 +1913,15 @@ mod tests {
                 .take(9)
                 .collect::<String>()
         );
-        let (token, jti) = encode_phone_verify_token(&phone, &ek, 10).unwrap();
+        let (token, jti) =
+            encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         // Store the jti "valid" so the single-use GETDEL succeeds.
         let _: () = redis
-            .set_ex(format!("phone_verify_jti:{jti}"), "valid", 600)
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti),
+                "valid",
+                600,
+            )
             .await
             .expect("seed jti");
 
@@ -1940,9 +1970,14 @@ mod tests {
         .execute(&pool)
         .await
         .expect("approve");
-        let (token3, jti3) = encode_phone_verify_token(&phone, &ek, 10).unwrap();
+        let (token3, jti3) =
+            encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         let _: () = redis
-            .set_ex(format!("phone_verify_jti:{jti3}"), "valid", 600)
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti3),
+                "valid",
+                600,
+            )
             .await
             .expect("seed jti3");
         let res3 = post_register(app, register_body(&token3, "guard")).await;
@@ -1974,7 +2009,7 @@ mod multi_role_tests {
     use axum::http::{Request, StatusCode};
     use axum::routing::{get, post};
     use axum::Router;
-    use shared::auth::encode_jwt_with_key;
+    use shared::auth::{encode_jwt_with_key, encode_phone_verify_token};
     use shared::config::{JwtConfig, ServiceJwtConfig};
     use sqlx::postgres::PgPoolOptions;
     use std::time::Duration;
@@ -2326,5 +2361,243 @@ mod multi_role_tests {
         assert_eq!(res2.status(), StatusCode::CONFLICT);
 
         cleanup(&pool, user_id).await;
+    }
+
+    // ===================== POST /auth/reset-pin (purpose + jti-key pairing) =====================
+    //
+    // HTTP-level tests over the SAME real-infra harness: the handler pairs the `pin_reset`
+    // DECODE purpose with the `pin_reset_jti:` marker key — a regression that mixes the pair
+    // (e.g. decodes pin_reset but GETDELs the phone_verify key) would brick every legit reset
+    // while unit tests still pass, so the pairing is asserted end-to-end here.
+
+    fn reset_pin_router(st: AppState) -> Router {
+        Router::new()
+            .route("/auth/reset-pin", post(reset_pin))
+            .with_state(st)
+    }
+
+    fn post_reset_pin(token: &str, new_pin_hash: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/reset-pin")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "phone_verified_token": token,
+                    "new_pin_hash": new_pin_hash,
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    }
+
+    /// [`seed_user`]'s phone is built from uuid HEX (may hold a–f) and fails the handler's
+    /// Thai-phone validation — overwrite it with a unique all-DIGIT phone and return it, so
+    /// each reset-pin test exercises the path it claims to (not an accidental 400).
+    async fn digits_phone(pool: &sqlx::PgPool, user_id: Uuid) -> String {
+        let phone: String = format!(
+            "0{}",
+            Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .chain("000000000".chars())
+                .take(9)
+                .collect::<String>()
+        );
+        sqlx::query("UPDATE identity.users SET phone = $1 WHERE id = $2")
+            .bind(&phone)
+            .bind(user_id)
+            .execute(pool)
+            .await
+            .expect("set digit phone");
+        phone
+    }
+
+    /// Happy path: a pin_reset-purpose token whose jti is live under `pin_reset_jti:` resets
+    /// the PIN (200), writes the `pin_reset` credential_audit row, and is single-use.
+    #[tokio::test]
+    async fn reset_pin_happy_path_audits_and_is_single_use() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = reset_pin_router(state(pool.clone(), redis.clone()));
+
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (token, jti) = encode_phone_verify_token(&phone, PIN_RESET_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti), "valid", 600)
+            .await
+            .expect("seed pin_reset jti");
+
+        let res = app
+            .clone()
+            .oneshot(post_reset_pin(&token, &"b".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "pin_reset token resets");
+
+        let (audits,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM identity.credential_audit WHERE user_id = $1 AND action = 'pin_reset'",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audits, 1, "the reset writes its credential_audit row");
+
+        // Single-use: replaying the SAME token finds no live marker → 400.
+        let res2 = app
+            .oneshot(post_reset_pin(&token, &"c".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(res2.status(), StatusCode::BAD_REQUEST, "jti is single-use");
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// Purpose isolation at the HTTP layer: a REGISTER-purpose token is rejected (401) even
+    /// when a live `pin_reset_jti:` marker exists for its jti — the decode purpose, not the
+    /// marker, is what fails — and the marker survives (nothing was burned).
+    #[tokio::test]
+    async fn reset_pin_rejects_register_purpose_token_without_burning() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = reset_pin_router(state(pool.clone(), redis.clone()));
+
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (token, jti) =
+            encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        // Seed markers under BOTH keys to prove the rejection is the token's purpose.
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti),
+                "valid",
+                600,
+            )
+            .await
+            .expect("seed register jti");
+        let _: () = redis
+            .set_ex(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti), "valid", 600)
+            .await
+            .expect("seed reset-key marker");
+
+        let res = app
+            .oneshot(post_reset_pin(&token, &"b".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a register-flow token can NEVER drive a credential reset"
+        );
+
+        let live: Option<String> = redis
+            .get(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti))
+            .await
+            .expect("read marker");
+        assert_eq!(
+            live.as_deref(),
+            Some("valid"),
+            "the wrong-purpose rejection must not consume any marker"
+        );
+        let (audits,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM identity.credential_audit WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(audits, 0, "no credential change, no audit row");
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// Key pairing: a pin_reset token whose jti was (wrongly) stored under the REGISTER key
+    /// finds no `pin_reset_jti:` marker → 400. Locks the decode-purpose ↔ marker-key pair.
+    #[tokio::test]
+    async fn reset_pin_requires_the_pin_reset_scoped_marker_key() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = reset_pin_router(state(pool.clone(), redis.clone()));
+
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (token, jti) = encode_phone_verify_token(&phone, PIN_RESET_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti),
+                "valid",
+                600,
+            )
+            .await
+            .expect("seed under the WRONG (register) key");
+
+        let res = app
+            .oneshot(post_reset_pin(&token, &"b".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "the reset consumer must GETDEL the pin_reset-scoped key specifically"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// No-account probe: a valid pin_reset token for a phone with NO live account fails
+    /// WITHOUT burning the single-use marker — the user can retry after registering (or a
+    /// deactivated user doesn't lose a full OTP round per attempt).
+    #[tokio::test]
+    async fn reset_pin_unknown_phone_does_not_burn_the_token() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let app = reset_pin_router(state(pool.clone(), redis.clone()));
+
+        // A syntactically valid Thai phone that no seeded account holds.
+        let phone = format!("09{:08}", std::process::id() % 100_000_000);
+        let _ = sqlx::query("DELETE FROM identity.users WHERE phone = $1")
+            .bind(&phone)
+            .execute(&pool)
+            .await;
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (token, jti) = encode_phone_verify_token(&phone, PIN_RESET_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti), "valid", 600)
+            .await
+            .expect("seed jti");
+
+        let res = app
+            .oneshot(post_reset_pin(&token, &"b".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "no account → 400");
+
+        let live: Option<String> = redis
+            .get(phone_verify_jti_key(PIN_RESET_PURPOSE, &jti))
+            .await
+            .expect("read marker");
+        assert_eq!(
+            live.as_deref(),
+            Some("valid"),
+            "the existence probe must run BEFORE the jti burn"
+        );
     }
 }

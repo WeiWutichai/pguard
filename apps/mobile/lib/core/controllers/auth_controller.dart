@@ -172,6 +172,10 @@ class AuthController extends _$AuthController {
         'phone': normalizeThaiPhone(state.phone) ?? state.phone,
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
+        // A reset run BINDS the purpose at request time: the code row stores it, the
+        // SMS says "รีเซ็ต PIN", and /otp/verify can only mint a pin_reset token from
+        // it (the server rejects a cross-flow verify). Registration sends no field.
+        if (state.reset) 'purpose': 'pin_reset',
       });
       // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
       // any stale state from a previous, abandoned attempt: the role-stage resume marker + raw
@@ -214,13 +218,16 @@ class AuthController extends _$AuthController {
 
   /// `POST /otp/verify` — confirm the SMS code, then advance to the PIN step. Capture the
   /// single-use `phone_verified_token` (state + secure storage) — it is exchanged at
-  /// `POST /auth/register` after the PIN + role are chosen.
+  /// `POST /auth/register` after the PIN + role are chosen, or at `POST /auth/reset-pin`
+  /// on a forgot-PIN run. A reset run asks for a `pin_reset`-purpose token — the server
+  /// rejects it on /auth/register and vice-versa, so the two flows can't be crossed.
   Future<bool> verifyOtp(String code) => _guard(() async {
         final data =
             await ref.read(pguardApiProvider).post('/otp/verify', data: {
           // Same canonical national form the OTP was requested with.
           'phone': normalizeThaiPhone(state.phone) ?? state.phone,
           'code': code,
+          if (state.reset) 'purpose': 'pin_reset',
         });
         final token = (data is Map<String, dynamic>)
             ? data['phone_verified_token'] as String?

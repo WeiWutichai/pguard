@@ -20,7 +20,8 @@ mod tests {
     #[test]
     fn token_round_trips_and_carries_phone_purpose_jti() {
         let ek = EncodingKey::from_secret(SECRET.as_bytes());
-        let (token, jti) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (token, jti) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
 
         let mut validation = Validation::default();
         validation.algorithms = vec![Algorithm::HS256];
@@ -38,8 +39,10 @@ mod tests {
     #[test]
     fn each_token_has_a_unique_jti() {
         let ek = EncodingKey::from_secret(SECRET.as_bytes());
-        let (_, j1) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
-        let (_, j2) = encode_phone_verify_token("0812345678", &ek, 10).unwrap();
+        let (_, j1) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let (_, j2) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
         assert_ne!(j1, j2, "jti must be unique per issuance (single-use)");
     }
 }

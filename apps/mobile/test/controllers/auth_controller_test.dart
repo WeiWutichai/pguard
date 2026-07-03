@@ -38,8 +38,17 @@ void main() {
       onPost: (path, data) async {
         switch (path) {
           case '/otp/request':
+            expect(
+                (data as Map<String, dynamic>).containsKey('purpose'), isFalse,
+                reason: 'a REGISTRATION request binds no purpose (server '
+                    'default phone_verify) — pin_reset is reset-run only');
             return {'message': 'sent', 'expires_in': 300};
           case '/otp/verify':
+            expect(
+                (data as Map<String, dynamic>).containsKey('purpose'), isFalse,
+                reason:
+                    'a REGISTRATION verify sends no purpose (server default '
+                    'phone_verify) — pin_reset is reset-run only');
             return {'phone_verified_token': 'pvt', 'expires_in': 300};
           case '/auth/login':
             return {
@@ -85,10 +94,27 @@ void main() {
     final store = InMemoryStore();
     final calls = <String>[];
     final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        return {
+          'challenge_id': 'chR',
+          'question': '1 + 1 = ?',
+          'expires_in': 180,
+        };
+      },
       onPost: (path, data) async {
         calls.add(path);
         switch (path) {
+          case '/otp/request':
+            expect((data as Map<String, dynamic>)['purpose'], 'pin_reset',
+                reason: 'a RESET run BINDS the purpose at request time — the '
+                    'server stores it on the code row and words the SMS as a '
+                    'PIN reset');
+            return {'message': 'sent', 'expires_in': 300};
           case '/otp/verify':
+            expect((data as Map<String, dynamic>)['purpose'], 'pin_reset',
+                reason: 'the verify cross-checks the same flow; the token '
+                    'purpose itself comes from the request-time binding');
             return {'phone_verified_token': 'PVT'};
           case '/auth/reset-pin':
             final m = data as Map<String, dynamic>;
@@ -121,13 +147,17 @@ void main() {
         reason: 'the run is a reset, not a registration');
     expect(c.read(authControllerProvider).phone, '0812345678');
 
-    // OTP verify captures the phone-verified token (as the OTP screen does).
+    // Captcha → OTP request (binds purpose) → verify (as the reset screens do).
+    expect(await ctrl.loadChallenge(), isTrue);
+    expect(await ctrl.sendOtp('2'), isTrue);
     expect(await ctrl.verifyOtp('123456'), isTrue);
 
     // Reset the PIN → POST /auth/reset-pin, then log in with the NEW PIN → session authenticated.
     expect(await ctrl.resetPin(newPin: '654321'), isTrue);
-    expect(calls, ['/otp/verify', '/auth/reset-pin', '/auth/login']);
-    expect(store.refresh, 'r-new', reason: 'logged in with the new PIN post-reset');
+    expect(calls,
+        ['/otp/request', '/otp/verify', '/auth/reset-pin', '/auth/login']);
+    expect(store.refresh, 'r-new',
+        reason: 'logged in with the new PIN post-reset');
     expect(store.pinHash, isNotNull, reason: 'new PIN persisted locally');
     expect(c.read(sessionProvider).status, SessionStatus.authenticated);
   });
@@ -162,7 +192,8 @@ void main() {
       },
       onPost: (path, _) async {
         expect(path, '/otp/request');
-        throw const ApiException(message: 'Rate limit exceeded', statusCode: 429);
+        throw const ApiException(
+            message: 'Rate limit exceeded', statusCode: 429);
       },
     );
     final c = container(api: api, store: store);
@@ -174,9 +205,11 @@ void main() {
 
     expect(await ctrl.sendOtp('2'), isFalse);
     final st = c.read(authControllerProvider);
-    expect(st.error, 'Rate limit exceeded', reason: 'the failure reason stays visible');
+    expect(st.error, 'Rate limit exceeded',
+        reason: 'the failure reason stays visible');
     expect(st.challenge?.challengeId, 'ch2',
-        reason: 'the burned ch1 is replaced by a fresh, usable challenge for the retry');
+        reason:
+            'the burned ch1 is replaced by a fresh, usable challenge for the retry');
     expect(st.step, isNot(AuthStep.otp));
   });
 
@@ -308,7 +341,8 @@ void main() {
     expect(prefs.values[kEnrolledRolesKey], 'customer,guard');
   });
 
-  test('a single-role login defaults available_roles to [active role]', () async {
+  test('a single-role login defaults available_roles to [active role]',
+      () async {
     final store = InMemoryStore();
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(FakeApi(onPost: (path, _) async {
@@ -395,8 +429,10 @@ void main() {
     ctrl.setPhone('0812345678');
 
     // Fire two verifies back-to-back (mimics OtpInput auto-submit firing twice / a double-tap).
-    final first = ctrl.verifyOtp('123456'); // in flight (busy set synchronously)
-    final second = await ctrl.verifyOtp('123456'); // sees busy → bails immediately
+    final first =
+        ctrl.verifyOtp('123456'); // in flight (busy set synchronously)
+    final second =
+        await ctrl.verifyOtp('123456'); // sees busy → bails immediately
 
     expect(second, isFalse, reason: 'the duplicate must be ignored');
     expect(api.calls.where((p) => p == 'POST /otp/verify').length, 1,

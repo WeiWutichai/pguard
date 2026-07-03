@@ -102,6 +102,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**me**](doc/AuthApi.md#me) | **GET** /auth/me | Current authenticated user
 [*AuthApi*](doc/AuthApi.md) | [**refresh**](doc/AuthApi.md#refresh) | **POST** /auth/refresh | Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
 [*AuthApi*](doc/AuthApi.md) | [**register**](doc/AuthApi.md#register) | **POST** /auth/register | Create an account from a verified phone + chosen role (returns 202, NO tokens)
+[*AuthApi*](doc/AuthApi.md) | [**resetPin**](doc/AuthApi.md#resetpin) | **POST** /auth/reset-pin | Reset a FORGOTTEN PIN via the OTP flow (edge-public)
 [*AuthApi*](doc/AuthApi.md) | [**revokeAllSessions**](doc/AuthApi.md#revokeallsessions) | **POST** /auth/revoke-all | Sign out everywhere — revoke ALL of the caller&#39;s own sessions
 [*AuthApi*](doc/AuthApi.md) | [**revokeSession**](doc/AuthApi.md#revokesession) | **DELETE** /auth/sessions/{family_id} | Revoke ONE of the caller&#39;s sessions (sign out a single device,
 [*AuthApi*](doc/AuthApi.md) | [**setup2fa**](doc/AuthApi.md#setup2fa) | **POST** /auth/2fa/setup | Begin TOTP 2FA enrollment (provision — NOT yet enabled,
@@ -151,6 +152,9 @@ Class | Method | HTTP request | Description
  - [Register202Response](doc/Register202Response.md)
  - [RegisterRequest](doc/RegisterRequest.md)
  - [RegisterResult](doc/RegisterResult.md)
+ - [ResetPin200Response](doc/ResetPin200Response.md)
+ - [ResetPin200ResponseAllOfData](doc/ResetPin200ResponseAllOfData.md)
+ - [ResetPinRequest](doc/ResetPinRequest.md)
  - [ResolveUsersRequest](doc/ResolveUsersRequest.md)
  - [ResolvedUser](doc/ResolvedUser.md)
  - [SessionView](doc/SessionView.md)

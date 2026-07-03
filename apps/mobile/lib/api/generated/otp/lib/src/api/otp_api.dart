@@ -171,7 +171,7 @@ class OTPApi {
   }
 
   /// Request an OTP (captcha-gated, rate-limited)
-  /// Validates the captcha (GETDEL), the Thai phone format, and the tiered abuse controls (cooldown / daily cap / burst+admin lockout), then stores a hashed OTP and sends it via SMS. Always returns a GENERIC success body — it never reveals whether the phone exists or is registered. 
+  /// Validates the captcha (GETDEL), the Thai phone format, and the tiered abuse controls (cooldown / daily cap / burst+admin lockout), then stores a hashed OTP BOUND to the requested &#x60;purpose&#x60; and sends it via SMS whose wording names the flow (a &#x60;pin_reset&#x60; SMS says \&quot;รีเซ็ต PIN\&quot;). An unknown &#x60;purpose&#x60; is rejected BEFORE the captcha is burned. Always returns a GENERIC success body — it never reveals whether the phone exists or is registered. 
   ///
   /// Parameters:
   /// * [requestOtpRequest] 
@@ -266,7 +266,7 @@ class OTPApi {
   }
 
   /// Verify an OTP and obtain a single-use phone-verified token
-  /// Atomically increments the latest live code&#39;s attempts, enforces max-attempts, constant-time compares the submitted code, and on success returns a single-use phone-verified JWT (purpose &#x60;phone_verify&#x60;). Failure responses are generic. 
+  /// Atomically increments the latest live code&#39;s attempts, enforces max-attempts, constant-time compares the submitted code, and on success returns a single-use phone-verified JWT scoped to the purpose that was BOUND at &#x60;POST /otp/request&#x60; (&#x60;phone_verify&#x60; tokens are consumed by &#x60;/auth/register&#x60;; &#x60;pin_reset&#x60; ONLY by &#x60;POST /auth/reset-pin&#x60;). The body&#39;s &#x60;purpose&#x60; is a cross-check: a correct code presented for the other flow burns the code and fails generically. An unknown &#x60;purpose&#x60; is rejected BEFORE the code is checked (no attempt burned). Failure responses are generic. 
   ///
   /// Parameters:
   /// * [verifyOtpRequest] 

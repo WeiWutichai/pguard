@@ -252,6 +252,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/reset-pin": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reset a FORGOTTEN PIN via the OTP flow (edge-public)
+         * @description Authorized ENTIRELY by a single-use `phone_verified_token` from the OTP flow run
+         *     with `purpose: "pin_reset"` (bound at `POST /otp/request`, minted at
+         *     `POST /otp/verify`) — the phone comes from that token, NEVER the body, so a
+         *     caller can only reset the PIN of a phone they just proved they own. A
+         *     registration-purpose (`phone_verify`) token is REJECTED (purpose isolation on
+         *     top of single-use). No current PIN is required (it was forgotten).
+         *     On success the new Argon2 hash is stored, EVERY session is force-revoked
+         *     (`token_revocation_version` bumped + all refresh families revoked), and the reset
+         *     is recorded in `identity.credential_audit`. Edge-public: no bearer token — the
+         *     purpose token in the body is the sole credential.
+         */
+        post: operations["resetPin"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/2fa/setup": {
         parameters: {
             query?: never;
@@ -682,6 +711,17 @@ export interface components {
              *     server-side; a wrong value → a generic 401 (no enumeration).
              */
             current_password: string;
+            /** @description SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`). */
+            new_pin_hash: string;
+        };
+        ResetPinRequest: {
+            /**
+             * @description Single-use JWT from an OTP run bound to `purpose: "pin_reset"` (set at
+             *     `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified
+             *     phone (the body has NO phone field). A `phone_verify`-purpose
+             *     (registration) token is rejected.
+             */
+            phone_verified_token: string;
             /** @description SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`). */
             new_pin_hash: string;
         };
@@ -1209,6 +1249,37 @@ export interface operations {
                         data?: {
                             /** @example true */
                             password_changed?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    resetPin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPinRequest"];
+            };
+        };
+        responses: {
+            /** @description PIN reset; every existing session revoked — log in with the new PIN */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            /** @example true */
+                            pin_reset?: boolean;
                         };
                     };
                 };

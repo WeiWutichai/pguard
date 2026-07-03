@@ -51,6 +51,9 @@ import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
 import 'package:pguard_identity_api/src/model/register_result.dart';
+import 'package:pguard_identity_api/src/model/reset_pin200_response.dart';
+import 'package:pguard_identity_api/src/model/reset_pin200_response_all_of_data.dart';
+import 'package:pguard_identity_api/src/model/reset_pin_request.dart';
 import 'package:pguard_identity_api/src/model/resolve_users_request.dart';
 import 'package:pguard_identity_api/src/model/resolved_user.dart';
 import 'package:pguard_identity_api/src/model/session_view.dart';
@@ -105,6 +108,9 @@ part 'serializers.g.dart';
   Register202Response,
   RegisterRequest,
   RegisterResult,
+  ResetPin200Response,
+  ResetPin200ResponseAllOfData,
+  ResetPinRequest,
   ResolveUsersRequest,
   ResolvedUser,
   SessionView,

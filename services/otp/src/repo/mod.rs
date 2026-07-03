@@ -11,36 +11,43 @@ use uuid::Uuid;
 use shared::error::AppError;
 
 /// A row from `otp.otp_codes`, fetched atomically with the attempts increment.
+/// `purpose` is the FLOW the code was requested for ([`PURPOSE_REGISTER`] /
+/// [`PURPOSE_PIN_RESET`]) — the verify step mints the token from THIS stored value,
+/// never from what the verify request asks for (purpose is bound at request time).
 #[derive(Debug, sqlx::FromRow)]
 pub struct OtpRow {
     pub id: Uuid,
     pub code_hash: String,
     pub attempts: i32,
+    pub purpose: String,
     #[allow(dead_code)]
     pub expires_at: DateTime<Utc>,
 }
 
-const PURPOSE_REGISTER: &str = "register";
+/// Row purpose for a REGISTRATION code (mints a `phone_verify` token). The legacy
+/// spelling — every pre-split row holds this value, so it stays the stored form.
+pub const PURPOSE_REGISTER: &str = "register";
+/// Row purpose for a FORGOT-PIN RESET code (mints a `pin_reset` token).
+pub const PURPOSE_PIN_RESET: &str = "pin_reset";
 
-/// Invalidate any previous unused OTP for this phone+purpose, then insert the new hashed
-/// code — both in one transaction so a request can never leave two live codes.
+/// Invalidate any previous unused OTP for this phone (ANY purpose), then insert the new
+/// hashed code — both in one transaction so a phone can never hold two live codes. The
+/// any-purpose invalidation matters for the purpose binding: if a register code could
+/// stay live next to a newer reset code, verify's latest-row claim would be ambiguous.
 #[tracing::instrument(skip(db, code_hash, phone))]
 pub async fn store_code(
     db: &PgPool,
     phone: &str,
     code_hash: &str,
+    purpose: &str,
     expires_at: DateTime<Utc>,
 ) -> Result<(), AppError> {
     let mut tx = db.begin().await?;
 
-    sqlx::query(
-        "UPDATE otp.otp_codes SET is_used = true \
-         WHERE phone = $1 AND purpose = $2 AND is_used = false",
-    )
-    .bind(phone)
-    .bind(PURPOSE_REGISTER)
-    .execute(&mut *tx)
-    .await?;
+    sqlx::query("UPDATE otp.otp_codes SET is_used = true WHERE phone = $1 AND is_used = false")
+        .bind(phone)
+        .execute(&mut *tx)
+        .await?;
 
     sqlx::query(
         "INSERT INTO otp.otp_codes (phone, code_hash, purpose, expires_at) \
@@ -48,7 +55,7 @@ pub async fn store_code(
     )
     .bind(phone)
     .bind(code_hash)
-    .bind(PURPOSE_REGISTER)
+    .bind(purpose)
     .bind(expires_at)
     .execute(&mut *tx)
     .await?;
@@ -57,9 +64,10 @@ pub async fn store_code(
     Ok(())
 }
 
-/// Atomically find the latest valid unused OTP for `phone`, increment its attempts, and
-/// return it. The `FOR UPDATE` subquery serialises concurrent verify attempts so the
-/// attempts counter can never be lost (security-reviewer §3: "Attempts counter atomic").
+/// Atomically find the latest valid unused OTP for `phone` (any purpose — a phone has at
+/// most ONE live code, see [`store_code`]), increment its attempts, and return it. The
+/// `FOR UPDATE` subquery serialises concurrent verify attempts so the attempts counter
+/// can never be lost (security-reviewer §3: "Attempts counter atomic").
 /// Returns `None` when there is no valid (unused, unexpired) code.
 #[tracing::instrument(skip(db, phone))]
 pub async fn claim_for_verify(db: &PgPool, phone: &str) -> Result<Option<OtpRow>, AppError> {
@@ -69,16 +77,15 @@ pub async fn claim_for_verify(db: &PgPool, phone: &str) -> Result<Option<OtpRow>
         SET attempts = attempts + 1
         WHERE id = (
             SELECT id FROM otp.otp_codes
-            WHERE phone = $1 AND purpose = $2 AND is_used = false AND expires_at > now()
+            WHERE phone = $1 AND is_used = false AND expires_at > now()
             ORDER BY created_at DESC
             LIMIT 1
             FOR UPDATE
         )
-        RETURNING id, code_hash, attempts, expires_at
+        RETURNING id, code_hash, attempts, purpose, expires_at
         "#,
     )
     .bind(phone)
-    .bind(PURPOSE_REGISTER)
     .fetch_optional(db)
     .await?;
     Ok(row)
@@ -125,13 +132,14 @@ mod db_tests {
         let hash = sha256_hex(code);
         let expires = Utc::now() + chrono::TimeDelta::minutes(5);
 
-        store_code(&pool, &phone, &hash, expires)
+        store_code(&pool, &phone, &hash, PURPOSE_REGISTER, expires)
             .await
             .expect("store #1");
 
-        // Store again: the previous unused code must be invalidated (single live code).
+        // Store again with the OTHER purpose: the previous unused code must be invalidated
+        // (single live code per phone across purposes — verify's latest-row claim relies on it).
         let hash2 = sha256_hex("131313");
-        store_code(&pool, &phone, &hash2, expires)
+        store_code(&pool, &phone, &hash2, PURPOSE_PIN_RESET, expires)
             .await
             .expect("store #2");
 
@@ -151,6 +159,10 @@ mod db_tests {
             .expect("a live code exists");
         assert_eq!(r1.attempts, 1, "first claim sets attempts=1");
         assert_eq!(r1.code_hash, hash2, "latest code is returned");
+        assert_eq!(
+            r1.purpose, PURPOSE_PIN_RESET,
+            "the stored purpose rides back on the claim (token purpose binds to it)"
+        );
 
         let r2 = claim_for_verify(&pool, &phone)
             .await

@@ -23,6 +23,15 @@ pub fn format_otp_message(code: &str, expiry_minutes: i64) -> String {
     format!("รหัส OTP: {code} หมดอายุใน {expiry_minutes} นาที")
 }
 
+/// Format the FORGOT-PIN-RESET OTP message. Deliberately DIFFERENT wording from
+/// [`format_otp_message`]: the SMS itself names the action, so a victim who is phished
+/// into relaying "a login/registration code" can see the code resets their PIN — the
+/// wording is part of the purpose binding, not cosmetics. Same ≤ 40-char single-segment
+/// budget.
+pub fn format_pin_reset_otp_message(code: &str, expiry_minutes: i64) -> String {
+    format!("OTP รีเซ็ต PIN: {code} หมดอายุใน {expiry_minutes} นาที")
+}
+
 /// Validate Thai phone number format: 10 digits starting with 0.
 /// Strips non-digit characters before validation.
 pub fn validate_thai_phone(phone: &str) -> Result<String, AppError> {
@@ -106,6 +115,27 @@ mod tests {
         assert!(
             char_count <= 40,
             "OTP message too long: {char_count} chars (max 40 for 1 credit)"
+        );
+    }
+
+    #[test]
+    fn format_pin_reset_otp_message_names_the_action_and_fits_one_segment() {
+        // Two-digit expiry = the longest realistic form; must still be 1 credit.
+        let msg = format_pin_reset_otp_message("123456", 10);
+        assert!(msg.contains("123456"));
+        assert!(
+            msg.contains("รีเซ็ต PIN"),
+            "the reset SMS must NAME the action — the wording is part of the purpose binding"
+        );
+        assert_ne!(
+            msg,
+            format_otp_message("123456", 10),
+            "reset wording must differ from the registration wording"
+        );
+        let char_count = msg.chars().count();
+        assert!(
+            char_count <= 40,
+            "reset OTP message too long: {char_count} chars (max 40 for 1 credit)"
         );
     }
 
