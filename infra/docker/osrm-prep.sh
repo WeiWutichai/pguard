@@ -12,7 +12,10 @@ set -euo pipefail
 
 DATA_DIR="${OSRM_DATA_DIR:-/opt/pguard-osrm}"
 PBF_URL="${OSRM_PBF_URL:-https://download.geofabrik.de/asia/thailand-latest.osm.pbf}"
-IMG="${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend:latest}"
+# MUST match the digest pinned in docker-compose.prod.yml — osrm-routed refuses data prepped by a
+# DIFFERENT OSRM version ("File is incompatible…" crash-loop; bit us when :latest moved under a
+# routine deploy pull, 2026-07-01). Bump both together, re-run this prep, then recreate `osrm`.
+IMG="${OSRM_IMAGE:-ghcr.io/project-osrm/osrm-backend@sha256:021e51ca99fd4c6e650bf61558fb6513ef91d519c83966f1077d984f4157c680}"
 PROFILE="/opt/car.lua"   # car routing; motorcycle ≈ car, walk ETA is derived client-side
 
 mkdir -p "$DATA_DIR"

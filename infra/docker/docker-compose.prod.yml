@@ -845,8 +845,13 @@ services:
   # public is only reachable over IPv6 and the IPv4-only Docker bridge can't reach it, so we host
   # our own. ONE-TIME data prep on the VPS before first start (downloads + preprocesses the
   # Thailand extract into ${OSRM_DATA_DIR:-/opt/pguard-osrm}): run `bash infra/docker/osrm-prep.sh`.
+  #
+  # PINNED BY DIGEST, deliberately not `:latest`: osrm-routed refuses data prepped by a different
+  # OSRM version ("File is incompatible with this version of OSRM" → crash-loop). `:latest` moved
+  # 26.6.5→26.7.1 under a routine deploy pull on 2026-07-01 and broke routing until re-prep.
+  # To upgrade: bump THIS digest + the same default in osrm-prep.sh, re-run the prep, then up.
   osrm:
-    image: ghcr.io/project-osrm/osrm-backend:latest
+    image: ghcr.io/project-osrm/osrm-backend@sha256:021e51ca99fd4c6e650bf61558fb6513ef91d519c83966f1077d984f4157c680 # v26.7.1
     container_name: pguard-prod-osrm
     command: osrm-routed --algorithm mld --max-table-size 8000 /data/thailand-latest.osrm
     volumes:

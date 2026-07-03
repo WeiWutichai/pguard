@@ -20,16 +20,29 @@
 //! WITHOUT the secret (so the simulated path is unaffected); the slip path requires it and fails
 //! gracefully when absent (a typed config error) — see [`HttpSlipVerifier::verify`].
 //!
-//! Response envelope `{ code, message, data }`: `code == "200000"` ("Slip found") = success; any
-//! other code is a FAIL whose `message` is surfaced. We re-validate amount/receiver on OUR side
-//! after a 200000 (never trust the external check alone) — see the handler.
+//! Response envelope `{ code, message, data }`: per the Slip2Go docs' "Success Code" table,
+//! TWO codes carry a verified slip — `200000` "Slip found" (no/before conditions) and `200200`
+//! "Slip is Valid" (the slip ALSO matched every `checkCondition` we sent, e.g. `checkReceiver`;
+//! same `data` shape as Slip found). Any other code is a FAIL whose `message` is surfaced
+//! (`200401` receiver mismatch, `200404` not found, `200501` duplicate, …). We re-validate
+//! amount/receiver on OUR side after either success code (never trust the external check
+//! alone) — see the handler.
 
 use serde::Deserialize;
 
 use shared::error::AppError;
 
-/// Slip2Go's success code ("Slip found"). Any other `code` is a verification FAIL.
+/// Slip2Go success: "Slip found" — the slip is real (returned when no condition gated it).
 pub const SUCCESS_CODE: &str = "200000";
+/// Slip2Go success: "Slip is Valid" — the slip is real AND matched every `checkCondition`
+/// in the request. This is what a receiver-matched slip returns once `checkReceiver` is
+/// sent; treating it as a failure rejected every legitimate QR payment (found 2026-07-03).
+pub const SUCCESS_VALID_CODE: &str = "200200";
+
+/// Both envelope codes that carry a [`VerifiedSlip`]. Anything else is a rejection.
+fn is_success_code(code: &str) -> bool {
+    code == SUCCESS_CODE || code == SUCCESS_VALID_CODE
+}
 
 /// The verified-slip facts we act on (a flattened subset of Slip2Go's `data`). All anti-fraud
 /// re-validation (amount ≥ estimate, receiver == our account) + the our-side dedupe (trans_ref /
@@ -75,8 +88,8 @@ pub struct SlipConditions {
 /// `async-trait`, mirroring `BookingReader`.
 #[allow(async_fn_in_trait)]
 pub trait SlipVerifier: Send + Sync {
-    /// Verify `image` (the raw slip bytes) with the given `conditions`. On Slip2Go `code==200000`
-    /// returns the [`VerifiedSlip`]; on any non-200000 code returns a typed slip-rejection error
+    /// Verify `image` (the raw slip bytes) with the given `conditions`. On a Slip2Go success code
+    /// (`200000` / `200200`) returns the [`VerifiedSlip`]; on any other code returns a typed slip-rejection error
     /// (the external `message` is surfaced); on a config/transport failure a generic error.
     async fn verify(
         &self,
@@ -187,11 +200,12 @@ impl SlipData {
     }
 }
 
-/// Map a verified envelope into either a [`VerifiedSlip`] (200000) or a typed slip-rejection error
-/// carrying the external `message`. Pure (no I/O) so the success/fail branching is unit-testable.
+/// Map a verified envelope into either a [`VerifiedSlip`] (200000 "Slip found" / 200200 "Slip is
+/// Valid") or a typed slip-rejection error carrying the external `message`. Pure (no I/O) so the
+/// success/fail branching is unit-testable.
 fn interpret(envelope: SlipEnvelope) -> Result<VerifiedSlip, AppError> {
-    if envelope.code != SUCCESS_CODE {
-        // A non-200000 code = the slip is not valid / a condition did not match / a duplicate /
+    if !is_success_code(&envelope.code) {
+        // A non-success code = the slip is not valid / a condition did not match / a duplicate /
         // quota. Surface Slip2Go's message under a typed code so the client can branch + retry.
         let msg = if envelope.message.trim().is_empty() {
             "Slip verification failed".to_string()
@@ -221,7 +235,7 @@ fn interpret(envelope: SlipEnvelope) -> Result<VerifiedSlip, AppError> {
 
 // ----- Typed slip-rejection codes (the client branches on `error.code`) -----
 
-/// Slip2Go itself rejected the slip (non-200000): invalid / altered / condition not met / quota.
+/// Slip2Go itself rejected the slip (non-success code): invalid / altered / condition not met / quota.
 pub const SLIP_VERIFY_FAILED_CODE: &str = "SLIP_VERIFY_FAILED";
 /// The slip's amount was less than the server estimate (underpay) — our-side re-validation.
 pub const SLIP_AMOUNT_TOO_LOW_CODE: &str = "SLIP_AMOUNT_TOO_LOW";
@@ -403,6 +417,53 @@ mod tests {
         .unwrap();
         let v = interpret(envelope).unwrap();
         assert_eq!(v.receiver_accounts, vec!["0812345678".to_string()]);
+    }
+
+    #[test]
+    fn interpret_accepts_200200_slip_is_valid() {
+        // REGRESSION (staging 2026-07-03): once `checkReceiver` matches, Slip2Go answers
+        // `200200 "Slip is Valid"` (its condition-matched SUCCESS code, same data shape) —
+        // treating only 200000 as success rejected every legitimate in-app QR payment
+        // right after the receiver fix (#209) started matching.
+        let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
+            "code": "200200",
+            "message": "Slip is Valid",
+            "data": {
+                "referenceId": "22222222-2222-2222-2222-222222222222",
+                "transRef": "184440173749COT08999",
+                "amount": 750.5,
+                "receiver": { "account": {
+                    "bank": { "account": "1234567890" },
+                    "proxy": { "type": "MSISDN", "account": "0863208235" }
+                } }
+            }
+        }))
+        .unwrap();
+        let v = interpret(envelope).unwrap();
+        assert_eq!(v.trans_ref, "184440173749COT08999");
+        assert_eq!(v.amount, dec("750.5"));
+        assert_eq!(
+            v.receiver_accounts,
+            vec!["1234567890".to_string(), "0863208235".to_string()]
+        );
+    }
+
+    #[test]
+    fn interpret_condition_mismatch_codes_stay_rejections() {
+        // The neighbouring 2004xx family (receiver/amount/date mismatch, not found) and the
+        // duplicate code must STAY rejections — only the two documented success codes pass.
+        for code in ["200401", "200402", "200403", "200404", "200501"] {
+            let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
+                "code": code,
+                "message": "mismatch",
+                "data": null
+            }))
+            .unwrap();
+            assert!(
+                interpret(envelope).is_err(),
+                "code {code} must remain a rejection"
+            );
+        }
     }
 
     #[test]
