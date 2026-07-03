@@ -3,6 +3,7 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:built_collection/built_collection.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -13,6 +14,7 @@ part 'verify_otp_request.g.dart';
 /// Properties:
 /// * [phone] 
 /// * [code] - The OTP code (digits)
+/// * [purpose] - Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
 @BuiltValue()
 abstract class VerifyOtpRequest implements Built<VerifyOtpRequest, VerifyOtpRequestBuilder> {
   @BuiltValueField(wireName: r'phone')
@@ -21,6 +23,11 @@ abstract class VerifyOtpRequest implements Built<VerifyOtpRequest, VerifyOtpRequ
   /// The OTP code (digits)
   @BuiltValueField(wireName: r'code')
   String get code;
+
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  @BuiltValueField(wireName: r'purpose')
+  VerifyOtpRequestPurposeEnum? get purpose;
+  // enum purposeEnum {  phone_verify,  pin_reset,  };
 
   VerifyOtpRequest._();
 
@@ -55,6 +62,13 @@ class _$VerifyOtpRequestSerializer implements PrimitiveSerializer<VerifyOtpReque
       object.code,
       specifiedType: const FullType(String),
     );
+    if (object.purpose != null) {
+      yield r'purpose';
+      yield serializers.serialize(
+        object.purpose,
+        specifiedType: const FullType(VerifyOtpRequestPurposeEnum),
+      );
+    }
   }
 
   @override
@@ -92,6 +106,13 @@ class _$VerifyOtpRequestSerializer implements PrimitiveSerializer<VerifyOtpReque
           ) as String;
           result.code = valueDes;
           break;
+        case r'purpose':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(VerifyOtpRequestPurposeEnum),
+          ) as VerifyOtpRequestPurposeEnum;
+          result.purpose = valueDes;
+          break;
         default:
           unhandled.add(key);
           unhandled.add(value);
@@ -119,5 +140,22 @@ class _$VerifyOtpRequestSerializer implements PrimitiveSerializer<VerifyOtpReque
     );
     return result.build();
   }
+}
+
+class VerifyOtpRequestPurposeEnum extends EnumClass {
+
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  @BuiltValueEnumConst(wireName: r'phone_verify')
+  static const VerifyOtpRequestPurposeEnum phoneVerify = _$verifyOtpRequestPurposeEnum_phoneVerify;
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  @BuiltValueEnumConst(wireName: r'pin_reset')
+  static const VerifyOtpRequestPurposeEnum pinReset = _$verifyOtpRequestPurposeEnum_pinReset;
+
+  static Serializer<VerifyOtpRequestPurposeEnum> get serializer => _$verifyOtpRequestPurposeEnumSerializer;
+
+  const VerifyOtpRequestPurposeEnum._(String name): super(name);
+
+  static BuiltSet<VerifyOtpRequestPurposeEnum> get values => _$verifyOtpRequestPurposeEnumValues;
+  static VerifyOtpRequestPurposeEnum valueOf(String name) => _$verifyOtpRequestPurposeEnumValueOf(name);
 }
 

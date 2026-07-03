@@ -7,16 +7,24 @@ use serde::{Deserialize, Serialize};
 // ----- Requests -----
 
 /// `POST /otp/request` body. The captcha must be solved first (`GET /otp/challenge`).
+/// `purpose` BINDS the flow at request time: omitted / `"phone_verify"` → registration
+/// (default keeps older clients working), `"pin_reset"` → forgot-PIN reset. The stored
+/// code carries it, the SMS wording names it, and `/otp/verify` mints the token FROM it —
+/// the code recipient can see what the code is for, and a verifier can never upgrade a
+/// registration code into a credential-reset token.
 #[derive(Debug, Deserialize)]
 pub struct RequestOtpRequest {
     pub phone: String,
     pub challenge_id: String,
     pub answer: String,
+    #[serde(default)]
+    pub purpose: Option<String>,
 }
 
-/// `POST /otp/verify` body. `purpose` selects which flow the issued token is scoped to:
-/// omitted / `"phone_verify"` → registration (the default keeps older clients working),
-/// `"pin_reset"` → forgot-PIN reset. Any other value is rejected before the code is
+/// `POST /otp/verify` body. `purpose` is a CROSS-CHECK only — the issued token's purpose
+/// comes from the value bound at `/otp/request`. Omitted / `"phone_verify"` → expects a
+/// registration code, `"pin_reset"` → expects a reset code; a mismatch with the stored
+/// code burns it and fails generically. Unknown values are rejected before the code is
 /// checked (never burn an OTP attempt on a malformed request).
 #[derive(Debug, Deserialize)]
 pub struct VerifyOtpRequest {

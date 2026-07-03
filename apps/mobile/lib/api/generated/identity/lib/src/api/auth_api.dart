@@ -27,6 +27,8 @@ import 'package:pguard_identity_api/src/model/me200_response.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
+import 'package:pguard_identity_api/src/model/reset_pin200_response.dart';
+import 'package:pguard_identity_api/src/model/reset_pin_request.dart';
 import 'package:pguard_identity_api/src/model/setup2fa200_response.dart';
 import 'package:pguard_identity_api/src/model/switch_role_request.dart';
 import 'package:pguard_identity_api/src/model/update_me_request.dart';
@@ -1136,6 +1138,101 @@ class AuthApi {
     }
 
     return Response<Register202Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Reset a FORGOTTEN PIN via the OTP flow (edge-public)
+  /// Authorized ENTIRELY by a single-use &#x60;phone_verified_token&#x60; from the OTP flow run with &#x60;purpose: \&quot;pin_reset\&quot;&#x60; (bound at &#x60;POST /otp/request&#x60;, minted at &#x60;POST /otp/verify&#x60;) — the phone comes from that token, NEVER the body, so a caller can only reset the PIN of a phone they just proved they own. A registration-purpose (&#x60;phone_verify&#x60;) token is REJECTED (purpose isolation on top of single-use). No current PIN is required (it was forgotten). On success the new Argon2 hash is stored, EVERY session is force-revoked (&#x60;token_revocation_version&#x60; bumped + all refresh families revoked), and the reset is recorded in &#x60;identity.credential_audit&#x60;. Edge-public: no bearer token — the purpose token in the body is the sole credential. 
+  ///
+  /// Parameters:
+  /// * [resetPinRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ResetPin200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ResetPin200Response>> resetPin({ 
+    required ResetPinRequest resetPinRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/reset-pin';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ResetPinRequest);
+      _bodyData = _serializers.serialize(resetPinRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ResetPin200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ResetPin200Response),
+      ) as ResetPin200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ResetPin200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

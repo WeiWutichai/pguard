@@ -52,6 +52,9 @@ lib/src/model/refresh_request.dart
 lib/src/model/register202_response.dart
 lib/src/model/register_request.dart
 lib/src/model/register_result.dart
+lib/src/model/reset_pin200_response.dart
+lib/src/model/reset_pin200_response_all_of_data.dart
+lib/src/model/reset_pin_request.dart
 lib/src/model/resolve_users_request.dart
 lib/src/model/resolved_user.dart
 lib/src/model/session_view.dart

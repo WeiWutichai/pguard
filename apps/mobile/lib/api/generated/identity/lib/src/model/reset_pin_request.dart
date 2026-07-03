@@ -6,44 +6,44 @@
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
-part 'verify_otp_result.g.dart';
+part 'reset_pin_request.g.dart';
 
-/// VerifyOtpResult
+/// ResetPinRequest
 ///
 /// Properties:
-/// * [phoneVerifiedToken] - Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN
-/// * [expiresIn] - Token validity in seconds
+/// * [phoneVerifiedToken] - Single-use JWT from an OTP run bound to `purpose: \"pin_reset\"` (set at `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified phone (the body has NO phone field). A `phone_verify`-purpose (registration) token is rejected. 
+/// * [newPinHash] - SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).
 @BuiltValue()
-abstract class VerifyOtpResult implements Built<VerifyOtpResult, VerifyOtpResultBuilder> {
-  /// Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN
+abstract class ResetPinRequest implements Built<ResetPinRequest, ResetPinRequestBuilder> {
+  /// Single-use JWT from an OTP run bound to `purpose: \"pin_reset\"` (set at `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified phone (the body has NO phone field). A `phone_verify`-purpose (registration) token is rejected. 
   @BuiltValueField(wireName: r'phone_verified_token')
   String get phoneVerifiedToken;
 
-  /// Token validity in seconds
-  @BuiltValueField(wireName: r'expires_in')
-  int get expiresIn;
+  /// SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).
+  @BuiltValueField(wireName: r'new_pin_hash')
+  String get newPinHash;
 
-  VerifyOtpResult._();
+  ResetPinRequest._();
 
-  factory VerifyOtpResult([void updates(VerifyOtpResultBuilder b)]) = _$VerifyOtpResult;
+  factory ResetPinRequest([void updates(ResetPinRequestBuilder b)]) = _$ResetPinRequest;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(VerifyOtpResultBuilder b) => b;
+  static void _defaults(ResetPinRequestBuilder b) => b;
 
   @BuiltValueSerializer(custom: true)
-  static Serializer<VerifyOtpResult> get serializer => _$VerifyOtpResultSerializer();
+  static Serializer<ResetPinRequest> get serializer => _$ResetPinRequestSerializer();
 }
 
-class _$VerifyOtpResultSerializer implements PrimitiveSerializer<VerifyOtpResult> {
+class _$ResetPinRequestSerializer implements PrimitiveSerializer<ResetPinRequest> {
   @override
-  final Iterable<Type> types = const [VerifyOtpResult, _$VerifyOtpResult];
+  final Iterable<Type> types = const [ResetPinRequest, _$ResetPinRequest];
 
   @override
-  final String wireName = r'VerifyOtpResult';
+  final String wireName = r'ResetPinRequest';
 
   Iterable<Object?> _serializeProperties(
     Serializers serializers,
-    VerifyOtpResult object, {
+    ResetPinRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
     yield r'phone_verified_token';
@@ -51,17 +51,17 @@ class _$VerifyOtpResultSerializer implements PrimitiveSerializer<VerifyOtpResult
       object.phoneVerifiedToken,
       specifiedType: const FullType(String),
     );
-    yield r'expires_in';
+    yield r'new_pin_hash';
     yield serializers.serialize(
-      object.expiresIn,
-      specifiedType: const FullType(int),
+      object.newPinHash,
+      specifiedType: const FullType(String),
     );
   }
 
   @override
   Object serialize(
     Serializers serializers,
-    VerifyOtpResult object, {
+    ResetPinRequest object, {
     FullType specifiedType = FullType.unspecified,
   }) {
     return _serializeProperties(serializers, object, specifiedType: specifiedType).toList();
@@ -72,7 +72,7 @@ class _$VerifyOtpResultSerializer implements PrimitiveSerializer<VerifyOtpResult
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
     required List<Object?> serializedList,
-    required VerifyOtpResultBuilder result,
+    required ResetPinRequestBuilder result,
     required List<Object?> unhandled,
   }) {
     for (var i = 0; i < serializedList.length; i += 2) {
@@ -86,12 +86,12 @@ class _$VerifyOtpResultSerializer implements PrimitiveSerializer<VerifyOtpResult
           ) as String;
           result.phoneVerifiedToken = valueDes;
           break;
-        case r'expires_in':
+        case r'new_pin_hash':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(int),
-          ) as int;
-          result.expiresIn = valueDes;
+            specifiedType: const FullType(String),
+          ) as String;
+          result.newPinHash = valueDes;
           break;
         default:
           unhandled.add(key);
@@ -102,12 +102,12 @@ class _$VerifyOtpResultSerializer implements PrimitiveSerializer<VerifyOtpResult
   }
 
   @override
-  VerifyOtpResult deserialize(
+  ResetPinRequest deserialize(
     Serializers serializers,
     Object serialized, {
     FullType specifiedType = FullType.unspecified,
   }) {
-    final result = VerifyOtpResultBuilder();
+    final result = ResetPinRequestBuilder();
     final serializedList = (serialized as Iterable<Object?>).toList();
     final unhandled = <Object?>[];
     _deserializeProperties(

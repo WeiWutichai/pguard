@@ -8,12 +8,18 @@ Flow (all endpoints are PUBLIC / pre-auth — no bearer or service token):
      burned on request via GETDEL.
   2. `POST /otp/request`   — solve captcha → validate Thai phone → tiered abuse
      control (atomic cooldown, daily cap, burst/admin lockout) → store the SHA-256
-     **hash** of a fresh OTP in Postgres → send it via the INET CSGAPI SMS gateway.
-     The response is GENERIC and never reveals whether the phone is registered.
+     **hash** of a fresh OTP in Postgres, BOUND to the requested `purpose`
+     (`phone_verify` for registration — the default — or `pin_reset` for the
+     forgot-PIN reset; the SMS wording names the flow) → send it via the INET
+     CSGAPI SMS gateway. The response is GENERIC and never reveals whether the
+     phone is registered.
   3. `POST /otp/verify`    — atomically increment attempts, enforce max-attempts,
      constant-time compare the SHA-256 of the submitted code, then issue a
-     **single-use** phone-verified JWT (purpose `phone_verify`; its jti is tracked in
-     Redis for later GETDEL by profile/identity).
+     **single-use** phone-verified JWT scoped to the purpose BOUND AT REQUEST
+     TIME (the body's `purpose` is only a cross-check — a mismatch burns the
+     code; a verifier can never upgrade a registration code into a `pin_reset`
+     token). The jti is tracked in Redis under a purpose-scoped key for later
+     GETDEL by the matching identity route.
 
 Security posture (v1 audit / security-reviewer §3): OTP codes stored hashed only;
 constant-time compare; atomic SET NX EX cooldown; daily cap with TTL recovery; atomic

@@ -172,6 +172,10 @@ class AuthController extends _$AuthController {
         'phone': normalizeThaiPhone(state.phone) ?? state.phone,
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
+        // A reset run BINDS the purpose at request time: the code row stores it, the
+        // SMS says "รีเซ็ต PIN", and /otp/verify can only mint a pin_reset token from
+        // it (the server rejects a cross-flow verify). Registration sends no field.
+        if (state.reset) 'purpose': 'pin_reset',
       });
       // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
       // any stale state from a previous, abandoned attempt: the role-stage resume marker + raw

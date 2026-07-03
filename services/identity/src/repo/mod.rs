@@ -958,6 +958,23 @@ pub async fn change_password(
     Ok(new_version)
 }
 
+/// Cheap existence probe: does a LIVE (active, non-deleted) account hold this phone?
+/// Used by `/auth/reset-pin` BEFORE it burns the single-use token jti — a reset attempt
+/// against a phone with no resettable account should fail WITHOUT consuming the token
+/// (otherwise a deactivated-account user burns a full OTP round per attempt). Purely
+/// advisory: the authoritative row lock + re-check still happens inside
+/// [`reset_password_by_phone`]'s transaction.
+pub async fn active_account_exists_by_phone(db: &PgPool, phone: &str) -> Result<bool, AppError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM identity.users \
+         WHERE phone = $1 AND is_active = TRUE AND deleted_at IS NULL",
+    )
+    .bind(phone)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Reset the PIN of an EXISTING account BY PHONE — the "forgot PIN" flow, driven by a verified OTP
 /// token (the phone comes from that token, NEVER the request body). No current-PIN verify: phone
 /// ownership + the single-use token ARE the authorization. Stores the new Argon2 hash, bumps the

@@ -3,6 +3,7 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:built_collection/built_collection.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -14,6 +15,7 @@ part 'request_otp_request.g.dart';
 /// * [phone] - Thai phone — 10 digits starting with 0
 /// * [challengeId] - From GET /otp/challenge
 /// * [answer] - The captcha answer (numeric string)
+/// * [purpose] - Which flow this code is for — BOUND here, stored with the code, and named in the SMS wording. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `/otp/verify` will only mint a `pin_reset` token from a code requested this way.
 @BuiltValue()
 abstract class RequestOtpRequest implements Built<RequestOtpRequest, RequestOtpRequestBuilder> {
   /// Thai phone — 10 digits starting with 0
@@ -27,6 +29,11 @@ abstract class RequestOtpRequest implements Built<RequestOtpRequest, RequestOtpR
   /// The captcha answer (numeric string)
   @BuiltValueField(wireName: r'answer')
   String get answer;
+
+  /// Which flow this code is for — BOUND here, stored with the code, and named in the SMS wording. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `/otp/verify` will only mint a `pin_reset` token from a code requested this way.
+  @BuiltValueField(wireName: r'purpose')
+  RequestOtpRequestPurposeEnum? get purpose;
+  // enum purposeEnum {  phone_verify,  pin_reset,  };
 
   RequestOtpRequest._();
 
@@ -66,6 +73,13 @@ class _$RequestOtpRequestSerializer implements PrimitiveSerializer<RequestOtpReq
       object.answer,
       specifiedType: const FullType(String),
     );
+    if (object.purpose != null) {
+      yield r'purpose';
+      yield serializers.serialize(
+        object.purpose,
+        specifiedType: const FullType(RequestOtpRequestPurposeEnum),
+      );
+    }
   }
 
   @override
@@ -110,6 +124,13 @@ class _$RequestOtpRequestSerializer implements PrimitiveSerializer<RequestOtpReq
           ) as String;
           result.answer = valueDes;
           break;
+        case r'purpose':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(RequestOtpRequestPurposeEnum),
+          ) as RequestOtpRequestPurposeEnum;
+          result.purpose = valueDes;
+          break;
         default:
           unhandled.add(key);
           unhandled.add(value);
@@ -137,5 +158,22 @@ class _$RequestOtpRequestSerializer implements PrimitiveSerializer<RequestOtpReq
     );
     return result.build();
   }
+}
+
+class RequestOtpRequestPurposeEnum extends EnumClass {
+
+  /// Which flow this code is for — BOUND here, stored with the code, and named in the SMS wording. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `/otp/verify` will only mint a `pin_reset` token from a code requested this way.
+  @BuiltValueEnumConst(wireName: r'phone_verify')
+  static const RequestOtpRequestPurposeEnum phoneVerify = _$requestOtpRequestPurposeEnum_phoneVerify;
+  /// Which flow this code is for — BOUND here, stored with the code, and named in the SMS wording. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `/otp/verify` will only mint a `pin_reset` token from a code requested this way.
+  @BuiltValueEnumConst(wireName: r'pin_reset')
+  static const RequestOtpRequestPurposeEnum pinReset = _$requestOtpRequestPurposeEnum_pinReset;
+
+  static Serializer<RequestOtpRequestPurposeEnum> get serializer => _$requestOtpRequestPurposeEnumSerializer;
+
+  const RequestOtpRequestPurposeEnum._(String name): super(name);
+
+  static BuiltSet<RequestOtpRequestPurposeEnum> get values => _$requestOtpRequestPurposeEnumValues;
+  static RequestOtpRequestPurposeEnum valueOf(String name) => _$requestOtpRequestPurposeEnumValueOf(name);
 }
 

@@ -371,11 +371,12 @@ paths:
       tags: [Auth]
       summary: Reset a FORGOTTEN PIN via the OTP flow (edge-public)
       description: |
-        Authorized ENTIRELY by a single-use `phone_verified_token` minted by
-        `POST /otp/verify` with `purpose: "pin_reset"` — the phone comes from that token,
-        NEVER the body, so a caller can only reset the PIN of a phone they just proved
-        they own. A registration-purpose (`phone_verify`) token is REJECTED (purpose
-        isolation on top of single-use). No current PIN is required (it was forgotten).
+        Authorized ENTIRELY by a single-use `phone_verified_token` from the OTP flow run
+        with `purpose: "pin_reset"` (bound at `POST /otp/request`, minted at
+        `POST /otp/verify`) — the phone comes from that token, NEVER the body, so a
+        caller can only reset the PIN of a phone they just proved they own. A
+        registration-purpose (`phone_verify`) token is REJECTED (purpose isolation on
+        top of single-use). No current PIN is required (it was forgotten).
         On success the new Argon2 hash is stored, EVERY session is force-revoked
         (`token_revocation_version` bumped + all refresh families revoked), and the reset
         is recorded in `identity.credential_audit`. Edge-public: no bearer token — the
@@ -1052,8 +1053,9 @@ components:
         phone_verified_token:
           type: string
           description: |
-            Single-use JWT from `POST /otp/verify` with `purpose: "pin_reset"`. Carries the
-            verified phone (the body has NO phone field). A `phone_verify`-purpose
+            Single-use JWT from an OTP run bound to `purpose: "pin_reset"` (set at
+            `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified
+            phone (the body has NO phone field). A `phone_verify`-purpose
             (registration) token is rejected.
         new_pin_hash:
           type: string

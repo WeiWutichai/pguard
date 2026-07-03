@@ -22,6 +22,18 @@ use crate::repo;
 use crate::state::AppState;
 use crate::token::encode_phone_verify_token;
 
+/// Resolve a client-requested token purpose. Omitted = registration (`phone_verify`) —
+/// pre-purpose clients send no field. Unknown values are rejected up front (pure check,
+/// BEFORE any Redis/DB side effect, so a malformed request never burns a captcha,
+/// consumes quota, or spends a verify attempt).
+fn resolve_token_purpose(requested: Option<&str>) -> Result<&'static str, AppError> {
+    match requested {
+        None | Some(shared::auth::PHONE_VERIFY_PURPOSE) => Ok(shared::auth::PHONE_VERIFY_PURPOSE),
+        Some(shared::auth::PIN_RESET_PURPOSE) => Ok(shared::auth::PIN_RESET_PURPOSE),
+        Some(_) => Err(AppError::BadRequest("Unknown token purpose".to_string())),
+    }
+}
+
 /// Captcha TTL — 3 minutes to solve (v1 parity).
 const CAPTCHA_TTL_SECS: u64 = 180;
 /// Daily OTP counter window (24h).
@@ -70,6 +82,12 @@ pub async fn request(
     State(state): State<AppState>,
     Json(req): Json<RequestOtpRequest>,
 ) -> Result<Json<ApiResponse<RequestOtpResponse>>, AppError> {
+    // 0. Resolve the flow purpose (pure; an unknown value must not burn the captcha).
+    //    The purpose is BOUND here: stored with the code, named in the SMS wording, and
+    //    the token minted at /otp/verify comes from the STORED value — a verifier can
+    //    never upgrade a registration code into a pin_reset token.
+    let purpose = resolve_token_purpose(req.purpose.as_deref())?;
+
     let mut conn = state.redis_conn.clone();
 
     // 1. Validate the captcha FIRST — burns the challenge (GETDEL) before any other work
@@ -178,12 +196,18 @@ pub async fn request(
         }
     }
 
-    // 7. Generate the OTP, store ONLY its SHA-256 hash (never plaintext).
+    // 7. Generate the OTP, store ONLY its SHA-256 hash (never plaintext), bound to the
+    //    resolved purpose (row vocabulary: legacy 'register' ≙ phone_verify).
     let code = domain::generate_otp(state.otp_config.length);
     let code_hash = domain::sha256_hex(&code);
     let expires_at =
         chrono::Utc::now() + chrono::TimeDelta::minutes(state.otp_config.expiry_minutes);
-    repo::store_code(&state.db, &phone, &code_hash, expires_at).await?;
+    let row_purpose = if purpose == shared::auth::PIN_RESET_PURPOSE {
+        repo::PURPOSE_PIN_RESET
+    } else {
+        repo::PURPOSE_REGISTER
+    };
+    repo::store_code(&state.db, &phone, &code_hash, row_purpose, expires_at).await?;
 
     // 8. Send via the INET SMS port. Plaintext code never leaves this scope.
     //    On a delivery failure (transient gateway timeout / INET '08' insufficient
@@ -191,7 +215,13 @@ pub async fn request(
     //    steps 4–5 above would otherwise stay consumed, turning a gateway hiccup into a
     //    self-DoS on the user's daily budget. Compensate (best-effort) by reverting the
     //    daily counter and clearing the short cooldown before propagating a GENERIC error.
-    let message = domain::format_otp_message(&code, state.otp_config.expiry_minutes);
+    //    The SMS wording NAMES the flow — a reset code says "รีเซ็ต PIN", so a recipient
+    //    phished into relaying "a registration code" can see what it really unlocks.
+    let message = if purpose == shared::auth::PIN_RESET_PURPOSE {
+        domain::format_pin_reset_otp_message(&code, state.otp_config.expiry_minutes)
+    } else {
+        domain::format_otp_message(&code, state.otp_config.expiry_minutes)
+    };
     let sms_phone = domain::to_international_format(&phone);
     if let Err(send_err) = state.sms.send(&sms_phone, &message).await {
         let compensation: Result<(), redis::RedisError> = redis::pipe()
@@ -224,7 +254,10 @@ pub async fn request(
 /// Verify an OTP. Atomically claims the latest live code (incrementing attempts),
 /// enforces max-attempts, constant-time compares the SHA-256 of the submitted code, and
 /// on success marks it used + issues a single-use phone-verified JWT (jti tracked in
-/// Redis for later GETDEL). All failure paths return a generic error.
+/// Redis for later GETDEL). The token's purpose comes from the purpose BOUND AT
+/// `/otp/request` (stored on the code row) — the request's own `purpose` field is only a
+/// cross-check, so presenting a valid code can never mint a token for a different flow
+/// than the SMS announced. All failure paths return a generic error.
 #[tracing::instrument(skip(state, req))]
 pub async fn verify(
     State(state): State<AppState>,
@@ -236,16 +269,9 @@ pub async fn verify(
         return Err(AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()));
     }
 
-    // Resolve the token purpose UP FRONT (before any Redis/DB side effect) so an unknown
-    // purpose never consumes a verify attempt or burns the code. Omitted = registration —
-    // the pre-purpose clients (and the register flow) send no field.
-    let purpose = match req.purpose.as_deref() {
-        None | Some(shared::auth::PHONE_VERIFY_PURPOSE) => shared::auth::PHONE_VERIFY_PURPOSE,
-        Some(shared::auth::PIN_RESET_PURPOSE) => shared::auth::PIN_RESET_PURPOSE,
-        Some(_) => {
-            return Err(AppError::BadRequest("Unknown token purpose".to_string()));
-        }
-    };
+    // Resolve the CLIENT-declared purpose UP FRONT (pure — an unknown value never
+    // consumes a verify attempt). Omitted = registration (pre-purpose clients).
+    let requested_purpose = resolve_token_purpose(req.purpose.as_deref())?;
 
     // Atomically find + increment-attempts on the latest live code.
     let row = repo::claim_for_verify(&state.db, &phone)
@@ -265,6 +291,23 @@ pub async fn verify(
     let submitted_hash = domain::sha256_hex(&req.code);
     if !domain::hashes_match(&row.code_hash, &submitted_hash) {
         return Err(AppError::BadRequest("OTP ไม่ถูกต้อง".to_string()));
+    }
+
+    // The AUTHORITATIVE purpose is the one bound at /otp/request (stored on the row;
+    // legacy 'register' rows predate the split and are registration codes).
+    let purpose = if row.purpose == repo::PURPOSE_PIN_RESET {
+        shared::auth::PIN_RESET_PURPOSE
+    } else {
+        shared::auth::PHONE_VERIFY_PURPOSE
+    };
+
+    // Cross-check the verifier's declared flow against the bound one. A CORRECT code
+    // presented for the WRONG flow is exactly the relay/upgrade attempt the binding
+    // exists to stop (e.g. a registration code presented with purpose=pin_reset) — burn
+    // the code (the SMS owner must re-request) and fail generically.
+    if requested_purpose != purpose {
+        repo::mark_used(&state.db, row.id).await?;
+        return Err(AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()));
     }
 
     // Correct — burn the code.
