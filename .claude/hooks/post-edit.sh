@@ -1,10 +1,21 @@
 #!/bin/bash
-# Post-edit hook: runs auto-format + lint after Claude Code edits files
+# Post-edit hook (PostToolUse, matcher "Edit|Write|MultiEdit"): auto-format + lint after an edit.
 # Supports: .rs (cargo fmt + clippy + unwrap check), .dart (dart format + analyze),
-#           .ts/.tsx (prettier + eslint if configured), .py (ruff format + check)
-# Silent on success, verbose on issues. Never blocks (exit 0).
+#           .ts/.tsx (prettier + eslint if configured), .py (ruff format + check).
+# Claude Code delivers the tool call as JSON on STDIN (NOT argv); the edited path lives at
+# `.tool_input.file_path`. Silent on success, verbose on issues. Never blocks (exit 0).
+# See https://code.claude.com/docs/en/hooks.md
 
-FILE="$1"
+INPUT=$(cat)
+
+# Extract the edited file path from the stdin JSON — jq if present, else a python3 fallback.
+if command -v jq >/dev/null 2>&1; then
+    FILE=$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty')
+elif command -v python3 >/dev/null 2>&1; then
+    FILE=$(printf '%s' "$INPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))' 2>/dev/null)
+else
+    FILE=""
+fi
 
 # Skip if no file
 if [[ -z "$FILE" ]] || [[ ! -f "$FILE" ]]; then
