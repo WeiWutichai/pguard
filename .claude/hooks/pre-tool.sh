@@ -1,9 +1,21 @@
 #!/bin/bash
-# Pre-tool hook: block destructive bash commands
-# Runs before every bash tool invocation
-# Exit 2 = blocked
+# Pre-tool hook (PreToolUse, matcher "Bash"): block destructive bash commands.
+# Claude Code delivers the tool call as JSON on STDIN (NOT argv / env vars); the Bash
+# command lives at `.tool_input.command`. Exit 2 = block the call (stderr is shown to Claude).
+# See https://code.claude.com/docs/en/hooks.md
 
-COMMAND="$1"
+INPUT=$(cat)
+
+# Extract the command from the stdin JSON — jq if present, else a python3 fallback so the hook
+# still works on a machine without jq. Empty (non-Bash / malformed) → nothing to check → allow.
+if command -v jq >/dev/null 2>&1; then
+    COMMAND=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty')
+elif command -v python3 >/dev/null 2>&1; then
+    COMMAND=$(printf '%s' "$INPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' 2>/dev/null)
+else
+    COMMAND=""
+fi
+[[ -z "$COMMAND" ]] && exit 0
 
 # Dangerous patterns — block by default; user can confirm and run themselves
 DANGEROUS_PATTERNS=(
@@ -44,9 +56,12 @@ DANGEROUS_PATTERNS=(
 
 for pattern in "${DANGEROUS_PATTERNS[@]}"; do
     if echo "$COMMAND" | grep -qiE "$pattern"; then
-        echo "🚫 BLOCKED: Destructive pattern detected: '$pattern'"
-        echo "   Command: $COMMAND"
-        echo "   If this is intentional, run it yourself outside Claude Code."
+        # Exit 2 blocks the tool call; Claude Code surfaces STDERR (not stdout) as the reason.
+        {
+            echo "🚫 BLOCKED: Destructive pattern detected: '$pattern'"
+            echo "   Command: $COMMAND"
+            echo "   If this is intentional, run it yourself outside Claude Code."
+        } >&2
         exit 2
     fi
 done

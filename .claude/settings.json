@@ -1,23 +1,23 @@
 {
   "hooks": {
-    "pre_tool_use": [
+    "PreToolUse": [
       {
-        "matcher": "bash",
+        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/pre-tool.sh \"$TOOL_INPUT\""
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/pre-tool.sh\""
           }
         ]
       }
     ],
-    "post_tool_use": [
+    "PostToolUse": [
       {
-        "matcher": "write_file|edit_file|str_replace",
+        "matcher": "Edit|Write|MultiEdit",
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/post-edit.sh \"$TOOL_INPUT_PATH\""
+            "command": "bash \"${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit.sh\""
           }
         ]
       }
