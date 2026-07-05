@@ -143,6 +143,27 @@ pub async fn guard_ratings(
     Ok((summary, reviews))
 }
 
+/// The CALLER's OWN review of one assignment (booking), if any. Self-scoped by `customer_id`,
+/// so it returns only the caller's row — never another customer's — which is why the handler
+/// needs no booking-owner read. `None` when the caller has not reviewed this assignment; the
+/// client uses that to gate the "rate the guard" entry instead of relying on the submit 409.
+pub async fn get_own_review(
+    db: &sqlx::PgPool,
+    assignment_id: Uuid,
+    customer_id: Uuid,
+) -> Result<Option<ReviewResponse>, AppError> {
+    let sql = format!(
+        "SELECT {REVIEW_COLUMNS} FROM rating.guard_reviews \
+         WHERE assignment_id = $1 AND customer_id = $2"
+    );
+    let review = sqlx::query_as::<_, ReviewResponse>(&sql)
+        .bind(assignment_id)
+        .bind(customer_id)
+        .fetch_optional(db)
+        .await?;
+    Ok(review)
+}
+
 /// Aggregate a guard's VISIBLE overall ratings into `{ count, average }`. The visibility
 /// filter lives in the SQL; the aggregation math is the pure [`domain::compute_summary`].
 pub async fn guard_summary(db: &sqlx::PgPool, guard_id: Uuid) -> Result<RatingSummary, AppError> {
@@ -455,6 +476,68 @@ mod db_tests {
         .await
         .expect("count");
         assert_eq!(count, 1, "one-per-assignment enforced");
+
+        cleanup(&pool, assignment_id, guard_id).await;
+    }
+
+    /// get_own_review returns ONLY the caller's own row: present for the author, `None` for a
+    /// different customer or a different assignment (the self-scoped gate the client relies on).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn get_own_review_is_self_scoped() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let guard_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let other_customer = Uuid::new_v4();
+        let assignment_id = Uuid::new_v4();
+
+        // No review yet → None.
+        assert!(
+            get_own_review(&pool, assignment_id, customer_id)
+                .await
+                .expect("query")
+                .is_none(),
+            "no review yet → None"
+        );
+
+        submit_review_tx(
+            &pool,
+            guard_id,
+            customer_id,
+            assignment_id,
+            &review(4),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("submit");
+
+        // The author reads their own review.
+        let mine = get_own_review(&pool, assignment_id, customer_id)
+            .await
+            .expect("query")
+            .expect("author sees their review");
+        assert_eq!(mine.overall_rating, 4);
+        assert_eq!(mine.guard_id, guard_id);
+
+        // A DIFFERENT customer never sees it (self-scoped, no IDOR).
+        assert!(
+            get_own_review(&pool, assignment_id, other_customer)
+                .await
+                .expect("query")
+                .is_none(),
+            "another customer cannot read this review"
+        );
+        // A different assignment → None.
+        assert!(
+            get_own_review(&pool, Uuid::new_v4(), customer_id)
+                .await
+                .expect("query")
+                .is_none(),
+            "a different assignment → None"
+        );
 
         cleanup(&pool, assignment_id, guard_id).await;
     }

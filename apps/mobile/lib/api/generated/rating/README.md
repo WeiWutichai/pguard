@@ -89,6 +89,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**listAdminReviews**](doc/AdminApi.md#listadminreviews) | **GET** /admin/reviews | List reviews with filters (admin only)
 [*AdminApi*](doc/AdminApi.md) | [**setReviewVisibility**](doc/AdminApi.md#setreviewvisibility) | **PUT** /admin/reviews/{id}/visibility | Toggle a review&#39;s public visibility (admin only)
 [*ReviewsApi*](doc/ReviewsApi.md) | [**getGuardRatings**](doc/ReviewsApi.md#getguardratings) | **GET** /guards/{id}/ratings | Guard ratings — visible reviews + aggregate summary
+[*ReviewsApi*](doc/ReviewsApi.md) | [**getOwnReview**](doc/ReviewsApi.md#getownreview) | **GET** /assignments/{id}/review | The caller&#39;s OWN review of this assignment, if any (customer only)
 [*ReviewsApi*](doc/ReviewsApi.md) | [**submitReview**](doc/ReviewsApi.md#submitreview) | **POST** /assignments/{id}/review | Submit a review for a completed assignment (customer only)
 
 
@@ -103,6 +104,7 @@ Class | Method | HTTP request | Description
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetGuardRatings200Response](doc/GetGuardRatings200Response.md)
  - [GetInternalRatingSummary200Response](doc/GetInternalRatingSummary200Response.md)
+ - [GetOwnReview200Response](doc/GetOwnReview200Response.md)
  - [GuardRatings](doc/GuardRatings.md)
  - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListAdminReviews200Response](doc/ListAdminReviews200Response.md)

@@ -7,12 +7,14 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_payment_controller.dart';
 import '../../core/controllers/booking_status_controller.dart';
+import '../../core/controllers/customer_home_controller.dart';
 import '../../core/controllers/customer_public_profile_controller.dart';
 import '../../core/controllers/guard_clock.dart';
 import '../../core/controllers/guard_location_controller.dart';
 import '../../core/controllers/guard_public_profile_controller.dart';
 import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/my_review_controller.dart';
 import '../../core/controllers/progress_reports_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/booking.dart';
@@ -764,19 +766,14 @@ class _Actions extends ConsumerWidget {
                   ),
                 )
               // Once the job is completed, the CUSTOMER's next step is the review (Customer App
-              // ⑫). One review per assignment — a duplicate is handled by the review screen (409
-              // → "already reviewed"). #97: rating is CUSTOMER-ONLY — gate by ownership so a guard
-              // who deep-links here for their own job NEVER sees a rating CTA; they get a "View
-              // receipt" action instead (the same receipt the customer sees, booking-derived).
+              // ⑫). One review per assignment: [_RateGuardButton] gates the CTA on whether the
+              // customer has ALREADY reviewed (GET /assignments/{id}/review) so a re-open shows a
+              // "rated" state instead of re-entering the form (the 409 stays the server backstop).
+              // #97: rating is CUSTOMER-ONLY — gate by ownership so a guard who deep-links here for
+              // their own job NEVER sees a rating CTA; they get a "View receipt" action instead.
               : booking.status == BookingStatus.completed
                   ? (isOwner
-                      ? PgPrimaryButton(
-                          label:
-                              isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
-                          color: PgTokens.colorAmber500,
-                          onPressed: () =>
-                              context.push('/booking/${booking.id}/review'),
-                        )
+                      ? _RateGuardButton(bookingId: booking.id)
                       : _ViewReceiptButton(booking: booking, isOwner: false))
                   // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
                   // trailing action opens the booking-details sheet (address / schedule /
@@ -792,6 +789,46 @@ class _Actions extends ConsumerWidget {
                     ),
         ),
       ],
+    );
+  }
+}
+
+/// The customer's completion CTA for a `completed` booking: "Rate the guard" when they have NOT
+/// reviewed yet, or a passive "ให้คะแนนแล้ว/Rated" state once they have. Gated on
+/// [myReviewProvider] (`GET /assignments/{id}/review`) so re-opening a completed booking no longer
+/// re-offers the form and dead-ends on the submit 409 (the reported "can rate again" bug). While the
+/// rated-state is unknown (loading/error) it optimistically offers the form — the review screen
+/// re-checks on entry, and the server's one-per-assignment 409 is the final backstop.
+class _RateGuardButton extends ConsumerWidget {
+  const _RateGuardButton({required this.bookingId});
+
+  final String bookingId;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // Already reviewed only when the fetch resolved to a non-null review; loading/error/404 → not
+    // yet (offer the form). `.valueOrNull` is null in all of those "not confirmed rated" cases.
+    final alreadyRated = ref.watch(myReviewProvider(bookingId)).valueOrNull != null;
+
+    if (alreadyRated) {
+      // Passive "rated" state — no navigation into the form. A tap just reassures the customer.
+      return PgPrimaryButton(
+        label: isThai ? 'ให้คะแนนแล้ว' : 'Rated',
+        color: PgTokens.colorGreen700,
+        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isThai
+                ? 'คุณให้คะแนนงานนี้แล้ว ขอบคุณสำหรับรีวิว'
+                : "You've already rated this job. Thanks for your review!"),
+          ),
+        ),
+      );
+    }
+    return PgPrimaryButton(
+      label: isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
+      color: PgTokens.colorAmber500,
+      onPressed: () => context.push('/booking/$bookingId/review'),
     );
   }
 }
@@ -862,6 +899,11 @@ class _CompletionReviewPanelState
       return;
     }
     if (approve) {
+      // The booking just moved to `completed`, so the customer home's one-shot `GET /bookings`
+      // snapshot (the "งานที่กำลังดำเนิน" ongoing-job card) is now stale. Invalidate it here so it
+      // re-pulls the moment the customer lands back on home — home does NOT observe the booking-
+      // status WS, so without this it stays stale until pull-to-refresh / app resume.
+      ref.invalidate(customerHomeControllerProvider);
       // Settle is in flight (booking.completed → payment reconcile). Move to the summary; it
       // reads the reconciled payment and forces the customer on to rate the guard.
       context.pushReplacement('/booking/${widget.bookingId}/summary');

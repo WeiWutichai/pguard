@@ -19,7 +19,7 @@ use crate::booking_client::BookingReader;
 use crate::domain::{is_reviewable_status, validate_review};
 use crate::models::{
     AdminReviewsQuery, AdminReviewsResponse, CreateReviewRequest, GuardRatingsResponse,
-    RatingSummaryResponse, SetVisibilityRequest, SubmitReviewResponse,
+    RatingSummaryResponse, ReviewResponse, SetVisibilityRequest, SubmitReviewResponse,
 };
 use crate::repo;
 use crate::state::{RatingDeps, RatingInternalDeps};
@@ -92,6 +92,32 @@ pub async fn submit_review<S: RatingDeps>(
     .await?;
 
     Ok(Json(ApiResponse::success(SubmitReviewResponse { id })))
+}
+
+/// GET /assignments/{id}/review — the CALLER's OWN review of this assignment (booking), if any.
+///
+/// Self-scoped by `customer_id` (you can only ever read YOUR review), so there is no IDOR surface
+/// and no authoritative booking read is needed. `404` when the caller has not reviewed this
+/// assignment. The client calls this to GATE the "rate the guard" entry — once reviewed it shows a
+/// "rated" state instead of re-opening the rating form — so a customer never re-submits and hits the
+/// `submit_review` 409 dead-end (the UNIQUE-per-assignment guarantee is unchanged; this only makes
+/// the client aware of it up front).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, assignment_id = %assignment_id))]
+pub async fn get_own_review<S: RatingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(assignment_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<ReviewResponse>>, AppError> {
+    if user.role != "customer" {
+        return Err(AppError::Forbidden(
+            "Only customers have reviews".to_string(),
+        ));
+    }
+    // Self-scoped read → replica (C5.3). Only the caller's own row can match.
+    let review = repo::get_own_review(state.db_read(), assignment_id, user.user_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("You have not reviewed this booking".to_string()))?;
+    Ok(Json(ApiResponse::success(review)))
 }
 
 /// GET /guards/{id}/ratings — guard discovery: visible reviews + aggregate summary.
@@ -285,7 +311,10 @@ mod tests {
         };
         Some(
             Router::new()
-                .route("/assignments/{id}/review", post(submit_review::<TestDeps>))
+                .route(
+                    "/assignments/{id}/review",
+                    post(submit_review::<TestDeps>).get(get_own_review::<TestDeps>),
+                )
                 .route("/admin/reviews", get(list_admin_reviews::<TestDeps>))
                 .route("/guards/{id}/ratings", get(guard_ratings::<TestDeps>))
                 .with_state(deps),
@@ -330,6 +359,44 @@ mod tests {
         assert_eq!(
             submit(app, None, review_body(5)).await,
             StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// GET the caller's own review with NO token → 401 (short-circuits before any DB read).
+    #[tokio::test]
+    async fn get_own_review_rejects_missing_token() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let req = Request::builder()
+            .method("GET")
+            .uri("/assignments/00000000-0000-0000-0000-000000000001/review")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::UNAUTHORIZED
+        );
+    }
+
+    /// GET the caller's own review as a NON-customer (guard) → 403 (role gate before any DB read).
+    #[tokio::test]
+    async fn get_own_review_rejects_non_customer_role() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let tok = token(Uuid::new_v4(), "guard");
+        let req = Request::builder()
+            .method("GET")
+            .uri("/assignments/00000000-0000-0000-0000-000000000001/review")
+            .header("authorization", format!("Bearer {tok}"))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(
+            app.oneshot(req).await.unwrap().status(),
+            StatusCode::FORBIDDEN
         );
     }
 
