@@ -39,7 +39,8 @@ enum ChatMessageType {
 
   final String wire;
 
-  bool get isMedia => this == ChatMessageType.image || this == ChatMessageType.video;
+  bool get isMedia =>
+      this == ChatMessageType.image || this == ChatMessageType.video;
 
   /// Parse a wire value; unknown/absent → [text] (forward-compatible).
   static ChatMessageType parse(String? value) {
@@ -79,6 +80,7 @@ class ChatMessage {
     required this.createdAt,
     this.senderRole,
     this.content,
+    this.read = false,
   });
 
   final String id;
@@ -91,6 +93,11 @@ class ChatMessage {
   final ChatMessageType type;
   final DateTime createdAt;
 
+  /// Whether the COUNTERPART has read this message (server-computed against their read receipt).
+  /// Drives the sender's single-tick (sent) vs double-tick (read). Only the REST message-list
+  /// carries a real value; a WS-pushed / optimistic message defaults to `false` (correctly unread).
+  final bool read;
+
   /// `true` when this message was sent in the caller's acting role → render on the RIGHT (me).
   /// Alignment by role, NEVER by sender_id (rule: a user can be guard here, customer elsewhere).
   bool isFromRole(ChatRole acting) => senderRole == acting.wire;
@@ -102,16 +109,21 @@ class ChatMessage {
         senderRole: json['sender_role'] as String?,
         content: json['content'] as String?,
         type: ChatMessageType.parse(json['message_type'] as String?),
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
-            DateTime.now().toUtc(),
+        createdAt:
+            DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
+                DateTime.now().toUtc(),
+        read: json['read'] as bool? ?? false,
       );
 
   /// Parse a decoded WS frame into a message, or `null` if it is not a message (e.g. a
   /// `{ "type":"error", ... }` frame, or a malformed/heartbeat frame). Lets the socket layer
   /// `.where((m) => m != null)` so only real messages reach the controller.
   static ChatMessage? tryParse(Map<String, dynamic> json) {
-    if (json['type'] == 'error') return null; // server error frame — not a message
-    if (json['id'] is! String || json['conversation_id'] is! String) return null;
+    // server error frame — not a message
+    if (json['type'] == 'error') return null;
+    if (json['id'] is! String || json['conversation_id'] is! String) {
+      return null;
+    }
     return ChatMessage.fromJson(json);
   }
 }
@@ -151,8 +163,9 @@ class Conversation {
   factory Conversation.fromJson(Map<String, dynamic> json) => Conversation(
         id: json['id'] as String,
         requestId: json['request_id'] as String,
-        createdAt: DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
-            DateTime.now().toUtc(),
+        createdAt:
+            DateTime.tryParse(json['created_at'] as String? ?? '')?.toUtc() ??
+                DateTime.now().toUtc(),
         unreadCount: (json['unread_count'] as num?)?.toInt() ?? 0,
         participantId: json['participant_id'] as String?,
         participantName: json['participant_name'] as String?,
@@ -213,8 +226,9 @@ class Attachment {
   final int? fileSize;
 
   /// The message type to send for this attachment (`image`/`video` from the MIME family).
-  ChatMessageType get messageType =>
-      mimeType.startsWith('video/') ? ChatMessageType.video : ChatMessageType.image;
+  ChatMessageType get messageType => mimeType.startsWith('video/')
+      ? ChatMessageType.video
+      : ChatMessageType.image;
 
   factory Attachment.fromJson(Map<String, dynamic> json) => Attachment(
         id: json['id'] as String,

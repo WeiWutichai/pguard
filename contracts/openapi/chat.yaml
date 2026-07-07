@@ -468,6 +468,13 @@ components:
         content: { type: string, nullable: true }
         message_type: { $ref: '#/components/schemas/MessageType' }
         created_at: { type: string, format: date-time }
+        read:
+          type: boolean
+          default: false
+          description: >-
+            Whether the COUNTERPART has read this message (their read receipt covers it). Drives the
+            sender's single-tick (sent) vs double-tick (read). Only the message-list carries a real
+            value; a WS-pushed / just-sent message defaults to false (correctly unread).
 
     AdminEnrichedMessage:
       type: object

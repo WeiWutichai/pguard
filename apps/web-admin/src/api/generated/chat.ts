@@ -298,6 +298,11 @@ export interface components {
             message_type: components["schemas"]["MessageType"];
             /** Format: date-time */
             created_at: string;
+            /**
+             * @description Whether the COUNTERPART has read this message (their read receipt covers it). Drives the sender's single-tick (sent) vs double-tick (read). Only the message-list carries a real value; a WS-pushed / just-sent message defaults to false (correctly unread).
+             * @default false
+             */
+            read: boolean;
         };
         /** @description An admin-audit message enriched into RENDERABLE data. The raw `content` is parsed per `message_type`: text rows carry `text`; image/video rows resolve to a presigned `attachment` (with the raw `attachment_id` echoed even if resolution fails); a call-summary `system` row parses into a structured `call_event` (and `kind` becomes `call-event`). READ-ONLY (no moderation fields — Phase D). */
         AdminEnrichedMessage: {

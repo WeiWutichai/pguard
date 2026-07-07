@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../core/controllers/guard_avatar_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/guard_ratings_controller.dart';
 import '../../core/controllers/locale_controller.dart';
@@ -105,12 +106,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
                 onPressed: () => context.push(ChatRoutes.list(ChatRole.guard)),
               ),
             ),
-            IconButton(
-              icon: const Icon(Icons.person_outline,
-                  color: Colors.white, size: 22),
-              tooltip: isThai ? 'โปรไฟล์' : 'Profile',
-              onPressed: () => context.push('/profile'),
-            ),
+            _GuardProfileAvatarButton(isThai: isThai),
           ],
         ),
       ),
@@ -318,6 +314,39 @@ class GuardHomeStats {
   }
 }
 
+/// The header's profile entry: the guard's real profile PHOTO when set, falling back to a person
+/// icon on green. `foregroundImage` shows the avatar on top and reverts to the `child` fallback if
+/// it is null or fails to load. Pushes `/profile` (mirrors the customer header avatar).
+class _GuardProfileAvatarButton extends ConsumerWidget {
+  const _GuardProfileAvatarButton({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final avatarUrl = ref.watch(guardAvatarControllerProvider).valueOrNull;
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: PgTokens.space1),
+      child: Tooltip(
+        message: isThai ? 'โปรไฟล์' : 'Profile',
+        child: InkWell(
+          onTap: () => context.push('/profile'),
+          customBorder: const CircleBorder(),
+          child: CircleAvatar(
+            radius: 16,
+            backgroundColor: PgTokens.colorGreen800,
+            foregroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
+                ? NetworkImage(avatarUrl)
+                : null,
+            child:
+                const Icon(Icons.person_outline, size: 16, color: Colors.white),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Screen 1 stats row — 3 equal cards: today's earnings / jobs today / rating.
 class _StatsRow extends StatelessWidget {
   const _StatsRow({required this.bookings, required this.isThai});
@@ -400,7 +429,8 @@ class _StatCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: PgTokens.colorBorder),
         boxShadow: const [
-          BoxShadow(color: Color(0x0A000000), blurRadius: 4, offset: Offset(0, 2)),
+          BoxShadow(
+              color: Color(0x0A000000), blurRadius: 4, offset: Offset(0, 2)),
         ],
       ),
       child: Column(
@@ -642,7 +672,9 @@ class _EmptyJobsCard extends StatelessWidget {
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                    color: Color(0x14000000), blurRadius: 8, offset: Offset(0, 2)),
+                    color: Color(0x14000000),
+                    blurRadius: 8,
+                    offset: Offset(0, 2)),
               ],
             ),
             child: Icon(icon, size: 30, color: PgTokens.colorGreen600),
@@ -692,8 +724,8 @@ class _DashedRRectPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1.3;
     final path = Path()
-      ..addRRect(RRect.fromRectAndRadius(
-          Offset.zero & size, Radius.circular(radius)));
+      ..addRRect(
+          RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius)));
     const dash = 5.0;
     const gap = 4.0;
     for (final metric in path.computeMetrics()) {

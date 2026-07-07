@@ -19,6 +19,7 @@ part 'message.g.dart';
 /// * [content] 
 /// * [messageType] 
 /// * [createdAt] 
+/// * [read] - Whether the COUNTERPART has read this message (their read receipt covers it). Drives the sender's single-tick (sent) vs double-tick (read). Only the message-list carries a real value; a WS-pushed / just-sent message defaults to false (correctly unread).
 @BuiltValue()
 abstract class Message implements Built<Message, MessageBuilder> {
   @BuiltValueField(wireName: r'id')
@@ -44,12 +45,17 @@ abstract class Message implements Built<Message, MessageBuilder> {
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
 
+  /// Whether the COUNTERPART has read this message (their read receipt covers it). Drives the sender's single-tick (sent) vs double-tick (read). Only the message-list carries a real value; a WS-pushed / just-sent message defaults to false (correctly unread).
+  @BuiltValueField(wireName: r'read')
+  bool? get read;
+
   Message._();
 
   factory Message([void updates(MessageBuilder b)]) = _$Message;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(MessageBuilder b) => b;
+  static void _defaults(MessageBuilder b) => b
+      ..read = false;
 
   @BuiltValueSerializer(custom: true)
   static Serializer<Message> get serializer => _$MessageSerializer();
@@ -106,6 +112,13 @@ class _$MessageSerializer implements PrimitiveSerializer<Message> {
       object.createdAt,
       specifiedType: const FullType(DateTime),
     );
+    if (object.read != null) {
+      yield r'read';
+      yield serializers.serialize(
+        object.read,
+        specifiedType: const FullType(bool),
+      );
+    }
   }
 
   @override
@@ -177,6 +190,13 @@ class _$MessageSerializer implements PrimitiveSerializer<Message> {
             specifiedType: const FullType(DateTime),
           ) as DateTime;
           result.createdAt = valueDes;
+          break;
+        case r'read':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.read = valueDes;
           break;
         default:
           unhandled.add(key);
