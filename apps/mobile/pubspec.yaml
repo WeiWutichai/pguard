@@ -79,6 +79,7 @@ dependencies:
   pguard_design_tokens:
     path: ../design-tokens
   video_player: ^2.11.1
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

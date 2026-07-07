@@ -24,13 +24,39 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
   final _fullName = TextEditingController();
   final _address = TextEditingController();
   // Guard
-  final _gender = TextEditingController();
+  String? _gender; // dropdown (male|female|other)
   final _dob = TextEditingController();
   final _experience = TextEditingController();
   final _workplace = TextEditingController();
-  final _bankName = TextEditingController();
+  String? _bankName; // dropdown (Thai bank name)
   final _accountName = TextEditingController();
   final _newAccountNumber = TextEditingController();
+
+  // Dropdown options — reuse the registration form's lists so edit + register agree. `value` is the
+  // stored code (locale-independent: male/female/other; the Thai bank name); `label` is localized.
+  static List<({String value, String label})> _genders(bool isThai) => [
+        (value: 'male', label: isThai ? 'ชาย' : 'Male'),
+        (value: 'female', label: isThai ? 'หญิง' : 'Female'),
+        (value: 'other', label: isThai ? 'อื่นๆ' : 'Other'),
+      ];
+  static List<({String value, String label})> _banks(bool isThai) => [
+        (
+          value: 'ธนาคารกสิกรไทย',
+          label: isThai ? 'ธนาคารกสิกรไทย' : 'Kasikornbank'
+        ),
+        (
+          value: 'ธนาคารไทยพาณิชย์',
+          label: isThai ? 'ธนาคารไทยพาณิชย์' : 'Siam Commercial Bank'
+        ),
+        (
+          value: 'ธนาคารกรุงเทพ',
+          label: isThai ? 'ธนาคารกรุงเทพ' : 'Bangkok Bank'
+        ),
+        (
+          value: 'ธนาคารกรุงไทย',
+          label: isThai ? 'ธนาคารกรุงไทย' : 'Krung Thai Bank'
+        ),
+      ];
 
   bool _saving = false;
   bool _seeded = false;
@@ -41,11 +67,15 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     if (_seeded) return;
     _fullName.text = p.fullName ?? '';
     _address.text = p.address ?? '';
-    _gender.text = p.gender ?? '';
+    // Coerce to null when the stored value isn't a dropdown option (DropdownButtonFormField asserts
+    // on an initialValue with no matching item — e.g. a legacy free-typed bank/gender).
+    _gender =
+        const ['male', 'female', 'other'].contains(p.gender) ? p.gender : null;
     _dob.text = p.dateOfBirth ?? '';
     _experience.text = p.yearsOfExperience?.toString() ?? '';
     _workplace.text = p.previousWorkplace ?? '';
-    _bankName.text = p.bankName ?? '';
+    _bankName =
+        _banks(true).any((b) => b.value == p.bankName) ? p.bankName : null;
     _accountName.text = p.accountName ?? '';
     _seeded = true;
   }
@@ -55,11 +85,9 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     for (final c in [
       _fullName,
       _address,
-      _gender,
       _dob,
       _experience,
       _workplace,
-      _bankName,
       _accountName,
       _newAccountNumber,
     ]) {
@@ -79,11 +107,11 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     final String? err;
     if (p.isGuard) {
       err = await ref.read(profileControllerProvider.notifier).save(
-            gender: trimOrNull(_gender),
+            gender: _gender,
             dateOfBirth: trimOrNull(_dob),
             yearsOfExperience: int.tryParse(_experience.text.trim()),
             previousWorkplace: trimOrNull(_workplace),
-            bankName: trimOrNull(_bankName),
+            bankName: _bankName,
             accountName: trimOrNull(_accountName),
             // Only send a NEW account number — never echo the masked value back.
             accountNumber: trimOrNull(_newAccountNumber),
@@ -116,7 +144,8 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
     if (p != null) _seed(p);
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'แก้ไขโปรไฟล์' : 'Edit profile',
         subtitle: isThai ? 'แก้ไขข้อมูลโปรไฟล์ของคุณ' : 'Edit profile',
         showBack: true,
@@ -181,7 +210,12 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
       ];
 
   List<Widget> _guardFields(UserProfile p, bool isThai) => [
-        _Field(label: isThai ? 'เพศ' : 'Gender', controller: _gender),
+        _DropdownField(
+          label: isThai ? 'เพศ' : 'Gender',
+          value: _gender,
+          items: _genders(isThai),
+          onChanged: (v) => setState(() => _gender = v),
+        ),
         const SizedBox(height: PgTokens.space3),
         _Field(
             label: isThai ? 'วันเกิด (ปปปป-ดด-วว)' : 'Date of birth',
@@ -199,7 +233,12 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
             label: isThai ? 'ที่ทำงานก่อนหน้า' : 'Previous workplace',
             controller: _workplace),
         const SizedBox(height: PgTokens.space3),
-        _Field(label: isThai ? 'ธนาคาร' : 'Bank', controller: _bankName),
+        _DropdownField(
+          label: isThai ? 'ธนาคาร' : 'Bank',
+          value: _bankName,
+          items: _banks(isThai),
+          onChanged: (v) => setState(() => _bankName = v),
+        ),
         const SizedBox(height: PgTokens.space3),
         _Field(
             label: isThai ? 'ชื่อบัญชี' : 'Account name',
@@ -217,6 +256,47 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
           inputFormatters: [FilteringTextInputFormatter.digitsOnly],
         ),
       ];
+}
+
+/// A labelled dropdown styled like [_Field] (label above the control). Used for the guard profile's
+/// gender + bank fields so they're PICKED from a fixed list, not free-typed.
+class _DropdownField extends StatelessWidget {
+  const _DropdownField({
+    required this.label,
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final String label;
+  final String? value;
+  final List<({String value, String label})> items;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style:
+                const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600)),
+        const SizedBox(height: PgTokens.space1),
+        DropdownButtonFormField<String>(
+          initialValue: value,
+          isExpanded: true,
+          items: [
+            for (final it in items)
+              DropdownMenuItem(
+                value: it.value,
+                child: Text(it.label, overflow: TextOverflow.ellipsis),
+              ),
+          ],
+          onChanged: onChanged,
+        ),
+      ],
+    );
+  }
 }
 
 class _Field extends StatelessWidget {
