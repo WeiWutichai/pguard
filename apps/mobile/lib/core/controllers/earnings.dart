@@ -42,46 +42,48 @@ class GuardEarnings {
     return sum;
   }
 
-  /// Length of a rolling earnings window. Day = 24h, Week = 7d, Month = 30d.
-  static Duration windowLength(EarningsWindow w) => switch (w) {
-        EarningsWindow.day => const Duration(days: 1),
-        EarningsWindow.week => const Duration(days: 7),
-        EarningsWindow.month => const Duration(days: 30),
+  /// Window length in CALENDAR days. Day = today, Week = last 7 days, Month = last 30 days.
+  static int windowDays(EarningsWindow w) => switch (w) {
+        EarningsWindow.day => 1,
+        EarningsWindow.week => 7,
+        EarningsWindow.month => 30,
       };
 
-  /// Σ estimated pay for completed jobs scheduled in the window `(now − len, now]`.
-  /// ACCURACY: derived from `GET /v1/bookings`, which is `ORDER BY created_at DESC LIMIT 100`
-  /// ([feedRowCap]). When the feed is BELOW the cap it holds every booking, so the windowed total
-  /// is complete. When it is AT the cap the server has dropped the oldest-CREATED rows — and
-  /// because we window by `scheduled_at`, a dropped row can still fall inside the window, so the
-  /// total may under-report. [feedMayBeTruncated] detects that case and the UI shows a
-  /// completeness caveat; every figure is also labelled "ประมาณการ / Estimated" (method: base × hours).
-  static int sumInWindow(List<Booking> all, DateTime now, EarningsWindow w) {
-    final from = now.subtract(windowLength(w));
+  /// Σ estimated pay for completed jobs whose scheduled LOCAL date falls in a calendar-day range:
+  /// the `days` days ending `offsetDays` days before today (offset 0 = the current window; offset =
+  /// days = the immediately-prior window, for growth). CALENDAR-day bucketing — the SAME rule as
+  /// [dailySeries] — so a job scheduled for LATER TODAY that is already completed is still counted.
+  /// (The old rolling `(now − len, now]` window used a `!isAfter(now)` future-TIME guard that wrongly
+  /// dropped a job booked for, say, 14:00 today when the clock read 11:58 → "฿0 today" despite
+  /// completed jobs sitting in the list below.) ACCURACY caveat re the 100-row feed cap is unchanged
+  /// ([feedMayBeTruncated]); every figure is labelled "ประมาณการ / Estimated" (method: base × hours).
+  static int _sumCalendarDays(List<Booking> all, DateTime now, int days,
+      {int offsetDays = 0}) {
+    final local = now.toLocal();
+    final end = DateTime(local.year, local.month, local.day - offsetDays);
+    final start = DateTime(end.year, end.month, end.day - (days - 1));
     var sum = 0;
     for (final b in completedJobs(all)) {
-      final when = b.scheduledAt;
-      if (when != null && when.isAfter(from) && !when.isAfter(now)) {
+      final w = b.scheduledAt?.toLocal();
+      if (w == null) continue;
+      final d = DateTime(w.year, w.month, w.day);
+      if (!d.isBefore(start) && !d.isAfter(end)) {
         sum += jobEarningsSatang(b);
       }
     }
     return sum;
   }
 
+  /// Σ estimated pay for completed jobs in the current window (today / last 7 / last 30 days).
+  static int sumInWindow(List<Booking> all, DateTime now, EarningsWindow w) =>
+      _sumCalendarDays(all, now, windowDays(w));
+
   /// Growth fraction vs the immediately-prior window of the same length (e.g. +0.14 = +14%).
   /// `null` when the prior window had no earnings (no honest baseline to compare against).
   static double? growth(List<Booking> all, DateTime now, EarningsWindow w) {
-    final len = windowLength(w);
-    final current = sumInWindow(all, now, w);
-    final priorEnd = now.subtract(len);
-    final priorFrom = priorEnd.subtract(len);
-    var prior = 0;
-    for (final b in completedJobs(all)) {
-      final when = b.scheduledAt;
-      if (when != null && when.isAfter(priorFrom) && !when.isAfter(priorEnd)) {
-        prior += jobEarningsSatang(b);
-      }
-    }
+    final days = windowDays(w);
+    final current = _sumCalendarDays(all, now, days);
+    final prior = _sumCalendarDays(all, now, days, offsetDays: days);
     if (prior == 0) return null;
     return (current - prior) / prior;
   }

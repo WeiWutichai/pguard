@@ -105,12 +105,25 @@ void main() {
           184000 * 3);
     });
 
-    test('a future-dated job is excluded from the window', () {
+    test('a future-CALENDAR-DAY job is excluded from the window', () {
       final withFuture = [
         ...jobs,
         booking(id: 'future', scheduledAt: now.add(const Duration(days: 1))),
       ];
       expect(GuardEarnings.sumInWindow(withFuture, now, EarningsWindow.day),
+          184000);
+    });
+
+    test('a completed job scheduled LATER TODAY is counted (bug: ฿0 today)',
+        () {
+      // now = 12:00 June 17; a job booked for 14:00 TODAY that is already completed must count
+      // in today's total (the old rolling window wrongly excluded it via a future-time guard).
+      final laterToday = [
+        booking(id: 'later', scheduledAt: now.add(const Duration(hours: 2))),
+      ];
+      expect(GuardEarnings.sumInWindow(laterToday, now, EarningsWindow.day),
+          184000);
+      expect(GuardEarnings.sumInWindow(laterToday, now, EarningsWindow.week),
           184000);
     });
 
