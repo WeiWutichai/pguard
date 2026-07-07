@@ -383,6 +383,14 @@ services:
       # AES-256 key (64 hex chars / 32 bytes) sealing the per-user TOTP 2FA secret at rest (#144).
       # DEDICATED — never an overload of any JWT secret. Generate: `openssl rand -hex 32`.
       TOTP_ENC_KEY: ${TOTP_ENC_KEY:?TOTP_ENC_KEY is required (64 hex chars / 32 bytes for 2FA)}
+      # Internal service hosts identity calls over the service-JWT (cluster DNS). PROFILE_URL feeds
+      # `/auth/me`'s `pending_roles` (asks profile which roles are pending); PROFILE/BOOKING/PAYMENT/
+      # RATING are the PDPA data-export fan-out upstreams. Without these the clients default to
+      # `localhost` and fail INSIDE the container (localhost = identity itself, not the peer service).
+      PROFILE_URL: http://profile:3002
+      BOOKING_URL: http://booking:3005
+      PAYMENT_URL: http://payment:3006
+      RATING_URL: http://rating:3007
     expose:
       - "3001"
 
