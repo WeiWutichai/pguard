@@ -33,10 +33,12 @@ const SAMPLE_USER: {
   user_id: string;
   role: "admin";
   roles: ("admin" | "customer" | "guard")[];
+  pending_roles: ("admin" | "customer" | "guard")[];
 } = {
   user_id: "00000000-0000-0000-0000-000000000000",
   role: "admin",
   roles: ["admin"],
+  pending_roles: [],
 };
 
 // Static dot classes (a `bg-status-${x}` template literal would escape Tailwind's scanner).
