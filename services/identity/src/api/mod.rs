@@ -198,7 +198,14 @@ pub async fn login(
 /// normal dual-role account); otherwise fall back to an approved enrolled role; `None` when the
 /// account holds no approved role yet (an anomaly — an approved account always has ≥1 enrolled role).
 fn active_role_for(requested: &str, enrolled: &[String]) -> Option<String> {
-    if enrolled.iter().any(|r| r == requested) {
+    // Empty enrolled set → an account approved OUTSIDE the profile-approval event that populates
+    // `user_roles` (an ADMIN, a seeded/migrated, or a legacy account): trust the primary role — it
+    // was vetted by whatever approved it, and blocking it would break admin + legacy login. A
+    // NON-empty set that lacks the primary is the dangerous case (the primary role is pending/rejected
+    // while a DIFFERENT role got approved — the add-role vetting-bypass): mint the approved enrolled
+    // role, never the unvetted primary. NOTE the empty case can never smuggle an unvetted role in: an
+    // attacker can only reach `approved` via the approval event, which ALWAYS enrols a role (non-empty).
+    if enrolled.is_empty() || enrolled.iter().any(|r| r == requested) {
         Some(requested.to_string())
     } else {
         enrolled.first().cloned()
@@ -2150,8 +2157,11 @@ mod tests {
             active_role_for("guard", &["customer".to_string()]),
             Some("customer".to_string())
         );
-        // No approved role yet → mint NOTHING (caller 401s).
-        assert_eq!(active_role_for("guard", &[]), None);
+        // Empty enrolled set (admin / seeded / legacy account approved outside the enrolment event)
+        // → trust the primary, so admin + legacy login keeps working. An attacker can't reach this
+        // with an unvetted role: `approved` is only set by the approval event, which enrols a role.
+        assert_eq!(active_role_for("admin", &[]), Some("admin".to_string()));
+        assert_eq!(active_role_for("guard", &[]), Some("guard".to_string()));
     }
 
     /// add-role can never add admin → 403, BEFORE any token/Redis/DB side effect (validate first).
