@@ -735,6 +735,14 @@ export interface components {
              */
             roles: components["schemas"]["UserRole"][];
             /**
+             * @description Roles the account has SUBMITTED a profile for but that are NOT yet approved (a pending
+             *     second-role application). Distinct from `roles` (approved). Lets the mobile mode-picker
+             *     show a submitted role as "pending approval" instead of re-offering its blank registration
+             *     form. Best-effort: `[]` if the profile service can't be reached.
+             * @default []
+             */
+            pending_roles: components["schemas"]["UserRole"][];
+            /**
              * @description The caller's own display name (#144). `null` when unset — notably an admin who has not
              *     filled it in yet. Settable via `PUT /auth/me`.
              */

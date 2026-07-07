@@ -54,6 +54,7 @@ import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_guard.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
+import 'package:pguard_profile_api/src/model/internal_pending_roles200_response.dart';
 import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_response.dart';
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
 import 'package:pguard_profile_api/src/model/my_guard_profile.dart';
@@ -116,6 +117,7 @@ part 'serializers.g.dart';
   InternalExportUser200Response,
   InternalGuard,
   InternalListGuards200Response,
+  InternalPendingRoles200Response,
   ListGuardDocumentExpiries200Response,
   MyCustomerProfile,
   MyGuardProfile,

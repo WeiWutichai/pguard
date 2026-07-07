@@ -250,6 +250,12 @@ pub struct MeResponse {
     /// user this is exactly `[role]`; for a dual-role user it carries both so the app can offer a
     /// role switch (`POST /auth/switch-role`). Always contains the active `role`.
     pub roles: Vec<String>,
+    /// Roles the account has SUBMITTED a profile for but that are NOT yet approved (a pending
+    /// second-role application). Distinct from `roles` (approved). Lets the mobile mode-picker show
+    /// a submitted role as "pending approval" instead of re-offering its blank registration form.
+    /// Best-effort: `[]` if the profile service can't be reached.
+    #[serde(default)]
+    pub pending_roles: Vec<String>,
     /// The caller's own display name, or `null` if not set (an admin who hasn't filled it).
     pub display_name: Option<String>,
     /// The caller's own email, or `null` if not set.

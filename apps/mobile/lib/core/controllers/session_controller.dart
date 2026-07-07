@@ -159,14 +159,18 @@ class Session extends _$Session {
         user: user.withActiveRole(role));
   }
 
-  /// Refresh the enrolled-role set from `GET /auth/me` (it may have grown after an admin approved a
-  /// newly-enrolled role). Persists it and re-emits so the homes/picker see the updated set.
-  void refreshRoles(List<String> roles) {
+  /// Refresh the enrolled-role set (and the PENDING set) from `GET /auth/me` — the enrolled set may
+  /// have grown after an admin approved a role, and [pendingRoles] carries the roles with a
+  /// submitted-but-unapproved profile (so the mode picker shows "pending approval" instead of the
+  /// blank form). Persists the enrolled set (cold-start hint) and re-emits so the homes/picker see
+  /// the update. The pending set is kept in-memory only — it is re-derived on the next `/auth/me`.
+  void refreshRoles(List<String> roles,
+      {List<String> pendingRoles = const []}) {
     final user = state.user;
     if (user == null || state.status != SessionStatus.authenticated) return;
-    _persistRoles(user.withRoles(roles).enrolledRoles);
-    state =
-        SessionState(SessionStatus.authenticated, user: user.withRoles(roles));
+    final updated = user.withRoles(roles, pendingRoles: pendingRoles);
+    _persistRoles(updated.enrolledRoles);
+    state = SessionState(SessionStatus.authenticated, user: updated);
   }
 
   /// After clearing the PIN gate on cold start.

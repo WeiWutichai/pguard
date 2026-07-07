@@ -16,6 +16,7 @@ part 'me.g.dart';
 /// * [userId] 
 /// * [role] 
 /// * [roles] - The SET of APPROVED roles this account holds (multi-role, Option A). For a single-role user this is exactly `[role]`; for a dual-role user it carries both so the app can offer a role switch (`POST /auth/switch-role`). Always contains the active `role`. 
+/// * [pendingRoles] - Roles the account has SUBMITTED a profile for but that are NOT yet approved (a pending second-role application). Distinct from `roles` (approved). Lets the mobile mode-picker show a submitted role as \"pending approval\" instead of re-offering its blank registration form. Best-effort: `[]` if the profile service can't be reached. 
 /// * [displayName] - The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
 /// * [email] - The caller's own email, or `null` if unset. Settable via `PUT /auth/me`.
 @BuiltValue()
@@ -31,6 +32,10 @@ abstract class Me implements Built<Me, MeBuilder> {
   @BuiltValueField(wireName: r'roles')
   BuiltList<UserRole> get roles;
 
+  /// Roles the account has SUBMITTED a profile for but that are NOT yet approved (a pending second-role application). Distinct from `roles` (approved). Lets the mobile mode-picker show a submitted role as \"pending approval\" instead of re-offering its blank registration form. Best-effort: `[]` if the profile service can't be reached. 
+  @BuiltValueField(wireName: r'pending_roles')
+  BuiltList<UserRole>? get pendingRoles;
+
   /// The caller's own display name (#144). `null` when unset — notably an admin who has not filled it in yet. Settable via `PUT /auth/me`. 
   @BuiltValueField(wireName: r'display_name')
   String? get displayName;
@@ -44,7 +49,8 @@ abstract class Me implements Built<Me, MeBuilder> {
   factory Me([void updates(MeBuilder b)]) = _$Me;
 
   @BuiltValueHook(initializeBuilder: true)
-  static void _defaults(MeBuilder b) => b;
+  static void _defaults(MeBuilder b) => b
+      ..pendingRoles = ListBuilder();
 
   @BuiltValueSerializer(custom: true)
   static Serializer<Me> get serializer => _$MeSerializer();
@@ -77,6 +83,13 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
       object.roles,
       specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
     );
+    if (object.pendingRoles != null) {
+      yield r'pending_roles';
+      yield serializers.serialize(
+        object.pendingRoles,
+        specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
+      );
+    }
     if (object.displayName != null) {
       yield r'display_name';
       yield serializers.serialize(
@@ -134,6 +147,13 @@ class _$MeSerializer implements PrimitiveSerializer<Me> {
             specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
           ) as BuiltList<UserRole>;
           result.roles.replace(valueDes);
+          break;
+        case r'pending_roles':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(BuiltList, [FullType(UserRole)]),
+          ) as BuiltList<UserRole>;
+          result.pendingRoles.replace(valueDes);
           break;
         case r'display_name':
           final valueDes = serializers.deserialize(

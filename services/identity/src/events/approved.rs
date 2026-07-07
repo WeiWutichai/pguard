@@ -321,6 +321,12 @@ mod e2e_tests {
                 60,
                 vec![],
             ),
+            profile_status_client: crate::profile_status_client::ProfileStatusClient::new(
+                reqwest::Client::new(),
+                jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                60,
+                "http://localhost:0".to_string(),
+            ),
             totp_enc_key: [0u8; 32],
         };
 
@@ -459,6 +465,12 @@ mod e2e_tests {
                 jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
                 60,
                 vec![],
+            ),
+            profile_status_client: crate::profile_status_client::ProfileStatusClient::new(
+                reqwest::Client::new(),
+                jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                60,
+                "http://localhost:0".to_string(),
             ),
             totp_enc_key: [0u8; 32],
         };

@@ -12,6 +12,7 @@ mod domain;
 mod events;
 mod export_client;
 mod models;
+mod profile_status_client;
 mod repo;
 mod state;
 
@@ -24,6 +25,7 @@ use shared::db::create_pool;
 use shared::redis_client::create_connection_manager;
 
 use crate::export_client::{ExportClient, ExportUpstream};
+use crate::profile_status_client::ProfileStatusClient;
 use crate::state::AppState;
 
 const SERVICE_NAME: &str = "identity";
@@ -87,12 +89,25 @@ async fn main() -> anyhow::Result<()> {
         ],
     );
 
+    // --- profile-status client: enriches /auth/me with `pending_roles` (best-effort) ---
+    let profile_status_client = ProfileStatusClient::new(
+        reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(500))
+            .timeout(std::time::Duration::from_secs(3))
+            .build()
+            .context("build profile-status HTTP client")?,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+        svc_url("PROFILE_URL", "http://localhost:3002"),
+    );
+
     let state = AppState {
         db,
         redis_conn,
         jwt_config,
         service_jwt_config,
         export_client,
+        profile_status_client,
         totp_enc_key,
     };
 
