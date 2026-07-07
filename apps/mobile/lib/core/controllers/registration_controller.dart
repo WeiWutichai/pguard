@@ -24,6 +24,11 @@ enum RegisterOutcome {
   /// router will redirect to the dashboard.
   loggedIn,
 
+  /// 409 but the PIN set in the flow did NOT match the existing account's stored PIN — the session
+  /// was dropped to `returning` and the caller must send the user to the PIN-login screen to enter
+  /// their real PIN (with "forgot PIN" → `pin_reset` OTP there).
+  needsPinLogin,
+
   /// Validation/network/other failure — `state.error` carries a user-safe message.
   error,
 }
@@ -210,9 +215,12 @@ class RegistrationController extends _$RegistrationController {
       return RegisterOutcome.needsProfile;
     } on ApiException catch (e) {
       if (e.statusCode == 409) {
-        // Already registered (approved/active) — log in with the SAME PIN instead.
+        // Already registered (approved/active). The user reached here via "use a different account"
+        // → phone → OTP → the registration "set a PIN" step. Try that PIN as a login first — the
+        // common case is they typed their REAL PIN, in which case they're straight in.
         _phoneVerifiedToken =
             null; // not consumed by the rejected register; drop for hygiene
+        await store.clearPhoneVerifiedToken();
         final ok = await ref
             .read(authControllerProvider.notifier)
             .loginWithPin(phone: phone, pin: pin);
@@ -221,10 +229,16 @@ class RegistrationController extends _$RegistrationController {
           state = state.copyWith(busy: false);
           return RegisterOutcome.loggedIn;
         }
-        state = state.copyWith(
-            busy: false,
-            error: isThai ? 'เข้าสู่ระบบไม่สำเร็จ' : 'Could not sign in');
-        return RegisterOutcome.error;
+        // The PIN they SET differs from this existing account's stored PIN (the "set a PIN" step
+        // invites a fresh one). Don't dead-end on a bare "เข้าสู่ระบบไม่สำเร็จ": the phone is a real
+        // account, so hand off to PIN-LOGIN for it — the user enters their REAL PIN (server-checked),
+        // and that screen's "forgot PIN" runs a proper `pin_reset` OTP if they've forgotten it. (We
+        // can't silently reset here: reset-pin needs a `pin_reset`-purpose token, and this OTP flow
+        // only holds a `phone_verify` one — purpose isolation rejects it.)
+        await _clearPending();
+        await ref.read(sessionProvider.notifier).toReturningLogin(phone: phone);
+        state = state.copyWith(busy: false);
+        return RegisterOutcome.needsPinLogin;
       }
       if (e.statusCode == 401 || e.statusCode == 400) {
         // Stale phone-verified token: 401 = JWT past exp (>10 min), 400 = jti already consumed

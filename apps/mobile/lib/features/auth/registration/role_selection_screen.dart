@@ -68,9 +68,8 @@ class _ModePicker extends ConsumerWidget {
         context.go(_homeFor(role.wire));
       case RoleActionOutcome.needsProfile:
         // Add-role: the registration controller holds the profile_token; open that role's form.
-        context.push(role.isGuard
-            ? '/auth/register/guard'
-            : '/auth/register/customer');
+        context.push(
+            role.isGuard ? '/auth/register/guard' : '/auth/register/customer');
       case RoleActionOutcome.error:
         break; // state.error is rendered below
     }
@@ -149,8 +148,8 @@ class _ModePicker extends ConsumerWidget {
                   title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard',
                   desc: _modeDesc(RegistrationRole.guard),
                   enabled: !state.busy,
-                  loading: state.busy &&
-                      state.pendingRole == RegistrationRole.guard,
+                  loading:
+                      state.busy && state.pendingRole == RegistrationRole.guard,
                   active: activeRole == 'guard',
                   enrolled: enrolled(RegistrationRole.guard),
                   isThai: isThai,
@@ -218,6 +217,13 @@ class _OnboardingChooser extends ConsumerWidget {
       if (outcome == RegisterOutcome.needsProfile) {
         context.push(
             role.isGuard ? '/auth/register/guard' : '/auth/register/customer');
+        return;
+      }
+      if (outcome == RegisterOutcome.needsPinLogin) {
+        // Existing account, but the PIN they set didn't match — the controller dropped the session
+        // to `returning`. Send them to PIN-login to enter their REAL PIN (the returning `/auth/*`
+        // redirect allows role-select to linger, so navigate explicitly).
+        context.go('/login/pin');
         return;
       }
       if (outcome == RegisterOutcome.loggedIn) {
@@ -318,8 +324,7 @@ class _OnboardingChooser extends ConsumerWidget {
               const Text(
                 '© 2023 Security Platform System',
                 textAlign: TextAlign.center,
-                style:
-                    TextStyle(fontSize: 12, color: PgTokens.colorTextFaint),
+                style: TextStyle(fontSize: 12, color: PgTokens.colorTextFaint),
               ),
               const SizedBox(height: PgTokens.space5),
             ],

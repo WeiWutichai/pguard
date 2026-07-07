@@ -132,6 +132,16 @@ class Session extends _$Session {
   void onPendingApproval() =>
       state = const SessionState(SessionStatus.pendingApproval);
 
+  /// The "use a different account" OTP flow discovered (via a register 409) that the entered phone
+  /// is ALREADY an existing account whose stored PIN differs from the one just set. Persist the
+  /// phone and drop to [SessionStatus.returning] so the caller can send the user to the PIN-login
+  /// screen to enter their REAL PIN (server-checked; no local PIN needed) — with the returning
+  /// screen's "forgot PIN" doing a proper `pin_reset` OTP if they forgot it.
+  Future<void> toReturningLogin({required String phone}) async {
+    await ref.read(appStoreProvider).savePhone(phone);
+    state = const SessionState(SessionStatus.returning);
+  }
+
   /// After a successful login (tokens already persisted). Persists the enrolled-role set
   /// (non-sensitive) so a cold start can land on the mode picker for a dual-role account.
   void onLoggedIn(AuthUser user) {
