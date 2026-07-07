@@ -159,6 +159,47 @@ void main() {
   });
 
   test(
+      'register 409 + set PIN mismatches stored → PIN-login handoff (returning), no silent reset',
+      () async {
+    // "Use a different account": the user set a PIN that does NOT match the existing approved
+    // account's stored PIN → login 401s. The flow must NOT silently reset (it only holds a
+    // phone_verify token) — it drops to `returning` (phone persisted) so the caller sends them to
+    // PIN-login to enter their real PIN.
+    final store = InMemoryStore();
+    final prefs = FakePrefsStore();
+    var loginCalls = 0;
+    final api = FakeApi(onPost: (path, data) async {
+      switch (path) {
+        case '/auth/register':
+          throw const ApiException(
+              message: 'exists', code: 'CONFLICT', statusCode: 409);
+        case '/auth/login':
+          loginCalls++;
+          throw const ApiException(
+              message: 'bad creds', code: 'UNAUTHORIZED', statusCode: 401);
+        case '/auth/reset-pin':
+          fail('reset-pin must NOT be called with a phone_verify token');
+        default:
+          throw StateError('unexpected POST $path');
+      }
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    ctrl.selectRole(RegistrationRole.customer);
+    final outcome = await ctrl.register();
+
+    expect(outcome, RegisterOutcome.needsPinLogin);
+    expect(loginCalls,
+        1); // exactly one login attempt (the set PIN), then hand off — no retry
+    // Session dropped to `returning` with the phone persisted so PIN-login can read it.
+    expect(c.read(sessionProvider).status, SessionStatus.returning);
+    expect(await store.readPhone(), phone);
+    expect(store.access, isNull); // NOT logged in
+  });
+
+  test(
       'submitGuardProfile: POSTs /profile/guard with the profile_token Bearer; FULL acct to backend, MASKED locally',
       () async {
     final store = InMemoryStore();
