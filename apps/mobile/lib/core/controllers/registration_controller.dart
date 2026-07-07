@@ -296,6 +296,9 @@ class RegistrationController extends _$RegistrationController {
       // The OTP token is now consumed — drop it so a back-out can't re-present a spent token.
       _phoneVerifiedToken = null;
       await store.clearPhoneVerifiedToken();
+      // The account now holds BOTH roles — mark it so the pending screen hides the "add the other
+      // role" button (there is no third role; re-offering it only burns an OTP for a 409).
+      await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
       // Session is already `pendingApproval` — leave it. The profile submit below persists the
       // (new-role) pending summary and lands back on the pending screen.
       state = state.copyWith(busy: false);

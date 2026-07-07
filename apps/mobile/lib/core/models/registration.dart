@@ -54,6 +54,12 @@ enum GuardDocKind {
 const String kRegPendingRoleKey = 'pg_reg_pending_role';
 const String kRegSummaryKey = 'pg_reg_summary';
 
+/// Set once the account holds BOTH roles (the user added the second via the pending screen's
+/// "register the other role too" flow). The pending screen reads it to HIDE that button — there is
+/// no third role to add, so re-offering it would only walk the user through a wasted OTP round that
+/// the backend rejects (409 ROLE_ALREADY_HELD). Cleared on logout/wipe like the other reg markers.
+const String kRegBothRolesKey = 'pg_reg_both_roles';
+
 /// Durable marker (SharedPreferences — non-sensitive, just a stage label, no PII) set when the
 /// user finishes the first onboarding segment (phone→OTP→PIN) and reaches role-select but has
 /// NOT registered yet. The session controller reads it on cold start to resume at `/auth/role`

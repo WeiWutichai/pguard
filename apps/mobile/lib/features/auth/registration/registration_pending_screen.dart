@@ -35,6 +35,10 @@ class _RegistrationPendingScreenState
     extends ConsumerState<RegistrationPendingScreen> {
   RegistrationSummary? _summary;
 
+  /// True once the account holds BOTH roles → hide the "add the other role" button (no third role
+  /// to add; re-offering it would only burn an OTP for a backend 409).
+  bool _hasBothRoles = false;
+
   @override
   void initState() {
     super.initState();
@@ -44,6 +48,12 @@ class _RegistrationPendingScreenState
     if (_summary == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadFromPrefs());
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadBothRolesFlag());
+  }
+
+  Future<void> _loadBothRolesFlag() async {
+    final v = await ref.read(prefsStoreProvider).getString(kRegBothRolesKey);
+    if (v == '1' && mounted) setState(() => _hasBothRoles = true);
   }
 
   Future<void> _loadFromPrefs() async {
@@ -197,33 +207,37 @@ class _RegistrationPendingScreenState
                   onPressed: state.busy ? null : _checkStatus,
                 ),
               ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, PgTokens.space4),
-                child: SizedBox(
-                  height: 52,
-                  child: TextButton(
-                    onPressed: state.busy ? null : _addOtherRole,
-                    style: TextButton.styleFrom(
-                      foregroundColor: PgTokens.colorGreen800,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-                        side: const BorderSide(color: PgTokens.colorBorder),
+              // Hidden once the account already holds both roles (nothing left to add).
+              if (!_hasBothRoles)
+                Padding(
+                  padding:
+                      const EdgeInsets.fromLTRB(20, 0, 20, PgTokens.space4),
+                  child: SizedBox(
+                    height: 52,
+                    child: TextButton(
+                      onPressed: state.busy ? null : _addOtherRole,
+                      style: TextButton.styleFrom(
+                        foregroundColor: PgTokens.colorGreen800,
+                        shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(PgTokens.radiusXl),
+                          side: const BorderSide(color: PgTokens.colorBorder),
+                        ),
                       ),
-                    ),
-                    child: Text(
-                      isGuard
-                          ? (isThai
-                              ? 'สมัครเป็นลูกค้าด้วย'
-                              : 'Also register as a customer')
-                          : (isThai
-                              ? 'สมัครเป็นเจ้าหน้าที่ด้วย'
-                              : 'Also register as a guard'),
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w600),
+                      child: Text(
+                        isGuard
+                            ? (isThai
+                                ? 'สมัครเป็นลูกค้าด้วย'
+                                : 'Also register as a customer')
+                            : (isThai
+                                ? 'สมัครเป็นเจ้าหน้าที่ด้วย'
+                                : 'Also register as a guard'),
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
                     ),
                   ),
                 ),
-              ),
             ],
           ),
         ),
