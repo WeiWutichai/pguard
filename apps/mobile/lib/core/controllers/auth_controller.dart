@@ -26,6 +26,7 @@ class AuthFlowState {
     this.otpRequestCount = 0,
     this.phoneVerifiedToken,
     this.reset = false,
+    this.addRoleTarget,
     this.busy = false,
     this.error,
   });
@@ -39,6 +40,13 @@ class AuthFlowState {
   /// registration: the phone is pre-filled and, after OTP verify, the PIN screen exchanges the
   /// verified token for a NEW PIN via `POST /auth/reset-pin` instead of registering a new account.
   final bool reset;
+
+  /// Non-null when this OTP run is ADDING A SECOND ROLE to a still-pending account (started via
+  /// [AuthController.startAddRolePending]) — the wire role to add (`guard`/`customer`, the opposite
+  /// of the account's current role). The phone is pre-filled; after OTP verify the flow skips the
+  /// PIN step (the account already has one) and calls `POST /auth/register/add-role` with the
+  /// verified token, then submits that role's profile. Distinct from a normal registration or reset.
+  final String? addRoleTarget;
 
   /// How many OTP SMS have been requested this flow (display state for the design's
   /// "พยายาม 1/5 / attempt 1/5" resend counter — the server enforces the real limit).
@@ -58,6 +66,7 @@ class AuthFlowState {
     int? otpRequestCount,
     String? phoneVerifiedToken,
     bool? reset,
+    String? addRoleTarget,
     bool? busy,
     Object? error = _unset,
   }) {
@@ -69,6 +78,7 @@ class AuthFlowState {
       otpRequestCount: otpRequestCount ?? this.otpRequestCount,
       phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
       reset: reset ?? this.reset,
+      addRoleTarget: addRoleTarget ?? this.addRoleTarget,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
     );
@@ -288,6 +298,15 @@ class AuthController extends _$AuthController {
   /// into the captcha step and moves the session to a state that permits the /auth/* flow.
   void startReset(String phone) =>
       state = const AuthFlowState().copyWith(phone: phone, reset: true);
+
+  /// Start an ADD-SECOND-ROLE run for a still-pending account: pre-fill the known [phone] and mark
+  /// the target role ([targetRoleWire] — the opposite of the account's current role), so the SAME
+  /// captcha → OTP screens run but, after verify, the flow calls `POST /auth/register/add-role`
+  /// (instead of register) and submits the second role's profile. No new PIN (the account has one).
+  /// The caller navigates into the captcha step.
+  void startAddRolePending(
+          {required String phone, required String targetRoleWire}) =>
+      state = AuthFlowState(phone: phone, addRoleTarget: targetRoleWire);
 
   /// `POST /auth/reset-pin` — the forgot-PIN reset. Exchanges the single-use `phone_verified_token`
   /// (from the just-completed OTP verify) for the NEW PIN, then logs in with it so the session flips

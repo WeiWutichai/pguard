@@ -5,7 +5,9 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/registration_controller.dart';
 import '../../core/controllers/resend_policy.dart';
+import '../../core/models/registration.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/otp_input.dart';
 import '../../widgets/pg_auth_back_bar.dart';
@@ -27,7 +29,33 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
 
   Future<void> _verify() async {
     final ok = await ref.read(authControllerProvider.notifier).verifyOtp(_code);
-    if (ok && mounted) context.push('/auth/pin');
+    if (!ok || !mounted) return;
+    // ADD-SECOND-ROLE run (from the pending screen): skip the PIN step (the account already has
+    // one) — exchange the just-verified token for the second role via `POST /auth/register/add-role`
+    // and go straight to that role's profile form. A normal register/reset run continues to the PIN.
+    final target = ref.read(authControllerProvider).addRoleTarget;
+    if (target != null) {
+      final role = RegistrationRole.tryParse(target);
+      if (role == null) return;
+      final outcome = await ref
+          .read(registrationControllerProvider.notifier)
+          .addSecondRoleWhilePending(role);
+      if (!mounted) return;
+      if (outcome == RegisterOutcome.needsProfile) {
+        context.push(
+            role.isGuard ? '/auth/register/guard' : '/auth/register/customer');
+      } else {
+        // 409 already-held / error → surface the controller's message and bounce back to pending.
+        final msg = ref.read(registrationControllerProvider).error;
+        if (msg != null) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text(msg)));
+        }
+        context.go('/auth/pending');
+      }
+      return;
+    }
+    context.push('/auth/pin');
   }
 
   @override
