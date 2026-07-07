@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
+import '../../../core/controllers/profile_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/controllers/role_switch_controller.dart';
 import '../../../core/controllers/session_controller.dart';
@@ -85,6 +86,11 @@ class _ModePicker extends ConsumerWidget {
     final state = ref.watch(roleSwitchControllerProvider);
     final activeRole = user?.role;
     bool enrolled(RegistrationRole r) => user?.isEnrolledIn(r.wire) == true;
+    bool pending(RegistrationRole r) => user?.isPendingIn(r.wire) == true;
+    // Refresh /auth/me (auto-dispose → re-fetches on each open) so a role SUBMITTED since login shows
+    // as pending here. Its `session.refreshRoles(roles, pendingRoles: …)` re-emits the session, which
+    // rebuilds this picker with the fresh pending set. Value unused — watched only for the side-effect.
+    ref.watch(profileControllerProvider);
 
     return PopScope(
       // Intercept the system back so it returns to the current home (not the auth stack).
@@ -147,11 +153,13 @@ class _ModePicker extends ConsumerWidget {
                   iconFg: Colors.white,
                   title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard',
                   desc: _modeDesc(RegistrationRole.guard),
-                  enabled: !state.busy,
+                  // A pending role is NOT tappable → it can't re-open the registration form.
+                  enabled: !state.busy && !pending(RegistrationRole.guard),
                   loading:
                       state.busy && state.pendingRole == RegistrationRole.guard,
                   active: activeRole == 'guard',
                   enrolled: enrolled(RegistrationRole.guard),
+                  pending: pending(RegistrationRole.guard),
                   isThai: isThai,
                   onTap: () => _tap(context, ref, RegistrationRole.guard),
                 ),
@@ -162,11 +170,12 @@ class _ModePicker extends ConsumerWidget {
                   iconFg: PgTokens.colorAmber700,
                   title: isThai ? 'จ้าง รปภ' : 'Hire a Guard',
                   desc: _modeDesc(RegistrationRole.customer),
-                  enabled: !state.busy,
+                  enabled: !state.busy && !pending(RegistrationRole.customer),
                   loading: state.busy &&
                       state.pendingRole == RegistrationRole.customer,
                   active: activeRole == 'customer',
                   enrolled: enrolled(RegistrationRole.customer),
+                  pending: pending(RegistrationRole.customer),
                   isThai: isThai,
                   onTap: () => _tap(context, ref, RegistrationRole.customer),
                 ),
@@ -193,9 +202,12 @@ class _ModePicker extends ConsumerWidget {
     if (user?.isEnrolledIn(role.wire) == true) {
       return isThai ? 'แตะเพื่อสลับไปโหมดนี้' : 'Tap to switch to this mode';
     }
-    return isThai
-        ? 'แตะเพื่อเพิ่มบทบาทนี้ (รออนุมัติ)'
-        : 'Tap to add this role (pending approval)';
+    if (user?.isPendingIn(role.wire) == true) {
+      return isThai
+          ? 'ส่งข้อมูลแล้ว — รอแอดมินอนุมัติ'
+          : 'Submitted — awaiting admin approval';
+    }
+    return isThai ? 'แตะเพื่อเพิ่มบทบาทนี้' : 'Tap to add this role';
   }
 }
 
@@ -351,6 +363,7 @@ class _RoleCard extends StatelessWidget {
     this.loading = false,
     this.active = false,
     this.enrolled = false,
+    this.pending = false,
   });
 
   final IconData icon;
@@ -370,6 +383,10 @@ class _RoleCard extends StatelessWidget {
 
   /// Mode-picker only: the account is enrolled in this role (badge "พร้อมใช้").
   final bool enrolled;
+
+  /// Mode-picker only: this role has a SUBMITTED-but-unapproved profile (badge "รอตรวจ"). The card
+  /// is passed `enabled: false` so it can't re-open the registration form — it just shows status.
+  final bool pending;
 
   @override
   Widget build(BuildContext context) {
@@ -426,6 +443,13 @@ class _RoleCard extends StatelessWidget {
                             fg: PgTokens.colorTextMuted,
                             bg: PgTokens.colorSunken,
                           ),
+                        ] else if (pending) ...[
+                          const SizedBox(width: 8),
+                          _Badge(
+                            label: isThai ? 'รอตรวจ' : 'Pending',
+                            fg: PgTokens.colorAmber700,
+                            bg: PgTokens.colorAmber100,
+                          ),
                         ],
                       ],
                     ),
@@ -446,8 +470,14 @@ class _RoleCard extends StatelessWidget {
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               else
-                Icon(enrolled || active ? Icons.chevron_right : Icons.add,
-                    color: PgTokens.colorTextFaint, size: 22),
+                Icon(
+                    pending
+                        ? Icons.hourglass_empty
+                        : (enrolled || active
+                            ? Icons.chevron_right
+                            : Icons.add),
+                    color: PgTokens.colorTextFaint,
+                    size: 22),
             ],
           ),
         ),

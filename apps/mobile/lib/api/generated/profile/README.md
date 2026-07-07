@@ -113,6 +113,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminUpdateOrgSettings**](doc/AdminApi.md#adminupdateorgsettings) | **PUT** /admin/org-settings | Set/replace the organization (company) profile (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**internalListGuards**](doc/AdminApi.md#internallistguards) | **GET** /internal/guards | Approved guard catalog (service-to-service)
+[*AdminApi*](doc/AdminApi.md) | [**internalPendingRoles**](doc/AdminApi.md#internalpendingroles) | **GET** /internal/users/{user_id}/pending-roles | Roles with a submitted-but-pending profile (service-to-service)
 [*ProfileApi*](doc/ProfileApi.md) | [**getCustomerAvatar**](doc/ProfileApi.md#getcustomeravatar) | **GET** /profile/customer/{user_id}/avatar | A presigned URL for the customer&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardAvatar**](doc/ProfileApi.md#getguardavatar) | **GET** /profile/guard/{user_id}/avatar | A presigned URL for the guard&#39;s avatar
 [*ProfileApi*](doc/ProfileApi.md) | [**getGuardDocument**](doc/ProfileApi.md#getguarddocument) | **GET** /profile/guard/{user_id}/documents | A presigned URL for one of the guard&#39;s stored documents
@@ -171,6 +172,7 @@ Class | Method | HTTP request | Description
  - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [InternalGuard](doc/InternalGuard.md)
  - [InternalListGuards200Response](doc/InternalListGuards200Response.md)
+ - [InternalPendingRoles200Response](doc/InternalPendingRoles200Response.md)
  - [ListGuardDocumentExpiries200Response](doc/ListGuardDocumentExpiries200Response.md)
  - [MyCustomerProfile](doc/MyCustomerProfile.md)
  - [MyGuardProfile](doc/MyGuardProfile.md)

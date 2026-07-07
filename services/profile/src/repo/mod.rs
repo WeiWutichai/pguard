@@ -1171,6 +1171,25 @@ pub async fn upsert_org_settings(
     Ok(row)
 }
 
+/// The roles this user has a SUBMITTED-but-PENDING profile for (awaiting admin approval). Union of
+/// the guard + customer profile tables filtered to `approval_status = 'pending'`. Identity calls
+/// this (service-JWT) to enrich `/auth/me` with `pending_roles`, so the mobile mode-picker can show
+/// a submitted role as "รอการยืนยัน / pending approval" instead of re-offering its blank form.
+/// Read-only; returns `[]` when nothing is pending.
+pub async fn pending_roles_for_user(db: &PgPool, user_id: Uuid) -> Result<Vec<String>, AppError> {
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT 'guard' FROM profile.guard_profiles \
+              WHERE user_id = $1 AND approval_status = 'pending'::profile.approval_status \
+         UNION \
+         SELECT 'customer' FROM profile.customer_profiles \
+              WHERE user_id = $1 AND approval_status = 'pending'::profile.approval_status",
+    )
+    .bind(user_id)
+    .fetch_all(db)
+    .await?;
+    Ok(roles)
+}
+
 /// PDPA §19/§32 data export: the user's OWN profile rows (guard and/or customer). This is
 /// the data subject reading their own data, so the FULL account number is returned;
 /// documents are reported as presence flags (not raw S3 keys — signed-URL download is a
@@ -1358,6 +1377,14 @@ mod db_tests {
         assert_eq!(created.approval_status, ApprovalStatus::Pending);
         assert_eq!(created.account_number.as_deref(), Some("1234567890")); // repo never masks
 
+        // 1a) pending_roles_for_user surfaces the submitted-but-unapproved guard role (feeds
+        //     identity's /auth/me `pending_roles` → the mobile mode-picker's "pending" card).
+        assert_eq!(
+            pending_roles_for_user(&pool, user_id).await.unwrap(),
+            vec!["guard".to_string()],
+            "a pending guard profile → pending_roles = [guard]"
+        );
+
         // 2) get — round-trips the row.
         let fetched = get_guard_profile(&pool, user_id)
             .await
@@ -1371,6 +1398,15 @@ mod db_tests {
             .await
             .expect("approve");
         assert_eq!(approved.approval_status, ApprovalStatus::Approved);
+
+        // 3b) …and once approved it is no longer pending (the mode-picker flips pending → enrolled).
+        assert!(
+            pending_roles_for_user(&pool, user_id)
+                .await
+                .unwrap()
+                .is_empty(),
+            "an approved guard is no longer in pending_roles"
+        );
 
         // 3a) ATOMIC: a `user.approved` outbox row was written in the SAME tx as the flip,
         //     carrying this user_id — the only coupling to identity (no cross-schema write).

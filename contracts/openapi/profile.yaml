@@ -1063,6 +1063,40 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /internal/users/{user_id}/pending-roles:
+    get:
+      tags: [Admin]
+      summary: Roles with a submitted-but-pending profile (service-to-service)
+      description: |
+        Internal read for identity: the roles this user has SUBMITTED a profile for that are NOT
+        yet approved (`approval_status = 'pending'` in `guard_profiles`/`customer_profiles`).
+        identity calls this (over a **service-JWT**, `serviceAuth`, blocked at the public edge) to
+        enrich `GET /auth/me` with `pending_roles`, so the mobile mode-picker shows a submitted role
+        as "pending approval" instead of re-offering its blank registration form. Returns `[]` when
+        nothing is pending.
+      operationId: internalPendingRoles
+      security: [{ serviceAuth: [] }]
+      parameters:
+        - name: user_id
+          in: path
+          required: true
+          schema: { type: string, format: uuid }
+      responses:
+        '200':
+          description: The roles awaiting approval for this user (`[]` when none)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { type: string }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
 components:
   securitySchemes:
     bearerAuth:

@@ -710,12 +710,19 @@ pub async fn me(
     // dual-role user it carries both so the app can offer a role switch. The ACTIVE `role`
     // below is still the token's role (authoritative for this session).
     let roles = repo::list_user_roles(&state.db, user.user_id).await?;
+    // Best-effort: which roles the user has a submitted-but-pending profile for (asks profile over a
+    // service-JWT). A profile outage degrades to `[]` — the picker just falls back to "not enrolled".
+    let pending_roles = state
+        .profile_status_client
+        .pending_roles(user.user_id)
+        .await;
     Ok(Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
         // Prefer the freshly-read DB role (authoritative if it changed since the token issued);
         // falls back identically to the token's role in the common case.
         role: profile.role,
         roles,
+        pending_roles,
         display_name: profile.display_name,
         email: profile.email,
     })))
@@ -742,6 +749,9 @@ pub async fn update_me(
         user_id: user.user_id,
         role: profile.role,
         roles,
+        // This is the self-EDIT response (display_name/email); the mobile picker reads pending_roles
+        // from GET /auth/me, so skip the extra profile round-trip here.
+        pending_roles: Vec::new(),
         display_name: profile.display_name,
         email: profile.email,
     })))
@@ -2350,6 +2360,12 @@ mod multi_role_tests {
                 jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
                 60,
                 vec![],
+            ),
+            profile_status_client: crate::profile_status_client::ProfileStatusClient::new(
+                reqwest::Client::new(),
+                jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+                60,
+                "http://localhost:0".to_string(),
             ),
             totp_enc_key: [0u8; 32],
         }

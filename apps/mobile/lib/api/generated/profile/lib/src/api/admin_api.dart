@@ -25,6 +25,7 @@ import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object2.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
+import 'package:pguard_profile_api/src/model/internal_pending_roles200_response.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
 import 'package:pguard_profile_api/src/model/resolve_names_request.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
@@ -1526,6 +1527,87 @@ class AdminApi {
     }
 
     return Response<InternalListGuards200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Roles with a submitted-but-pending profile (service-to-service)
+  /// Internal read for identity: the roles this user has SUBMITTED a profile for that are NOT yet approved (&#x60;approval_status &#x3D; &#39;pending&#39;&#x60; in &#x60;guard_profiles&#x60;/&#x60;customer_profiles&#x60;). identity calls this (over a **service-JWT**, &#x60;serviceAuth&#x60;, blocked at the public edge) to enrich &#x60;GET /auth/me&#x60; with &#x60;pending_roles&#x60;, so the mobile mode-picker shows a submitted role as \&quot;pending approval\&quot; instead of re-offering its blank registration form. Returns &#x60;[]&#x60; when nothing is pending. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InternalPendingRoles200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InternalPendingRoles200Response>> internalPendingRoles({ 
+    required String userId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/users/{user_id}/pending-roles'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InternalPendingRoles200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InternalPendingRoles200Response),
+      ) as InternalPendingRoles200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InternalPendingRoles200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

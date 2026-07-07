@@ -51,7 +51,9 @@ class AuthUser {
     required this.userId,
     required this.role,
     List<String>? roles,
-  }) : roles = roles ?? const [];
+    List<String>? pendingRoles,
+  })  : roles = roles ?? const [],
+        pendingRoles = pendingRoles ?? const [];
 
   final String userId;
   final String role; // "customer" | "guard" | "admin"
@@ -59,6 +61,11 @@ class AuthUser {
   /// The enrolled/approved roles. Always includes [role]; >1 entry means the account can switch
   /// modes. Never null (an empty list is treated as "just the active role" by [enrolledRoles]).
   final List<String> roles;
+
+  /// Roles the account has SUBMITTED a profile for but that are NOT yet approved (awaiting admin
+  /// review). Distinct from [roles] (approved/enrolled). Drives the mode picker's "รอการยืนยัน /
+  /// pending approval" card so a submitted role isn't re-offered as a blank registration form.
+  final List<String> pendingRoles;
 
   bool get isCustomer => role == 'customer';
   bool get isGuard => role == 'guard';
@@ -74,13 +81,23 @@ class AuthUser {
 
   bool isEnrolledIn(String r) => enrolledRoles.contains(r);
 
-  /// Copy with a new active [role] (e.g. after a successful switch-role), keeping the enrolled set.
-  AuthUser withActiveRole(String role) =>
-      AuthUser(userId: userId, role: role, roles: roles);
+  /// A role with a submitted-but-unapproved profile (and NOT already enrolled) → show it as pending,
+  /// never re-offer its registration form.
+  bool isPendingIn(String r) => !isEnrolledIn(r) && pendingRoles.contains(r);
 
-  /// Copy with an updated enrolled set (e.g. after `GET /auth/me`), keeping the active role.
-  AuthUser withRoles(List<String> roles) =>
-      AuthUser(userId: userId, role: role, roles: roles);
+  /// Copy with a new active [role] (e.g. after a successful switch-role), keeping the enrolled +
+  /// pending sets.
+  AuthUser withActiveRole(String role) => AuthUser(
+      userId: userId, role: role, roles: roles, pendingRoles: pendingRoles);
+
+  /// Copy with an updated enrolled set (e.g. after `GET /auth/me`), keeping the active role. Pass
+  /// [pendingRoles] to refresh the pending set too (defaults to the current one).
+  AuthUser withRoles(List<String> roles, {List<String>? pendingRoles}) =>
+      AuthUser(
+          userId: userId,
+          role: role,
+          roles: roles,
+          pendingRoles: pendingRoles ?? this.pendingRoles);
 
   /// Normalize a roles JSON array (`available_roles` / `roles`) to a clean, de-duplicated list of
   /// non-empty role strings. Tolerates a missing/non-list value (→ empty).
@@ -98,5 +115,6 @@ class AuthUser {
         userId: (json['user_id'] ?? json['sub'] ?? '') as String,
         role: (json['role'] ?? '') as String,
         roles: rolesFromJson(json['roles'] ?? json['available_roles']),
+        pendingRoles: rolesFromJson(json['pending_roles']),
       );
 }

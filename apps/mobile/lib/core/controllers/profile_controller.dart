@@ -24,7 +24,13 @@ class ProfileController extends _$ProfileController {
     // approved AFTER login (the new role joins `user_roles`) starts showing up in the mode picker /
     // switch affordance without a fresh login. No-op when `roles` is absent/empty.
     final roles = AuthUser.rolesFromJson(me['roles']);
-    if (roles.isNotEmpty) session.refreshRoles(roles);
+    // `pending_roles` = roles with a submitted-but-unapproved profile → the mode picker shows them
+    // as "pending approval" instead of re-offering the blank form. Refreshed together with `roles`
+    // so an approval (pending → enrolled) and a fresh submit (→ pending) both reflect immediately.
+    final pendingRoles = AuthUser.rolesFromJson(me['pending_roles']);
+    if (roles.isNotEmpty) {
+      session.refreshRoles(roles, pendingRoles: pendingRoles);
+    }
     Map<String, dynamic>? profile;
     try {
       profile = await api.get('/profile/me') as Map<String, dynamic>?;

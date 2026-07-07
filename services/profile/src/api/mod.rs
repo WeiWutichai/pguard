@@ -1286,6 +1286,18 @@ pub async fn internal_export_user<S: ProfileInternalDeps>(
     Ok(Json(ApiResponse::success(data)))
 }
 
+/// GET /internal/users/{user_id}/pending-roles (service-JWT). The roles this user has submitted a
+/// profile for but that are NOT yet approved. Identity calls this to enrich `/auth/me` so the
+/// mobile mode-picker shows a submitted role as pending instead of re-offering its registration form.
+pub async fn internal_pending_roles<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    _caller: ServiceCaller,
+    Path(user_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
+    let roles = repo::pending_roles_for_user(state.db_read(), user_id).await?;
+    Ok(Json(ApiResponse::success(roles)))
+}
+
 /// Allowed `window` values (days) for the expiring-documents list filter — the same urgency
 /// bands the dashboard pills use. An out-of-set value → 400. Default = 90 (the widest band).
 const DOC_EXPIRY_WINDOWS: [i64; 3] = [7, 30, 90];
