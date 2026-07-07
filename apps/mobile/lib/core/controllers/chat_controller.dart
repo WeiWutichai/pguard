@@ -32,8 +32,10 @@ class ChatController extends _$ChatController {
   late ChatRole _acting;
 
   @override
-  Future<List<ChatMessage>> build(String conversationId, ChatRole acting) async {
-    _disposed = false; // reset every (re)build so a rebuilt notifier is never permanently muted
+  Future<List<ChatMessage>> build(
+      String conversationId, ChatRole acting) async {
+    _disposed =
+        false; // reset every (re)build so a rebuilt notifier is never permanently muted
     _conversationId = conversationId;
     _acting = acting;
     _seen.clear();
@@ -65,12 +67,18 @@ class ChatController extends _$ChatController {
     // chat; dedupe-by-id makes any overlap safe.
 
     // Live feed: filter by conversation id + dedupe by message id as frames arrive.
-    final feed = ref.read(chatFeedBuilderProvider)(() => api.validAccessToken());
+    final feed =
+        ref.read(chatFeedBuilderProvider)(() => api.validAccessToken());
     _feed = feed;
     final sub = feed.messages.listen(_onIncoming);
     ref.onDispose(() {
       sub.cancel();
       feed.close();
+      // Mark read on LEAVE too. The open-time mark_read (above) captured `read_at` BEFORE any live
+      // message arrived, so a message received WHILE the thread was open would re-surface as unread
+      // when the list re-pulls on back-out. This advances `read_at` past everything seen this
+      // session. Fire-and-forget with the captured `api` (the notifier is disposing).
+      unawaited(_markRead(api));
     });
     await feed.connect();
 
@@ -79,10 +87,14 @@ class ChatController extends _$ChatController {
 
   void _onIncoming(ChatMessage message) {
     if (_disposed) return;
-    if (message.conversationId != _conversationId) return; // another conversation — ignore
+    // another conversation — ignore
+    if (message.conversationId != _conversationId) return;
     if (!_seen.add(message.id)) return; // echo / overlap — dedupe by id
     final current = state.valueOrNull ?? const <ChatMessage>[];
     state = AsyncData([...current, message]);
+    // The thread is FOREGROUNDED, so the user is seeing this message → keep `read_at` current so the
+    // unread badge doesn't reappear on leave. Best-effort; low-volume 1:1 chat so no throttle needed.
+    unawaited(_markRead(ref.read(pguardApiProvider)));
   }
 
   Future<void> _markRead(PguardApi api) async {
@@ -90,7 +102,8 @@ class ChatController extends _$ChatController {
       // The embedded `?role=` is intentional (PguardApi.put takes no query map). The server uses
       // the JWT role for non-admins and ignores this param — harmless here since a user has exactly
       // one role, so the acting role always equals the token role.
-      await api.put('/conversations/$_conversationId/read?role=${_acting.wire}');
+      await api
+          .put('/conversations/$_conversationId/read?role=${_acting.wire}');
     } catch (e) {
       // Best-effort (re-upserts next open); a debug breadcrumb (no PII) for a chronic failure.
       debugPrint('chat mark-read failed: $e');
