@@ -226,9 +226,20 @@ pub async fn list_messages(
 ) -> Result<Vec<OutgoingChatMessage>, AppError> {
     let limit = limit.clamp(1, 200);
     let offset = offset.max(0);
+    // Per-message `read`: has the COUNTERPART (any participant other than the sender) a read receipt
+    // whose `read_at` covers this message? Drives the sender's sent(✓) vs read(✓✓) tick — so a
+    // message never shows "read" until the recipient actually opened the thread. Correlated EXISTS on
+    // the small per-conversation read_receipts table (2 rows max); no cross-schema join.
     let sql = format!(
-        "SELECT {MESSAGE_COLUMNS} FROM chat.messages \
-         WHERE conversation_id = $1 ORDER BY created_at DESC LIMIT $2 OFFSET $3"
+        "SELECT {MESSAGE_COLUMNS}, \
+             EXISTS( \
+                 SELECT 1 FROM chat.read_receipts rr \
+                  WHERE rr.conversation_id = m.conversation_id \
+                    AND rr.user_id <> m.sender_id \
+                    AND rr.read_at >= m.created_at \
+             ) AS read \
+         FROM chat.messages m \
+         WHERE m.conversation_id = $1 ORDER BY m.created_at DESC LIMIT $2 OFFSET $3"
     );
     let rows = sqlx::query_as::<_, OutgoingChatMessage>(&sql)
         .bind(conversation_id)
@@ -1003,12 +1014,35 @@ mod tests {
             .unread_count;
         assert_eq!(unread, 1);
 
+        // Read receipt on the message: before the customer reads, the guard's own message is NOT
+        // read (sender would show a single ✓, never ✓✓).
+        let msgs_before = list_messages(&db, conv.id, 50, 0).await.unwrap();
+        assert!(
+            !msgs_before
+                .iter()
+                .find(|m| m.sender_id == guard)
+                .unwrap()
+                .read,
+            "unread before the counterpart opens the thread"
+        );
+
         mark_read(&db, conv.id, customer, "customer")
             .await
             .expect("mark read");
         let after = list_conversations(&db, customer, "customer").await.unwrap();
         let unread = after.iter().find(|c| c.id == conv.id).unwrap().unread_count;
         assert_eq!(unread, 0, "marking read clears unread for that role");
+
+        // …and now the guard's message reads `read=true` (the customer's receipt covers it → ✓✓).
+        let msgs_after = list_messages(&db, conv.id, 50, 0).await.unwrap();
+        assert!(
+            msgs_after
+                .iter()
+                .find(|m| m.sender_id == guard)
+                .unwrap()
+                .read,
+            "counterpart read → sender sees read=true"
+        );
 
         // Attachment IDOR: a participant sees it, a stranger does not.
         let att = save_attachment(

@@ -140,6 +140,14 @@ pub struct OutgoingChatMessage {
     pub content: Option<String>,
     pub message_type: String,
     pub created_at: DateTime<Utc>,
+    /// Whether the COUNTERPART has read this message (their read receipt covers it) — drives the
+    /// SENDER'S single-tick (sent) vs double-tick (read) indicator. ONLY the message-list query
+    /// computes it; a just-sent / WS-pushed / admin-enriched message defaults to `false` (correctly
+    /// unread until the recipient opens the thread). `#[sqlx(default)]` lets the FromRow queries
+    /// that don't SELECT it fall back to `false`.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub read: bool,
 }
 
 /// An ADMIN-ENRICHED message (`GET /admin/conversations/{id}/messages`). Unlike

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
+import '../../core/controllers/customer_avatar_controller.dart';
 import '../../core/controllers/customer_home_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
@@ -215,8 +216,9 @@ class _SectionHeading extends StatelessWidget {
       );
 }
 
-/// The header's profile entry: the user's avatar initials (no avatar endpoint exists in v2),
-/// white on green, still pushing `/profile`.
+/// The header's profile entry: the user's real profile PHOTO when set, falling back to their
+/// initials (or a person icon) on green. `foregroundImage` shows the avatar on top and reverts to
+/// the `child` fallback automatically if it is null or fails to load. Still pushes `/profile`.
 class _ProfileAvatarButton extends ConsumerWidget {
   const _ProfileAvatarButton();
 
@@ -224,6 +226,7 @@ class _ProfileAvatarButton extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final initials = ref.watch(profileControllerProvider).valueOrNull?.initials;
+    final avatarUrl = ref.watch(customerAvatarControllerProvider).valueOrNull;
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: PgTokens.space1),
       child: Tooltip(
@@ -234,6 +237,9 @@ class _ProfileAvatarButton extends ConsumerWidget {
           child: CircleAvatar(
             radius: 16,
             backgroundColor: PgTokens.colorGreen800,
+            foregroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
+                ? NetworkImage(avatarUrl)
+                : null,
             child: initials == null
                 ? const Icon(Icons.person_outline,
                     size: 16, color: Colors.white)

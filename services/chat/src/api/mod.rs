@@ -783,6 +783,7 @@ mod tests {
             content,
             message_type: mtype.to_string(),
             created_at: chrono::Utc::now(),
+            read: false,
         };
 
         // Build the attachment index the handler would have batch-fetched.

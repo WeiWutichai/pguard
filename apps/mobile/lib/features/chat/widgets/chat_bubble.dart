@@ -117,7 +117,10 @@ class ChatBubble extends StatelessWidget {
               ),
               if (mine) ...[
                 const SizedBox(width: 3),
-                const Icon(Icons.done_all, size: 13, color: Colors.white70),
+                // Single tick = sent; double tick = the recipient has READ it. Never show ✓✓
+                // until the counterpart's read receipt actually covers this message.
+                Icon(message.read ? Icons.done_all : Icons.done,
+                    size: 13, color: Colors.white70),
               ],
             ],
           ),

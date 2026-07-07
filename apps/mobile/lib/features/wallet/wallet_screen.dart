@@ -31,7 +31,8 @@ class WalletScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'ใบเสร็จ' : 'Receipts',
         subtitle: isThai ? 'รายการชำระเงิน' : 'Your payments',
         showBack: true,
@@ -91,7 +92,9 @@ class _TotalSpentHero extends StatelessWidget {
           ),
           const SizedBox(height: PgTokens.space1),
           Text(
-            Money.format(totalSatang),
+            // Satang precision: ฿1/hr services prorate to sub-฿1 finals — whole-baht floors them
+            // to ฿0 (the "receipts all show ฿0" bug). Matches the charge/receipt screens.
+            Money.format(totalSatang, decimals: true),
             style: const TextStyle(
               fontSize: 34,
               fontWeight: FontWeight.w600,
@@ -168,7 +171,9 @@ class _ReceiptRow extends StatelessWidget {
               Text(
                 // Effective charge (final_amount wins) — keeps rows coherent with the
                 // hero total; refunded rows keep the original figure (badge explains).
-                Money.format(WalletController.rowAmountSatang(payment)),
+                // Satang precision so a sub-฿1 prorated charge isn't floored to ฿0.
+                Money.format(WalletController.rowAmountSatang(payment),
+                    decimals: true),
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,
