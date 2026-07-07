@@ -404,6 +404,45 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/register/add-role:
+    post:
+      tags: [Auth]
+      summary: Add a SECOND pending role to an existing account (edge-public, OTP-authorized)
+      description: |
+        The "register both roles" flow. By the time a user is on the pending-approval screen
+        the register `profile_token` is spent and a pending account has no access token, so
+        neither the profile-token switch (`/auth/register/reissue`) nor the authenticated
+        enroll (`POST /auth/roles`) is reachable. This re-proves phone ownership with a FRESH
+        single-use `phone_verified_token` (a normal OTP round), resolves the account by that
+        phone, and — WITHOUT changing the account's existing role — returns a single-use
+        `profile_token` for the SECOND role so the client submits that role's profile
+        (`POST /profile/{guard,customer}`), creating a second PENDING profile for the same
+        account. Both roles then await admin approval independently; each enters the account's
+        approved role set only on its own approval. Adding a role the account already holds
+        (its current role, or an approved one) → 409 `ROLE_ALREADY_HELD`. `admin` is rejected
+        (403). Edge-public: the phone comes from the token, never the body.
+      operationId: addRole
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AddRoleRequest' }
+      responses:
+        '202':
+          description: Second role accepted; carries `{ user_id, profile_token }` for the new role's profile submit
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/RegisterResult' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   /auth/2fa/setup:
     post:
       tags: [Auth]
@@ -902,6 +941,24 @@ components:
         pin_hash:
           type: string
           description: Client-side SHA-256 hex of the user's PIN (64 hex chars); Argon2'd server-side.
+
+    AddRoleRequest:
+      type: object
+      required: [phone_verified_token, role]
+      properties:
+        phone_verified_token:
+          type: string
+          description: |
+            A FRESH single-use phone-verified JWT from `POST /otp/verify` (a normal OTP round).
+            The phone is read from this token (not the body) and the token is consumed; it
+            re-proves ownership of the account's phone so a token-less pending account can add a
+            second role.
+        role:
+          type: string
+          enum: [guard, customer]
+          description: |
+            The SECOND role to add. Must differ from the account's current role and any role it
+            already holds (else 409 `ROLE_ALREADY_HELD`). `admin` is rejected (403).
 
     RegisterResult:
       type: object

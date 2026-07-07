@@ -14,6 +14,7 @@ lib/src/auth/basic_auth.dart
 lib/src/auth/bearer_auth.dart
 lib/src/auth/oauth.dart
 lib/src/date_serializer.dart
+lib/src/model/add_role_request.dart
 lib/src/model/admin_search_users200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/api_token_view.dart

@@ -90,6 +90,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**createApiToken**](doc/AdminApi.md#createapitoken) | **POST** /admin/api-tokens | Create an admin API token — full token returned ONCE (role&#x3D;admin,
 [*AdminApi*](doc/AdminApi.md) | [**listApiTokens**](doc/AdminApi.md#listapitokens) | **GET** /admin/api-tokens | List the caller&#39;s admin API tokens (NEVER the secret, role&#x3D;admin,
 [*AdminApi*](doc/AdminApi.md) | [**revokeApiToken**](doc/AdminApi.md#revokeapitoken) | **DELETE** /admin/api-tokens/{id} | Revoke one of the caller&#39;s admin API tokens (role&#x3D;admin,
+[*AuthApi*](doc/AuthApi.md) | [**addRole**](doc/AuthApi.md#addrole) | **POST** /auth/register/add-role | Add a SECOND pending role to an existing account (edge-public, OTP-authorized)
 [*AuthApi*](doc/AuthApi.md) | [**changePassword**](doc/AuthApi.md#changepassword) | **PUT** /auth/password | Change the caller&#39;s OWN password (#144)
 [*AuthApi*](doc/AuthApi.md) | [**dataExport**](doc/AuthApi.md#dataexport) | **GET** /me/data-export | Export the authenticated user&#39;s data (PDPA §19 access / §32 portability)
 [*AuthApi*](doc/AuthApi.md) | [**deleteMe**](doc/AuthApi.md#deleteme) | **DELETE** /auth/me | Erase the authenticated user&#39;s account (PDPA §33 right to erasure)
@@ -115,6 +116,7 @@ Class | Method | HTTP request | Description
 
 ## Documentation For Models
 
+ - [AddRoleRequest](doc/AddRoleRequest.md)
  - [AdminSearchUsers200Response](doc/AdminSearchUsers200Response.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
  - [ApiTokenView](doc/ApiTokenView.md)

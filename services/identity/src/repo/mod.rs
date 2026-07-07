@@ -975,6 +975,24 @@ pub async fn active_account_exists_by_phone(db: &PgPool, phone: &str) -> Result<
     Ok(row.is_some())
 }
 
+/// Resolve a LIVE (active, non-deleted) account by phone to `(user_id, primary_role)`. Used by
+/// the add-a-second-role flow: a phone-verified (OTP) caller adds another pending role to their
+/// EXISTING account, so we need the account id + its current primary `role` (to reject adding a
+/// role the account already holds as its primary). `None` when no live account holds the phone.
+pub async fn account_id_and_role_by_phone(
+    db: &PgPool,
+    phone: &str,
+) -> Result<Option<(Uuid, String)>, AppError> {
+    let row: Option<(Uuid, String)> = sqlx::query_as(
+        "SELECT id, role::text FROM identity.users \
+         WHERE phone = $1 AND is_active = TRUE AND deleted_at IS NULL",
+    )
+    .bind(phone)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
 /// Reset the PIN of an EXISTING account BY PHONE — the "forgot PIN" flow, driven by a verified OTP
 /// token (the phone comes from that token, NEVER the request body). No current-PIN verify: phone
 /// ownership + the single-use token ARE the authorization. Stores the new Argon2 hash, bumps the

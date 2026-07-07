@@ -21,12 +21,12 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::rotation::{decide, RotationDecision};
 use crate::domain::{mask, registration, token, twofactor};
 use crate::models::{
-    ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest, CreateApiTokenResponse,
-    Disable2faRequest, Enable2faRequest, Enable2faResponse, EnrollRoleRequest, LoginRequest,
-    LoginTokenPair, MeResponse, RefreshRequest, RegisterRequest, RegisterResult,
-    ReissueProfileTokenRequest, ResetPinRequest, ResolveUsersRequest, ResolvedUser, SessionView,
-    Setup2faResponse, SwitchRoleRequest, TokenPair, TwoFactorChallenge, UpdateMeRequest,
-    UserSearchQuery, UserSearchResult, Verify2faRequest, VerifyApiTokenRequest,
+    AddRoleRequest, ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest,
+    CreateApiTokenResponse, Disable2faRequest, Enable2faRequest, Enable2faResponse,
+    EnrollRoleRequest, LoginRequest, LoginTokenPair, MeResponse, RefreshRequest, RegisterRequest,
+    RegisterResult, ReissueProfileTokenRequest, ResetPinRequest, ResolveUsersRequest, ResolvedUser,
+    SessionView, Setup2faResponse, SwitchRoleRequest, TokenPair, TwoFactorChallenge,
+    UpdateMeRequest, UserSearchQuery, UserSearchResult, Verify2faRequest, VerifyApiTokenRequest,
     VerifyApiTokenResponse,
 };
 use crate::repo;
@@ -388,6 +388,99 @@ pub async fn reissue_profile_token<S: RegisterDeps>(
         .await?;
 
     tracing::info!(%user_id, role = %role, "pending account role switched (profile token reissued)");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(ApiResponse::success(RegisterResult {
+            user_id,
+            profile_token,
+        })),
+    ))
+}
+
+// ----- POST /auth/register/add-role -----
+
+/// ADD a SECOND pending role to an EXISTING account, re-proving phone ownership by OTP.
+///
+/// The "register both roles" flow: by the time a user reaches the pending screen the register
+/// `profile_token` is already spent (consumed at the first profile submit) AND a pending account
+/// has no access token — so `reissue` (profile-token auth) and `enroll_role` (access-token auth)
+/// are both unreachable. This endpoint re-verifies phone ownership with a FRESH
+/// `phone_verified_token` (a normal OTP round), resolves the account by that phone, and — WITHOUT
+/// touching the account's existing `role` — mints a single-use `profile_token` for the SECOND
+/// role so the app can submit that role's profile (a second PENDING profile for the same
+/// user_id). Both roles then await admin approval independently; each enters `user_roles` only on
+/// its own approval. Edge-public (carries the OTP token, not an access token). `skip_all`: never
+/// log the token or phone.
+#[tracing::instrument(skip_all)]
+pub async fn add_role<S: RegisterDeps>(
+    State(state): State<S>,
+    Json(req): Json<AddRoleRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // 1) Validate the target role BEFORE any side effect (guard/customer; admin rejected — it has
+    //    no profile route and is never self-assignable).
+    let role = registration::validate_registration_role(&req.role)?;
+
+    // 2) Verify phone ownership from the FRESH OTP token (signature + purpose + expiry). The phone
+    //    is FROM the token, never the body — this is the whole authorization for adding the role.
+    let (phone, jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        state.jwt_decoding_key(),
+        PHONE_VERIFY_PURPOSE,
+    )?;
+    let phone = registration::validate_thai_phone(&phone)?;
+
+    // 3) Resolve the account for this phone. `None` = no live account → they should register
+    //    first (generic message; enumeration is already gated by the OTP token). Done BEFORE the
+    //    single-use claim so a token isn't burned when there is no account to add a role to.
+    let Some((user_id, current_role)) =
+        repo::account_id_and_role_by_phone(state.db(), &phone).await?
+    else {
+        return Err(AppError::BadRequest(
+            "No account found for this phone — please register first".to_string(),
+        ));
+    };
+
+    // 4) Reject adding a role the account already has: its current primary role, or a role already
+    //    enrolled (approved) in `user_roles`. Nothing to add → Conflict (the app shows the picker).
+    if role.to_string() == current_role
+        || repo::user_has_role(state.db(), user_id, &role.to_string()).await?
+    {
+        return Err(AppError::ConflictCode {
+            code: "ROLE_ALREADY_HELD",
+            message: "This account already has that role.".to_string(),
+        });
+    }
+
+    // 5) Claim the single-use jti (GETDEL) AFTER the validations so a rejected request never burns
+    //    the OTP token. A reused/expired/forged token has no live "valid" marker → reject.
+    let mut redis = state.redis();
+    let jti_status: Option<String> = redis::cmd("GETDEL")
+        .arg(phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &jti))
+        .query_async(&mut redis)
+        .await?;
+    if jti_status.as_deref() != Some("valid") {
+        return Err(AppError::BadRequest(
+            "Phone verification token is invalid, expired, or already used".to_string(),
+        ));
+    }
+
+    // 6) Mint the single-use profile_token for the SECOND role's onboarding route (same scheme as
+    //    register step 6). `users.role` is left untouched — this is ADDITIVE, not a switch. The
+    //    profile submit then creates a second PENDING profile for the SAME user_id.
+    let purpose = registration::profile_purpose_for_role(&role)?;
+    let (profile_token, profile_jti) = encode_profile_token(
+        user_id,
+        purpose,
+        state.jwt_encoding_key(),
+        PROFILE_TOKEN_TTL_MINUTES,
+    )?;
+    let ttl_secs = (PROFILE_TOKEN_TTL_MINUTES * 60 + PROFILE_JTI_SKEW_BUFFER_SECS) as u64;
+    redis
+        .set_ex::<_, _, ()>(format!("profile_jti:{profile_jti}"), "valid", ttl_secs)
+        .await?;
+
+    tracing::info!(%user_id, role = %role, "second role added (pending profile) via OTP");
 
     Ok((
         StatusCode::ACCEPTED,
@@ -1767,8 +1860,23 @@ mod tests {
                 "/auth/register/reissue",
                 post(reissue_profile_token::<RegisterTestDeps>),
             )
+            .route(
+                "/auth/register/add-role",
+                post(add_role::<RegisterTestDeps>),
+            )
             .with_state(deps);
         Some((app, redis))
+    }
+
+    fn post_add_role(token: &str, role: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/register/add-role")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "phone_verified_token": token, "role": role }).to_string(),
+            ))
+            .unwrap()
     }
 
     fn post_reissue(bearer: &str, role: &str) -> Request<Body> {
@@ -1988,6 +2096,147 @@ mod tests {
         );
 
         // cleanup the row we created.
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// add-role can never add admin → 403, BEFORE any token/Redis/DB side effect (validate first).
+    #[tokio::test]
+    async fn add_role_rejects_admin_role() {
+        let Some((app, _redis)) = register_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app.oneshot(post_add_role("x.y.z", "admin")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    /// Full add-second-role flow (DATABASE_URL + Redis): register a pending GUARD, then add CUSTOMER
+    /// via a FRESH phone-verify token → 202 with a profile_token, `users.role` UNCHANGED (still
+    /// guard — additive, not a switch), token single-use (reuse → 400), and adding the SAME role the
+    /// account already holds → 409 ROLE_ALREADY_HELD.
+    #[tokio::test]
+    async fn add_role_adds_second_pending_role_keeping_the_first() {
+        if std::env::var("DATABASE_URL").is_err() {
+            eprintln!("SKIP: DATABASE_URL required for the add-role happy-path test");
+            return;
+        }
+        let Some((app, mut redis)) = register_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(USER_SECRET.as_bytes());
+        let phone: String = format!(
+            "0{}",
+            Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+
+        // Register the FIRST role (guard) → pending.
+        let (t0, j0) = encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &j0),
+                "valid",
+                600,
+            )
+            .await
+            .expect("seed j0");
+        let reg = post_register(app.clone(), register_body(&t0, "guard")).await;
+        assert_eq!(reg.status(), StatusCode::ACCEPTED);
+        let reg_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(reg.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        let user_id = Uuid::parse_str(reg_json["data"]["user_id"].as_str().unwrap()).unwrap();
+
+        // ADD the SECOND role (customer) via a fresh OTP token.
+        let (t1, j1) = encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &j1),
+                "valid",
+                600,
+            )
+            .await
+            .expect("seed j1");
+        let add = app
+            .clone()
+            .oneshot(post_add_role(&t1, "customer"))
+            .await
+            .unwrap();
+        assert_eq!(add.status(), StatusCode::ACCEPTED, "add customer → 202");
+        let add_json: serde_json::Value = serde_json::from_slice(
+            &axum::body::to_bytes(add.into_body(), usize::MAX)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            add_json["data"]["user_id"].as_str().unwrap(),
+            user_id.to_string(),
+            "same account"
+        );
+        assert!(
+            add_json["data"]["profile_token"].is_string(),
+            "carries a customer profile_token"
+        );
+
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&std::env::var("DATABASE_URL").unwrap())
+            .await
+            .expect("pool");
+        // users.role is UNCHANGED (additive, not a switch).
+        let (role,): (String,) =
+            sqlx::query_as("SELECT role::text FROM identity.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read role");
+        assert_eq!(
+            role, "guard",
+            "the first role is preserved (add, not switch)"
+        );
+
+        // The OTP token is single-use → replay 400s.
+        let replay = app
+            .clone()
+            .oneshot(post_add_role(&t1, "customer"))
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.status(),
+            StatusCode::BAD_REQUEST,
+            "OTP token is single-use"
+        );
+
+        // Adding a role the account ALREADY holds (its primary guard) → 409 (fresh token seeded).
+        let (t2, j2) = encode_phone_verify_token(&phone, PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_VERIFY_PURPOSE, &j2),
+                "valid",
+                600,
+            )
+            .await
+            .expect("seed j2");
+        let dup = app.oneshot(post_add_role(&t2, "guard")).await.unwrap();
+        assert_eq!(
+            dup.status(),
+            StatusCode::CONFLICT,
+            "already-held role → 409"
+        );
+
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
             .execute(&pool)

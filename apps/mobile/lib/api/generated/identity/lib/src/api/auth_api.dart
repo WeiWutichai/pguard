@@ -9,6 +9,7 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_identity_api/src/api_util.dart';
+import 'package:pguard_identity_api/src/model/add_role_request.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response.dart';
 import 'package:pguard_identity_api/src/model/change_password_request.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response.dart';
@@ -42,6 +43,101 @@ class AuthApi {
   final Serializers _serializers;
 
   const AuthApi(this._dio, this._serializers);
+
+  /// Add a SECOND pending role to an existing account (edge-public, OTP-authorized)
+  /// The \&quot;register both roles\&quot; flow. By the time a user is on the pending-approval screen the register &#x60;profile_token&#x60; is spent and a pending account has no access token, so neither the profile-token switch (&#x60;/auth/register/reissue&#x60;) nor the authenticated enroll (&#x60;POST /auth/roles&#x60;) is reachable. This re-proves phone ownership with a FRESH single-use &#x60;phone_verified_token&#x60; (a normal OTP round), resolves the account by that phone, and — WITHOUT changing the account&#39;s existing role — returns a single-use &#x60;profile_token&#x60; for the SECOND role so the client submits that role&#39;s profile (&#x60;POST /profile/{guard,customer}&#x60;), creating a second PENDING profile for the same account. Both roles then await admin approval independently; each enters the account&#39;s approved role set only on its own approval. Adding a role the account already holds (its current role, or an approved one) → 409 &#x60;ROLE_ALREADY_HELD&#x60;. &#x60;admin&#x60; is rejected (403). Edge-public: the phone comes from the token, never the body. 
+  ///
+  /// Parameters:
+  /// * [addRoleRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [Register202Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<Register202Response>> addRole({ 
+    required AddRoleRequest addRoleRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/register/add-role';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(AddRoleRequest);
+      _bodyData = _serializers.serialize(addRoleRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    Register202Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(Register202Response),
+      ) as Register202Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<Register202Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// Change the caller&#39;s OWN password (#144)
   /// Verifies &#x60;current_password&#x60; against the stored Argon2 hash (a wrong value → a GENERIC 401, no enumeration), then Argon2-stores &#x60;new_pin_hash&#x60; and force-revokes the user&#39;s OTHER sessions (refresh families revoked + &#x60;token_revocation_version&#x60; bumped, so every other device is rejected at once) and clears THIS browser&#39;s auth cookies so the current session re-authenticates with the new PIN. Self only. 
