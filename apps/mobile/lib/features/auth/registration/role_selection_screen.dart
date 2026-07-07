@@ -228,13 +228,30 @@ class _OnboardingChooser extends ConsumerWidget {
       }
       if (outcome == RegisterOutcome.loggedIn) {
         // The phone already has an account (409 → logged in). If the user picked a role this account
-        // does NOT hold yet (e.g. a guard-only phone where they tapped "customer"), DON'T silently
-        // drop them on the existing role's home — send them to the mode picker so they can ENROL the
-        // role they asked for. If the account already holds the picked role, the router lands them on
-        // the right home as usual.
+        // does NOT hold yet (e.g. a customer-only phone where they tapped "guard"), take them
+        // STRAIGHT into ADDING that role — its BLANK registration form — instead of dropping them on
+        // the mode picker, which shows their EXISTING role as "current mode" and reads as "I chose
+        // guard but it's still customer data". If the account already holds the picked role, the
+        // router lands them on the right home as usual.
         final user = ref.read(sessionProvider).user;
         if (user != null && !user.isEnrolledIn(role.wire)) {
-          context.go('/auth/role');
+          final add = await ref
+              .read(roleSwitchControllerProvider.notifier)
+              .choose(role);
+          if (!context.mounted) return;
+          switch (add) {
+            case RoleActionOutcome.needsProfile:
+              // Enrolled → open that role's fresh profile form (the add-role flow).
+              context.push(role.isGuard
+                  ? '/auth/register/guard'
+                  : '/auth/register/customer');
+            case RoleActionOutcome.switched:
+              // Already enrolled after all (stale set) → just land on that role's home.
+              context.go(role.isGuard ? '/home/guard' : '/home/customer');
+            case RoleActionOutcome.error:
+              // Enrol failed → fall back to the mode picker so the user isn't stranded.
+              context.go('/auth/role');
+          }
         }
       }
       // error → state.error is rendered below; the user can retry.
