@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/chat_list_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
@@ -28,7 +29,8 @@ class ChatListScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'ข้อความ' : 'Messages',
         subtitle: isThai ? 'พูดคุยกับคู่สนทนา' : 'Conversations',
         showBack: true,
@@ -56,11 +58,20 @@ class ChatListScreen extends ConsumerWidget {
                         conversation: c,
                         isThai: isThai,
                         onTap: () async {
+                          // Thread the booking + whether it is callable RIGHT NOW so the chat
+                          // header shows the call/VDO action on the home-entry path too (not only
+                          // when opened from the booking) — gated exactly like the calling service.
+                          final status =
+                              BookingStatus.tryParse(c.requestStatus);
                           await context.push(
                             ChatRoutes.conversation(
                               c.id,
                               acting: actingRole,
                               readOnly: c.isReadOnly,
+                              bookingId: c.requestId,
+                              callable: c.participantId != null &&
+                                  status != null &&
+                                  BookingLifecycle.isCallable(status),
                             ),
                             extra: c.participantName,
                           );
@@ -68,7 +79,8 @@ class ChatListScreen extends ConsumerWidget {
                           // re-pull the list on return so this row's unread badge clears and the
                           // entry-point/nav badge (also fed by this controller) refreshes. Same
                           // gesture-driven pattern as ChatEntryButton — no polling.
-                          ref.invalidate(chatListControllerProvider(actingRole));
+                          ref.invalidate(
+                              chatListControllerProvider(actingRole));
                         },
                       );
                     },

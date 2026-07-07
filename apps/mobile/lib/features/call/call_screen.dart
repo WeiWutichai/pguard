@@ -5,6 +5,8 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/call_controller.dart';
+import '../../core/controllers/customer_public_profile_controller.dart';
+import '../../core/controllers/guard_public_profile_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/models/call.dart';
@@ -114,7 +116,8 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   /// continuation / double-bind on every rebuild.
   void _onCallStateChanged(CallState? prev, CallState next) {
     if (next.callType.isVideo &&
-        (next.phase == CallPhase.connecting || next.phase == CallPhase.active)) {
+        (next.phase == CallPhase.connecting ||
+            next.phase == CallPhase.active)) {
       _ensureRenderers().then((_) {
         if (mounted) _bindStreams();
       });
@@ -161,8 +164,27 @@ class _CallScreenState extends ConsumerState<CallScreen> {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final notifier = ref.read(callControllerProvider.notifier);
     // The PEER is the opposite of the local session role: a guard talks to a customer and
-    // vice-versa (v2 call models carry no peer profile).
+    // vice-versa. The call carries the peer's user_id (caller/callee) — fetch their public profile
+    // (IDOR-gated, same read the live-status map uses) to show the REAL photo + name instead of a
+    // generic icon. Degrades to the generic avatar + "Contact" label on a null/failed read.
     final peerIsCustomer = ref.watch(sessionProvider).user?.isGuard ?? false;
+    final callData = call.call;
+    final peerId = callData == null
+        ? null
+        : (call.isCaller ? callData.calleeId : callData.callerId);
+    String? peerName;
+    String? peerAvatar;
+    if (peerId != null && peerId.isNotEmpty) {
+      if (peerIsCustomer) {
+        final p = ref.watch(customerPublicProfileProvider(peerId)).valueOrNull;
+        peerName = p?.fullName;
+        peerAvatar = p?.avatarUrl;
+      } else {
+        final p = ref.watch(guardPublicProfileProvider(peerId)).valueOrNull;
+        peerName = p?.fullName;
+        peerAvatar = p?.avatarUrl;
+      }
+    }
 
     ref.listen(callControllerProvider, _onCallStateChanged);
 
@@ -191,6 +213,8 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   isThai: isThai,
                   call: call,
                   peerIsCustomer: peerIsCustomer,
+                  peerName: peerName,
+                  peerAvatar: peerAvatar,
                   onToggleMute: notifier.toggleMute,
                   onCancel: _end,
                 ),
@@ -198,6 +222,8 @@ class _CallScreenState extends ConsumerState<CallScreen> {
                   isThai: isThai,
                   call: call,
                   peerIsCustomer: peerIsCustomer,
+                  peerName: peerName,
+                  peerAvatar: peerAvatar,
                   onAccept: notifier.accept,
                   onReject: _reject,
                 ),
@@ -215,6 +241,7 @@ class _CallScreenState extends ConsumerState<CallScreen> {
               CallPhase.ended => _EndedView(
                   isThai: isThai,
                   call: call,
+                  peerName: peerName,
                   elapsed: _finalElapsed,
                   onCallAgain: () {
                     final bookingId = call.call?.bookingId;
@@ -231,13 +258,19 @@ class _CallScreenState extends ConsumerState<CallScreen> {
   }
 }
 
-String _peerLabel(bool isThai) => isThai ? 'คู่สนทนา' : 'Contact';
+/// The peer's real name when the public profile resolved, else the generic "Contact" label.
+String _peerLabel(bool isThai, [String? name]) =>
+    (name != null && name.isNotEmpty)
+        ? name
+        : (isThai ? 'คู่สนทนา' : 'Contact');
 
 class _RingingView extends StatelessWidget {
   const _RingingView({
     required this.isThai,
     required this.call,
     required this.peerIsCustomer,
+    required this.peerName,
+    required this.peerAvatar,
     required this.onToggleMute,
     required this.onCancel,
   });
@@ -245,6 +278,8 @@ class _RingingView extends StatelessWidget {
   final bool isThai;
   final CallState call;
   final bool peerIsCustomer;
+  final String? peerName;
+  final String? peerAvatar;
   final VoidCallback onToggleMute;
   final VoidCallback onCancel;
 
@@ -253,9 +288,9 @@ class _RingingView extends StatelessWidget {
     return Column(
       children: [
         const Spacer(),
-        const CallAvatar(),
+        CallAvatar(avatarUrl: peerAvatar),
         const SizedBox(height: PgTokens.space6),
-        Text(_peerLabel(isThai),
+        Text(_peerLabel(isThai, peerName),
             style: const TextStyle(
                 color: Colors.white,
                 fontSize: 25,
@@ -320,6 +355,8 @@ class _IncomingView extends StatelessWidget {
     required this.isThai,
     required this.call,
     required this.peerIsCustomer,
+    required this.peerName,
+    required this.peerAvatar,
     required this.onAccept,
     required this.onReject,
   });
@@ -327,6 +364,8 @@ class _IncomingView extends StatelessWidget {
   final bool isThai;
   final CallState call;
   final bool peerIsCustomer;
+  final String? peerName;
+  final String? peerAvatar;
   final VoidCallback onAccept;
   final VoidCallback onReject;
 
@@ -335,9 +374,9 @@ class _IncomingView extends StatelessWidget {
     return Column(
       children: [
         const Spacer(),
-        const CallAvatar(),
+        CallAvatar(avatarUrl: peerAvatar),
         const SizedBox(height: PgTokens.space6),
-        Text(_peerLabel(isThai),
+        Text(_peerLabel(isThai, peerName),
             style: const TextStyle(
                 color: Colors.white,
                 fontSize: 25,
@@ -353,7 +392,9 @@ class _IncomingView extends StatelessWidget {
         ],
         Text(
           call.callType.isVideo
-              ? (isThai ? 'สายวิดีโอเรียกเข้า · pguard' : 'Incoming video call · pguard')
+              ? (isThai
+                  ? 'สายวิดีโอเรียกเข้า · pguard'
+                  : 'Incoming video call · pguard')
               : (isThai ? 'สายเรียกเข้า · pguard' : 'Incoming call · pguard'),
           style: callStatusStyle(),
         ),
@@ -423,8 +464,7 @@ class _InCallView extends StatelessWidget {
         Positioned.fill(
           child: showRemoteVideo
               ? RTCVideoView(remoteRenderer!,
-                  objectFit:
-                      RTCVideoViewObjectFit.RTCVideoViewObjectFitCover)
+                  objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitCover)
               : Center(
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
@@ -520,8 +560,7 @@ class _InCallView extends StatelessWidget {
                   icon: call.muted ? Icons.mic_off : Icons.mic,
                   label: isThai ? 'ปิดเสียง' : 'Mute',
                   color: call.muted ? Colors.white : null,
-                  foreground:
-                      call.muted ? PgTokens.colorBrand : Colors.white,
+                  foreground: call.muted ? PgTokens.colorBrand : Colors.white,
                   onPressed: onToggleMute,
                 ),
                 const SizedBox(width: 22),
@@ -563,12 +602,14 @@ class _EndedView extends StatelessWidget {
   const _EndedView({
     required this.isThai,
     required this.call,
+    required this.peerName,
     required this.elapsed,
     required this.onCallAgain,
   });
 
   final bool isThai;
   final CallState call;
+  final String? peerName;
   final Duration? elapsed;
   final VoidCallback? onCallAgain;
 
@@ -614,7 +655,7 @@ class _EndedView extends StatelessWidget {
           ),
           const SizedBox(height: PgTokens.space3),
           Text(
-            _peerLabel(isThai),
+            _peerLabel(isThai, peerName),
             style: const TextStyle(
               color: PgTokens.colorText,
               fontSize: 19,
@@ -625,8 +666,8 @@ class _EndedView extends StatelessWidget {
           Text(
             call.error ?? _durationLine(),
             textAlign: TextAlign.center,
-            style: const TextStyle(
-                color: PgTokens.colorTextMuted, fontSize: 14),
+            style:
+                const TextStyle(color: PgTokens.colorTextMuted, fontSize: 14),
           ),
           const Spacer(),
           if (onCallAgain != null) ...[

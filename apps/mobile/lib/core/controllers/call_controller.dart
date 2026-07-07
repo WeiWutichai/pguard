@@ -43,10 +43,12 @@ class CallController extends _$CallController {
   final List<SignalCandidate> _localIceQueue = [];
   bool _peerReady = false;
   bool _remoteSet = false;
-  bool _maybeAnswering = false; // in-flight guard: prevents a concurrent double-answer
+  bool _maybeAnswering =
+      false; // in-flight guard: prevents a concurrent double-answer
   bool _accepted = false; // callee has accepted → answer once the offer is in
   SignalDescription? _pendingOffer; // callee: offer received before accept
-  SignalDescription? _localOffer; // caller: offer to (re)send on the callee's `ready`
+  SignalDescription?
+      _localOffer; // caller: offer to (re)send on the callee's `ready`
   String? _callId;
   bool _tornDown = false;
 
@@ -123,7 +125,8 @@ class CallController extends _$CallController {
   /// [typeHint] is the push's `call_type` (when it carried one): the ring UI shows the video
   /// indicator immediately, before `GET /calls/{id}` resolves the authoritative type — the callee
   /// must know it is a video call BEFORE answering. The GET still overwrites it (server is truth).
-  Future<void> startIncoming({required String callId, CallType? typeHint}) async {
+  Future<void> startIncoming(
+      {required String callId, CallType? typeHint}) async {
     if (_busy) return;
     _resetSession();
     _callId = callId;
@@ -189,7 +192,8 @@ class CallController extends _$CallController {
       _end(reason: 'rejected');
       return;
     }
-    _sendSignal(CallSignal.bye()); // notify the peer immediately (before the REST round-trip)
+    _sendSignal(CallSignal
+        .bye()); // notify the peer immediately (before the REST round-trip)
     try {
       await ref.read(pguardApiProvider).put('/calls/$id/reject');
     } catch (_) {}
@@ -200,7 +204,8 @@ class CallController extends _$CallController {
   Future<void> end() async {
     final id = _callId;
     if (id != null) {
-      _sendSignal(CallSignal.bye()); // notify the peer immediately (before the REST round-trip)
+      _sendSignal(CallSignal
+          .bye()); // notify the peer immediately (before the REST round-trip)
       try {
         await ref.read(pguardApiProvider).put('/calls/$id/end');
       } catch (_) {}
@@ -247,7 +252,8 @@ class CallController extends _$CallController {
   Future<void> _setupSession({required bool video}) async {
     final api = ref.read(pguardApiProvider);
 
-    final feed = ref.read(callSignalFeedBuilderProvider)(() => api.validAccessToken());
+    final feed =
+        ref.read(callSignalFeedBuilderProvider)(() => api.validAccessToken());
     _feed = feed;
     _signalSub = feed.signals.listen(_onSignal);
     await feed.connect();
@@ -269,16 +275,29 @@ class CallController extends _$CallController {
     _remoteSub = engine.onRemoteStreamChanged.listen((_) {
       if (state.phase == CallPhase.ended) return;
       state = state.copyWith(
-        remoteVideoActive: engine.remoteStream != null && state.callType.isVideo,
+        remoteVideoActive:
+            engine.remoteStream != null && state.callType.isVideo,
       );
     });
 
     // One-shot: end the call if it never reaches `active` (callee never answers / media never
     // connects) so the dialing/connecting screen can't hang. Cancelled on `active` + teardown.
-    _connectTimeout = Timer(_connectTimeoutDuration, () {
-      if (state.phase != CallPhase.active && state.phase != CallPhase.ended) {
-        _end(reason: 'no_answer');
+    _connectTimeout = Timer(_connectTimeoutDuration, () async {
+      if (state.phase == CallPhase.active || state.phase == CallPhase.ended) {
+        return;
       }
+      // Tell the SERVER the dial timed out so the call row advances initiated→missed. WITHOUT this
+      // (the old local-only `_end`) the row lingers 'initiated' forever, and a later tap on the
+      // stale "incoming call" notification GETs a non-terminal call and re-opens the ringing screen
+      // for a call that is long over. Mirror end()'s server hit; keep the local 'no_answer' state.
+      final id = _callId;
+      if (id != null) {
+        _sendSignal(CallSignal.bye());
+        try {
+          await ref.read(pguardApiProvider).put('/calls/$id/end');
+        } catch (_) {}
+      }
+      _end(reason: 'no_answer');
     });
   }
 
@@ -319,7 +338,9 @@ class CallController extends _$CallController {
 
   void _resendOffer() {
     final offer = _localOffer;
-    if (state.isCaller && offer != null) _sendSignal(CallSignal.offer(offer.sdp));
+    if (state.isCaller && offer != null) {
+      _sendSignal(CallSignal.offer(offer.sdp));
+    }
   }
 
   /// A local ICE candidate fired: relay it if the peer is already on the room, else QUEUE it until
@@ -382,7 +403,8 @@ class CallController extends _$CallController {
   Future<void> _onRemoteAnswer(CallSignal signal) async {
     final sdp = signal.sdp;
     if (sdp == null || _engine == null || _remoteSet) return;
-    await _engine!.setRemoteDescription(SignalDescription(type: 'answer', sdp: sdp));
+    await _engine!
+        .setRemoteDescription(SignalDescription(type: 'answer', sdp: sdp));
     _remoteSet = true;
     await _flushIce();
     // Caller now traverses `connecting` (matching the callee) until media reports `connected` —

@@ -137,7 +137,11 @@ class _ChatVideoViewerState extends State<_ChatVideoViewer> {
       await controller.setLooping(false);
       await controller.play();
       setState(() {});
-    } catch (_) {
+    } catch (e) {
+      // Surface the real native error (ExoPlayer/AVPlayer source/codec/HTTP code) to logcat so a
+      // "can't play video" report is diagnosable — the image path uses the SAME presigned host, so
+      // a video-only failure is a player/format/range issue, not URL resolution.
+      debugPrint('[chat-video] init failed for ${widget.url}: $e');
       if (!mounted) return;
       setState(() => _failed = true);
     }

@@ -33,8 +33,7 @@ class CallBackground extends StatelessWidget {
         ),
       ),
       child: showGrid
-          ? const CustomPaint(
-              painter: _GridPainter(), child: SizedBox.expand())
+          ? const CustomPaint(painter: _GridPainter(), child: SizedBox.expand())
           : const SizedBox.expand(),
     );
   }
@@ -67,10 +66,16 @@ class _GridPainter extends CustomPainter {
 /// with two pulsing ripple rings while ringing (scale 0.85→1.4, fade 0.6→0, 2s loop, the second
 /// ring phase-shifted by 1s).
 class CallAvatar extends StatefulWidget {
-  const CallAvatar({super.key, this.size = 120, this.ripple = true});
+  const CallAvatar(
+      {super.key, this.size = 120, this.ripple = true, this.avatarUrl});
 
   final double size;
   final bool ripple;
+
+  /// The peer's real profile photo (short-lived presigned URL). When null/blank OR it fails to
+  /// load, falls back to the generic person icon — so a peer with no photo (or a private read)
+  /// degrades gracefully.
+  final String? avatarUrl;
 
   @override
   State<CallAvatar> createState() => _CallAvatarState();
@@ -84,9 +89,9 @@ class _CallAvatarState extends State<CallAvatar>
   void initState() {
     super.initState();
     if (widget.ripple) {
-      _controller = AnimationController(
-          vsync: this, duration: const Duration(seconds: 2))
-        ..repeat();
+      _controller =
+          AnimationController(vsync: this, duration: const Duration(seconds: 2))
+            ..repeat();
     }
   }
 
@@ -125,6 +130,9 @@ class _CallAvatarState extends State<CallAvatar>
 
   @override
   Widget build(BuildContext context) {
+    final url = widget.avatarUrl;
+    final fallbackIcon =
+        Icon(Icons.person, size: widget.size * 0.47, color: Colors.white);
     final circle = Container(
       width: widget.size,
       height: widget.size,
@@ -132,7 +140,16 @@ class _CallAvatarState extends State<CallAvatar>
         color: Colors.white.withValues(alpha: .15),
         shape: BoxShape.circle,
       ),
-      child: Icon(Icons.person, size: widget.size * 0.47, color: Colors.white),
+      clipBehavior: Clip.antiAlias,
+      child: (url == null || url.isEmpty)
+          ? fallbackIcon
+          : Image.network(
+              url,
+              width: widget.size,
+              height: widget.size,
+              fit: BoxFit.cover,
+              errorBuilder: (_, __, ___) => fallbackIcon,
+            ),
     );
     if (!widget.ripple) return circle;
     return SizedBox(
