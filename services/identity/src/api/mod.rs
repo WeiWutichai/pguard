@@ -189,6 +189,22 @@ pub async fn login(
 /// `user_roles` set) so a multi-role app can offer a role switch. The access token's active role
 /// is the supplied `role` (the registration/primary role on login) — unchanged minting
 /// behaviour; `available_roles` is additive and backward-compatible.
+/// Pick the role to mint an access token for, from the account's primary [requested] role and its
+/// ENROLLED (approved) `user_roles` set. CRITICAL anti-escalation invariant: a token is minted ONLY
+/// for a role the account is actually enrolled in — never the raw primary `users.role`, which may be
+/// PENDING/rejected while the account is `approved` account-level via a DIFFERENT role (a guard whose
+/// customer profile was approved is `approved` but their guard vetting may never have happened; see
+/// the add-role flow). Prefer the primary when it IS approved (unchanged for every single-role and
+/// normal dual-role account); otherwise fall back to an approved enrolled role; `None` when the
+/// account holds no approved role yet (an anomaly — an approved account always has ≥1 enrolled role).
+fn active_role_for(requested: &str, enrolled: &[String]) -> Option<String> {
+    if enrolled.iter().any(|r| r == requested) {
+        Some(requested.to_string())
+    } else {
+        enrolled.first().cloned()
+    }
+}
+
 async fn issue_login_tokens(
     state: &AppState,
     user_id: Uuid,
@@ -196,9 +212,17 @@ async fn issue_login_tokens(
     trv: i32,
     headers: &HeaderMap,
 ) -> Result<axum::response::Response, AppError> {
+    // The enrolled-role set for the picker. A single-role user → `[role]`; a dual-role user → both.
+    let available_roles = repo::list_user_roles(&state.db, user_id).await?;
+    // NEVER mint the raw primary role: only an APPROVED (enrolled) role. This closes the vetting
+    // bypass where an approved-account-level flag on the pending primary would otherwise mint a token
+    // for an unvetted role. `None` = no approved role yet → generic 401 (account not usable).
+    let active = active_role_for(role, &available_roles)
+        .ok_or_else(|| AppError::Unauthorized("Invalid credentials".to_string()))?;
+
     let (access_token, _jti) = encode_jwt_with_key(
         user_id,
-        role,
+        &active,
         trv as i64,
         &state.jwt_config.encoding_key,
         state.jwt_config.expiry_minutes,
@@ -212,9 +236,6 @@ async fn issue_login_tokens(
         expires_in: state.jwt_config.expiry_minutes * 60,
         token_type: "Bearer",
     };
-    // The enrolled-role set for the picker. A single-role user → `[role]` (identical to the
-    // single-role world); a dual-role user → both. Always contains the active `role`.
-    let available_roles = repo::list_user_roles(&state.db, user_id).await?;
 
     let (cookie_headers, _) = token_cookie_headers(&pair, state.jwt_config.expiry_minutes * 60);
     let body = LoginTokenPair {
@@ -568,9 +589,15 @@ pub async fn refresh(
                 );
                 return Err(generic_401());
             };
+            // Same anti-escalation gate as login: re-mint the access token ONLY for an ENROLLED
+            // (approved) role, never the raw primary `users.role` (which may be a pending/rejected
+            // role on an account that is `approved` account-level via a different role). Without
+            // this a refresh would revert an approved user to their unvetted primary role.
+            let enrolled = repo::list_user_roles(&state.db, located.user_id).await?;
+            let active = active_role_for(&meta.role, &enrolled).ok_or_else(generic_401)?;
             let (access_token, _jti) = encode_jwt_with_key(
                 meta.id,
-                &meta.role,
+                &active,
                 meta.token_revocation_version as i64,
                 &state.jwt_config.encoding_key,
                 state.jwt_config.expiry_minutes,
@@ -2100,6 +2127,31 @@ mod tests {
             .bind(user_id)
             .execute(&pool)
             .await;
+    }
+
+    /// The anti-escalation role gate for token minting: a token is issued ONLY for an ENROLLED
+    /// (approved) role. Critical: an approved-account-level flag on a pending/rejected PRIMARY role
+    /// must never mint a token for that unvetted role (the add-role vetting-bypass this closes).
+    #[test]
+    fn active_role_for_mints_only_enrolled_roles() {
+        // Normal single-role: primary is enrolled → use it.
+        assert_eq!(
+            active_role_for("guard", &["guard".to_string()]),
+            Some("guard".to_string())
+        );
+        // Dual-role: primary preferred when enrolled.
+        assert_eq!(
+            active_role_for("guard", &["customer".to_string(), "guard".to_string()]),
+            Some("guard".to_string())
+        );
+        // THE EXPLOIT CASE: primary (guard) NOT enrolled (never approved) but the account is
+        // approved via customer → mint CUSTOMER, never the unvetted guard.
+        assert_eq!(
+            active_role_for("guard", &["customer".to_string()]),
+            Some("customer".to_string())
+        );
+        // No approved role yet → mint NOTHING (caller 401s).
+        assert_eq!(active_role_for("guard", &[]), None);
     }
 
     /// add-role can never add admin → 403, BEFORE any token/Redis/DB side effect (validate first).
