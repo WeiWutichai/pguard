@@ -281,6 +281,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/register/add-role": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Add a SECOND pending role to an existing account (edge-public, OTP-authorized)
+         * @description The "register both roles" flow. By the time a user is on the pending-approval screen
+         *     the register `profile_token` is spent and a pending account has no access token, so
+         *     neither the profile-token switch (`/auth/register/reissue`) nor the authenticated
+         *     enroll (`POST /auth/roles`) is reachable. This re-proves phone ownership with a FRESH
+         *     single-use `phone_verified_token` (a normal OTP round), resolves the account by that
+         *     phone, and — WITHOUT changing the account's existing role — returns a single-use
+         *     `profile_token` for the SECOND role so the client submits that role's profile
+         *     (`POST /profile/{guard,customer}`), creating a second PENDING profile for the same
+         *     account. Both roles then await admin approval independently; each enters the account's
+         *     approved role set only on its own approval. Adding a role the account already holds
+         *     (its current role, or an approved one) → 409 `ROLE_ALREADY_HELD`. `admin` is rejected
+         *     (403). Edge-public: the phone comes from the token, never the body.
+         */
+        post: operations["addRole"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/2fa/setup": {
         parameters: {
             query?: never;
@@ -597,6 +628,21 @@ export interface components {
             role: "guard" | "customer";
             /** @description Client-side SHA-256 hex of the user's PIN (64 hex chars); Argon2'd server-side. */
             pin_hash: string;
+        };
+        AddRoleRequest: {
+            /**
+             * @description A FRESH single-use phone-verified JWT from `POST /otp/verify` (a normal OTP round).
+             *     The phone is read from this token (not the body) and the token is consumed; it
+             *     re-proves ownership of the account's phone so a token-less pending account can add a
+             *     second role.
+             */
+            phone_verified_token: string;
+            /**
+             * @description The SECOND role to add. Must differ from the account's current role and any role it
+             *     already holds (else 409 `ROLE_ALREADY_HELD`). `admin` is rejected (403).
+             * @enum {string}
+             */
+            role: "guard" | "customer";
         };
         RegisterResult: {
             /** Format: uuid */
@@ -1286,6 +1332,36 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    addRole: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AddRoleRequest"];
+            };
+        };
+        responses: {
+            /** @description Second role accepted; carries `{ user_id, profile_token }` for the new role's profile submit */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RegisterResult"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            409: components["responses"]["Conflict"];
         };
     };
     setup2fa: {

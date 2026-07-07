@@ -616,6 +616,11 @@ const PUBLIC_PATHS: &[&str] = &[
     // internally. Like `/auth/register`, the edge access-token validator can't decode it, so it must
     // be edge-public.
     "/auth/register/reissue",
+    // Add a SECOND pending role (register both roles): carries a FRESH single-use
+    // `phone_verified_token` (otp-issued) in the BODY, NOT an access token — a pending account has
+    // none. Like `/auth/register`, the edge validator can't decode the OTP token, so it must be
+    // edge-public; identity re-verifies phone ownership + single-use internally.
+    "/auth/register/add-role",
     // Forgot-PIN reset: carries a single-use `phone_verified_token` (otp-issued purpose JWT) in the
     // BODY, NOT an access token — the edge validator can't decode it, so it must be edge-public;
     // identity validates the token (signature + purpose + expiry + single-use) internally.
@@ -909,6 +914,7 @@ mod tests {
         for path in [
             "/v1/auth/register",
             "/v1/auth/register/reissue",
+            "/v1/auth/register/add-role",
             "/v1/profile/guard",
             "/v1/profile/customer",
         ] {

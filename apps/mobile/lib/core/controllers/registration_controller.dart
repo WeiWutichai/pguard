@@ -255,6 +255,71 @@ class RegistrationController extends _$RegistrationController {
     }
   }
 
+  /// `POST /auth/register/add-role { phone_verified_token, role }` — ADD a SECOND pending role to
+  /// a still-pending account (the "register both roles" flow). [role] is the OTHER role (the app
+  /// picks the opposite of the account's current role). The FRESH `phone_verified_token` from the
+  /// just-completed OTP re-verify authorizes it (a pending account has no access token, and the
+  /// original register profile_token is spent). On **202** → stash the returned `profile_token` for
+  /// the new role and return [RegisterOutcome.needsProfile] so the caller pushes that role's profile
+  /// form; the session is left as-is (still `pendingApproval`). On **409** the account already holds
+  /// that role. Never sets a PIN (the account has one).
+  Future<RegisterOutcome> addSecondRoleWhilePending(
+      RegistrationRole role) async {
+    if (state.busy) return RegisterOutcome.error;
+    state = state.copyWith(busy: true, error: null, role: role);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final store = ref.read(appStoreProvider);
+    final pvt = ref.read(authControllerProvider).phoneVerifiedToken ??
+        await store.readPhoneVerifiedToken();
+    if (pvt == null) {
+      state = state.copyWith(
+          busy: false,
+          error: isThai
+              ? 'การยืนยันหมดอายุ กรุณาขอ OTP ใหม่'
+              : 'Verification expired — request a new OTP');
+      return RegisterOutcome.error;
+    }
+    try {
+      final data = await ref
+          .read(pguardApiProvider)
+          .post('/auth/register/add-role', data: {
+        'phone_verified_token': pvt,
+        'role': role.wire,
+      });
+      final profileToken = (data is Map<String, dynamic>)
+          ? data['profile_token'] as String?
+          : null;
+      if (profileToken != null) {
+        _profileToken = profileToken;
+        await store.saveProfileToken(profileToken);
+      }
+      // The OTP token is now consumed — drop it so a back-out can't re-present a spent token.
+      _phoneVerifiedToken = null;
+      await store.clearPhoneVerifiedToken();
+      // The account now holds BOTH roles — mark it so the pending screen hides the "add the other
+      // role" button (there is no third role; re-offering it only burns an OTP for a 409).
+      await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
+      // Session is already `pendingApproval` — leave it. The profile submit below persists the
+      // (new-role) pending summary and lands back on the pending screen.
+      state = state.copyWith(busy: false);
+      return RegisterOutcome.needsProfile;
+    } on ApiException catch (e) {
+      // 409 ROLE_ALREADY_HELD — the account already has this role (current or approved).
+      final msg = e.statusCode == 409
+          ? (isThai
+              ? 'บัญชีนี้มีบทบาทนี้อยู่แล้ว'
+              : 'This account already has that role')
+          : e.message;
+      state = state.copyWith(busy: false, error: msg);
+      return RegisterOutcome.error;
+    } catch (_) {
+      state = state.copyWith(
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
+      return RegisterOutcome.error;
+    }
+  }
+
   /// `POST /profile/customer` with the `profile_token`. Address is required (the screen validates
   /// length); full_name/company_name/email/contact_phone are optional v1-parity fields.
   Future<bool> submitCustomerProfile({
@@ -271,29 +336,29 @@ class RegistrationController extends _$RegistrationController {
     final mail = email?.trim();
     final phone = contactPhone?.trim();
     return await _submitProfile(
-      '/profile/customer',
-      {
-        if (name != null && name.isNotEmpty) 'full_name': name,
-        'address': addr,
-        if (company != null && company.isNotEmpty) 'company_name': company,
-        if (mail != null && mail.isNotEmpty) 'email': mail,
-        if (phone != null && phone.isNotEmpty) 'contact_phone': phone,
-      },
-      summary: RegistrationSummary(
-        role: RegistrationRole.customer,
-        lines: [
-          if (name != null && name.isNotEmpty)
-            (label: isThai ? 'ชื่อ' : 'Name', value: name),
-          (label: isThai ? 'ที่อยู่' : 'Address', value: addr),
-          if (company != null && company.isNotEmpty)
-            (label: isThai ? 'บริษัท' : 'Company', value: company),
-          if (mail != null && mail.isNotEmpty)
-            (label: isThai ? 'อีเมล' : 'Email', value: mail),
-          if (phone != null && phone.isNotEmpty)
-            (label: isThai ? 'เบอร์ติดต่อ' : 'Phone', value: phone),
-        ],
-      ),
-    ) !=
+          '/profile/customer',
+          {
+            if (name != null && name.isNotEmpty) 'full_name': name,
+            'address': addr,
+            if (company != null && company.isNotEmpty) 'company_name': company,
+            if (mail != null && mail.isNotEmpty) 'email': mail,
+            if (phone != null && phone.isNotEmpty) 'contact_phone': phone,
+          },
+          summary: RegistrationSummary(
+            role: RegistrationRole.customer,
+            lines: [
+              if (name != null && name.isNotEmpty)
+                (label: isThai ? 'ชื่อ' : 'Name', value: name),
+              (label: isThai ? 'ที่อยู่' : 'Address', value: addr),
+              if (company != null && company.isNotEmpty)
+                (label: isThai ? 'บริษัท' : 'Company', value: company),
+              if (mail != null && mail.isNotEmpty)
+                (label: isThai ? 'อีเมล' : 'Email', value: mail),
+              if (phone != null && phone.isNotEmpty)
+                (label: isThai ? 'เบอร์ติดต่อ' : 'Phone', value: phone),
+            ],
+          ),
+        ) !=
         null;
   }
 
@@ -428,7 +493,8 @@ class RegistrationController extends _$RegistrationController {
     final api = ref.read(pguardApiProvider);
     for (final entry in uploads.entries) {
       try {
-        final mime = _detectImageMime(await _readHead(entry.value, 12)) ?? 'image/jpeg';
+        final mime =
+            _detectImageMime(await _readHead(entry.value, 12)) ?? 'image/jpeg';
         final form = FormData.fromMap({
           'document_type': entry.key,
           'file': await MultipartFile.fromFile(
@@ -532,8 +598,9 @@ class RegistrationController extends _$RegistrationController {
       // The single-use profile_token is the Bearer. For a first-role registration there is no
       // session yet; for an ADD-ROLE the user IS authenticated but the purpose-scoped token (not the
       // session token) still authorizes this one write, so `bearer:` is correct in both cases.
-      final resp =
-          await ref.read(pguardApiProvider).post(path, data: data, bearer: token);
+      final resp = await ref
+          .read(pguardApiProvider)
+          .post(path, data: data, bearer: token);
       // First-role registration: persist the pending flag + MASKED summary (prefs, non-sensitive) so
       // a cold start resumes the pending screen with the submitted summary.
       // ADD-ROLE: the user stays in their CURRENT (approved) role — the new role is just pending in
@@ -687,10 +754,10 @@ class RegistrationController extends _$RegistrationController {
       String oldToken, RegistrationRole role) async {
     try {
       final data = await ref.read(pguardApiProvider).post(
-        '/auth/register/reissue',
-        data: {'role': role.wire},
-        bearer: oldToken,
-      );
+            '/auth/register/reissue',
+            data: {'role': role.wire},
+            bearer: oldToken,
+          );
       final newToken = (data is Map<String, dynamic>)
           ? data['profile_token'] as String?
           : null;

@@ -106,6 +106,59 @@ void main() {
   });
 
   test(
+      'addSecondRoleWhilePending: POSTs /auth/register/add-role, stashes profile_token, needsProfile',
+      () async {
+    final store = InMemoryStore()..phoneVerifiedToken = 'pvt-fresh';
+    final prefs = FakePrefsStore();
+    Map<String, dynamic>? addBody;
+    String? addPath;
+    final api = FakeApi(onPost: (path, data) async {
+      addPath = path;
+      addBody = data as Map<String, dynamic>;
+      return {'user_id': 'u1', 'profile_token': 'ptok-customer'};
+    });
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+
+    // A pending GUARD adds the CUSTOMER role using the fresh OTP token (from store).
+    final outcome =
+        await ctrl.addSecondRoleWhilePending(RegistrationRole.customer);
+
+    expect(outcome, RegisterOutcome.needsProfile);
+    expect(addPath, '/auth/register/add-role');
+    expect(addBody!['role'], 'customer');
+    expect(addBody!['phone_verified_token'], 'pvt-fresh');
+    // NO pin_hash — the account already has a PIN (this is not a fresh registration).
+    expect(addBody!.containsKey('pin_hash'), isFalse);
+    // The new-role profile_token is stashed for the profile submit; the spent OTP token is dropped.
+    expect(store.profileToken, 'ptok-customer');
+    expect(store.phoneVerifiedToken, isNull);
+    // Session is untouched (still whatever it was — no accidental auth flip).
+    expect(store.access, isNull);
+    expect(
+        c.read(registrationControllerProvider).role, RegistrationRole.customer);
+  });
+
+  test(
+      'addSecondRoleWhilePending: 409 ROLE_ALREADY_HELD → error, no profile step',
+      () async {
+    final store = InMemoryStore()..phoneVerifiedToken = 'pvt-fresh';
+    final prefs = FakePrefsStore();
+    final api = FakeApi(
+        onPost: (_, __) async =>
+            throw const ApiException(message: 'already held', statusCode: 409));
+    final c = container(api: api, store: store, prefs: prefs);
+    final ctrl = c.read(registrationControllerProvider.notifier);
+
+    final outcome =
+        await ctrl.addSecondRoleWhilePending(RegistrationRole.guard);
+
+    expect(outcome, RegisterOutcome.error);
+    expect(c.read(registrationControllerProvider).error, isNotNull);
+    expect(store.profileToken, isNull, reason: 'no profile step on 409');
+  });
+
+  test(
       'submitGuardProfile: POSTs /profile/guard with the profile_token Bearer; FULL acct to backend, MASKED locally',
       () async {
     final store = InMemoryStore();
@@ -174,11 +227,13 @@ void main() {
 
     expect(ok, isFalse);
     expect(posted, isFalse); // the guard token never hit /profile/customer
-    expect(await store.readProfileToken(), isNull); // dropped so the retry starts clean
+    expect(await store.readProfileToken(),
+        isNull); // dropped so the retry starts clean
     expect(c.read(registrationControllerProvider).error, isNotNull);
   });
 
-  test('submitCustomerProfile accepts a matching CUSTOMER-purpose token', () async {
+  test('submitCustomerProfile accepts a matching CUSTOMER-purpose token',
+      () async {
     final store = InMemoryStore()
       ..profileToken = fakeJwt(
           {'sub': 'u1', 'purpose': 'customer_profile', 'exp': 9999999999});
@@ -208,7 +263,8 @@ void main() {
         fakeJwt({'sub': 'u1', 'purpose': 'guard_profile', 'exp': 9999999999});
     final customerTok = fakeJwt(
         {'sub': 'u1', 'purpose': 'customer_profile', 'exp': 9999999999});
-    final store = InMemoryStore()..profileToken = guardTok; // leftover guard token, no pvt
+    final store = InMemoryStore()
+      ..profileToken = guardTok; // leftover guard token, no pvt
     final prefs = FakePrefsStore();
     String? reissueRole;
     final api = FakeApi(onPost: (path, data) async {
@@ -224,7 +280,8 @@ void main() {
 
     expect(outcome, RegisterOutcome.needsProfile);
     expect(reissueRole, 'customer'); // asked the server for the new role
-    expect(api.postBearer['/auth/register/reissue'], guardTok); // old token authorised it
+    expect(api.postBearer['/auth/register/reissue'],
+        guardTok); // old token authorised it
     expect(store.profileToken, customerTok); // new correct-role token persisted
   });
 
@@ -468,7 +525,8 @@ void main() {
     ctrl.selectRole(RegistrationRole.guard);
     final second = await ctrl.register();
 
-    expect(second, RegisterOutcome.needsProfile); // resumes, NOT an error/bounce
+    expect(
+        second, RegisterOutcome.needsProfile); // resumes, NOT an error/bounce
     expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
     // The resume short-circuits before the network → no second register call.
     expect(api.calls.where((p) => p == 'POST /auth/register').length, 1);

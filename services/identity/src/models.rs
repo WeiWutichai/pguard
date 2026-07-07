@@ -37,6 +37,19 @@ pub struct ReissueProfileTokenRequest {
     pub role: String,
 }
 
+/// ADD a SECOND pending role to an existing account (`POST /auth/register/add-role`). Unlike
+/// `reissue` (which SWITCHES the one pending role) this is ADDITIVE — the account keeps its first
+/// role and gains a second pending profile. Authorized by a FRESH `phone_verified_token` (OTP):
+/// by the time a user is on the pending screen the register `profile_token` is already spent and
+/// a pending account has no access token, so re-proving phone ownership is the only auth left.
+/// The phone comes from the token, never the body.
+#[derive(Debug, Deserialize)]
+pub struct AddRoleRequest {
+    pub phone_verified_token: String,
+    /// The SECOND `guard` | `customer` role to add (must differ from the account's current role).
+    pub role: String,
+}
+
 /// Update the CALLER'S OWN self-profile (`PUT /auth/me`): `display_name` + `email` only. Phone,
 /// role, and password are NEVER changed here (password has its own `PUT /auth/password`). `email`
 /// is optional (omit / null / "" clears it); both are validated + normalized server-side.

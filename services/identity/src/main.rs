@@ -126,6 +126,7 @@ async fn main() -> anyhow::Result<()> {
             "/auth/register/reissue",
             post(api::reissue_profile_token::<AppState>),
         )
+        .route("/auth/register/add-role", post(api::add_role::<AppState>))
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))

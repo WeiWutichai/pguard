@@ -14,6 +14,7 @@ export 'package:pguard_identity_api/src/api/admin_api.dart';
 export 'package:pguard_identity_api/src/api/auth_api.dart';
 export 'package:pguard_identity_api/src/api/internal_api.dart';
 
+export 'package:pguard_identity_api/src/model/add_role_request.dart';
 export 'package:pguard_identity_api/src/model/admin_search_users200_response.dart';
 export 'package:pguard_identity_api/src/model/api_response_envelope.dart';
 export 'package:pguard_identity_api/src/model/api_token_view.dart';

@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/auth_controller.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/controllers/session_controller.dart';
@@ -34,6 +35,10 @@ class _RegistrationPendingScreenState
     extends ConsumerState<RegistrationPendingScreen> {
   RegistrationSummary? _summary;
 
+  /// True once the account holds BOTH roles → hide the "add the other role" button (no third role
+  /// to add; re-offering it would only burn an OTP for a backend 409).
+  bool _hasBothRoles = false;
+
   @override
   void initState() {
     super.initState();
@@ -43,6 +48,12 @@ class _RegistrationPendingScreenState
     if (_summary == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _loadFromPrefs());
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) => _loadBothRolesFlag());
+  }
+
+  Future<void> _loadBothRolesFlag() async {
+    final v = await ref.read(prefsStoreProvider).getString(kRegBothRolesKey);
+    if (v == '1' && mounted) setState(() => _hasBothRoles = true);
   }
 
   Future<void> _loadFromPrefs() async {
@@ -81,6 +92,31 @@ class _RegistrationPendingScreenState
         isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
       ),
     ));
+  }
+
+  /// Start the "register the OTHER role too" flow: re-verify the account's phone by OTP (a pending
+  /// account has no token and the register profile_token is spent), then add the opposite role.
+  /// There are exactly two roles, so the target is deterministic (guard↔customer). The captcha →
+  /// OTP screens run, then `POST /auth/register/add-role` + the new role's profile form.
+  Future<void> _addOtherRole() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final currentIsGuard = _summary?.role.isGuard ?? false;
+    final target =
+        currentIsGuard ? RegistrationRole.customer : RegistrationRole.guard;
+    final phone = await ref.read(appStoreProvider).readPhone();
+    if (!mounted) return;
+    if (phone == null) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'ไม่พบเบอร์โทร กรุณาเข้าสู่ระบบใหม่'
+            : 'Phone not found — please sign in again'),
+      ));
+      return;
+    }
+    ref
+        .read(authControllerProvider.notifier)
+        .startAddRolePending(phone: phone, targetRoleWire: target.wire);
+    context.push('/auth/captcha');
   }
 
   /// Cold start: the in-memory PIN is gone, so re-enter it to attempt the approved-login.
@@ -160,16 +196,48 @@ class _RegistrationPendingScreenState
                 ),
               ),
               const Spacer(),
-              // Footer: CTA pinned above the home indicator.
+              // Footer: primary "check status" + a secondary "register the other role too" so a
+              // pending user isn't stuck — they can add the opposite role (both await approval).
               Padding(
                 padding: const EdgeInsets.fromLTRB(
-                    20, PgTokens.space4, 20, PgTokens.space4),
+                    20, PgTokens.space4, 20, PgTokens.space2),
                 child: PgPrimaryButton(
                   label: isThai ? 'ตรวจสอบสถานะ' : 'Check status',
                   busy: state.busy,
                   onPressed: state.busy ? null : _checkStatus,
                 ),
               ),
+              // Hidden once the account already holds both roles (nothing left to add).
+              if (!_hasBothRoles)
+                Padding(
+                  padding:
+                      const EdgeInsets.fromLTRB(20, 0, 20, PgTokens.space4),
+                  child: SizedBox(
+                    height: 52,
+                    child: TextButton(
+                      onPressed: state.busy ? null : _addOtherRole,
+                      style: TextButton.styleFrom(
+                        foregroundColor: PgTokens.colorGreen800,
+                        shape: RoundedRectangleBorder(
+                          borderRadius:
+                              BorderRadius.circular(PgTokens.radiusXl),
+                          side: const BorderSide(color: PgTokens.colorBorder),
+                        ),
+                      ),
+                      child: Text(
+                        isGuard
+                            ? (isThai
+                                ? 'สมัครเป็นลูกค้าด้วย'
+                                : 'Also register as a customer')
+                            : (isThai
+                                ? 'สมัครเป็นเจ้าหน้าที่ด้วย'
+                                : 'Also register as a guard'),
+                        style: const TextStyle(
+                            fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                  ),
+                ),
             ],
           ),
         ),

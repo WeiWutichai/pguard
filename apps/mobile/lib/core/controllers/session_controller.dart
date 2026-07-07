@@ -155,8 +155,8 @@ class Session extends _$Session {
     final user = state.user;
     if (user == null || state.status != SessionStatus.authenticated) return;
     _persistRoles(user.withRoles(roles).enrolledRoles);
-    state = SessionState(SessionStatus.authenticated,
-        user: user.withRoles(roles));
+    state =
+        SessionState(SessionStatus.authenticated, user: user.withRoles(roles));
   }
 
   /// After clearing the PIN gate on cold start.
@@ -206,6 +206,8 @@ class Session extends _$Session {
     final prefs = ref.read(prefsStoreProvider);
     await prefs.remove(kRegPendingRoleKey);
     await prefs.remove(kRegSummaryKey);
+    // Drop the "account holds both roles" marker so the next user's pending screen offers add-role.
+    await prefs.remove(kRegBothRolesKey);
     // Drop the persisted enrolled-role set so a logged-out device doesn't carry one account's roles
     // into the next user's cold-start classification.
     await prefs.remove(kEnrolledRolesKey);

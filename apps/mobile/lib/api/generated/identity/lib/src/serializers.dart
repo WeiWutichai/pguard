@@ -14,6 +14,7 @@ import 'package:built_value/iso_8601_date_time_serializer.dart';
 import 'package:pguard_identity_api/src/date_serializer.dart';
 import 'package:pguard_identity_api/src/model/date.dart';
 
+import 'package:pguard_identity_api/src/model/add_role_request.dart';
 import 'package:pguard_identity_api/src/model/admin_search_users200_response.dart';
 import 'package:pguard_identity_api/src/model/api_response_envelope.dart';
 import 'package:pguard_identity_api/src/model/api_token_view.dart';
@@ -71,6 +72,7 @@ import 'package:pguard_identity_api/src/model/verify2fa_request.dart';
 part 'serializers.g.dart';
 
 @SerializersFor([
+  AddRoleRequest,
   AdminSearchUsers200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApiTokenView,
