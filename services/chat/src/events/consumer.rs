@@ -284,6 +284,124 @@ async fn create_conversation_for_booking<B: BookingReader>(
     Ok(conv.id)
 }
 
+// ---------------------------------------------------------------------------------------------
+// Booking-status consumer — keeps `chat.conversations.request_status` current from booking's
+// lifecycle so a completed/cancelled job's thread becomes READ-ONLY. Both gates already read that
+// column (server: `repo::send_message` → `domain::is_writable`; mobile: `ChatReadOnly.fromStatus`)
+// — they just never learned the booking closed because `request_status` was frozen at create time.
+// Own durable + offset (independent of the call-summary consumer); terminal-topics only.
+// ---------------------------------------------------------------------------------------------
+
+const BOOKING_STATUS_DURABLE: &str = "chat-booking-status";
+const BOOKING_STATUS_FILTER: &str = "pguard.events.booking.>";
+
+/// Only `booking_id` is needed to locate the conversation (completed also carries proration fields,
+/// which serde ignores here).
+#[derive(Deserialize)]
+struct BookingStatusPayload {
+    booking_id: Uuid,
+}
+
+pub async fn run_booking_status_consumer(db: sqlx::PgPool, nats_url: String) {
+    loop {
+        match connect_and_consume_booking_status(&db, &nats_url).await {
+            Ok(()) => tracing::warn!("chat booking-status consumer stream ended; reconnecting"),
+            Err(e) => tracing::warn!("chat booking-status consumer error: {e}; reconnecting"),
+        }
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
+    }
+}
+
+async fn connect_and_consume_booking_status(
+    db: &sqlx::PgPool,
+    nats_url: &str,
+) -> Result<(), AppError> {
+    let client = shared_events::connect(nats_url)
+        .await
+        .map_err(|e| AppError::Internal(format!("NATS connect failed: {e}")))?;
+    let jetstream = async_nats::jetstream::new(client);
+    let stream = jetstream
+        .get_or_create_stream(async_nats::jetstream::stream::Config {
+            name: STREAM.to_string(),
+            subjects: vec![SUBJECTS.to_string()],
+            ..Default::default()
+        })
+        .await
+        .map_err(|e| AppError::Internal(format!("ensure stream failed: {e}")))?;
+    let consumer = stream
+        .get_or_create_consumer(
+            BOOKING_STATUS_DURABLE,
+            async_nats::jetstream::consumer::pull::Config {
+                durable_name: Some(BOOKING_STATUS_DURABLE.to_string()),
+                filter_subject: BOOKING_STATUS_FILTER.to_string(),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|e| AppError::Internal(format!("ensure consumer failed: {e}")))?;
+    let mut messages = consumer
+        .messages()
+        .await
+        .map_err(|e| AppError::Internal(format!("consume failed: {e}")))?;
+    tracing::info!(
+        stream = STREAM,
+        filter = BOOKING_STATUS_FILTER,
+        "chat booking-status consumer started"
+    );
+
+    while let Some(item) = messages.next().await {
+        let message = match item {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::warn!("NATS message error: {e}");
+                continue;
+            }
+        };
+        if let Ok(info) = message.info() {
+            observability::record_consumer_lag(BOOKING_STATUS_DURABLE, info.pending);
+        }
+        // Fail-closed on a forged/unsigned event.
+        if !shared_events::verify_message(message.headers.as_ref(), message.payload.as_ref()) {
+            observability::record_rejected_event(BOOKING_STATUS_DURABLE);
+            tracing::warn!("dropping booking event with missing/invalid signature (forged?)");
+            let _ = message.ack().await;
+            continue;
+        }
+        let envelope: EventEnvelope<BookingStatusPayload> =
+            match serde_json::from_slice(message.payload.as_ref()) {
+                Ok(e) => e,
+                Err(e) => {
+                    // Poison → ACK (drop) rather than redeliver forever.
+                    tracing::warn!("poison booking event (drop): {e}");
+                    let _ = message.ack().await;
+                    continue;
+                }
+            };
+        // Only the TERMINAL topics change writability; ack-skip every other booking event.
+        let status = match envelope.event_type.as_str() {
+            topics::BOOKING_COMPLETED => "completed",
+            topics::BOOKING_CANCELLED => "cancelled",
+            _ => {
+                let _ = message.ack().await;
+                continue;
+            }
+        };
+        match repo::set_request_status(db, envelope.payload.booking_id, status).await {
+            Ok(_) => {
+                let _ = message.ack().await;
+            }
+            Err(e) => {
+                // Transient DB error → NAK for redelivery (don't lose the read-only flip).
+                tracing::warn!("set_request_status failed: {e}; will redeliver");
+                let _ = message
+                    .ack_with(async_nats::jetstream::AckKind::Nak(None))
+                    .await;
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
