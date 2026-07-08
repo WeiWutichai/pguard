@@ -275,6 +275,11 @@ class _OnboardingChooser extends ConsumerWidget {
               // Enrol failed → fall back to the mode picker so the user isn't stranded.
               context.go('/auth/role');
           }
+        } else if (user != null) {
+          // The account ALREADY holds the picked role (409 → logged in, role enrolled) → go STRAIGHT
+          // to its home. Without this the user is stranded on this chooser: the authenticated
+          // `/auth/*` redirect does NOT bounce them off, so nothing navigates.
+          context.go(role.isGuard ? '/home/guard' : '/home/customer');
         }
       }
       // error → state.error is rendered below; the user can retry.

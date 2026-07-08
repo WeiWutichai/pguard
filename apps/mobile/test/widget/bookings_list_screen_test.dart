@@ -27,11 +27,17 @@ Map<String, dynamic> bookingJson(
       'tip': tip,
     };
 
+String _jwt() => fakeJwt({
+      'sub': 'c1',
+      'role': 'customer',
+      'exp': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/ 1000,
+    });
+
 Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
   await tester.pumpWidget(ProviderScope(
     overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _jwt()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ],
     child: const MaterialApp(home: BookingsListScreen()),

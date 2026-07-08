@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
+import '../../../core/controllers/profile_controller.dart';
 import '../../../core/controllers/session_controller.dart';
 
 /// A header "switch mode / back to role-select" action (CLAUDE.md: shared widget, no copy-paste).
@@ -30,7 +31,13 @@ class SwitchModeAction extends ConsumerWidget {
           ? (multiRole ? 'สลับโหมด' : 'เพิ่มบทบาท')
           : (multiRole ? 'Switch mode' : 'Add role'),
       // push (not go) so the picker sits over the home; the picker's own close/back returns here.
-      onPressed: () => context.push('/auth/role'),
+      // Invalidate the (home-cached) profile FIRST so the picker re-fetches /auth/me — otherwise the
+      // enrolled/pending badges + the A3 load-gate render against a STALE role set (a role submitted
+      // or approved since the home mounted wouldn't show).
+      onPressed: () {
+        ref.invalidate(profileControllerProvider);
+        context.push('/auth/role');
+      },
     );
   }
 }
@@ -48,10 +55,14 @@ class SwitchModeTile extends ConsumerWidget {
     if (user == null) return const SizedBox.shrink();
     final multiRole = user.hasMultipleRoles;
     return InkWell(
-      onTap: () => context.push('/auth/role'),
+      // Refresh the (home-cached) profile so the picker shows a fresh enrolled/pending role set.
+      onTap: () {
+        ref.invalidate(profileControllerProvider);
+        context.push('/auth/role');
+      },
       child: Padding(
-        padding:
-            const EdgeInsets.symmetric(horizontal: PgTokens.space4, vertical: 14),
+        padding: const EdgeInsets.symmetric(
+            horizontal: PgTokens.space4, vertical: 14),
         child: Row(
           children: [
             Container(

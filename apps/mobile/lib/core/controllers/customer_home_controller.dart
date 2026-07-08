@@ -23,10 +23,13 @@ class CustomerHomeController extends _$CustomerHomeController {
     final token = await ref.read(appStoreProvider).readAccessToken();
     final me = token != null ? Jwt.subject(token) : null;
     final data = await ref.read(pguardApiProvider).get('/bookings');
+    // Fail CLOSED: if the subject can't be resolved, show nothing rather than the unfiltered OR-list
+    // (which would leak the account's accepted GUARD jobs onto the customer surface).
+    if (me == null) return const [];
     return (data as List)
         .whereType<Map<String, dynamic>>()
         .map(Booking.fromJson)
-        .where((b) => me == null || b.customerId == me)
+        .where((b) => b.customerId == me)
         .toList();
   }
 
