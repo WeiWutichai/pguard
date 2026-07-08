@@ -4,6 +4,7 @@ import '../models/auth_models.dart';
 import '../models/profile.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
+import '../push/push_registration_controller.dart';
 import 'locale_controller.dart';
 import 'session_controller.dart';
 
@@ -97,7 +98,19 @@ class ProfileController extends _$ProfileController {
     final store = ref.read(appStoreProvider);
     final api = ref.read(pguardApiProvider);
     final session = ref.read(sessionProvider.notifier);
+    final push = ref.read(pushServiceProvider);
     final refresh = await store.readRefreshToken();
+    // Unregister this device's FCM token FIRST — while the access token is still valid (before
+    // /auth/logout revokes it and before session.logout wipes storage) — so the server stops pushing
+    // to this device after logout (the reported "notifications keep coming on the PIN screen"). Then
+    // rotate the OS token so a push already in flight can't reach the old one. All best-effort.
+    try {
+      final token = await push.getToken();
+      if (token != null) await api.delete('/tokens', data: {'token': token});
+      await push.deleteToken();
+    } catch (_) {
+      // No push / offline / already gone — logout still proceeds.
+    }
     try {
       await api.post('/auth/logout',
           data: refresh != null ? {'refresh_token': refresh} : null);

@@ -151,6 +151,16 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- background booking-status consumer: booking.completed/.cancelled → flip the conversation's
+    // request_status so a finished job's chat becomes READ-ONLY (both send gates read that column). ---
+    {
+        let consumer_db = db.clone();
+        let consumer_nats = nats_url.clone();
+        tokio::spawn(async move {
+            events::consumer::run_booking_status_consumer(consumer_db, consumer_nats).await;
+        });
+    }
+
     // --- background call-summary consumer (subscribes to terminal calling.* → posts a
     // server-generated `system` summary message; the SECURITY FIX: clients can no longer forge a
     // `system` message to silence the victim's push, and the summary is emitted server-side). ---

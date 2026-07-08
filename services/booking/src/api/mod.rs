@@ -21,11 +21,12 @@ use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, Ra
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::models::{
-    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, BookingResponse, BookingsReport,
-    CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, InternalBooking,
-    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, OverdueCheckinsQuery,
-    OverdueCheckinsResponse, ProgressReportResponse, PublicServiceItem, ReportRangeQuery,
-    RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem, UpdateServiceRequest,
+    AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, AvailableGuardsQuery,
+    BookingResponse, BookingsReport, CreateBookingRequest, CreateServiceRequest,
+    CustomerBookingStat, InternalBooking, ListProgressReportsQuery, NewProgressReport,
+    OpenJobsQuery, OverdueCheckinsQuery, OverdueCheckinsResponse, ProgressReportResponse,
+    PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
+    ServiceCatalogItem, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -169,19 +170,15 @@ pub async fn accept_booking<S: BookingDeps>(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_GUARD)?;
-    // ONE active job per guard: a guard already holding an active assignment cannot accept another
-    // (a physical guard is at one place — otherwise a busy guard piles up concurrent jobs and the
-    // customer effectively re-hires the same busy guard). Admins act on behalf, so they bypass. Same
-    // busy set the customer-facing guard discovery already excludes with.
-    if !is_admin {
-        let busy = repo::busy_guard_ids(state.db()).await?;
-        if busy.contains(&user.user_id) {
-            return Err(AppError::ConflictCode {
-                code: "GUARD_BUSY",
-                message: "You already have an active job — finish it before taking another."
-                    .to_string(),
-            });
-        }
+    // A guard may hold multiple jobs, but never two that OVERLAP in time (a physical guard is at one
+    // place at a time; 9–18 then 19–22 is fine, a second 9–18 is not). Reject an accept that overlaps
+    // an assignment this guard already holds. Admins act on behalf, so they bypass.
+    if !is_admin && repo::guard_has_overlapping_active_job(state.db(), user.user_id, id).await? {
+        return Err(AppError::ConflictCode {
+            code: "GUARD_BUSY",
+            message: "You already have a job during this time window — pick a non-overlapping one."
+                .to_string(),
+        });
     }
     do_transition(
         &state,
@@ -947,14 +944,24 @@ pub async fn list_progress_reports<S: BookingDeps>(
 pub async fn available_guards<S: DiscoveryDeps>(
     State(state): State<S>,
     user: AuthUser,
+    Query(window): Query<AvailableGuardsQuery>,
 ) -> Result<Json<ApiResponse<Vec<AvailableGuard>>>, AppError> {
     let guards = state.guard_catalog().list_approved_guards().await?;
     let rater = state.rating_reader();
 
-    // The set of guards already working an active assignment (booking's own schema). FAIL-CLOSED:
-    // propagate the error — this is a local DB read, so a failure is a service-wide DB problem,
-    // and silently offering a busy guard would let two customers book the same guard.
-    let busy = state.busy_guards().busy_guard_ids().await?;
+    // The set of guards to EXCLUDE. With a time window (customer already picked the slot), exclude
+    // only guards whose assignment OVERLAPS it — a guard busy 9–18 is still offered for 19–22. Without
+    // a window, fall back to excluding any-active-job guard (back-compat). FAIL-CLOSED: propagate the
+    // error — this is a local DB read, and silently offering a busy guard would double-book them.
+    let busy = match (window.scheduled_at, window.hours) {
+        (Some(start), Some(hours)) if hours > 0 => {
+            state
+                .busy_guards()
+                .busy_guard_ids_overlapping(start, hours)
+                .await?
+        }
+        _ => state.busy_guards().busy_guard_ids().await?,
+    };
 
     // Consult presence for who is currently LIVE. `None` => FAIL-OPEN: presence was unreachable,
     // so we do NOT apply the online filter (showing the approved list beats blocking all bookings).
@@ -2319,6 +2326,15 @@ mod tests {
             } else {
                 Ok(self.busy.clone())
             }
+        }
+
+        async fn busy_guard_ids_overlapping(
+            &self,
+            _window_start: chrono::DateTime<chrono::Utc>,
+            _window_hours: i32,
+        ) -> Result<HashSet<Uuid>, AppError> {
+            // The stub ignores the window (tests drive the busy set directly); same fail-closed path.
+            self.busy_guard_ids().await
         }
     }
 

@@ -158,6 +158,15 @@ pub struct OpenJobsQuery {
     pub offset: Option<i64>,
 }
 
+/// Query params for `GET /available-guards`. When BOTH `scheduled_at` + `hours` are present, the
+/// busy-guard exclusion is scoped to that time window (a guard free at the requested time is still
+/// offered). Omitting them falls back to the coarse "any active job" exclusion (back-compat).
+#[derive(Debug, Deserialize)]
+pub struct AvailableGuardsQuery {
+    pub scheduled_at: Option<DateTime<Utc>>,
+    pub hours: Option<i32>,
+}
+
 /// Query params for `GET /admin/bookings` (admin cross-user list). `status` is validated
 /// against `BookingStatus` (unknown → 400); `search` is a case-insensitive substring match on
 /// the address. `guard_id`/`customer_id` narrow the list to one guard's job history or one

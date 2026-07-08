@@ -10,6 +10,8 @@
 
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
+
 use jsonwebtoken::EncodingKey;
 use rust_decimal::Decimal;
 use serde::Deserialize;
@@ -89,7 +91,17 @@ pub trait PresenceReader: Send + Sync {
 /// the error — see the handler for the exact policy.
 #[allow(async_fn_in_trait)]
 pub trait BusyGuardsReader: Send + Sync {
+    /// Guards holding ANY active assignment (the coarse, window-agnostic set — used as a fallback
+    /// when the caller doesn't supply a time window).
     async fn busy_guard_ids(&self) -> Result<HashSet<Uuid>, AppError>;
+
+    /// Guards whose active assignment OVERLAPS `[window_start, window_start + window_hours h)` — the
+    /// time-scoped busy set, so a guard free at the requested time is still offered.
+    async fn busy_guard_ids_overlapping(
+        &self,
+        window_start: DateTime<Utc>,
+        window_hours: i32,
+    ) -> Result<HashSet<Uuid>, AppError>;
 }
 
 // ----- Real HTTP impls (one reqwest client + service-JWT minting, shared config) -----
@@ -202,6 +214,14 @@ impl RatingReader for HttpDiscoveryClient {
 impl BusyGuardsReader for sqlx::PgPool {
     async fn busy_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
         crate::repo::busy_guard_ids(self).await
+    }
+
+    async fn busy_guard_ids_overlapping(
+        &self,
+        window_start: DateTime<Utc>,
+        window_hours: i32,
+    ) -> Result<HashSet<Uuid>, AppError> {
+        crate::repo::busy_guard_ids_overlapping(self, window_start, window_hours).await
     }
 }
 

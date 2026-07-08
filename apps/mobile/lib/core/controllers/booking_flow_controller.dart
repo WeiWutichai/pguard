@@ -210,7 +210,8 @@ class BookingFlowController extends _$BookingFlowController {
   void selectService(ServiceOption service) {
     final start = state.startAt;
     DateTime? end = state.endAt;
-    if (start != null && (end == null || hoursBetween(start, end) < service.minHours)) {
+    if (start != null &&
+        (end == null || hoursBetween(start, end) < service.minHours)) {
       end = start.add(Duration(hours: service.minHours));
     }
     state = state.copyWith(service: service, endAt: end, error: null);
@@ -239,7 +240,8 @@ class BookingFlowController extends _$BookingFlowController {
 
   /// Set the end instant directly (the end date+time picker). The form/server enforce min-hours;
   /// this stores the raw pick so the live duration + warning update.
-  void setEnd(DateTime when) => state = state.copyWith(endAt: when, error: null);
+  void setEnd(DateTime when) =>
+      state = state.copyWith(endAt: when, error: null);
 
   /// Quick-preset: set the end to `start + hours` (a "12 ชม."/"8 ชม." chip). Anchors the start to
   /// now when none is chosen yet so a preset alone produces a complete, valid range.
@@ -252,8 +254,8 @@ class BookingFlowController extends _$BookingFlowController {
   }
 
   /// Toggle one security-equipment id in/out of the selection.
-  void toggleEquipment(String id) =>
-      state = state.copyWith(equipment: _toggled(state.equipment, id), error: null);
+  void toggleEquipment(String id) => state =
+      state.copyWith(equipment: _toggled(state.equipment, id), error: null);
 
   /// Toggle one add-on-service id in/out of the selection.
   void toggleAddOn(String id) =>
@@ -340,11 +342,19 @@ class BookingFlowController extends _$BookingFlowController {
         return true;
       });
 
-  /// `GET /v1/available-guards` — discovery preview. The endpoint takes no params and returns
-  /// approved guards enriched with their rating summary. v2 is first-come-accept, so this is a
-  /// preview of who is available; a nearby guard accepts the request later (seen on live-status).
+  /// `GET /v1/available-guards` — discovery preview of approved guards enriched with their rating
+  /// summary. Passes the customer's chosen time window (`scheduled_at` + `hours`) so the backend
+  /// excludes only guards already booked for an OVERLAPPING slot — a guard busy at another time is
+  /// still offered. v2 is first-come-accept, so a nearby guard accepts the request later.
   Future<bool> loadGuards() => _guard(() async {
-        final data = await ref.read(pguardApiProvider).get('/available-guards');
+        final start = state.scheduledAt;
+        final query = <String, dynamic>{
+          if (start != null) 'scheduled_at': start.toUtc().toIso8601String(),
+          if (start != null) 'hours': state.hours,
+        };
+        final data = await ref
+            .read(pguardApiProvider)
+            .get('/available-guards', query: query);
         final list = (data as List)
             .whereType<Map<String, dynamic>>()
             .map(AvailableGuard.fromJson)

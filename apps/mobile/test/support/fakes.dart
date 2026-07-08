@@ -10,6 +10,7 @@ import 'package:pguard_mobile/core/media/chat_media_picker.dart';
 import 'package:pguard_mobile/core/media/document_picker.dart';
 import 'package:pguard_mobile/core/media/photo_capture.dart';
 import 'package:pguard_mobile/core/media/slip_picker.dart';
+import 'package:pguard_mobile/core/push/push_service.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/models/call.dart';
@@ -124,7 +125,8 @@ class InMemoryStore implements AppStore {
   @override
   Future<bool> isBiometricEnabled() async => biometricEnabled;
   @override
-  Future<void> setBiometricEnabled(bool value) async => biometricEnabled = value;
+  Future<void> setBiometricEnabled(bool value) async =>
+      biometricEnabled = value;
 
   @override
   Future<void> wipe() async {
@@ -153,13 +155,37 @@ class FakePrefsStore implements PrefsStore {
 
 /// Configurable fake [PguardApi] with per-method handlers and a call log (to prove there is
 /// NO polling — the live-status path should fetch REST exactly once).
+/// Minimal [PushService] stub for tests that just need the provider off real Firebase (e.g. logout,
+/// which unregisters the FCM token). Records how many times [deleteToken] ran.
+class StubPush implements PushService {
+  StubPush({this.token = 'fcm-tok'});
+  final String? token;
+  int deleteTokenCalls = 0;
+
+  @override
+  Future<void> requestPermission() async {}
+  @override
+  Future<String?> getToken() async => token;
+  @override
+  Future<void> deleteToken() async => deleteTokenCalls++;
+  @override
+  Stream<String> get tokenRefreshes => const Stream.empty();
+  @override
+  Stream<Map<String, dynamic>> get foregroundMessages => const Stream.empty();
+  @override
+  Stream<Map<String, dynamic>> get openedMessages => const Stream.empty();
+  @override
+  Future<Map<String, dynamic>?> initialMessageData() async => null;
+}
+
 class FakeApi implements PguardApi {
-  FakeApi({this.onGet, this.onPost, this.onPut});
+  FakeApi({this.onGet, this.onPost, this.onPut, this.onDelete});
 
   final Future<dynamic> Function(String path, Map<String, dynamic>? query)?
       onGet;
   final Future<dynamic> Function(String path, Object? data)? onPost;
   final Future<dynamic> Function(String path, Object? data)? onPut;
+  final Future<dynamic> Function(String path, Object? data)? onDelete;
 
   final List<String> calls = [];
 
@@ -184,6 +210,13 @@ class FakeApi implements PguardApi {
   Future<dynamic> put(String path, {Object? data}) {
     calls.add('PUT $path');
     return onPut!(path, data);
+  }
+
+  @override
+  Future<dynamic> delete(String path, {Object? data}) {
+    calls.add('DELETE $path');
+    // Tolerate tests that don't wire onDelete (e.g. logout's best-effort token unregister).
+    return onDelete?.call(path, data) ?? Future.value(null);
   }
 
   @override

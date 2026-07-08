@@ -819,6 +819,8 @@ class BookingsApi {
   /// booking owns discovery but none of the guard catalog (profile), reviews (rating), or live presence (presence). This lists the APPROVED guard catalog (read from profile&#39;s &#x60;/internal/guards&#x60; over a service-JWT), RESTRICTED to guards who are currently ONLINE — live per presence&#39;s &#x60;/internal/online-guards&#x60; (&#x60;is_online&#x60; AND a fresh GPS fix, \&quot;พร้อมรับงาน\&quot;) — and enriches each with the guard&#39;s live rating summary (read from rating&#39;s &#x60;/internal/guards/{id}/rating-summary&#x60;).  Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on presence: if the presence consult errors/times out, the full approved list is returned UNFILTERED (a presence hiccup must never blank discovery and block all bookings).  Best-effort on ratings: a guard whose rating lookup fails still appears with &#x60;average_rating: null&#x60; and &#x60;review_count: 0&#x60;. 
   ///
   /// Parameters:
+  /// * [scheduledAt] - Start of the customer's chosen window. When supplied WITH `hours`, the busy-guard exclusion is scoped to this window (a guard booked for a non-overlapping time is still offered). Omit both for the coarse \"any active job\" exclusion. 
+  /// * [hours] - Length of the window in hours (paired with `scheduled_at`).
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -829,6 +831,8 @@ class BookingsApi {
   /// Returns a [Future] containing a [Response] with a [ListAvailableGuards200Response] as data
   /// Throws [DioException] if API call or serialization fails
   Future<Response<ListAvailableGuards200Response>> listAvailableGuards({ 
+    DateTime? scheduledAt,
+    int? hours,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -855,9 +859,15 @@ class BookingsApi {
       validateStatus: validateStatus,
     );
 
+    final _queryParameters = <String, dynamic>{
+      if (scheduledAt != null) r'scheduled_at': encodeQueryParameter(_serializers, scheduledAt, const FullType(DateTime)),
+      if (hours != null) r'hours': encodeQueryParameter(_serializers, hours, const FullType(int)),
+    };
+
     final _response = await _dio.request<Object>(
       _path,
       options: _options,
+      queryParameters: _queryParameters,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
       onReceiveProgress: onReceiveProgress,

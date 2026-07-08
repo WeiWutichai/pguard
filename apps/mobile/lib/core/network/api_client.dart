@@ -17,6 +17,7 @@ abstract class PguardApi {
   /// (there is no session yet, and the token is purpose-scoped).
   Future<dynamic> post(String path, {Object? data, String? bearer});
   Future<dynamic> put(String path, {Object? data});
+  Future<dynamic> delete(String path, {Object? data});
 
   /// A non-expired access token, refreshing proactively if needed (or `null` if there is no
   /// usable session). The WebSocket layer uses this so each (re)connect carries a fresh Bearer
@@ -242,6 +243,10 @@ class ApiClient implements PguardApi {
   @override
   Future<dynamic> put(String path, {Object? data}) =>
       _send(() => _dio.put<dynamic>(path, data: data));
+
+  @override
+  Future<dynamic> delete(String path, {Object? data}) =>
+      _send(() => _dio.delete<dynamic>(path, data: data));
 
   Future<dynamic> _send(Future<Response<dynamic>> Function() call) async {
     try {

@@ -1322,7 +1322,16 @@ export interface operations {
     };
     listAvailableGuards: {
         parameters: {
-            query?: never;
+            query?: {
+                /**
+                 * @description Start of the customer's chosen window. When supplied WITH `hours`, the busy-guard
+                 *     exclusion is scoped to this window (a guard booked for a non-overlapping time is still
+                 *     offered). Omit both for the coarse "any active job" exclusion.
+                 */
+                scheduled_at?: string;
+                /** @description Length of the window in hours (paired with `scheduled_at`). */
+                hours?: number;
+            };
             header?: never;
             path?: never;
             cookie?: never;

@@ -13,6 +13,10 @@ abstract class PushService {
   /// The current FCM registration token, or null if unavailable.
   Future<String?> getToken();
 
+  /// Delete this device's FCM token so the OS stops delivering to it (used on logout, after the
+  /// backend row is removed, so a lingering push can't reach the logged-out device).
+  Future<void> deleteToken();
+
   /// Emits a new token whenever FCM rotates it (must be re-registered with the backend).
   Stream<String> get tokenRefreshes;
 
@@ -39,6 +43,9 @@ class FirebasePushService implements PushService {
 
   @override
   Future<String?> getToken() => _fm.getToken();
+
+  @override
+  Future<void> deleteToken() => _fm.deleteToken();
 
   @override
   Stream<String> get tokenRefreshes => _fm.onTokenRefresh;

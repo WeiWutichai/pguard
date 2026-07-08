@@ -5,7 +5,11 @@ import '../models/registration.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'customer_home_controller.dart';
+import 'guard_jobs_controller.dart';
+import 'guard_ratings_controller.dart';
 import 'locale_controller.dart';
+import 'profile_controller.dart';
 import 'registration_controller.dart';
 import 'session_controller.dart';
 
@@ -110,11 +114,25 @@ class RoleSwitchController extends _$RoleSwitchController {
         return RoleActionOutcome.error;
       }
       // Persist the NEW pair (the old access token is now superseded; refresh is a fresh family).
-      await ref.read(appStoreProvider).saveTokens(access: access, refresh: refresh);
+      await ref
+          .read(appStoreProvider)
+          .saveTokens(access: access, refresh: refresh);
       // Trust the new token's `role` claim for the active role (the server is the authority); fall
       // back to the requested role if the claim is somehow absent.
       final activeRole = Jwt.role(access) ?? role.wire;
       ref.read(sessionProvider.notifier).switchActiveRole(activeRole);
+      // Deterministically drop the role-scoped caches so each home re-fetches against the NEW token
+      // instead of showing the previous role's snapshot. The switch keeps the same user_id and mounts
+      // the new home in the same frame the old one unmounts, so autoDispose alone doesn't reliably
+      // evict these — the reported "job count / income / rating don't match the account after switch".
+      ref.invalidate(
+          profileControllerProvider); // greeting name/initials + session.refreshRoles
+      ref.invalidate(
+          guardJobsControllerProvider); // guard Today-income + Jobs-today + the lists
+      ref.invalidate(
+          guardRatingsProvider); // whole family → the rating card re-fetches
+      ref.invalidate(
+          customerHomeControllerProvider); // symmetric guard→customer staleness
       state = state.copyWith(busy: false, pendingRole: null);
       return RoleActionOutcome.switched;
     } on ApiException catch (e) {

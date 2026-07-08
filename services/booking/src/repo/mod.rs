@@ -1081,6 +1081,59 @@ pub async fn busy_guard_ids(
     Ok(rows.into_iter().map(|(g,)| g).collect())
 }
 
+/// Guards whose active assignment OVERLAPS the requested window `[window_start, window_start +
+/// window_hours h)`. A guard is only "busy" FOR THAT WINDOW — they can still take non-overlapping
+/// jobs (a physical guard works one place at a time, but 9–18 then 19–22 is fine). Overlap test:
+/// `existing.start < requested.end AND requested.start < existing.end`.
+pub async fn busy_guard_ids_overlapping(
+    db: &sqlx::PgPool,
+    window_start: DateTime<Utc>,
+    window_hours: i32,
+) -> Result<std::collections::HashSet<Uuid>, AppError> {
+    let rows: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT DISTINCT guard_id FROM booking.bookings \
+         WHERE guard_id IS NOT NULL \
+           AND status IN ('accepted'::booking.booking_status, \
+                          'en_route'::booking.booking_status, \
+                          'arrived'::booking.booking_status, \
+                          'pending_completion'::booking.booking_status) \
+           AND scheduled_at < $1 + make_interval(hours => $2) \
+           AND $1 < scheduled_at + make_interval(hours => hours)",
+    )
+    .bind(window_start)
+    .bind(window_hours)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(g,)| g).collect())
+}
+
+/// Whether `guard_id` already holds an active assignment whose window OVERLAPS the target booking's
+/// own window (the booking being accepted is excluded). Drives the accept gate: a guard can accept a
+/// job only if it doesn't overlap one they're already committed to.
+pub async fn guard_has_overlapping_active_job(
+    db: &sqlx::PgPool,
+    guard_id: Uuid,
+    target_booking_id: Uuid,
+) -> Result<bool, AppError> {
+    let (exists,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS ( \
+           SELECT 1 FROM booking.bookings a \
+           JOIN booking.bookings t ON t.id = $2 \
+           WHERE a.guard_id = $1 AND a.id <> t.id \
+             AND a.status IN ('accepted'::booking.booking_status, \
+                              'en_route'::booking.booking_status, \
+                              'arrived'::booking.booking_status, \
+                              'pending_completion'::booking.booking_status) \
+             AND a.scheduled_at < t.scheduled_at + make_interval(hours => t.hours) \
+             AND t.scheduled_at < a.scheduled_at + make_interval(hours => a.hours) )",
+    )
+    .bind(guard_id)
+    .bind(target_booking_id)
+    .fetch_one(db)
+    .await?;
+    Ok(exists)
+}
+
 /// PRE-PAY: react to a `pguard.events.payment.completed` event by stamping the booking's
 /// `paid_at` (which un-gates the `accepted → en_route` transition) — IDEMPOTENTLY, in ONE
 /// transaction:
@@ -3206,6 +3259,113 @@ mod db_tests {
 
         cleanup_booking(&pool, active.id).await;
         cleanup_booking(&pool, withdrawn.id).await;
+    }
+
+    /// Time-overlap busy: a guard with an accepted 4h job is busy for an OVERLAPPING window but free
+    /// for a non-overlapping one — both via the discovery set and the per-booking accept gate.
+    #[tokio::test]
+    async fn overlap_busy_is_window_scoped_not_any_active_job() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer = Uuid::new_v4();
+        let guard = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        // A: guard accepts a [now, now+4h) job.
+        let a = create_booking(
+            &pool,
+            customer,
+            &booking_req("A Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create A");
+        let a_start = a.scheduled_at;
+        transition(
+            &pool,
+            a.id,
+            guard,
+            false,
+            BookingStatus::Accepted,
+            Some(guard),
+            correlation,
+        )
+        .await
+        .expect("guard accepts A");
+
+        // B: an unassigned job in the SAME window → overlaps A.
+        let b = create_booking(
+            &pool,
+            customer,
+            &booking_req("B Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create B");
+        // C: an unassigned job well AFTER A ends (now+1 day) → no overlap.
+        let c = create_booking(
+            &pool,
+            customer,
+            &booking_req("C Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create C");
+        sqlx::query("UPDATE booking.bookings SET scheduled_at = $2 WHERE id = $1")
+            .bind(c.id)
+            .bind(a_start + chrono::Duration::days(1))
+            .execute(&pool)
+            .await
+            .expect("push C a day out");
+
+        // Accept gate: overlapping B is blocked, non-overlapping C is allowed.
+        assert!(
+            guard_has_overlapping_active_job(&pool, guard, b.id)
+                .await
+                .unwrap(),
+            "accepting B (same window as A) must be blocked as overlapping"
+        );
+        assert!(
+            !guard_has_overlapping_active_job(&pool, guard, c.id)
+                .await
+                .unwrap(),
+            "accepting C (a day after A) must be allowed — non-overlapping"
+        );
+
+        // Discovery set: guard excluded for A's window, offered for C's.
+        let busy_now = busy_guard_ids_overlapping(&pool, a_start, 4).await.unwrap();
+        assert!(
+            busy_now.contains(&guard),
+            "guard is busy for the overlapping window"
+        );
+        let busy_later = busy_guard_ids_overlapping(&pool, a_start + chrono::Duration::days(1), 4)
+            .await
+            .unwrap();
+        assert!(
+            !busy_later.contains(&guard),
+            "guard is free for a non-overlapping window"
+        );
+
+        cleanup_booking(&pool, a.id).await;
+        cleanup_booking(&pool, b.id).await;
+        cleanup_booking(&pool, c.id).await;
     }
 
     /// Regression for the heatmap-bucket rounding bug: `bucket = floor(hour / 2)` must use
