@@ -23,10 +23,11 @@ use crate::domain::{mask, registration, token, twofactor};
 use crate::models::{
     AddRoleRequest, ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest,
     CreateApiTokenResponse, Disable2faRequest, Enable2faRequest, Enable2faResponse,
-    EnrollRoleRequest, LoginRequest, LoginTokenPair, MeResponse, RefreshRequest, RegisterRequest,
-    RegisterResult, ReissueProfileTokenRequest, ResetPinRequest, ResolveUsersRequest, ResolvedUser,
-    SessionView, Setup2faResponse, SwitchRoleRequest, TokenPair, TwoFactorChallenge,
-    UpdateMeRequest, UserSearchQuery, UserSearchResult, Verify2faRequest, VerifyApiTokenRequest,
+    EnrollRoleRequest, LoginRequest, LoginTokenPair, MeResponse, PhoneStatusRequest,
+    PhoneStatusResponse, RefreshRequest, RegisterRequest, RegisterResult,
+    ReissueProfileTokenRequest, ResetPinRequest, ResolveUsersRequest, ResolvedUser, SessionView,
+    Setup2faResponse, SwitchRoleRequest, TokenPair, TwoFactorChallenge, UpdateMeRequest,
+    UserSearchQuery, UserSearchResult, Verify2faRequest, VerifyApiTokenRequest,
     VerifyApiTokenResponse,
 };
 use crate::repo;
@@ -267,6 +268,33 @@ async fn issue_login_tokens(
 /// being stranded on "already used". The UPSERT's `ON CONFLICT WHERE pending` idempotency
 /// absorbs a rare double-submit that races in before the consume.
 ///
+/// `POST /auth/phone-status` — after a successful OTP round, report whether the verified phone
+/// ALREADY has a live account, so the app can route a RETURNING phone to PIN-login instead of a
+/// fresh set-PIN screen (the "use different account → same phone → forced to set a new PIN" bug).
+///
+/// Authorized ENTIRELY by the FRESH `phone_verified_token` (signature + purpose + expiry) — the
+/// caller already proved phone ownership via OTP, so revealing existence here is NOT an enumeration
+/// oracle. The token is only DECODED, never GETDEL-consumed, so the subsequent register/login round
+/// still has its single-use token. `skip_all`: never log the token or the phone.
+#[tracing::instrument(skip_all)]
+pub async fn phone_status<S: RegisterDeps>(
+    State(state): State<S>,
+    Json(req): Json<PhoneStatusRequest>,
+) -> Result<Json<ApiResponse<PhoneStatusResponse>>, AppError> {
+    let (phone, _jti) = decode_phone_verify_token(
+        &req.phone_verified_token,
+        state.jwt_decoding_key(),
+        PHONE_VERIFY_PURPOSE,
+    )?;
+    let phone = registration::validate_thai_phone(&phone)?;
+    let account_exists = repo::account_id_and_role_by_phone(state.db(), &phone)
+        .await?
+        .is_some();
+    Ok(Json(ApiResponse::success(PhoneStatusResponse {
+        account_exists,
+    })))
+}
+
 /// `skip_all`: never log the tokens, the pin_hash, or the phone (PII).
 #[tracing::instrument(skip_all)]
 pub async fn register<S: RegisterDeps>(

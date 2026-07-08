@@ -625,6 +625,12 @@ const PUBLIC_PATHS: &[&str] = &[
     // BODY, NOT an access token — the edge validator can't decode it, so it must be edge-public;
     // identity validates the token (signature + purpose + expiry + single-use) internally.
     "/auth/reset-pin",
+    // Post-OTP "does this phone already have an account?" check: carries a single-use
+    // `phone_verified_token` (otp-issued) in the BODY, NOT an access token — the edge validator
+    // can't decode it, so it must be edge-public. Identity verifies the token (proving phone
+    // ownership, so this is no enumeration oracle) WITHOUT consuming it, then reports existence so
+    // the app routes a returning phone to PIN-login instead of a fresh set-PIN.
+    "/auth/phone-status",
     // Initial profile submission is DUAL-AUTH: the client presents a purpose-scoped
     // `profile_token` (not an access token) as Bearer, which the profile service validates
     // itself (or an `AuthUser` for later updates). The edge access-token validator cannot

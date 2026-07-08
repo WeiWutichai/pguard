@@ -142,6 +142,9 @@ async fn main() -> anyhow::Result<()> {
             post(api::reissue_profile_token::<AppState>),
         )
         .route("/auth/register/add-role", post(api::add_role::<AppState>))
+        // Post-OTP "does this phone already have an account?" probe (edge-public; carries a
+        // phone_verified_token, verified but NOT consumed) → the app routes returning phones to PIN.
+        .route("/auth/phone-status", post(api::phone_status::<AppState>))
         .route("/auth/login", post(api::login))
         .route("/auth/refresh", post(api::refresh))
         .route("/auth/logout", post(api::logout))

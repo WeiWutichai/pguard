@@ -48,6 +48,9 @@ import 'package:pguard_identity_api/src/model/login_request.dart';
 import 'package:pguard_identity_api/src/model/login_token_pair.dart';
 import 'package:pguard_identity_api/src/model/me.dart';
 import 'package:pguard_identity_api/src/model/me200_response.dart';
+import 'package:pguard_identity_api/src/model/phone_status200_response.dart';
+import 'package:pguard_identity_api/src/model/phone_status200_response_all_of_data.dart';
+import 'package:pguard_identity_api/src/model/phone_status_request.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
@@ -106,6 +109,9 @@ part 'serializers.g.dart';
   LoginTokenPair,
   Me,
   Me200Response,
+  PhoneStatus200Response,
+  PhoneStatus200ResponseAllOfData,
+  PhoneStatusRequest,
   RefreshRequest,
   Register202Response,
   RegisterRequest,

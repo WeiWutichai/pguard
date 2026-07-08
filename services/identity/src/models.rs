@@ -50,6 +50,22 @@ pub struct AddRoleRequest {
     pub role: String,
 }
 
+/// Body of `POST /auth/phone-status` — a post-OTP "does this phone already have an account?" probe.
+/// Carries the FRESH single-use `phone_verified_token` (proving phone ownership); identity verifies
+/// it WITHOUT consuming the single-use marker so the subsequent register/login still works.
+#[derive(Debug, Deserialize)]
+pub struct PhoneStatusRequest {
+    pub phone_verified_token: String,
+}
+
+/// Response of `POST /auth/phone-status`.
+#[derive(Debug, Serialize)]
+pub struct PhoneStatusResponse {
+    /// True when a live account already exists for the verified phone (→ the app sends the user to
+    /// PIN-login instead of a fresh set-PIN registration).
+    pub account_exists: bool,
+}
+
 /// Update the CALLER'S OWN self-profile (`PUT /auth/me`): `display_name` + `email` only. Phone,
 /// role, and password are NEVER changed here (password has its own `PUT /auth/password`). `email`
 /// is optional (omit / null / "" clears it); both are validated + normalized server-side.

@@ -249,6 +249,26 @@ class AuthController extends _$AuthController {
         return true;
       });
 
+  /// After a successful OTP round, ask identity whether the verified phone ALREADY has an account
+  /// (`POST /auth/phone-status`, carrying the just-minted `phone_verified_token`). Lets the OTP
+  /// screen send a RETURNING phone (e.g. "use different account" → same number) to PIN-LOGIN instead
+  /// of a fresh set-PIN. Best-effort + NOT wrapped in [_guard]: any error → `false` (fall through to
+  /// the normal register flow, which still 409→loginWithPin as a backstop). Does NOT consume the
+  /// single-use token, so the subsequent register/login round still has it.
+  Future<bool> phoneHasAccount() async {
+    final token = state.phoneVerifiedToken;
+    if (token == null) return false;
+    try {
+      final data = await ref.read(pguardApiProvider).post(
+        '/auth/phone-status',
+        data: {'phone_verified_token': token},
+      );
+      return data is Map<String, dynamic> && data['account_exists'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// `POST /auth/login` with `{ identifier: phone, password: SHA-256(pin) }`. The password is the
   /// SAME `pin_hash` registration submitted (identity Argon2's that hash, so login must present
   /// it — NOT the raw PIN). [phone] is explicit so callers outside the auth flow (the
