@@ -72,9 +72,7 @@ class GuardJobsController extends _$GuardJobsController {
   /// Done tab); reject → `arrived` (back to a normal in-progress card).
   static String? statusBadge(Booking booking, {required bool isThai}) =>
       booking.status == BookingStatus.pendingCompletion
-          ? (isThai
-              ? 'รอลูกค้ายืนยันจบงาน'
-              : 'Awaiting customer confirmation')
+          ? (isThai ? 'รอลูกค้ายืนยันจบงาน' : 'Awaiting customer confirmation')
           : null;
 
   /// Whether tapping this card should open the READ-ONLY job status view (`/guard/job/{id}`)
@@ -97,13 +95,16 @@ class GuardJobsController extends _$GuardJobsController {
         also: () => ref.invalidate(activeJobControllerProvider(id)),
       );
 
-  /// Locally hide an incoming offer the guard isn't taking. v2 is first-come-accept: there is
-  /// NO server-side "decline" for an unassigned `requested` job (PUT decline is the assigned
-  /// guard withdrawing — see [ActiveJobController.withdraw]), so this just removes the card.
-  void dismiss(String id) {
+  /// Pass on an incoming offer the guard isn't taking. SERVER-TRACKED (`POST /bookings/{id}/skip`)
+  /// so discovery stops re-offering it to THIS guard — v2 is first-come-accept, so this is a
+  /// per-guard skip, NOT a cancellation (the booking stays open for other guards). Removes the card
+  /// optimistically for a snappy UI, then persists + re-fetches (so it can't reappear on refresh).
+  Future<String?> dismiss(String id) {
     final list = state.valueOrNull;
-    if (list == null) return;
-    state = AsyncData(list.where((b) => b.id != id).toList());
+    if (list != null) {
+      state = AsyncData(list.where((b) => b.id != id).toList());
+    }
+    return _act(() => ref.read(pguardApiProvider).post('/bookings/$id/skip'));
   }
 
   Future<String?> refresh() async {

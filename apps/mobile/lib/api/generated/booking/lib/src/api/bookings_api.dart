@@ -18,6 +18,7 @@ import 'package:pguard_booking_api/src/model/list_bookings200_response.dart';
 import 'package:pguard_booking_api/src/model/list_progress_reports200_response.dart';
 import 'package:pguard_booking_api/src/model/list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
+import 'package:pguard_booking_api/src/model/skip_booking200_response.dart';
 
 class BookingsApi {
 
@@ -1332,6 +1333,87 @@ class BookingsApi {
     }
 
     return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Guard passes on an open offer (server-tracked skip)
+  /// The guard SKIPS an open offer they aren&#39;t taking. Server-tracked (per-guard) so open-job discovery (&#x60;GET /bookings/open&#x60;) stops re-offering THIS booking to THIS guard — the booking stays &#x60;requested&#x60;/open for OTHER guards (NOT a cancellation). Idempotent. Guard only. 
+  ///
+  /// Parameters:
+  /// * [id] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [SkipBooking200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<SkipBooking200Response>> skipBooking({ 
+    required String id,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/bookings/{id}/skip'.replaceAll('{' r'id' '}', encodeQueryParameter(_serializers, id, const FullType(String)).toString());
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    SkipBooking200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(SkipBooking200Response),
+      ) as SkipBooking200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<SkipBooking200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

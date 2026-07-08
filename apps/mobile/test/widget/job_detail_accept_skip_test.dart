@@ -28,7 +28,8 @@ GoRouter buildRouter() => GoRouter(
         ),
         GoRoute(
           path: '/guard/job/:id',
-          builder: (_, s) => JobDetailScreen(bookingId: s.pathParameters['id']!),
+          builder: (_, s) =>
+              JobDetailScreen(bookingId: s.pathParameters['id']!),
         ),
         GoRoute(
           path: '/guard/active/:id',
@@ -110,9 +111,9 @@ void main() {
   });
 
   testWidgets(
-      'Skip (relabelled from ปฏิเสธ) → confirm → local dismiss + clarifying '
-      'snackbar (NO server call), pops back', (tester) async {
-    final api = apiWith();
+      'Skip (ข้าม) → confirm → SERVER skip (POST /skip) + clarifying snackbar, '
+      'pops back', (tester) async {
+    final api = apiWith(onPost: (_, __) async => {'skipped': true});
     await pumpFlow(tester, api);
 
     // The local-skip button is now "ข้าม" (was the misleading "ปฏิเสธ").
@@ -129,10 +130,10 @@ void main() {
     await tester.tap(find.widgetWithText(TextButton, 'ข้าม'));
     await tester.pumpAndSettle();
 
-    // Clarifying snackbar — and NO POST/PUT (skip is purely local).
+    // Clarifying snackbar — and the skip is now SERVER-TRACKED (POST /bookings/{id}/skip) so it
+    // can't reappear on refresh (was purely local before).
     expect(find.textContaining('งานยังเปิดให้เจ้าหน้าที่อื่น'), findsOneWidget);
-    expect(api.calls.where((c) => c.startsWith('POST') || c.startsWith('PUT')),
-        isEmpty);
+    expect(api.calls.where((c) => c.contains('/skip')).length, 1);
     expect(find.text('GUARD HOME STUB'), findsOneWidget); // popped back
   });
 }

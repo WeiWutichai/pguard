@@ -323,6 +323,28 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bookings/{id}/skip": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Guard passes on an open offer (server-tracked skip)
+         * @description The guard SKIPS an open offer they aren't taking. Server-tracked (per-guard) so open-job
+         *     discovery (`GET /bookings/open`) stops re-offering THIS booking to THIS guard — the booking
+         *     stays `requested`/open for OTHER guards (NOT a cancellation). Idempotent. Guard only.
+         */
+        post: operations["skipBooking"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bookings/{id}/decline": {
         parameters: {
             query?: never;
@@ -1413,6 +1435,35 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    skipBooking: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["BookingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Skip recorded */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            skipped?: boolean;
+                        };
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     declineBooking: {
