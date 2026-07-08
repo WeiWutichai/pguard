@@ -488,6 +488,36 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /bookings/{id}/skip:
+    post:
+      tags: [Bookings]
+      summary: Guard passes on an open offer (server-tracked skip)
+      description: |
+        The guard SKIPS an open offer they aren't taking. Server-tracked (per-guard) so open-job
+        discovery (`GET /bookings/open`) stops re-offering THIS booking to THIS guard — the booking
+        stays `requested`/open for OTHER guards (NOT a cancellation). Idempotent. Guard only.
+      operationId: skipBooking
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200':
+          description: Skip recorded
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          skipped: { type: boolean }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /bookings/{id}/decline:
     put:
       tags: [Bookings]

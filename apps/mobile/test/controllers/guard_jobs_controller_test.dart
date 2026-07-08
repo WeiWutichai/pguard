@@ -26,12 +26,16 @@ Map<String, dynamic> bookingJson(String id, String status) => {
 void main() {
   test(
       'merges assigned (/bookings) + open discovery (/bookings/open) and partitions '
-      'incoming from the open feed, active/completed from the assigned feed', () async {
+      'incoming from the open feed, active/completed from the assigned feed',
+      () async {
     final api = FakeApi(
       onGet: (path, _) async {
         switch (path) {
           case '/bookings':
-            return [bookingJson('b2', 'accepted'), bookingJson('b3', 'completed')];
+            return [
+              bookingJson('b2', 'accepted'),
+              bookingJson('b3', 'completed')
+            ];
           case '/bookings/open':
             return [bookingJson('b1', 'requested')];
           default:
@@ -79,7 +83,8 @@ void main() {
     expect(GuardJobsController.incoming(list), isEmpty);
 
     final b = list.single;
-    expect(GuardJobsController.statusBadge(b, isThai: true), 'รอลูกค้ายืนยันจบงาน',
+    expect(
+        GuardJobsController.statusBadge(b, isThai: true), 'รอลูกค้ายืนยันจบงาน',
         reason: 'the card must label the awaiting-confirmation state');
     expect(GuardJobsController.statusBadge(b, isThai: false),
         'Awaiting customer confirmation');
@@ -106,7 +111,8 @@ void main() {
     expect(GuardJobsController.opensReadOnly(b), isFalse);
   });
 
-  test('open-feed failure degrades to assigned-only (no throw, incoming empty)', () async {
+  test('open-feed failure degrades to assigned-only (no throw, incoming empty)',
+      () async {
     final api = FakeApi(
       onGet: (path, _) async {
         if (path == '/bookings') return [bookingJson('b2', 'accepted')];
@@ -128,8 +134,9 @@ void main() {
 
   test('accept POSTs the correct path (claiming an open job)', () async {
     final api = FakeApi(
-      onGet: (path, _) async =>
-          path == '/bookings/open' ? [bookingJson('b1', 'requested')] : const [],
+      onGet: (path, _) async => path == '/bookings/open'
+          ? [bookingJson('b1', 'requested')]
+          : const [],
       onPost: (path, _) async {
         expect(path, '/bookings/b1/accept');
         return bookingJson('b1', 'accepted');
@@ -147,11 +154,21 @@ void main() {
     expect(api.calls, contains('POST /bookings/b1/accept'));
   });
 
-  test('dismiss hides an offer locally with NO mutating API call', () async {
+  test(
+      'dismiss SKIPS an offer server-side (POST /skip) → stays gone on refresh',
+      () async {
+    final skipped = <String>{}; // the server-side per-guard skip set
     final api = FakeApi(
       onGet: (path, _) async => path == '/bookings/open'
           ? [bookingJson('b1', 'requested'), bookingJson('b2', 'requested')]
+              .where((b) => !skipped.contains(b['id'] as String))
+              .toList()
           : const [],
+      // POST /bookings/{id}/skip — discovery excludes it for this guard thereafter.
+      onPost: (path, _) async {
+        skipped.add(path.split('/')[2]);
+        return {'skipped': true};
+      },
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
@@ -160,11 +177,12 @@ void main() {
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
 
-    c.read(guardJobsControllerProvider.notifier).dismiss('b1');
+    final err =
+        await c.read(guardJobsControllerProvider.notifier).dismiss('b1');
+    expect(err, isNull);
+    // The skip hit the server, and the re-fetch (which the fake now filters) keeps b1 gone.
+    expect(api.calls, contains('POST /bookings/b1/skip'));
     expect(c.read(guardJobsControllerProvider).value!.map((b) => b.id), ['b2']);
-    // First-come-accept: dismiss must not call the (illegal pre-accept) decline endpoint —
-    // only the two read calls from build happened.
-    expect(api.calls, ['GET /bookings', 'GET /bookings/open']);
   });
 
   test(
@@ -212,12 +230,14 @@ void main() {
     // re-fetches and now reflects the accepted snapshot — NOT the cached `requested` one.
     final after = await c.read(activeJobControllerProvider('b1').future);
     expect(after.booking.status, BookingStatus.accepted,
-        reason: 'the active screen the guard navigates to builds fresh, not stale');
+        reason:
+            'the active screen the guard navigates to builds fresh, not stale');
   });
 
   test(
       'active() EXCLUDES terminal jobs (cancelled/completed/declined) so a job the '
-      'customer cancelled never lingers in the Active tab and traps the guard', () async {
+      'customer cancelled never lingers in the Active tab and traps the guard',
+      () async {
     final api = FakeApi(
       onGet: (path, _) async => path == '/bookings'
           ? [
@@ -236,14 +256,17 @@ void main() {
 
     final list = await c.read(guardJobsControllerProvider.future);
     expect(GuardJobsController.active(list).map((b) => b.id), ['b1'],
-        reason: 'only the in-progress job; cancelled/declined/completed are excluded');
+        reason:
+            'only the in-progress job; cancelled/declined/completed are excluded');
     expect(GuardJobsController.completed(list).map((b) => b.id), ['b4']);
   });
 
-  test('accept surfaces the server error message (and does not throw)', () async {
+  test('accept surfaces the server error message (and does not throw)',
+      () async {
     final api = FakeApi(
-      onGet: (path, _) async =>
-          path == '/bookings/open' ? [bookingJson('b1', 'requested')] : const [],
+      onGet: (path, _) async => path == '/bookings/open'
+          ? [bookingJson('b1', 'requested')]
+          : const [],
       onPost: (_, __) async => throw const ApiException(
           message: 'Already taken', code: 'CONFLICT', statusCode: 409),
     );

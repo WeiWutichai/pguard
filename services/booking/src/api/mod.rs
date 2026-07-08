@@ -169,6 +169,20 @@ pub async fn accept_booking<S: BookingDeps>(
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_GUARD)?;
+    // ONE active job per guard: a guard already holding an active assignment cannot accept another
+    // (a physical guard is at one place — otherwise a busy guard piles up concurrent jobs and the
+    // customer effectively re-hires the same busy guard). Admins act on behalf, so they bypass. Same
+    // busy set the customer-facing guard discovery already excludes with.
+    if !is_admin {
+        let busy = repo::busy_guard_ids(state.db()).await?;
+        if busy.contains(&user.user_id) {
+            return Err(AppError::ConflictCode {
+                code: "GUARD_BUSY",
+                message: "You already have an active job — finish it before taking another."
+                    .to_string(),
+            });
+        }
+    }
     do_transition(
         &state,
         id,
@@ -362,9 +376,25 @@ pub async fn list_open_bookings<S: BookingDeps>(
     require_role(&user, ROLE_GUARD)?;
     let geo = progress::validate_open_jobs_query(query.lat, query.lng, query.radius_km)?;
     let (limit, offset) = page(query.limit, query.offset);
-    // Discovery is a pure list read → replica (C5.3), like list_bookings.
-    let items = repo::list_open_bookings(state.db_read(), geo, limit, offset).await?;
+    // Discovery is a pure list read → replica (C5.3), like list_bookings. Excludes jobs THIS guard
+    // has skipped so a passed-on offer doesn't keep reappearing.
+    let items = repo::list_open_bookings(state.db_read(), user.user_id, geo, limit, offset).await?;
     Ok(Json(ApiResponse::success(items)))
+}
+
+/// POST /bookings/{id}/skip — the guard PASSES on an open offer. Server-tracked so discovery stops
+/// re-offering it to THIS guard; the booking stays open for others (NOT a cancellation).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+pub async fn skip_booking<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<serde_json::Value>>, AppError> {
+    require_role(&user, ROLE_GUARD)?;
+    repo::skip_job(state.db(), user.user_id, id).await?;
+    Ok(Json(ApiResponse::success(
+        serde_json::json!({ "skipped": true }),
+    )))
 }
 
 /// GET /admin/bookings — admin cross-user booking list (optional `status`/`search`/`guard_id`/
@@ -1124,6 +1154,7 @@ mod tests {
                 put(review_completion::<TestDeps>),
             )
             .route("/bookings/{id}/cancel", put(cancel_booking::<TestDeps>))
+            .route("/bookings/{id}/skip", post(skip_booking::<TestDeps>))
             .route("/bookings/open", get(list_open_bookings::<TestDeps>))
             .route("/bookings/{id}", get(get_booking::<TestDeps>))
             .route(

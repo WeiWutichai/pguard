@@ -47,6 +47,8 @@ import 'package:pguard_booking_api/src/model/public_service_item.dart';
 import 'package:pguard_booking_api/src/model/retention_point.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
 import 'package:pguard_booking_api/src/model/service_catalog_item.dart';
+import 'package:pguard_booking_api/src/model/skip_booking200_response.dart';
+import 'package:pguard_booking_api/src/model/skip_booking200_response_all_of_data.dart';
 import 'package:pguard_booking_api/src/model/update_service_request.dart';
 import 'package:pguard_booking_api/src/model/utilization_cell.dart';
 
@@ -86,6 +88,8 @@ part 'serializers.g.dart';
   RetentionPoint,
   ReviewCompletionRequest,
   ServiceCatalogItem,
+  SkipBooking200Response,
+  SkipBooking200ResponseAllOfData,
   UpdateServiceRequest,
   UtilizationCell,
 ])

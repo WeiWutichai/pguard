@@ -209,6 +209,8 @@ async fn main() -> anyhow::Result<()> {
             "/bookings/{id}/accept",
             post(api::accept_booking::<AppState>),
         )
+        // Guard passes on an open offer → server-tracked skip (discovery stops re-offering it to them).
+        .route("/bookings/{id}/skip", post(api::skip_booking::<AppState>))
         // Lifecycle state changes (PUT). Guard: decline/en-route/arrived/start/complete;
         // customer: review-completion/cancel. The gateway's `/bookings` prefix already routes
         // every subpath, so these are edge-reachable under /v1.

@@ -973,22 +973,29 @@ pub async fn list_progress_reports(
 /// formula marginally past 1.0, and Postgres `asin(>1)` errors.
 pub async fn list_open_bookings(
     db: &sqlx::PgPool,
+    guard_id: Uuid,
     geo: Option<GeoFilter>,
     limit: i64,
     offset: i64,
 ) -> Result<Vec<BookingResponse>, AppError> {
+    // Never re-offer a job THIS guard has skipped (server-tracked; the booking stays open for others).
     let rows = match geo {
         None => {
             let sql = format!(
                 r#"
                 SELECT {BOOKING_COLUMNS}
-                FROM booking.bookings
+                FROM booking.bookings b
                 WHERE status = 'requested'::booking.booking_status AND guard_id IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM booking.guard_job_skips s
+                      WHERE s.booking_id = b.id AND s.guard_id = $1
+                  )
                 ORDER BY created_at DESC
-                LIMIT $1 OFFSET $2
+                LIMIT $2 OFFSET $3
                 "#
             );
             sqlx::query_as::<_, BookingResponse>(&sql)
+                .bind(guard_id)
                 .bind(limit)
                 .bind(offset)
                 .fetch_all(db)
@@ -1010,10 +1017,14 @@ pub async fn list_open_bookings(
                                + cos(radians($1)) * cos(radians(lat))
                                  * power(sin(radians(lng - $2) / 2), 2)
                            ))) AS distance_km
-                    FROM booking.bookings
+                    FROM booking.bookings b
                     WHERE status = 'requested'::booking.booking_status
                       AND guard_id IS NULL
                       AND lat IS NOT NULL AND lng IS NOT NULL
+                      AND NOT EXISTS (
+                          SELECT 1 FROM booking.guard_job_skips s
+                          WHERE s.booking_id = b.id AND s.guard_id = $6
+                      )
                 ) AS open_jobs
                 WHERE distance_km <= $3
                 ORDER BY distance_km, created_at DESC
@@ -1026,11 +1037,26 @@ pub async fn list_open_bookings(
                 .bind(radius_km)
                 .bind(limit)
                 .bind(offset)
+                .bind(guard_id)
                 .fetch_all(db)
                 .await?
         }
     };
     Ok(rows)
+}
+
+/// Record that `guard_id` SKIPPED (passed on) open booking `booking_id`, so discovery stops
+/// re-offering it to THEM. Idempotent (PK conflict → no-op); the booking stays open for other guards.
+pub async fn skip_job(db: &sqlx::PgPool, guard_id: Uuid, booking_id: Uuid) -> Result<(), AppError> {
+    sqlx::query(
+        "INSERT INTO booking.guard_job_skips (guard_id, booking_id) \
+         VALUES ($1, $2) ON CONFLICT (guard_id, booking_id) DO NOTHING",
+    )
+    .bind(guard_id)
+    .bind(booking_id)
+    .execute(db)
+    .await?;
+    Ok(())
 }
 
 /// The set of guards who currently hold an ACTIVE assignment — a booking assigned to them in
@@ -2720,7 +2746,8 @@ mod db_tests {
         .expect("create far");
 
         // Plain list (no geo): open jobs include A and B, never the accepted C.
-        let open = list_open_bookings(&pool, None, 200, 0)
+        let viewer = Uuid::new_v4(); // a guard with no skips → sees every open job
+        let open = list_open_bookings(&pool, viewer, None, 200, 0)
             .await
             .expect("plain open list");
         assert!(open.iter().any(|b| b.id == near.id), "A (near) is open");
@@ -2738,6 +2765,7 @@ mod db_tests {
         // only in-radius row); the formula itself is pinned by the distance bound.
         let geo = list_open_bookings(
             &pool,
+            viewer,
             Some(GeoFilter {
                 lat: ref_lat,
                 lng: ref_lng,
@@ -2760,6 +2788,27 @@ mod db_tests {
         let a = geo.iter().find(|b| b.id == near.id).expect("A row");
         assert_eq!(a.lat, Some(ref_lat + 0.01));
         assert_eq!(a.lng, Some(ref_lng));
+
+        // SKIP: the viewer passes on A → it disappears from THEIR open list (both plain + geo), but
+        // stays open for a DIFFERENT guard, and the skip is idempotent.
+        skip_job(&pool, viewer, near.id).await.expect("skip");
+        skip_job(&pool, viewer, near.id)
+            .await
+            .expect("skip idempotent");
+        let after = list_open_bookings(&pool, viewer, None, 200, 0)
+            .await
+            .unwrap();
+        assert!(
+            !after.iter().any(|b| b.id == near.id),
+            "the viewer's skipped job A is excluded from their open list"
+        );
+        let other = list_open_bookings(&pool, Uuid::new_v4(), None, 200, 0)
+            .await
+            .unwrap();
+        assert!(
+            other.iter().any(|b| b.id == near.id),
+            "A stays open for a different guard (skip is per-guard, not a cancel)"
+        );
 
         for id in [near.id, no_coords.id, taken.id, far.id] {
             cleanup_booking(&pool, id).await;

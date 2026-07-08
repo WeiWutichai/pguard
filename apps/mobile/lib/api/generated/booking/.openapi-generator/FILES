@@ -48,6 +48,8 @@ lib/src/model/public_service_item.dart
 lib/src/model/retention_point.dart
 lib/src/model/review_completion_request.dart
 lib/src/model/service_catalog_item.dart
+lib/src/model/skip_booking200_response.dart
+lib/src/model/skip_booking200_response_all_of_data.dart
 lib/src/model/update_service_request.dart
 lib/src/model/utilization_cell.dart
 lib/src/serializers.dart

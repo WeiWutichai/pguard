@@ -103,6 +103,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**listProgressReports**](doc/BookingsApi.md#listprogressreports) | **GET** /bookings/{id}/progress-reports | List a booking&#39;s check-in reports (participants only)
 [*BookingsApi*](doc/BookingsApi.md) | [**listServices**](doc/BookingsApi.md#listservices) | **GET** /services | List ACTIVE catalog services (customer-facing picker)
 [*BookingsApi*](doc/BookingsApi.md) | [**reviewCompletion**](doc/BookingsApi.md#reviewcompletion) | **PUT** /bookings/{id}/review-completion | Customer reviews the guard&#39;s completion request
+[*BookingsApi*](doc/BookingsApi.md) | [**skipBooking**](doc/BookingsApi.md#skipbooking) | **POST** /bookings/{id}/skip | Guard passes on an open offer (server-tracked skip)
 [*BookingsApi*](doc/BookingsApi.md) | [**startBooking**](doc/BookingsApi.md#startbooking) | **PUT** /bookings/{id}/start | Assigned guard starts the job
 [*InternalApi*](doc/InternalApi.md) | [**getInternalBooking**](doc/InternalApi.md#getinternalbooking) | **GET** /internal/bookings/{id} | Read authoritative booking fields (service-JWT only)
 [*InternalApi*](doc/InternalApi.md) | [**internalExportUser**](doc/InternalApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
@@ -143,6 +144,8 @@ Class | Method | HTTP request | Description
  - [RetentionPoint](doc/RetentionPoint.md)
  - [ReviewCompletionRequest](doc/ReviewCompletionRequest.md)
  - [ServiceCatalogItem](doc/ServiceCatalogItem.md)
+ - [SkipBooking200Response](doc/SkipBooking200Response.md)
+ - [SkipBooking200ResponseAllOfData](doc/SkipBooking200ResponseAllOfData.md)
  - [UpdateServiceRequest](doc/UpdateServiceRequest.md)
  - [UtilizationCell](doc/UtilizationCell.md)
 
