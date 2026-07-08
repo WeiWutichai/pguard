@@ -147,8 +147,53 @@ _NotifCopy _copyFor(AppNotification n, bool thai) {
           ? const _NotifCopy('ข้อความใหม่', 'คุณมีข้อความใหม่')
           : const _NotifCopy('New message', 'You have a new message');
     case NotificationType.system:
-      // Not modelled → trust the server copy (already localized for these).
-      return _NotifCopy(n.title, n.body);
+      // Several server kinds (declined / completion-requested / payment / review / call) are all
+      // `system` on the wire with pre-rendered THAI title+body, so they never followed the language
+      // toggle. Localize them here by the payload's `event_type`; a truly-unknown kind keeps the
+      // server copy.
+      return _systemCopy(n, thai);
+  }
+}
+
+_NotifCopy _systemCopy(AppNotification n, bool thai) {
+  final event = n.payload['event_type'] as String?;
+  switch (event) {
+    case 'pguard.events.booking.declined':
+      return thai
+          ? const _NotifCopy(
+              'เจ้าหน้าที่ปฏิเสธงาน', 'กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ')
+          : const _NotifCopy('Guard declined', 'Finding you another guard');
+    case 'pguard.events.booking.completion_requested':
+      return thai
+          ? const _NotifCopy(
+              'เจ้าหน้าที่ขอปิดงาน', 'เจ้าหน้าที่ขอปิดงาน — โปรดตรวจสอบ')
+          : const _NotifCopy('Completion requested',
+              'The guard asked to close the job — please review');
+    case 'pguard.events.payment.completed':
+      final guardSide = n.payload['target_role'] == 'guard';
+      if (guardSide) {
+        return thai
+            ? const _NotifCopy('ลูกค้าชำระเงินแล้ว', 'ลูกค้าชำระเงินแล้ว')
+            : const _NotifCopy('Customer paid', 'The customer has paid');
+      }
+      return thai
+          ? const _NotifCopy('ชำระเงินสำเร็จ', 'ชำระเงินสำเร็จ')
+          : const _NotifCopy('Payment successful', 'Payment completed');
+    case 'pguard.events.rating.submitted':
+      return thai
+          ? const _NotifCopy('มีรีวิวใหม่', 'คุณได้รับคะแนนรีวิวใหม่')
+          : const _NotifCopy('New review', 'You received a new review');
+    case 'pguard.events.calling.initiated':
+      return thai
+          ? const _NotifCopy('สายเรียกเข้า', 'คุณมีสายเรียกเข้า แตะเพื่อรับสาย')
+          : const _NotifCopy(
+              'Incoming call', 'You have an incoming call — tap to answer');
+    case 'pguard.events.calling.ended':
+      return thai
+          ? const _NotifCopy('สายที่ไม่ได้รับ', 'สายเรียกเข้าถูกยกเลิก')
+          : const _NotifCopy('Missed call', 'The call was cancelled');
+    default:
+      return _NotifCopy(n.title, n.body); // truly unknown → server copy
   }
 }
 

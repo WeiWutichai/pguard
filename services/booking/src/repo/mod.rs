@@ -670,6 +670,43 @@ pub async fn transition(
                     "Booking already has an assigned guard".to_string(),
                 ));
             }
+            // TIME-OVERLAP guard, race-proof. The handler pre-check (accept_booking) is a fast-fail
+            // but is check-then-act OUTSIDE any lock, so two CONCURRENT accepts by the SAME guard for
+            // different overlapping jobs (double-tap / retry / two devices) both pass it — neither
+            // job is committed at check time. Serialize same-guard accepts on a guard-scoped advisory
+            // xact lock, THEN re-test overlap against the now-committed state inside this tx: the
+            // loser blocks until the winner commits, sees its active job, and is rejected 409.
+            if let Some(guard) = assign_guard {
+                sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))")
+                    .bind(guard)
+                    .execute(&mut *tx)
+                    .await?;
+                let (overlaps,): (bool,) = sqlx::query_as(
+                    "SELECT EXISTS ( \
+                       SELECT 1 FROM booking.bookings a \
+                       JOIN booking.bookings t ON t.id = $2 \
+                       WHERE a.guard_id = $1 AND a.id <> t.id \
+                         AND a.status IN ('accepted'::booking.booking_status, \
+                                          'en_route'::booking.booking_status, \
+                                          'arrived'::booking.booking_status, \
+                                          'pending_completion'::booking.booking_status) \
+                         AND a.scheduled_at < t.scheduled_at + make_interval(hours => t.hours) \
+                         AND t.scheduled_at < a.scheduled_at + make_interval(hours => a.hours) )",
+                )
+                .bind(guard)
+                .bind(id)
+                .fetch_one(&mut *tx)
+                .await?;
+                if overlaps {
+                    tx.rollback().await?;
+                    return Err(AppError::ConflictCode {
+                        code: "GUARD_BUSY",
+                        message:
+                            "You already have a job during this time window — pick a non-overlapping one."
+                                .to_string(),
+                    });
+                }
+            }
         }
         RequiredActor::AssignedGuard => {
             if !is_admin && existing_guard != Some(actor) {

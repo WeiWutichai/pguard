@@ -23,6 +23,16 @@ Map<String, dynamic> bookingJson(String id, String status) => {
       'updated_at': '2026-06-05T10:00:00Z',
     };
 
+// A guard session whose user_id matches the bookings' guard_id ('g1'), so the assigned-feed
+// role filter (guard_id == me) keeps them.
+String _guardJwt() => fakeJwt({
+      'sub': 'g1',
+      'role': 'guard',
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
+              1000,
+    });
+
 void main() {
   test(
       'merges assigned (/bookings) + open discovery (/bookings/open) and partitions '
@@ -45,7 +55,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -71,7 +81,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -102,7 +112,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -122,7 +132,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -144,7 +154,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
@@ -172,7 +182,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
@@ -211,7 +221,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -250,7 +260,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
 
@@ -272,7 +282,7 @@ void main() {
     );
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
     ]);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
