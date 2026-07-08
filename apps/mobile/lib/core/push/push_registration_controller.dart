@@ -8,6 +8,7 @@ import '../../features/call/call_routes.dart';
 import '../../routing/app_router.dart';
 import '../controllers/active_job_controller.dart';
 import '../controllers/booking_status_controller.dart';
+import '../controllers/call_controller.dart';
 import '../controllers/customer_home_controller.dart';
 import '../controllers/guard_jobs_controller.dart';
 import '../controllers/locale_controller.dart';
@@ -120,6 +121,15 @@ class PushRegistration extends _$PushRegistration {
       ref.read(pushNavigateProvider)(route);
       return;
     }
+    // The caller hung up before we answered → clear the incoming ring (WS `bye` fallback). Silent:
+    // it dismisses the ring for THIS call_id and shows no banner.
+    if (data['type'] == 'call_cancelled') {
+      final id = data['call_id'];
+      if (id is String && id.isNotEmpty) {
+        ref.read(callControllerProvider.notifier).dismissIncoming(id);
+      }
+      return;
+    }
     final job = NewJobPush.tryParse(data);
     if (job != null) {
       _onNewJob(); // new_job surfaces its own banner + refetches the open feed
@@ -228,7 +238,9 @@ class PushRegistration extends _$PushRegistration {
     ref.invalidate(guardJobsControllerProvider);
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     ref.read(pushNotifyProvider)(
-      isThai ? 'มีงานใหม่ใกล้คุณ แตะเพื่อดู' : 'A new job is nearby — tap to view',
+      isThai
+          ? 'มีงานใหม่ใกล้คุณ แตะเพื่อดู'
+          : 'A new job is nearby — tap to view',
       title: isThai ? 'งานใหม่' : 'New job',
       type: InAppBannerType.success,
     );

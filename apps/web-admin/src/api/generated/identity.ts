@@ -281,6 +281,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/phone-status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Does the just-verified phone already have an account? (edge-public)
+         * @description A post-OTP probe: given a FRESH single-use `phone_verified_token` (from
+         *     `POST /otp/verify`), report whether a LIVE account already exists for that phone.
+         *     The token is DECODED (signature + purpose + expiry) but NOT consumed, so the
+         *     subsequent register/login round still has its single-use token. Because the caller
+         *     already proved phone ownership via OTP, this is not an enumeration oracle. The app
+         *     uses it to route a RETURNING phone (e.g. "use a different account" → the same
+         *     number) to PIN-login instead of a fresh set-PIN screen. Edge-public.
+         */
+        post: operations["phoneStatus"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/register/add-role": {
         parameters: {
             query?: never;
@@ -1334,6 +1360,39 @@ export interface operations {
                         data?: {
                             /** @example true */
                             pin_reset?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    phoneStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    phone_verified_token: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Whether the phone already has an account */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            /** @example true */
+                            account_exists?: boolean;
                         };
                     };
                 };

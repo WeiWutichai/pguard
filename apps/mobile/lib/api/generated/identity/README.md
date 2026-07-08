@@ -101,6 +101,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**login**](doc/AuthApi.md#login) | **POST** /auth/login | Authenticate with phone/email + password; issue an access + refresh token
 [*AuthApi*](doc/AuthApi.md) | [**logout**](doc/AuthApi.md#logout) | **POST** /auth/logout | Log out — blocklist the access jti and revoke the refresh family
 [*AuthApi*](doc/AuthApi.md) | [**me**](doc/AuthApi.md#me) | **GET** /auth/me | Current authenticated user
+[*AuthApi*](doc/AuthApi.md) | [**phoneStatus**](doc/AuthApi.md#phonestatus) | **POST** /auth/phone-status | Does the just-verified phone already have an account? (edge-public)
 [*AuthApi*](doc/AuthApi.md) | [**refresh**](doc/AuthApi.md#refresh) | **POST** /auth/refresh | Rotate a refresh token (RFC 6749 §6) — issue a new access + refresh pair
 [*AuthApi*](doc/AuthApi.md) | [**register**](doc/AuthApi.md#register) | **POST** /auth/register | Create an account from a verified phone + chosen role (returns 202, NO tokens)
 [*AuthApi*](doc/AuthApi.md) | [**resetPin**](doc/AuthApi.md#resetpin) | **POST** /auth/reset-pin | Reset a FORGOTTEN PIN via the OTP flow (edge-public)
@@ -150,6 +151,9 @@ Class | Method | HTTP request | Description
  - [LoginTokenPair](doc/LoginTokenPair.md)
  - [Me](doc/Me.md)
  - [Me200Response](doc/Me200Response.md)
+ - [PhoneStatus200Response](doc/PhoneStatus200Response.md)
+ - [PhoneStatus200ResponseAllOfData](doc/PhoneStatus200ResponseAllOfData.md)
+ - [PhoneStatusRequest](doc/PhoneStatusRequest.md)
  - [RefreshRequest](doc/RefreshRequest.md)
  - [Register202Response](doc/Register202Response.md)
  - [RegisterRequest](doc/RegisterRequest.md)

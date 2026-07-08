@@ -404,6 +404,45 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/phone-status:
+    post:
+      tags: [Auth]
+      summary: Does the just-verified phone already have an account? (edge-public)
+      description: |
+        A post-OTP probe: given a FRESH single-use `phone_verified_token` (from
+        `POST /otp/verify`), report whether a LIVE account already exists for that phone.
+        The token is DECODED (signature + purpose + expiry) but NOT consumed, so the
+        subsequent register/login round still has its single-use token. Because the caller
+        already proved phone ownership via OTP, this is not an enumeration oracle. The app
+        uses it to route a RETURNING phone (e.g. "use a different account" → the same
+        number) to PIN-login instead of a fresh set-PIN screen. Edge-public.
+      operationId: phoneStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone_verified_token]
+              properties:
+                phone_verified_token: { type: string }
+      responses:
+        '200':
+          description: Whether the phone already has an account
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          account_exists: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /auth/register/add-role:
     post:
       tags: [Auth]

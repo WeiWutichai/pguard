@@ -7,6 +7,7 @@ import '../../core/controllers/auth_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/registration_controller.dart';
 import '../../core/controllers/resend_policy.dart';
+import '../../core/controllers/session_controller.dart';
 import '../../core/models/registration.dart';
 import '../../widgets/auth_head.dart';
 import '../../widgets/otp_input.dart';
@@ -55,6 +56,20 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
       }
       return;
     }
+    // Normal register run: if this phone ALREADY has an account (e.g. "use different account" → the
+    // SAME number, which wiped the local PIN), it's a RETURNING user — send them to PIN-LOGIN to
+    // enter their EXISTING PIN (server-verified; no local hash needed), NOT a fresh set-PIN. Skip for
+    // the forgot-PIN reset, which intentionally sets a new PIN.
+    final auth = ref.read(authControllerProvider);
+    if (!auth.reset &&
+        await ref.read(authControllerProvider.notifier).phoneHasAccount()) {
+      if (!mounted) return;
+      await ref
+          .read(sessionProvider.notifier)
+          .toReturningLogin(phone: auth.phone);
+      return; // the router redirects SessionStatus.returning → /login/pin
+    }
+    if (!mounted) return;
     context.push('/auth/pin');
   }
 

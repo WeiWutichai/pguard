@@ -25,6 +25,8 @@ import 'package:pguard_identity_api/src/model/list_sessions200_response.dart';
 import 'package:pguard_identity_api/src/model/login200_response.dart';
 import 'package:pguard_identity_api/src/model/login_request.dart';
 import 'package:pguard_identity_api/src/model/me200_response.dart';
+import 'package:pguard_identity_api/src/model/phone_status200_response.dart';
+import 'package:pguard_identity_api/src/model/phone_status_request.dart';
 import 'package:pguard_identity_api/src/model/refresh_request.dart';
 import 'package:pguard_identity_api/src/model/register202_response.dart';
 import 'package:pguard_identity_api/src/model/register_request.dart';
@@ -1044,6 +1046,101 @@ class AuthApi {
     }
 
     return Response<Me200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Does the just-verified phone already have an account? (edge-public)
+  /// A post-OTP probe: given a FRESH single-use &#x60;phone_verified_token&#x60; (from &#x60;POST /otp/verify&#x60;), report whether a LIVE account already exists for that phone. The token is DECODED (signature + purpose + expiry) but NOT consumed, so the subsequent register/login round still has its single-use token. Because the caller already proved phone ownership via OTP, this is not an enumeration oracle. The app uses it to route a RETURNING phone (e.g. \&quot;use a different account\&quot; → the same number) to PIN-login instead of a fresh set-PIN screen. Edge-public. 
+  ///
+  /// Parameters:
+  /// * [phoneStatusRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [PhoneStatus200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<PhoneStatus200Response>> phoneStatus({ 
+    required PhoneStatusRequest phoneStatusRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/phone-status';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(PhoneStatusRequest);
+      _bodyData = _serializers.serialize(phoneStatusRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    PhoneStatus200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(PhoneStatus200Response),
+      ) as PhoneStatus200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<PhoneStatus200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
