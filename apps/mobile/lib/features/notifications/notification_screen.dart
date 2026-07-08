@@ -17,19 +17,36 @@ import 'widgets/notification_tile.dart';
 
 /// The notification centre: the caller's notifications with mark-read (tap) + mark-all-read.
 /// Pull-to-refresh re-fetches; there is NO polling. UI per `Mobile - Guard App.html`.
-class NotificationScreen extends ConsumerWidget {
+class NotificationScreen extends ConsumerStatefulWidget {
   const NotificationScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<NotificationScreen> createState() => _NotificationScreenState();
+}
+
+class _NotificationScreenState extends ConsumerState<NotificationScreen> {
+  // Fire the open-time "mark everything read" exactly once (post first loaded-with-unread build).
+  bool _autoMarked = false;
+
+  @override
+  Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(notificationControllerProvider);
     final ctrl = ref.read(notificationControllerProvider.notifier);
     final hasUnread = async.valueOrNull?.any((n) => !n.isRead) ?? false;
 
+    // OPENING the centre = seeing everything → clear the bell badge. The reported "read them all but
+    // the number stays" happened because clearing required tapping each row (or the button); users
+    // expect opening the list to be enough. Fire once, post-frame (never mutate during build).
+    if (hasUnread && !_autoMarked) {
+      _autoMarked = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.markAllRead());
+    }
+
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'การแจ้งเตือน' : 'Notifications',
         showBack: true,
         trailing: hasUnread
@@ -82,7 +99,8 @@ class NotificationScreen extends ConsumerWidget {
       BuildContext context, WidgetRef ref, AppNotification n) async {
     if (!n.isRead) {
       // Fire-and-forget the server write; the optimistic update + count refresh happen inside.
-      unawaited(ref.read(notificationControllerProvider.notifier).markRead(n.id));
+      unawaited(
+          ref.read(notificationControllerProvider.notifier).markRead(n.id));
     }
     final user = ref.read(sessionProvider).user;
     final target = notificationTarget(n, user: user);

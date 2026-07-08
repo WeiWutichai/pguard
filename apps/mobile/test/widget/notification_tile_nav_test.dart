@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/notifications/notification_screen.dart';
+import 'package:pguard_mobile/features/notifications/widgets/notification_tile.dart';
 
 import '../support/fakes.dart';
 
@@ -28,10 +29,9 @@ Map<String, dynamic> notifJson(
 String _customerJwt() => fakeJwt({
       'sub': 'c1',
       'role': 'customer',
-      'exp': DateTime.now()
-              .add(const Duration(hours: 1))
-              .millisecondsSinceEpoch ~/
-          1000,
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
+              1000,
     });
 
 void main() {
@@ -75,8 +75,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()..access = _customerJwt()..refresh = 'r'),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..access = _customerJwt()
+          ..refresh = 'r'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
       ],
       child: MaterialApp.router(routerConfig: router),
@@ -84,14 +85,15 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(find.textContaining('หัวข้อ n1'), findsOneWidget);
+    // Opening the centre auto-marks everything read (badge clears without per-row taps).
+    expect(puts, contains('/notifications/read-all'));
+    expect(find.byType(NotificationTile), findsOneWidget);
 
-    await tester.tap(find.textContaining('หัวข้อ n1'));
+    await tester.tap(find.byType(NotificationTile));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // Marked read (server write) AND navigated to the customer live-status screen.
-    expect(puts, contains('/notifications/n1/read'));
+    // Tapping the tile navigates to the customer live-status screen.
     expect(landedAt, '/booking/bk-7/live');
     expect(find.text('LIVE'), findsOneWidget);
   });
@@ -127,8 +129,9 @@ void main() {
     await tester.pumpWidget(ProviderScope(
       overrides: [
         pguardApiProvider.overrideWithValue(api),
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()..access = _customerJwt()..refresh = 'r'),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..access = _customerJwt()
+          ..refresh = 'r'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
       ],
       child: MaterialApp.router(routerConfig: router),
@@ -136,12 +139,15 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
+    // Opening the centre auto-marks all read (read-all). `system` type keeps the server copy.
+    expect(puts, contains('/notifications/read-all'));
+    expect(find.textContaining('หัวข้อ n2'), findsOneWidget);
+
     await tester.tap(find.textContaining('หัวข้อ n2'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    expect(puts, contains('/notifications/n2/read'));
-    // Still on the notification screen (no navigation target).
+    // Still on the notification screen (no navigation target) — no crash.
     expect(find.textContaining('หัวข้อ n2'), findsOneWidget);
   });
 }
