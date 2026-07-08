@@ -225,6 +225,16 @@ class CallController extends _$CallController {
     state = CallState.idle;
   }
 
+  /// A `call_cancelled` push arrived — the caller hung up BEFORE we answered. Clear the incoming
+  /// ring for THIS call (treated as a remote end → the screen shows the ended summary + auto-pops).
+  /// No-op unless we are actually ringing for this exact call_id, so a stale/duplicate signal — or
+  /// one for another call — can never tear down a live or unrelated call. This is the fallback for
+  /// when the WS `bye` was missed (the callee's socket wasn't registered yet when the caller left).
+  void dismissIncoming(String callId) {
+    if (state.phase != CallPhase.incoming || _callId != callId) return;
+    _end(reason: 'cancelled');
+  }
+
   // ---------------------------------------------------------------------------
   // In-call controls
   // ---------------------------------------------------------------------------

@@ -248,6 +248,33 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
                 data,
             })
         }
+        // A call that ENDED without ever being answered (status "missed" — the caller cancelled
+        // before pickup, or it rang out) must CLEAR the callee's ring. The in-call WS `bye` does this
+        // when the callee's socket is live, but a callee whose socket isn't registered yet (the
+        // incoming-call push only just arrived) would ring forever — so push a `call_cancelled` data
+        // signal as the fallback. Answered ends (status "ended") and declines (CALLING_REJECTED) ring
+        // no one, so they stay unmapped below.
+        topics::CALLING_ENDED
+            if payload.get("status").and_then(|v| v.as_str()) == Some("missed") =>
+        {
+            let mut data = build_data(None, event_type, payload);
+            if let Value::Object(ref mut m) = data {
+                m.insert(
+                    "type".to_string(),
+                    Value::String("call_cancelled".to_string()),
+                );
+                if let Some(v) = payload.get("call_id") {
+                    m.insert("call_id".to_string(), v.clone());
+                }
+            }
+            Some(NotificationPlan {
+                recipient_id: uuid_field(payload, "callee_id")?,
+                notification_type: NotificationType::System,
+                title: "สายที่ไม่ได้รับ".to_string(),
+                body: "สายเรียกเข้าถูกยกเลิก".to_string(),
+                data,
+            })
+        }
         // No user notification: force-revoke is identity's concern; the remaining calling.* events
         // and any unmapped/under-specified topic are intentionally ignored (claimed, not pushed).
         _ => None,
@@ -466,9 +493,31 @@ mod tests {
     fn calling_initiated_without_callee_is_ignored() {
         // No callee_id to route to → None (not a panic), like the other recipient-less events.
         assert!(plan_for_event(topics::CALLING_INITIATED, &json!({})).is_none());
-        // The non-initiated calling.* events stay unmapped (in-call signaling, not push).
-        let p = json!({ "callee_id": Uuid::new_v4(), "id": Uuid::new_v4() });
+        // In-call signaling stays unmapped (not a push): accepted, and an ANSWERED end (status
+        // "ended") rings no one.
+        let p = json!({ "callee_id": Uuid::new_v4(), "id": Uuid::new_v4(), "status": "ended" });
         assert!(plan_for_event(topics::CALLING_ACCEPTED, &p).is_none());
         assert!(plan_for_event(topics::CALLING_ENDED, &p).is_none());
+    }
+
+    #[test]
+    fn calling_ended_missed_pushes_call_cancelled_to_callee() {
+        // Caller hung up before the callee answered (status "missed") → clear the callee's ring with
+        // a `call_cancelled` data-push carrying the call_id (the WS `bye` fallback).
+        let callee = Uuid::new_v4();
+        let call_id = Uuid::new_v4();
+        let p = json!({
+            "callee_id": callee,
+            "call_id": call_id,
+            "status": "missed",
+        });
+        let plan = plan_for_event(topics::CALLING_ENDED, &p).expect("missed end should push");
+        assert_eq!(plan.recipient_id, callee, "the CALLEE's ring is cleared");
+        assert_eq!(plan.data["type"], "call_cancelled");
+        assert_eq!(
+            plan.data["call_id"],
+            json!(call_id),
+            "call_id must ride so the right ring clears"
+        );
     }
 }

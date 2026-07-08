@@ -78,8 +78,9 @@ void main() {
     final api = FakeApi(
       onPost: (_, __) async => initiate ?? callJson('call1'),
       // The controller GETs both the call (`/calls/{id}`) and the served ICE list (`/calls/ice`).
-      onGet: (path, __) async =>
-          path == '/calls/ice' ? (ice ?? iceJson()) : (get ?? callJson('call1')),
+      onGet: (path, __) async => path == '/calls/ice'
+          ? (ice ?? iceJson())
+          : (get ?? callJson('call1')),
       onPut: (_, __) async => {'success': true},
     );
     final c = ProviderContainer(overrides: [
@@ -104,7 +105,8 @@ void main() {
 
   // ---- state machine + REST verbs ----
 
-  test('outgoing: POST /calls/initiate → dialing, engine + socket up; offer held until `ready`',
+  test(
+      'outgoing: POST /calls/initiate → dialing, engine + socket up; offer held until `ready`',
       () async {
     final t = make(initiate: callJson('call1'));
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
@@ -116,10 +118,12 @@ void main() {
     expect(t.engine.createOfferCount, 1, reason: 'the offer is created…');
     expect(t.feed.connected, isTrue);
     expect(kinds(t.feed), isEmpty,
-        reason: '…but NOT sent until the callee signals `ready` (no wasted send)');
+        reason:
+            '…but NOT sent until the callee signals `ready` (no wasted send)');
   });
 
-  test('offer-on-ready RACE: callee `ready` beats a still-pending createOffer → exactly ONE offer (PR #170)',
+  test(
+      'offer-on-ready RACE: callee `ready` beats a still-pending createOffer → exactly ONE offer (PR #170)',
       () async {
     // PR #170. On a VIDEO call the caller's media setup + camera-permission prompt make
     // `createOffer()` slow, so the push → callee `ready` can BEAT the offer being created. While
@@ -150,8 +154,10 @@ void main() {
     final pending =
         ctrl(c).startOutgoing(bookingId: 'bk1', type: CallType.video);
     await tick(); // let setup run up to the blocked createOffer
-    expect(eng.createOfferCount, 1, reason: 'createOffer is in-flight (blocked)');
-    expect(kinds(feed), isEmpty, reason: 'no offer can be sent before it exists');
+    expect(eng.createOfferCount, 1,
+        reason: 'createOffer is in-flight (blocked)');
+    expect(kinds(feed), isEmpty,
+        reason: 'no offer can be sent before it exists');
 
     // The callee opens its socket and announces `ready` WHILE createOffer is still pending. The
     // one-shot `ready` is consumed now with a null offer — it sends nothing.
@@ -171,11 +177,13 @@ void main() {
     final offers =
         feed.sent.where((s) => s.signal.kind == CallSignalKind.offer).toList();
     expect(offers, hasLength(1),
-        reason: 'exactly ONE offer — not lost when `ready` beat createOffer, not doubled');
+        reason:
+            'exactly ONE offer — not lost when `ready` beat createOffer, not doubled');
     expect(offers.single.signal.sdp, 'OFFER_SDP');
   });
 
-  test('ICE config applied: served STUN+TURN list is fetched and passed to the engine (not hard-coded)',
+  test(
+      'ICE config applied: served STUN+TURN list is fetched and passed to the engine (not hard-coded)',
       () async {
     final t = make(initiate: callJson('call1'));
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
@@ -187,14 +195,17 @@ void main() {
     expect(servers, isNotNull);
     expect(servers!.length, 2);
     expect(servers[0].urls, ['stun:stun.l.google.com:19302']);
-    expect(servers[0].credential, isNull, reason: 'STUN entry carries no credential');
+    expect(servers[0].credential, isNull,
+        reason: 'STUN entry carries no credential');
     // The TURN entry carries the short-lived, per-caller credential from the server.
-    expect(servers[1].urls, contains('turn:turn.pguard.app:3478?transport=udp'));
+    expect(
+        servers[1].urls, contains('turn:turn.pguard.app:3478?transport=udp'));
     expect(servers[1].username, '1700000000:user-1');
     expect(servers[1].credential, 'c2hvcnQtbGl2ZWQtY3JlZA==');
   });
 
-  test('ICE fetch failure fails call setup + tears down (no silent hard-coded fallback)',
+  test(
+      'ICE fetch failure fails call setup + tears down (no silent hard-coded fallback)',
       () async {
     final eng = FakeCallEngine();
     final feed = FakeCallSignalFeed();
@@ -220,7 +231,8 @@ void main() {
         .startOutgoing(bookingId: 'bk1', type: CallType.audio);
 
     expect(c.read(callControllerProvider).phase, CallPhase.ended);
-    expect(eng.initialized, isFalse, reason: 'engine never initialised without ICE');
+    expect(eng.initialized, isFalse,
+        reason: 'engine never initialised without ICE');
     expect(feed.closed, isTrue, reason: 'setup torn down on failure');
   });
 
@@ -236,7 +248,8 @@ void main() {
         reason: 'caller traverses connecting (symmetric with the callee)');
   });
 
-  test('two offers (eager + ready-resend) produce exactly ONE answer (no double-answer race)',
+  test(
+      'two offers (eager + ready-resend) produce exactly ONE answer (no double-answer race)',
       () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
@@ -267,7 +280,25 @@ void main() {
     expect(t.feed.sent.single.signal.kind, CallSignalKind.ready);
   });
 
-  test('incoming video HINT: ring shows video BEFORE the GET resolves (callee knows pre-answer)',
+  test(
+      'dismissIncoming (call_cancelled push) clears the ring for THIS call; no-op otherwise',
+      () async {
+    final t = make(get: callJson('call1'));
+    await ctrl(t.c).startIncoming(callId: 'call1');
+    expect(st(t.c).phase, CallPhase.incoming);
+
+    // A cancel for a DIFFERENT / stale call must never tear down a live ring.
+    ctrl(t.c).dismissIncoming('other');
+    expect(st(t.c).phase, CallPhase.incoming,
+        reason: 'only the matching call_id may clear the ring');
+
+    // The caller hung up before we answered → the ring clears (→ ended, screen auto-pops).
+    ctrl(t.c).dismissIncoming('call1');
+    expect(st(t.c).phase, CallPhase.ended);
+  });
+
+  test(
+      'incoming video HINT: ring shows video BEFORE the GET resolves (callee knows pre-answer)',
       () async {
     // The push carried `call_type: video`; the GET would resolve audio (here) — but the ring UI
     // must reflect the video hint IMMEDIATELY (synchronously, before the GET), so the callee knows
@@ -280,7 +311,8 @@ void main() {
     expect(st(t.c).phase, CallPhase.incoming);
     expect(st(t.c).callType, CallType.video,
         reason: 'video hint reflected before the GET');
-    expect(st(t.c).speakerOn, isTrue, reason: 'speaker on for video by default');
+    expect(st(t.c).speakerOn, isTrue,
+        reason: 'speaker on for video by default');
 
     await pending; // GET resolves → server type (audio here) is authoritative and overwrites.
     expect(st(t.c).callType, CallType.audio,
@@ -289,7 +321,9 @@ void main() {
 
   // ---- can-call-again-after-end (keepAlive singleton reset) ----
 
-  test('reset() returns an ENDED call to idle, so a fresh call starts right after', () async {
+  test(
+      'reset() returns an ENDED call to idle, so a fresh call starts right after',
+      () async {
     final t = make(get: callJson('call1'));
     // A callee call that is rejected → ended (callee path does not hit the caller-only summary).
     await ctrl(t.c).startIncoming(callId: 'call1');
@@ -305,7 +339,8 @@ void main() {
     expect(st(t.c).phase, CallPhase.dialing);
   });
 
-  test('reset() is a no-op for a LIVE call (never breaks the single-active-call guard)',
+  test(
+      'reset() is a no-op for a LIVE call (never breaks the single-active-call guard)',
       () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
@@ -316,7 +351,8 @@ void main() {
         reason: 'reset only acts on a terminal (ended) call');
   });
 
-  test('accept: PUT /calls/{id}/accept → connecting; answers once the offer is in',
+  test(
+      'accept: PUT /calls/{id}/accept → connecting; answers once the offer is in',
       () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
@@ -332,7 +368,8 @@ void main() {
     expect(kinds(t.feed), contains(CallSignalKind.answer));
   });
 
-  test('media connected → PUT /calls/{id}/connected and phase active', () async {
+  test('media connected → PUT /calls/{id}/connected and phase active',
+      () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
     t.feed.emitSignal('call1', CallSignal.offer('O'));
@@ -348,7 +385,8 @@ void main() {
 
   // ---- trickle ICE queue ----
 
-  test('trickle ICE: candidates before the remote description queue, then flush in order',
+  test(
+      'trickle ICE: candidates before the remote description queue, then flush in order',
       () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
@@ -368,10 +406,12 @@ void main() {
     // A candidate AFTER the remote description is applied immediately.
     t.feed.emitSignal('call1', CallSignal.candidate(candidate: 'c3'));
     await tick();
-    expect(t.engine.addedCandidates.map((c) => c.candidate), ['c1', 'c2', 'c3']);
+    expect(
+        t.engine.addedCandidates.map((c) => c.candidate), ['c1', 'c2', 'c3']);
   });
 
-  test('caller: local ICE candidates buffer until `ready`, then flush in order', () async {
+  test('caller: local ICE candidates buffer until `ready`, then flush in order',
+      () async {
     final t = make(initiate: callJson('call1'));
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
 
@@ -410,14 +450,16 @@ void main() {
     );
   });
 
-  test('callee: local ICE flows immediately (the caller is already on the relay)', () async {
+  test(
+      'callee: local ICE flows immediately (the caller is already on the relay)',
+      () async {
     final t = make(get: callJson('call1'));
     await ctrl(t.c).startIncoming(callId: 'call1');
 
     // The callee's peer (the caller) dialed first and is already connected, so the callee marks the
     // peer ready when it announces itself — its local candidates are relayed without buffering.
-    t.engine.emitLocalCandidate(
-        const SignalCandidate(candidate: 'localC', sdpMid: '0', sdpMLineIndex: 0));
+    t.engine.emitLocalCandidate(const SignalCandidate(
+        candidate: 'localC', sdpMid: '0', sdpMLineIndex: 0));
     await tick();
     expect(
       t.feed.sent
@@ -509,7 +551,8 @@ void main() {
     final t = make(
       initiate: callJson('call1'),
       engine: FakeCallEngine(
-          throwOnInit: const CallException('Microphone permission is required')),
+          throwOnInit:
+              const CallException('Microphone permission is required')),
     );
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
 
@@ -577,7 +620,8 @@ void main() {
     Future<void> settle() =>
         Future<void>.delayed(const Duration(milliseconds: 400));
 
-    test('caller end(): does NOT open a chat feed or send a `system` frame', () async {
+    test('caller end(): does NOT open a chat feed or send a `system` frame',
+        () async {
       final t = makeWithChatSpy();
       await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
       t.engine.emitMediaEvent(CallMediaEvent.connected);
@@ -586,7 +630,8 @@ void main() {
       await settle();
 
       expect(t.chatFeed.connected, isFalse,
-          reason: 'the call summary is server-side now — no chat feed is opened');
+          reason:
+              'the call summary is server-side now — no chat feed is opened');
       expect(t.chatFeed.sent, isEmpty,
           reason: 'the mobile no longer posts the call-summary chat frame');
     });
