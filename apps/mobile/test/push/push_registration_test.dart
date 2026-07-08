@@ -24,12 +24,16 @@ class FakePushService implements PushService {
   final String? token;
   final _fg = StreamController<Map<String, dynamic>>.broadcast();
   int permissionRequests = 0;
+  int deleteTokenCalls = 0;
 
   @override
   Future<void> requestPermission() async => permissionRequests++;
 
   @override
   Future<String?> getToken() async => token;
+
+  @override
+  Future<void> deleteToken() async => deleteTokenCalls++;
 
   @override
   Stream<String> get tokenRefreshes => const Stream.empty();
@@ -65,8 +69,7 @@ void main() {
       expect(IncomingCallPush.tryParse({'type': 'chat'}), isNull);
       expect(IncomingCallPush.tryParse({'type': 'incoming_call'}), isNull);
       expect(
-          IncomingCallPush.tryParse(
-              {'type': 'incoming_call', 'call_id': ''}),
+          IncomingCallPush.tryParse({'type': 'incoming_call', 'call_id': ''}),
           isNull);
     });
   });
@@ -92,7 +95,8 @@ void main() {
     });
   });
 
-  test('registers the FCM token on auth and routes an incoming-call push', () async {
+  test('registers the FCM token on auth and routes an incoming-call push',
+      () async {
     final push = FakePushService();
     final routes = <String>[];
     final banners = <String>[];
@@ -109,8 +113,9 @@ void main() {
         (message, {title, type = InAppBannerType.info, onTap}) =>
             banners.add(message),
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
 
@@ -147,8 +152,9 @@ void main() {
         (message, {title, type = InAppBannerType.info, onTap}) =>
             banners.add(message),
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
 
@@ -197,8 +203,9 @@ void main() {
         (message, {title, type = InAppBannerType.info, onTap}) =>
             banners.add(message),
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
 
@@ -248,8 +255,9 @@ void main() {
       pushNotifyProvider.overrideWithValue(
         (message, {title, type = InAppBannerType.info, onTap}) {},
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
       bookingStatusFeedBuilderProvider
           .overrideWithValue((id, tp) => FakeBookingFeed()),
     ]);
@@ -273,7 +281,8 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(homeFetches, greaterThan(before),
-        reason: 'the booking push invalidated customerHomeController → it re-pulled');
+        reason:
+            'the booking push invalidated customerHomeController → it re-pulled');
   });
 
   test(
@@ -298,8 +307,9 @@ void main() {
       pushNotifyProvider.overrideWithValue(
         (message, {title, type = InAppBannerType.info, onTap}) {},
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
       bookingStatusFeedBuilderProvider
           .overrideWithValue((id, tp) => FakeBookingFeed()),
     ]);
@@ -324,7 +334,8 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 20));
 
     expect(openFetches, greaterThan(1),
-        reason: 'the booking.completed push invalidated guardJobsController → it re-pulled, so the '
+        reason:
+            'the booking.completed push invalidated guardJobsController → it re-pulled, so the '
             'completed job leaves "กำลังทำ"');
   });
 
@@ -352,8 +363,8 @@ void main() {
 
     test('returns null for new_job / incoming_call / chat / unknown', () {
       // new_job & incoming_call carry `type` → owned by their own handlers.
-      expect(BookingPush.tryParse({'type': 'new_job', 'booking_id': 'b'}),
-          isNull);
+      expect(
+          BookingPush.tryParse({'type': 'new_job', 'booking_id': 'b'}), isNull);
       expect(BookingPush.tryParse({'type': 'incoming_call', 'call_id': 'c'}),
           isNull);
       expect(
@@ -402,16 +413,16 @@ void main() {
       pushNotifyProvider.overrideWithValue(
         (message, {title, type = InAppBannerType.info, onTap}) {},
       ),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
       bookingStatusFeedBuilderProvider
           .overrideWithValue((id, tp) => FakeBookingFeed()),
     ]);
     addTearDown(c.dispose);
 
     // Keep both of the booking's controllers actively listened so an invalidate REFETCHES.
-    final bSub =
-        c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    final bSub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
     addTearDown(bSub.close);
     final aSub = c.listen(activeJobControllerProvider('b1'), (_, __) {});
     addTearDown(aSub.close);
@@ -431,7 +442,8 @@ void main() {
 
     // `paid_at` lands ~12ms later (just after the 10ms retry delay) — the immediate post-push
     // refetch still sees it absent, only the bounded retry picks it up.
-    Future<void>.delayed(const Duration(milliseconds: 12), () => paidVisible = true);
+    Future<void>.delayed(
+        const Duration(milliseconds: 12), () => paidVisible = true);
 
     // The payment push fires: invalidate both controllers, and (paid_at still lagging) retry the
     // active job once after the (shrunk) delay.
@@ -444,10 +456,12 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 60));
 
     expect(bookingFetches, greaterThan(fetchesBefore),
-        reason: 'the booking-status + active-job controllers re-fetched on the push');
+        reason:
+            'the booking-status + active-job controllers re-fetched on the push');
     // The retry re-fetch picked up the now-present paid_at → the guard un-gates.
     final jobAfter = c.read(activeJobControllerProvider('b1')).valueOrNull;
     expect(jobAfter?.booking.isPaid, isTrue,
-        reason: 'active-job re-fetch (with one retry) saw paid_at → en_route enabled');
+        reason:
+            'active-job re-fetch (with one retry) saw paid_at → en_route enabled');
   });
 }

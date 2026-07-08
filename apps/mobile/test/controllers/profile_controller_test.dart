@@ -4,6 +4,7 @@ import 'package:pguard_mobile/core/controllers/profile_controller.dart';
 import 'package:pguard_mobile/core/models/profile.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/core/push/push_registration_controller.dart';
 
 import '../support/fakes.dart';
 
@@ -15,6 +16,8 @@ void main() {
           .overrideWithValue(store ?? (InMemoryStore()..access = 't')),
       // logout() now also clears pending-registration prefs — keep it off real SharedPreferences.
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      // logout() unregisters the FCM token → keep the push layer off real Firebase.
+      pushServiceProvider.overrideWithValue(StubPush()),
     ]);
     addTearDown(c.dispose);
     return c;
@@ -72,7 +75,8 @@ void main() {
     expect(p.yearsOfExperience, 6);
     expect(p.accountNumberMasked, '••••7890');
     expect(p.approvalStatus, ApprovalStatus.approved);
-    expect(p.displayName, 'สมชาย ก.'); // falls back to account_name (no name field)
+    expect(p.displayName,
+        'สมชาย ก.'); // falls back to account_name (no name field)
   });
 
   test('tolerates a 404 profile (not set up yet)', () async {

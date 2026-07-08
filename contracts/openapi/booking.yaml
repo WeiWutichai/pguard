@@ -359,6 +359,20 @@ paths:
         `average_rating: null` and `review_count: 0`.
       operationId: listAvailableGuards
       security: [{ bearerAuth: [] }]
+      parameters:
+        - name: scheduled_at
+          in: query
+          required: false
+          schema: { type: string, format: date-time }
+          description: |
+            Start of the customer's chosen window. When supplied WITH `hours`, the busy-guard
+            exclusion is scoped to this window (a guard booked for a non-overlapping time is still
+            offered). Omit both for the coarse "any active job" exclusion.
+        - name: hours
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1 }
+          description: Length of the window in hours (paired with `scheduled_at`).
       responses:
         '200':
           description: Approved guards with rating summaries

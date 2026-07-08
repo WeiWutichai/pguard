@@ -27,6 +27,14 @@ String? notificationTarget(AppNotification n, {required AuthUser? user}) {
       );
 
     case NotificationType.bookingCreated:
+      // A NEW-JOB offer is still `requested` (unaccepted). For a guard it must open the OFFER detail
+      // (`/guard/job` — JobDetailScreen with the Accept action), NOT the active-job working screen:
+      // that screen assumes an ASSIGNED booking and misreads a `requested` job as "completed". The
+      // customer just watches their own new booking on the live-status screen.
+      final newBid = n.bookingId;
+      if (newBid == null) return null;
+      return isGuard ? '/guard/job/$newBid' : '/booking/$newBid/live';
+
     case NotificationType.guardAssigned:
     case NotificationType.guardEnRoute:
     case NotificationType.guardArrived:
