@@ -89,8 +89,14 @@ class _ModePicker extends ConsumerWidget {
     bool pending(RegistrationRole r) => user?.isPendingIn(r.wire) == true;
     // Refresh /auth/me (auto-dispose → re-fetches on each open) so a role SUBMITTED since login shows
     // as pending here. Its `session.refreshRoles(roles, pendingRoles: …)` re-emits the session, which
-    // rebuilds this picker with the fresh pending set. Value unused — watched only for the side-effect.
-    ref.watch(profileControllerProvider);
+    // rebuilds this picker with the fresh pending set.
+    //
+    // The PIN-login response only carries the ENROLLED set, not the PENDING one, so on a returning
+    // login the session's pending set is empty until this /auth/me lands. Gate the cards on that
+    // first load: without it a pending role renders as a normal (tappable) card for a beat, and a tap
+    // in that window re-opens the registration form / bounces to a status page instead of just showing
+    // "รอตรวจ". Once loaded, the pending card stays disabled by `pending(...)` below.
+    final rolesLoading = ref.watch(profileControllerProvider).isLoading;
 
     return PopScope(
       // Intercept the system back so it returns to the current home (not the auth stack).
@@ -153,8 +159,11 @@ class _ModePicker extends ConsumerWidget {
                   iconFg: Colors.white,
                   title: isThai ? 'เจ้าหน้าที่ รปภ.' : 'Security Guard',
                   desc: _modeDesc(RegistrationRole.guard),
-                  // A pending role is NOT tappable → it can't re-open the registration form.
-                  enabled: !state.busy && !pending(RegistrationRole.guard),
+                  // A pending role is NOT tappable → it can't re-open the registration form. Also
+                  // gated while the pending set is still loading (see rolesLoading above).
+                  enabled: !state.busy &&
+                      !rolesLoading &&
+                      !pending(RegistrationRole.guard),
                   loading:
                       state.busy && state.pendingRole == RegistrationRole.guard,
                   active: activeRole == 'guard',
@@ -170,7 +179,9 @@ class _ModePicker extends ConsumerWidget {
                   iconFg: PgTokens.colorAmber700,
                   title: isThai ? 'จ้าง รปภ' : 'Hire a Guard',
                   desc: _modeDesc(RegistrationRole.customer),
-                  enabled: !state.busy && !pending(RegistrationRole.customer),
+                  enabled: !state.busy &&
+                      !rolesLoading &&
+                      !pending(RegistrationRole.customer),
                   loading: state.busy &&
                       state.pendingRole == RegistrationRole.customer,
                   active: activeRole == 'customer',

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/notifications/notification_screen.dart';
+import 'package:pguard_mobile/features/notifications/widgets/notification_tile.dart';
 
 import '../support/fakes.dart';
 
@@ -18,13 +19,17 @@ Map<String, dynamic> notifJson(String id, bool isRead) => {
     };
 
 void main() {
-  testWidgets('renders the list and mark-all marks everything read',
+  testWidgets(
+      'renders the list and OPENING the centre auto-marks everything read',
       (tester) async {
+    var readAllCalls = 0;
     final api = FakeApi(
       onGet: (_, __) async => [notifJson('n1', false), notifJson('n2', true)],
       onPut: (path, _) async {
-        expect(path, '/notifications/read-all');
-        return {'count': 1};
+        expect(path,
+            '/notifications/read-all'); // the only mutating call is the open-time read-all
+        readAllCalls++;
+        return {'count': 0};
       },
     );
     await tester.pumpWidget(ProviderScope(
@@ -38,17 +43,11 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // The tile renders one '<bold title> · body' run, so match on the substring.
-    expect(find.textContaining('หัวข้อ n1'), findsOneWidget);
-    expect(find.textContaining('หัวข้อ n2'), findsOneWidget);
-    // There is an unread item → the "mark all read" action shows.
-    expect(find.text('อ่านทั้งหมด'), findsOneWidget);
-
-    await tester.tap(find.text('อ่านทั้งหมด'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 20));
-
-    // Optimistically everything is read → the action disappears.
+    // Both notifications render (type-localized copy replaces the raw server title).
+    expect(find.byType(NotificationTile), findsNWidgets(2));
+    // Opening the centre auto-marked everything read (the reported "read them all but the badge
+    // stays" fix) → read-all fired once and the explicit "mark all read" action is gone.
+    expect(readAllCalls, 1);
     expect(find.text('อ่านทั้งหมด'), findsNothing);
   });
 
