@@ -238,6 +238,21 @@ class _RegistrationPendingScreenState
                     ),
                   ),
                 ),
+              // An ESCAPE from the pending screen: the redirect otherwise confines a pending account
+              // to /auth/* with no way out. Full sign-out (drops the phone + pending flag) → OTP.
+              const SizedBox(height: PgTokens.space2),
+              TextButton(
+                onPressed: state.busy
+                    ? null
+                    : () => ref
+                        .read(sessionProvider.notifier)
+                        .logout(forgetDevice: true),
+                child: Text(
+                  isThai ? 'เข้าด้วยบัญชีอื่น' : 'Use a different account',
+                  style: const TextStyle(
+                      fontSize: 14, color: PgTokens.colorTextMuted),
+                ),
+              ),
             ],
           ),
         ),
