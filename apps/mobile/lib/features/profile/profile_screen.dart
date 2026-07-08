@@ -44,7 +44,8 @@ class ProfileScreen extends ConsumerWidget {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'โปรไฟล์' : 'Profile',
         subtitle: isThai ? 'โปรไฟล์และการตั้งค่า' : 'Profile & settings',
         showBack: true,
@@ -72,8 +73,10 @@ class ProfileScreen extends ConsumerWidget {
                     icon: Icons.person_outline,
                     title: isThai ? 'ข้อมูลส่วนตัว' : 'Personal info',
                     subtitle: profile.isGuard
-                        ? 'เพศ วันเกิด ประสบการณ์'
-                        : 'ชื่อ ที่อยู่',
+                        ? (isThai
+                            ? 'เพศ วันเกิด ประสบการณ์'
+                            : 'Gender, birthday, experience')
+                        : (isThai ? 'ชื่อ ที่อยู่' : 'Name, address'),
                     onTap: () => context.push('/profile/edit'),
                   ),
                   if (profile.isGuard)
@@ -320,8 +323,7 @@ class _EditableAvatar extends ConsumerWidget {
             .read(customerAvatarControllerProvider.notifier)
             .upload(path);
     if (err != null && context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(err)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     }
   }
 
@@ -347,7 +349,8 @@ class _EditableAvatar extends ConsumerWidget {
                     width: 74,
                     height: 74,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _InitialsAvatar(initials: initials),
+                    errorBuilder: (_, __, ___) =>
+                        _InitialsAvatar(initials: initials),
                   )
                 : _InitialsAvatar(initials: initials),
           ),

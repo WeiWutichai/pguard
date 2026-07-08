@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/booking.dart';
 import '../network/api_exception.dart';
+import '../network/jwt.dart';
 import '../providers.dart';
 import 'active_job_controller.dart';
 import 'locale_controller.dart';
@@ -22,10 +23,17 @@ class GuardJobsController extends _$GuardJobsController {
   @override
   Future<List<Booking>> build() async {
     final api = ref.read(pguardApiProvider);
+    // GET /bookings returns customer_id = me OR guard_id = me (both roles for a dual-role account).
+    // The guard's job lists must show ONLY jobs THIS guard is assigned to — not the account's own
+    // customer hires — so scope the assigned feed to guard_id = me (the token subject). Open jobs
+    // come from the separate /bookings/open feed below.
+    final token = await ref.read(appStoreProvider).readAccessToken();
+    final me = token != null ? Jwt.subject(token) : null;
     final assignedData = await api.get('/bookings');
     final assigned = (assignedData as List)
         .whereType<Map<String, dynamic>>()
         .map(Booking.fromJson)
+        .where((b) => me == null || b.guardId == me)
         .toList();
     // Open-job discovery — best-effort so a failure here leaves the assigned jobs intact.
     var open = <Booking>[];

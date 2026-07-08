@@ -20,10 +20,21 @@ Map<String, dynamic> _b(String status, String address, String id, String at) =>
       'tip': '0',
     };
 
+// A guard session whose subject matches the bookings' guard_id ('g1'), so the assigned-feed role
+// filter (guard_id == token subject) keeps them.
+String _guardJwt() => fakeJwt({
+      'sub': 'g1',
+      'role': 'guard',
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
+              1000,
+    });
+
 Future<void> _pump(WidgetTester tester, FakeApi api) async {
   await tester.pumpWidget(ProviderScope(
     overrides: [
       pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ],
     child: const MaterialApp(home: GuardWorkHistoryScreen()),
@@ -38,15 +49,17 @@ void main() {
       (tester) async {
     // History reads the ASSIGNED feed (/bookings); the open-discovery feed (/bookings/open)
     // never carries completed/cancelled jobs, so it returns nothing here.
-    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
-        ? [
-            _b('completed', 'งานเก่า', 'c-old', '2026-06-01T07:00:00Z'),
-            _b('completed', 'งานใหม่', 'c-new', '2026-06-10T07:00:00Z'),
-            _b('cancelled', 'ลูกค้ายกเลิกงาน', 'x1', '2026-06-05T07:00:00Z'),
-            _b('declined', 'ถอนตัวเอง', 'x2', '2026-06-06T07:00:00Z'),
-            _b('accepted', 'งานที่กำลังรับ', 'a1', '2026-06-09T07:00:00Z'),
-          ]
-        : const <Map<String, dynamic>>[]);
+    final api = FakeApi(
+        onGet: (path, _) async => path == '/bookings'
+            ? [
+                _b('completed', 'งานเก่า', 'c-old', '2026-06-01T07:00:00Z'),
+                _b('completed', 'งานใหม่', 'c-new', '2026-06-10T07:00:00Z'),
+                _b('cancelled', 'ลูกค้ายกเลิกงาน', 'x1',
+                    '2026-06-05T07:00:00Z'),
+                _b('declined', 'ถอนตัวเอง', 'x2', '2026-06-06T07:00:00Z'),
+                _b('accepted', 'งานที่กำลังรับ', 'a1', '2026-06-09T07:00:00Z'),
+              ]
+            : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
 
     // Completed tab is the default: both completed jobs show; cancelled/declined/active do not.
@@ -69,10 +82,12 @@ void main() {
     expect(find.text('งานใหม่'), findsNothing);
   });
 
-  testWidgets('the job feeds are fetched once each (no polling)', (tester) async {
-    final api = FakeApi(onGet: (path, _) async => path == '/bookings'
-        ? [_b('completed', 'งานเสร็จ', 'c1', '2026-06-10T07:00:00Z')]
-        : const <Map<String, dynamic>>[]);
+  testWidgets('the job feeds are fetched once each (no polling)',
+      (tester) async {
+    final api = FakeApi(
+        onGet: (path, _) async => path == '/bookings'
+            ? [_b('completed', 'งานเสร็จ', 'c1', '2026-06-10T07:00:00Z')]
+            : const <Map<String, dynamic>>[]);
     await _pump(tester, api);
     await tester.pump(const Duration(seconds: 2));
 

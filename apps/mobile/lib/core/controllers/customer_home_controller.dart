@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/booking.dart';
 import '../models/money.dart';
+import '../network/jwt.dart';
 import '../providers.dart';
 
 part 'customer_home_controller.g.dart';
@@ -15,10 +16,17 @@ part 'customer_home_controller.g.dart';
 class CustomerHomeController extends _$CustomerHomeController {
   @override
   Future<List<Booking>> build() async {
+    // GET /bookings returns rows where customer_id = me OR guard_id = me — i.e. BOTH roles for a
+    // dual-role account. The customer surfaces (dashboard + "Hirer history") must show ONLY the
+    // user's own hires, never their accepted GUARD jobs, so scope to customer_id = me. `me` is the
+    // token subject (the current account) — read raw so it works without a live Session (+ tests).
+    final token = await ref.read(appStoreProvider).readAccessToken();
+    final me = token != null ? Jwt.subject(token) : null;
     final data = await ref.read(pguardApiProvider).get('/bookings');
     return (data as List)
         .whereType<Map<String, dynamic>>()
         .map(Booking.fromJson)
+        .where((b) => me == null || b.customerId == me)
         .toList();
   }
 
