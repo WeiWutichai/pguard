@@ -30,11 +30,15 @@ class GuardJobsController extends _$GuardJobsController {
     final token = await ref.read(appStoreProvider).readAccessToken();
     final me = token != null ? Jwt.subject(token) : null;
     final assignedData = await api.get('/bookings');
-    final assigned = (assignedData as List)
-        .whereType<Map<String, dynamic>>()
-        .map(Booking.fromJson)
-        .where((b) => me == null || b.guardId == me)
-        .toList();
+    // Fail CLOSED: no resolvable subject → no assigned jobs (never fall through to the unfiltered
+    // OR-list, which would leak the account's own customer hires into the guard's job list).
+    final assigned = me == null
+        ? const <Booking>[]
+        : (assignedData as List)
+            .whereType<Map<String, dynamic>>()
+            .map(Booking.fromJson)
+            .where((b) => b.guardId == me)
+            .toList();
     // Open-job discovery — best-effort so a failure here leaves the assigned jobs intact.
     var open = <Booking>[];
     try {

@@ -32,11 +32,17 @@ Map<String, dynamic> jobJson(
 // default Week window contains them — the windowed hero is otherwise time-relative.
 final _now = DateTime.utc(2026, 6, 4, 12);
 
+String _jwt() => fakeJwt({
+      'sub': 'g1',
+      'role': 'guard',
+      'exp': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/ 1000,
+    });
+
 Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
   await tester.pumpWidget(ProviderScope(
     overrides: [
       pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _jwt()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ],
     child: MaterialApp(home: EarningsScreen(now: _now)),
