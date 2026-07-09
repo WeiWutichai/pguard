@@ -6,7 +6,7 @@
 // completed-job count, and the current active job (admin booking list filtered by guard_id).
 // Only km-away (needs a distance calc) and the chat/call actions (no v2 admin channel) remain
 // honest "รอ API / Awaiting API" gaps.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, MessageSquare, Navigation, Phone, Shield, X } from "lucide-react";
 
 import type { components } from "@/api/generated/booking";
@@ -15,6 +15,8 @@ import { Badge, Button } from "@/components/ui";
 import { bookingApi, ratingApi } from "@/lib/api";
 import { ADMIN_LIST_CAP, fmtCappedCount } from "@/lib/format";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
+import { cn } from "@/lib/cn";
 import {
   ACTIVE_BOOKING_STATUSES,
   ACTIVE_STATUS_TONE,
@@ -30,6 +32,10 @@ type Booking = components["schemas"]["Booking"];
 export function DetailCard({ guard, onClose }: { guard: MapGuard; onClose: () => void }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
+  // Resolve the selected guard's id to a real display name (header showed a raw UUID slice).
+  const ids = useMemo(() => [guard.guard_id], [guard.guard_id]);
+  const { resolve } = useNameResolver(ids, lang);
+  const name = resolve(guard.guard_id).name;
 
   // The selected guard's overall rating (admin-readable). Re-fetched per selection; "—" until
   // loaded or when the guard has no visible reviews (never a fake 0.0).
@@ -98,11 +104,16 @@ export function DetailCard({ guard, onClose }: { guard: MapGuard; onClose: () =>
       {/* Header (design `.dh`). */}
       <div className="flex items-start gap-[13px] p-4">
         <span className="flex size-[54px] flex-none items-center justify-center rounded-[14px] bg-green-100 font-latin text-[19px] font-semibold text-green-800 dark:bg-green-800 dark:text-green-100">
-          {initials(guard.guard_id)}
+          {initials(name ?? guard.guard_id)}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="font-mono text-[17px] font-semibold leading-tight text-text-strong">
-            {shortId(guard.guard_id)}
+          <div
+            className={cn(
+              "text-[17px] font-semibold leading-tight text-text-strong",
+              name ? "" : "font-mono",
+            )}
+          >
+            {name ?? shortId(guard.guard_id)}
           </div>
           <div className="mt-px truncate font-mono text-[11px] text-muted" title={guard.guard_id}>
             {c.idLabel(guard.guard_id)}

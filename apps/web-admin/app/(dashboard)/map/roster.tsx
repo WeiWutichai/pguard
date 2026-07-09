@@ -6,10 +6,12 @@
 // that don't exist in v2 yet — cards show only real presence fields (status, GPS accuracy,
 // last update) instead of fake numbers; the missing stats are gap-chipped in the detail card.
 import { Loader2 } from "lucide-react";
+import { useMemo } from "react";
 
 import type { GuardStatus, MapGuard } from "@/components/guard-map";
 import { Avatar, Chip } from "@/components/ui";
 import { useLanguage } from "@/lib/i18n";
+import { useNameResolver } from "@/lib/use-names";
 import { cn } from "@/lib/cn";
 import {
   AVATAR_STATUS,
@@ -48,6 +50,9 @@ export function RosterPanel({
 }) {
   const { t, lang } = useLanguage();
   const c = COPY[lang];
+  // Resolve the online guards' ids to real display names (the panel showed raw UUID slices).
+  const guardIds = useMemo(() => guards.map((g) => g.guard_id), [guards]);
+  const { resolve } = useNameResolver(guardIds, lang);
 
   return (
     <aside className="flex w-80 flex-none flex-col border-l border-border bg-surface">
@@ -81,6 +86,8 @@ export function RosterPanel({
         ) : (
           guards.map((g) => {
             const sel = g.guard_id === selectedId;
+            const r = resolve(g.guard_id);
+            const name = r.name; // null while the resolver hasn't placed it (unknown / mid-load)
             return (
               <button
                 key={g.guard_id}
@@ -97,11 +104,17 @@ export function RosterPanel({
                 )}
               >
                 <Avatar size="lg" status={AVATAR_STATUS[g.status]}>
-                  {initials(g.guard_id)}
+                  {initials(name ?? g.guard_id)}
                 </Avatar>
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate font-mono text-sm font-semibold text-text-strong">
-                    {shortId(g.guard_id)}
+                  <span
+                    className={cn(
+                      "block truncate text-sm font-semibold text-text-strong",
+                      // Real name in the normal face; fall back to the id slice in mono.
+                      name ? "" : "font-mono",
+                    )}
+                  >
+                    {name ?? shortId(g.guard_id)}
                   </span>
                   <span className="mt-0.5 flex items-center gap-1.5 text-xs text-muted">
                     <span className={cn("font-semibold", STATUS_TEXT[g.status])}>
