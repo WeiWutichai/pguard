@@ -138,6 +138,42 @@ class _ReturningLoginScreenState extends ConsumerState<ReturningLoginScreen> {
                       Text(isThai ? 'ยินดีต้อนรับกลับ' : 'Welcome back',
                           style: const TextStyle(
                               fontSize: 18, fontWeight: FontWeight.w600)),
+                      // WHY the previous session ended, when the server told us — today only
+                      // the single-device kick. One-shot: cleared on the next successful
+                      // login (Session.onLoggedIn), so it never haunts a later visit.
+                      if (ref.watch(sessionNoticeProvider) ==
+                          'SESSION_SUPERSEDED') ...[
+                        const SizedBox(height: PgTokens.space3),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: PgTokens.space3,
+                              vertical: PgTokens.space2),
+                          decoration: BoxDecoration(
+                            color: PgTokens.colorAmber50,
+                            borderRadius:
+                                BorderRadius.circular(PgTokens.radiusLg),
+                            border: Border.all(color: PgTokens.colorAmber200),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.devices_other_outlined,
+                                  size: 18, color: PgTokens.colorAmber700),
+                              const SizedBox(width: PgTokens.space2),
+                              Expanded(
+                                child: Text(
+                                  isThai
+                                      ? 'บัญชีนี้ถูกเข้าสู่ระบบจากอุปกรณ์อื่น — เครื่องนี้จึงถูกออกจากระบบ'
+                                      : 'This account signed in on another device — this device was signed out',
+                                  style: const TextStyle(
+                                      fontSize: 12.5,
+                                      height: 1.4,
+                                      color: PgTokens.colorAmber700),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: PgTokens.space2),
                       Text(
                           isThai

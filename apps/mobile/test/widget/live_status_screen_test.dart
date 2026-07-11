@@ -108,8 +108,7 @@ void main() {
         ),
         GoRoute(
           path: '/booking/:id/map',
-          builder: (_, s) =>
-              GuardMapScreen(bookingId: s.pathParameters['id']!),
+          builder: (_, s) => GuardMapScreen(bookingId: s.pathParameters['id']!),
         ),
       ],
     );
@@ -278,7 +277,11 @@ void main() {
 
     // It PUT the approve action and landed on the completion summary.
     expect(putBody, {'action': 'approve'});
-    expect(api.calls.where((c) => c == 'PUT /bookings/b1/review-completion').length, 1);
+    expect(
+        api.calls
+            .where((c) => c == 'PUT /bookings/b1/review-completion')
+            .length,
+        1);
     expect(find.byType(JobCompletionSummaryScreen), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
@@ -350,7 +353,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('Details action opens the booking-details sheet (no longer a no-op)',
+  testWidgets(
+      'Details action opens the booking-details sheet (no longer a no-op)',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') {
@@ -459,8 +463,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      '#87 OWNER (customer) sees the Pay banner when accepted + unpaid',
+  testWidgets('#87 OWNER (customer) sees the Pay banner when accepted + unpaid',
       (tester) async {
     final api = FakeApi(
       onGet: (path, _) async => path == '/bookings/b1'
@@ -481,10 +484,9 @@ void main() {
         routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // The acting user IS the booking owner (sub == customer_id 'c1'). A refresh token (+ no
         // PIN) makes the session resolve `authenticated` so sessionProvider.user is populated.
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()
-              ..refresh = 'r'
-              ..access = _jwt('c1')),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..refresh = 'r'
+          ..access = _jwt('c1')),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tp) => FakeBookingFeed()),
@@ -505,8 +507,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      '#97 completed: OWNER (customer) sees the Rate-the-guard CTA',
+  testWidgets('#97 completed: OWNER (customer) sees the Rate-the-guard CTA',
       (tester) async {
     final api = FakeApi(
       onGet: (path, _) async => path == '/bookings/b1'
@@ -528,10 +529,9 @@ void main() {
         // the network (default null route → the straight-line fallback the preview degrades to).
         routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // Acting user IS the owner (sub == customer_id 'c1').
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()
-              ..refresh = 'r'
-              ..access = _jwt('c1')),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..refresh = 'r'
+          ..access = _jwt('c1')),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tp) => FakeBookingFeed()),
@@ -541,10 +541,70 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // The customer keeps the rating CTA on a completed job.
+    // The customer keeps the rating CTA on a completed job — and NOW also gets the receipt as a
+    // secondary action beside it (the rating-only state dead-ended the owner away from their
+    // settled bill).
     expect(find.text('ให้คะแนนเจ้าหน้าที่'), findsOneWidget,
         reason: 'the customer (owner) rates the guard');
-    expect(find.text('ดูใบสรุปค่าบริการ'), findsNothing);
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsOneWidget,
+        reason: 'the owner gets a receipt path alongside the rating CTA');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'completed + already RATED: owner sees the passive Rated state AND keeps '
+      'the receipt button', (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          return {
+            'id': 'b1',
+            'customer_id': 'c1',
+            'status': 'completed',
+            'guard_id': 'g1',
+            'hours': 2,
+            'base_fee': '500.00',
+          };
+        }
+        if (path == '/assignments/b1/review') {
+          // The customer already reviewed this booking.
+          return {
+            'id': 'rv1',
+            'guard_id': 'g1',
+            'overall_rating': 5,
+            'created_at': '2026-06-10T10:00:00Z',
+          };
+        }
+        return const <Map<String, dynamic>>[];
+      },
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..refresh = 'r'
+          ..access = _jwt('c1')),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider
+            .overrideWithValue((id, tp) => FakeBookingFeed()),
+      ],
+      child: const MaterialApp(home: LiveStatusScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    // One more frame: the already-rated gate (GET /assignments/{id}/review) resolves a hop
+    // after the completed actions row first builds.
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The passive "Rated" state replaces the rating CTA — but the receipt stays reachable
+    // (previously the rated state was the ONLY action, hiding the receipt entirely).
+    expect(find.text('ให้คะแนนแล้ว'), findsOneWidget);
+    expect(find.text('ให้คะแนนเจ้าหน้าที่'), findsNothing);
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsOneWidget,
+        reason: 'the receipt survives rating');
 
     await tester.pumpWidget(const SizedBox());
   });
@@ -572,10 +632,9 @@ void main() {
         // the network (default null route → the straight-line fallback the preview degrades to).
         routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // Acting user is the GUARD (sub 'g1') — NOT the booking owner 'c1'.
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()
-              ..refresh = 'r'
-              ..access = _jwt('g1', role: 'guard')),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..refresh = 'r'
+          ..access = _jwt('g1', role: 'guard')),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tp) => FakeBookingFeed()),
@@ -615,10 +674,9 @@ void main() {
         // the network (default null route → the straight-line fallback the preview degrades to).
         routingServiceProvider.overrideWithValue(FakeRoutingService()),
         // The acting user is the GUARD (sub 'g1', role guard) — NOT the booking owner 'c1'.
-        appStoreProvider.overrideWithValue(
-            InMemoryStore()
-              ..refresh = 'r'
-              ..access = _jwt('g1', role: 'guard')),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..refresh = 'r'
+          ..access = _jwt('g1', role: 'guard')),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         bookingStatusFeedBuilderProvider
             .overrideWithValue((id, tp) => FakeBookingFeed()),

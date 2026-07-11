@@ -75,10 +75,12 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
       fireImmediately: true,
     );
     // Live cancellation: the active-job controller has no WS of its own (it re-fetches only on
-    // resume), so subscribe to the booking-status feed and fold a terminal transition the guard
+    // resume), so subscribe to the booking-status feed and fold a TERMINAL transition the guard
     // didn't drive — chiefly the CUSTOMER cancelling — into the active-job state the instant it
-    // lands. Without this a cancelled job would keep showing its working chrome until the guard
-    // backgrounded + resumed. The fold is idempotent (a no-op when the status already matches).
+    // lands. Only terminals are forwarded: they are final + idempotent (no ordering hazard from
+    // at-least-once redelivery). A stale NON-terminal (e.g. an en_route PUT whose response was
+    // lost, leaving a button that 409s) is corrected instead by the 409-triggered snapshot
+    // re-pull inside the controller's `_transition`, not by folding non-terminal WS frames.
     ref.listenManual(
       bookingStatusControllerProvider(widget.bookingId),
       (_, next) {
@@ -136,7 +138,9 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
       // client-only `startedAt` + the in-memory completedCheckIns) and races the not-yet-submitted
       // report, which is exactly what made round 1 look unregistered / re-prompt "Start job". The
       // payment-resync this guard exists for can wait until the check-in sheet closes.
-      if (ref.read(workSessionStoreProvider).isCheckInInFlight(widget.bookingId)) {
+      if (ref
+          .read(workSessionStoreProvider)
+          .isCheckInInFlight(widget.bookingId)) {
         return;
       }
       ref.invalidate(activeJobControllerProvider(widget.bookingId));
@@ -330,8 +334,7 @@ class _Body extends StatelessWidget {
                   children: [
                     BookingStatusStepper(status: booking.status),
                     const Padding(
-                      padding:
-                          EdgeInsets.symmetric(vertical: PgTokens.space3),
+                      padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
                       child: Divider(height: 1, color: PgTokens.colorBorder),
                     ),
                     // #123: the SHARED guard-progress timeline (accept → en route → arrived →
@@ -685,7 +688,8 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
 
     // Read the LIVE controller state (not the captured widget.state) so the status/busy checks
     // reflect any transition that landed since this panel was built.
-    final live = ref.read(activeJobControllerProvider(widget.bookingId)).valueOrNull;
+    final live =
+        ref.read(activeJobControllerProvider(widget.bookingId)).valueOrNull;
     if (live == null || live.busy) return;
 
     // Only auto-fire while still working: arrived + started, with the countdown known. The instant

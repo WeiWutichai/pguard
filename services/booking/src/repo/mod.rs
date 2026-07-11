@@ -29,7 +29,8 @@ use crate::models::{
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
-     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, paid_at, created_at, updated_at";
+     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, work_started_at, paid_at, \
+     created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -529,9 +530,9 @@ pub async fn create_booking(
     Ok(created)
 }
 
-/// A booking's authoritative decision inputs: status + participant ids + proration clock.
-/// Read row-locked inside transactions ([`locked_current`]) and plain for handler
-/// pre-flight checks ([`get_booking_core`]).
+/// A booking's authoritative decision inputs: status + participant ids + proration clock +
+/// site pin. Read row-locked inside transactions ([`locked_current`]) and plain for
+/// handler pre-flight checks ([`get_booking_core`]).
 pub struct BookingCore {
     pub status: BookingStatus,
     pub customer_id: Uuid,
@@ -542,11 +543,23 @@ pub struct BookingCore {
     /// When the booking was PAID (stamped by the `payment.completed` consumer). `None` = unpaid;
     /// the `accepted → en_route` transition is gated on this being set (PRE-PAY).
     pub paid_at: Option<DateTime<Utc>>,
+    /// Site pin (customer-provided at create). `None` = legacy address-only booking — the
+    /// start-work geofence has nothing to measure against and skips.
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
+}
+
+impl BookingCore {
+    /// The site pin as a coordinate pair — `Some` only when BOTH columns are set (the
+    /// create API enforces both-or-neither, so a half-pin can't occur; this is defensive).
+    pub fn site(&self) -> Option<(f64, f64)> {
+        self.lat.zip(self.lng)
+    }
 }
 
 /// Raw row shape returned by the core queries: status text, customer, guard, booked hours,
-/// work-start clock, paid-at clock. Aliased to keep the query type readable (clippy
-/// `type_complexity`).
+/// work-start clock, paid-at clock, site pin. Aliased to keep the query type readable
+/// (clippy `type_complexity`).
 type CoreRow = (
     String,
     Uuid,
@@ -554,14 +567,16 @@ type CoreRow = (
     i32,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
+    Option<f64>,
+    Option<f64>,
 );
 
 const CORE_QUERY: &str =
-    "SELECT status::text, customer_id, guard_id, hours, work_started_at, paid_at \
+    "SELECT status::text, customer_id, guard_id, hours, work_started_at, paid_at, lat, lng \
      FROM booking.bookings WHERE id = $1";
 
 fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
-    let (status_str, customer_id, guard_id, hours, work_started_at, paid_at) =
+    let (status_str, customer_id, guard_id, hours, work_started_at, paid_at, lat, lng) =
         row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
@@ -573,6 +588,8 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         hours,
         work_started_at,
         paid_at,
+        lat,
+        lng,
     })
 }
 
@@ -627,6 +644,7 @@ pub async fn transition(
         hours,
         work_started_at,
         paid_at,
+        ..
     } = locked_current(&mut tx, id).await?;
 
     let actor_class = required_actor(current, new_status);
@@ -809,45 +827,66 @@ pub async fn transition(
 /// stays `arrived`. A guarded side-effect, NOT a status transition (mirrors v1's `start_job`
 /// quirk): only the assigned guard (or admin) may start, the booking must be `arrived`, and a
 /// second start is an idempotent no-op (returns the current row). No event.
+///
+/// GEOFENCE (inside the row lock, against the booking's own site pin): a pinned booking may
+/// only be started from within [`crate::domain::geo::START_GEOFENCE_M`] of the site
+/// (+ capped accuracy allowance) — 409 `NOT_AT_SITE`; a pinned booking with no `guard_gps`
+/// is 409 `GPS_REQUIRED`. Unpinned (legacy address-only) bookings skip the check. Order
+/// matters: the geofence runs AFTER the idempotent already-started early-return, so a
+/// network-retry of a successful start never re-fails on a drifted fix — and `is_admin`
+/// bypasses it (support acting on behalf is not on site). The accepted fix is persisted
+/// (`work_started_lat/lng/accuracy_m`) as audit evidence of on-site presence.
 #[tracing::instrument(skip(db), fields(booking_id = %id))]
 pub async fn start_job(
     db: &sqlx::PgPool,
     id: Uuid,
     actor: Uuid,
     is_admin: bool,
+    guard_gps: Option<(f64, f64)>,
+    accuracy_m: Option<f32>,
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
-    let BookingCore {
-        status,
-        guard_id: existing_guard,
-        work_started_at,
-        ..
-    } = locked_current(&mut tx, id).await?;
+    let core = locked_current(&mut tx, id).await?;
 
-    if !is_admin && existing_guard != Some(actor) {
+    if !is_admin && core.guard_id != Some(actor) {
         tx.rollback().await?;
         return Err(AppError::Forbidden(
             "Only the assigned guard can start this job".to_string(),
         ));
     }
-    if status != BookingStatus::Arrived {
+    if core.status != BookingStatus::Arrived {
         tx.rollback().await?;
         return Err(AppError::Conflict(
             "Can only start a job after arriving at the location".to_string(),
         ));
     }
-    // Idempotent: already started → return the current row unchanged.
-    if work_started_at.is_some() {
+    // Idempotent: already started → return the current row unchanged (BEFORE the geofence —
+    // a retry of an already-accepted start must not re-run it).
+    if core.work_started_at.is_some() {
         tx.rollback().await?;
         return get_booking(db, id).await;
     }
+    // Geofence — pure domain rule against the row-locked site pin; admin bypass.
+    if !is_admin {
+        if let Err(e) =
+            crate::domain::geo::validate_start_geofence(core.site(), guard_gps, accuracy_m)
+        {
+            tx.rollback().await?;
+            return Err(e);
+        }
+    }
 
     let sql = format!(
-        "UPDATE booking.bookings SET work_started_at = now(), updated_at = now() \
+        "UPDATE booking.bookings SET work_started_at = now(), work_started_lat = $2, \
+         work_started_lng = $3, work_started_accuracy_m = $4, updated_at = now() \
          WHERE id = $1 RETURNING {BOOKING_COLUMNS}"
     );
     let updated = sqlx::query_as::<_, BookingResponse>(&sql)
         .bind(id)
+        .bind(guard_gps.map(|(lat, _)| lat))
+        .bind(guard_gps.map(|(_, lng)| lng))
+        // Junk accuracy (negative/NaN/absurd) is stored as NULL, not persisted noise.
+        .bind(crate::domain::progress::sanitize_accuracy(accuracy_m))
         .fetch_one(&mut *tx)
         .await?;
     tx.commit().await?;
@@ -1046,7 +1085,8 @@ pub async fn list_open_bookings(
             let sql = format!(
                 r#"
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
-                       base_fee, guard_count, tip, lat, lng, paid_at, created_at, updated_at
+                       base_fee, guard_count, tip, lat, lng, work_started_at, paid_at,
+                       created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
                            2 * 6371 * asin(least(1, sqrt(
@@ -1976,7 +2016,7 @@ mod db_tests {
         assert!(matches!(not_started, AppError::Conflict(_)));
 
         // start (stamps work_started_at, stays arrived) → complete (pending_completion).
-        start_job(&pool, created.id, guard_id, false)
+        start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect("start");
         let work_started: Option<chrono::DateTime<Utc>> =
@@ -2221,7 +2261,7 @@ mod db_tests {
             .await
             .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
         }
-        start_job(&pool, created.id, guard_id, false)
+        start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect("start");
         transition(
@@ -2454,7 +2494,7 @@ mod db_tests {
             .await
             .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
         }
-        start_job(pool, created.id, guard_id, false)
+        start_job(pool, created.id, guard_id, false, None, None)
             .await
             .expect("start");
         (created.id, customer_id, guard_id)
@@ -2959,7 +2999,7 @@ mod db_tests {
         .expect("accept");
 
         // (2) start before arriving → Conflict (still only `accepted`).
-        let too_early = start_job(&pool, created.id, guard_id, false)
+        let too_early = start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect_err("start before arrived must be rejected");
         assert!(
@@ -2984,7 +3024,7 @@ mod db_tests {
         }
 
         // (3) a non-assigned guard cannot start the job → Forbidden (IDOR).
-        let intruder_err = start_job(&pool, created.id, intruder, false)
+        let intruder_err = start_job(&pool, created.id, intruder, false, None, None)
             .await
             .expect_err("non-assigned guard must not start the job");
         assert!(
@@ -2993,7 +3033,7 @@ mod db_tests {
         );
 
         // first (real) start stamps work_started_at
-        start_job(&pool, created.id, guard_id, false)
+        start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect("first start");
         let first_ts: Option<chrono::DateTime<Utc>> =
@@ -3006,7 +3046,7 @@ mod db_tests {
 
         // (1) a second start is idempotent: work_started_at UNCHANGED (the proration clock must
         // not reset — that would shrink actual_seconds and over-refund / overcharge).
-        start_job(&pool, created.id, guard_id, false)
+        start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect("second start (idempotent no-op)");
         let second_ts: Option<chrono::DateTime<Utc>> =

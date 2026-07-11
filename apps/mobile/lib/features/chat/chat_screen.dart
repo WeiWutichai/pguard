@@ -19,9 +19,15 @@ import 'widgets/chat_bubble.dart';
 
 /// The real-time conversation. History + live pushes are owned by [ChatController] (the WebSocket
 /// lifecycle lives there, NOT in this widget — CLAUDE.md); this screen only renders the message
-/// list, autoscrolls on new messages, and hosts the composer. When [readOnly] (booking
+/// list, autoscrolls on new messages, and hosts the composer. When read-only (booking
 /// completed/cancelled) the composer is replaced by a locked banner — the server also rejects
 /// writes, so this is UX only. No `Timer.periodic` anywhere.
+///
+/// Read-only is SELF-VERIFIED: the navigation-time [readOnly] flag is only a hint (it goes stale
+/// when the booking closes while the thread is open, and the push-notification entry hardcodes
+/// `false`), so the screen ORs it with the server-resolved [chatServerClosedProvider] — and a
+/// live send rejected with `code == "read_only"` flips that provider, locking the composer
+/// reactively (plus a snackbar via [chatSendErrorsProvider], so no rejection vanishes silently).
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({
     super.key,
@@ -125,6 +131,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ? ChatReadOnly.sendBlockedMessage(isThai: isThai)
           : e.message;
       messenger.showSnackBar(SnackBar(content: Text(text)));
+      // A 409 upload rejection is the SAME read-only signal as a rejected WS text send — latch
+      // the composer closed so the user can't keep re-attaching into a dead thread (mirrors the
+      // WS `code == "read_only"` path). Only the upload endpoint's read-only gate 409s here.
+      if (e.isConflict && mounted) {
+        ref
+            .read(chatServerClosedProvider(widget.conversationId, widget.acting)
+                .notifier)
+            .markClosed();
+      }
     } finally {
       if (mounted) setState(() => _attachBusy = false);
     }
@@ -137,11 +152,38 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     final async = ref.watch(provider);
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
 
+    // SELF-VERIFIED read-only: the navigation flag OR the server's own answer (resolved from the
+    // conversations list + flipped live by a rejected send). Short-circuit keeps an already-known
+    // read-only entry from spending a fetch on re-verification; while unresolved (loading/error)
+    // only the navigation flag applies — the server still rejects writes either way.
+    final effectiveReadOnly = widget.readOnly ||
+        (ref
+                .watch(chatServerClosedProvider(
+                    widget.conversationId, widget.acting))
+                .valueOrNull ??
+            false);
+
     // Autoscroll when a new message lands (initial load or a push). No polling.
     ref.listen(provider, (prev, next) {
       final before = prev?.valueOrNull?.length ?? 0;
       final after = next.valueOrNull?.length ?? 0;
       if (after > before) _scrollToBottom();
+    });
+
+    // A send the server REFUSED must not vanish silently: read-only rejections show the existing
+    // localized "job ended" line (the composer lock itself comes from chatServerClosedProvider,
+    // flipped by the controller); any other/legacy error frame (no `code`) surfaces its
+    // client-safe message as a generic snackbar.
+    ref.listen(chatSendErrorsProvider(widget.conversationId, widget.acting),
+        (prev, next) {
+      final error = next.valueOrNull;
+      if (error == null) return;
+      final text = error.isReadOnly
+          ? ChatReadOnly.sendBlockedMessage(isThai: isThai)
+          : (error.message.isNotEmpty
+              ? error.message
+              : (isThai ? 'ส่งข้อความไม่สำเร็จ' : 'Message could not be sent'));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     });
 
     // The counterpart label: the name when known, else a generic role-aware fallback (the v2
@@ -156,10 +198,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true,
+      appBar: PGuardHeader(
+        light: true,
         title: counterpartLabel,
         // Design state 3: read-only thread swaps the status line to "job completed".
-        subtitle: widget.readOnly
+        subtitle: effectiveReadOnly
             ? (isThai ? 'งานเสร็จสิ้นแล้ว' : 'Job completed')
             : (isThai ? 'แชท' : 'Chat'),
         showBack: true,
@@ -171,7 +214,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             if (widget.bookingId != null) ...[
               _CallAction(
-                enabled: widget.callable && !widget.readOnly,
+                enabled: widget.callable && !effectiveReadOnly,
                 isThai: isThai,
                 onCall: _startCall,
               ),
@@ -251,7 +294,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       ),
               ),
             ),
-            if (widget.readOnly)
+            if (effectiveReadOnly)
               _LockedBanner(isThai: isThai)
             else
               _Composer(

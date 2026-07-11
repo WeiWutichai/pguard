@@ -105,8 +105,8 @@ void main() {
       onGet: (_, __) async => thread(),
       onPut: (_, __) async => {'success': true},
     );
-    await tester.pumpWidget(
-        host(guardApi, FakeChatFeed(), readOnly: false, acting: ChatRole.guard));
+    await tester.pumpWidget(host(guardApi, FakeChatFeed(),
+        readOnly: false, acting: ChatRole.guard));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
 
@@ -154,6 +154,130 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  // The screen SELF-VERIFIES read-only: the push-notification entry hardcodes readOnly:false
+  // (the payload has no booking status), so the screen must resolve the conversation's CURRENT
+  // status from the server (the conversations list carries request_status) and lock itself.
+  testWidgets(
+      'opened with readOnly:false but the server says the booking completed → '
+      'composer locked', (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/conversations') {
+          return [
+            {
+              'id': 'cv1',
+              'request_id': 'r1',
+              'created_at': '2026-06-05T10:00:00Z',
+              'unread_count': 0,
+              'request_status': 'completed',
+            }
+          ];
+        }
+        return <Map<String, dynamic>>[]; // message history
+      },
+      onPut: (_, __) async => {'success': true},
+    );
+
+    await tester.pumpWidget(host(api, FakeChatFeed(), readOnly: false));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.byType(TextField), findsNothing,
+        reason: 'the SERVER status wins over the stale navigation flag');
+    expect(find.text('งานสิ้นสุดแล้ว ไม่สามารถส่งข้อความได้'), findsOneWidget,
+        reason: 'locked banner replaces the composer');
+    expect(find.text('งานเสร็จสิ้นแล้ว'), findsOneWidget,
+        reason: 'the header subtitle flips to job-completed too');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  // A rejected WS send must not vanish silently: `code: read_only` shows the localized
+  // job-ended line AND locks the composer reactively (the booking completed while typing).
+  testWidgets(
+      'read_only error frame → snackbar + composer swaps to the locked banner',
+      (tester) async {
+    final feed = FakeChatFeed();
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/conversations') {
+          return [
+            {
+              'id': 'cv1',
+              'request_id': 'r1',
+              'created_at': '2026-06-05T10:00:00Z',
+              'unread_count': 0,
+              'request_status': 'accepted', // still writable at open time
+            }
+          ];
+        }
+        return <Map<String, dynamic>>[];
+      },
+      onPut: (_, __) async => {'success': true},
+    );
+
+    await tester.pumpWidget(host(api, feed, readOnly: false));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(find.byType(TextField), findsOneWidget,
+        reason: 'writable at open time');
+
+    // The booking completes while the thread is open; the next send is refused on the wire.
+    feed.emitError(const ChatWsError(
+        code: 'read_only',
+        message: 'Conversation is read-only (booking completed/cancelled)'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.text('งานสิ้นสุดแล้ว — ส่งข้อความไม่ได้'), findsOneWidget,
+        reason: 'the localized read-only snackbar (never the raw English)');
+    expect(find.byType(TextField), findsNothing,
+        reason: 'the composer locks reactively');
+    expect(find.text('งานสิ้นสุดแล้ว ไม่สามารถส่งข้อความได้'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  // Backward compat: an error frame WITHOUT a code still surfaces (generic snackbar), and the
+  // composer stays — only read_only locks it.
+  testWidgets('code-less error frame → generic snackbar, composer stays',
+      (tester) async {
+    final feed = FakeChatFeed();
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/conversations') {
+          return [
+            {
+              'id': 'cv1',
+              'request_id': 'r1',
+              'created_at': '2026-06-05T10:00:00Z',
+              'unread_count': 0,
+              'request_status': 'accepted',
+            }
+          ];
+        }
+        return <Map<String, dynamic>>[];
+      },
+      onPut: (_, __) async => {'success': true},
+    );
+
+    await tester.pumpWidget(host(api, feed, readOnly: false));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    feed.emitError(
+        const ChatWsError(message: 'Not a participant of this conversation'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.text('Not a participant of this conversation'), findsOneWidget,
+        reason: 'the client-safe server message surfaces as-is');
+    expect(find.byType(TextField), findsOneWidget,
+        reason: 'a non-read_only rejection never locks the composer');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   // Bug #3: a booking can complete WHILE the thread is open (the read-only route flag is stale), so
   // an upload still fires and the chat service rejects it with 409. The screen must surface the
   // localized "job ended" line, NOT the generic transport "Network error" the bare 413/409 would
@@ -176,7 +300,8 @@ void main() {
 
     // readOnly:false → the composer (and attach button) is still shown (stale flag), so the upload
     // is attempted and the 409 path is exercised.
-    await tester.pumpWidget(host(api, feed, readOnly: false, attachments: service));
+    await tester
+        .pumpWidget(host(api, feed, readOnly: false, attachments: service));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
 

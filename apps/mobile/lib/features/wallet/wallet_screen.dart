@@ -4,11 +4,14 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/wallet_controller.dart';
+import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/models/payment.dart';
 import '../../core/network/api_exception.dart';
+import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
+import '../booking/widgets/job_receipt_sheet.dart';
 
 /// Customer "กระเป๋า" tab — the caller's payments from `GET /v1/payments` via
 /// [WalletController]. UI per Customer_App.md Screen 13 "Receipts List" (the design's wallet
@@ -19,8 +22,10 @@ import '../../widgets/pguard_header.dart';
 /// Design deltas (data the v2 contract doesn't carry — never invented):
 ///  - the mock's receipt rows show the GUARD NAME; a payment carries only ids, so the row
 ///    shows the date + a status badge instead;
-///  - rows are not tappable: there is no receipt-detail endpoint (mock Screen 14's
-///    fee/discount/PDF breakdown does not exist in v2).
+///  - there is still no receipt-detail ENDPOINT (mock Screen 14's fee/discount/PDF breakdown
+///    does not exist in v2), so a row tap opens the shared [showJobReceiptSheet] instead: the
+///    booking snapshot (`GET /v1/bookings/{id}` via [bookingStatusControllerProvider]) plus this
+///    row's payment — the same receipt the completed-booking screens show.
 class WalletScreen extends ConsumerWidget {
   const WalletScreen({super.key});
 
@@ -110,84 +115,149 @@ class _TotalSpentHero extends StatelessWidget {
 }
 
 /// One receipt card per the design `.rcpt-row`: sunken receipt icon, mono reference, muted
-/// date line, status badge + right-aligned mono amount.
-class _ReceiptRow extends StatelessWidget {
+/// date line, status badge + right-aligned mono amount. Tapping opens the shared job receipt
+/// sheet for the row's booking (fixes "กดดูไม่ได้" — the rows used to be dead).
+class _ReceiptRow extends ConsumerStatefulWidget {
   const _ReceiptRow({required this.payment, required this.isThai});
 
   final Payment payment;
   final bool isThai;
 
   @override
+  ConsumerState<_ReceiptRow> createState() => _ReceiptRowState();
+}
+
+class _ReceiptRowState extends ConsumerState<_ReceiptRow> {
+  /// One in-flight open at a time (disables the tap + swaps the icon for a spinner).
+  bool _busy = false;
+
+  /// Fetch the booking snapshot this payment belongs to, then open the shared receipt sheet
+  /// with the authoritative payment row we already have. A DIRECT one-shot `GET /bookings/{id}`
+  /// (NOT the autoDispose booking-status provider's `.future`: read without a listener, that
+  /// provider is disposed mid-fetch on a real-network delay and its `.future` rejects — the
+  /// receipt is a historical read that never needs the live WS feed anyway).
+  Future<void> _openReceipt() async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final data = await ref
+          .read(pguardApiProvider)
+          .get('/bookings/${widget.payment.bookingId}');
+      final booking = Booking.fromJson(data as Map<String, dynamic>);
+      if (!mounted) return;
+      await showJobReceiptSheet(
+        context,
+        booking: booking,
+        payment: widget.payment,
+        isThai: widget.isThai,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(widget.isThai
+            ? 'โหลดใบเสร็จไม่สำเร็จ — ลองใหม่'
+            : 'Could not load the receipt — try again'),
+      ));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final payment = widget.payment;
     final when = payment.createdAt ?? payment.paidAt;
-    return Container(
-      margin: const EdgeInsets.fromLTRB(
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
           PgTokens.space5, 0, PgTokens.space5, PgTokens.space3),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
+      // Material + InkWell (not the bare Container) so the now-tappable card ripples; the
+      // border/padding stay identical to the previous static card.
+      child: Material(
         color: PgTokens.colorSurface,
         borderRadius: BorderRadius.circular(PgTokens.radiusXl),
-        border: Border.all(color: PgTokens.colorBorder),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 38,
-            height: 38,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+          onTap: _busy ? null : _openReceipt,
+          child: Container(
+            padding: const EdgeInsets.all(14),
             decoration: BoxDecoration(
-              color: PgTokens.colorSunken,
-              borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+              borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+              border: Border.all(color: PgTokens.colorBorder),
             ),
-            child: const Icon(Icons.receipt_long_outlined,
-                size: 17, color: PgTokens.colorTextMuted),
+            child: _rowBody(when),
           ),
-          const SizedBox(width: 13),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  WalletController.paymentRef(payment),
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
-                    fontFamily: 'IBMPlexMono',
-                    color: PgTokens.colorTextStrong,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  when != null ? thaiShortDateYear(when, isThai: isThai) : '—',
-                  style: const TextStyle(
-                      fontSize: 11.5, color: PgTokens.colorTextMuted),
-                ),
-              ],
-            ),
+        ),
+      ),
+    );
+  }
+
+  Widget _rowBody(DateTime? when) {
+    final payment = widget.payment;
+    final isThai = widget.isThai;
+    return Row(
+      children: [
+        Container(
+          width: 38,
+          height: 38,
+          decoration: BoxDecoration(
+            color: PgTokens.colorSunken,
+            borderRadius: BorderRadius.circular(PgTokens.radiusLg),
           ),
-          const SizedBox(width: PgTokens.space2),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
+          child: _busy
+              ? const Padding(
+                  padding: EdgeInsets.all(10),
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: PgTokens.colorTextMuted),
+                )
+              : const Icon(Icons.receipt_long_outlined,
+                  size: 17, color: PgTokens.colorTextMuted),
+        ),
+        const SizedBox(width: 13),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                // Effective charge (final_amount wins) — keeps rows coherent with the
-                // hero total; refunded rows keep the original figure (badge explains).
-                // Satang precision so a sub-฿1 prorated charge isn't floored to ฿0.
-                Money.format(WalletController.rowAmountSatang(payment),
-                    decimals: true),
+                WalletController.paymentRef(payment),
                 style: const TextStyle(
-                  fontSize: 14,
+                  fontSize: 13.5,
                   fontWeight: FontWeight.w600,
                   fontFamily: 'IBMPlexMono',
-                  fontFeatures: [FontFeature.tabularFigures()],
                   color: PgTokens.colorTextStrong,
                 ),
               ),
-              const SizedBox(height: 3),
-              _PaymentBadge(status: payment.status, isThai: isThai),
+              const SizedBox(height: 2),
+              Text(
+                when != null ? thaiShortDateYear(when, isThai: isThai) : '—',
+                style: const TextStyle(
+                    fontSize: 11.5, color: PgTokens.colorTextMuted),
+              ),
             ],
           ),
-        ],
-      ),
+        ),
+        const SizedBox(width: PgTokens.space2),
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Text(
+              // Effective charge (final_amount wins) — keeps rows coherent with the
+              // hero total; refunded rows keep the original figure (badge explains).
+              // Satang precision so a sub-฿1 prorated charge isn't floored to ฿0.
+              Money.format(WalletController.rowAmountSatang(payment),
+                  decimals: true),
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                fontFamily: 'IBMPlexMono',
+                fontFeatures: [FontFeature.tabularFigures()],
+                color: PgTokens.colorTextStrong,
+              ),
+            ),
+            const SizedBox(height: 3),
+            _PaymentBadge(status: payment.status, isThai: isThai),
+          ],
+        ),
+      ],
     );
   }
 }

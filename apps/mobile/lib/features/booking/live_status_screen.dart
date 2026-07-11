@@ -771,9 +771,21 @@ class _Actions extends ConsumerWidget {
               // "rated" state instead of re-entering the form (the 409 stays the server backstop).
               // #97: rating is CUSTOMER-ONLY — gate by ownership so a guard who deep-links here for
               // their own job NEVER sees a rating CTA; they get a "View receipt" action instead.
+              // The OWNER also gets the receipt as a SECONDARY action beside the rating CTA (and it
+              // stays after rating — "Rated" alone dead-ended the customer away from their settled
+              // bill, the reported "กดดูใบเสร็จไม่ได้").
               : booking.status == BookingStatus.completed
                   ? (isOwner
-                      ? _RateGuardButton(bookingId: booking.id)
+                      ? Row(
+                          children: [
+                            Expanded(
+                                child: _RateGuardButton(bookingId: booking.id)),
+                            const SizedBox(width: PgTokens.space2),
+                            Expanded(
+                                child: _ViewReceiptButton(
+                                    booking: booking, isOwner: true)),
+                          ],
+                        )
                       : _ViewReceiptButton(booking: booking, isOwner: false))
                   // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
                   // trailing action opens the booking-details sheet (address / schedule /

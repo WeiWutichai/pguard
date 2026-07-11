@@ -26,7 +26,8 @@ void main() {
     });
 
     test('returns null for a server error frame', () {
-      expect(ChatMessage.tryParse({'type': 'error', 'message': 'nope'}), isNull);
+      expect(
+          ChatMessage.tryParse({'type': 'error', 'message': 'nope'}), isNull);
     });
 
     test('returns null for a malformed frame (no id / conversation_id)', () {
@@ -35,11 +36,48 @@ void main() {
     });
   });
 
+  group('ChatWsError.tryParse (the exact complement of the message drop)', () {
+    test('parses an error frame with the machine-readable read_only code', () {
+      final e = ChatWsError.tryParse({
+        'type': 'error',
+        'code': 'read_only',
+        'message': 'Conversation is read-only (booking completed/cancelled)',
+      });
+      expect(e, isNotNull);
+      expect(e!.isReadOnly, isTrue);
+      expect(e.message, contains('read-only'));
+    });
+
+    test('an error frame WITHOUT a code still parses (backward compat)', () {
+      final e = ChatWsError.tryParse({
+        'type': 'error',
+        'message': 'Not a participant of this conversation',
+      });
+      expect(e, isNotNull);
+      expect(e!.code, isNull);
+      expect(e.isReadOnly, isFalse);
+      expect(e.message, 'Not a participant of this conversation');
+    });
+
+    test('returns null for anything that is not an error frame', () {
+      expect(
+          ChatWsError.tryParse({
+            'id': 'm1',
+            'conversation_id': 'cv1',
+            'content': 'hi',
+          }),
+          isNull,
+          reason: 'a message frame is not an error');
+      expect(ChatWsError.tryParse({'message': 'no type'}), isNull);
+    });
+  });
+
   group('alignment is by sender_role, never sender_id', () {
     ChatMessage msg(String role) => ChatMessage(
           id: 'm',
           conversationId: 'cv1',
-          senderId: 'the-same-user', // identical id in both roles — must NOT decide side
+          senderId:
+              'the-same-user', // identical id in both roles — must NOT decide side
           senderRole: role,
           type: ChatMessageType.text,
           createdAt: DateTime.utc(2026),
@@ -118,7 +156,8 @@ void main() {
   });
 
   group('MediaHost.rewrite', () {
-    test('swaps scheme+authority for the public host, keeping path + signature', () {
+    test('swaps scheme+authority for the public host, keeping path + signature',
+        () {
       expect(
         MediaHost.rewrite('http://minio:9000/chat/cv1/a.jpg?sig=abc',
             publicHost: 'https://media.pguard.app'),
@@ -138,7 +177,8 @@ void main() {
           '/relative/a.jpg');
     });
 
-    test('preserves a percent-encoded signature byte-for-byte (no re-encode)', () {
+    test('preserves a percent-encoded signature byte-for-byte (no re-encode)',
+        () {
       expect(
         MediaHost.rewrite(
             'http://minio:9000/chat/x.jpg?X-Amz-Signature=AbC%2F123%2Bz',

@@ -26,7 +26,7 @@ use crate::models::{
     CustomerBookingStat, InternalBooking, ListProgressReportsQuery, NewProgressReport,
     OpenJobsQuery, OverdueCheckinsQuery, OverdueCheckinsResponse, ProgressReportResponse,
     PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
-    ServiceCatalogItem, UpdateServiceRequest,
+    ServiceCatalogItem, StartJobRequest, UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -250,14 +250,34 @@ pub async fn arrived_booking<S: BookingDeps>(
 
 /// PUT /bookings/{id}/start — the assigned guard starts the job (stamps `work_started_at`,
 /// the proration basis). Status stays `arrived`; no event.
-#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+///
+/// The OPTIONAL JSON body carries the guard's GPS fix for the 50m start geofence
+/// (`domain::geo`, enforced inside the repo's row lock). `Option<Json<..>>`: an old app
+/// build's empty body (no JSON content-type) extracts as `None` → no fix — which still
+/// 409s `GPS_REQUIRED` on a pinned booking (fail closed) and passes on a legacy
+/// address-only one. Coordinates are validated here (both-or-neither + ranges, the same
+/// `validate_coords` as create-booking) so the repo only ever sees a sane pair.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id, booking_id = %id))]
 pub async fn start_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    body: Option<Json<StartJobRequest>>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_GUARD)?;
-    let booking = repo::start_job(state.db(), id, user.user_id, is_admin).await?;
+    let (guard_gps, accuracy_m) = match body {
+        None => (None, None),
+        Some(Json(req)) => (progress::validate_coords(req.lat, req.lng)?, req.accuracy_m),
+    };
+    let booking = repo::start_job(
+        state.db(),
+        id,
+        user.user_id,
+        is_admin,
+        guard_gps,
+        accuracy_m,
+    )
+    .await?;
     Ok(Json(ApiResponse::success(booking)))
 }
 
@@ -1975,7 +1995,7 @@ mod tests {
                 .await
                 .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
         }
-        repo::start_job(&db, created.id, guard, false)
+        repo::start_job(&db, created.id, guard, false, None, None)
             .await
             .expect("start");
         repo::create_progress_report(
@@ -2041,6 +2061,244 @@ mod tests {
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
             .bind(created.id)
+            .execute(&db)
+            .await;
+    }
+
+    // ----- start-work geofence (PUT /bookings/{id}/start) -----
+
+    /// A test site pin (Bangkok) + a point `meters` due north of it — pure-latitude offsets
+    /// make the haversine near-exact so the fence distances are dialled in precisely
+    /// (mirrors the `domain::geo` unit-test helper).
+    const START_SITE: (f64, f64) = (13.7563, 100.5018);
+    fn north_of_site(meters: f64) -> (f64, f64) {
+        let deg_per_m = 180.0 / (std::f64::consts::PI * 6_371_000.0);
+        (START_SITE.0 + meters * deg_per_m, START_SITE.1)
+    }
+
+    /// `start` validates the GPS body BEFORE any DB access: `lat` without `lng` (and
+    /// out-of-range coordinates) are 400 at the handler — the lazy pool (closed port)
+    /// would 500 if a query were attempted. Redis-gated like the other router tests.
+    #[tokio::test]
+    async fn start_validates_gps_body_before_db() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        for bad in [
+            serde_json::json!({ "lat": 13.75 }),
+            serde_json::json!({ "lng": 100.5 }),
+            serde_json::json!({ "lat": 91.0, "lng": 100.5 }),
+            serde_json::json!({ "lat": 13.75, "lng": 180.5 }),
+        ] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("PUT")
+                        .uri(format!("/bookings/{id}/start"))
+                        .header("authorization", format!("Bearer {}", user_token("guard")))
+                        .header("content-type", "application/json")
+                        .body(Body::from(bad.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "body: {bad}");
+        }
+    }
+
+    /// The start-work geofence, end-to-end over the router (real DB + Redis; hermetic SKIP):
+    /// a PINNED booking rejects a far fix (409 `NOT_AT_SITE`) and a missing fix (409
+    /// `GPS_REQUIRED` — an old build's EMPTY body extracts as `None`), accepts an in-fence
+    /// fix (200, `work_started_at` returned), and an idempotent GPS-less RETRY of the
+    /// already-started job stays 200 (the geofence must not re-run). An UNPINNED legacy
+    /// booking starts with no GPS at all. Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///   TEST_REDIS_URL=redis://localhost:6379 \
+    ///     cargo test -p pguard-booking -- start_geofence --nocapture
+    #[tokio::test]
+    async fn start_geofence_matrix() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+
+        // Seed a booking driven to `arrived` (the startable state); `coords` pins the site.
+        let arrived_booking = |coords: Option<(f64, f64)>, guard: Uuid| {
+            let db = db.clone();
+            async move {
+                let created = repo::create_booking(
+                    &db,
+                    Uuid::new_v4(),
+                    &CreateBookingRequest {
+                        address: "5 Geofence Rd".to_string(),
+                        scheduled_at: chrono::Utc::now(),
+                        hours: 4,
+                        service_id: None,
+                        guard_count: None,
+                        tip: None,
+                        lat: coords.map(|c| c.0),
+                        lng: coords.map(|c| c.1),
+                    },
+                    1,
+                    rust_decimal::Decimal::ZERO,
+                    None,
+                    Uuid::new_v4(),
+                )
+                .await
+                .expect("create");
+                // PRE-PAY gate: paid before en_route (the payment.completed consumer in prod).
+                sqlx::query("UPDATE booking.bookings SET paid_at = now() WHERE id = $1")
+                    .bind(created.id)
+                    .execute(&db)
+                    .await
+                    .expect("mark paid");
+                for (status, assign) in [
+                    (BookingStatus::Accepted, Some(guard)),
+                    (BookingStatus::EnRoute, None),
+                    (BookingStatus::Arrived, None),
+                ] {
+                    repo::transition(
+                        &db,
+                        created.id,
+                        guard,
+                        false,
+                        status,
+                        assign,
+                        Uuid::new_v4(),
+                    )
+                    .await
+                    .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+                }
+                created.id
+            }
+        };
+
+        // PUT /bookings/{id}/start as `guard`; `gps` None sends an EMPTY body with no
+        // content-type — exactly what an old app build sends (extracts as `None`).
+        let start = |id: Uuid, guard: Uuid, gps: Option<serde_json::Value>| {
+            let app = app.clone();
+            async move {
+                let mut builder = Request::builder()
+                    .method("PUT")
+                    .uri(format!("/bookings/{id}/start"))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token_for(guard, "guard")),
+                    );
+                let body = match gps {
+                    Some(v) => {
+                        builder = builder.header("content-type", "application/json");
+                        Body::from(v.to_string())
+                    }
+                    None => Body::empty(),
+                };
+                let res = app.oneshot(builder.body(body).unwrap()).await.unwrap();
+                let status = res.status();
+                let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+                    .await
+                    .unwrap();
+                let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                (status, v)
+            }
+        };
+        let gps_at = |p: (f64, f64), acc: Option<f32>| {
+            let mut v = serde_json::json!({ "lat": p.0, "lng": p.1 });
+            if let Some(a) = acc {
+                v["accuracy_m"] = serde_json::json!(a);
+            }
+            v
+        };
+
+        let guard = Uuid::new_v4();
+        let pinned = arrived_booking(Some(START_SITE), guard).await;
+
+        // OUTSIDE the fence (250m out, no accuracy) → 409 with the NOT_AT_SITE sub-code.
+        let (status, v) = start(pinned, guard, Some(gps_at(north_of_site(250.0), None))).await;
+        assert_eq!(status, StatusCode::CONFLICT, "far fix must be rejected");
+        assert_eq!(
+            v["error"]["code"],
+            crate::domain::geo::NOT_AT_SITE_CODE,
+            "geofence 409 must carry NOT_AT_SITE, got: {v}"
+        );
+
+        // Pinned booking + NO GPS (empty body, old build) → 409 GPS_REQUIRED (fail closed).
+        let (status, v) = start(pinned, guard, None).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "pinned + no fix must be rejected"
+        );
+        assert_eq!(
+            v["error"]["code"],
+            crate::domain::geo::GPS_REQUIRED_CODE,
+            "missing-fix 409 must carry GPS_REQUIRED, got: {v}"
+        );
+        // ...and the job was NOT started by either rejection.
+        let ws: Option<chrono::DateTime<chrono::Utc>> =
+            sqlx::query_scalar("SELECT work_started_at FROM booking.bookings WHERE id = $1")
+                .bind(pinned)
+                .fetch_one(&db)
+                .await
+                .expect("read work_started_at");
+        assert!(
+            ws.is_none(),
+            "a geofence-rejected start must not stamp the clock"
+        );
+
+        // INSIDE the fence (60m out but ±15m accuracy widens 50 → 65) → 200; the response
+        // exposes `work_started_at` (the mobile job-clock restore) and the fix is persisted.
+        let (status, v) = start(pinned, guard, Some(gps_at(north_of_site(60.0), Some(15.0)))).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "in-fence fix must start the job: {v}"
+        );
+        assert!(
+            v["data"]["work_started_at"].is_string(),
+            "BookingResponse must return work_started_at, got: {v}"
+        );
+        let started_at = v["data"]["work_started_at"].as_str().unwrap().to_string();
+        let (glat, gacc): (Option<f64>, Option<f32>) = sqlx::query_as(
+            "SELECT work_started_lat, work_started_accuracy_m FROM booking.bookings WHERE id = $1",
+        )
+        .bind(pinned)
+        .fetch_one(&db)
+        .await
+        .expect("read persisted fix");
+        assert!(glat.is_some(), "the accepted fix must be persisted");
+        assert_eq!(gacc, Some(15.0), "the reported accuracy must be persisted");
+
+        // IDEMPOTENT RETRY with NO GPS on the already-started booking → 200, clock unchanged
+        // (the geofence must NOT re-run on a retry of an accepted start).
+        let (status, v) = start(pinned, guard, None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "GPS-less retry of a started job must 200: {v}"
+        );
+        assert_eq!(
+            v["data"]["work_started_at"].as_str(),
+            Some(started_at.as_str()),
+            "the retry must not re-stamp the proration clock"
+        );
+
+        // UNPINNED legacy booking (no site coordinates) + no GPS → 200 (geofence skips).
+        // A DIFFERENT guard: the first one still holds the overlapping pinned job, so the
+        // same-guard accept would 409 GUARD_BUSY at the claim's time-overlap gate.
+        let guard2 = Uuid::new_v4();
+        let unpinned = arrived_booking(None, guard2).await;
+        let (status, v) = start(unpinned, guard2, None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unpinned booking starts without GPS: {v}"
+        );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = ANY($1)")
+            .bind(vec![pinned, unpinned])
             .execute(&db)
             .await;
     }

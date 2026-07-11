@@ -591,21 +591,47 @@ paths:
   /bookings/{id}/start:
     put:
       tags: [Bookings]
-      summary: Assigned guard starts the job
+      summary: Assigned guard starts the job (50m geofence)
       description: |
         Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
         Assigned guard only; the booking must be `arrived`. A second start is an idempotent
-        no-op. The job must be started before completion can be requested.
+        no-op (the geofence is NOT re-run on the retry of an already-started job). The job
+        must be started before completion can be requested.
+
+        **Geofence:** the OPTIONAL body carries the guard's GPS fix at the moment of
+        pressing start. On a booking with site coordinates (`lat`/`lng` pinned at create)
+        the fix must be within **50m** of the pin, widened by the reported `accuracy_m`
+        capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with
+        `error.code = NOT_AT_SITE` (message carries the measured distance in whole meters).
+        A pinned booking started with NO fix (absent body/coordinates — e.g. an older app
+        build) is 409 `error.code = GPS_REQUIRED` (fail closed; clients branch on the code
+        and localize). Legacy address-only bookings (no pin) skip the check entirely.
+        Admin starts bypass the geofence (support acts on behalf, off-site). The accepted
+        fix is persisted server-side as audit evidence; body `lat`/`lng` are both-or-neither
+        (400 otherwise, like create-booking).
       operationId: startBooking
       security: [{ bearerAuth: [] }]
       parameters:
         - $ref: '#/components/parameters/BookingId'
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/StartJobRequest' }
       responses:
         '200': { $ref: '#/components/responses/BookingOk' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            Conflict — `error.code` is `NOT_AT_SITE` (fix beyond the 50m fence + accuracy
+            allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT`
+            (booking not `arrived`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
 
   /bookings/{id}/complete:
     put:
@@ -1004,6 +1030,36 @@ components:
           enum: [approve, reject]
           description: "`approve` → completed (emits booking.completed); `reject` → back to arrived."
 
+    StartJobRequest:
+      type: object
+      description: |
+        The guard's GPS fix at the moment of pressing start, feeding the 50m start geofence.
+        The whole body is OPTIONAL (older builds send none): no fix on a pinned booking →
+        409 `GPS_REQUIRED`; on a legacy address-only booking the geofence skips. `lat`/`lng`
+        must come together (400 otherwise).
+      properties:
+        lat:
+          type: number
+          format: double
+          minimum: -90
+          maximum: 90
+          nullable: true
+          description: Guard latitude at start (must be paired with `lng`).
+        lng:
+          type: number
+          format: double
+          minimum: -180
+          maximum: 180
+          nullable: true
+          description: Guard longitude at start (must be paired with `lat`).
+        accuracy_m:
+          type: number
+          format: float
+          nullable: true
+          description: >-
+            Reported fix accuracy in meters — widens the 50m fence by up to 30m
+            (negative/NaN counts as 0). Junk values are stored as null.
+
     CreateBookingRequest:
       type: object
       required: [address, scheduled_at, hours]
@@ -1063,6 +1119,14 @@ components:
         tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
         lat: { type: number, format: double, nullable: true, description: Site latitude (null when not provided at create). }
         lng: { type: number, format: double, nullable: true, description: Site longitude (null when not provided at create). }
+        work_started_at:
+          type: string
+          format: date-time
+          nullable: true
+          description: >-
+            When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the
+            proration basis). null until started — clients restore the job clock from this
+            after an app restart.
         paid_at:
           type: string
           format: date-time

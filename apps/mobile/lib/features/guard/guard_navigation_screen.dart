@@ -9,6 +9,7 @@ import '../../core/controllers/guard_route_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
 import '../../core/location/routing_service.dart';
+import '../../core/models/booking.dart';
 import '../../core/models/geo.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
@@ -67,25 +68,54 @@ class GuardNavigationScreen extends ConsumerWidget {
 
   final String bookingId;
 
-  /// The combined "I've arrived — start" action: mark arrived, then start the work clock, then
-  /// return to the active-job (now working) screen. Surfaces a message and stays put on failure.
+  /// The combined "I've arrived — start" action: mark arrived (skipped when the job is ALREADY
+  /// `arrived` — advanced from another screen/frame), then start the work clock, then return to
+  /// the active-job (now working) screen. STATUS-GATED: pressed while the booking is no longer
+  /// en_route/arrived (cancelled during a WS gap, still merely accepted) it explains instead of
+  /// firing a guaranteed-409 PUT. Failure messages prefer the controller's localized transition
+  /// error (e.g. the 50 m geofence "อยู่ห่างจากจุดงาน…") over the generic fallback.
   Future<void> _arriveAndStart(
       BuildContext context, WidgetRef ref, bool isThai) async {
     final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
-    final arrived = await ctrl.arrived();
-    if (!context.mounted) return;
-    if (!arrived) {
-      _snack(context, isThai ? 'ทำรายการไม่สำเร็จ' : "Couldn't update the job");
+    final status = ref
+        .read(activeJobControllerProvider(bookingId))
+        .valueOrNull
+        ?.booking
+        .status;
+    if (status != BookingStatus.enRoute && status != BookingStatus.arrived) {
+      _snack(
+          context,
+          isThai
+              ? 'สถานะงานเปลี่ยนไปแล้ว — กลับไปหน้างานเพื่อดูสถานะล่าสุด'
+              : 'The job state changed — check the job screen for the latest');
       return;
+    }
+    if (status == BookingStatus.enRoute) {
+      final arrived = await ctrl.arrived();
+      if (!context.mounted) return;
+      if (!arrived) {
+        _snack(
+            context,
+            _ctrlError(ref) ??
+                (isThai ? 'ทำรายการไม่สำเร็จ' : "Couldn't update the job"));
+        return;
+      }
     }
     final started = await ctrl.start();
     if (!context.mounted) return;
     if (started) {
       context.pop();
     } else {
-      _snack(context, isThai ? 'เริ่มงานไม่สำเร็จ' : "Couldn't start the job");
+      _snack(
+          context,
+          _ctrlError(ref) ??
+              (isThai ? 'เริ่มงานไม่สำเร็จ' : "Couldn't start the job"));
     }
   }
+
+  /// The controller's localized transition error for this booking, if it recorded one.
+  String? _ctrlError(WidgetRef ref) =>
+      ref.read(activeJobControllerProvider(bookingId)).valueOrNull?.error;
 
   static void _snack(BuildContext context, String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));

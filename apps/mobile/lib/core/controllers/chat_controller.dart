@@ -7,8 +7,58 @@ import '../models/chat.dart';
 import '../network/api_client.dart';
 import '../network/sockets/chat_socket.dart';
 import '../providers.dart';
+import 'chat_list_controller.dart';
 
 part 'chat_controller.g.dart';
+
+/// Whether the conversation is CLOSED (read-only) according to the SERVER — the chat screen's
+/// SELF-VERIFIED signal, independent of the navigation-time `readOnly` flag (which goes stale
+/// when the booking completes while the thread is open, and is hardcoded `false` on the
+/// push-notification entry — see `notification_target.dart`).
+///
+/// Resolution reuses the existing conversations-list fetch (`GET /v1/conversations?role=` already
+/// returns `request_status` per row — no new endpoint): the list is awaited and this conversation's
+/// [Conversation.isReadOnly] is the answer. Unknown conversation / fetch failure → `false` (fall
+/// back to the navigation flag; the server still rejects writes, this gate is UX only).
+///
+/// [markClosed] flips it to `true` the moment a live send is rejected with `code == "read_only"`
+/// (see [ChatController]) — and is STICKY: a closed booking never reopens, so a slower/stale list
+/// fetch resolving after the flip must not undo it.
+@riverpod
+class ChatServerClosed extends _$ChatServerClosed {
+  bool _closedByServer = false;
+
+  @override
+  Future<bool> build(String conversationId, ChatRole acting) async {
+    final conversations =
+        await ref.watch(chatListControllerProvider(acting).future);
+    for (final conversation in conversations) {
+      if (conversation.id == conversationId) {
+        return _closedByServer || conversation.isReadOnly;
+      }
+    }
+    return _closedByServer;
+  }
+
+  /// The server refused a send because the conversation is closed — latch read-only NOW (don't
+  /// wait for a list re-fetch). Sticky across rebuilds via [_closedByServer].
+  void markClosed() {
+    _closedByServer = true;
+    state = const AsyncData(true);
+  }
+}
+
+/// The server's send-REJECTION frames for one conversation, as a watchable stream — lets the
+/// screen `ref.listen` for the error snackbar without hand-managing a StreamSubscription.
+/// Depends on the NOTIFIER instance (not its message-list state) so ordinary message updates
+/// never resubscribe; keeping this provider watched also keeps the controller (and its socket)
+/// alive.
+@riverpod
+Stream<ChatWsError> chatSendErrors(
+        ChatSendErrorsRef ref, String conversationId, ChatRole acting) =>
+    ref
+        .watch(chatControllerProvider(conversationId, acting).notifier)
+        .sendErrors;
 
 /// The real-time message list for one conversation. On build it loads history
 /// (`GET /v1/conversations/{id}/messages`), marks the conversation read for the acting role
@@ -30,6 +80,17 @@ class ChatController extends _$ChatController {
   ChatFeed? _feed;
   late String _conversationId;
   late ChatRole _acting;
+
+  /// Re-broadcast of the feed's server-rejection frames (see [chatSendErrors]). Notifier-scoped
+  /// and intentionally never closed: `build()` re-runs on the SAME notifier instance (a rebuild's
+  /// `onDispose` must not kill it), and a listener-less broadcast controller holds no resources.
+  final StreamController<ChatWsError> _errors =
+      StreamController<ChatWsError>.broadcast();
+
+  /// Server rejections of this user's sends (read-only conversation, participant gate, …) —
+  /// consumed by the screen via [chatSendErrors] for the snackbar; the `read_only` flip of
+  /// [ChatServerClosed] already happened in [_onSendError] by the time an event lands here.
+  Stream<ChatWsError> get sendErrors => _errors.stream;
 
   @override
   Future<List<ChatMessage>> build(
@@ -71,8 +132,13 @@ class ChatController extends _$ChatController {
         ref.read(chatFeedBuilderProvider)(() => api.validAccessToken());
     _feed = feed;
     final sub = feed.messages.listen(_onIncoming);
+    // Rejected sends come back as ERROR frames on the same socket — surface them (snackbar via
+    // [chatSendErrors]) and flip the read-only signal on `code == read_only` instead of letting
+    // the frame vanish silently.
+    final errSub = feed.errors.listen(_onSendError);
     ref.onDispose(() {
       sub.cancel();
+      errSub.cancel();
       feed.close();
       // Mark read on LEAVE too. The open-time mark_read (above) captured `read_at` BEFORE any live
       // message arrived, so a message received WHILE the thread was open would re-surface as unread
@@ -95,6 +161,19 @@ class ChatController extends _$ChatController {
     // The thread is FOREGROUNDED, so the user is seeing this message → keep `read_at` current so the
     // unread badge doesn't reappear on leave. Best-effort; low-volume 1:1 chat so no throttle needed.
     unawaited(_markRead(ref.read(pguardApiProvider)));
+  }
+
+  void _onSendError(ChatWsError error) {
+    if (_disposed) return;
+    // The booking closed while the thread was open (the server is authoritative): latch the
+    // self-verified read-only signal so the composer locks reactively — BEFORE re-broadcasting,
+    // so the screen's snackbar handler already sees the locked state.
+    if (error.isReadOnly) {
+      ref
+          .read(chatServerClosedProvider(_conversationId, _acting).notifier)
+          .markClosed();
+    }
+    if (!_errors.isClosed) _errors.add(error);
   }
 
   Future<void> _markRead(PguardApi api) async {

@@ -5,8 +5,10 @@
 //!   ([`event_for_status`]), the producer counterpart to notification's mapper.
 //! - [`progress`] — hourly check-in rules (state gate, hour window, photo validation) +
 //!   open-job discovery query validation.
+//! - [`geo`] — start-work geofence (haversine + the 50m fence with capped accuracy allowance).
 
 pub mod events;
+pub mod geo;
 pub mod progress;
 pub mod state;
 

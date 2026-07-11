@@ -616,6 +616,20 @@ pub async fn revoke_family(db: &PgPool, family_id: Uuid) -> Result<u64, AppError
     Ok(res.rows_affected())
 }
 
+/// Does the family still hold at least one LIVE (unrevoked) token? Distinguishes, at
+/// refresh time, a token whose WHOLE family was revoked wholesale (single-device kick by a
+/// newer login, logout, force-revoke-all → the session was superseded) from a token that
+/// was individually rotated away while its family lives on (a genuine RFC 6749 §6 replay).
+pub async fn family_has_live_token(db: &PgPool, family_id: Uuid) -> Result<bool, AppError> {
+    let (exists,): (bool,) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM identity.refresh_tokens WHERE family_id = $1 AND revoked = FALSE)",
+    )
+    .bind(family_id)
+    .fetch_one(db)
+    .await?;
+    Ok(exists)
+}
+
 /// The user's current role (re-read at rotation so a role change since login is honoured
 /// in the freshly-issued access token). `None` if the user is gone, deactivated, or no
 /// longer approved — so a refresh cannot mint a fresh access token for an account that has

@@ -21,14 +21,14 @@ class ConversationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = conversation.participantName ??
-        (isThai ? 'การสนทนา' : 'Conversation');
+    final name =
+        conversation.participantName ?? (isThai ? 'การสนทนา' : 'Conversation');
     // Localize the last-message preview: a SERVER-emitted call-summary `system` message has its
     // content as the pinned call JSON — render the one-line summary, not the raw '{"k":"call",…}'
     // (reuses CallSummary via ChatFormat). Other messages render verbatim; null → placeholder.
-    final preview = ChatFormat.lastMessagePreview(conversation.lastMessage,
-            thai: isThai) ??
-        (isThai ? 'แตะเพื่อเริ่มแชท' : 'Tap to start chatting');
+    final preview =
+        ChatFormat.lastMessagePreview(conversation.lastMessage, thai: isThai) ??
+            (isThai ? 'แตะเพื่อเริ่มแชท' : 'Tap to start chatting');
     final when = conversation.lastMessageAt;
     final time = when == null
         ? ''
@@ -48,8 +48,7 @@ class ConversationTile extends StatelessWidget {
               child: Text(
                 ChatFormat.initials(conversation.participantName),
                 style: const TextStyle(
-                    color: PgTokens.colorGreen800,
-                    fontWeight: FontWeight.w600),
+                    color: PgTokens.colorGreen800, fontWeight: FontWeight.w600),
               ),
             ),
             const SizedBox(width: 13),
@@ -57,14 +56,40 @@ class ConversationTile extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 14.5,
-                      fontWeight: unread ? FontWeight.w700 : FontWeight.w600,
-                    ),
+                  Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 14.5,
+                            fontWeight:
+                                unread ? FontWeight.w700 : FontWeight.w600,
+                          ),
+                        ),
+                      ),
+                      // Read-only thread (booking completed/cancelled): a muted "job ended" tag
+                      // so the list telegraphs the locked composer before the thread is opened.
+                      if (conversation.isReadOnly) ...[
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 6, vertical: 1.5),
+                          decoration: BoxDecoration(
+                            color: PgTokens.colorSunken,
+                            borderRadius:
+                                BorderRadius.circular(PgTokens.radiusFull),
+                          ),
+                          child: Text(
+                            isThai ? 'งานจบแล้ว' : 'Job ended',
+                            style: const TextStyle(
+                                fontSize: 10, color: PgTokens.colorTextMuted),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                   const SizedBox(height: 2),
                   Text(
@@ -73,11 +98,9 @@ class ConversationTile extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
                       fontSize: 13,
-                      fontWeight:
-                          unread ? FontWeight.w500 : FontWeight.w400,
-                      color: unread
-                          ? PgTokens.colorText
-                          : PgTokens.colorTextMuted,
+                      fontWeight: unread ? FontWeight.w500 : FontWeight.w400,
+                      color:
+                          unread ? PgTokens.colorText : PgTokens.colorTextMuted,
                     ),
                   ),
                 ],
@@ -93,8 +116,8 @@ class ConversationTile extends StatelessWidget {
                 const SizedBox(height: 6),
                 if (unread)
                   Container(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 7, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
                     decoration: BoxDecoration(
                       color: PgTokens.colorPrimary,
                       borderRadius: BorderRadius.circular(PgTokens.radiusFull),

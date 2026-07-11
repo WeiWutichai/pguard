@@ -215,6 +215,10 @@ void main() {
       overrides: [
         pguardApiProvider.overrideWithValue(api),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        // The combined CTA's start() reads a one-shot GPS fix for the 50 m geofence — stub it
+        // (the real geolocator has no platform channel under test).
+        locationServiceProvider.overrideWithValue(FakeLocationService()),
         guardSelfLocationProvider
             .overrideWith((ref) => Stream.value(const GeoPoint(13.76, 100.50))),
         routingServiceProvider

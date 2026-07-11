@@ -78,7 +78,10 @@ class ApiClient implements PguardApi {
 
   /// Invoked when a refresh attempt fails and the session is dropped, so the app can route
   /// back to the lock/login screen instead of sitting in a zombie "authenticated" state.
-  final void Function()? onAuthLost;
+  /// [reasonCode] carries the server's machine-readable rejection code when one was given —
+  /// notably `SESSION_SUPERSEDED` (this device was kicked by a newer login on another device)
+  /// so the login screen can say WHY instead of silently demanding the PIN again.
+  final void Function({String? reasonCode})? onAuthLost;
 
   /// In-flight refresh shared by all callers (single-flight). Resolves to the new access
   /// token, or `null` if refresh failed.
@@ -193,17 +196,32 @@ class ApiClient implements PguardApi {
       // deploy even though their 7-day refresh tokens were still valid server-side.
       final status = e.response?.statusCode;
       if (status == 401 || status == 403) {
-        await _sessionLost();
+        await _sessionLost(reasonCode: _rejectionCode(e.response));
       }
       return null;
     }
   }
 
-  /// A real session was lost mid-flight (refresh rejected): clear tokens AND notify the app so
-  /// the router leaves the dashboard. Without the callback the UI would zombie on stale state.
-  Future<void> _sessionLost() async {
-    await _store.clearSession();
-    onAuthLost?.call();
+  /// The machine-readable `error.code` off a refresh rejection body, if the server sent one
+  /// (e.g. `SESSION_SUPERSEDED` — kicked by a newer login on another device).
+  static String? _rejectionCode(Response<dynamic>? res) {
+    final body = res?.data;
+    if (body is Map<String, dynamic>) {
+      final err = body['error'];
+      if (err is Map<String, dynamic>) return err['code'] as String?;
+    }
+    return null;
+  }
+
+  /// A real session was lost mid-flight (refresh rejected): clear the TOKENS and notify the app
+  /// so the router leaves the dashboard. Deliberately [SessionStore.clearTokens], NOT
+  /// `clearSession` — the wider clear also deleted the remembered PHONE before
+  /// `Session.logout()` could capture it, which made the device classify as brand-new and
+  /// forced the OTP + SET-A-NEW-PIN flow instead of the returning PIN-login. Session teardown
+  /// (phone capture → returning) is owned by the [onAuthLost] handler.
+  Future<void> _sessionLost({String? reasonCode}) async {
+    await _store.clearTokens();
+    onAuthLost?.call(reasonCode: reasonCode);
   }
 
   @override

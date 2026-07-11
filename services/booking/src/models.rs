@@ -46,6 +46,23 @@ pub struct ReviewCompletionRequest {
     pub action: String,
 }
 
+/// The assigned guard starts the job (`PUT /bookings/{id}/start`) — their GPS fix at the
+/// moment of pressing start, feeding the 50m geofence (`domain::geo`). The WHOLE body is
+/// optional (older app builds send none): absent body/fields → no fix, which 409s
+/// `GPS_REQUIRED` on a pinned booking and passes on a legacy address-only one.
+/// `lat`/`lng` are both-or-neither (validated like create-booking's site coordinates).
+#[derive(Debug, Deserialize)]
+pub struct StartJobRequest {
+    #[serde(default)]
+    pub lat: Option<f64>,
+    #[serde(default)]
+    pub lng: Option<f64>,
+    /// Reported fix accuracy in meters — widens the fence up to the domain cap; junk
+    /// (negative/NaN) is treated as 0 for the fence and stored as NULL.
+    #[serde(default)]
+    pub accuracy_m: Option<f32>,
+}
+
 // ----- Responses -----
 
 /// A booking row as returned to clients. `status` is read as text (the DB enum cast to
@@ -66,6 +83,10 @@ pub struct BookingResponse {
     /// Site coordinates — `None` when the customer did not provide them at create.
     pub lat: Option<f64>,
     pub lng: Option<f64>,
+    /// When the assigned guard STARTED work (stamped by `PUT /bookings/{id}/start`; the
+    /// proration basis). `None` until started — the client restores the job clock from this
+    /// after an app restart.
+    pub work_started_at: Option<DateTime<Utc>>,
     /// When the booking was PAID (PRE-PAY: stamped by the `payment.completed` consumer). `None`
     /// = unpaid — the client uses this to know the `accepted → en_route` transition is gated
     /// (show the pay-step) vs. already paid.

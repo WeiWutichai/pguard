@@ -33,10 +33,11 @@ Widget host(FakeApi api) => ProviderScope(
 
 void main() {
   testWidgets('renders conversation rows with an unread badge', (tester) async {
-    final api = FakeApi(onGet: (_, __) async => [
-          convJson('cv1', unread: 3, name: 'Somchai'),
-          convJson('cv2', unread: 0, name: 'Anan'),
-        ]);
+    final api = FakeApi(
+        onGet: (_, __) async => [
+              convJson('cv1', unread: 3, name: 'Somchai'),
+              convJson('cv2', unread: 0, name: 'Anan'),
+            ]);
     await tester.pumpWidget(host(api));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
@@ -44,6 +45,24 @@ void main() {
     expect(find.text('Somchai'), findsOneWidget);
     expect(find.text('Anan'), findsOneWidget);
     expect(find.text('3'), findsOneWidget, reason: 'unread badge for cv1');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'a read-only conversation row shows the muted "job ended" tag '
+      '(active rows do not)', (tester) async {
+    final api = FakeApi(
+        onGet: (_, __) async => [
+              convJson('cv1', name: 'Somchai', status: 'completed'),
+              convJson('cv2', name: 'Anan', status: 'accepted'),
+            ]);
+    await tester.pumpWidget(host(api));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    expect(find.text('งานจบแล้ว'), findsOneWidget,
+        reason: 'only the completed-booking row is tagged');
 
     await tester.pumpWidget(const SizedBox());
   });

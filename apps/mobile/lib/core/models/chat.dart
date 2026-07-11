@@ -128,6 +128,35 @@ class ChatMessage {
   }
 }
 
+/// A server ERROR frame from the chat WS — the reply to a REJECTED send
+/// (`{"type":"error","code":?,"message":…}`). `code` is the machine-readable reason the chat
+/// service added for client handling; today only [codeReadOnly] ("read_only": the linked booking
+/// completed/cancelled, the conversation is closed). Older/other rejections carry only `message`
+/// (`code` null) and surface as a generic notice. PURE + unit-testable like the sibling models.
+class ChatWsError {
+  const ChatWsError({this.code, required this.message});
+
+  static const String codeReadOnly = 'read_only';
+
+  final String? code;
+  final String message;
+
+  /// The send was refused because the conversation is CLOSED (booking completed/cancelled) —
+  /// the client should flip its composer into the locked state, not just toast.
+  bool get isReadOnly => code == codeReadOnly;
+
+  /// Parse a decoded WS frame into an error, or `null` if it is not an error frame. The exact
+  /// complement of [ChatMessage.tryParse]'s error-frame drop, so the socket can split one frame
+  /// stream into `messages` + `errors` without the two parsing rules drifting.
+  static ChatWsError? tryParse(Map<String, dynamic> json) {
+    if (json['type'] != 'error') return null;
+    return ChatWsError(
+      code: json['code'] as String?,
+      message: (json['message'] as String?) ?? '',
+    );
+  }
+}
+
 /// An enriched conversation row from `GET /conversations?role=` (N+1-free). The counterpart is
 /// the participant whose role differs from the acting role (already resolved server-side).
 class Conversation {

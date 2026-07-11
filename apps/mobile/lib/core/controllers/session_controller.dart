@@ -1,12 +1,20 @@
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/auth_models.dart';
 import '../models/registration.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'active_job_controller.dart';
 import 'auth_controller.dart';
 
 part 'session_controller.g.dart';
+
+/// One-shot, machine-readable notice about WHY the last session ended — today only
+/// `SESSION_SUPERSEDED` (this device was kicked because the account logged in on another
+/// device). Set by the API client's auth-lost path, rendered (then cleared on the next
+/// successful login) by the returning PIN-login screen.
+final sessionNoticeProvider = StateProvider<String?>((ref) => null);
 
 /// Where the app should route the user.
 enum SessionStatus {
@@ -146,6 +154,8 @@ class Session extends _$Session {
   /// (non-sensitive) so a cold start can land on the mode picker for a dual-role account.
   void onLoggedIn(AuthUser user) {
     _persistRoles(user.enrolledRoles);
+    // A fresh login supersedes any pending "why you were signed out" notice.
+    ref.read(sessionNoticeProvider.notifier).state = null;
     state = SessionState(SessionStatus.authenticated, user: user);
   }
 
@@ -200,8 +210,37 @@ class Session extends _$Session {
   /// → the user gets back in with just their PIN (no OTP, no new PIN). Pass [forgetDevice] = true for
   /// a FULL sign-out ("use a different account" / a forgotten PIN) — the phone is dropped and the
   /// local PIN wiped, so the device is a fresh [SessionStatus.unauthenticated] → the OTP flow.
-  Future<void> logout({bool forgetDevice = false}) async {
+  ///
+  /// SINGLE-FLIGHT: a user-tapped logout can race the API client's auth-lost logout (a dying
+  /// session 401s the logout POST itself). Two interleaved runs used to let the second read
+  /// `phone == null` between the first's `clearSession` and `savePhone` — classifying the
+  /// device as brand-new and forcing OTP + set-a-new-PIN. The latch makes the second call
+  /// await the first instead. `forgetDevice` is NOT collapsed: a full sign-out
+  /// (`forgetDevice:true`) that arrives while a remembered logout is in flight re-runs as a
+  /// wipe after it — a requested "use a different account" must never be downgraded to a
+  /// remembered logout just because it coalesced.
+  Future<void> logout({bool forgetDevice = false}) {
+    final inFlight = _logoutInFlight;
+    if (inFlight != null) {
+      // Coalesce, but if this caller wants the STRONGER teardown the in-flight run isn't doing,
+      // chain it afterwards so the wipe still happens.
+      return forgetDevice
+          ? (_logoutInFlight = inFlight
+              .then((_) => _doLogout(forgetDevice: true))
+              .whenComplete(() => _logoutInFlight = null))
+          : inFlight;
+    }
+    return _logoutInFlight = _doLogout(forgetDevice: forgetDevice)
+        .whenComplete(() => _logoutInFlight = null);
+  }
+
+  Future<void>? _logoutInFlight;
+
+  Future<void> _doLogout({required bool forgetDevice}) async {
     final store = ref.read(appStoreProvider);
+    // Drop any client-side work-session residue (start stamps / in-flight markers) so the next
+    // account in this process can't inherit them.
+    ref.invalidate(workSessionStoreProvider);
     // Capture the login identifier BEFORE clearing storage — a remembered device re-authenticates
     // by PIN, which needs the phone.
     final phone = await store.readPhone();
@@ -233,10 +272,13 @@ class Session extends _$Session {
     // phone-verified token) here — otherwise a next registration would start with the previous
     // user's phone/token lingering.
     ref.read(authControllerProvider.notifier).reset();
-    if (hasPin && phone != null) {
+    if (hasPin) {
       // Remembered device: re-persist the phone (clearSession dropped it) and land on the PIN-login
       // screen. The local PIN is untouched, so the returning login can proceed offline-then-online.
-      await store.savePhone(phone);
+      // A missing phone (an earlier partial teardown) still lands on `returning` — the
+      // returning-login screen handles a null phone — rather than misclassifying a device that
+      // HOLDS a PIN as brand-new and forcing OTP + a pointless new-PIN setup.
+      if (phone != null) await store.savePhone(phone);
       state = const SessionState(SessionStatus.returning);
     } else {
       state = const SessionState(SessionStatus.unauthenticated);
