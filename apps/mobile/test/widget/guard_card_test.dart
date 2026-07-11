@@ -106,7 +106,8 @@ void main() {
     // The avatar is a network image (the photo) — present when avatar_url is set.
     final img = tester.widget<Image>(find.byType(Image));
     expect(img.image, isA<NetworkImage>());
-    expect((img.image as NetworkImage).url, 'https://cdn.example/guard-cccc.jpg');
+    expect(
+        (img.image as NetworkImage).url, 'https://cdn.example/guard-cccc.jpg');
   });
 
   testWidgets('shows the initials monogram (no Image) when there is no photo',
@@ -125,6 +126,54 @@ void main() {
     // with the cluster "บุ" (บ + the below-vowel ◌ุ), so the monogram is "บุ" not a broken "บ".
     expect(find.byType(Image), findsNothing);
     expect(find.text('บุ'), findsOneWidget);
+  });
+
+  testWidgets('shows "มีเอกสาร" when the guard has documents on file',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-aaaa-1111',
+        averageRating: '4.90',
+        reviewCount: 188,
+        hasDocuments: true,
+      ),
+    );
+
+    expect(find.textContaining('มีเอกสาร'), findsOneWidget);
+    expect(find.textContaining('ไม่มีเอกสาร'), findsNothing);
+  });
+
+  testWidgets(
+      'shows "ไม่มีเอกสาร" when the guard has no documents (honest absence)',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-bbbb-2222',
+        averageRating: null,
+        reviewCount: 0,
+        hasDocuments: false,
+      ),
+    );
+
+    expect(find.textContaining('ไม่มีเอกสาร'), findsOneWidget);
+  });
+
+  testWidgets(
+      'renders NO documents indicator when the backend omitted has_documents (unknown)',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-cccc-3333',
+        averageRating: null,
+        reviewCount: 0,
+        // hasDocuments omitted → null (older backend) → say nothing, never a false claim.
+      ),
+    );
+
+    expect(find.textContaining('เอกสาร'), findsNothing);
   });
 
   testWidgets(

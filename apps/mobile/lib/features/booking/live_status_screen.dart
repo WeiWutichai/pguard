@@ -162,65 +162,65 @@ class _LiveBody extends ConsumerWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-          Container(
-            decoration: BoxDecoration(
-              color: PgTokens.colorSurface,
-              borderRadius: BorderRadius.circular(PgTokens.radius2xl),
-              border: Border.all(color: PgTokens.colorBorder),
+            Container(
+              decoration: BoxDecoration(
+                color: PgTokens.colorSurface,
+                borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+                border: Border.all(color: PgTokens.colorBorder),
+              ),
+              padding: const EdgeInsets.all(PgTokens.space4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _GuardCard(booking: booking),
+                  const SizedBox(height: PgTokens.space4),
+                  // Live-map: while a guard is assigned and the job is running, embed an inline
+                  // preview (guard pin + destination + straight route) in the empty space below the
+                  // card — tap / expand opens the full-screen map. The map screen itself handles
+                  // every state safely on deep link.
+                  if (booking.guardId != null &&
+                      !BookingLifecycle.isTerminal(booking.status)) ...[
+                    _InlineGuardMap(bookingId: booking.id),
+                    const SizedBox(height: PgTokens.space4),
+                  ],
+                  BookingStatusStepper(status: booking.status),
+                  // #123: the shared vertical step timeline of the guard's progress for THIS booking
+                  // (accept → en route → arrived → working → completed). Shown the instant a guard is
+                  // assigned (a guard_id exists) — before that there is no progress to track. The same
+                  // widget renders on the guard's active-job screen. Driven purely by the booking
+                  // status the WS pushes — no timer.
+                  if (booking.guardId != null) ...[
+                    const SizedBox(height: PgTokens.space4),
+                    _StatusTimelineSection(status: booking.status),
+                  ],
+                  const SizedBox(height: PgTokens.space4),
+                  // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
+                  // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
+                  // accepted-and-unpaid (the booking-status WS drives `status`/`paid_at`, no polling)
+                  // — once paid, the booking un-gates the guard and this disappears.
+                  // OWNER-ONLY (#87): only the booking's customer ever sees the Pay button. A guard
+                  // who reaches this screen sees a READ-ONLY "รอลูกค้าชำระเงิน" notice instead —
+                  // never a pay action.
+                  if (booking.status == BookingStatus.accepted &&
+                      !booking.isPaid) ...[
+                    if (isOwner)
+                      _PayNowBanner(bookingId: booking.id)
+                    else
+                      const _AwaitingCustomerPaymentNotice(),
+                    const SizedBox(height: PgTokens.space4),
+                  ],
+                  // The guard has REQUESTED completion (arrived → pending_completion). The
+                  // customer must rule on it: APPROVE → completed (triggers the settle) or
+                  // REJECT → back to arrived (the guard keeps working). Driven by the WS status
+                  // frame, no polling.
+                  if (booking.status == BookingStatus.pendingCompletion) ...[
+                    _CompletionReviewPanel(bookingId: booking.id),
+                    const SizedBox(height: PgTokens.space4),
+                  ],
+                  _Actions(booking: booking, isOwner: isOwner),
+                ],
+              ),
             ),
-            padding: const EdgeInsets.all(PgTokens.space4),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _GuardCard(booking: booking),
-                const SizedBox(height: PgTokens.space4),
-                // Live-map: while a guard is assigned and the job is running, embed an inline
-                // preview (guard pin + destination + straight route) in the empty space below the
-                // card — tap / expand opens the full-screen map. The map screen itself handles
-                // every state safely on deep link.
-                if (booking.guardId != null &&
-                    !BookingLifecycle.isTerminal(booking.status)) ...[
-                  _InlineGuardMap(bookingId: booking.id),
-                  const SizedBox(height: PgTokens.space4),
-                ],
-                BookingStatusStepper(status: booking.status),
-                // #123: the shared vertical step timeline of the guard's progress for THIS booking
-                // (accept → en route → arrived → working → completed). Shown the instant a guard is
-                // assigned (a guard_id exists) — before that there is no progress to track. The same
-                // widget renders on the guard's active-job screen. Driven purely by the booking
-                // status the WS pushes — no timer.
-                if (booking.guardId != null) ...[
-                  const SizedBox(height: PgTokens.space4),
-                  _StatusTimelineSection(status: booking.status),
-                ],
-                const SizedBox(height: PgTokens.space4),
-                // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
-                // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
-                // accepted-and-unpaid (the booking-status WS drives `status`/`paid_at`, no polling)
-                // — once paid, the booking un-gates the guard and this disappears.
-                // OWNER-ONLY (#87): only the booking's customer ever sees the Pay button. A guard
-                // who reaches this screen sees a READ-ONLY "รอลูกค้าชำระเงิน" notice instead —
-                // never a pay action.
-                if (booking.status == BookingStatus.accepted &&
-                    !booking.isPaid) ...[
-                  if (isOwner)
-                    _PayNowBanner(bookingId: booking.id)
-                  else
-                    const _AwaitingCustomerPaymentNotice(),
-                  const SizedBox(height: PgTokens.space4),
-                ],
-                // The guard has REQUESTED completion (arrived → pending_completion). The
-                // customer must rule on it: APPROVE → completed (triggers the settle) or
-                // REJECT → back to arrived (the guard keeps working). Driven by the WS status
-                // frame, no polling.
-                if (booking.status == BookingStatus.pendingCompletion) ...[
-                  _CompletionReviewPanel(bookingId: booking.id),
-                  const SizedBox(height: PgTokens.space4),
-                ],
-                _Actions(booking: booking, isOwner: isOwner),
-              ],
-            ),
-          ),
             if (_showHourlyReports) ...[
               const SizedBox(height: PgTokens.space4),
               _HourlyReportsCard(booking: booking),
@@ -570,8 +570,8 @@ class _TimelineItem extends StatelessWidget {
     if (report == null) return row;
     return InkWell(
       borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      onTap: () => showProgressReportViewer(context,
-          report: report, isThai: isThai),
+      onTap: () =>
+          showProgressReportViewer(context, report: report, isThai: isThai),
       child: row,
     );
   }
@@ -809,7 +809,8 @@ class _RateGuardButton extends ConsumerWidget {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     // Already reviewed only when the fetch resolved to a non-null review; loading/error/404 → not
     // yet (offer the form). `.valueOrNull` is null in all of those "not confirmed rated" cases.
-    final alreadyRated = ref.watch(myReviewProvider(bookingId)).valueOrNull != null;
+    final alreadyRated =
+        ref.watch(myReviewProvider(bookingId)).valueOrNull != null;
 
     if (alreadyRated) {
       // Passive "rated" state — no navigation into the form. A tap just reassures the customer.
@@ -940,9 +941,7 @@ class _CompletionReviewPanelState
               const SizedBox(width: PgTokens.space2),
               Expanded(
                 child: Text(
-                  isThai
-                      ? 'รอยืนยันจบงาน'
-                      : 'Awaiting your confirmation',
+                  isThai ? 'รอยืนยันจบงาน' : 'Awaiting your confirmation',
                   style: const TextStyle(
                       fontSize: 14, fontWeight: FontWeight.w700),
                 ),
@@ -1016,7 +1015,8 @@ class AddressDetail {
 /// Pure → unit-testable; [isThai] only chooses which label text the rows carry.
 ///
 /// Returns an empty list for a null/blank address (the sheet then shows the "Not set" fallback).
-List<AddressDetail> parseComposedAddress(String? address, {required bool isThai}) {
+List<AddressDetail> parseComposedAddress(String? address,
+    {required bool isThai}) {
   if (address == null) return const [];
   final lines = address
       .split('\n')
@@ -1027,10 +1027,28 @@ List<AddressDetail> parseComposedAddress(String? address, {required bool isThai}
 
   // (icon, TH prefix, EN prefix, TH row label, EN row label) for each folded line kind.
   const folded = <(IconData, String, String, String, String)>[
-    (Icons.home_outlined, 'ประเภทสถานที่', 'Place type', 'ประเภทสถานที่', 'Place type'),
-    (Icons.notes_outlined, 'รายละเอียดเพิ่มเติม', 'Details', 'รายละเอียดเพิ่มเติม', 'Details'),
+    (
+      Icons.home_outlined,
+      'ประเภทสถานที่',
+      'Place type',
+      'ประเภทสถานที่',
+      'Place type'
+    ),
+    (
+      Icons.notes_outlined,
+      'รายละเอียดเพิ่มเติม',
+      'Details',
+      'รายละเอียดเพิ่มเติม',
+      'Details'
+    ),
     (Icons.security_outlined, 'อุปกรณ์', 'Equipment', 'อุปกรณ์', 'Equipment'),
-    (Icons.add_circle_outline, 'บริการเพิ่มเติม', 'Add-ons', 'บริการเพิ่มเติม', 'Add-ons'),
+    (
+      Icons.add_circle_outline,
+      'บริการเพิ่มเติม',
+      'Add-ons',
+      'บริการเพิ่มเติม',
+      'Add-ons'
+    ),
   ];
 
   final out = <AddressDetail>[
@@ -1046,9 +1064,8 @@ List<AddressDetail> parseComposedAddress(String? address, {required bool isThai}
     final colon = line.indexOf(':');
     final prefix = colon < 0 ? line : line.substring(0, colon).trim();
     final value = colon < 0 ? line : line.substring(colon + 1).trim();
-    final match = folded
-        .where((f) => f.$2 == prefix || f.$3 == prefix)
-        .toList();
+    final match =
+        folded.where((f) => f.$2 == prefix || f.$3 == prefix).toList();
     if (colon >= 0 && match.isNotEmpty) {
       final f = match.first;
       out.add(AddressDetail(
@@ -1203,8 +1220,7 @@ Future<void> showBookingDetailsSheet(
                         fontSize: 14, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: PgTokens.space3),
-                  BookingStatusTimeline(
-                      status: booking.status, isThai: isThai),
+                  BookingStatusTimeline(status: booking.status, isThai: isThai),
                 ],
                 if (totalSatang != null) ...[
                   const Padding(
@@ -1254,20 +1270,25 @@ class _GuardDetailRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final name =
-        ref.watch(guardPublicProfileProvider(guardId)).valueOrNull?.fullName?.trim();
+    final name = ref
+        .watch(guardPublicProfileProvider(guardId))
+        .valueOrNull
+        ?.fullName
+        ?.trim();
     return _DetailRow(
       icon: Icons.shield_outlined,
       label: isThai ? 'เจ้าหน้าที่' : 'Guard',
-      value: (name != null && name.isNotEmpty) ? name : '#${_shortRef(guardId)}',
+      value:
+          (name != null && name.isNotEmpty) ? name : '#${_shortRef(guardId)}',
     );
   }
 }
 
 /// #127: the GUARD-facing "ลูกค้า / Customer" row, resolving the booking customer's REAL NAME from
-/// the IDOR-gated `/customers/{id}/public` read (the mirror of [_GuardDetailRow]). Pure enrichment:
-/// while it loads / if it degrades to null (e.g. the customer set no name), it falls back to a short
-/// `#id` ref so the guard always has a quotable reference (never a fabricated name).
+/// the `/customers/{id}/public` read (the mirror of [_GuardDetailRow]; readable by any guard from
+/// the job offer onwards — 2026-07-11 product decision). Pure enrichment: while it loads / if it
+/// degrades to null (e.g. the customer set no name), it falls back to a short `#id` ref so the
+/// guard always has a quotable reference (never a fabricated name).
 class _CustomerDetailRow extends ConsumerWidget {
   const _CustomerDetailRow({required this.customerId, required this.isThai});
 
@@ -1284,8 +1305,9 @@ class _CustomerDetailRow extends ConsumerWidget {
     return _DetailRow(
       icon: Icons.person_outline,
       label: isThai ? 'ลูกค้า' : 'Customer',
-      value:
-          (name != null && name.isNotEmpty) ? name : '#${_shortRef(customerId)}',
+      value: (name != null && name.isNotEmpty)
+          ? name
+          : '#${_shortRef(customerId)}',
     );
   }
 }
@@ -1359,7 +1381,8 @@ class _DetailRow extends StatelessWidget {
             child: Text(
               value,
               textAlign: TextAlign.right,
-              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+              style:
+                  const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
             ),
           ),
         ],

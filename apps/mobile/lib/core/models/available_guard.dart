@@ -19,6 +19,7 @@ class AvailableGuard {
     this.yearsOfExperience,
     this.averageRating,
     required this.reviewCount,
+    this.hasDocuments,
   });
 
   final String guardId;
@@ -41,16 +42,26 @@ class AvailableGuard {
   final String? averageRating;
   final int reviewCount;
 
+  /// Whether the guard's five credential documents are on file (profile-derived boolean —
+  /// booking's `AvailableGuard.has_documents`). The customer only ever sees THAT documents
+  /// exist, never the documents. NULL when the backend didn't say (older backend during a
+  /// mixed-version window) — the card renders nothing then, never a false "no documents".
+  final bool? hasDocuments;
+
   factory AvailableGuard.fromJson(Map<String, dynamic> json) => AvailableGuard(
         guardId: json['guard_id'] as String,
-        // Optional enrichment (present once the backend FLAG below ships) — trim to null so an
-        // empty/whitespace name never wins over the id-handle fallback.
+        // Optional enrichment — trim to null so an empty/whitespace name never wins over the
+        // id-handle fallback.
         displayName: _nonEmpty(json['display_name'] as Object?),
         avatarUrl: _nonEmpty(json['avatar_url'] as Object?),
         yearsOfExperience: (json['years_of_experience'] as num?)?.toInt(),
         // Decimal string on the wire; parse defensively.
         averageRating: (json['average_rating'] as Object?)?.toString(),
         reviewCount: (json['review_count'] as num?)?.toInt() ?? 0,
+        // Tri-state: absent/garbage → null (unknown), never a false "no documents".
+        hasDocuments: json['has_documents'] is bool
+            ? json['has_documents'] as bool
+            : null,
       );
 
   static String? _nonEmpty(Object? v) {
@@ -95,10 +106,13 @@ class AvailableGuard {
   /// Thai combining marks that hang off the preceding base consonant (so they belong to the same
   /// grapheme cluster): mai han-akat, sara am, the below/above vowels, and the tone marks.
   static bool _isThaiCombining(int r) =>
-      r == 0x0E31 || (r >= 0x0E33 && r <= 0x0E3A) || (r >= 0x0E47 && r <= 0x0E4E);
+      r == 0x0E31 ||
+      (r >= 0x0E33 && r <= 0x0E3A) ||
+      (r >= 0x0E47 && r <= 0x0E4E);
 
   /// The card title: the guard's REAL NAME when discovery provides it, else the id-derived
   /// "เจ้าหน้าที่ #XXXX" handle (so an un-enriched list still renders, just without the name).
   String displayLabel(bool isThai) =>
-      displayName ?? (isThai ? 'เจ้าหน้าที่ #$shortHandle' : 'Guard #$shortHandle');
+      displayName ??
+      (isThai ? 'เจ้าหน้าที่ #$shortHandle' : 'Guard #$shortHandle');
 }

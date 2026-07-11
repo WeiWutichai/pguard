@@ -167,6 +167,17 @@ class _RatingLine extends ConsumerWidget {
     if (guard.yearsOfExperience != null) {
       parts.add(TextSpan(text: ' · ${guard.yearsOfExperience} ปี'));
     }
+    // Documents indicator — WHETHER the guard's credential documents are on file, never the
+    // documents themselves (wire-driven `has_documents`, unlike the static verified badge in
+    // the title row). Tri-state: true/false both render (an honest absence), but UNKNOWN (an
+    // older backend that omitted the field) renders nothing — never a false "no documents".
+    if (guard.hasDocuments case final hasDocs?) {
+      parts.add(TextSpan(
+        text: hasDocs
+            ? (isThai ? ' · มีเอกสาร' : ' · Docs on file')
+            : (isThai ? ' · ไม่มีเอกสาร' : ' · No documents'),
+      ));
+    }
     return Text.rich(
       TextSpan(
         style: const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),

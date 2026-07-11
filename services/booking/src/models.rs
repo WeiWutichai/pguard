@@ -340,6 +340,10 @@ pub struct UpdateServiceRequest {
 /// `display_name` + `avatar_url` come straight from profile's catalog (the same approved-guard
 /// exposure as `GET /guards/{id}/public`) so the customer's selection card shows a real name +
 /// photo instead of an id + initials; both are omitted from the JSON when absent.
+/// `has_documents` is profile's derived boolean (all five credential documents on file) — the
+/// customer sees WHETHER the guard has documents, never the documents themselves. OMITTED (not
+/// `false`) when profile didn't say (older profile during a mixed-version deploy), so the app
+/// can render "unknown" as nothing rather than a false "no documents".
 #[derive(Debug, Serialize)]
 pub struct AvailableGuard {
     pub guard_id: Uuid,
@@ -350,6 +354,8 @@ pub struct AvailableGuard {
     pub years_of_experience: Option<i32>,
     pub average_rating: Option<Decimal>,
     pub review_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub has_documents: Option<bool>,
 }
 
 /// The authoritative subset of a booking exposed to internal callers (service-JWT'd),

@@ -1004,6 +1004,7 @@ pub async fn available_guards<S: DiscoveryDeps>(
                 years_of_experience: g.years_of_experience,
                 average_rating: summary.average,
                 review_count: summary.count,
+                has_documents: g.has_documents,
             };
             (guard, !ok)
         })
@@ -2291,6 +2292,7 @@ mod tests {
             full_name: None,
             avatar_url: None,
             years_of_experience,
+            has_documents: None,
         }
     }
 
@@ -2492,12 +2494,14 @@ mod tests {
                     full_name: Some("Somchai Jaidee".to_string()),
                     avatar_url: Some("https://minio.example/presigned-good".to_string()),
                     years_of_experience: Some(5),
+                    has_documents: Some(true),
                 },
                 CatalogGuard {
                     user_id: bad,
                     full_name: None,
                     avatar_url: None,
                     years_of_experience: None,
+                    has_documents: Some(false),
                 },
             ],
         };
@@ -2542,12 +2546,14 @@ mod tests {
         assert_eq!(data[0]["average_rating"], serde_json::json!("4.50"));
         assert_eq!(data[0]["review_count"], serde_json::json!(2));
         assert_eq!(data[0]["years_of_experience"], serde_json::json!(5));
-        // The catalog's name + presigned avatar thread through to the selection card.
+        // The catalog's name + presigned avatar + documents boolean thread through to the
+        // selection card.
         assert_eq!(data[0]["display_name"], serde_json::json!("Somchai Jaidee"));
         assert_eq!(
             data[0]["avatar_url"],
             serde_json::json!("https://minio.example/presigned-good")
         );
+        assert_eq!(data[0]["has_documents"], serde_json::json!(true));
         // The guard whose rating lookup failed still appears, with best-effort defaults.
         assert_eq!(data[1]["guard_id"], serde_json::json!(bad));
         assert!(
@@ -2563,6 +2569,60 @@ mod tests {
         assert!(
             data[1].get("avatar_url").is_none(),
             "no avatar → key omitted"
+        );
+        assert_eq!(
+            data[1]["has_documents"],
+            serde_json::json!(false),
+            "profile said no documents → explicit false"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_guards_omits_unknown_has_documents() {
+        // An OLDER profile that doesn't emit `has_documents` (CatalogGuard defaults to None)
+        // must produce an OMITTED key — never a false "no documents" claim — during a
+        // mixed-version deploy window.
+        let g = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![catalog_guard(g, None)],
+        };
+        let Some(app) = discovery_router(
+            catalog,
+            StubRater { good: g },
+            StubPresence {
+                online: HashSet::from([g]),
+                down: false,
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 1);
+        assert!(
+            data[0].get("has_documents").is_none(),
+            "unknown documents state → key omitted (tri-state), not false"
         );
     }
 

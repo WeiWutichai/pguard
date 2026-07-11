@@ -698,18 +698,25 @@ pub async fn list_guard_profiles(
 }
 
 /// List APPROVED guards for the internal discovery catalog (booking's `/available-guards`).
-/// Narrow projection (user_id + name + avatar key + experience) — NEVER the bank/PII columns;
-/// least-privilege over the service-to-service wire. `full_name` + `avatar_key` enrich the
-/// customer's guard-selection card (the handler presigns `avatar_key`); both are the same
-/// approved-guard exposure as `GET /guards/{id}/public`. Bounded (`LIMIT`), newest first; NOT
-/// paginated yet, so a roster beyond the cap is truncated (the handler logs it). The `user_id`
-/// tiebreaker makes the order deterministic when `created_at` ties (stable across calls).
+/// Narrow projection (user_id + name + avatar key + experience + a derived documents boolean) —
+/// NEVER the bank/PII columns; least-privilege over the service-to-service wire. `full_name` +
+/// `avatar_key` enrich the customer's guard-selection card (the handler presigns `avatar_key`);
+/// both are the same approved-guard exposure as `GET /guards/{id}/public`. `has_documents` is
+/// derived HERE (all five credential `*_key` columns non-null — passbook excluded, it's banking
+/// not a credential) so only a boolean ever crosses the wire, never the keys. Bounded (`LIMIT`),
+/// newest first; NOT paginated yet, so a roster beyond the cap is truncated (the handler logs
+/// it). The `user_id` tiebreaker makes the order deterministic when `created_at` ties (stable
+/// across calls).
 pub async fn list_approved_guards(
     db: &PgPool,
     limit: i64,
 ) -> Result<Vec<InternalGuardRow>, AppError> {
     let rows = sqlx::query_as::<_, InternalGuardRow>(
-        "SELECT user_id, full_name, avatar_key, years_of_experience FROM profile.guard_profiles \
+        "SELECT user_id, full_name, avatar_key, years_of_experience, \
+         (id_card_key IS NOT NULL AND security_license_key IS NOT NULL \
+          AND training_cert_key IS NOT NULL AND criminal_check_key IS NOT NULL \
+          AND driver_license_key IS NOT NULL) AS has_documents \
+         FROM profile.guard_profiles \
          WHERE approval_status = 'approved'::profile.approval_status \
          ORDER BY created_at DESC, user_id DESC LIMIT $1",
     )
