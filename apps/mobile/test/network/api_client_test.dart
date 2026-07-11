@@ -12,7 +12,8 @@ import '../support/fakes.dart';
 /// 401 becomes a DioException that reaches the interceptor. These tests pin that behaviour (incl.
 /// the FormData.clone path) and confirm the no-refresh case is unchanged.
 void main() {
-  const farFuture = 9999999999; // exp far ahead → no PROACTIVE refresh in _onRequest
+  const farFuture =
+      9999999999; // exp far ahead → no PROACTIVE refresh in _onRequest
 
   ApiClient buildClient(InMemoryStore store, HttpClientAdapter adapter) =>
       ApiClient(
@@ -21,7 +22,8 @@ void main() {
         refreshDio: Dio()..httpClientAdapter = adapter,
       );
 
-  test('a 401 with a working refresh is transparently refreshed + retried (GET)',
+  test(
+      'a 401 with a working refresh is transparently refreshed + retried (GET)',
       () async {
     final store = InMemoryStore()
       ..access = fakeJwt({'exp': farFuture})
@@ -33,14 +35,23 @@ void main() {
         refreshes++;
         return _json(200, {
           'success': true,
-          'data': {'access_token': fakeJwt({'exp': farFuture}), 'refresh_token': 'r2'},
+          'data': {
+            'access_token': fakeJwt({'exp': farFuture}),
+            'refresh_token': 'r2'
+          },
         });
       }
       if (options.path == '/bookings/b1') {
         hits++;
         return hits == 1
-            ? _json(401, {'success': false, 'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}})
-            : _json(200, {'success': true, 'data': {'id': 'b1'}});
+            ? _json(401, {
+                'success': false,
+                'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}
+              })
+            : _json(200, {
+                'success': true,
+                'data': {'id': 'b1'}
+              });
       }
       return _json(404, {'success': false, 'error': 'nope'});
     });
@@ -53,7 +64,8 @@ void main() {
     expect(store.access, isNot('r1'));
   });
 
-  test('a 401 on a multipart POST survives the retry via FormData.clone', () async {
+  test('a 401 on a multipart POST survives the retry via FormData.clone',
+      () async {
     final store = InMemoryStore()
       ..access = fakeJwt({'exp': farFuture})
       ..refresh = 'r1';
@@ -62,7 +74,10 @@ void main() {
       if (options.path == '/auth/refresh') {
         return _json(200, {
           'success': true,
-          'data': {'access_token': fakeJwt({'exp': farFuture}), 'refresh_token': 'r2'},
+          'data': {
+            'access_token': fakeJwt({'exp': farFuture}),
+            'refresh_token': 'r2'
+          },
         });
       }
       if (options.path == '/attachments') {
@@ -70,32 +85,45 @@ void main() {
         // A finalized FormData re-sent WITHOUT cloning would throw a StateError before reaching
         // here a second time; getting two hits + a 200 proves the clone worked.
         return hits == 1
-            ? _json(401, {'success': false, 'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}})
-            : _json(200, {'success': true, 'data': {'id': 'att1'}});
+            ? _json(401, {
+                'success': false,
+                'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}
+              })
+            : _json(200, {
+                'success': true,
+                'data': {'id': 'att1'}
+              });
       }
       return _json(404, {'success': false, 'error': 'nope'});
     });
 
     final form = FormData.fromMap({'k': 'v'});
-    final data = await buildClient(store, adapter).post('/attachments', data: form);
+    final data =
+        await buildClient(store, adapter).post('/attachments', data: form);
 
     expect(hits, 2, reason: 'multipart retried with a cloned body');
     expect((data as Map)['id'], 'att1');
   });
 
-  test('a 401 with no usable refresh still surfaces as ApiException(401)', () async {
-    final store = InMemoryStore()..access = fakeJwt({'exp': farFuture}); // no refresh token
+  test('a 401 with no usable refresh still surfaces as ApiException(401)',
+      () async {
+    final store = InMemoryStore()
+      ..access = fakeJwt({'exp': farFuture}); // no refresh token
     // No refresh token → _doRefresh returns null without ever hitting /auth/refresh.
-    final adapter = _StubAdapter((options) async => _json(
-        401, {'success': false, 'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}}));
+    final adapter = _StubAdapter((options) async => _json(401, {
+          'success': false,
+          'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}
+        }));
 
     await expectLater(
       () => buildClient(store, adapter).get('/bookings/b1'),
-      throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 401)),
+      throwsA(
+          isA<ApiException>().having((e) => e.statusCode, 'statusCode', 401)),
     );
   });
 
-  test('a retry that ALSO 401s surfaces ApiException(401) — no infinite loop', () async {
+  test('a retry that ALSO 401s surfaces ApiException(401) — no infinite loop',
+      () async {
     final store = InMemoryStore()
       ..access = fakeJwt({'exp': farFuture})
       ..refresh = 'r1';
@@ -104,18 +132,25 @@ void main() {
       if (options.path == '/auth/refresh') {
         return _json(200, {
           'success': true,
-          'data': {'access_token': fakeJwt({'exp': farFuture}), 'refresh_token': 'r2'},
+          'data': {
+            'access_token': fakeJwt({'exp': farFuture}),
+            'refresh_token': 'r2'
+          },
         });
       }
       hits++;
       // Refresh succeeds, but the resource keeps returning 401 (e.g. a permission, not a token,
       // problem). The pg_retried guard must stop after exactly one retry.
-      return _json(401, {'success': false, 'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}});
+      return _json(401, {
+        'success': false,
+        'error': {'code': 'UNAUTHORIZED', 'message': 'revoked'}
+      });
     });
 
     await expectLater(
       () => buildClient(store, adapter).get('/bookings/b1'),
-      throwsA(isA<ApiException>().having((e) => e.statusCode, 'statusCode', 401)),
+      throwsA(
+          isA<ApiException>().having((e) => e.statusCode, 'statusCode', 401)),
     );
     expect(hits, 2, reason: 'original + exactly one retry, then it gives up');
   });
@@ -134,27 +169,36 @@ void main() {
   ]) {
     test('refresh ${c.status} → sessionLost=${c.lost}', () async {
       final store = InMemoryStore()
-        ..access = fakeJwt({'exp': 1}) // expired → proactive refresh fires first
-        ..refresh = 'r1';
+        ..access =
+            fakeJwt({'exp': 1}) // expired → proactive refresh fires first
+        ..refresh = 'r1'
+        ..phone = '0810000000'; // remembered device — must survive auth-loss
       var authLost = false;
       final adapter = _StubAdapter((options) async {
         if (options.path == '/auth/refresh') {
           return _json(c.status, {'success': false, 'error': 'x'});
         }
-        return _json(200, {'success': true, 'data': {'ok': true}});
+        return _json(200, {
+          'success': true,
+          'data': {'ok': true}
+        });
       });
       final client = ApiClient(
         store: store,
         dio: Dio()..httpClientAdapter = adapter,
         refreshDio: Dio()..httpClientAdapter = adapter,
-        onAuthLost: () => authLost = true,
+        onAuthLost: ({String? reasonCode}) => authLost = true,
       );
       try {
         await client.get('/bookings/b1');
       } catch (_) {}
       expect(authLost, c.lost);
-      // The refresh token is preserved on a transient failure, cleared on a genuine rejection.
+      // The refresh token is cleared on a genuine rejection; the PHONE is kept either way (only
+      // clearTokens runs on auth-loss now — clearSession's phone wipe caused the set-new-PIN bug).
       expect(store.refresh, c.lost ? isNull : 'r1');
+      expect(store.phone, isNotNull,
+          reason:
+              'auth-loss must NOT drop the remembered phone (returning-login relies on it)');
     });
   }
 }

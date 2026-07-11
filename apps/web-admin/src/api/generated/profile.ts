@@ -131,16 +131,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Assigned guard's view of a customer's public mini-profile (name only)
-         * @description The MINI-profile (name only) of the customer on the caller's booking, so the assigned guard's
-         *     job sheet can address the customer by their REAL NAME instead of a raw id. The MIRROR of
-         *     `GET /guards/{id}/public` for the other direction. **IDOR-gated:** a `guard` may read it ONLY
-         *     while they have an ACTIVE booking with this customer (the same event-derived read-model
-         *     projected from `pguard.events.booking.*`, queried with the roles flipped); a `customer` may
-         *     read only their own; an `admin` may read any. A guard without an active booking gets **403**
-         *     (NOT 404 — no existence probe). Returns ONLY `{ user_id, full_name }` — never the customer's
-         *     address/company/email/phone PII. `full_name` is PII reachable by a non-owner ONLY under this
-         *     active-booking trust boundary (PDPA §7).
+         * Guard's view of a customer's public mini-profile (name + photo)
+         * @description The MINI-profile (name + photo) of a customer, so the guard's job sheet can address the
+         *     customer by their REAL NAME instead of a raw id. **Role-gated:** any `guard` may read it —
+         *     from the job OFFER onwards, per the 2026-07-11 product decision that guards see who is
+         *     booking BEFORE accepting (the old active-booking IDOR gate 403'd every unaccepted offer
+         *     and every finished job in the work history); a `customer` may read only their own; an
+         *     `admin` may read any. Returns ONLY `{ user_id, full_name, avatar_url }` — never the
+         *     customer's address/company/email/phone PII. Exposure stays bounded: customer ids are
+         *     unguessable UUIDv4s a guard only learns from bookings already shown to them.
          */
         get: operations["getPublicCustomerProfile"];
         put?: never;
@@ -792,13 +791,23 @@ export interface components {
         };
         /**
          * @description The lean approved-guard row for internal discovery — deliberately NARROW (no bank/PII;
-         *     least-privilege over the service-to-service wire).
+         *     least-privilege over the service-to-service wire). `full_name`/`avatar_url` power the
+         *     customer's guard-selection card (the same approved-guard exposure as
+         *     `GET /guards/{id}/public`; `avatar_url` is presigned by profile). `has_documents` is a
+         *     profile-derived boolean — all five credential documents (id card, security license,
+         *     training cert, criminal check, driver license) on file — so the customer card can show
+         *     WHETHER documents exist; the documents themselves never cross this wire.
          */
         InternalGuard: {
             /** Format: uuid */
             user_id: string;
+            full_name?: string | null;
+            /** @description Presigned GET URL for the guard's avatar (expires in ~1h), or null when unset. */
+            avatar_url?: string | null;
             /** Format: int32 */
             years_of_experience?: number | null;
+            /** @description True when all five credential documents are on file (derived; passbook excluded). */
+            has_documents: boolean;
         };
         /**
          * @description The lean, customer-facing guard mini-profile for the live-tracking map. NARROW by design —
@@ -819,11 +828,12 @@ export interface components {
         };
         /**
          * @description The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the
-         *     other direction. NARROW by design: only the customer's name + photo (so the assigned guard's
-         *     job sheet can address them by name and show their face); NEVER the address/company/email/phone
-         *     PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see
-         *     `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key
-         *     is never on the wire), `null` when the customer has not set an avatar.
+         *     other direction. NARROW by design: only the customer's name + photo (so the guard's job
+         *     sheet can address them by name and show their face); NEVER the address/company/email/phone
+         *     PII. `full_name` is reachable by any guard-role caller — from the job offer onwards, per
+         *     the 2026-07-11 product decision (see `GET /customers/{id}/public`). `avatar_url` is a
+         *     short-lived presigned GET URL (the raw S3 key is never on the wire), `null` when the
+         *     customer has not set an avatar.
          */
         PublicCustomerProfile: {
             /** Format: uuid */

@@ -31,6 +31,10 @@ Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      // A row tap one-shot-reads bookingStatusControllerProvider, which builds a live feed —
+      // fake it so no test touches a real WebSocket.
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tokenProvider) => FakeBookingFeed()),
     ],
     child: const MaterialApp(home: WalletScreen()),
   ));
@@ -94,6 +98,60 @@ void main() {
 
     expect(find.textContaining('ยังไม่มีใบเสร็จ'), findsOneWidget);
     expect(find.text('฿0.00'), findsOneWidget); // honest empty total
+  });
+
+  testWidgets(
+      'tapping a receipt row fetches the booking and opens the receipt sheet',
+      (tester) async {
+    const bookingId = '3f2a9b1c-0000-4000-8000-000000000001';
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/payments') return [paymentJson('p1')];
+      if (path == '/bookings/$bookingId') {
+        return {
+          'id': bookingId,
+          'customer_id': 'c1',
+          'status': 'completed',
+          'guard_id': 'g1',
+          'hours': 2,
+          'base_fee': '1000.00',
+        };
+      }
+      return <Map<String, dynamic>>[];
+    });
+    await pumpScreen(tester, api);
+
+    await tester.tap(find.text('PG-3F2A9B1C'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    // The shared job-receipt sheet opened with the booking + this row's payment.
+    expect(find.text('ใบสรุปค่าบริการ'), findsOneWidget,
+        reason: 'the receipt sheet title');
+    expect(find.text('ชั่วโมงที่จอง'), findsOneWidget);
+    expect(api.calls, contains('GET /bookings/$bookingId'),
+        reason: 'the tap fetched the booking snapshot');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'receipt row tap: booking fetch failure shows the retry snackbar '
+      '(no sheet)', (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/payments') return [paymentJson('p1')];
+      throw Exception('boom'); // the booking snapshot fetch fails
+    });
+    await pumpScreen(tester, api);
+
+    await tester.tap(find.text('PG-3F2A9B1C'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(find.text('โหลดใบเสร็จไม่สำเร็จ — ลองใหม่'), findsOneWidget);
+    expect(find.text('ใบสรุปค่าบริการ'), findsNothing,
+        reason: 'no sheet on failure');
+
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('shows PgErrorState with retry on load failure', (tester) async {

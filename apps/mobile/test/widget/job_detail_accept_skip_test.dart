@@ -111,23 +111,24 @@ void main() {
   });
 
   testWidgets(
-      'Skip (ข้าม) → confirm → SERVER skip (POST /skip) + clarifying snackbar, '
+      'Decline (ไม่รับงาน) → confirm → SERVER skip (POST /skip) + clarifying snackbar, '
       'pops back', (tester) async {
     final api = apiWith(onPost: (_, __) async => {'skipped': true});
     await pumpFlow(tester, api);
 
-    // The local-skip button is now "ข้าม" (was the misleading "ปฏิเสธ").
-    expect(find.text('ข้าม'), findsOneWidget);
+    // The decline button is now "ไม่รับงาน" (2026-07-11 — was "ข้าม", earlier "ปฏิเสธ").
+    expect(find.text('ไม่รับงาน'), findsOneWidget);
+    expect(find.text('ข้าม'), findsNothing);
     expect(find.text('ปฏิเสธ'), findsNothing);
 
-    await tester.tap(find.text('ข้าม'));
+    await tester.tap(find.text('ไม่รับงาน'));
     await tester.pumpAndSettle();
 
-    expect(find.text('ข้ามงานนี้?'), findsOneWidget);
+    expect(find.text('ไม่รับงานนี้?'), findsOneWidget);
 
-    // The dialog's confirm action is the "ข้าม" inside a TextButton (the footer button is a
+    // The dialog's confirm action is the "ไม่รับงาน" inside a TextButton (the footer button is a
     // PgPrimaryButton), so scoping to TextButton disambiguates from the footer trigger.
-    await tester.tap(find.widgetWithText(TextButton, 'ข้าม'));
+    await tester.tap(find.widgetWithText(TextButton, 'ไม่รับงาน'));
     await tester.pumpAndSettle();
 
     // Clarifying snackbar — and the skip is now SERVER-TRACKED (POST /bookings/{id}/skip) so it

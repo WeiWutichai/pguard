@@ -8,6 +8,14 @@ abstract class SessionStore {
   Future<void> saveTokens({required String access, required String refresh});
   Future<void> clearSession();
 
+  /// Drop ONLY the access/refresh token pair — the credential teardown for a session that died
+  /// SERVER-SIDE (refresh rejected / kicked by another device). Deliberately narrower than
+  /// [clearSession]: it must NOT touch the remembered phone, or the follow-up
+  /// `Session.logout()` reads `phone == null`, classifies the device as brand-new and routes
+  /// the user into OTP + SET-A-NEW-PIN instead of the returning PIN-login (the reported
+  /// "ตั้ง PIN ใหม่หลัง logout" bug).
+  Future<void> clearTokens();
+
   /// The verified login phone (PII) — persisted in secure storage at login so the profile can
   /// show it read-only (it is the login identifier and is not returned by any API). Cleared on
   /// logout. Mirrors v1's `verified_phone` PDPA decision (PII never in SharedPreferences).
@@ -123,6 +131,12 @@ class SecureStore implements AppStore {
     await _s.delete(key: _kPhone);
     await _s.delete(key: _kOnboardingPin);
     await clearRegistrationTokens();
+  }
+
+  @override
+  Future<void> clearTokens() async {
+    await _s.delete(key: _kAccess);
+    await _s.delete(key: _kRefresh);
   }
 
   // ---- phone (PII; the login identifier, shown read-only on the profile) ----

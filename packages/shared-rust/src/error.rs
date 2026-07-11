@@ -16,6 +16,15 @@ pub enum AppError {
     #[error("{0}")]
     Unauthorized(String),
 
+    /// A 401 that carries a machine-readable sub-code (e.g. `SESSION_SUPERSEDED`) so
+    /// clients branch on `error.code` instead of matching the message text. Same 401
+    /// status and the same `{ error: { code, message } }` envelope as
+    /// [`AppError::Unauthorized`]; ONLY the `code` string differs (plain `Unauthorized`
+    /// keeps `"UNAUTHORIZED"`). `code` is `&'static str` so only a fixed, vetted set of
+    /// sub-codes can be emitted. Mirrors [`AppError::ConflictCode`].
+    #[error("{message}")]
+    UnauthorizedCode { code: &'static str, message: String },
+
     #[error("{0}")]
     Forbidden(String),
 
@@ -61,6 +70,8 @@ impl IntoResponse for AppError {
         let (status, code) = match &self {
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, "BAD_REQUEST"),
             AppError::Unauthorized(_) => (StatusCode::UNAUTHORIZED, "UNAUTHORIZED"),
+            // Same 401 as Unauthorized; the variant supplies its own machine-readable code.
+            AppError::UnauthorizedCode { code, .. } => (StatusCode::UNAUTHORIZED, *code),
             AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "FORBIDDEN"),
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             AppError::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
@@ -165,6 +176,44 @@ mod tests {
             1,
             "top-level is just `error`"
         );
+    }
+
+    #[tokio::test]
+    async fn unauthorized_code_returns_401_with_custom_code_and_same_envelope() {
+        // Same status + envelope SHAPE as Unauthorized; only the code differs.
+        let err = AppError::UnauthorizedCode {
+            code: "SESSION_SUPERSEDED",
+            message: "Signed out because the account was logged in on another device".into(),
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "SESSION_SUPERSEDED");
+        assert_eq!(
+            json["error"]["message"],
+            "Signed out because the account was logged in on another device"
+        );
+        // Envelope shape is exactly `{ error: { code, message } }` — no extra/renamed keys.
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            1,
+            "top-level is just `error`"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_unauthorized_keeps_generic_code_in_body() {
+        // Backward-compat guard: the plain `Unauthorized` variant must still serialize the
+        // `"UNAUTHORIZED"` code (a sub-code must never leak into existing call sites).
+        let err = AppError::Unauthorized("invalid token".into());
+        let body = axum::body::to_bytes(err.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "UNAUTHORIZED");
     }
 
     #[test]

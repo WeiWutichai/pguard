@@ -37,10 +37,17 @@ PrefsStore prefsStore(PrefsStoreRef ref) => const SharedPrefsStore();
 
 /// The REST client to the `/v1` gateway (Dio + auth interceptors). On unrecoverable refresh
 /// failure it drops the session so the router leaves the dashboard (no zombie auth state).
+/// The rejection code (e.g. `SESSION_SUPERSEDED` — kicked by a login on another device) is
+/// stashed as a one-shot notice so the returning PIN-login screen can explain WHY.
 @Riverpod(keepAlive: true)
 PguardApi pguardApi(PguardApiRef ref) => ApiClient(
       store: ref.watch(appStoreProvider),
-      onAuthLost: () => ref.read(sessionProvider.notifier).logout(),
+      onAuthLost: ({String? reasonCode}) {
+        if (reasonCode != null) {
+          ref.read(sessionNoticeProvider.notifier).state = reasonCode;
+        }
+        ref.read(sessionProvider.notifier).logout();
+      },
     );
 
 /// Local PIN gate (salted hash + lockout/wipe policy).

@@ -485,16 +485,16 @@ pub async fn get_public_guard_profile<S: ProfileDeps>(
 
 // ----- GET /customers/{id}/public — guard-readable customer mini-profile (assigned guard's job) -----
 
-/// Authorize a customer mini-profile read. The MIRROR of [`authorize_guard_profile_read`] for the
-/// other direction: `admin` → any; `customer` → self only; `guard` → only a customer on the guard's
-/// ACTIVE booking (the same event-derived `profile.guard_assignments` read-model, flipped so the
-/// caller is the GUARD); any other role → 403. A guard WITHOUT an active booking with that customer
-/// gets 403 (NOT 404) so they cannot probe arbitrary customer ids by a status-code differential.
-async fn authorize_customer_profile_read<S: ProfileDeps>(
-    state: &S,
-    user: &AuthUser,
-    customer_id: Uuid,
-) -> Result<(), AppError> {
+/// Authorize a customer mini-profile read: `admin` → any; `customer` → self only; `guard` → ANY
+/// customer; any other role → 403.
+///
+/// PRODUCT DECISION (2026-07-11): guards read the customer's name/photo from the moment a job
+/// OFFER is visible — before accepting — so the gate no longer requires an active booking (the
+/// old `profile.guard_assignments` check, which 403'd every unaccepted offer and every finished
+/// job in the guard's work history). The exposure stays narrow: this endpoint only ever returns
+/// `{ user_id, full_name, avatar_url }`, ids are unguessable UUIDv4s a guard only learns from
+/// bookings already shown to them, and the caller must still hold a valid guard token.
+fn authorize_customer_profile_read(user: &AuthUser, customer_id: Uuid) -> Result<(), AppError> {
     match user.role.as_str() {
         ROLE_ADMIN => Ok(()),
         ROLE_CUSTOMER => {
@@ -506,41 +506,45 @@ async fn authorize_customer_profile_read<S: ProfileDeps>(
                 ))
             }
         }
-        ROLE_GUARD => {
-            // Same read-model row as the guard-profile gate, queried (customer_id, guard_id):
-            // the caller (a guard) must hold an ACTIVE booking with this customer.
-            if state
-                .booking_authz()
-                .has_active_booking(customer_id, user.user_id)
-                .await?
-            {
-                Ok(())
-            } else {
-                Err(AppError::Forbidden(
-                    "You can only view a customer on your active booking".to_string(),
-                ))
-            }
-        }
+        ROLE_GUARD => Ok(()),
         _ => Err(AppError::Forbidden("Not authorized".to_string())),
     }
 }
 
-/// GET /customers/{id}/public — the assigned GUARD reads the customer's MINI-profile (name + photo)
-/// so the job sheet can address the customer by their REAL NAME instead of a raw id, and show their
-/// face. The mirror of [`get_public_guard_profile`]: IDOR-gated (see
-/// [`authorize_customer_profile_read`]) — a guard may read it ONLY for a customer on their active
-/// booking (else 403, no existence probe). Returns ONLY `{ user_id, full_name, avatar_url }` — never
-/// the customer's address/company/email/phone PII. `avatar_url` is the raw `avatar_key` presigned
-/// into a short-lived GET URL HERE (one place; the key never leaves profile), `None` when unset.
-/// 404 when the customer has no profile row. Read on the replica (the authz read-model is on the
-/// primary).
+/// GET /customers/{id}/public — a GUARD reads the customer's MINI-profile (name + photo) so the
+/// job sheet can address the customer by their REAL NAME instead of a raw id, and show their
+/// face. Role-gated (see [`authorize_customer_profile_read`]): any guard may read it — from the
+/// job OFFER onwards, per the 2026-07-11 product decision — while customers stay self-only.
+/// Returns ONLY `{ user_id, full_name, avatar_url }` — never the customer's
+/// address/company/email/phone PII. Every guard read is PDPA-audited (best-effort
+/// `guard_read_customer_public` row in `profile.access_audit`). `avatar_url` is the raw
+/// `avatar_key` presigned into a short-lived GET URL HERE (one place; the key never leaves
+/// profile), `None` when unset. 404 when the customer has no profile row. Read on the replica.
 #[tracing::instrument(skip(state), fields(user = %user.user_id, customer = %customer_id))]
 pub async fn get_public_customer_profile<S: ProfileDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(customer_id): Path<Uuid>,
 ) -> Result<Json<ApiResponse<PublicCustomerProfile>>, AppError> {
-    authorize_customer_profile_read(&state, &user, customer_id).await?;
+    authorize_customer_profile_read(&user, customer_id)?;
+    // PDPA §30 read-audit: a guard reading a NON-OWNER's PII (name + photo) leaves an
+    // attributable row, like the admin cross-reads — since the 2026-07-11 gate relaxation this
+    // read is no longer bounded by an active booking, so the audit trail is what makes abnormal
+    // read patterns (bulk name harvesting) detectable after the fact. BEST-EFFORT: this is a
+    // hot, per-job-view read — an audit-insert hiccup must degrade to a warn, not a 500.
+    if user.role == ROLE_GUARD {
+        if let Err(e) = repo::record_access(
+            state.db(),
+            user.user_id,
+            "guard_read_customer_public",
+            Some(&customer_id.to_string()),
+        )
+        .await
+        {
+            tracing::warn!(guard = %user.user_id, customer = %customer_id,
+                "guard_read_customer_public audit insert failed: {e}");
+        }
+    }
     let row = repo::get_public_customer_profile(state.db_read(), customer_id)
         .await?
         .ok_or_else(|| AppError::NotFound("Customer not found".to_string()))?;
@@ -1238,11 +1242,13 @@ pub async fn admin_resolve_names<S: ProfileDeps>(
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
 /// guard catalog. Guarded by [`ServiceCaller`] (a valid service-JWT) — never reachable from
 /// the public edge (the gateway blocks `/internal/`). Returns `{ user_id, full_name,
-/// avatar_url, years_of_experience }` — `full_name`/`avatar_url` power the customer's
-/// guard-selection card and are the SAME approved-guard exposure as `GET /guards/{id}/public`
-/// (no bank/PII over the wire). `avatar_url` is the raw `avatar_key` presigned into a
-/// short-lived GET URL (the key never leaves profile), `None` when no avatar is set. Generic
-/// over [`ProfileInternalDeps`] so the guard is unit-testable (mirrors booking's internal read).
+/// avatar_url, years_of_experience, has_documents }` — `full_name`/`avatar_url` power the
+/// customer's guard-selection card and are the SAME approved-guard exposure as
+/// `GET /guards/{id}/public` (no bank/PII over the wire). `avatar_url` is the raw `avatar_key`
+/// presigned into a short-lived GET URL (the key never leaves profile), `None` when no avatar
+/// is set. `has_documents` is a repo-derived boolean (all five credential docs on file) — the
+/// document keys/URLs themselves never cross this wire. Generic over [`ProfileInternalDeps`]
+/// so the guard is unit-testable (mirrors booking's internal read).
 #[tracing::instrument(skip(state), fields(caller = %caller.service))]
 pub async fn internal_list_guards<S: ProfileInternalDeps>(
     State(state): State<S>,
@@ -1266,6 +1272,7 @@ pub async fn internal_list_guards<S: ProfileInternalDeps>(
             full_name: r.full_name,
             avatar_url: r.avatar_key.as_deref().map(|k| state.s3().download_url(k)),
             years_of_experience: r.years_of_experience,
+            has_documents: r.has_documents,
         })
         .collect();
     Ok(Json(ApiResponse::success(guards)))
@@ -2544,7 +2551,7 @@ mod tests {
         assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
-    // ----- GET /customers/{id}/public — IDOR gate (assigned guard reads the customer's name) -----
+    // ----- GET /customers/{id}/public — role gate (guards read the customer's name from the offer) -----
 
     #[tokio::test]
     async fn public_customer_rejects_missing_token() {
@@ -2566,35 +2573,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn public_customer_guard_without_active_booking_is_forbidden() {
+    async fn public_customer_guard_without_active_booking_passes_authz() {
         let Some(app) = public_profile_router(false).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        // A guard with NO active booking with this customer → 403 (NOT 404 — no existence probe),
-        // short-circuiting before any DB read.
-        let res = app
-            .oneshot(get_with_bearer(
-                &format!("/customers/{}/public", Uuid::new_v4()),
-                &token(ROLE_GUARD),
-            ))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.status(),
-            StatusCode::FORBIDDEN,
-            "a guard with no active booking must not read a customer's profile"
-        );
-    }
-
-    #[tokio::test]
-    async fn public_customer_guard_with_active_booking_passes_authz() {
-        let Some(app) = public_profile_router(true).await else {
-            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
-            return;
-        };
-        // The ASSIGNED guard (active booking) passes the gate → reaches the repo (500s on the closed
-        // lazy pool). NOT 401/403 proves authz let it through.
+        // PRODUCT DECISION 2026-07-11: a guard reads the customer mini-profile from the job OFFER
+        // onwards — no active-booking requirement (authz stub answering `false` is never even
+        // consulted). Passing the gate → reaches the repo (500s on the closed lazy pool);
+        // NOT 401/403 proves authz let it through.
         let res = app
             .oneshot(get_with_bearer(
                 &format!("/customers/{}/public", Uuid::new_v4()),
@@ -2606,7 +2593,30 @@ mod tests {
         assert_ne!(
             res.status(),
             StatusCode::FORBIDDEN,
-            "the assigned guard must pass the IDOR gate"
+            "a guard must read a customer mini-profile even without an active booking (job offer)"
+        );
+    }
+
+    #[tokio::test]
+    async fn public_customer_guard_with_active_booking_passes_authz() {
+        let Some(app) = public_profile_router(true).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // The assigned guard passes too (the gate is role-only either way) → reaches the repo
+        // (500s on the closed lazy pool). NOT 401/403 proves authz let it through.
+        let res = app
+            .oneshot(get_with_bearer(
+                &format!("/customers/{}/public", Uuid::new_v4()),
+                &token(ROLE_GUARD),
+            ))
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "the assigned guard must pass the gate"
         );
     }
 

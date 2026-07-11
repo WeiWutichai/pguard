@@ -19,6 +19,7 @@ import 'package:pguard_booking_api/src/model/list_progress_reports200_response.d
 import 'package:pguard_booking_api/src/model/list_services200_response.dart';
 import 'package:pguard_booking_api/src/model/review_completion_request.dart';
 import 'package:pguard_booking_api/src/model/skip_booking200_response.dart';
+import 'package:pguard_booking_api/src/model/start_job_request.dart';
 
 class BookingsApi {
 
@@ -1435,11 +1436,12 @@ class BookingsApi {
     );
   }
 
-  /// Assigned guard starts the job
-  /// Stamps &#x60;work_started_at&#x60; (the proration basis); status stays &#x60;arrived&#x60; (no event). Assigned guard only; the booking must be &#x60;arrived&#x60;. A second start is an idempotent no-op. The job must be started before completion can be requested. 
+  /// Assigned guard starts the job (50m geofence)
+  /// Stamps &#x60;work_started_at&#x60; (the proration basis); status stays &#x60;arrived&#x60; (no event). Assigned guard only; the booking must be &#x60;arrived&#x60;. A second start is an idempotent no-op (the geofence is NOT re-run on the retry of an already-started job). The job must be started before completion can be requested.  **Geofence:** the OPTIONAL body carries the guard&#39;s GPS fix at the moment of pressing start. On a booking with site coordinates (&#x60;lat&#x60;/&#x60;lng&#x60; pinned at create) the fix must be within **50m** of the pin, widened by the reported &#x60;accuracy_m&#x60; capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with &#x60;error.code &#x3D; NOT_AT_SITE&#x60; (message carries the measured distance in whole meters). A pinned booking started with NO fix (absent body/coordinates — e.g. an older app build) is 409 &#x60;error.code &#x3D; GPS_REQUIRED&#x60; (fail closed; clients branch on the code and localize). Legacy address-only bookings (no pin) skip the check entirely. Admin starts bypass the geofence (support acts on behalf, off-site). The accepted fix is persisted server-side as audit evidence; body &#x60;lat&#x60;/&#x60;lng&#x60; are both-or-neither (400 otherwise, like create-booking). 
   ///
   /// Parameters:
   /// * [id] 
+  /// * [startJobRequest] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -1451,6 +1453,7 @@ class BookingsApi {
   /// Throws [DioException] if API call or serialization fails
   Future<Response<InlineObject>> startBooking({ 
     required String id,
+    StartJobRequest? startJobRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -1474,11 +1477,31 @@ class BookingsApi {
         ],
         ...?extra,
       },
+      contentType: 'application/json',
       validateStatus: validateStatus,
     );
 
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(StartJobRequest);
+      _bodyData = startJobRequest == null ? null : _serializers.serialize(startJobRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
     final _response = await _dio.request<Object>(
       _path,
+      data: _bodyData,
       options: _options,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,

@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/customer_avatar_controller.dart';
 import '../../core/controllers/guard_avatar_controller.dart';
+import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/controllers/session_controller.dart';
@@ -26,11 +27,29 @@ class ProfileScreen extends ConsumerWidget {
 
   Future<void> _logout(BuildContext context, WidgetRef ref) async {
     final notifier = ref.read(profileControllerProvider.notifier);
+    // Pre-logout ACTIVE-JOB check (guard-enrolled accounts, regardless of the active mode): if
+    // an assignment is still in flight, the dialog warns that live GPS to the customer stops
+    // until the guard signs back in — logout stays ALLOWED (the job is server-owned and resumes
+    // after the PIN re-login). Best-effort + fail-open: an offline logout must never be blocked
+    // by this read, so any error/timeout just skips the warning.
+    var warnActiveJob = false;
+    final user = ref.read(sessionProvider).user;
+    if (user != null && user.isEnrolledIn('guard')) {
+      try {
+        final jobs = await ref
+            .read(guardJobsControllerProvider.future)
+            .timeout(const Duration(seconds: 3));
+        warnActiveJob = GuardJobsController.active(jobs).isNotEmpty;
+      } catch (_) {
+        // Fail-open: no warning rather than a blocked logout.
+      }
+    }
+    if (!context.mounted) return;
     final yes = await showDialog<bool>(
       context: context,
       // Design overlay rgba(8,20,15,0.55) has no token — nearest is colorBrand @ 55%.
       barrierColor: PgTokens.colorBrand.withValues(alpha: 0.55),
-      builder: (c) => const _LogoutDialog(),
+      builder: (c) => _LogoutDialog(warnActiveJob: warnActiveJob),
     );
     if (yes != true) return;
     // On success the session flips to unauthenticated and the router redirects to auth.
@@ -153,7 +172,12 @@ class ProfileScreen extends ConsumerWidget {
 /// centered title/description, then stacked full-width danger CTA + sunken cancel.
 /// Pops `true` to confirm — the logout call itself stays in [ProfileScreen._logout].
 class _LogoutDialog extends ConsumerWidget {
-  const _LogoutDialog();
+  const _LogoutDialog({this.warnActiveJob = false});
+
+  /// When the guard has an ACTIVE assignment: swap the body copy for a warning that live GPS to
+  /// the customer stops until they sign back in (logout is still allowed — the job resumes on
+  /// the PIN re-login).
+  final bool warnActiveJob;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -173,32 +197,46 @@ class _LogoutDialog extends ConsumerWidget {
             Container(
               width: 60,
               height: 60,
-              decoration: const BoxDecoration(
-                color: PgTokens.colorDangerBg,
+              decoration: BoxDecoration(
+                color: warnActiveJob
+                    ? PgTokens.colorAmber50
+                    : PgTokens.colorDangerBg,
                 shape: BoxShape.circle,
               ),
-              child: const Icon(Icons.logout,
-                  size: 26, color: PgTokens.colorDanger),
+              child: Icon(
+                  warnActiveJob ? Icons.work_history_outlined : Icons.logout,
+                  size: 26,
+                  color: warnActiveJob
+                      ? PgTokens.colorAmber700
+                      : PgTokens.colorDanger),
             ),
             // Design: 18px below the icon circle (non-token design metric).
             const SizedBox(height: 18),
             Text(
-              isThai ? 'ออกจากระบบ?' : 'Log out?',
+              warnActiveJob
+                  ? (isThai ? 'มีงานค้างอยู่' : 'You have an active job')
+                  : (isThai ? 'ออกจากระบบ?' : 'Log out?'),
               textAlign: TextAlign.center,
               style: const TextStyle(fontSize: 19, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: PgTokens.space2),
             Text(
-              isThai
-                  ? 'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง'
-                  : 'Session revoked and local tokens cleared. Sign in with your PIN again.',
+              warnActiveJob
+                  ? (isThai
+                      ? 'คุณมีงานที่กำลังดำเนินอยู่ — ออกจากระบบแล้วตำแหน่ง GPS จะหยุดส่งให้ลูกค้าจนกว่าจะเข้าสู่ระบบด้วย PIN อีกครั้ง งานจะไม่ถูกยกเลิกและกลับมาทำต่อได้'
+                      : 'A job is in progress — logging out stops live GPS to the customer until you sign back in with your PIN. The job is not cancelled and you can resume it.')
+                  : (isThai
+                      ? 'เซสชันจะถูกยกเลิกและล้างโทเคนในเครื่อง คุณต้องเข้าสู่ระบบด้วย PIN อีกครั้ง'
+                      : 'Session revoked and local tokens cleared. Sign in with your PIN again.'),
               textAlign: TextAlign.center,
               style: const TextStyle(
                   fontSize: 13.5, color: PgTokens.colorTextMuted),
             ),
             const SizedBox(height: PgTokens.space6),
             PgPrimaryButton(
-              label: isThai ? 'ออกจากระบบ' : 'Log out',
+              label: warnActiveJob
+                  ? (isThai ? 'ออกจากระบบต่อ' : 'Log out anyway')
+                  : (isThai ? 'ออกจากระบบ' : 'Log out'),
               color: PgTokens.colorDanger,
               onPressed: () => Navigator.pop(context, true),
             ),

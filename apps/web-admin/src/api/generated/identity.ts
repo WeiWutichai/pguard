@@ -67,6 +67,13 @@ export interface paths {
          *     single-role user gets `available_roles: [their_role]` and the access token is minted with
          *     their registration/primary role exactly as before. When `available_roles` has >1 entry the
          *     app can show a role picker and call `POST /auth/switch-role`.
+         *
+         *     **Single-device sessions:** a successful GUARD/CUSTOMER login (including the 2FA-verify
+         *     completion) force-revokes every PREVIOUS session of the account (`token_revocation_version`
+         *     bump + every refresh family revoked) BEFORE the new session is created — the account is only
+         *     ever live on one device. A kicked device's next `POST /auth/refresh` returns 401 with
+         *     `error.code = SESSION_SUPERSEDED`. ADMIN logins never kick (web-admin multi-browser stays
+         *     allowed). `POST /auth/switch-role` does not kick (it is not a login).
          */
         post: operations["login"];
         delete?: never;
@@ -89,8 +96,14 @@ export interface paths {
          * @description Validates the presented refresh token (from the body or the `refresh_token`
          *     cookie). On success it rotates: the presented token is revoked and a new
          *     access+refresh pair is issued in the SAME family. **Reuse detection:** presenting
-         *     a token that was already rotated revokes the entire family and returns 401.
-         *     Expired or unknown tokens also return a generic 401.
+         *     a token that was already rotated while its family is still live revokes the entire
+         *     family and returns a generic 401. Expired or unknown tokens also return a generic 401.
+         *
+         *     **`SESSION_SUPERSEDED` (single-device sessions):** when the presented token's WHOLE
+         *     family is revoked — this device was kicked by a newer guard/customer login, logged
+         *     out, or force-revoked — the 401 carries the machine-readable
+         *     `error.code = SESSION_SUPERSEDED` so the app can show "บัญชีนี้ถูกเข้าสู่ระบบจากอุปกรณ์อื่น"
+         *     (signed in from another device) and route to login instead of a generic session-expired.
          */
         post: operations["refresh"];
         delete?: never;
@@ -977,6 +990,22 @@ export interface components {
                 "application/json": components["schemas"]["ErrorBody"];
             };
         };
+        /**
+         * @description The refresh token was rejected. An invalid/expired/replayed token carries the generic
+         *     `error.code = UNAUTHORIZED`. When the token's WHOLE family is revoked — this device was
+         *     KICKED by a newer guard/customer login (single-device sessions), logged out, or
+         *     force-revoked — the code is `SESSION_SUPERSEDED`, e.g.
+         *     `{ "error": { "code": "SESSION_SUPERSEDED", "message": "This session was signed out because the account logged in on another device" } }`.
+         *     Clients should branch on `error.code`, never the message text.
+         */
+        RefreshUnauthorized: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
         /** @description Malformed request (bad role/pin shape, or an invalid/expired/used token) */
         BadRequest: {
             headers: {
@@ -1142,7 +1171,7 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["TokenPairOk"];
-            401: components["responses"]["Unauthorized"];
+            401: components["responses"]["RefreshUnauthorized"];
         };
     };
     logout: {

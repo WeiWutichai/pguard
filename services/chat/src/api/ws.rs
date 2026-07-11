@@ -117,7 +117,9 @@ async fn session<S: ChatDeps>(socket: WebSocket, user: AuthUser, token: Option<S
                     let frame: IncomingChatMessage = match serde_json::from_str(text.as_str()) {
                         Ok(f) => f,
                         Err(e) => {
-                            let _ = sink.send(err_frame(&format!("invalid message: {e}"))).await;
+                            let _ = sink
+                                .send(err_frame(None, &format!("invalid message: {e}")))
+                                .await;
                             continue;
                         }
                     };
@@ -141,7 +143,11 @@ async fn session<S: ChatDeps>(socket: WebSocket, user: AuthUser, token: Option<S
                             // Participant gate / read-only / not-found surface as a CLIENT-SAFE
                             // error frame — the socket stays open. Database/Redis detail is masked
                             // (parity with the HTTP IntoResponse path; no sqlx detail on the wire).
-                            let _ = sink.send(err_frame(&client_safe_message(&e))).await;
+                            // A machine-readable `code` rides along where one exists (`read_only`)
+                            // so the client can lock its composer instead of dropping the frame.
+                            let _ = sink
+                                .send(err_frame(err_code(&e), &client_safe_message(&e)))
+                                .await;
                         }
                     }
                 }
@@ -213,12 +219,26 @@ async fn session<S: ChatDeps>(socket: WebSocket, user: AuthUser, token: Option<S
     tracing::info!(user = %uid, "chat ws session closed");
 }
 
-fn err_frame(message: &str) -> Message {
-    Message::Text(
-        json!({ "type": "error", "message": message })
-            .to_string()
-            .into(),
-    )
+/// Build a `{"type":"error", ["code":…,] "message":…}` frame. `code` is OPTIONAL and additive:
+/// older clients that only read `message` (or drop error frames entirely) are unaffected, while
+/// newer clients act on the machine-readable code (e.g. `read_only` → lock the composer).
+fn err_frame(code: Option<&str>, message: &str) -> Message {
+    let mut frame = json!({ "type": "error", "message": message });
+    if let Some(code) = code {
+        frame["code"] = json!(code);
+    }
+    Message::Text(frame.to_string().into())
+}
+
+/// Machine-readable code for a rejected send, so a silently-dropped frame becomes actionable
+/// client-side. On the WS send path `Conflict` is raised ONLY by the read-only gate in
+/// `repo::send_message` (booking completed/cancelled), so the mapping is exact; every other
+/// rejection carries no code and clients fall back to the human-readable `message`.
+fn err_code(err: &AppError) -> Option<&'static str> {
+    match err {
+        AppError::Conflict(_) => Some("read_only"),
+        _ => None,
+    }
 }
 
 /// Map an `AppError` to a CLIENT-SAFE WS message, mirroring `AppError`'s HTTP `IntoResponse`
@@ -379,6 +399,37 @@ mod tests {
             client_safe_message(&AppError::Conflict("Conversation is read-only".into())),
             "Conversation is read-only"
         );
+    }
+
+    #[test]
+    fn read_only_rejection_carries_a_machine_readable_code() {
+        // The read-only gate (the only Conflict on the send path) gets `code: "read_only"` so the
+        // client can lock its composer; other rejections carry NO code (backward-compatible shape).
+        let read_only = AppError::Conflict("Conversation is read-only".into());
+        assert_eq!(err_code(&read_only), Some("read_only"));
+        assert_eq!(
+            err_code(&AppError::Forbidden("Not a participant".into())),
+            None
+        );
+
+        let frame = err_frame(err_code(&read_only), &client_safe_message(&read_only));
+        let Message::Text(text) = frame else {
+            panic!("error frame must be a text frame");
+        };
+        let v: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        assert_eq!(v["type"], json!("error"));
+        assert_eq!(v["code"], json!("read_only"));
+        assert_eq!(v["message"], json!("Conversation is read-only"));
+
+        // No code → the field is ABSENT (not null), matching the pre-existing frame shape.
+        let frame = err_frame(None, "invalid message: boom");
+        let Message::Text(text) = frame else {
+            panic!("error frame must be a text frame");
+        };
+        let v: serde_json::Value = serde_json::from_str(text.as_str()).unwrap();
+        assert_eq!(v["type"], json!("error"));
+        assert!(v.get("code").is_none(), "no code field without a code");
+        assert_eq!(v["message"], json!("invalid message: boom"));
     }
 
     #[tokio::test]

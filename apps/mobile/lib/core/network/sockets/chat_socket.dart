@@ -8,6 +8,12 @@ abstract class ChatFeed {
   /// Persisted messages arriving over the socket — both the counterpart's messages AND the
   /// echo of this client's own sends (so the controller must DEDUPE by message id).
   Stream<ChatMessage> get messages;
+
+  /// Server ERROR frames — the reply to a REJECTED send (read-only conversation, participant
+  /// gate, malformed frame). Split out of [messages] (which drops non-message frames) so a
+  /// refused send is surfaced to the user instead of vanishing silently.
+  Stream<ChatWsError> get errors;
+
   Future<void> connect();
 
   /// Send a message frame. `conversationId` travels IN the frame (it is NEVER in the URL — the
@@ -56,6 +62,15 @@ class ChatSocket implements ChatFeed {
       .map(ChatMessage.tryParse)
       .where((m) => m != null)
       .cast<ChatMessage>();
+
+  /// Decoded server error frames (`{"type":"error",…}`) — the frames [messages] drops. A rejected
+  /// send (e.g. the booking completed while the thread was open → `code: "read_only"`) reaches
+  /// the controller here instead of disappearing.
+  @override
+  Stream<ChatWsError> get errors => _ws.messages
+      .map(ChatWsError.tryParse)
+      .where((e) => e != null)
+      .cast<ChatWsError>();
 
   @override
   Future<void> connect() => _ws.connect();

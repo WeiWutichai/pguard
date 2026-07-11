@@ -19,7 +19,8 @@ import '../booking/widgets/pg_map.dart';
 /// Incoming-job detail (design `Mobile - Guard App.html` ③): a 160px map preview with a floating
 /// glass back button, then a rounded-top sheet — place title + service/hours, a customer row and a
 /// time row (with the fee) in 40×40 icon tiles — and an accept/decline footer. accept (POST) →
-/// the active-job screen; decline (first-come local dismiss) → back to the dashboard.
+/// the active-job screen; decline ("ไม่รับงาน" — a server-tracked per-guard skip, the booking
+/// stays open to other guards) → back to the dashboard.
 class JobDetailScreen extends ConsumerWidget {
   const JobDetailScreen({super.key, required this.bookingId});
 
@@ -53,27 +54,28 @@ class JobDetailScreen extends ConsumerWidget {
     }
   }
 
-  // First-come-accept: SKIPPING an unaccepted offer is a LOCAL dismiss, not a server call — the
-  // booking stays open for other guards, so the customer is NOT cancelled/notified. Confirm so the
-  // guard understands skipping ≠ cancelling, then clarify with the result snackbar.
+  // First-come-accept: DECLINING an unaccepted offer is a server-tracked per-guard skip
+  // (POST /bookings/{id}/skip via the controller) — the booking stays open for other guards, so
+  // the customer is NOT cancelled/notified. Confirm so the guard understands declining ≠
+  // cancelling, then clarify with the result snackbar.
   Future<void> _skip(BuildContext context, WidgetRef ref) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final yes = await showConfirmDialog(
       context,
       isThai: isThai,
-      title: isThai ? 'ข้ามงานนี้?' : 'Skip this job?',
+      title: isThai ? 'ไม่รับงานนี้?' : 'Decline this job?',
       message: isThai
           ? 'งานจะยังเปิดให้เจ้าหน้าที่คนอื่นรับ — ไม่ใช่การยกเลิก'
           : "The job stays open to other guards — this isn't a cancellation.",
-      confirmLabel: isThai ? 'ข้าม' : 'Skip',
+      confirmLabel: isThai ? 'ไม่รับงาน' : 'Decline',
     );
     if (!yes || !context.mounted) return;
     ref.read(guardJobsControllerProvider.notifier).dismiss(bookingId);
     _snack(
       context,
       isThai
-          ? 'ข้ามงานนี้แล้ว — งานยังเปิดให้เจ้าหน้าที่อื่น'
-          : 'Skipped — still open to other guards',
+          ? 'ไม่รับงานนี้แล้ว — งานยังเปิดให้เจ้าหน้าที่อื่น'
+          : 'Declined — still open to other guards',
     );
     context.pop();
   }
@@ -127,7 +129,8 @@ class _Plain extends StatelessWidget {
             top: PgTokens.space2,
             left: PgTokens.space3,
             child: IconButton(
-              icon: const Icon(Icons.arrow_back, color: PgTokens.colorTextStrong),
+              icon:
+                  const Icon(Icons.arrow_back, color: PgTokens.colorTextStrong),
               onPressed: () => context.pop(),
             ),
           ),
@@ -292,10 +295,11 @@ class _Sheet extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final hours = booking.hours;
-    // #127: the customer's REAL NAME, resolved from the IDOR-gated `/customers/{id}/public` read.
-    // It is only readable once this guard is ASSIGNED (active booking) — so an UNACCEPTED offer
-    // (`requested`) degrades to null (403 not-yet-assigned) and falls back to the short `#id` ref,
-    // which is exactly the right privacy behaviour (no name leak before the guard takes the job).
+    // The customer's REAL NAME, resolved from the `/customers/{id}/public` read. Since the
+    // 2026-07-11 product decision, any guard may read it from the job OFFER onwards (the old
+    // active-booking gate 403'd unaccepted offers into a cryptic `#id`), so the name shows on
+    // pending offers AND finished jobs in the work history; the short `#id` ref remains only as
+    // the degraded fallback (no profile row / network error).
     final customerProfile = ref
         .watch(customerPublicProfileProvider(booking.customerId))
         .valueOrNull;
@@ -310,21 +314,19 @@ class _Sheet extends ConsumerWidget {
     final guardCount = booking.guardCount ?? 1;
 
     final rows = <Widget>[
-      // Customer — the customer's real name once this guard is assigned, else a short id ref.
+      // Customer — the customer's real name (readable from the offer onwards), else a short id ref.
       _DetailRow(
         icon: Icons.person_outline,
         label: isThai ? 'ลูกค้า' : 'Customer',
         value: customerValue,
-        // #163: the customer's real PHOTO once this guard is assigned (presigned, IDOR-gated), else
-        // the person glyph.
+        // #163: the customer's real PHOTO (presigned), else the person glyph.
         leadingImageUrl: customerAvatarUrl,
       ),
       _DetailRow(
         icon: Icons.calendar_today_outlined,
         label: isThai ? 'เวลา' : 'Time',
-        value:
-            JobDetailTime.window(booking.scheduledAt, hours, DateTime.now(),
-                isThai: isThai),
+        value: JobDetailTime.window(booking.scheduledAt, hours, DateTime.now(),
+            isThai: isThai),
         trailing: Text(
           Money.format(feeSatang),
           style: const TextStyle(
@@ -411,7 +413,8 @@ class _Sheet extends ConsumerWidget {
                           ? const BoxDecoration()
                           : const BoxDecoration(
                               border: Border(
-                                  top: BorderSide(color: PgTokens.colorBorder))),
+                                  top:
+                                      BorderSide(color: PgTokens.colorBorder))),
                       child: rows[i],
                     ),
                   if (!canAccept)
@@ -435,15 +438,16 @@ class _Sheet extends ConsumerWidget {
                   20, 8, 20, 16 + MediaQuery.of(context).padding.bottom),
               child: Row(
                 children: [
-                  // The local-skip affordance: NOT a cancel — it hides this offer locally and the
-                  // job stays open to other guards. Labelled "ข้าม/Skip" (was the misleading
-                  // "ปฏิเสธ/Decline") so the guard doesn't read it as cancelling on the customer.
+                  // The decline affordance: NOT a cancel — a server-tracked per-guard skip; the
+                  // job stays open to other guards. Labelled "ไม่รับงาน/Decline" (2026-07-11 —
+                  // clearer than the earlier "ข้าม/Skip") with the confirm dialog + snackbar
+                  // spelling out that it isn't cancelling on the customer.
                   // ~90px in the mockup; widened so the Thai label clears Flutter's default
                   // button padding without wrapping.
                   SizedBox(
                     width: 116,
                     child: PgPrimaryButton(
-                      label: isThai ? 'ข้าม' : 'Skip',
+                      label: isThai ? 'ไม่รับงาน' : 'Decline',
                       color: PgTokens.colorSunken,
                       foreground: PgTokens.colorTextStrong,
                       onPressed: onSkip,

@@ -28,8 +28,8 @@ void main() {
                 guard: guard,
                 selected: false,
                 onTap: () {},
-                onViewReviews: () =>
-                    showGuardReviewsSheet(context: context, guardId: guard.guardId),
+                onViewReviews: () => showGuardReviewsSheet(
+                    context: context, guardId: guard.guardId),
               ),
             ),
           ),
@@ -89,10 +89,8 @@ void main() {
     expect(find.text('Older review'), findsOneWidget);
 
     // Newest-first: the newer review's comment appears above the older one's.
-    final newerY =
-        tester.getTopLeft(find.text('Newer review')).dy;
-    final olderY =
-        tester.getTopLeft(find.text('Older review')).dy;
+    final newerY = tester.getTopLeft(find.text('Newer review')).dy;
+    final olderY = tester.getTopLeft(find.text('Older review')).dy;
     expect(newerY, lessThan(olderY));
   });
 
@@ -110,8 +108,9 @@ void main() {
     await tester.pumpAndSettle();
 
     // Friendly empty state (Thai default). The unique subtitle anchors the assertion to the
-    // sheet (the card itself also shows a "ยังไม่มีรีวิว" no-rating label, hence the substring
-    // count of two — the sheet's distinctive copy proves the empty state rendered).
+    // sheet (the card itself also shows a "ยังไม่มีรีวิว" no-rating label — with no documents
+    // indicator here since this fixture's has_documents is unknown — hence the exact count of
+    // two; the sheet's distinctive copy proves the empty state rendered).
     expect(find.textContaining('ยังไม่มีรีวิวจากลูกค้า'), findsOneWidget);
     expect(find.text('ยังไม่มีรีวิว'), findsNWidgets(2));
   });

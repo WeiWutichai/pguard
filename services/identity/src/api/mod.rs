@@ -185,7 +185,15 @@ pub async fn login(
 
 /// Mint the access token (for `role`) plus a new refresh family and build the LOGIN response
 /// (body and cookies), stamping the login device context. Shared by `login` (no-2FA path) and
-/// `verify_2fa` (the second factor succeeded), so both issue tokens identically. The body is a
+/// `verify_2fa` (the second factor succeeded), so both issue tokens identically.
+///
+/// **Single-device sessions:** when the minted ACTIVE role is guard/customer, this login first
+/// force-revokes every existing session (trv bump + all refresh families) so the account is only
+/// ever live on ONE device — the kicked device's next refresh gets 401 `SESSION_SUPERSEDED`.
+/// Admin logins never kick (web-admin multi-browser is allowed). `switch_role` does NOT go
+/// through here (a role switch must not kick the session that is switching).
+///
+/// The body is a
 /// `LoginTokenPair`: the usual `TokenPair` fields PLUS `available_roles` (the account's enrolled
 /// `user_roles` set) so a multi-role app can offer a role switch. The access token's active role
 /// is the supplied `role` (the registration/primary role on login) — unchanged minting
@@ -228,6 +236,31 @@ async fn issue_login_tokens(
     let active = active_role_for(role, &available_roles)
         .ok_or_else(|| AppError::Unauthorized("Invalid credentials".to_string()))?;
 
+    // Single-device sessions: a fresh GUARD/CUSTOMER login kicks every previous session of the
+    // account — bump `token_revocation_version` + revoke every refresh family (one tx) BEFORE
+    // the new family is created below, so only the new login survives. A kicked device's refresh
+    // then hits the fully-revoked-family path → 401 `SESSION_SUPERSEDED`. ADMIN logins are
+    // exempt (web-admin multi-browser stays allowed). The Redis marker (rejects outstanding
+    // ACCESS tokens at once) is LENIENT here, unlike change_password/reset_pin: the families are
+    // already revoked in the DB, so on a marker failure an old access token lingers at most its
+    // TTL — never fail a valid login over it.
+    let trv = if active == ROLE_ADMIN {
+        trv
+    } else {
+        let new_version = repo::revoke_all(&state.db, user_id).await?;
+        let mut redis = state.redis_conn.clone();
+        if let Err(e) = crate::state::mark_user_revoked(&mut redis, user_id, new_version).await {
+            tracing::warn!(
+                %user_id,
+                "single-device login: revocation marker write failed — families already revoked \
+                 in DB; old access tokens live until natural expiry: {e}"
+            );
+        }
+        new_version
+    };
+
+    // Minted with the CURRENT (post-kick) version, so the fresh login's own access token passes
+    // the gateway's revocation-version check.
     let (access_token, _jti) = encode_jwt_with_key(
         user_id,
         &active,
@@ -584,15 +617,35 @@ pub async fn refresh(
 
     match decide(&located.stored, chrono::Utc::now()) {
         RotationDecision::ReuseDetected => {
-            // Token reuse (RFC 6749 §6): a previously-rotated token was replayed. Kill the
-            // entire family and reject. (alert hook is a followup — see SLICE notes.)
-            tracing::warn!(
-                user_id = %located.user_id,
-                family_id = %located.family_id,
-                "refresh-token reuse detected — revoking family"
-            );
-            repo::revoke_family(&state.db, located.family_id).await?;
-            Err(generic_401())
+            // Two distinct cases share the "presented token is revoked" signal:
+            //  (a) the family still holds a LIVE token → the presented one was rotated away and
+            //      is now REPLAYED (RFC 6749 §6 reuse). Kill the entire family and reject with
+            //      the generic 401. (alert hook is a followup — see SLICE notes.)
+            //  (b) the WHOLE family is already revoked — superseded by a newer single-device
+            //      login (the kick in `issue_login_tokens`), a logout, or a force-revoke-all →
+            //      401 with the machine-readable `SESSION_SUPERSEDED` code so the kicked device
+            //      can tell "signed in elsewhere" apart from a plain bad/expired token.
+            if repo::family_has_live_token(&state.db, located.family_id).await? {
+                tracing::warn!(
+                    user_id = %located.user_id,
+                    family_id = %located.family_id,
+                    "refresh-token reuse detected — revoking family"
+                );
+                repo::revoke_family(&state.db, located.family_id).await?;
+                Err(generic_401())
+            } else {
+                tracing::info!(
+                    user_id = %located.user_id,
+                    family_id = %located.family_id,
+                    "refresh presented for a fully-revoked family — session superseded"
+                );
+                Err(AppError::UnauthorizedCode {
+                    code: "SESSION_SUPERSEDED",
+                    message: "This session was signed out because the account logged in on \
+                              another device"
+                        .to_string(),
+                })
+            }
         }
         RotationDecision::Expired => Err(generic_401()),
         // Absolute rotation ceiling (RFC-6749-aligned hardening) — now decided in
@@ -2954,5 +3007,270 @@ mod multi_role_tests {
             Some("valid"),
             "the existence probe must run BEFORE the jti burn"
         );
+    }
+
+    // ===================== Single-device sessions (login kicks prior sessions) =====================
+    //
+    // A fresh guard/customer login force-revokes every PREVIOUS session (trv bump + all refresh
+    // families) so the account is live on ONE device only; the kicked device's refresh gets a
+    // machine-readable 401 `SESSION_SUPERSEDED`. Admin logins are exempt. NOTE: the LENIENT
+    // marker-failure path (Redis down on login → warn + continue) cannot be exercised here —
+    // `ConnectionManager` awaits a live initial connect, so a stubbed/dead Redis can't be injected
+    // (same limitation as `state::tests::mark_user_revoked_writes_marker_and_returns_ok`).
+
+    fn auth_router(st: AppState) -> Router {
+        Router::new()
+            .route("/auth/login", post(login))
+            .route("/auth/refresh", post(refresh))
+            .route("/auth/switch-role", post(switch_role))
+            .with_state(st)
+    }
+
+    fn post_login(identifier: &str, password: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/login")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "identifier": identifier, "password": password }).to_string(),
+            ))
+            .unwrap()
+    }
+
+    fn post_refresh(refresh_token: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/refresh")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "refresh_token": refresh_token }).to_string(),
+            ))
+            .unwrap()
+    }
+
+    async fn body_json(res: axum::response::Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .expect("read body");
+        serde_json::from_slice(&bytes).expect("json body")
+    }
+
+    async fn db_trv(pool: &sqlx::PgPool, user_id: Uuid) -> i32 {
+        let (trv,): (i32,) =
+            sqlx::query_as("SELECT token_revocation_version FROM identity.users WHERE id = $1")
+                .bind(user_id)
+                .fetch_one(pool)
+                .await
+                .expect("read trv");
+        trv
+    }
+
+    /// THE single-device test: a guard's fresh login revokes the pre-existing refresh family —
+    /// the kicked device's refresh returns 401 with the `SESSION_SUPERSEDED` code (so the app
+    /// can show "logged in from another device"), while the NEW login's own access token is
+    /// stamped with the post-kick trv (passes the gateway check), the `user_trv` marker is
+    /// published, and the new refresh token rotates normally (its family was created AFTER the
+    /// revoke).
+    #[tokio::test]
+    async fn guard_login_kicks_previous_sessions_with_session_superseded() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        // The "old device": a pre-existing session (refresh family) from an earlier login.
+        let old_refresh = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("old family");
+
+        // Fresh login on a "new device" (seed_user's password is "x").
+        let res = app.clone().oneshot(post_login(&phone, "x")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "login succeeds");
+        let json = body_json(res).await;
+        let new_access = json["data"]["access_token"].as_str().unwrap().to_string();
+        let new_refresh = json["data"]["refresh_token"].as_str().unwrap().to_string();
+
+        // The kicked device: its refresh is rejected with the MACHINE-READABLE code.
+        let res = app
+            .clone()
+            .oneshot(post_refresh(&old_refresh))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "the old session is revoked"
+        );
+        let json = body_json(res).await;
+        assert_eq!(
+            json["error"]["code"], "SESSION_SUPERSEDED",
+            "a kicked device gets the SESSION_SUPERSEDED code, not a generic 401"
+        );
+
+        // The new login's access token carries the POST-kick trv (not the stale pre-login one)…
+        let dk = jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes());
+        let claims = shared::auth::decode_jwt_with_key(&new_access, &dk).expect("decode");
+        let trv = db_trv(&pool, user_id).await;
+        assert!(trv > 0, "the login bumped token_revocation_version");
+        assert_eq!(
+            claims.trv, trv as i64,
+            "the fresh login's own token must pass the gateway's trv check"
+        );
+        // …and the revocation marker was published (rejects lingering OLD access tokens at once).
+        let marker: Option<i32> = redis
+            .get(format!("user_trv:{user_id}"))
+            .await
+            .expect("read marker");
+        assert_eq!(marker, Some(trv), "the user_trv marker is published");
+
+        // The new refresh family survives the kick (created AFTER the revoke) and rotates.
+        let res = app.oneshot(post_refresh(&new_refresh)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the new login's own refresh token works"
+        );
+
+        cleanup(&pool, user_id).await;
+        let _: () = redis.del(format!("user_trv:{user_id}")).await.unwrap();
+    }
+
+    /// Admin logins are EXEMPT from the single-device kick: web-admin multi-browser stays
+    /// allowed — an admin login revokes nothing (no trv bump, prior refresh families still
+    /// rotate).
+    #[tokio::test]
+    async fn admin_login_does_not_kick_existing_sessions() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Admins have an EMPTY user_roles set (enrolled via nothing — the primary role rules).
+        let user_id = seed_user(&pool, "admin", &[]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let old_refresh = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("old family");
+        let trv_before = db_trv(&pool, user_id).await;
+
+        let res = app.clone().oneshot(post_login(&phone, "x")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "admin login succeeds");
+
+        assert_eq!(
+            db_trv(&pool, user_id).await,
+            trv_before,
+            "an admin login must NOT bump token_revocation_version"
+        );
+        let res = app.oneshot(post_refresh(&old_refresh)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the other browser's session still refreshes (no kick for admin)"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// `POST /auth/switch-role` does NOT pass through the login kick: switching after a login
+    /// works with the login-issued access token (which carries the post-kick trv), and the
+    /// login's own refresh family survives the switch (family-scoped mint, no trv bump).
+    #[tokio::test]
+    async fn switch_role_after_login_does_not_kick_the_session() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let res = app.clone().oneshot(post_login(&phone, "x")).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let json = body_json(res).await;
+        let access = json["data"]["access_token"].as_str().unwrap().to_string();
+        let refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+        let trv_after_login = db_trv(&pool, user_id).await;
+
+        // Switch with the LOGIN token — proves the fresh token passes the trv check post-kick.
+        let res = app
+            .clone()
+            .oneshot(json_post(
+                "/auth/switch-role",
+                &access,
+                serde_json::json!({ "role": "guard" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "switch-role works after login"
+        );
+
+        // The switch is family-scoped: no trv bump, and the login's refresh still rotates.
+        assert_eq!(
+            db_trv(&pool, user_id).await,
+            trv_after_login,
+            "switch-role must not bump token_revocation_version"
+        );
+        let res = app.oneshot(post_refresh(&refresh_tok)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "the login session survives a role switch (no kick)"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// A GENUINE refresh-token replay (the rotated-away token is presented again while its
+    /// family lives on) keeps the RFC 6749 §6 behaviour: family killed, GENERIC 401 — the
+    /// `SESSION_SUPERSEDED` code is reserved for fully-revoked families. The follow-up refresh
+    /// on the killed family THEN reports `SESSION_SUPERSEDED` (whole family revoked).
+    #[tokio::test]
+    async fn genuine_replay_stays_generic_and_kills_the_family() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let first = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
+            .await
+            .expect("family");
+
+        // Legit rotation: `first` is consumed, a successor is minted (family stays live).
+        let res = app.clone().oneshot(post_refresh(&first)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "first rotation succeeds");
+        let successor = body_json(res).await["data"]["refresh_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        // REPLAY the consumed token while the successor is live → generic 401 + family kill.
+        let res = app.clone().oneshot(post_refresh(&first)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(res).await;
+        assert_eq!(
+            json["error"]["code"], "UNAUTHORIZED",
+            "a real replay stays a GENERIC 401 (no oracle for attackers)"
+        );
+
+        // The kill revoked the WHOLE family — the successor now reports superseded.
+        let res = app.oneshot(post_refresh(&successor)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        let json = body_json(res).await;
+        assert_eq!(
+            json["error"]["code"], "SESSION_SUPERSEDED",
+            "after the reuse kill the family is fully revoked"
+        );
+
+        cleanup(&pool, user_id).await;
     }
 }

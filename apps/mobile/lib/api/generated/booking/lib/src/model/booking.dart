@@ -24,6 +24,7 @@ part 'booking.g.dart';
 /// * [tip] - Up-front tip (exact decimal)
 /// * [lat] - Site latitude (null when not provided at create).
 /// * [lng] - Site longitude (null when not provided at create).
+/// * [workStartedAt] - When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
 /// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
 /// * [createdAt] 
 /// * [updatedAt] 
@@ -69,6 +70,10 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// Site longitude (null when not provided at create).
   @BuiltValueField(wireName: r'lng')
   double? get lng;
+
+  /// When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
+  @BuiltValueField(wireName: r'work_started_at')
+  DateTime? get workStartedAt;
 
   /// When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
   @BuiltValueField(wireName: r'paid_at')
@@ -167,6 +172,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       yield serializers.serialize(
         object.lng,
         specifiedType: const FullType(double),
+      );
+    }
+    if (object.workStartedAt != null) {
+      yield r'work_started_at';
+      yield serializers.serialize(
+        object.workStartedAt,
+        specifiedType: const FullType(DateTime),
       );
     }
     if (object.paidAt != null) {
@@ -292,6 +304,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(double),
           ) as double;
           result.lng = valueDes;
+          break;
+        case r'work_started_at':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(DateTime),
+          ) as DateTime;
+          result.workStartedAt = valueDes;
           break;
         case r'paid_at':
           final valueDes = serializers.deserialize(

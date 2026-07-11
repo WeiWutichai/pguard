@@ -45,16 +45,15 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   Future<void> _submit() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     int? opt(int v) => v > 0 ? v : null;
-    final outcome =
-        await ref.read(reviewControllerProvider.notifier).submit(
-              assignmentId: widget.bookingId,
-              overallRating: _overall,
-              punctuality: opt(_punctuality),
-              professionalism: opt(_professionalism),
-              communication: opt(_communication),
-              appearance: opt(_appearance),
-              reviewText: _comment.text,
-            );
+    final outcome = await ref.read(reviewControllerProvider.notifier).submit(
+          assignmentId: widget.bookingId,
+          overallRating: _overall,
+          punctuality: opt(_punctuality),
+          professionalism: opt(_professionalism),
+          communication: opt(_communication),
+          appearance: opt(_appearance),
+          reviewText: _comment.text,
+        );
     if (!mounted) return;
     switch (outcome) {
       // A fresh submit AND an already-reviewed booking both END the review flow successfully:
@@ -101,7 +100,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                   ? 'ความคิดเห็นของคุณช่วยพัฒนาบริการของเรา'
                   : 'Your feedback helps us improve our service.'),
           textAlign: TextAlign.center,
-          style: const TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
+          style:
+              const TextStyle(fontSize: 13.5, color: PgTokens.colorTextMuted),
         ),
         actionsAlignment: MainAxisAlignment.center,
         actions: [
@@ -112,8 +112,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, false),
-            style: FilledButton.styleFrom(
-                backgroundColor: PgTokens.colorGreen800),
+            style:
+                FilledButton.styleFrom(backgroundColor: PgTokens.colorGreen800),
             child: Text(isThai ? 'กลับหน้าหลัก' : 'Back to home'),
           ),
         ],
@@ -141,20 +141,33 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
   /// `final_amount` / `refund_amount` / `actual_hours`. If the settle hasn't propagated (no row),
   /// the sheet falls back to the booking-derived estimate — it never blocks. Reuses #99's
   /// [showJobReceiptSheet].
+  ///
+  /// The booking snapshot is AWAITED (not `.valueOrNull`): the build-time watch usually has it
+  /// resolved already, but when it hasn't (or the fetch failed) the old null-check silently
+  /// no-opped the dialog's "ดูใบเสร็จ" tap — now a still-loading snapshot is waited for and a
+  /// failure gets an honest snackbar instead of nothing.
   Future<void> _openReceipt(bool isThai) async {
-    final booking = ref
-        .read(bookingStatusControllerProvider(widget.bookingId))
-        .valueOrNull;
-    if (booking == null || !mounted) return;
-    final payment = ref
-        .read(bookingPaymentControllerProvider(widget.bookingId))
-        .valueOrNull;
-    await showJobReceiptSheet(
-      context,
-      booking: booking,
-      payment: payment,
-      isThai: isThai,
-    );
+    try {
+      final booking = await ref
+          .read(bookingStatusControllerProvider(widget.bookingId).future);
+      if (!mounted) return;
+      final payment = ref
+          .read(bookingPaymentControllerProvider(widget.bookingId))
+          .valueOrNull;
+      await showJobReceiptSheet(
+        context,
+        booking: booking,
+        payment: payment,
+        isThai: isThai,
+      );
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'โหลดใบเสร็จไม่สำเร็จ — ลองใหม่'
+            : 'Could not load the receipt — try again'),
+      ));
+    }
   }
 
   @override
@@ -177,7 +190,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     // completed booking), show a read-only "rated" state instead of the form — a duplicate submit
     // would only 409. `null` = not rated yet (or still loading / a 404), so the form shows; the
     // forced summary→review flow always lands here BEFORE rating, so it sees the form as expected.
-    final existingReview = ref.watch(myReviewProvider(widget.bookingId)).valueOrNull;
+    final existingReview =
+        ref.watch(myReviewProvider(widget.bookingId)).valueOrNull;
     if (existingReview != null) {
       return _AlreadyReviewed(rating: existingReview.overallRating);
     }
@@ -233,15 +247,15 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     ),
                     const SizedBox(height: PgTokens.space3),
                     Text(
-                      isThai
-                          ? 'เจ้าหน้าที่รักษาความปลอดภัย'
-                          : 'Security guard',
+                      isThai ? 'เจ้าหน้าที่รักษาความปลอดภัย' : 'Security guard',
                       style: const TextStyle(
                           fontSize: 17, fontWeight: FontWeight.w600),
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      isThai ? 'บริการเป็นอย่างไรบ้าง?' : 'How was the service?',
+                      isThai
+                          ? 'บริการเป็นอย่างไรบ้าง?'
+                          : 'How was the service?',
                       style: const TextStyle(
                           fontSize: 13, color: PgTokens.colorTextMuted),
                     ),
@@ -287,8 +301,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                     Container(
                       decoration: BoxDecoration(
                         color: PgTokens.colorSunken,
-                        borderRadius:
-                            BorderRadius.circular(PgTokens.radiusXl),
+                        borderRadius: BorderRadius.circular(PgTokens.radiusXl),
                       ),
                       padding: const EdgeInsets.symmetric(
                           horizontal: PgTokens.space4, vertical: 4),
@@ -369,9 +382,12 @@ class _AlreadyReviewed extends ConsumerWidget {
                   size: 56, color: PgTokens.colorSuccess),
               const SizedBox(height: PgTokens.space3),
               Text(
-                isThai ? 'คุณให้คะแนนงานนี้แล้ว' : "You've already rated this job",
+                isThai
+                    ? 'คุณให้คะแนนงานนี้แล้ว'
+                    : "You've already rated this job",
                 textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
+                style:
+                    const TextStyle(fontSize: 17, fontWeight: FontWeight.w700),
               ),
               const SizedBox(height: PgTokens.space3),
               StarRatingDisplay(value: rating, size: 30),
@@ -381,8 +397,8 @@ class _AlreadyReviewed extends ConsumerWidget {
                     ? 'ความคิดเห็นของคุณช่วยพัฒนาบริการของเรา'
                     : 'Your feedback helps us improve our service.',
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+                style: const TextStyle(
+                    fontSize: 13, color: PgTokens.colorTextMuted),
               ),
               const SizedBox(height: PgTokens.space5),
               PgPrimaryButton(

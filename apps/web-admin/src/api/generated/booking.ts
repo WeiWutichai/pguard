@@ -419,10 +419,23 @@ export interface paths {
         };
         get?: never;
         /**
-         * Assigned guard starts the job
+         * Assigned guard starts the job (50m geofence)
          * @description Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
          *     Assigned guard only; the booking must be `arrived`. A second start is an idempotent
-         *     no-op. The job must be started before completion can be requested.
+         *     no-op (the geofence is NOT re-run on the retry of an already-started job). The job
+         *     must be started before completion can be requested.
+         *
+         *     **Geofence:** the OPTIONAL body carries the guard's GPS fix at the moment of
+         *     pressing start. On a booking with site coordinates (`lat`/`lng` pinned at create)
+         *     the fix must be within **50m** of the pin, widened by the reported `accuracy_m`
+         *     capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with
+         *     `error.code = NOT_AT_SITE` (message carries the measured distance in whole meters).
+         *     A pinned booking started with NO fix (absent body/coordinates — e.g. an older app
+         *     build) is 409 `error.code = GPS_REQUIRED` (fail closed; clients branch on the code
+         *     and localize). Legacy address-only bookings (no pin) skip the check entirely.
+         *     Admin starts bypass the geofence (support acts on behalf, off-site). The accepted
+         *     fix is persisted server-side as audit evidence; body `lat`/`lng` are both-or-neither
+         *     (400 otherwise, like create-booking).
          */
         put: operations["startBooking"];
         post?: never;
@@ -676,6 +689,29 @@ export interface components {
              */
             action: "approve" | "reject";
         };
+        /**
+         * @description The guard's GPS fix at the moment of pressing start, feeding the 50m start geofence.
+         *     The whole body is OPTIONAL (older builds send none): no fix on a pinned booking →
+         *     409 `GPS_REQUIRED`; on a legacy address-only booking the geofence skips. `lat`/`lng`
+         *     must come together (400 otherwise).
+         */
+        StartJobRequest: {
+            /**
+             * Format: double
+             * @description Guard latitude at start (must be paired with `lng`).
+             */
+            lat?: number | null;
+            /**
+             * Format: double
+             * @description Guard longitude at start (must be paired with `lat`).
+             */
+            lng?: number | null;
+            /**
+             * Format: float
+             * @description Reported fix accuracy in meters — widens the 50m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
+             */
+            accuracy_m?: number | null;
+        };
         CreateBookingRequest: {
             address: string;
             /** Format: date-time */
@@ -744,6 +780,11 @@ export interface components {
              * @description Site longitude (null when not provided at create).
              */
             lng?: number | null;
+            /**
+             * Format: date-time
+             * @description When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
+             */
+            work_started_at?: string | null;
             /**
              * Format: date-time
              * @description When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
@@ -845,7 +886,7 @@ export interface components {
              */
             tip: string;
         };
-        /** @description An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set). */
+        /** @description An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set). `has_documents` says WHETHER the guard's five credential documents are on file (profile-derived boolean) — the documents themselves are never exposed to customers. OMITTED when unknown (an older profile that doesn't emit the field), so a client must render "unknown" as nothing, never as "no documents". */
         AvailableGuard: {
             /** Format: uuid */
             guard_id: string;
@@ -865,6 +906,8 @@ export interface components {
             average_rating?: string | null;
             /** Format: int64 */
             review_count: number;
+            /** @description True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown. */
+            has_documents?: boolean;
         };
         DailyCount: {
             /** Format: date */
@@ -1538,13 +1581,26 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StartJobRequest"];
+            };
+        };
         responses: {
             200: components["responses"]["BookingOk"];
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description Conflict — `error.code` is `NOT_AT_SITE` (fix beyond the 50m fence + accuracy allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT` (booking not `arrived`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     completeBooking: {

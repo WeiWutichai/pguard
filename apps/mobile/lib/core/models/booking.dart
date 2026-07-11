@@ -90,7 +90,10 @@ class BookingStatusEvent {
       );
     }
     final status = BookingStatus.tryParse(rawStatus);
-    if (status == null) return null; // unknown status (and not a nudge) — ignore forward-compat
+    if (status == null) {
+      // Unknown status (and not a nudge) — ignore, forward-compatible.
+      return null;
+    }
     return BookingStatusEvent(
       bookingId: bookingId,
       status: status,
@@ -116,6 +119,7 @@ class Booking {
     this.lat,
     this.lng,
     this.paidAt,
+    this.workStartedAt,
   });
 
   final String id;
@@ -153,6 +157,13 @@ class Booking {
   /// Whether the PRE-PAY charge has cleared — `true` once [paidAt] is set. Gates the guard's
   /// start action and the customer's "waiting for the guard" state.
   bool get isPaid => paidAt != null;
+
+  /// When the guard actually started work (server-stamped by `PUT /bookings/{id}/start`, the
+  /// proration basis). `null` until started — and on snapshots from a backend predating the
+  /// field. The AUTHORITATIVE anchor for the active-job countdown + check-in schedule: with it,
+  /// the work clock survives app restart/logout instead of re-deriving from check-in
+  /// timestamps or a client-only stamp.
+  final DateTime? workStartedAt;
 
   /// DISPLAY-only charge estimate in satang — `base_fee × hours × guard_count + tip` — derived
   /// purely from this snapshot's server-owned fields (the same figure the customer's live screen
@@ -192,6 +203,9 @@ class Booking {
         paidAt: json['paid_at'] != null
             ? DateTime.tryParse(json['paid_at'] as String)
             : null,
+        workStartedAt: json['work_started_at'] != null
+            ? DateTime.tryParse(json['work_started_at'] as String)
+            : null,
       );
 
   /// A copy with [paidAt] set (everything else unchanged). Used to OPTIMISTICALLY mark a booking
@@ -212,6 +226,7 @@ class Booking {
         lat: lat,
         lng: lng,
         paidAt: paidAt,
+        workStartedAt: workStartedAt,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -236,6 +251,7 @@ class Booking {
         lat: lat,
         lng: lng,
         paidAt: paidAt,
+        workStartedAt: workStartedAt,
       );
 }
 

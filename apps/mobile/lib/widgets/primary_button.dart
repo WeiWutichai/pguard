@@ -52,7 +52,11 @@ class PgPrimaryButton extends StatelessWidget {
                 child: CircularProgressIndicator(
                     strokeWidth: 2, color: Colors.white),
               )
-            : Text(label),
+            // scaleDown only ever SHRINKS an overflowing label (same convention as the
+            // live-status cancel ghost button) — a fitting label renders at natural size, so
+            // existing full-width CTAs are unchanged; needed now that two CTAs can share a row
+            // (completed booking: rate + receipt) on narrow devices.
+            : FittedBox(fit: BoxFit.scaleDown, child: Text(label)),
       ),
     );
   }

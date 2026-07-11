@@ -524,9 +524,10 @@ class _JobsBody extends StatelessWidget {
               actions: Row(
                 children: [
                   SizedBox(
-                    width: 80,
+                    // 96px so the longer "ไม่รับงาน" label clears the TextButton padding.
+                    width: 96,
                     child: PgGhostButton(
-                      label: isThai ? 'ข้าม' : 'Skip',
+                      label: isThai ? 'ไม่รับงาน' : 'Decline',
                       onPressed: () => onDismiss(b.id),
                     ),
                   ),

@@ -74,19 +74,21 @@ void main() {
   });
 
   group('multi-role enrolled set', () {
-    test('onLoggedIn persists the enrolled roles (prefs) and exposes them', () async {
+    test('onLoggedIn persists the enrolled roles (prefs) and exposes them',
+        () async {
       final prefs = FakePrefsStore();
       final c = container(InMemoryStore(), prefs);
       c.listen(sessionProvider, (_, __) {});
-      c.read(sessionProvider.notifier).onLoggedIn(
-          const AuthUser(userId: 'u1', role: 'customer', roles: ['customer', 'guard']));
+      c.read(sessionProvider.notifier).onLoggedIn(const AuthUser(
+          userId: 'u1', role: 'customer', roles: ['customer', 'guard']));
 
       expect(c.read(sessionProvider).user!.hasMultipleRoles, isTrue);
       // Persisted (non-sensitive) so a cold start lands on the picker.
       expect(prefs.values[kEnrolledRolesKey], 'customer,guard');
     });
 
-    test('cold start rebuilds the enrolled set from prefs (dual-role survives a restart)',
+    test(
+        'cold start rebuilds the enrolled set from prefs (dual-role survives a restart)',
         () async {
       final store = InMemoryStore()
         ..refresh = 'r'
@@ -102,12 +104,13 @@ void main() {
           reason: 'enrolled set restored from prefs');
     });
 
-    test('switchActiveRole swaps the active role, keeps the enrolled set, no logout',
+    test(
+        'switchActiveRole swaps the active role, keeps the enrolled set, no logout',
         () async {
       final c = container(InMemoryStore(), FakePrefsStore());
       c.listen(sessionProvider, (_, __) {});
-      c.read(sessionProvider.notifier).onLoggedIn(
-          const AuthUser(userId: 'u1', role: 'customer', roles: ['customer', 'guard']));
+      c.read(sessionProvider.notifier).onLoggedIn(const AuthUser(
+          userId: 'u1', role: 'customer', roles: ['customer', 'guard']));
 
       c.read(sessionProvider.notifier).switchActiveRole('guard');
       final s = c.read(sessionProvider);
@@ -116,7 +119,8 @@ void main() {
       expect(s.user!.enrolledRoles, containsAll(['customer', 'guard']));
     });
 
-    test('refreshRoles grows the enrolled set after an approval (and persists it)',
+    test(
+        'refreshRoles grows the enrolled set after an approval (and persists it)',
         () async {
       final prefs = FakePrefsStore();
       final c = container(InMemoryStore(), prefs);
@@ -142,7 +146,8 @@ void main() {
   });
 
   group('returning device (logout → PIN login, no OTP)', () {
-    test('logout keeps a remembered device (phone + PIN) → returning', () async {
+    test('logout keeps a remembered device (phone + PIN) → returning',
+        () async {
       final store = InMemoryStore()
         ..refresh = 'r' // a live session → starts locked
         ..phone = '0812345678'
@@ -185,6 +190,41 @@ void main() {
       final store = InMemoryStore()..pinHash = 'h'; // no phone, no refresh
       expect(await resolved(container(store, FakePrefsStore())),
           SessionStatus.unauthenticated);
+    });
+
+    test(
+        'logout with a PIN but a missing phone still lands on returning (never forces set-PIN)',
+        () async {
+      // The set-new-PIN-after-logout bug: a device that HOLDS a PIN but whose phone was dropped
+      // (a racing partial teardown) must NOT be classified as brand-new → OTP → set-PIN. logout
+      // now lands on returning whenever a PIN exists; the returning screen recovers a null phone.
+      final store = InMemoryStore()
+        ..refresh = 'r'
+        ..pinHash = 'h'; // PIN present, phone absent
+      final c = container(store, FakePrefsStore());
+      await resolved(c);
+      await c.read(sessionProvider.notifier).logout();
+      expect(c.read(sessionProvider).status, SessionStatus.returning);
+      expect(store.pinHash, isNotNull);
+    });
+
+    test('concurrent logout calls are single-flight (no returning→phone race)',
+        () async {
+      final store = InMemoryStore()
+        ..refresh = 'r'
+        ..phone = '0812345678'
+        ..pinHash = 'h';
+      final c = container(store, FakePrefsStore());
+      await resolved(c);
+      // Fire two logouts at once (the user-tap + the API client's auth-lost path). The latch
+      // must serialize them so the phone is re-saved exactly once and the device stays
+      // remembered — never dropped to unauthenticated by an interleaved clear.
+      await Future.wait([
+        c.read(sessionProvider.notifier).logout(),
+        c.read(sessionProvider.notifier).logout(),
+      ]);
+      expect(c.read(sessionProvider).status, SessionStatus.returning);
+      expect(store.phone, '0812345678');
     });
   });
 }

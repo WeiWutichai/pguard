@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../media/photo_capture.dart';
@@ -53,7 +55,8 @@ class WorkSessionStore {
 }
 
 @Riverpod(keepAlive: true)
-WorkSessionStore workSessionStore(WorkSessionStoreRef ref) => WorkSessionStore();
+WorkSessionStore workSessionStore(WorkSessionStoreRef ref) =>
+    WorkSessionStore();
 
 /// State for the active-job screen: the booking, the client-recorded start time (the API does
 /// NOT expose `work_started_at`, so we stamp it when the guard taps "start" to drive the DISPLAY
@@ -138,21 +141,23 @@ class ActiveJobController extends _$ActiveJobController {
           .toList();
       completed = reports.map((r) => r.hourNumber - 1).toSet();
       for (final r in reports) {
-        final anchored = r.createdAt.subtract(Duration(hours: r.hourNumber - 1));
-        if (startedAt == null || anchored.isBefore(startedAt)) startedAt = anchored;
+        final anchored =
+            r.createdAt.subtract(Duration(hours: r.hourNumber - 1));
+        if (startedAt == null || anchored.isBefore(startedAt)) {
+          startedAt = anchored;
+        }
       }
     } catch (_) {
       // No trail yet (or a transient read failure) → pre-start state. A transient miss self-heals:
       // tapping Start again is idempotent server-side (start_job keeps the original work_started_at).
     }
 
-    // Restore the client-recorded start across rebuilds. `work_started_at` is NOT on the API, so an
-    // invalidation (notably the `resumed` re-fetch after the camera backgrounds the app during a
-    // check-in) would otherwise WIPE `startedAt` — and before the first check-in lands there is no
-    // report to re-anchor from, which collapses the working panel and re-prompts "Start job". The
-    // keep-alive [WorkSessionStore] survives the rebuild, so we fall back to it. When the server
-    // trail DOES yield an anchor we reconcile (keep the earliest) so the stored value can't drift
-    // the countdown later than the real start.
+    // Anchor precedence: the SERVER's `work_started_at` (now on the booking snapshot — the
+    // authoritative proration basis, survives app restart/logout) → the check-in-derived estimate
+    // → the client-session stamp in the keep-alive [WorkSessionStore] (covers the window between
+    // tapping Start and the snapshot refresh on an old backend that doesn't send the field yet).
+    // The store is still reconciled so an invalidation mid-check-in can't wipe the anchor.
+    startedAt = booking.workStartedAt ?? startedAt;
     final store = ref.read(workSessionStoreProvider);
     if (startedAt != null) {
       store.reconcile(bookingId, startedAt);
@@ -166,16 +171,25 @@ class ActiveJobController extends _$ActiveJobController {
     );
   }
 
-  /// Fold an EXTERNALLY-observed status into the active-job state — used when the live
-  /// booking-status WebSocket pushes a transition this controller didn't drive itself (notably the
-  /// CUSTOMER cancelling the job while the guard sits on the active-job screen). The active-job
-  /// controller has no WS of its own (it re-fetches only on resume), so without this a cancellation
-  /// would not surface until the guard backgrounded + resumed the app. Idempotent: a no-op when the
-  /// status already matches, so a duplicate WS frame can't churn state. Clears any stale `busy`/
-  /// `error` so the screen lands cleanly on the new terminal state.
+  /// Fold an EXTERNALLY-observed TERMINAL transition into the active-job state — used when the
+  /// live booking-status WebSocket pushes a terminal the guard didn't drive: chiefly the
+  /// CUSTOMER cancelling while the guard sits on the active-job screen. The active-job
+  /// controller has no WS of its own (it re-fetches only on resume), so without this a cancel
+  /// wouldn't surface until the guard backgrounded + resumed. ONLY terminal frames are folded
+  /// (the caller already filters to terminals): terminals are FINAL + idempotent, so there is
+  /// no ordering hazard — a non-terminal fold could be rewound by an at-least-once redelivered
+  /// EARLIER frame, so those are deliberately NOT folded here (a stale non-terminal like a lost
+  /// en_route PUT is instead corrected by the 409-triggered snapshot re-pull in `_transition`).
+  /// Once the state is ALREADY terminal it never changes again (a dead job stays dead), so a
+  /// late frame of any kind is ignored. Clears stale `busy`/`error` so the screen lands cleanly.
   void applyExternalStatus(BookingStatus status) {
     final current = state.valueOrNull;
     if (current == null || current.booking.status == status) return;
+    // Defence-in-depth: only terminals fold, and never over an already-terminal state.
+    if (!BookingLifecycle.isTerminal(status) ||
+        BookingLifecycle.isTerminal(current.booking.status)) {
+      return;
+    }
     state = AsyncData(current.copyWith(
       booking: current.booking.applyEvent(BookingStatusEvent(
         bookingId: current.booking.id,
@@ -197,43 +211,155 @@ class ActiveJobController extends _$ActiveJobController {
   /// `PUT /v1/bookings/{id}/arrived`.
   Future<bool> arrived() => _transition('arrived');
 
-  /// `PUT /v1/bookings/{id}/start` — stamps the (display-only) client start time.
-  Future<bool> start() => _transition('start', markStart: true);
+  /// `PUT /v1/bookings/{id}/start` — stamps the server work-start time, now WITH the guard's
+  /// GPS fix so the backend can (a) record where the job was started and (b) enforce the 50 m
+  /// start geofence. Prefers the live tracking fix (the active screen already streams while
+  /// en_route/arrived); falls back to a fresh one-shot read. A missing fix still sends the
+  /// bodiless PUT — the backend decides (409 GPS_REQUIRED on pinned bookings), so the policy
+  /// lives in exactly one place.
+  Future<bool> start() async {
+    final gps = await _startFix();
+    return _transition(
+      'start',
+      markStart: true,
+      body: gps == null
+          ? null
+          : {
+              'lat': gps.lat,
+              'lng': gps.lng,
+              if (gps.accuracy != null) 'accuracy_m': gps.accuracy,
+            },
+    );
+  }
+
+  /// The guard's GPS fix for the start geofence — a FRESH one-shot read at the moment of
+  /// pressing start (freshest is what the 50 m fence wants; the streaming lease's last sample
+  /// can be up to the ~15 m movement gate stale). Guarded so an unavailable/denied location
+  /// source degrades to `null` (a bodiless start PUT — the backend then decides: 409
+  /// GPS_REQUIRED on a pinned booking) rather than throwing.
+  Future<GpsSample?> _startFix() async {
+    try {
+      return await ref.read(locationServiceProvider).currentSample();
+    } catch (_) {
+      return null;
+    }
+  }
 
   /// `PUT /v1/bookings/{id}/complete` — requests completion (→ pending_completion). Live status
   /// then flows to the customer over the existing WS; nothing to poll.
   Future<bool> complete() => _transition('complete');
 
-  Future<bool> _transition(String action, {bool markStart = false}) async {
+  Future<bool> _transition(
+    String action, {
+    bool markStart = false,
+    Map<String, dynamic>? body,
+  }) async {
     final current = state.valueOrNull;
     if (current == null) return false;
     state = AsyncData(current.copyWith(busy: true, error: null));
     try {
       final data = await ref
           .read(pguardApiProvider)
-          .put('/bookings/${current.booking.id}/$action');
+          .put('/bookings/${current.booking.id}/$action', data: body);
       final booking = Booking.fromJson(data as Map<String, dynamic>);
       DateTime? startedAt;
       if (markStart) {
-        startedAt = DateTime.now().toUtc();
-        // Persist the client start so it SURVIVES a controller rebuild (the API never returns
-        // `work_started_at`). Without this, the `resumed` re-fetch triggered when the check-in
-        // camera backgrounds the app would wipe the start before the first report exists to
-        // re-anchor from — reverting the screen to "Start job".
+        // Prefer the server's authoritative stamp off the PUT response; the client stamp is
+        // only the fallback against an old backend that doesn't return `work_started_at` yet.
+        startedAt = booking.workStartedAt ?? DateTime.now().toUtc();
+        // Persist the start so it SURVIVES a controller rebuild (notably the `resumed`
+        // re-fetch when the check-in camera backgrounds the app before the first report
+        // exists to re-anchor from).
         ref.read(workSessionStoreProvider).markStarted(booking.id, startedAt);
       }
-      state = AsyncData(current.copyWith(
+      // Rebase on the LATEST state, not the pre-await `current` — a terminal (e.g. a customer
+      // cancel) folded by the WS listener while this PUT was in flight must win over our
+      // just-succeeded transition (a dead job stays dead).
+      final latest = state.valueOrNull ?? current;
+      if (BookingLifecycle.isTerminal(latest.booking.status)) return true;
+      state = AsyncData(latest.copyWith(
         booking: booking,
         busy: false,
         startedAt: startedAt,
       ));
       return true;
     } on ApiException catch (e) {
-      state = AsyncData(current.copyWith(busy: false, error: e.message));
+      final latest = state.valueOrNull ?? current;
+      // Don't clobber a terminal folded mid-flight with a stale error banner.
+      if (!BookingLifecycle.isTerminal(latest.booking.status)) {
+        state = AsyncData(latest.copyWith(busy: false, error: _localizeApi(e)));
+      }
+      // A 409 means OUR snapshot disagrees with the server (already transitioned, cancelled
+      // during a WS gap, unpaid...). Re-pull the booking best-effort so the screen re-renders
+      // the TRUE state instead of leaving a stale enabled button that 409s forever.
+      if (e.statusCode == 409) {
+        unawaited(_refreshBookingSnapshot());
+      }
       return false;
     } catch (_) {
-      state = AsyncData(current.copyWith(busy: false, error: _genericError()));
+      final latest = state.valueOrNull ?? current;
+      if (!BookingLifecycle.isTerminal(latest.booking.status)) {
+        state = AsyncData(latest.copyWith(busy: false, error: _genericError()));
+      }
       return false;
+    }
+  }
+
+  /// Best-effort re-pull of the booking snapshot after a 409 — folds ONLY the booking (keeps
+  /// startedAt/check-ins/error) so the screen catches up with the server's real state. Never
+  /// rewinds a locally-terminal job: if a terminal (a customer cancel) already folded in, the
+  /// re-pull is dropped rather than risk resurrecting it from a not-yet-consistent read.
+  Future<void> _refreshBookingSnapshot() async {
+    try {
+      final current = state.valueOrNull;
+      if (current != null &&
+          BookingLifecycle.isTerminal(current.booking.status)) {
+        return;
+      }
+      final data =
+          await ref.read(pguardApiProvider).get('/bookings/$bookingId');
+      final booking = Booking.fromJson(data as Map<String, dynamic>);
+      final latest = state.valueOrNull;
+      if (latest == null ||
+          BookingLifecycle.isTerminal(latest.booking.status)) {
+        return;
+      }
+      state = AsyncData(latest.copyWith(booking: booking));
+    } catch (_) {
+      // Best-effort only — the user can still recover via resume/re-entry.
+    }
+  }
+
+  /// Map a transition [ApiException] to a message in the user's language. The server's
+  /// transition errors are English (contract messages); the guard-facing screen must explain
+  /// them in Thai, keyed on the machine-readable `code` (raw message only as a last resort).
+  String _localizeApi(ApiException e) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    switch (e.code) {
+      case 'PAYMENT_REQUIRED':
+        return isThai
+            ? 'ลูกค้ายังไม่ได้ชำระเงิน — เริ่มเดินทางได้หลังชำระเงินแล้ว'
+            : 'Waiting for the customer to pay before going en route';
+      case 'GPS_REQUIRED':
+        return isThai
+            ? 'ต้องมีสัญญาณ GPS เพื่อเริ่มงาน — เปิดตำแหน่ง (Location) แล้วลองใหม่'
+            : 'A GPS fix is required to start — turn on Location and retry';
+      case 'NOT_AT_SITE':
+        // The server message carries the measured distance ("You are {d} m from the job
+        // site (max 50 m)") — pull the first number for the Thai copy, degrade gracefully.
+        final d = RegExp(r'\d+').firstMatch(e.message)?.group(0);
+        return isThai
+            ? (d != null
+                ? 'คุณอยู่ห่างจากจุดงานประมาณ $d ม. — ต้องอยู่ในระยะ 50 ม. จึงจะเริ่มงานได้'
+                : 'คุณอยู่นอกพื้นที่งาน — ต้องอยู่ในระยะ 50 ม. จากจุดงานจึงจะเริ่มงานได้')
+            : e.message;
+      default:
+        if (e.statusCode == 409) {
+          return isThai
+              ? 'สถานะงานเปลี่ยนไปแล้ว — อัปเดตข้อมูลล่าสุดให้แล้ว ลองอีกครั้ง'
+              : 'The job state changed — refreshed to the latest, please retry';
+        }
+        return e.message;
     }
   }
 

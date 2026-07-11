@@ -26,6 +26,9 @@ use shared::service_jwt::encode_service_jwt;
 /// short-lived presigned GET URL, already signed by profile) feed the customer's
 /// guard-selection card; both are `None`-safe (a guard with no name / no avatar set), and
 /// `#[serde(default)]` keeps booking forward-compatible if profile omits them.
+/// `has_documents` (profile-derived: all five credential docs on file) feeds the card's
+/// "มีเอกสาร / ไม่มีเอกสาร" indicator; `#[serde(default)]` → `None` against an older profile
+/// that doesn't emit the field, so "unknown" is never misreported as "no documents".
 #[derive(Debug, Clone, Deserialize)]
 pub struct CatalogGuard {
     pub user_id: Uuid,
@@ -34,6 +37,8 @@ pub struct CatalogGuard {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub years_of_experience: Option<i32>,
+    #[serde(default)]
+    pub has_documents: Option<bool>,
 }
 
 /// A guard's rating summary from rating's `/internal/guards/{id}/rating-summary`. `Default`

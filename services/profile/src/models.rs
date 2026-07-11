@@ -25,6 +25,11 @@ pub struct InternalGuard {
     pub full_name: Option<String>,
     pub avatar_url: Option<String>,
     pub years_of_experience: Option<i32>,
+    /// Whether ALL FIVE credential documents (id card, security license, training cert,
+    /// criminal check, driver license — passbook is banking, not a credential) are on file.
+    /// A derived boolean only — the documents themselves stay owner/admin-only; this powers the
+    /// customer-facing "มีเอกสาร / ไม่มีเอกสาร" indicator on the guard-selection card.
+    pub has_documents: bool,
 }
 
 /// The raw `list_approved_guards` repo row — DB columns only, including the unsigned
@@ -38,6 +43,8 @@ pub struct InternalGuardRow {
     pub full_name: Option<String>,
     pub avatar_key: Option<String>,
     pub years_of_experience: Option<i32>,
+    /// Derived in SQL: all five credential `*_key` columns non-null (see `list_approved_guards`).
+    pub has_documents: bool,
 }
 
 /// The lean, customer-facing guard mini-profile for the live-tracking map
@@ -71,9 +78,9 @@ pub struct PublicGuardProfileRow {
 /// [`PublicGuardProfile`] for the OTHER direction. The assigned guard's job sheet needs to address
 /// the customer by name (not a raw id) + show their photo, so this exposes ONLY
 /// `{ user_id, full_name, avatar_url }`. NEVER the address / company / email / phone
-/// (least-privilege; those stay owner/admin-only). `full_name` is PII reachable by a non-owner
-/// ONLY under the same active-booking IDOR gate the guard-profile read uses — here flipped so it is
-/// the ASSIGNED GUARD (not the customer) who may read it. `avatar_url` is a short-lived presigned
+/// (least-privilege; those stay owner/admin-only). `full_name` is PII reachable by any GUARD-role
+/// caller (product decision 2026-07-11: the name shows from the job OFFER onwards, so the old
+/// active-booking gate was dropped for this direction). `avatar_url` is a short-lived presigned
 /// GET URL (the raw S3 key is never on the wire — the handler presigns the `avatar_key`), `None`
 /// when the customer has not set an avatar — the same exposure the customer makes of the guard's
 /// avatar via `GET /guards/{id}/public` / discovery, mirrored.

@@ -23,6 +23,10 @@ String? notificationTarget(AppNotification n, {required AuthUser? user}) {
       return ChatRoutes.conversation(
         cid,
         acting: isGuard ? ChatRole.guard : ChatRole.customer,
+        // Navigation-time HINT only: a notification payload carries no booking status, so this
+        // is optimistically writable — safe because ChatScreen now SELF-VERIFIES read-only
+        // against the server (`chatServerClosedProvider`) and locks the composer if the
+        // conversation's booking has actually completed/cancelled.
         readOnly: false,
       );
 
