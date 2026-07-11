@@ -49,6 +49,7 @@ export 'package:pguard_booking_api/src/model/review_completion_request.dart';
 export 'package:pguard_booking_api/src/model/service_catalog_item.dart';
 export 'package:pguard_booking_api/src/model/skip_booking200_response.dart';
 export 'package:pguard_booking_api/src/model/skip_booking200_response_all_of_data.dart';
+export 'package:pguard_booking_api/src/model/start_job_request.dart';
 export 'package:pguard_booking_api/src/model/update_service_request.dart';
 export 'package:pguard_booking_api/src/model/utilization_cell.dart';
 

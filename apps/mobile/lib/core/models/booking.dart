@@ -90,8 +90,10 @@ class BookingStatusEvent {
       );
     }
     final status = BookingStatus.tryParse(rawStatus);
-    if (status == null)
-      return null; // unknown status (and not a nudge) — ignore forward-compat
+    if (status == null) {
+      // Unknown status (and not a nudge) — ignore, forward-compatible.
+      return null;
+    }
     return BookingStatusEvent(
       bookingId: bookingId,
       status: status,

@@ -362,8 +362,8 @@ class ProfileApi {
     );
   }
 
-  /// Assigned guard&#39;s view of a customer&#39;s public mini-profile (name only)
-  /// The MINI-profile (name only) of the customer on the caller&#39;s booking, so the assigned guard&#39;s job sheet can address the customer by their REAL NAME instead of a raw id. The MIRROR of &#x60;GET /guards/{id}/public&#x60; for the other direction. **IDOR-gated:** a &#x60;guard&#x60; may read it ONLY while they have an ACTIVE booking with this customer (the same event-derived read-model projected from &#x60;pguard.events.booking.*&#x60;, queried with the roles flipped); a &#x60;customer&#x60; may read only their own; an &#x60;admin&#x60; may read any. A guard without an active booking gets **403** (NOT 404 — no existence probe). Returns ONLY &#x60;{ user_id, full_name }&#x60; — never the customer&#39;s address/company/email/phone PII. &#x60;full_name&#x60; is PII reachable by a non-owner ONLY under this active-booking trust boundary (PDPA §7). 
+  /// Guard&#39;s view of a customer&#39;s public mini-profile (name + photo)
+  /// The MINI-profile (name + photo) of a customer, so the guard&#39;s job sheet can address the customer by their REAL NAME instead of a raw id. **Role-gated:** any &#x60;guard&#x60; may read it — from the job OFFER onwards, per the 2026-07-11 product decision that guards see who is booking BEFORE accepting (the old active-booking IDOR gate 403&#39;d every unaccepted offer and every finished job in the work history); a &#x60;customer&#x60; may read only their own; an &#x60;admin&#x60; may read any. Returns ONLY &#x60;{ user_id, full_name, avatar_url }&#x60; — never the customer&#39;s address/company/email/phone PII. Exposure stays bounded: customer ids are unguessable UUIDv4s a guard only learns from bookings already shown to them. 
   ///
   /// Parameters:
   /// * [id] - The customer's user_id.

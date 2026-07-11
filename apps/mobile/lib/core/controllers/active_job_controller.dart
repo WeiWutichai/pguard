@@ -143,8 +143,9 @@ class ActiveJobController extends _$ActiveJobController {
       for (final r in reports) {
         final anchored =
             r.createdAt.subtract(Duration(hours: r.hourNumber - 1));
-        if (startedAt == null || anchored.isBefore(startedAt))
+        if (startedAt == null || anchored.isBefore(startedAt)) {
           startedAt = anchored;
+        }
       }
     } catch (_) {
       // No trail yet (or a transient read failure) → pre-start state. A transient miss self-heals:

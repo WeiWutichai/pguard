@@ -8,7 +8,7 @@ import 'package:built_value/serializer.dart';
 
 part 'available_guard.g.dart';
 
-/// An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set).
+/// An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set). `has_documents` says WHETHER the guard's five credential documents are on file (profile-derived boolean) — the documents themselves are never exposed to customers. OMITTED when unknown (an older profile that doesn't emit the field), so a client must render \"unknown\" as nothing, never as \"no documents\".
 ///
 /// Properties:
 /// * [guardId] 
@@ -17,6 +17,7 @@ part 'available_guard.g.dart';
 /// * [yearsOfExperience] 
 /// * [averageRating] - AVG of visible overall ratings (decimal string); null if none / rating unreachable.
 /// * [reviewCount] 
+/// * [hasDocuments] - True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown.
 @BuiltValue()
 abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBuilder> {
   @BuiltValueField(wireName: r'guard_id')
@@ -39,6 +40,10 @@ abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBui
 
   @BuiltValueField(wireName: r'review_count')
   int get reviewCount;
+
+  /// True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown.
+  @BuiltValueField(wireName: r'has_documents')
+  bool? get hasDocuments;
 
   AvailableGuard._();
 
@@ -101,6 +106,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
       object.reviewCount,
       specifiedType: const FullType(int),
     );
+    if (object.hasDocuments != null) {
+      yield r'has_documents';
+      yield serializers.serialize(
+        object.hasDocuments,
+        specifiedType: const FullType(bool),
+      );
+    }
   }
 
   @override
@@ -165,6 +177,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
             specifiedType: const FullType(int),
           ) as int;
           result.reviewCount = valueDes;
+          break;
+        case r'has_documents':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.hasDocuments = valueDes;
           break;
         default:
           unhandled.add(key);

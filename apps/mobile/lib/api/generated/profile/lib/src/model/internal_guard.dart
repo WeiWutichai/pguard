@@ -8,18 +8,32 @@ import 'package:built_value/serializer.dart';
 
 part 'internal_guard.g.dart';
 
-/// The lean approved-guard row for internal discovery — deliberately NARROW (no bank/PII; least-privilege over the service-to-service wire). 
+/// The lean approved-guard row for internal discovery — deliberately NARROW (no bank/PII; least-privilege over the service-to-service wire). `full_name`/`avatar_url` power the customer's guard-selection card (the same approved-guard exposure as `GET /guards/{id}/public`; `avatar_url` is presigned by profile). `has_documents` is a profile-derived boolean — all five credential documents (id card, security license, training cert, criminal check, driver license) on file — so the customer card can show WHETHER documents exist; the documents themselves never cross this wire. 
 ///
 /// Properties:
 /// * [userId] 
+/// * [fullName] 
+/// * [avatarUrl] - Presigned GET URL for the guard's avatar (expires in ~1h), or null when unset.
 /// * [yearsOfExperience] 
+/// * [hasDocuments] - True when all five credential documents are on file (derived; passbook excluded).
 @BuiltValue()
 abstract class InternalGuard implements Built<InternalGuard, InternalGuardBuilder> {
   @BuiltValueField(wireName: r'user_id')
   String get userId;
 
+  @BuiltValueField(wireName: r'full_name')
+  String? get fullName;
+
+  /// Presigned GET URL for the guard's avatar (expires in ~1h), or null when unset.
+  @BuiltValueField(wireName: r'avatar_url')
+  String? get avatarUrl;
+
   @BuiltValueField(wireName: r'years_of_experience')
   int? get yearsOfExperience;
+
+  /// True when all five credential documents are on file (derived; passbook excluded).
+  @BuiltValueField(wireName: r'has_documents')
+  bool get hasDocuments;
 
   InternalGuard._();
 
@@ -49,6 +63,20 @@ class _$InternalGuardSerializer implements PrimitiveSerializer<InternalGuard> {
       object.userId,
       specifiedType: const FullType(String),
     );
+    if (object.fullName != null) {
+      yield r'full_name';
+      yield serializers.serialize(
+        object.fullName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.avatarUrl != null) {
+      yield r'avatar_url';
+      yield serializers.serialize(
+        object.avatarUrl,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.yearsOfExperience != null) {
       yield r'years_of_experience';
       yield serializers.serialize(
@@ -56,6 +84,11 @@ class _$InternalGuardSerializer implements PrimitiveSerializer<InternalGuard> {
         specifiedType: const FullType(int),
       );
     }
+    yield r'has_documents';
+    yield serializers.serialize(
+      object.hasDocuments,
+      specifiedType: const FullType(bool),
+    );
   }
 
   @override
@@ -86,12 +119,33 @@ class _$InternalGuardSerializer implements PrimitiveSerializer<InternalGuard> {
           ) as String;
           result.userId = valueDes;
           break;
+        case r'full_name':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.fullName = valueDes;
+          break;
+        case r'avatar_url':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.avatarUrl = valueDes;
+          break;
         case r'years_of_experience':
           final valueDes = serializers.deserialize(
             value,
             specifiedType: const FullType(int),
           ) as int;
           result.yearsOfExperience = valueDes;
+          break;
+        case r'has_documents':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(bool),
+          ) as bool;
+          result.hasDocuments = valueDes;
           break;
         default:
           unhandled.add(key);

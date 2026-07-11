@@ -8,7 +8,7 @@ import 'package:built_value/serializer.dart';
 
 part 'public_customer_profile.g.dart';
 
-/// The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the other direction. NARROW by design: only the customer's name + photo (so the assigned guard's job sheet can address them by name and show their face); NEVER the address/company/email/phone PII. `full_name` is reachable by a non-owner ONLY under the active-booking IDOR gate (see `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key is never on the wire), `null` when the customer has not set an avatar. 
+/// The lean, GUARD-facing customer mini-profile — the mirror of `PublicGuardProfile` for the other direction. NARROW by design: only the customer's name + photo (so the guard's job sheet can address them by name and show their face); NEVER the address/company/email/phone PII. `full_name` is reachable by any guard-role caller — from the job offer onwards, per the 2026-07-11 product decision (see `GET /customers/{id}/public`). `avatar_url` is a short-lived presigned GET URL (the raw S3 key is never on the wire), `null` when the customer has not set an avatar. 
 ///
 /// Properties:
 /// * [userId] 
