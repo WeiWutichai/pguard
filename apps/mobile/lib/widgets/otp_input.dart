@@ -39,7 +39,9 @@ class _OtpInputState extends State<OtpInput> {
   void _onChanged(String value) {
     setState(() {});
     widget.onChanged?.call(value);
-    if (value.length == widget.length) widget.onCompleted?.call(value);
+    // `>=` not `==`: a paste / SMS-autofill insert can momentarily land the whole code (or, on a
+    // laggy IME, coalesce two keystrokes) so the length reaches full in one event — never miss it.
+    if (value.length >= widget.length) widget.onCompleted?.call(value);
   }
 
   @override
@@ -96,6 +98,9 @@ class _OtpInputState extends State<OtpInput> {
               focusNode: _focus,
               autofocus: widget.autofocus,
               keyboardType: TextInputType.number,
+              // Let the OS offer the incoming SMS code as a one-tap autofill chip (Android 8+ / iOS)
+              // — the most reliable delivery path, sidestepping a dropped keystroke on the IME.
+              autofillHints: const [AutofillHints.oneTimeCode],
               maxLength: widget.length,
               showCursor: false,
               cursorColor: Colors.transparent,
@@ -104,6 +109,14 @@ class _OtpInputState extends State<OtpInput> {
               decoration: const InputDecoration(
                   counterText: '', border: InputBorder.none),
               onChanged: _onChanged,
+              // The keyboard's action key is an invisible manual-submit fallback (no on-screen CTA,
+              // per the design): if the boxes are full but auto-submit somehow didn't fire, the
+              // Done/✓ key still triggers a verify. Ignored when the code is short.
+              onSubmitted: (value) {
+                if (value.length >= widget.length) {
+                  widget.onCompleted?.call(value);
+                }
+              },
             ),
           ),
         ),
