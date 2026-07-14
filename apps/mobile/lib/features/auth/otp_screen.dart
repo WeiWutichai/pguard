@@ -28,7 +28,22 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   static const ResendPolicy _resend = ResendPolicy();
   String _code = '';
 
+  /// Covers the WHOLE submit flow (verify → phone-status → navigation), not just the guarded
+  /// `verifyOtp` call, so the spinner never blinks off between hops — and doubles as a re-entrancy
+  /// latch so a double auto-submit (IME repeat / keyboard action + onChanged) can't fire twice.
+  bool _verifying = false;
+
   Future<void> _verify() async {
+    if (_verifying) return;
+    setState(() => _verifying = true);
+    try {
+      await _runVerify();
+    } finally {
+      if (mounted) setState(() => _verifying = false);
+    }
+  }
+
+  Future<void> _runVerify() async {
     final ok = await ref.read(authControllerProvider.notifier).verifyOtp(_code);
     if (!ok || !mounted) return;
     // ADD-SECOND-ROLE run (from the pending screen): skip the PIN step (the account already has
@@ -104,7 +119,17 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                 },
               ),
               const SizedBox(height: PgTokens.space4),
-              if (sentAt != null)
+              // While the code is being checked, show a spinner instead of the resend line so a
+              // running verify is never mistaken for a hang (the screen has no submit button).
+              if (_verifying)
+                const Center(
+                  child: SizedBox(
+                    height: 22,
+                    width: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  ),
+                )
+              else if (sentAt != null)
                 _ResendCountdown(
                   sentAt: sentAt,
                   policy: _resend,
