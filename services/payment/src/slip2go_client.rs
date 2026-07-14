@@ -101,14 +101,18 @@ pub trait SlipVerifier: Send + Sync {
 
 // ----- Slip2Go wire shapes (deserialize side) -----
 
-/// The `{ code, message, data }` envelope.
+/// The `{ code, message, data }` envelope. `data` stays a RAW value here and is parsed into
+/// [`SlipData`] only after the code check: rejection envelopes carry a PARTIAL `data` (e.g.
+/// `200500 "Slip is fraud."` ships `{referenceId}` alone, no transRef/amount — staging
+/// 2026-07-14), and decoding it strictly up-front turned every such rejection into a generic
+/// 500 instead of the typed 409 with Slip2Go's verdict.
 #[derive(Debug, Deserialize)]
 struct SlipEnvelope {
     code: String,
     #[serde(default)]
     message: String,
     #[serde(default)]
-    data: Option<SlipData>,
+    data: Option<serde_json::Value>,
 }
 
 /// The subset of `data` we read. Slip2Go returns `amount` as a JSON NUMBER; the rest are strings /
@@ -221,9 +225,15 @@ fn interpret(envelope: SlipEnvelope) -> Result<VerifiedSlip, AppError> {
             message: msg,
         });
     }
-    let data = envelope
+    let data_value = envelope
         .data
         .ok_or_else(|| AppError::Internal("Slip verification returned no data".to_string()))?;
+    // Only a SUCCESS envelope's `data` must be the full slip shape; parse it here (not in serde)
+    // so partial rejection payloads never reach this point.
+    let data: SlipData = serde_json::from_value(data_value).map_err(|e| {
+        tracing::warn!("slip verify success-data decode error: {e}");
+        AppError::Internal("Slip verification failed".to_string())
+    })?;
     let receiver_accounts = data.receiver_accounts();
     Ok(VerifiedSlip {
         reference_id: data.reference_id,
@@ -344,8 +354,15 @@ impl SlipVerifier for HttpSlipVerifier {
             return Err(AppError::Internal("Slip verification failed".to_string()));
         }
 
-        let envelope: SlipEnvelope = resp.json().await.map_err(|e| {
-            tracing::warn!("slip verify decode error: {e}");
+        let body = resp.text().await.map_err(|e| {
+            tracing::warn!("slip verify read error: {e}");
+            AppError::Internal("Slip verification failed".to_string())
+        })?;
+        let envelope: SlipEnvelope = serde_json::from_str(&body).map_err(|e| {
+            // Include a bounded body prefix: a bare "decode error" hid the actual vendor verdict
+            // for a whole morning of failures (the 200500 partial-`data` incident).
+            let snippet: String = body.chars().take(300).collect();
+            tracing::warn!("slip verify decode error: {e}; body: {snippet}");
             AppError::Internal("Slip verification failed".to_string())
         })?;
         interpret(envelope)
@@ -464,6 +481,42 @@ mod tests {
                 "code {code} must remain a rejection"
             );
         }
+    }
+
+    #[test]
+    fn interpret_rejection_with_partial_data_is_typed_rejection() {
+        // REGRESSION (staging 2026-07-14): Slip2Go's fraud rejection ships a PARTIAL `data`
+        // ({referenceId} only — no transRef/amount). The old strict envelope decode failed on it,
+        // turning "Slip is fraud." into a generic 500 "Slip verification failed" on the device.
+        // The exact incident body:
+        let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
+            "code": "200500",
+            "message": "Slip is fraud.",
+            "data": { "referenceId": "4e647581-069f-4f70-863a-feb9b3968576-14165" }
+        }))
+        .unwrap();
+        match interpret(envelope).unwrap_err() {
+            AppError::ConflictCode { code, message } => {
+                assert_eq!(code, SLIP_VERIFY_FAILED_CODE);
+                assert_eq!(message, "Slip is fraud.", "surfaces Slip2Go's verdict");
+            }
+            other => panic!("expected typed slip rejection, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interpret_success_with_malformed_data_is_internal() {
+        // A SUCCESS code whose `data` is missing required slip fields is a vendor contract
+        // violation — an Internal error (never a paid booking off partial facts).
+        let envelope: SlipEnvelope = serde_json::from_value(serde_json::json!({
+            "code": "200000",
+            "data": { "referenceId": "r" }
+        }))
+        .unwrap();
+        assert!(matches!(
+            interpret(envelope).unwrap_err(),
+            AppError::Internal(_)
+        ));
     }
 
     #[test]
