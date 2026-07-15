@@ -29,18 +29,36 @@ class _OtpInputState extends State<OtpInput> {
   final TextEditingController _controller = TextEditingController();
   final FocusNode _focus = FocusNode();
 
+  /// The last text we reported, so a controller notification that didn't change the text (a cursor
+  /// move) is ignored and a full code isn't fired twice for the same value.
+  String _reported = '';
+
+  @override
+  void initState() {
+    super.initState();
+    // Drive completion from the CONTROLLER, not the TextField's `onChanged` callback. On a real
+    // device the IME / SMS-autofill can write the value straight into the controller (the boxes
+    // fill) WITHOUT invoking `onChanged` — so an onChanged-based trigger silently never fires and
+    // the screen looks hung (staging 2026-07-15: 6 boxes filled, no verify, no error). A controller
+    // listener fires on every value change regardless of the input path.
+    _controller.addListener(_onControllerChanged);
+  }
+
   @override
   void dispose() {
+    _controller.removeListener(_onControllerChanged);
     _controller.dispose();
     _focus.dispose();
     super.dispose();
   }
 
-  void _onChanged(String value) {
+  void _onControllerChanged() {
+    final value = _controller.text;
+    if (value == _reported) return; // selection-only change → nothing to do
+    _reported = value;
     setState(() {});
     widget.onChanged?.call(value);
-    // `>=` not `==`: a paste / SMS-autofill insert can momentarily land the whole code (or, on a
-    // laggy IME, coalesce two keystrokes) so the length reaches full in one event — never miss it.
+    // `>=` not `==`: a paste / SMS-autofill insert can land the whole code in one update.
     if (value.length >= widget.length) widget.onCompleted?.call(value);
   }
 
@@ -62,7 +80,9 @@ class _OtpInputState extends State<OtpInput> {
             return Container(
               width: 44,
               height: 54,
-              margin: const EdgeInsets.symmetric(horizontal: 4.5),
+              // 3.0 (was 4.5): six 44px boxes + margins must fit a 360dp-wide screen inside the
+              // screen padding — the wider gap overflowed by 6px on smaller phones (staging OPPO).
+              margin: const EdgeInsets.symmetric(horizontal: 3.0),
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: PgTokens.colorSurface,
@@ -108,7 +128,8 @@ class _OtpInputState extends State<OtpInput> {
               inputFormatters: [FilteringTextInputFormatter.digitsOnly],
               decoration: const InputDecoration(
                   counterText: '', border: InputBorder.none),
-              onChanged: _onChanged,
+              // No `onChanged:` — completion is driven by the controller listener above, which also
+              // catches autofill/IME writes that skip this callback.
               // The keyboard's action key is an invisible manual-submit fallback (no on-screen CTA,
               // per the design): if the boxes are full but auto-submit somehow didn't fire, the
               // Done/✓ key still triggers a verify. Ignored when the code is short.
