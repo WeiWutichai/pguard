@@ -3,6 +3,7 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:pguard_booking_api/src/model/guard_documents.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -18,6 +19,7 @@ part 'available_guard.g.dart';
 /// * [averageRating] - AVG of visible overall ratings (decimal string); null if none / rating unreachable.
 /// * [reviewCount] 
 /// * [hasDocuments] - True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown.
+/// * [documents] 
 @BuiltValue()
 abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBuilder> {
   @BuiltValueField(wireName: r'guard_id')
@@ -44,6 +46,9 @@ abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBui
   /// True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown.
   @BuiltValueField(wireName: r'has_documents')
   bool? get hasDocuments;
+
+  @BuiltValueField(wireName: r'documents')
+  GuardDocuments? get documents;
 
   AvailableGuard._();
 
@@ -111,6 +116,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
       yield serializers.serialize(
         object.hasDocuments,
         specifiedType: const FullType(bool),
+      );
+    }
+    if (object.documents != null) {
+      yield r'documents';
+      yield serializers.serialize(
+        object.documents,
+        specifiedType: const FullType(GuardDocuments),
       );
     }
   }
@@ -184,6 +196,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
             specifiedType: const FullType(bool),
           ) as bool;
           result.hasDocuments = valueDes;
+          break;
+        case r'documents':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(GuardDocuments),
+          ) as GuardDocuments;
+          result.documents.replace(valueDes);
           break;
         default:
           unhandled.add(key);

@@ -177,6 +177,78 @@ void main() {
   });
 
   testWidgets(
+      'renders the per-credential checklist (has/does-not-have for each TYPE)',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-eeee-5555',
+        averageRating: '4.90',
+        reviewCount: 188,
+        hasDocuments: false,
+        documents: GuardDocuments(
+          idCard: true,
+          securityLicense: true,
+          trainingCert: false,
+          criminalCheck: true,
+          driverLicense: false,
+        ),
+      ),
+    );
+
+    // Every credential TYPE label renders (Thai-default), present or not.
+    expect(find.text('บัตรประชาชน'), findsOneWidget);
+    expect(find.text('ใบอนุญาต รปภ.'), findsOneWidget);
+    expect(find.text('ใบรับรองอบรม'), findsOneWidget);
+    expect(find.text('ตรวจประวัติอาชญากรรม'), findsOneWidget);
+    expect(find.text('ใบขับขี่'), findsOneWidget);
+    // 3 present → check_circle, 2 absent → cancel.
+    expect(find.byIcon(Icons.check_circle), findsNWidgets(3));
+    expect(find.byIcon(Icons.cancel), findsNWidgets(2));
+  });
+
+  testWidgets(
+      'renders NO checklist when documents is omitted (unknown backend)',
+      (tester) async {
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-ffff-6666',
+        averageRating: null,
+        reviewCount: 0,
+        // documents omitted → null → checklist hidden (no false all-absent claim).
+      ),
+    );
+    expect(find.text('บัตรประชาชน'), findsNothing);
+  });
+
+  group('AvailableGuard.fromJson parses the documents breakdown', () {
+    test('per-type present/absent', () {
+      final g = AvailableGuard.fromJson({
+        'guard_id': 'g1',
+        'review_count': 0,
+        'documents': {
+          'id_card': true,
+          'security_license': false,
+          'training_cert': true,
+          'criminal_check': false,
+          'driver_license': true,
+        },
+      });
+      expect(g.documents, isNotNull);
+      expect(g.documents!.idCard, isTrue);
+      expect(g.documents!.securityLicense, isFalse);
+      expect(g.documents!.entries.length, 5);
+      expect(g.documents!.entries.where((e) => e.present).length, 3);
+    });
+
+    test('null when the backend omitted documents (unknown)', () {
+      final g = AvailableGuard.fromJson({'guard_id': 'g1', 'review_count': 0});
+      expect(g.documents, isNull);
+    });
+  });
+
+  testWidgets(
       'the "ดูรีวิว" affordance fires onViewReviews and does NOT radio-select the card',
       (tester) async {
     var selected = 0;

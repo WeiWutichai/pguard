@@ -75,6 +75,13 @@ class GuardCard extends ConsumerWidget {
                     ),
                     const SizedBox(height: 2),
                     _RatingLine(guard: guard),
+                    // Per-credential checklist (has / doesn't-have for each document TYPE, never
+                    // the files). Rendered only when the backend supplied the breakdown; a
+                    // mixed-version/older backend (documents == null) shows nothing.
+                    if (guard.documents case final docs?) ...[
+                      const SizedBox(height: 6),
+                      _DocumentChecklist(documents: docs),
+                    ],
                     const SizedBox(height: 4),
                     // Distinct, compact "ดูรีวิว / View reviews" affordance. Its own InkWell
                     // stops the tap from bubbling to the card body (which radio-selects), so
@@ -183,6 +190,66 @@ class _RatingLine extends ConsumerWidget {
         style: const TextStyle(fontSize: 12.5, color: PgTokens.colorTextMuted),
         children: parts,
       ),
+    );
+  }
+}
+
+/// The per-credential document checklist: one small chip per document TYPE, marked ✓ (on file) or
+/// ✗ (not on file). Shows WHICH credential types the guard has — never the documents themselves.
+/// Wrapped so it reflows on narrow cards. Renders all five types in a stable order.
+class _DocumentChecklist extends ConsumerWidget {
+  const _DocumentChecklist({required this.documents});
+
+  final GuardDocuments documents;
+
+  /// Localized label for each stable `type` key from [GuardDocuments.entries].
+  static String _label(String type, bool isThai) {
+    switch (type) {
+      case 'id_card':
+        return isThai ? 'บัตรประชาชน' : 'ID card';
+      case 'security_license':
+        return isThai ? 'ใบอนุญาต รปภ.' : 'Security license';
+      case 'training_cert':
+        return isThai ? 'ใบรับรองอบรม' : 'Training cert';
+      case 'criminal_check':
+        return isThai ? 'ตรวจประวัติอาชญากรรม' : 'Criminal check';
+      case 'driver_license':
+        return isThai ? 'ใบขับขี่' : 'Driver license';
+      default:
+        return type;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 4,
+      children: [
+        for (final e in documents.entries)
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                e.present ? Icons.check_circle : Icons.cancel,
+                size: 13,
+                color:
+                    e.present ? PgTokens.colorSuccess : PgTokens.colorTextFaint,
+              ),
+              const SizedBox(width: 2),
+              Text(
+                _label(e.type, isThai),
+                style: TextStyle(
+                  fontSize: 11.5,
+                  color: e.present
+                      ? PgTokens.colorTextMuted
+                      : PgTokens.colorTextFaint,
+                ),
+              ),
+            ],
+          ),
+      ],
     );
   }
 }

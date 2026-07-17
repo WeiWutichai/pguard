@@ -808,6 +808,15 @@ export interface components {
             years_of_experience?: number | null;
             /** @description True when all five credential documents are on file (derived; passbook excluded). */
             has_documents: boolean;
+            documents: components["schemas"]["GuardDocumentPresence"];
+        };
+        /** @description Per-credential PRESENCE (has / doesn''t-have) for the five customer-relevant credential documents. Booleans ONLY — a `true` means the document is on record; the file bytes never cross the wire (they stay owner/admin-only). Passbook is excluded (banking, not a credential). */
+        GuardDocumentPresence: {
+            id_card: boolean;
+            security_license: boolean;
+            training_cert: boolean;
+            criminal_check: boolean;
+            driver_license: boolean;
         };
         /**
          * @description The lean, customer-facing guard mini-profile for the live-tracking map. NARROW by design —

@@ -32,6 +32,7 @@ export 'package:pguard_booking_api/src/model/daily_count.dart';
 export 'package:pguard_booking_api/src/model/error_body.dart';
 export 'package:pguard_booking_api/src/model/error_detail.dart';
 export 'package:pguard_booking_api/src/model/get_internal_booking200_response.dart';
+export 'package:pguard_booking_api/src/model/guard_documents.dart';
 export 'package:pguard_booking_api/src/model/inline_object.dart';
 export 'package:pguard_booking_api/src/model/inline_object1.dart';
 export 'package:pguard_booking_api/src/model/internal_booking.dart';

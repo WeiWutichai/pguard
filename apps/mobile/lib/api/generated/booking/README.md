@@ -129,6 +129,7 @@ Class | Method | HTTP request | Description
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetInternalBooking200Response](doc/GetInternalBooking200Response.md)
+ - [GuardDocuments](doc/GuardDocuments.md)
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InternalBooking](doc/InternalBooking.md)

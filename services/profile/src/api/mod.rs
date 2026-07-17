@@ -27,11 +27,11 @@ use crate::identity_client::IdentityResolver;
 use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerAvatarResponse,
     CustomerProfileAdminResponse, CustomerProfileResponse, ExpiringDocumentsResponse,
-    GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentResponse, GuardProfileResponse,
-    GuardProfileSubmitResponse, InternalGuard, MyProfile, OrgSettingsResponse,
-    PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
-    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
-    StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentPresence, GuardDocumentResponse,
+    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, MyProfile,
+    OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
+    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
+    SetDocumentExpiryRequest, StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
     UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
 };
 use crate::repo;
@@ -1273,6 +1273,13 @@ pub async fn internal_list_guards<S: ProfileInternalDeps>(
             avatar_url: r.avatar_key.as_deref().map(|k| state.s3().download_url(k)),
             years_of_experience: r.years_of_experience,
             has_documents: r.has_documents,
+            documents: GuardDocumentPresence {
+                id_card: r.has_id_card,
+                security_license: r.has_security_license,
+                training_cert: r.has_training_cert,
+                criminal_check: r.has_criminal_check,
+                driver_license: r.has_driver_license,
+            },
         })
         .collect();
     Ok(Json(ApiResponse::success(guards)))

@@ -715,7 +715,12 @@ pub async fn list_approved_guards(
         "SELECT user_id, full_name, avatar_key, years_of_experience, \
          (id_card_key IS NOT NULL AND security_license_key IS NOT NULL \
           AND training_cert_key IS NOT NULL AND criminal_check_key IS NOT NULL \
-          AND driver_license_key IS NOT NULL) AS has_documents \
+          AND driver_license_key IS NOT NULL) AS has_documents, \
+         (id_card_key IS NOT NULL) AS has_id_card, \
+         (security_license_key IS NOT NULL) AS has_security_license, \
+         (training_cert_key IS NOT NULL) AS has_training_cert, \
+         (criminal_check_key IS NOT NULL) AS has_criminal_check, \
+         (driver_license_key IS NOT NULL) AS has_driver_license \
          FROM profile.guard_profiles \
          WHERE approval_status = 'approved'::profile.approval_status \
          ORDER BY created_at DESC, user_id DESC LIMIT $1",

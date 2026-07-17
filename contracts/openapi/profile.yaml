@@ -1276,13 +1276,28 @@ components:
         profile-derived boolean — all five credential documents (id card, security license,
         training cert, criminal check, driver license) on file — so the customer card can show
         WHETHER documents exist; the documents themselves never cross this wire.
-      required: [user_id, has_documents]
+      required: [user_id, has_documents, documents]
       properties:
         user_id: { type: string, format: uuid }
         full_name: { type: string, nullable: true }
         avatar_url: { type: string, nullable: true, description: 'Presigned GET URL for the guard''s avatar (expires in ~1h), or null when unset.' }
         years_of_experience: { type: integer, format: int32, nullable: true }
         has_documents: { type: boolean, description: 'True when all five credential documents are on file (derived; passbook excluded).' }
+        documents: { $ref: '#/components/schemas/GuardDocumentPresence' }
+
+    GuardDocumentPresence:
+      type: object
+      description: >
+        Per-credential PRESENCE (has / doesn''t-have) for the five customer-relevant credential
+        documents. Booleans ONLY — a `true` means the document is on record; the file bytes never
+        cross the wire (they stay owner/admin-only). Passbook is excluded (banking, not a credential).
+      required: [id_card, security_license, training_cert, criminal_check, driver_license]
+      properties:
+        id_card: { type: boolean }
+        security_license: { type: boolean }
+        training_cert: { type: boolean }
+        criminal_check: { type: boolean }
+        driver_license: { type: boolean }
 
     PublicGuardProfile:
       type: object

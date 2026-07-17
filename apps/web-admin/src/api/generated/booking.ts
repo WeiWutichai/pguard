@@ -908,6 +908,15 @@ export interface components {
             review_count: number;
             /** @description True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown. */
             has_documents?: boolean;
+            documents?: components["schemas"]["GuardDocuments"];
+        };
+        /** @description Per-credential PRESENCE (has / doesn''t-have), passed through from profile so the customer sees WHICH credential TYPES the guard has on file — never the files themselves. Booleans only. Omitted (not an all-false object) when profile didn''t say (older profile during a mixed-version deploy). Passbook is excluded (banking). */
+        GuardDocuments: {
+            id_card: boolean;
+            security_license: boolean;
+            training_cert: boolean;
+            criminal_check: boolean;
+            driver_license: boolean;
         };
         DailyCount: {
             /** Format: date */

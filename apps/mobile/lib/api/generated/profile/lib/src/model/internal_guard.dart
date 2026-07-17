@@ -3,6 +3,7 @@
 //
 
 // ignore_for_file: unused_element
+import 'package:pguard_profile_api/src/model/guard_document_presence.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -16,6 +17,7 @@ part 'internal_guard.g.dart';
 /// * [avatarUrl] - Presigned GET URL for the guard's avatar (expires in ~1h), or null when unset.
 /// * [yearsOfExperience] 
 /// * [hasDocuments] - True when all five credential documents are on file (derived; passbook excluded).
+/// * [documents] 
 @BuiltValue()
 abstract class InternalGuard implements Built<InternalGuard, InternalGuardBuilder> {
   @BuiltValueField(wireName: r'user_id')
@@ -34,6 +36,9 @@ abstract class InternalGuard implements Built<InternalGuard, InternalGuardBuilde
   /// True when all five credential documents are on file (derived; passbook excluded).
   @BuiltValueField(wireName: r'has_documents')
   bool get hasDocuments;
+
+  @BuiltValueField(wireName: r'documents')
+  GuardDocumentPresence get documents;
 
   InternalGuard._();
 
@@ -88,6 +93,11 @@ class _$InternalGuardSerializer implements PrimitiveSerializer<InternalGuard> {
     yield serializers.serialize(
       object.hasDocuments,
       specifiedType: const FullType(bool),
+    );
+    yield r'documents';
+    yield serializers.serialize(
+      object.documents,
+      specifiedType: const FullType(GuardDocumentPresence),
     );
   }
 
@@ -146,6 +156,13 @@ class _$InternalGuardSerializer implements PrimitiveSerializer<InternalGuard> {
             specifiedType: const FullType(bool),
           ) as bool;
           result.hasDocuments = valueDes;
+          break;
+        case r'documents':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(GuardDocumentPresence),
+          ) as GuardDocumentPresence;
+          result.documents.replace(valueDes);
           break;
         default:
           unhandled.add(key);

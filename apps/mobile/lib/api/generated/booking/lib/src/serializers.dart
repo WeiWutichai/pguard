@@ -32,6 +32,7 @@ import 'package:pguard_booking_api/src/model/daily_count.dart';
 import 'package:pguard_booking_api/src/model/error_body.dart';
 import 'package:pguard_booking_api/src/model/error_detail.dart';
 import 'package:pguard_booking_api/src/model/get_internal_booking200_response.dart';
+import 'package:pguard_booking_api/src/model/guard_documents.dart';
 import 'package:pguard_booking_api/src/model/inline_object.dart';
 import 'package:pguard_booking_api/src/model/inline_object1.dart';
 import 'package:pguard_booking_api/src/model/internal_booking.dart';
@@ -74,6 +75,7 @@ part 'serializers.g.dart';
   ErrorBody,
   ErrorDetail,
   GetInternalBooking200Response,
+  GuardDocuments,
   InlineObject,
   InlineObject1,
   InternalBooking,
