@@ -54,7 +54,10 @@ class ChatUnreadBadge extends ConsumerWidget {
                   color: Colors.white,
                   fontSize: 10,
                   fontWeight: FontWeight.w700,
-                  height: 1.2,
+                  height: 1,
+                  // Match the notification bell: IBMPlexSansThai's oversized ascent floats the
+                  // digit up under the default proportional leading — `even` recentres it.
+                  leadingDistribution: TextLeadingDistribution.even,
                 ),
               ),
             ),

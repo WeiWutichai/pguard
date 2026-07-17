@@ -31,6 +31,14 @@ use std::str::FromStr;
 /// `pguard.events.payment.completed` (which stamps `paid_at`).
 pub const PAYMENT_REQUIRED_CODE: &str = "PAYMENT_REQUIRED";
 
+/// Machine-readable `error.code` for the START-CHECK-IN gate 409: an `arrived → pending_completion`
+/// (the guard's completion request) attempted before the guard has filed ANY check-in. The
+/// start-of-work check-in is a first-person on-site attestation, so a job with zero reports has no
+/// evidence the guard was ever present — completing it is refused server-side (the mobile UI also
+/// gates the button, but that is UX-only and bypassable). Clients branch on this sub-code to show a
+/// "file the start check-in first" message instead of the generic conflict copy.
+pub const CHECK_IN_REQUIRED_CODE: &str = "CHECK_IN_REQUIRED";
+
 /// The booking lifecycle status. Serialized snake_case to match the Postgres enum
 /// `booking.booking_status` (NOT `sqlx::Type` — the repo binds [`BookingStatus::as_db_str`]
 /// with a `::booking.booking_status` cast and reads the column back as text).

@@ -8,6 +8,7 @@ import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/customer_avatar_controller.dart';
 import '../../core/controllers/customer_home_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/notification_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/controllers/services_controller.dart';
 import '../../core/models/booking.dart';
@@ -67,6 +68,11 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen>
     // event-driven on resume, NOT a Timer.periodic.
     if (state == AppLifecycleState.resumed) {
       ref.invalidate(customerHomeControllerProvider);
+      // Re-pull the notification unread count too: an FCM push that arrived while backgrounded
+      // carries a `notification` block, so the in-app onMessage handler never ran and the bell
+      // badge is stale on reopen. Invalidate on resume (same event-driven pattern, NOT polling) so
+      // the badge catches up without the user first having to open the notification centre.
+      ref.invalidate(unreadCountProvider);
     }
   }
 

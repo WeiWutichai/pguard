@@ -1025,6 +1025,7 @@ pub async fn available_guards<S: DiscoveryDeps>(
                 average_rating: summary.average,
                 review_count: summary.count,
                 has_documents: g.has_documents,
+                documents: g.documents,
             };
             (guard, !ok)
         })
@@ -2551,6 +2552,7 @@ mod tests {
             avatar_url: None,
             years_of_experience,
             has_documents: None,
+            documents: None,
         }
     }
 
@@ -2753,6 +2755,7 @@ mod tests {
                     avatar_url: Some("https://minio.example/presigned-good".to_string()),
                     years_of_experience: Some(5),
                     has_documents: Some(true),
+                    documents: None,
                 },
                 CatalogGuard {
                     user_id: bad,
@@ -2760,6 +2763,7 @@ mod tests {
                     avatar_url: None,
                     years_of_experience: None,
                     has_documents: Some(false),
+                    documents: None,
                 },
             ],
         };
@@ -2882,6 +2886,67 @@ mod tests {
             data[0].get("has_documents").is_none(),
             "unknown documents state → key omitted (tri-state), not false"
         );
+    }
+
+    #[tokio::test]
+    async fn available_guards_passes_through_per_type_documents() {
+        // profile supplies the per-credential presence breakdown; discovery must pass it through
+        // VERBATIM so the customer sees WHICH credential TYPES are on file (never the files).
+        let g = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![CatalogGuard {
+                user_id: g,
+                full_name: None,
+                avatar_url: None,
+                years_of_experience: None,
+                has_documents: Some(false),
+                documents: Some(crate::models::GuardDocuments {
+                    id_card: true,
+                    security_license: true,
+                    training_cert: false,
+                    criminal_check: true,
+                    driver_license: false,
+                }),
+            }],
+        };
+        let Some(app) = discovery_router(
+            catalog,
+            StubRater { good: g },
+            StubPresence {
+                online: HashSet::from([g]),
+                down: false,
+            },
+        )
+        .await
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let docs = &v["data"][0]["documents"];
+        assert_eq!(docs["id_card"], serde_json::json!(true));
+        assert_eq!(docs["security_license"], serde_json::json!(true));
+        assert_eq!(docs["training_cert"], serde_json::json!(false));
+        assert_eq!(docs["criminal_check"], serde_json::json!(true));
+        assert_eq!(docs["driver_license"], serde_json::json!(false));
     }
 
     /// Issue the discovery request and return the `data` guard_ids as a `Vec<String>`, or `None`

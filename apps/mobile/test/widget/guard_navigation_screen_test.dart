@@ -94,7 +94,7 @@ void main() {
     expect(find.textContaining('~'), findsOneWidget);
     expect(find.textContaining('นาที'), findsOneWidget);
     expect(find.textContaining('หมู่บ้านลัดดารมย์'), findsOneWidget);
-    expect(find.text('ถึงจุดนัดแล้ว — เริ่มงาน'), findsOneWidget);
+    expect(find.text('ถึงจุดนัดแล้ว'), findsOneWidget);
     // The drawn line is the straight 2-point segment, not a multi-point road route.
     expect(_polylinePointCount(tester), 2);
   });
@@ -179,17 +179,19 @@ void main() {
     await _pump(tester, api, null); // no self position
 
     expect(find.textContaining('นาที'), findsNothing); // no fabricated ETA
-    expect(find.text('ถึงจุดนัดแล้ว — เริ่มงาน'), findsOneWidget);
+    expect(find.text('ถึงจุดนัดแล้ว'), findsOneWidget);
     expect(find.textContaining('หมู่บ้านลัดดารมย์'), findsOneWidget);
   });
 
-  testWidgets('the combined CTA marks arrived then starts the job',
+  testWidgets(
+      'the CTA marks arrived only (start is now the on-screen check-in step)',
       (tester) async {
     final api = FakeApi(
       onGet: (_, __) async => _bookingJson('en_route'),
       onPut: (path, _) async {
         if (path == '/bookings/b1/arrived') return _bookingJson('arrived');
-        if (path == '/bookings/b1/start') return _bookingJson('arrived');
+        // start() must NOT be fired from the nav screen anymore — it moved to the active
+        // screen's "เช็คอินเริ่มงาน" step so the timer only runs after the on-site photo.
         throw StateError('unexpected PUT $path');
       },
     );
@@ -230,12 +232,13 @@ void main() {
 
     await tester.tap(find.text('go'));
     await _settle(tester);
-    await tester.tap(find.text('ถึงจุดนัดแล้ว — เริ่มงาน'));
+    await tester.tap(find.text('ถึงจุดนัดแล้ว'));
     await _settle(tester);
 
     expect(api.calls, contains('PUT /bookings/b1/arrived'));
-    expect(api.calls, contains('PUT /bookings/b1/start'));
-    // Returned to the previous screen after arrive+start.
+    // No start PUT — the nav screen only confirms arrival now.
+    expect(api.calls, isNot(contains('PUT /bookings/b1/start')));
+    // Returned to the previous screen after confirming arrival.
     expect(find.text('go'), findsOneWidget);
   });
 }

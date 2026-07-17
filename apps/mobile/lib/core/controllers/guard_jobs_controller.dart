@@ -138,7 +138,19 @@ class GuardJobsController extends _$GuardJobsController {
       await future;
       return null;
     } on ApiException catch (e) {
-      return e.message;
+      // Localize the typed 409 codes the accept/skip path can return (mirrors
+      // active_job_controller._localizeApi). The backend ships a machine-readable `code` PLUS an
+      // English `message`; a Thai-mode app must surface the Thai copy, not the raw English message.
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      switch (e.code) {
+        case 'GUARD_BUSY':
+          // Guard tried to accept a job overlapping one they already hold.
+          return isThai
+              ? 'คุณมีงานในช่วงเวลานี้อยู่แล้ว — เลือกงานที่เวลาไม่ทับซ้อนกัน'
+              : e.message;
+        default:
+          return e.message;
+      }
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';

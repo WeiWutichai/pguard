@@ -54,4 +54,22 @@ void main() {
     expect(completed, ['654321'],
         reason: 'Done/✓ rescues a full-but-unsent code');
   });
+
+  testWidgets(
+      'an IME/autofill write straight to the editing value still completes',
+      (tester) async {
+    // Regression (staging 2026-07-15): the code filled all 6 boxes but verify never fired — the
+    // value reached the controller without the onChanged callback. Completion is now driven by the
+    // controller listener, so a raw editing-value update (how autofill/IME can deliver it) must
+    // still trigger onCompleted.
+    final completed = <String>[];
+    await pump(tester, onCompleted: completed.add);
+
+    tester.testTextInput.updateEditingValue(const TextEditingValue(
+      text: '112233',
+      selection: TextSelection.collapsed(offset: 6),
+    ));
+    await tester.pump();
+    expect(completed, ['112233']);
+  });
 }

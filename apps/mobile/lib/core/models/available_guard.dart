@@ -20,6 +20,7 @@ class AvailableGuard {
     this.averageRating,
     required this.reviewCount,
     this.hasDocuments,
+    this.documents,
   });
 
   final String guardId;
@@ -48,6 +49,12 @@ class AvailableGuard {
   /// mixed-version window) — the card renders nothing then, never a false "no documents".
   final bool? hasDocuments;
 
+  /// Per-credential PRESENCE (which credential TYPES the guard has on file) — booking's
+  /// `AvailableGuard.documents`, passed through from profile. The customer sees WHICH types exist,
+  /// never the files. NULL when the backend didn't say (older backend during a mixed-version
+  /// window) — the card renders nothing then, never an all-false "has none".
+  final GuardDocuments? documents;
+
   factory AvailableGuard.fromJson(Map<String, dynamic> json) => AvailableGuard(
         guardId: json['guard_id'] as String,
         // Optional enrichment — trim to null so an empty/whitespace name never wins over the
@@ -61,6 +68,10 @@ class AvailableGuard {
         // Tri-state: absent/garbage → null (unknown), never a false "no documents".
         hasDocuments: json['has_documents'] is bool
             ? json['has_documents'] as bool
+            : null,
+        // Per-type presence; absent → null (unknown, older backend), never an all-false object.
+        documents: json['documents'] is Map<String, dynamic>
+            ? GuardDocuments.fromJson(json['documents'] as Map<String, dynamic>)
             : null,
       );
 
@@ -115,4 +126,43 @@ class AvailableGuard {
   String displayLabel(bool isThai) =>
       displayName ??
       (isThai ? 'เจ้าหน้าที่ #$shortHandle' : 'Guard #$shortHandle');
+}
+
+/// Per-credential PRESENCE (has / doesn't-have) for the five customer-relevant credential types.
+/// Booleans ONLY — a `true` means the document is on record; the file itself is NEVER exposed to
+/// the customer (it stays owner/admin-only). Pure (no Flutter) → unit-testable. The [entries] list
+/// gives the UI a stable, ordered `(type, present)` sequence to render as a checklist; the widget
+/// maps each `type` key to its localized label.
+class GuardDocuments {
+  const GuardDocuments({
+    required this.idCard,
+    required this.securityLicense,
+    required this.trainingCert,
+    required this.criminalCheck,
+    required this.driverLicense,
+  });
+
+  final bool idCard;
+  final bool securityLicense;
+  final bool trainingCert;
+  final bool criminalCheck;
+  final bool driverLicense;
+
+  factory GuardDocuments.fromJson(Map<String, dynamic> json) => GuardDocuments(
+        idCard: json['id_card'] == true,
+        securityLicense: json['security_license'] == true,
+        trainingCert: json['training_cert'] == true,
+        criminalCheck: json['criminal_check'] == true,
+        driverLicense: json['driver_license'] == true,
+      );
+
+  /// Ordered `(type, present)` entries for a per-type checklist. The `type` is a stable key the
+  /// UI maps to a localized label; `present` drives the ✓ / ✗ (has / doesn't-have) marker.
+  List<({String type, bool present})> get entries => [
+        (type: 'id_card', present: idCard),
+        (type: 'security_license', present: securityLicense),
+        (type: 'training_cert', present: trainingCert),
+        (type: 'criminal_check', present: criminalCheck),
+        (type: 'driver_license', present: driverLicense),
+      ];
 }

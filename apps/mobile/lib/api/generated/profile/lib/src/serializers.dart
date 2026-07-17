@@ -45,6 +45,7 @@ import 'package:pguard_profile_api/src/model/get_public_customer_profile200_resp
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/guard_avatar_response.dart';
 import 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
+import 'package:pguard_profile_api/src/model/guard_document_presence.dart';
 import 'package:pguard_profile_api/src/model/guard_document_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
@@ -108,6 +109,7 @@ part 'serializers.g.dart';
   GetPublicGuardProfile200Response,
   GuardAvatarResponse,
   GuardDocumentExpiry,
+  GuardDocumentPresence,
   GuardDocumentResponse,
   GuardProfile,$GuardProfile,
   InlineObject,

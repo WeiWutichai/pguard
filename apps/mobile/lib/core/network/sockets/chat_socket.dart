@@ -40,9 +40,14 @@ abstract class ChatFeed {
 ///    room over it). The [ChatController] therefore filters incoming by `conversation_id` and
 ///    dedupes by message id (the server echoes the sender's own message back to them).
 ///
-/// BACKEND DEPENDENCY (documented, mirrors `booking_status_socket.dart`): the api-gateway does
-/// not yet proxy the `/v1/ws/chat` upgrade. This client codes against the agreed contract so the
-/// screen works unchanged the moment a WS-aware ingress lands. NO polling: messages are push.
+/// BACKEND: the api-gateway NOW proxies the `/v1/ws/chat` upgrade (`crate::wsproxy`, registered in
+/// `services/api-gateway/src/main.rs` and mapped `Upstream::Chat -> /ws/chat` in
+/// `WS_PROXY_ROUTES`), exactly like `/v1/ws/track` (presence) and `/v1/ws/bookings/{id}`. The chat
+/// service persists each frame + broadcasts it to the conversation's `chat:{id}` Redis channel for
+/// cross-replica fan-out, so a message from one participant reaches the other IN REALTIME while both
+/// have the conversation open. NO polling: messages are push. (The chat-list unread badge, which is
+/// a REST fetch and only live while a conversation screen holds the socket, is bumped separately by
+/// the FCM chat push in `push_registration_controller._handle`.)
 class ChatSocket implements ChatFeed {
   ChatSocket({
     required Future<String?> Function() tokenProvider,

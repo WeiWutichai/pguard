@@ -39,6 +39,11 @@ pub struct CatalogGuard {
     pub years_of_experience: Option<i32>,
     #[serde(default)]
     pub has_documents: Option<bool>,
+    /// Per-credential presence (which credential TYPES the guard has), passed through to the
+    /// customer's card. `#[serde(default)]` → `None` against an older profile that doesn't emit it,
+    /// so "unknown" is never misreported as an all-false "has none".
+    #[serde(default)]
+    pub documents: Option<crate::models::GuardDocuments>,
 }
 
 /// A guard's rating summary from rating's `/internal/guards/{id}/rating-summary`. `Default`

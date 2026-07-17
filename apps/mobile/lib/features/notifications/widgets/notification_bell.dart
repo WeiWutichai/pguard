@@ -60,6 +60,11 @@ class _Badge extends StatelessWidget {
           fontSize: 9.5,
           fontWeight: FontWeight.w700,
           height: 1,
+          // IBMPlexSansThai has an oversized ascent (1.65em natural line box, to fit Thai stacked
+          // vowels/tone marks). With the default PROPORTIONAL leading, forcing height:1 compresses
+          // that box toward the ascent and floats the digit visibly UP. `even` splits the leading
+          // evenly so the digit sits optically centred in the badge circle.
+          leadingDistribution: TextLeadingDistribution.even,
         ),
       ),
     );

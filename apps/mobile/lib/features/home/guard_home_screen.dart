@@ -7,6 +7,7 @@ import '../../core/controllers/guard_avatar_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/guard_ratings_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/controllers/notification_controller.dart';
 import '../../core/controllers/profile_controller.dart';
 import '../../core/controllers/session_controller.dart';
 import '../../core/controllers/tracking_controller.dart';
@@ -55,6 +56,10 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
     // refresh()) so it only refetches while this dashboard is mounted/listening.
     if (state == AppLifecycleState.resumed) {
       ref.invalidate(guardJobsControllerProvider);
+      // Also re-pull the notification unread count: a backgrounded FCM push carries a
+      // `notification` block so the in-app handler never ran and the bell badge is stale on reopen.
+      // Invalidate on resume (event-driven, NOT polling) so the badge catches up without a tap.
+      ref.invalidate(unreadCountProvider);
     }
   }
 

@@ -770,6 +770,31 @@ pub async fn transition(
         ));
     }
 
+    // Completing ALSO requires at least one filed check-in — the start-of-work check-in is the
+    // guard's first-person on-site attestation, so a job with ZERO progress reports has no
+    // evidence the guard was ever present and must not be billable/completable. Authoritative
+    // (inside the row lock), not just the client-side button gate — a modified app can't bypass
+    // it. Progress reports are append-only (no delete path) and each requires `arrived` +
+    // `work_started_at`, so an EXISTS check can never wrongly ALLOW a zero-report completion.
+    // Gate on ANY report (not hour 1 specifically): a guard who filed only a later hour has still
+    // attested presence, and there is no UI path to backfill hour 1 once a later slot is due.
+    if new_status == BookingStatus::PendingCompletion {
+        let (has_check_in,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS(SELECT 1 FROM booking.progress_reports WHERE booking_id = $1)",
+        )
+        .bind(id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !has_check_in {
+            tx.rollback().await?;
+            return Err(AppError::ConflictCode {
+                code: crate::domain::state::CHECK_IN_REQUIRED_CODE,
+                message: "The start-of-work check-in is required before requesting completion"
+                    .to_string(),
+            });
+        }
+    }
+
     let guard_id = assign_guard.or(existing_guard);
 
     // 1) the business change. `work_started_at` is owned by `start_job`, never touched here.
@@ -807,9 +832,11 @@ pub async fn transition(
         None
     };
 
-    // 2) the event — same transaction (transactional outbox). The mapping depends on the WHOLE
-    // transition (`current → new_status`): e.g. the completion-reject bounce to `arrived` emits
-    // nothing, unlike a fresh arrival.
+    // 2) the event — same transaction (transactional outbox). The topic is keyed on the TARGET
+    // status (`event_for_status`), so BOTH a fresh arrival (`en_route → arrived`) and the
+    // completion-reject bounce (`pending_completion → arrived`) emit `booking.arrived` — the
+    // latter is what lets the guard's live screen leave "pending_completion" without a manual
+    // refresh (see `event_for_status` + the `review_reject_returns_to_arrived_owner_only` test).
     if let Some(EventMapping { topic, payload }) =
         event_for_status(current, new_status, id, customer_id, guard_id, completion)
     {
@@ -2027,6 +2054,12 @@ mod db_tests {
                 .expect("read work_started_at");
         assert!(work_started.is_some(), "work_started_at stamped by start");
 
+        // The start-of-work check-in is now REQUIRED before the guard may request completion —
+        // file hour 1 so the completion gate passes (a job with zero reports 409s CHECK_IN_REQUIRED).
+        create_progress_report(&pool, created.id, guard_id, &report(1), correlation)
+            .await
+            .expect("start check-in");
+
         let pending = transition(
             &pool,
             created.id,
@@ -2089,6 +2122,137 @@ mod db_tests {
                 .bind(created.id.to_string())
                 .execute(&pool)
                 .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The guard's completion request (`arrived → pending_completion`) is REFUSED until at least
+    /// one check-in exists: a started-but-never-checked-in job 409s `CHECK_IN_REQUIRED`, and the
+    /// same request succeeds once the start-of-work check-in is filed. This is the server-side
+    /// backstop for the "จบงาน without the start check-in photo" bug (the app also gates the
+    /// button, but that is UX-only). DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn pending_completion_requires_a_check_in() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "9 CheckIn Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 4,
+                service_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+
+        mark_paid_now(&pool, created.id).await;
+        for (status, assign) in [
+            (BookingStatus::Accepted, Some(guard_id)),
+            (BookingStatus::EnRoute, None),
+            (BookingStatus::Arrived, None),
+        ] {
+            transition(
+                &pool,
+                created.id,
+                guard_id,
+                false,
+                status,
+                assign,
+                correlation,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+        start_job(&pool, created.id, guard_id, false, None, None)
+            .await
+            .expect("start");
+
+        // Started but ZERO check-ins → completion request is refused with CHECK_IN_REQUIRED.
+        let refused = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("complete with no check-in must be refused");
+        assert!(
+            matches!(
+                refused,
+                AppError::ConflictCode {
+                    code: crate::domain::state::CHECK_IN_REQUIRED_CODE,
+                    ..
+                }
+            ),
+            "expected CHECK_IN_REQUIRED, got {refused:?}"
+        );
+        // The refusal did NOT advance the status (still arrived).
+        let still: String =
+            sqlx::query_scalar("SELECT status::text FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read status");
+        assert_eq!(
+            still, "arrived",
+            "a refused completion leaves the job arrived"
+        );
+
+        // File the start check-in → the same request now succeeds.
+        create_progress_report(&pool, created.id, guard_id, &report(1), correlation)
+            .await
+            .expect("start check-in");
+        let pending = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            correlation,
+        )
+        .await
+        .expect("complete → pending_completion once a check-in exists");
+        assert_eq!(pending.status, "pending_completion");
+
+        // cleanup
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.progress_reports WHERE booking_id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
             .bind(created.id)
             .execute(&pool)
@@ -2264,6 +2428,10 @@ mod db_tests {
         start_job(&pool, created.id, guard_id, false, None, None)
             .await
             .expect("start");
+        // Start-of-work check-in is required before completion can be requested.
+        create_progress_report(&pool, created.id, guard_id, &report(1), correlation)
+            .await
+            .expect("start check-in");
         transition(
             &pool,
             created.id,

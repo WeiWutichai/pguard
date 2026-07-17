@@ -30,6 +30,22 @@ pub struct InternalGuard {
     /// A derived boolean only — the documents themselves stay owner/admin-only; this powers the
     /// customer-facing "มีเอกสาร / ไม่มีเอกสาร" indicator on the guard-selection card.
     pub has_documents: bool,
+    /// Per-credential PRESENCE (has / doesn't have), so the customer can see WHICH credential
+    /// types the guard has on file — never the documents themselves (those stay owner/admin-only,
+    /// behind the presigned owner GET). Booleans only; the file bytes never leave profile.
+    pub documents: GuardDocumentPresence,
+}
+
+/// Per-credential presence flags (has/doesn't-have) for the five customer-relevant credential
+/// documents. Booleans ONLY — a "true" means the key column is non-null (the file is on record),
+/// never the file itself. Passbook is deliberately excluded (banking, not a vetting credential).
+#[derive(Debug, Clone, Serialize)]
+pub struct GuardDocumentPresence {
+    pub id_card: bool,
+    pub security_license: bool,
+    pub training_cert: bool,
+    pub criminal_check: bool,
+    pub driver_license: bool,
 }
 
 /// The raw `list_approved_guards` repo row — DB columns only, including the unsigned
@@ -45,6 +61,12 @@ pub struct InternalGuardRow {
     pub years_of_experience: Option<i32>,
     /// Derived in SQL: all five credential `*_key` columns non-null (see `list_approved_guards`).
     pub has_documents: bool,
+    /// Per-credential presence, each derived in SQL as `<name>_key IS NOT NULL`.
+    pub has_id_card: bool,
+    pub has_security_license: bool,
+    pub has_training_cert: bool,
+    pub has_criminal_check: bool,
+    pub has_driver_license: bool,
 }
 
 /// The lean, customer-facing guard mini-profile for the live-tracking map

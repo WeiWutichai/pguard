@@ -28,6 +28,7 @@ const Object _unset = Object();
 class WorkSessionStore {
   final Map<String, DateTime> _startedAt = {};
   final Set<String> _checkInInFlight = {};
+  final Set<String> _autoCompleteSuppressed = {};
 
   /// The client-recorded start for [bookingId], or null if the guard hasn't started it this session.
   DateTime? startedAt(String bookingId) => _startedAt[bookingId];
@@ -41,6 +42,19 @@ class WorkSessionStore {
 
   void beginCheckIn(String bookingId) => _checkInInFlight.add(bookingId);
   void endCheckIn(String bookingId) => _checkInInFlight.remove(bookingId);
+
+  /// True once the CUSTOMER has REJECTED a completion for [bookingId] ("ให้ทำงานต่อ / keep
+  /// working"). The customer is explicitly asking for work PAST the booked duration, so the
+  /// booked-duration auto-complete must NOT re-fire — otherwise the reject-bounce remount of the
+  /// working panel would instantly re-request completion (undoing the reject + re-spamming the
+  /// "please review" push). Session-scoped: reset on app relaunch (a rare edge where a long-elapsed
+  /// job could auto-complete once more — acceptable vs. the reject ping-pong).
+  bool isAutoCompleteSuppressed(String bookingId) =>
+      _autoCompleteSuppressed.contains(bookingId);
+
+  /// Suppress the booked-duration auto-complete for [bookingId] after a completion reject.
+  void suppressAutoComplete(String bookingId) =>
+      _autoCompleteSuppressed.add(bookingId);
 
   /// Record the start the moment the guard taps "Start job" (idempotent-friendly: keep the
   /// EARLIEST stamp so a re-tap / rebuild never pushes the countdown later).
@@ -201,6 +215,29 @@ class ActiveJobController extends _$ActiveJobController {
     ));
   }
 
+  /// The CUSTOMER REJECTED the guard's completion request (`pending_completion → arrived`, the
+  /// "ให้ทำงานต่อ / keep working" bounce), observed on the booking-status WS. The active-job
+  /// controller has no WS of its own, so the screen forwards this here. We do NOT fold the raw
+  /// non-terminal `arrived` frame (an at-least-once redelivered EARLIER frame could rewind it —
+  /// the same hazard [applyExternalStatus] guards against); instead we re-pull the authoritative
+  /// snapshot. The reject NEVER resets `work_started_at` (booking repo `transition` leaves it
+  /// untouched), and the guard's `completedCheckIns` already holds the start check-in, so the
+  /// re-fetch lands the guard back in the WORKING stage with the countdown continuing from the
+  /// original anchor. Self-gated to only act while the controller is still `pending_completion`,
+  /// so a normal `en_route → arrived` frame or a duplicate is a no-op.
+  Future<void> resumeFromRejectedCompletion() async {
+    final current = state.valueOrNull;
+    if (current == null ||
+        current.booking.status != BookingStatus.pendingCompletion) {
+      return;
+    }
+    // The customer asked the guard to KEEP WORKING — suppress the booked-duration auto-complete so
+    // the working panel that re-mounts on this bounce can't instantly re-request completion (which
+    // would undo the reject and re-fire the "please review" push). The guard ends manually now.
+    ref.read(workSessionStoreProvider).suppressAutoComplete(bookingId);
+    await _refreshBookingSnapshot();
+  }
+
   /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws after accepting
   /// (accepted → declined). Valid pre-arrival; the screen returns to the dashboard on success.
   Future<bool> withdraw() => _transition('decline');
@@ -344,6 +381,12 @@ class ActiveJobController extends _$ActiveJobController {
         return isThai
             ? 'ต้องมีสัญญาณ GPS เพื่อเริ่มงาน — เปิดตำแหน่ง (Location) แล้วลองใหม่'
             : 'A GPS fix is required to start — turn on Location and retry';
+      case 'CHECK_IN_REQUIRED':
+        // Server-side backstop for "จบงาน before the start check-in" — the screen already gates the
+        // End button behind the start check-in, so this only surfaces for an out-of-sync client.
+        return isThai
+            ? 'ต้องเช็คอินเริ่มงาน (แนบรูป) ก่อนจึงจะจบงานได้'
+            : 'File the start check-in photo before ending the job';
       case 'NOT_AT_SITE':
         // The server message carries the measured distance ("You are {d} m from the job
         // site (max 50 m)") — pull the first number for the Thai copy, degrade gracefully.

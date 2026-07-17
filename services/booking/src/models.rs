@@ -377,6 +377,24 @@ pub struct AvailableGuard {
     pub review_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub has_documents: Option<bool>,
+    /// Per-credential PRESENCE (has/doesn't-have), passed straight through from profile so the
+    /// customer sees WHICH credential types are on file — never the files themselves. OMITTED (not
+    /// an all-false object) when profile didn't say (older profile during a mixed-version deploy),
+    /// so the app renders "unknown" as nothing rather than a false "has none".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub documents: Option<GuardDocuments>,
+}
+
+/// Per-credential presence flags for the five customer-relevant credential documents. Booleans
+/// ONLY (each = the file is on record), never the file bytes. Serialized to the customer AND
+/// deserialized from profile's catalog, so it carries both derives. Passbook is excluded (banking).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GuardDocuments {
+    pub id_card: bool,
+    pub security_license: bool,
+    pub training_cert: bool,
+    pub criminal_check: bool,
+    pub driver_license: bool,
 }
 
 /// The authoritative subset of a booking exposed to internal callers (service-JWT'd),

@@ -68,13 +68,15 @@ class GuardNavigationScreen extends ConsumerWidget {
 
   final String bookingId;
 
-  /// The combined "I've arrived — start" action: mark arrived (skipped when the job is ALREADY
-  /// `arrived` — advanced from another screen/frame), then start the work clock, then return to
-  /// the active-job (now working) screen. STATUS-GATED: pressed while the booking is no longer
-  /// en_route/arrived (cancelled during a WS gap, still merely accepted) it explains instead of
-  /// firing a guaranteed-409 PUT. Failure messages prefer the controller's localized transition
-  /// error (e.g. the 50 m geofence "อยู่ห่างจากจุดงาน…") over the generic fallback.
-  Future<void> _arriveAndStart(
+  /// The "I've arrived" action: mark the job `arrived` (skipped when it is ALREADY `arrived` —
+  /// advanced from another screen/frame), then return to the active-job screen. It deliberately
+  /// does NOT start the work clock: starting + the checkpoint photo now happen on the active screen
+  /// ("เช็คอินเริ่มงาน"), so the timer only runs once the guard has filed the start check-in on
+  /// site — the active screen lands on `JobStage.start` after this pops. STATUS-GATED: pressed
+  /// while the booking is no longer en_route/arrived (cancelled during a WS gap, still merely
+  /// accepted) it explains instead of firing a guaranteed-409 PUT. The failure message prefers the
+  /// controller's localized transition error over the generic fallback.
+  Future<void> _confirmArrived(
       BuildContext context, WidgetRef ref, bool isThai) async {
     final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
     final status = ref
@@ -101,16 +103,7 @@ class GuardNavigationScreen extends ConsumerWidget {
         return;
       }
     }
-    final started = await ctrl.start();
-    if (!context.mounted) return;
-    if (started) {
-      context.pop();
-    } else {
-      _snack(
-          context,
-          _ctrlError(ref) ??
-              (isThai ? 'เริ่มงานไม่สำเร็จ' : "Couldn't start the job"));
-    }
+    if (context.mounted) context.pop();
   }
 
   /// The controller's localized transition error for this booking, if it recorded one.
@@ -151,7 +144,7 @@ class GuardNavigationScreen extends ConsumerWidget {
             dest: dest,
             self: self,
             busy: state.busy,
-            onArrive: () => _arriveAndStart(context, ref, isThai),
+            onArrive: () => _confirmArrived(context, ref, isThai),
           );
         },
       ),
@@ -611,9 +604,7 @@ class _Sheet extends StatelessWidget {
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
               child: PgPrimaryButton(
-                label: isThai
-                    ? 'ถึงจุดนัดแล้ว — เริ่มงาน'
-                    : "I've arrived — start",
+                label: isThai ? 'ถึงจุดนัดแล้ว' : "I've arrived",
                 busy: busy,
                 onPressed: busy ? null : onArrive,
               ),

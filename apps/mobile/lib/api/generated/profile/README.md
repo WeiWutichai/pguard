@@ -163,6 +163,7 @@ Class | Method | HTTP request | Description
  - [GetPublicGuardProfile200Response](doc/GetPublicGuardProfile200Response.md)
  - [GuardAvatarResponse](doc/GuardAvatarResponse.md)
  - [GuardDocumentExpiry](doc/GuardDocumentExpiry.md)
+ - [GuardDocumentPresence](doc/GuardDocumentPresence.md)
  - [GuardDocumentResponse](doc/GuardDocumentResponse.md)
  - [GuardProfile](doc/GuardProfile.md)
  - [InlineObject](doc/InlineObject.md)
