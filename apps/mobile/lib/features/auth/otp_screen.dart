@@ -52,7 +52,13 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
     final target = ref.read(authControllerProvider).addRoleTarget;
     if (target != null) {
       final role = RegistrationRole.tryParse(target);
-      if (role == null) return;
+      if (role == null) {
+        // Unreachable via the current caller (startAddRolePending passes a real role's wire, which
+        // always round-trips), but never silently `return` and strand the user on the OTP screen —
+        // bounce back to the pending screen this add-role run came from.
+        context.go('/auth/pending');
+        return;
+      }
       final outcome = await ref
           .read(registrationControllerProvider.notifier)
           .addSecondRoleWhilePending(role);
@@ -82,7 +88,16 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
       await ref
           .read(sessionProvider.notifier)
           .toReturningLogin(phone: auth.phone);
-      return; // the router redirects SessionStatus.returning → /login/pin
+      if (!mounted) return;
+      // Navigate to PIN-login EXPLICITLY — do NOT trust the session redirect to do it. The
+      // `returning` redirect deliberately KEEPS /auth/* reachable (so a reset-PIN / different-account
+      // OTP run can start from a remembered device), so `sessionRedirect(returning, '/auth/otp')`
+      // returns null (STAY) and never bounces us off the OTP screen. Relying on it left a returning
+      // user stranded here with the code entered, no error, and no forward progress (the "กรอก OTP
+      // แล้วค้าง" hang). This mirrors role_selection_screen, which likewise `go`es to /login/pin after
+      // its own `toReturningLogin` (the register-409 path). The router allows `returning → /login/pin`.
+      context.go('/login/pin');
+      return;
     }
     if (!mounted) return;
     context.push('/auth/pin');

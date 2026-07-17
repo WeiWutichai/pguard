@@ -30,19 +30,22 @@ void main() {
   });
 
   group('the mode picker is reachable while authenticated (not trapped)', () {
-    test('a dual-role user may OPEN /auth/role (allowed, not bounced home)', () {
+    test('a dual-role user may OPEN /auth/role (allowed, not bounced home)',
+        () {
       final s = authed('guard', ['customer', 'guard']);
       expect(sessionRedirect(s, '/auth/role'), isNull);
     });
 
-    test('a single-role user may ALSO open /auth/role (to enrol a 2nd role)', () {
+    test('a single-role user may ALSO open /auth/role (to enrol a 2nd role)',
+        () {
       // Was bounced home (a catch-22 — the add-role flow was unreachable). Now allowed: a single-role
       // user taps the "เพิ่มบทบาท / Add role" affordance to reach the picker and enrol the 2nd role.
       final s = authed('customer', ['customer']);
       expect(sessionRedirect(s, '/auth/role'), isNull);
     });
 
-    test('a single-role login still AUTO-lands on its home (not the picker)', () {
+    test('a single-role login still AUTO-lands on its home (not the picker)',
+        () {
       // Only an EXPLICIT open of /auth/role is allowed; the post-login auto-redirect from a stale
       // entry still sends a single-role account straight home (no forced one-option picker).
       final s = authed('customer', ['customer']);
@@ -75,9 +78,34 @@ void main() {
     expect(sessionRedirect(s, '/bookings-history'), isNull);
   });
 
+  group(
+      'returning KEEPS /auth reachable — so OTP/reset flows must navigate explicitly',
+      () {
+    const returning = SessionState(SessionStatus.returning);
+    test('a returning user sitting on /auth/otp is NOT bounced to /login/pin',
+        () {
+      // The redirect DELIBERATELY allows /auth/* under `returning` so a remembered device can run a
+      // reset-PIN / different-account OTP flow from here. The consequence: after the OTP screen flips
+      // the session to `returning` (an existing-account verify), this redirect will NOT move the user
+      // off /auth/otp — so OtpScreen MUST navigate to /login/pin ITSELF. It once relied on this
+      // redirect and left the user stranded on the OTP screen with the code entered ("กรอก OTP แล้วค้าง").
+      // This pins WHY the screen navigates explicitly; if this ever returns '/login/pin', revisit the
+      // screen's explicit go().
+      expect(sessionRedirect(returning, '/auth/otp'), isNull);
+    });
+    test('the explicit /login/pin target IS allowed under returning', () {
+      expect(sessionRedirect(returning, '/login/pin'), isNull);
+    });
+    test('a NON-auth destination under returning IS bounced to /login/pin', () {
+      expect(sessionRedirect(returning, '/home/guard'), '/login/pin');
+    });
+  });
+
   group('non-authenticated states are unchanged (regression)', () {
     test('unknown → splash', () {
-      expect(sessionRedirect(const SessionState(SessionStatus.unknown), '/home/guard'),
+      expect(
+          sessionRedirect(
+              const SessionState(SessionStatus.unknown), '/home/guard'),
           '/splash');
     });
     test('unauthenticated → phone', () {
@@ -87,13 +115,15 @@ void main() {
           '/auth/phone');
     });
     test('locked → lock', () {
-      expect(sessionRedirect(const SessionState(SessionStatus.locked), '/home/guard'),
+      expect(
+          sessionRedirect(
+              const SessionState(SessionStatus.locked), '/home/guard'),
           '/lock');
     });
     test('pendingApproval stays in the /auth sub-flow', () {
       expect(
-          sessionRedirect(
-              const SessionState(SessionStatus.pendingApproval), '/auth/pending'),
+          sessionRedirect(const SessionState(SessionStatus.pendingApproval),
+              '/auth/pending'),
           isNull);
     });
   });
