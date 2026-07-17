@@ -78,32 +78,53 @@ Future<void> pumpActiveJob(
 
 void main() {
   testWidgets(
-      '#98 working stage: the primary action (check-in + End) lives in ONE bottom bar',
+      'BUG1/BUG2 arrived-not-checked-in: the ONE CTA is the start check-in; End is unreachable',
       (tester) async {
-    // Arrived, not yet started, no reports → JobStage.start. Tapping "Start job" stamps startedAt
-    // = now with no completed slots, so slot 0 is immediately due → the check-in CTA is primary
-    // with "End" as the secondary, BOTH in the bottom bar (the consolidation).
-    final api = FakeApi(onPut: (path, _) async {
-      return bookingJson('arrived'); // start keeps status arrived
-    }, onGet: (path, _) async {
+    // Arrived, no reports → JobStage.start. The ONE CTA is "เช็คอินเริ่มงาน" (start + photo); the
+    // old bare "เริ่มงาน" is gone, there is no working panel, and — the BUG1 gate — "จบงาน" (End) is
+    // NOT reachable, because the only complete() callers live inside working-gated widgets.
+    final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson('arrived');
       return const <Map<String, dynamic>>[];
     });
 
     await pumpActiveJob(tester, api: api);
 
-    // Pre-start: the Start CTA (one place), no working panel yet.
-    expect(find.text('เริ่มงาน'), findsOneWidget);
-    expect(find.textContaining('ความคืบหน้า'), findsNothing);
-
-    await tester.tap(find.text('เริ่มงาน'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 20));
-
-    // The consolidated bottom bar: the due check-in CTA (slot 0 = "เช็คอินเริ่มงาน") is primary,
-    // and "จบงาน" (End) is the secondary — both in the bottom action area. The working panel
-    // shows the read-only progress (countdown + timeline), no separate in-panel check-in button.
+    expect(find.text('เริ่มงาน'), findsNothing);
     expect(find.text('เช็คอินเริ่มงาน'), findsOneWidget);
+    expect(find.textContaining('ความคืบหน้า'), findsNothing);
+    expect(find.textContaining('จบงาน'), findsNothing,
+        reason:
+            'BUG1: End must be unreachable until the start check-in is filed');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      '#98 working stage: after the start check-in, End is the consolidated bottom action',
+      (tester) async {
+    // The hour-1 (start) report hydrates slot 0 → JobStage.working. Anchored 5 min ago so the 8h
+    // shift is mid-flight (no hourly check-in due yet) → "จบงาน" is the primary End in the ONE
+    // bottom bar, and the panel is read-only progress (no separate in-panel check-in button).
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') return bookingJson('arrived');
+      if (path == '/bookings/b1/progress-reports') {
+        return [
+          {
+            'hour_number': 1,
+            'created_at': DateTime.now()
+                .toUtc()
+                .subtract(const Duration(minutes: 5))
+                .toIso8601String(),
+          }
+        ];
+      }
+      return const <Map<String, dynamic>>[];
+    });
+
+    await pumpActiveJob(tester, api: api);
+
+    // The consolidated End action (no in-panel check-in button; the panel is read-only progress).
     expect(find.text('จบงาน'), findsOneWidget);
     // The #123 status timeline grew the card above, so the working panel's progress header can sit
     // below the lazy ListView fold (off-screen children aren't built) — scroll it up first.
@@ -141,7 +162,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('#99c done stage: View receipt opens the booking-derived receipt sheet',
+  testWidgets(
+      '#99c done stage: View receipt opens the booking-derived receipt sheet',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson('completed');
@@ -185,8 +207,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      '#99a awaiting stage: guard can return to their jobs (not stuck)',
+  testWidgets('#99a awaiting stage: guard can return to their jobs (not stuck)',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson('pending_completion');

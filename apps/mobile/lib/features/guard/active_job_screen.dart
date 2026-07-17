@@ -85,10 +85,18 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
       bookingStatusControllerProvider(widget.bookingId),
       (_, next) {
         final status = next.valueOrNull?.status;
-        if (status != null && BookingLifecycle.isTerminal(status)) {
-          ref
-              .read(activeJobControllerProvider(widget.bookingId).notifier)
-              .applyExternalStatus(status);
+        if (status == null) return;
+        final notifier =
+            ref.read(activeJobControllerProvider(widget.bookingId).notifier);
+        if (BookingLifecycle.isTerminal(status)) {
+          notifier.applyExternalStatus(status);
+        } else if (status == BookingStatus.arrived) {
+          // The CUSTOMER tapped "ให้ทำงานต่อ" (reject completion): pending_completion → arrived.
+          // The backend re-emits `booking.arrived` on this bounce, so it reaches us over the same
+          // feed. Forward it — the controller self-gates to only act when it is still
+          // `pending_completion` and re-pulls the snapshot, dropping the guard back into the WORKING
+          // stage with the countdown continuing (a normal en_route→arrived frame is a no-op there).
+          notifier.resumeFromRejectedCompletion();
         }
       },
     );
@@ -224,7 +232,16 @@ JobStage stageOf(ActiveJobState s) {
     case BookingStatus.enRoute:
       return JobStage.arrived;
     case BookingStatus.arrived:
-      return s.startedAt == null ? JobStage.start : JobStage.working;
+      // The WORKING stage (green header + LIVE pill + running countdown) begins only once the
+      // START-of-work check-in (slot 0 / hour 1) has been filed — NOT merely when `start()` stamps
+      // `work_started_at`. Until then the guard sits in `JobStage.start`, whose CTA is
+      // "เช็คอินเริ่มงาน" (start + capture the checkpoint photo). This is what keeps the timer from
+      // running before the guard proves they are on site, and — because both callers of
+      // `complete()` live inside working-gated widgets — makes "จบงาน" unreachable without the
+      // check-in (the backend enforces the same gate authoritatively).
+      return s.completedCheckIns.contains(0)
+          ? JobStage.working
+          : JobStage.start;
     case BookingStatus.pendingCompletion:
       return JobStage.awaiting;
     default:
@@ -345,7 +362,10 @@ class _Body extends StatelessWidget {
                     // apart). Driven purely by status — no timer.
                     _GuardStatusTimeline(
                       status: booking.status,
-                      started: state.startedAt != null,
+                      // The "Working" step greens only once the START check-in is filed (the same
+                      // gate as [stageOf] → JobStage.working), so the timeline stays on "ถึงจุดนัด"
+                      // while the guard is arrived-but-not-yet-checked-in.
+                      started: state.completedCheckIns.contains(0),
                     ),
                   ],
                 ),
@@ -686,6 +706,17 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   Future<void> _maybeAutoComplete() async {
     if (_autoCompleted) return;
 
+    // The customer REJECTED a prior completion ("keep working") — they want work past the booked
+    // duration, so the booked-duration auto-complete must not re-fire and undo their choice. The
+    // per-panel `_autoCompleted` flag can't cover this: the reject bounce re-mounts a FRESH working
+    // panel (via resumeFromRejectedCompletion), resetting it — so the guard is the source of truth
+    // for ending from here. Kept in the keep-alive WorkSessionStore so it survives that remount.
+    if (ref
+        .read(workSessionStoreProvider)
+        .isAutoCompleteSuppressed(widget.bookingId)) {
+      return;
+    }
+
     // Read the LIVE controller state (not the captured widget.state) so the status/busy checks
     // reflect any transition that landed since this panel was built.
     final live =
@@ -897,6 +928,43 @@ class _TransitionBar extends ConsumerWidget {
     }
   }
 
+  /// The START-of-work check-in flow (JobStage.start CTA). Stamps the work clock, then captures the
+  /// checkpoint photo — the working stage + countdown only begin once the photo lands (slot 0 →
+  /// server hour 1, via [stageOf] gating on `completedCheckIns.contains(0)`). Order is forced by the
+  /// backend: `start()` must stamp `work_started_at` BEFORE an hour-1 check-in is legal, and it also
+  /// runs the 50 m start geofence — a GPS/geofence 409 (surfaced in `state.error`) aborts before the
+  /// camera opens. `start()` is idempotent, so retrying after a cancelled sheet re-uses the anchor.
+  Future<void> _startAndCheckIn(
+      BuildContext context, WidgetRef ref, bool isThai) async {
+    final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
+    final store = ref.read(workSessionStoreProvider);
+    final messenger = ScaffoldMessenger.of(context);
+    final started = state.startedAt != null || await ctrl.start();
+    if (!started || !context.mounted) return;
+    // Mark the check-in in flight so the screen's `resumed` re-fetch is suppressed while the camera
+    // backgrounds the app (it would otherwise wipe the just-stamped client startedAt mid-submit).
+    // Always cleared in `finally` so a cancel/error can't leave resync permanently suppressed.
+    store.beginCheckIn(bookingId);
+    final bool? ok;
+    try {
+      ok = await showCheckInSheet(
+        context: context,
+        ref: ref,
+        bookingId: bookingId,
+        hourNumber: 0, // slot 0 = the start check-in
+      );
+    } finally {
+      store.endCheckIn(bookingId);
+    }
+    if (ok == true && context.mounted) {
+      messenger.showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'เริ่มงานแล้ว — เช็คอินเรียบร้อย'
+            : 'Work started — check-in sent'),
+      ));
+    }
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
@@ -963,14 +1031,18 @@ class _TransitionBar extends ConsumerWidget {
                 ),
         );
       case JobStage.start:
-        // Design G3: the start CTA pulses (`.sb-btn.amber.pulse`).
+        // Arrived, not yet checked in: the ONE CTA is the START check-in (design G3, pulsing).
+        // It stamps the work clock AND captures the checkpoint photo in one flow — the timer +
+        // "กำลังปฏิบัติงาน" only begin once the photo lands (see [stageOf]). Replaces the old bare
+        // "เริ่มงาน" that started the clock with no photo.
         return bar(_PulsingGlow(
           child: PgPrimaryButton(
-            label: isThai ? 'เริ่มงาน' : 'Start job',
+            label: isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in',
             color: PgTokens.colorAccent,
             foreground: PgTokens.colorOnAmber,
             busy: busy,
-            onPressed: busy ? null : () => ctrl.start(),
+            onPressed:
+                busy ? null : () => _startAndCheckIn(context, ref, isThai),
           ),
         ));
       case JobStage.working:
@@ -998,12 +1070,11 @@ class _TransitionBar extends ConsumerWidget {
               onPressed: () => _backToJobs(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
-            // Design G5: chatting the customer + viewing live status are the secondary actions.
+            // Design G5: chatting the customer is the secondary action. (The old "ดูสถานะสด" link is
+            // gone — it opened the CUSTOMER live screen, /booking/{id}/live, whose completion-review
+            // panel is not owner-gated; the guard is already on their own live status here, and
+            // after a reject bounce this screen updates itself — no cross-role deep-link needed.)
             _ChatCustomerButton(booking: state.booking),
-            PgGhostButton(
-              label: isThai ? 'ดูสถานะสด' : 'View live status',
-              onPressed: () => context.push('/booking/$bookingId/live'),
-            ),
           ],
         ));
       case JobStage.done:
@@ -1061,10 +1132,8 @@ class _TransitionBar extends ConsumerWidget {
                 isThai: isThai,
               ),
             ),
-            PgGhostButton(
-              label: isThai ? 'ดูสถานะสด' : 'View live status',
-              onPressed: () => context.push('/booking/$bookingId/live'),
-            ),
+            // No "ดูสถานะสด" here either — it routed the guard into the customer live screen
+            // (/booking/{id}/live). The completed job's summary + receipt live on this guard screen.
           ],
         ));
     }

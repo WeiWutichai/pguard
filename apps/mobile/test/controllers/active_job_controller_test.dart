@@ -451,6 +451,63 @@ void main() {
     ctrl.applyExternalStatus(BookingStatus.arrived);
     expect(status(), BookingStatus.cancelled);
   });
+
+  test(
+      'BUG3.2 resumeFromRejectedCompletion: a pending_completion→arrived bounce re-fetches and '
+      'lands back in working with startedAt + check-ins preserved', () async {
+    // The customer tapped "ให้ทำงานต่อ" (reject completion). The booking-status WS pushes `arrived`;
+    // the screen forwards it here. The controller re-pulls the authoritative snapshot (now arrived,
+    // work_started_at preserved by the backend) and keeps the client startedAt + completedCheckIns.
+    var bookingStatus = 'pending_completion';
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          return bookingJson('b1', bookingStatus,
+              workStartedAt: '2026-06-05T14:00:00Z');
+        }
+        // The start check-in trail (hour 1) → slot 0 done, so on `arrived` the guard is WORKING.
+        return [
+          {'hour_number': 1, 'created_at': '2026-06-05T14:00:00Z'}
+        ];
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+    ]);
+    addTearDown(c.dispose);
+
+    final s0 = await c.read(activeJobControllerProvider('b1').future);
+    expect(s0.booking.status, BookingStatus.pendingCompletion);
+    expect(s0.completedCheckIns, contains(0));
+    final startedAt0 = s0.startedAt;
+    expect(startedAt0, isNotNull);
+
+    final ctrl = c.read(activeJobControllerProvider('b1').notifier);
+    ActiveJobState state() => c.read(activeJobControllerProvider('b1')).value!;
+
+    // The reject bounce: the server now reports `arrived`.
+    bookingStatus = 'arrived';
+    await ctrl.resumeFromRejectedCompletion();
+
+    // Back in working: status arrived, the anchor + check-ins are intact (timer continues).
+    expect(state().booking.status, BookingStatus.arrived);
+    expect(state().completedCheckIns, contains(0));
+    expect(state().startedAt, startedAt0,
+        reason: 'work_started_at is preserved across the reject (never reset)');
+
+    // The booked-duration auto-complete is now SUPPRESSED for this booking: the customer asked the
+    // guard to keep working, so the remounted working panel must not instantly re-request
+    // completion at the (already-elapsed) booked boundary.
+    expect(c.read(workSessionStoreProvider).isAutoCompleteSuppressed('b1'),
+        isTrue);
+
+    // Self-gated: called when NOT pending_completion, it is a no-op (no extra re-fetch).
+    final getsBefore = api.calls.where((s) => s == 'GET /bookings/b1').length;
+    await ctrl.resumeFromRejectedCompletion();
+    final getsAfter = api.calls.where((s) => s == 'GET /bookings/b1').length;
+    expect(getsAfter, getsBefore, reason: 'no re-fetch once already arrived');
+  });
 }
 
 /// Forces the Thai locale for the localized-error test.
