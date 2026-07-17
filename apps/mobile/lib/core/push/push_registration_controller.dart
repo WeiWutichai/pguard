@@ -9,11 +9,13 @@ import '../../routing/app_router.dart';
 import '../controllers/active_job_controller.dart';
 import '../controllers/booking_status_controller.dart';
 import '../controllers/call_controller.dart';
+import '../controllers/chat_list_controller.dart';
 import '../controllers/customer_home_controller.dart';
 import '../controllers/guard_jobs_controller.dart';
 import '../controllers/locale_controller.dart';
 import '../controllers/notification_controller.dart';
 import '../controllers/session_controller.dart';
+import '../models/chat.dart';
 import '../providers.dart';
 import 'booking_push.dart';
 import 'in_app_banner.dart';
@@ -152,6 +154,15 @@ class PushRegistration extends _$PushRegistration {
     // the bell badge + any open list so the unread count bumps LIVE (without waiting for the next
     // dashboard focus). Cheap one-shot invalidates of two autoDispose providers — not polling.
     _refreshNotificationCenter();
+    // A chat-message push additionally bumps the CHAT unread badge, which is fed by
+    // chatListControllerProvider (a one-shot REST fetch; the chat WS is not proxied at the gateway
+    // yet, and connects only while a conversation screen is open). Invalidate BOTH roles' lists so
+    // the header/entry chat badge catches up live instead of only on a manual re-open. The backend
+    // stamps `event_type = pguard.events.chat.message_sent` on chat pushes.
+    if (data['event_type'] == 'pguard.events.chat.message_sent') {
+      ref.invalidate(chatListControllerProvider(ChatRole.customer));
+      ref.invalidate(chatListControllerProvider(ChatRole.guard));
+    }
   }
 
   /// Re-pull the notification badge ([unreadCountProvider]) and, if open, the notification list
