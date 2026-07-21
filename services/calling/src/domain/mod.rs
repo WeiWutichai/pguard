@@ -101,10 +101,15 @@ pub fn is_valid_call_type(t: &str) -> bool {
 }
 
 /// A call may only be placed while the booking is ACTIVE — a guard is assigned and the job is
-/// in flight. Excludes `requested` (no guard), `declined`/`cancelled`/`completed` (done).
+/// in flight. Includes `pending_completion` (the guard has requested completion but the customer
+/// is still reviewing — both parties are assigned and may still need to talk). Excludes
+/// `requested` (no guard) and the terminals `declined`/`cancelled`/`completed` (done).
 /// Pure rule over the booking status text (the authz read returns status as text).
 pub fn is_callable_status(status: &str) -> bool {
-    matches!(status, "accepted" | "en_route" | "arrived")
+    matches!(
+        status,
+        "accepted" | "en_route" | "arrived" | "pending_completion"
+    )
 }
 
 /// Pure transition guard. `true` iff `from → to` is a legal lifecycle move.
@@ -229,7 +234,7 @@ mod tests {
 
     #[test]
     fn callable_status() {
-        for ok in ["accepted", "en_route", "arrived"] {
+        for ok in ["accepted", "en_route", "arrived", "pending_completion"] {
             assert!(is_callable_status(ok), "{ok} must be callable");
         }
         for no in [

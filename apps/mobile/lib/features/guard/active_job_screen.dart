@@ -190,8 +190,9 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
                 children: [
                   CallEntryButton(
                     bookingId: booking.id,
-                    // Callable window matches the calling service (accepted/en_route/arrived);
-                    // pendingCompletion is active but NOT callable → would 409.
+                    // Callable window matches the calling service (accepted/en_route/arrived/
+                    // pending_completion) — the guard + customer can still talk while completion
+                    // is under review. Only the terminals drop the call button.
                     enabled: BookingLifecycle.isCallable(booking.status),
                   ),
                   const SizedBox(width: PgTokens.space2),
@@ -519,6 +520,13 @@ class _AddressCard extends ConsumerWidget {
           isThai: isThai,
           // #127: the guard sees the customer's REAL NAME row (IDOR-gated resolve).
           showCustomer: true,
+          // Same "Working" signal as the guard's main timeline (the hour-1 start check-in).
+          started: ref
+                  .read(activeJobControllerProvider(booking.id))
+                  .valueOrNull
+                  ?.completedCheckIns
+                  .contains(0) ??
+              false,
         ),
         child: Container(
           padding: const EdgeInsets.all(PgTokens.space4),
