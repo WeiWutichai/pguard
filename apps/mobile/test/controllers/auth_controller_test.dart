@@ -496,6 +496,56 @@ void main() {
     expect(await first, isTrue);
     expect(store.phoneVerifiedToken, 'pvt');
   });
+
+  test(
+      're-entry: loadChallenge DROPS the burned challenge before fetching, so a '
+      'correct answer can never hit a dead challenge_id (CAPTCHA_INVALID fix)',
+      () async {
+    // On-device repro: after "ไม่ได้รับรหัส? ขอใหม่" (OTP screen → go('/auth/captcha')) the keepAlive
+    // state still holds the PREVIOUS challenge — already BURNED server-side (Redis GETDEL) by the
+    // /otp/request that advanced to OTP. Re-entering must not leave that dead challenge submittable:
+    // loadChallenge nulls it FIRST (screen shows loading + submit disabled) until a live one lands.
+    final store = InMemoryStore();
+    final gate = Completer<Map<String, dynamic>>();
+    var served = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        served++;
+        if (served == 1) {
+          return {
+            'challenge_id': 'burned-ch1',
+            'question': '1 + 1 = ?',
+            'expires_in': 180
+          };
+        }
+        return gate.future; // the re-entry fetch is held open
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    // First visit loads ch1 (the challenge the OTP request will burn).
+    await ctrl.loadChallenge();
+    expect(c.read(authControllerProvider).challenge?.challengeId, 'burned-ch1');
+
+    // Re-enter the captcha screen: loadChallenge fires again, its fetch still open.
+    final reentry = ctrl.loadChallenge();
+    // The burned challenge is ALREADY gone (cleared synchronously before the await) — nothing is
+    // submittable, so the dead challenge_id can never reach /otp/request.
+    expect(c.read(authControllerProvider).challenge, isNull,
+        reason:
+            'the burned challenge must be dropped before the new fetch resolves');
+
+    // The fresh challenge lands and becomes the only submittable one.
+    gate.complete({
+      'challenge_id': 'fresh-ch2',
+      'question': '2 + 2 = ?',
+      'expires_in': 180
+    });
+    await reentry;
+    expect(c.read(authControllerProvider).challenge?.challengeId, 'fresh-ch2');
+  });
 }
 
 /// Forces the English locale so the localized-error test can assert the app-language copy.
