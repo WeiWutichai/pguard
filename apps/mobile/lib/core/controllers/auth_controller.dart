@@ -404,6 +404,18 @@ class AuthController extends _$AuthController {
   /// already-safe message.
   String _localizeApiError(ApiException e) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    // Any 5xx is INFRASTRUCTURE (SMS gateway down / out of credits, DB, cache) — NEVER a problem
+    // with what the user typed. Confirmed on-device 2026-07-21: /otp/request 500 "Insufficient SMS
+    // Credits" surfaced the server's terse INTERNAL_ERROR text under the captcha at the same moment
+    // the challenge auto-refreshed (question swapped + answer field cleared) — which reads exactly
+    // like "answer rejected", so QA kept reporting a captcha bug that wasn't one. Say what it
+    // actually is, in the app's language, before the code switch (a 5xx carries no otp sub-code).
+    final status = e.statusCode;
+    if (status != null && status >= 500) {
+      return isThai
+          ? 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง'
+          : 'Temporary server problem — please try again later';
+    }
     switch (e.code) {
       case 'CAPTCHA_INVALID':
         return isThai

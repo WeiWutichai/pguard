@@ -546,6 +546,51 @@ void main() {
     await reentry;
     expect(c.read(authControllerProvider).challenge?.challengeId, 'fresh-ch2');
   });
+
+  test(
+      'a 500 from /otp/request (e.g. SMS gateway out of credits) shows the '
+      'localized server-problem message, NOT the raw INTERNAL_ERROR text',
+      () async {
+    // The 2026-07-21 on-device shape: the captcha PASSED, the SMS send failed (INET code=08
+    // "Insufficient SMS Credits") → 500 INTERNAL_ERROR. The raw server text under the captcha —
+    // shown at the same moment the challenge auto-refreshes — read as "answer rejected", so QA
+    // reported a captcha bug that wasn't one. A 5xx must localize to an infrastructure message.
+    final store = InMemoryStore();
+    var served = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        served++;
+        return {
+          'challenge_id': 'ch$served',
+          'question': '3 + 4 = ?',
+          'expires_in': 180
+        };
+      },
+      onPost: (path, _) async {
+        expect(path, '/otp/request');
+        throw const ApiException(
+            message: 'Internal server error',
+            code: 'INTERNAL_ERROR',
+            statusCode: 500);
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+
+    final ok = await ctrl.sendOtp('7');
+
+    expect(ok, isFalse);
+    final state = c.read(authControllerProvider);
+    expect(state.error, 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง',
+        reason: 'a 5xx must surface as an infrastructure problem in the app '
+            'language — never the raw server text (which reads as a captcha '
+            'rejection when the question refreshes at the same moment)');
+    expect(served, 2,
+        reason: 'the burned challenge is still auto-refreshed after the 500');
+  });
 }
 
 /// Forces the English locale so the localized-error test can assert the app-language copy.
