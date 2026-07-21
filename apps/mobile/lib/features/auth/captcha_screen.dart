@@ -58,6 +58,18 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
     final state = ref.watch(authControllerProvider);
     final question = state.challenge?.question;
 
+    // Clear the answer whenever the CHALLENGE changes. sendOtp auto-refreshes the captcha on ANY
+    // failed /otp/request (the server burns it via GETDEL), so a stale answer left in the field
+    // against the NEW question would fail the next submit even when the user "answered correctly"
+    // — the exact "solved right but keeps erroring / no OTP" trap. The challenge-id is the single
+    // source of truth (covers both the auto-refresh and the manual "โหลดคำถามใหม่").
+    ref.listen(
+      authControllerProvider.select((s) => s.challenge?.challengeId),
+      (prev, next) {
+        if (next != null && prev != null && prev != next) _answer.clear();
+      },
+    );
+
     return Scaffold(
       appBar: const PgAuthBackBar(),
       body: SafeArea(

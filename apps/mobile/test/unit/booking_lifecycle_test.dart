@@ -49,12 +49,14 @@ void main() {
       });
       expect(e, isNotNull);
       expect(e!.isRefresh, isTrue);
-      expect(e.status, isNull, reason: 'a check-in carries NO lifecycle status');
+      expect(e.status, isNull,
+          reason: 'a check-in carries NO lifecycle status');
       expect(e.bookingId, 'b1');
       expect(e.guardId, 'g1');
     });
 
-    test('rejects a truly unknown status (forward-compat) but not the nudge', () {
+    test('rejects a truly unknown status (forward-compat) but not the nudge',
+        () {
       expect(
         BookingStatusEvent.tryParse({
           'type': 'booking_status',
@@ -91,6 +93,30 @@ void main() {
       for (final s in BookingStatus.values) {
         expect(BookingLifecycle.labelTh(s), isNotEmpty);
         expect(BookingLifecycle.labelEn(s), isNotEmpty);
+      }
+    });
+
+    test('isCallable spans accepted..pendingCompletion, excludes the terminals',
+        () {
+      // Must stay in lock-step with services/calling is_callable_status. pendingCompletion is
+      // callable (the guard + customer can still talk while completion is under review).
+      for (final s in [
+        BookingStatus.accepted,
+        BookingStatus.enRoute,
+        BookingStatus.arrived,
+        BookingStatus.pendingCompletion,
+      ]) {
+        expect(BookingLifecycle.isCallable(s), isTrue,
+            reason: '$s must be callable');
+      }
+      for (final s in [
+        BookingStatus.requested,
+        BookingStatus.completed,
+        BookingStatus.declined,
+        BookingStatus.cancelled,
+      ]) {
+        expect(BookingLifecycle.isCallable(s), isFalse,
+            reason: '$s must not be callable');
       }
     });
   });

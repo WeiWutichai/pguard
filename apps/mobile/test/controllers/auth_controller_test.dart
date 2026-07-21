@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/auth_controller.dart';
+import 'package:pguard_mobile/core/controllers/locale_controller.dart';
 import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/models/registration.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
@@ -211,6 +212,59 @@ void main() {
         reason:
             'the burned ch1 is replaced by a fresh, usable challenge for the retry');
     expect(st.step, isNot(AuthStep.otp));
+  });
+
+  // ISSUE 5: a coded backend error is localized to the APP's language by CODE — not shown as the
+  // raw server text (which is hard-coded Thai) — so the copy is consistent with the selected locale.
+  FakeApi codedCooldownApi() {
+    var hits = 0;
+    return FakeApi(
+      onGet: (path, _) async {
+        hits++;
+        return {
+          'challenge_id': 'ch$hits',
+          'question': '1 + 1 = ?',
+          'expires_in': 180,
+        };
+      },
+      // Server returns a Thai literal + a machine-readable code.
+      onPost: (path, _) async => throw const ApiException(
+          message: 'กรุณารอสักครู่ก่อนขอ OTP ใหม่',
+          code: 'OTP_COOLDOWN',
+          statusCode: 400),
+    );
+  }
+
+  test(
+      'sendOtp localizes a coded error by CODE, not the raw server text (issue 5, TH default)',
+      () async {
+    final c = container(api: codedCooldownApi(), store: InMemoryStore());
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+    expect(await ctrl.sendOtp('2'), isFalse);
+    // The CLIENT's Thai copy (keyed on OTP_COOLDOWN) — distinct from the raw server string.
+    expect(
+        c.read(authControllerProvider).error, 'กรุณารอสักครู่ก่อนขอรหัสใหม่');
+  });
+
+  test(
+      'sendOtp error copy follows the app language, not the server (issue 5, EN)',
+      () async {
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(codedCooldownApi()),
+      appStoreProvider.overrideWithValue(InMemoryStore()),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      localeControllerProvider.overrideWith(_EnLocale.new),
+    ]);
+    addTearDown(c.dispose);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+    expect(await ctrl.sendOtp('2'), isFalse);
+    // Server text was Thai, but the app is English → English copy (no Thai leak).
+    expect(c.read(authControllerProvider).error,
+        'Please wait a moment before requesting another code');
   });
 
   test('invalid Thai phone is rejected before any network call', () async {
@@ -442,4 +496,10 @@ void main() {
     expect(await first, isTrue);
     expect(store.phoneVerifiedToken, 'pvt');
   });
+}
+
+/// Forces the English locale so the localized-error test can assert the app-language copy.
+class _EnLocale extends LocaleController {
+  @override
+  AppLocale build() => AppLocale.en;
 }

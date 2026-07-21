@@ -191,7 +191,8 @@ class _LiveBody extends ConsumerWidget {
                   // status the WS pushes — no timer.
                   if (booking.guardId != null) ...[
                     const SizedBox(height: PgTokens.space4),
-                    _StatusTimelineSection(status: booking.status),
+                    _StatusTimelineSection(
+                        status: booking.status, bookingId: booking.id),
                   ],
                   const SizedBox(height: PgTokens.space4),
                   // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
@@ -656,17 +657,28 @@ class _GuardCard extends ConsumerWidget {
 }
 
 /// The #123 status-timeline section on the customer live screen: a titled card-internal block
-/// wrapping the shared [BookingStatusTimeline]. The customer has no client work-start stamp, so
-/// `started` stays default (false) — the "Working" step ticks once the booking moves past
-/// `arrived`. The same [BookingStatusTimeline] renders on the guard's active-job screen.
+/// wrapping the shared [BookingStatusTimeline]. The booking stays wire-status `arrived` the WHOLE
+/// time the guard works, so the "Working" step is DERIVED: it ticks once the guard files the START
+/// (hour-1) check-in. The customer learns that from [HourlyProgress.workStartedAt] (the earliest
+/// check-in anchor) — the SAME source the countdown card uses, refreshed LIVE by the
+/// `progress_reported` WS nudge — so the timeline flips arrived→Working in realtime, no longer
+/// waiting for the booking to move past `arrived`. The same widget renders on the guard's screen.
 class _StatusTimelineSection extends ConsumerWidget {
-  const _StatusTimelineSection({required this.status});
+  const _StatusTimelineSection({required this.status, required this.bookingId});
 
   final BookingStatus status;
+  final String bookingId;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // Same provider instance the countdown card watches (family-keyed by bookingId) → no extra
+    // fetch. Non-null once ≥1 check-in exists (the hour-1 start check-in); empty/error → false.
+    final started = ref
+            .watch(progressReportsControllerProvider(bookingId))
+            .valueOrNull
+            ?.workStartedAt !=
+        null;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -678,7 +690,7 @@ class _StatusTimelineSection extends ConsumerWidget {
               color: PgTokens.colorText),
         ),
         const SizedBox(height: PgTokens.space3),
-        BookingStatusTimeline(status: status, isThai: isThai),
+        BookingStatusTimeline(status: status, isThai: isThai, started: started),
       ],
     );
   }
@@ -724,9 +736,9 @@ class _Actions extends ConsumerWidget {
           counterpartUserId: booking.guardId,
         ),
         const SizedBox(width: PgTokens.space2),
-        // Customer → assigned guard call (audio/video). Enabled ONLY while the booking is callable
-        // (accepted/en_route/arrived + guard assigned) — matching the calling service, so the
-        // button is never live for a status the server would 409 (e.g. pendingCompletion).
+        // Customer → assigned guard call (audio/video). Enabled while the booking is callable
+        // (accepted/en_route/arrived/pending_completion + guard assigned) — matching the calling
+        // service, so the button is never live for a status the server would 409 (the terminals).
         CallEntryButton(
           bookingId: booking.id,
           enabled: booking.guardId != null &&
@@ -797,6 +809,13 @@ class _Actions extends ConsumerWidget {
                         booking: booking,
                         totalSatang: _totalSatang,
                         isThai: isThai,
+                        // Same "Working" signal as the main timeline (the hour-1 check-in).
+                        started: ref
+                                .read(progressReportsControllerProvider(
+                                    booking.id))
+                                .valueOrNull
+                                ?.workStartedAt !=
+                            null,
                       ),
                     ),
         ),
@@ -1111,6 +1130,12 @@ Future<void> showBookingDetailsSheet(
   // resolving the customer's REAL NAME (the IDOR-gated `/customers/{id}/public` read). The CUSTOMER
   // viewing their own booking never sees it (it would be their own name) → defaults off.
   bool showCustomer = false,
+  // Whether the guard has STARTED working (the hour-1 check-in is filed), so the sheet's timeline
+  // ticks "Working" in LOCK-STEP with the live screen. A plain function can't watch a provider, so
+  // the (Consumer) caller passes the SAME signal it feeds the main timeline (`progress.workStartedAt
+  // != null`) — never `booking.workStartedAt` (stamped at Start, before the check-in) which would
+  // make the sheet flip Working while the main screen still shows Arrived.
+  bool started = false,
 }) {
   String two(int n) => n.toString().padLeft(2, '0');
   String? schedule;
@@ -1219,8 +1244,9 @@ Future<void> showBookingDetailsSheet(
                 // #129: the shared step timeline (accept → en route → arrived → working →
                 // completed) INSIDE the details sheet, shown the instant a guard is assigned — the
                 // SAME [BookingStatusTimeline] the main live + active-job screens render, so opening
-                // "ดูรายละเอียด / Details" shows the work-status progress too. Driven purely by
-                // status (no `started` stamp here → "Working" ticks once past `arrived`), no timer.
+                // "ดูรายละเอียด / Details" shows the work-status progress too. `started` is passed in
+                // by the caller from the SAME source as the main timeline (the hour-1 check-in), so
+                // the two never disagree during the guard's start→check-in window.
                 if (booking.guardId != null) ...[
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
@@ -1232,7 +1258,8 @@ Future<void> showBookingDetailsSheet(
                         fontSize: 14, fontWeight: FontWeight.w700),
                   ),
                   const SizedBox(height: PgTokens.space3),
-                  BookingStatusTimeline(status: booking.status, isThai: isThai),
+                  BookingStatusTimeline(
+                      status: booking.status, isThai: isThai, started: started),
                 ],
                 if (totalSatang != null) ...[
                   const Padding(

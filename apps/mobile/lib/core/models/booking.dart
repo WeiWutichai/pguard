@@ -298,15 +298,16 @@ class BookingLifecycle {
       status == BookingStatus.pendingCompletion;
 
   /// Whether a live voice/video call is allowed for this booking. Mirrors the calling service's
-  /// `is_callable_status` EXACTLY (`accepted | en_route | arrived`) — a guard has accepted and the
-  /// job is in flight. Deliberately NARROWER than [isActive]: `pendingCompletion` is active but the
-  /// calling service rejects it (409 "Booking is not in an active state for calling"), so the call
-  /// UI must gate on this, never on [isActive], to avoid routing into a guaranteed error.
+  /// `is_callable_status` EXACTLY (`accepted | en_route | arrived | pending_completion`) — a guard
+  /// is assigned and the job is in flight, INCLUDING while the guard's completion request awaits the
+  /// customer's review (`pendingCompletion` — both parties may still need to talk). Must stay in
+  /// lock-step with the service; the terminals (`completed`/`declined`/`cancelled`) are NOT callable.
   /// See `services/calling/src/domain/mod.rs::is_callable_status`.
   static bool isCallable(BookingStatus status) =>
       status == BookingStatus.accepted ||
       status == BookingStatus.enRoute ||
-      status == BookingStatus.arrived;
+      status == BookingStatus.arrived ||
+      status == BookingStatus.pendingCompletion;
 
   /// Bilingual short label for a status (TH primary, EN secondary).
   static String labelTh(BookingStatus status) {

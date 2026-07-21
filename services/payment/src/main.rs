@@ -146,6 +146,18 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- background cancellation-refund consumer (FULL-REFUNDS a paid pre-pay idempotently) ---
+    // The refund half of the money path: a guard withdrawing en_route or a customer cancelling
+    // after paying returns the whole pre-pay. Its OWN durable, kept separate from the completion
+    // settle so the reconcile path is untouched; owns its retry (a NATS outage never crashes payment).
+    {
+        let cancel_db = db.clone();
+        let cancel_nats = nats_url.clone();
+        tokio::spawn(async move {
+            events::cancel_consumer::run_consumer(cancel_db, &cancel_nats).await;
+        });
+    }
+
     // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
     // PRE-PAY: `POST /payments` pre-pays the estimate (createPayment); `GET /payments` (own
     // ledger) + `GET /payments/{id}`. The completion-time SETTLE is event-driven (the consumer).

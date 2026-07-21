@@ -367,7 +367,7 @@ class AuthController extends _$AuthController {
       state = state.copyWith(busy: false);
       return ok;
     } on ApiException catch (e) {
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(busy: false, error: _localizeApiError(e));
       return false;
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
@@ -375,6 +375,44 @@ class AuthController extends _$AuthController {
           busy: false,
           error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
       return false;
+    }
+  }
+
+  /// Map an auth-flow [ApiException] to a message in the USER's language, keyed on the
+  /// machine-readable `error.code` (the otp service returns locale-independent sub-codes — see
+  /// `services/otp/src/api/mod.rs` — so the copy must follow the app's language, NOT whatever
+  /// language the server hard-coded). This fixes the captcha/OTP screen showing Thai backend text
+  /// while the app is in English (and vice-versa). Unmapped codes fall back to the server's own
+  /// already-safe message.
+  String _localizeApiError(ApiException e) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    switch (e.code) {
+      case 'CAPTCHA_INVALID':
+        return isThai
+            ? 'คำตอบไม่ถูกต้อง กรุณาลองอีกครั้ง'
+            : 'That answer is incorrect — please try again';
+      case 'OTP_COOLDOWN':
+        return isThai
+            ? 'กรุณารอสักครู่ก่อนขอรหัสใหม่'
+            : 'Please wait a moment before requesting another code';
+      case 'OTP_BURST_LOCK':
+        return isThai
+            ? 'ขอรหัส OTP บ่อยเกินไป กรุณาลองใหม่ในภายหลัง'
+            : 'Too many OTP requests — please try again later';
+      case 'OTP_ADMIN_LOCK':
+        return isThai
+            ? 'ขอรหัส OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่'
+            : 'OTP request limit reached — please contact support';
+      case 'OTP_INVALID':
+        return isThai
+            ? 'รหัส OTP ไม่ถูกต้องหรือหมดอายุ'
+            : 'The OTP is incorrect or has expired';
+      case 'OTP_MAX_ATTEMPTS':
+        return isThai
+            ? 'กรอกรหัสผิดเกินจำนวนครั้ง กรุณาขอรหัสใหม่'
+            : 'Too many attempts — please request a new OTP';
+      default:
+        return e.message;
     }
   }
 }
