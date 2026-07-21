@@ -101,9 +101,11 @@ pub async fn request(
         .map(|e| e.trim() == req.answer.trim())
         .unwrap_or(false);
     if !captcha_ok {
-        return Err(AppError::BadRequest(
-            "รหัสยืนยันไม่ถูกต้อง กรุณาลองอีกครั้ง".to_string(),
-        ));
+        // Coded so the client localizes to the app's language (the literal is a Thai fallback).
+        return Err(AppError::BadRequestCode {
+            code: "CAPTCHA_INVALID",
+            message: "รหัสยืนยันไม่ถูกต้อง กรุณาลองอีกครั้ง".to_string(),
+        });
     }
 
     // 2. Validate phone format (normalises to 10 digits).
@@ -118,14 +120,16 @@ pub async fn request(
     match domain::existing_lock_decision(lock_ttl) {
         ActiveLock::None => {}
         ActiveLock::AdminContact => {
-            return Err(AppError::BadRequest(
-                "ขอ OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่".to_string(),
-            ));
+            return Err(AppError::BadRequestCode {
+                code: "OTP_ADMIN_LOCK",
+                message: "ขอ OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่".to_string(),
+            });
         }
         ActiveLock::Burst { remaining_minutes } => {
-            return Err(AppError::BadRequest(format!(
-                "ขอ OTP บ่อยเกินไป กรุณาลองใหม่ในอีก {remaining_minutes} นาที"
-            )));
+            return Err(AppError::BadRequestCode {
+                code: "OTP_BURST_LOCK",
+                message: format!("ขอ OTP บ่อยเกินไป กรุณาลองใหม่ในอีก {remaining_minutes} นาที"),
+            });
         }
     }
 
@@ -140,7 +144,10 @@ pub async fn request(
         .query_async(&mut conn)
         .await?;
     if was_set.is_none() {
-        return Err(AppError::BadRequest("กรุณารอสักครู่ก่อนขอ OTP ใหม่".to_string()));
+        return Err(AppError::BadRequestCode {
+            code: "OTP_COOLDOWN",
+            message: "กรุณารอสักครู่ก่อนขอ OTP ใหม่".to_string(),
+        });
     }
 
     // 5. Daily per-phone counter (INCR) — also powers the tiered lockouts.
@@ -184,15 +191,17 @@ pub async fn request(
         LockoutDecision::Allow => {}
         LockoutDecision::TripAdminLock { lock_secs } => {
             conn.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await?;
-            return Err(AppError::BadRequest(
-                "ขอ OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่".to_string(),
-            ));
+            return Err(AppError::BadRequestCode {
+                code: "OTP_ADMIN_LOCK",
+                message: "ขอ OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่".to_string(),
+            });
         }
         LockoutDecision::TripBurstLock { lock_secs } => {
             conn.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await?;
-            return Err(AppError::BadRequest(
-                "ขอ OTP บ่อยเกินไป กรุณาลองใหม่ในอีก 10 นาที".to_string(),
-            ));
+            return Err(AppError::BadRequestCode {
+                code: "OTP_BURST_LOCK",
+                message: "ขอ OTP บ่อยเกินไป กรุณาลองใหม่ในอีก 10 นาที".to_string(),
+            });
         }
     }
 
@@ -266,7 +275,10 @@ pub async fn verify(
     let phone = domain::validate_thai_phone(&req.phone)?;
 
     if req.code.len() != state.otp_config.length {
-        return Err(AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()));
+        return Err(AppError::BadRequestCode {
+            code: "OTP_INVALID",
+            message: "OTP ไม่ถูกต้องหรือหมดอายุ".to_string(),
+        });
     }
 
     // Resolve the CLIENT-declared purpose UP FRONT (pure — an unknown value never
@@ -276,21 +288,28 @@ pub async fn verify(
     // Atomically find + increment-attempts on the latest live code.
     let row = repo::claim_for_verify(&state.db, &phone)
         .await?
-        .ok_or_else(|| AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()))?;
+        .ok_or_else(|| AppError::BadRequestCode {
+            code: "OTP_INVALID",
+            message: "OTP ไม่ถูกต้องหรือหมดอายุ".to_string(),
+        })?;
 
     // attempts is already incremented by the claim; reject once it exceeds the cap and
     // burn the code so the user must request a fresh one.
     if row.attempts > state.otp_config.max_attempts {
         repo::mark_used(&state.db, row.id).await?;
-        return Err(AppError::BadRequest(
-            "เกินจำนวนครั้งที่อนุญาต กรุณาขอ OTP ใหม่".to_string(),
-        ));
+        return Err(AppError::BadRequestCode {
+            code: "OTP_MAX_ATTEMPTS",
+            message: "เกินจำนวนครั้งที่อนุญาต กรุณาขอ OTP ใหม่".to_string(),
+        });
     }
 
     // Constant-time compare of sha256(submitted) vs the stored hash.
     let submitted_hash = domain::sha256_hex(&req.code);
     if !domain::hashes_match(&row.code_hash, &submitted_hash) {
-        return Err(AppError::BadRequest("OTP ไม่ถูกต้อง".to_string()));
+        return Err(AppError::BadRequestCode {
+            code: "OTP_INVALID",
+            message: "OTP ไม่ถูกต้อง".to_string(),
+        });
     }
 
     // The AUTHORITATIVE purpose is the one bound at /otp/request (stored on the row;
@@ -307,7 +326,10 @@ pub async fn verify(
     // the code (the SMS owner must re-request) and fail generically.
     if requested_purpose != purpose {
         repo::mark_used(&state.db, row.id).await?;
-        return Err(AppError::BadRequest("OTP ไม่ถูกต้องหรือหมดอายุ".to_string()));
+        return Err(AppError::BadRequestCode {
+            code: "OTP_INVALID",
+            message: "OTP ไม่ถูกต้องหรือหมดอายุ".to_string(),
+        });
     }
 
     // Correct — burn the code.
