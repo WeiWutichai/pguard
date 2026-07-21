@@ -147,4 +147,29 @@ void main() {
     // Unmount to cancel the 1s display ticker (no pending timers at teardown).
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets(
+      'ISSUE3: en_route (pre-arrival) offers a Withdraw button so the guard can back out',
+      (tester) async {
+    // status=en_route → JobStage.arrived bar: primary confirms arrival (no coords → "ถึงแล้ว"),
+    // secondary is the pre-arrival withdraw (a paid booking is refunded server-side). Once ARRIVED
+    // (start/working) the withdraw is gone.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('en_route')
+          : const <Map<String, dynamic>>[],
+    );
+    await tester.pumpWidget(ProviderScope(
+      overrides: _baseOverrides(api),
+      child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('ถึงแล้ว'), findsOneWidget); // arrival primary
+    expect(find.text('ปฏิเสธงาน'), findsOneWidget,
+        reason: 'the guard can withdraw before arriving');
+
+    await tester.pumpWidget(const SizedBox());
+  });
 }
