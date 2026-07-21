@@ -175,9 +175,14 @@ pub async fn admin_count_refund_queue(
 /// Net revenue expression shared by the series + total queries: completed charges' effective
 /// amount (prorated `final_amount` when set, else `amount`) minus any refunds. Kept as one
 /// constant so the per-day series and the MoM total compute identically.
+///
+/// BOTH terms are status-gated to `completed`: a PARTIAL refund stays `completed` (so its
+/// `refund_amount` is subtracted here), but a FULL refund flips the row to `refunded` — its charge
+/// already drops out of the positive term, so its `refund_amount` must NOT be subtracted too
+/// (otherwise the row would net to −(pre-pay) instead of 0). Mirrors `customer_spend`'s exclusion.
 const NET_REVENUE_EXPR: &str =
     "COALESCE(SUM(CASE WHEN status = 'completed' THEN COALESCE(final_amount, amount) ELSE 0 END), 0) \
-     - COALESCE(SUM(COALESCE(refund_amount, 0)), 0)";
+     - COALESCE(SUM(CASE WHEN status = 'completed' THEN COALESCE(refund_amount, 0) ELSE 0 END), 0)";
 
 /// Daily net revenue over `[from, to)`, grouped by the day the money landed
 /// (`paid_at`, falling back to `created_at`). `payments` = completed charges that day. Newest
