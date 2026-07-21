@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -113,5 +115,63 @@ void main() {
     // The new question is shown (proves the refresh landed) + the error is visible + localized.
     expect(find.text('2 + 2 = ?'), findsOneWidget);
     expect(find.text('กรุณารอสักครู่ก่อนขอรหัสใหม่'), findsOneWidget);
+  });
+
+  testWidgets(
+      're-entering captcha with a BURNED challenge shows loading (not the stale '
+      'question), so the dead challenge_id can never be resubmitted',
+      (tester) async {
+    // Repro of the on-device "answered right but CAPTCHA_INVALID": tapping "ไม่ได้รับรหัส? ขอใหม่" on
+    // the OTP screen re-enters the captcha screen while the keepAlive state still holds the
+    // already-burned challenge. It must NOT render as answerable — loadChallenge nulls it first.
+    final gate = Completer<Map<String, dynamic>>();
+    var served = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        served++;
+        if (served == 1) {
+          return {
+            'challenge_id': 'burned',
+            'question': '11 + 7 = ?',
+            'expires_in': 180
+          };
+        }
+        return gate.future; // the re-entry fetch is held open
+      },
+    );
+    final container = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    ]);
+    addTearDown(container.dispose);
+    container.read(authControllerProvider.notifier).setPhone('0812345678');
+
+    // First visit loads (and would burn) 'burned'; it lingers in keepAlive state.
+    await container.read(authControllerProvider.notifier).loadChallenge();
+    expect(container.read(authControllerProvider).challenge?.challengeId,
+        'burned');
+
+    // Re-enter the captcha screen. initState re-fetches, but that fetch is held open by the gate.
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: container,
+      child: const MaterialApp(home: CaptchaScreen()),
+    ));
+    await tester
+        .pump(); // first frame + postFrame loadChallenge clears 'burned'
+    await tester.pump(); // flush the clear rebuild
+
+    // The stale/burned question is gone → loading shown (submit disabled: button gates on null).
+    expect(find.text('11 + 7 = ?'), findsNothing,
+        reason: 'a burned challenge must never stay rendered as answerable');
+    expect(find.text('กำลังโหลดคำถาม…'), findsOneWidget);
+
+    // The fresh challenge lands → it's the only thing that can be submitted.
+    gate.complete(
+        {'challenge_id': 'fresh', 'question': '2 + 2 = ?', 'expires_in': 180});
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(find.text('2 + 2 = ?'), findsOneWidget);
+    expect(find.text('11 + 7 = ?'), findsNothing);
   });
 }

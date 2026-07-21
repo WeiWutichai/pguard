@@ -62,11 +62,17 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
     // failed /otp/request (the server burns it via GETDEL), so a stale answer left in the field
     // against the NEW question would fail the next submit even when the user "answered correctly"
     // — the exact "solved right but keeps erroring / no OTP" trap. The challenge-id is the single
-    // source of truth (covers both the auto-refresh and the manual "โหลดคำถามใหม่").
+    // source of truth (covers the auto-refresh, the manual "โหลดคำถามใหม่", AND re-entry).
+    //
+    // Clear whenever a challenge that WAS present changes — to a new id OR to null. loadChallenge /
+    // the failed-send refresh now null the old (possibly already-burned) challenge BEFORE fetching a
+    // fresh one, so the transition is `old → null → new`; clearing must fire on the `old → null` leg
+    // too (a `next != null` guard would miss it and leave the stale answer). Skip only the very
+    // first load (prev == null), where the field is empty anyway.
     ref.listen(
       authControllerProvider.select((s) => s.challenge?.challengeId),
       (prev, next) {
-        if (next != null && prev != null && prev != next) _answer.clear();
+        if (prev != null && prev != next) _answer.clear();
       },
     );
 

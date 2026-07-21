@@ -496,6 +496,101 @@ void main() {
     expect(await first, isTrue);
     expect(store.phoneVerifiedToken, 'pvt');
   });
+
+  test(
+      're-entry: loadChallenge DROPS the burned challenge before fetching, so a '
+      'correct answer can never hit a dead challenge_id (CAPTCHA_INVALID fix)',
+      () async {
+    // On-device repro: after "ไม่ได้รับรหัส? ขอใหม่" (OTP screen → go('/auth/captcha')) the keepAlive
+    // state still holds the PREVIOUS challenge — already BURNED server-side (Redis GETDEL) by the
+    // /otp/request that advanced to OTP. Re-entering must not leave that dead challenge submittable:
+    // loadChallenge nulls it FIRST (screen shows loading + submit disabled) until a live one lands.
+    final store = InMemoryStore();
+    final gate = Completer<Map<String, dynamic>>();
+    var served = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        served++;
+        if (served == 1) {
+          return {
+            'challenge_id': 'burned-ch1',
+            'question': '1 + 1 = ?',
+            'expires_in': 180
+          };
+        }
+        return gate.future; // the re-entry fetch is held open
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    // First visit loads ch1 (the challenge the OTP request will burn).
+    await ctrl.loadChallenge();
+    expect(c.read(authControllerProvider).challenge?.challengeId, 'burned-ch1');
+
+    // Re-enter the captcha screen: loadChallenge fires again, its fetch still open.
+    final reentry = ctrl.loadChallenge();
+    // The burned challenge is ALREADY gone (cleared synchronously before the await) — nothing is
+    // submittable, so the dead challenge_id can never reach /otp/request.
+    expect(c.read(authControllerProvider).challenge, isNull,
+        reason:
+            'the burned challenge must be dropped before the new fetch resolves');
+
+    // The fresh challenge lands and becomes the only submittable one.
+    gate.complete({
+      'challenge_id': 'fresh-ch2',
+      'question': '2 + 2 = ?',
+      'expires_in': 180
+    });
+    await reentry;
+    expect(c.read(authControllerProvider).challenge?.challengeId, 'fresh-ch2');
+  });
+
+  test(
+      'a 500 from /otp/request (e.g. SMS gateway out of credits) shows the '
+      'localized server-problem message, NOT the raw INTERNAL_ERROR text',
+      () async {
+    // The 2026-07-21 on-device shape: the captcha PASSED, the SMS send failed (INET code=08
+    // "Insufficient SMS Credits") → 500 INTERNAL_ERROR. The raw server text under the captcha —
+    // shown at the same moment the challenge auto-refreshes — read as "answer rejected", so QA
+    // reported a captcha bug that wasn't one. A 5xx must localize to an infrastructure message.
+    final store = InMemoryStore();
+    var served = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/otp/challenge');
+        served++;
+        return {
+          'challenge_id': 'ch$served',
+          'question': '3 + 4 = ?',
+          'expires_in': 180
+        };
+      },
+      onPost: (path, _) async {
+        expect(path, '/otp/request');
+        throw const ApiException(
+            message: 'Internal server error',
+            code: 'INTERNAL_ERROR',
+            statusCode: 500);
+      },
+    );
+    final c = container(api: api, store: store);
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.setPhone('0812345678');
+    await ctrl.loadChallenge();
+
+    final ok = await ctrl.sendOtp('7');
+
+    expect(ok, isFalse);
+    final state = c.read(authControllerProvider);
+    expect(state.error, 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง',
+        reason: 'a 5xx must surface as an infrastructure problem in the app '
+            'language — never the raw server text (which reads as a captcha '
+            'rejection when the question refreshes at the same moment)');
+    expect(served, 2,
+        reason: 'the burned challenge is still auto-refreshed after the 500');
+  });
 }
 
 /// Forces the English locale so the localized-error test can assert the app-language copy.

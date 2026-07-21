@@ -61,7 +61,7 @@ class AuthFlowState {
   AuthFlowState copyWith({
     AuthStep? step,
     String? phone,
-    OtpChallenge? challenge,
+    Object? challenge = _unset,
     DateTime? otpSentAt,
     int? otpRequestCount,
     String? phoneVerifiedToken,
@@ -73,7 +73,12 @@ class AuthFlowState {
     return AuthFlowState(
       step: step ?? this.step,
       phone: phone ?? this.phone,
-      challenge: challenge ?? this.challenge,
+      // Sentinel-guarded like [error]: a plain `challenge ?? this.challenge` could NOT clear the
+      // challenge back to null, so a keepAlive-persisted (and already server-burned) challenge
+      // could never be dropped — [loadChallenge] relies on `copyWith(challenge: null)` to do so.
+      challenge: identical(challenge, _unset)
+          ? this.challenge
+          : challenge as OtpChallenge?,
       otpSentAt: otpSentAt ?? this.otpSentAt,
       otpRequestCount: otpRequestCount ?? this.otpRequestCount,
       phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
@@ -155,6 +160,15 @@ class AuthController extends _$AuthController {
 
   /// `GET /otp/challenge` — fetch the math captcha to gate the OTP request.
   Future<bool> loadChallenge() => _guard(() async {
+        // Drop any persisted challenge FIRST. This controller is keepAlive, so RE-ENTERING the
+        // captcha screen (e.g. tapping "ไม่ได้รับรหัส? ขอใหม่" on the OTP screen → go('/auth/captcha'))
+        // arrives with the PREVIOUS challenge still in state — and that one was already BURNED
+        // server-side (Redis GETDEL) by the /otp/request that advanced to the OTP step. If it stays
+        // rendered as answerable, a fast user can resubmit the dead challenge_id and the server
+        // rejects a CORRECT answer as CAPTCHA_INVALID ("คำตอบไม่ถูกต้อง" on a right answer). Nulling it
+        // makes the screen show its loading state and DISABLES submit (button gates on
+        // `challenge == null`) until THIS fetch returns a live challenge.
+        state = state.copyWith(challenge: null);
         final data = await ref.read(pguardApiProvider).get('/otp/challenge');
         state = state.copyWith(
           challenge: OtpChallenge.fromJson(data as Map<String, dynamic>),
@@ -216,6 +230,10 @@ class AuthController extends _$AuthController {
   /// user still sees WHY it failed but gets a new, un-burned question to retry with. Best-effort: on
   /// failure (e.g. offline) the old error stays and the user can tap "Reload question".
   Future<void> _refreshChallengeKeepingError() async {
+    // The just-submitted challenge is now burned server-side; drop it IMMEDIATELY so it can't be
+    // re-submitted during the fetch below (the same correct-answer→CAPTCHA_INVALID trap). Keep the
+    // existing error so the user still sees WHY the last attempt failed.
+    state = state.copyWith(challenge: null);
     try {
       final data = await ref.read(pguardApiProvider).get('/otp/challenge');
       state = state.copyWith(
@@ -386,6 +404,18 @@ class AuthController extends _$AuthController {
   /// already-safe message.
   String _localizeApiError(ApiException e) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    // Any 5xx is INFRASTRUCTURE (SMS gateway down / out of credits, DB, cache) — NEVER a problem
+    // with what the user typed. Confirmed on-device 2026-07-21: /otp/request 500 "Insufficient SMS
+    // Credits" surfaced the server's terse INTERNAL_ERROR text under the captcha at the same moment
+    // the challenge auto-refreshed (question swapped + answer field cleared) — which reads exactly
+    // like "answer rejected", so QA kept reporting a captcha bug that wasn't one. Say what it
+    // actually is, in the app's language, before the code switch (a 5xx carries no otp sub-code).
+    final status = e.statusCode;
+    if (status != null && status >= 500) {
+      return isThai
+          ? 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง'
+          : 'Temporary server problem — please try again later';
+    }
     switch (e.code) {
       case 'CAPTCHA_INVALID':
         return isThai
