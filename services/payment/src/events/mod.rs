@@ -13,8 +13,10 @@
 //! needs no `async-trait`.
 //!
 //! The CONSUMER half (subscribe to `booking.completed` → finalize proration idempotently)
-//! lives in [`consumer`].
+//! lives in [`consumer`]. The REFUND half (subscribe to `booking.declined`/`booking.cancelled` →
+//! full-refund a paid pre-pay idempotently) lives in [`cancel_consumer`].
 
+pub mod cancel_consumer;
 pub mod consumer;
 
 use std::time::Duration;

@@ -667,6 +667,103 @@ pub async fn reconcile_on_completion(
     Ok(settle)
 }
 
+/// The outcome of a cancellation/decline FULL refund against the pre-paid amount.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CancelRefundOutcome {
+    /// Nothing to refund (no PAID pre-pay on file, or the event was already processed).
+    NoOp,
+    /// The whole pre-paid `refund` was returned (status → `refunded`, refund_status = 'pending',
+    /// emitted `payment.refund_processed`).
+    Refunded { refund: Decimal },
+}
+
+/// FULL-REFUND a pre-paid booking whose job was CANCELLED or DECLINED before it ran — a guard
+/// withdrawing en_route, or a customer cancelling after paying — in ONE transaction. No work was
+/// done, so the ENTIRE pre-pay is returned: the payment row flips `status → refunded`,
+/// `final_amount → 0`, `refund_amount → the whole paid amount`, `refund_status → 'pending'` (an
+/// admin / real gateway later marks it 'processed'), and a `payment.refund_processed` event is
+/// enqueued. Excluding the `refunded` row from revenue nets the booking to zero.
+///
+/// Idempotent via the `processed_events` ledger: the event_id is claimed in the same tx, so a
+/// JetStream redelivery is a NoOp (the refund is never applied twice). NoOp when there is no PAID
+/// pre-pay on file — an UNPAID cancel (e.g. cancelled at `accepted`, before the pre-pay) has
+/// nothing to return. `status = 'completed'` in the lookup already excludes an already-`refunded`
+/// row, so a double-refund is impossible even independent of the event-id claim.
+#[tracing::instrument(skip(db), fields(booking_id = %booking_id, event_id = %event_id))]
+pub async fn refund_on_cancellation(
+    db: &sqlx::PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    booking_id: Uuid,
+    correlation_id: Uuid,
+) -> Result<CancelRefundOutcome, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) claim the event_id (at-least-once dedup). A redelivery inserts nothing → NoOp.
+    let claimed = sqlx::query(
+        "INSERT INTO payment.processed_events (event_id, event_type) VALUES ($1, $2) \
+         ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?;
+    if claimed.rows_affected() == 0 {
+        tx.rollback().await?;
+        tracing::debug!("cancellation refund already processed (idempotent NoOp)");
+        return Ok(CancelRefundOutcome::NoOp);
+    }
+
+    // 2) the PAID pre-pay to return (FOR UPDATE locks it for the write).
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE"
+    );
+    let Some(payment) = sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(booking_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        // No paid pre-pay — an unpaid cancel (nothing to return). Commit the claim so a replay
+        // stays a NoOp.
+        tx.commit().await?;
+        tracing::info!("cancellation/decline with no paid pre-pay; nothing to refund");
+        return Ok(CancelRefundOutcome::NoOp);
+    };
+
+    // FULL refund — no work was done. Flip to `refunded` (excluded from revenue → nets to 0),
+    // return the whole amount, and queue it for the refund workflow.
+    let refund = payment.amount;
+    sqlx::query(
+        "UPDATE payment.payments \
+           SET status = 'refunded'::payment.payment_status, final_amount = 0, \
+               refund_amount = $2, refund_status = 'pending', updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(payment.id)
+    .bind(refund)
+    .execute(&mut *tx)
+    .await?;
+
+    let payload = serde_json::json!({
+        "payment_id": payment.id,
+        "booking_id": booking_id,
+        "refund_amount": refund,
+        "final_amount": Decimal::ZERO,
+    });
+    enqueue_outbox(
+        &mut tx,
+        topics::PAYMENT_REFUND_PROCESSED,
+        payload,
+        correlation_id,
+    )
+    .await?;
+
+    tx.commit().await?;
+    tracing::info!(booking_id = %booking_id, %refund, "full-refunded pre-pay on cancellation/decline");
+    Ok(CancelRefundOutcome::Refunded { refund })
+}
+
 /// Insert one outbox row (a fully-formed EventEnvelope) inside the caller's transaction.
 async fn enqueue_outbox(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -1375,6 +1472,152 @@ mod db_tests {
         // cleanup
         let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
             .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: PRE-PAY a booking, then CANCEL/DECLINE it before it ran → the WHOLE pre-pay is
+    /// FULL-refunded (status → refunded, refund_amount = the full amount, final_amount 0,
+    /// refund_status='pending', a `payment.refund_processed` emitted). Idempotent (a redelivery is a
+    /// NoOp). An UNPAID booking (no pre-pay on file) → NoOp. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn refund_on_cancellation_full_refunds_and_is_idempotent() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // A paid pre-pay of 2000.00.
+        let paid = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                customer_id,
+                Some(Uuid::new_v4()),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        // Guard withdraws en_route (booking.declined) → the WHOLE pre-pay is refunded.
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_DECLINED,
+            booking_id,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("refund");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: dec("2000.00")
+            }
+        );
+
+        // The row: status refunded, full refund_amount, final_amount 0, pending refund workflow.
+        let row: (String, Option<Decimal>, Option<Decimal>, Option<String>) = sqlx::query_as(
+            "SELECT status::text, final_amount, refund_amount, refund_status \
+             FROM payment.payments WHERE id = $1",
+        )
+        .bind(paid.id)
+        .fetch_one(&pool)
+        .await
+        .expect("read row");
+        assert_eq!(row.0, "refunded", "a FULL refund flips status → refunded");
+        assert!(
+            row.1.expect("final_amount").is_zero(),
+            "final_amount 0 (no work)"
+        );
+        assert_eq!(
+            row.2,
+            Some(dec("2000.00")),
+            "refund_amount = the full pre-pay"
+        );
+        assert_eq!(row.3.as_deref(), Some("pending"));
+
+        // Shows in the admin refund queue with amount = the full refund.
+        let pending = admin_list_refund_queue(&pool, Some("pending"), 200, 0)
+            .await
+            .expect("queue");
+        let qrow = pending
+            .iter()
+            .find(|r| r.payment_id == paid.id)
+            .expect("in refund queue");
+        assert_eq!(qrow.amount, dec("2000.00"));
+
+        // exactly ONE refund_processed event.
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds");
+        assert_eq!(refunds, 1, "exactly one refund event");
+
+        // Replay the SAME event → idempotent NoOp (no second refund).
+        let replay = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_DECLINED,
+            booking_id,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("replay");
+        assert_eq!(replay, CancelRefundOutcome::NoOp, "replay is a NoOp");
+        let refunds2: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds after replay");
+        assert_eq!(refunds2, 1, "still exactly one refund (idempotent)");
+
+        // An UNPAID booking (no pre-pay on file) → NoOp, nothing to refund.
+        let unpaid_booking = Uuid::new_v4();
+        let noop_event = Uuid::new_v4();
+        let noop = refund_on_cancellation(
+            &pool,
+            noop_event,
+            topics::BOOKING_CANCELLED,
+            unpaid_booking,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("noop");
+        assert_eq!(
+            noop,
+            CancelRefundOutcome::NoOp,
+            "no pre-pay → nothing to refund"
+        );
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = ANY($1)")
+            .bind(vec![event_id, noop_event])
             .execute(&pool)
             .await;
         let _ =

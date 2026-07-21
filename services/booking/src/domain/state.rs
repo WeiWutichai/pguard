@@ -12,8 +12,9 @@
 //!                                                                                  completed
 //! ```
 //! - `accept` CLAIMS an unassigned booking (first-come) — there is no per-guard offer, so
-//!   `decline` is the ASSIGNED guard withdrawing after accepting (`accepted → declined`), not
-//!   a refusal of an open request.
+//!   `decline` is the ASSIGNED guard withdrawing PRE-ARRIVAL (`accepted → declined` or
+//!   `en_route → declined`), not a refusal of an open request. A paid en_route withdraw is
+//!   full-refunded to the customer (payment's cancellation consumer); once ARRIVED, no self-withdraw.
 //! - `complete` (by the guard) requests completion → `pending_completion`; the CUSTOMER then
 //!   approves (`→ completed`, emits `booking.completed`) or rejects (`→ arrived`).
 //! - `cancel` is allowed only PRE-ARRIVAL (requested/accepted/en_route) — once work has begun
@@ -130,7 +131,10 @@ pub fn required_actor(from: BookingStatus, to: BookingStatus) -> Option<Required
         (Accepted, EnRoute) | (EnRoute, Arrived) | (Arrived, PendingCompletion) => {
             Some(AssignedGuard)
         }
-        (Accepted, Declined) => Some(AssignedGuard),
+        // guard withdrawal — legal PRE-ARRIVAL (accepted OR en_route). A paid en_route booking is
+        // FULL-REFUNDED to the customer by payment's cancellation-refund consumer. Once ARRIVED
+        // (on-site) the guard can no longer self-withdraw — the job runs to completion review.
+        (Accepted, Declined) | (EnRoute, Declined) => Some(AssignedGuard),
         // customer review of the guard's completion request
         (PendingCompletion, Completed) | (PendingCompletion, Arrived) => Some(RequestOwner),
         // cancellation: PRE-ARRIVAL active states only (a guard is not yet on-site)
@@ -148,7 +152,8 @@ mod tests {
     /// (the prod authz path is the single source of truth; this just asserts legality).
     ///
     /// Happy path: `requested → accepted → en_route → arrived → pending_completion → completed`.
-    /// Branches: `accepted → declined` (assigned guard withdraws); `pending_completion →
+    /// Branches: `accepted`/`en_route → declined` (assigned guard withdraws pre-arrival);
+    /// `pending_completion →
     /// arrived` (customer rejects completion); `cancelled` from any PRE-ARRIVAL active state.
     fn can_transition(from: BookingStatus, to: BookingStatus) -> bool {
         required_actor(from, to).is_some()
@@ -164,12 +169,14 @@ mod tests {
     }
 
     #[test]
-    fn decline_is_assigned_guard_withdrawing_after_accept() {
+    fn decline_is_assigned_guard_withdrawing_before_arrival() {
         assert!(can_transition(Accepted, Declined));
+        // ...and also en_route: the guard can still back out before reaching the site (a paid
+        // booking is refunded by payment's cancellation consumer).
+        assert!(can_transition(EnRoute, Declined));
         // NOT from an unassigned request (v2 has no per-guard offer to decline).
         assert!(!can_transition(Requested, Declined));
-        // ...and never after work is underway.
-        assert!(!can_transition(EnRoute, Declined));
+        // ...but never once ARRIVED (on-site): the job runs to completion review.
         assert!(!can_transition(Arrived, Declined));
     }
 
