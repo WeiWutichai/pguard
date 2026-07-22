@@ -206,8 +206,10 @@ void main() {
 
     expect(await ctrl.sendOtp('2'), isFalse);
     final st = c.read(authControllerProvider);
-    expect(st.error, 'Rate limit exceeded',
-        reason: 'the failure reason stays visible');
+    // A 429 is now LOCALIZED (Thai default) — not the raw English 'Rate limit exceeded' the gateway
+    // sends as a bare string (deep-review captcha/language fix).
+    expect(st.error, 'ส่งคำขอถี่เกินไป กรุณารอสักครู่แล้วลองใหม่',
+        reason: 'the failure reason stays visible, localized');
     expect(st.challenge?.challengeId, 'ch2',
         reason:
             'the burned ch1 is replaced by a fresh, usable challenge for the retry');
@@ -421,7 +423,7 @@ void main() {
     expect(user.hasMultipleRoles, isFalse);
   });
 
-  test('login failure surfaces the server message and stores no tokens',
+  test('login failure surfaces a LOCALIZED error and stores no tokens',
       () async {
     final store = InMemoryStore();
     final api = FakeApi(onPost: (path, _) async {
@@ -438,7 +440,9 @@ void main() {
     ctrl.setPhone('0812345678');
     expect(
         await ctrl.loginWithPin(phone: '0812345678', pin: '135790'), isFalse);
-    expect(c.read(authControllerProvider).error, 'Invalid credentials');
+    // A 401 on the auth flow is localized (Thai default) — NOT the raw English "Invalid
+    // credentials" the returning-login screen used to surface (deep-review language fix).
+    expect(c.read(authControllerProvider).error, 'ข้อมูลเข้าสู่ระบบไม่ถูกต้อง');
     expect(store.access, isNull);
   });
 

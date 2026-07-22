@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/booking.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
@@ -149,7 +150,7 @@ class GuardJobsController extends _$GuardJobsController {
               ? 'คุณมีงานในช่วงเวลานี้อยู่แล้ว — เลือกงานที่เวลาไม่ทับซ้อนกัน'
               : e.message;
         default:
-          return e.message;
+          return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
       }
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;

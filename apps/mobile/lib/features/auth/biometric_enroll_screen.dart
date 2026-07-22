@@ -51,9 +51,18 @@ class _BiometricEnrollScreenState extends ConsumerState<BiometricEnrollScreen> {
         );
     if (!mounted) return;
     setState(() => _busy = false);
-    // On success continue; on cancel/failure stay so the user can retry or skip (no error noise —
-    // matches the design, which has no failure state on this screen).
-    if (ok) _continue();
+    if (ok) {
+      _continue();
+    } else {
+      // The button used to do NOTHING on failure (e.g. an Android sensor with no enrolled
+      // fingerprint → the plugin throws NotEnrolled, swallowed to false) — a dead button with zero
+      // feedback (deep-review). Tell the user why + point them to set one up in Settings.
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'ยังไม่ได้ตั้งค่าลายนิ้วมือ/ใบหน้าในเครื่อง หรือการยืนยันไม่สำเร็จ — ตั้งค่าในการตั้งค่าเครื่องก่อน หรือกด "ข้ามไปก่อน"'
+            : 'No fingerprint/face is set up on this device, or authentication failed — add one in Settings, or tap "Skip for now"'),
+      ));
+    }
   }
 
   @override

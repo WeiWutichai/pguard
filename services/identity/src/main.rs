@@ -132,6 +132,15 @@ async fn main() -> anyhow::Result<()> {
             events::approved::run_consumer(consumer_state, &nats).await;
         });
     }
+    // (3) user.rejected → flip our own approval_status to `rejected` (distinct rejected state +
+    //     re-apply). Separate durable from the approvals consumer.
+    {
+        let consumer_state = state.clone();
+        let nats = nats_url.clone();
+        tokio::spawn(async move {
+            events::rejected::run_consumer(consumer_state, &nats).await;
+        });
+    }
 
     // --- HTTP router ---
     let app = Router::new()

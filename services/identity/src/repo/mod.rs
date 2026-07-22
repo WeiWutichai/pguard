@@ -83,8 +83,19 @@ pub async fn verify_credentials(
 ) -> Result<AuthUserRow, AppError> {
     let user = find_user_by_identifier(db, identifier).await?;
 
-    // Pick the hash to verify against: the real one (only for an eligible account), or a
-    // constant dummy. Either way we spend the same Argon2 time.
+    // A live but REJECTED account: verify against its REAL hash (not the dummy) so that a caller
+    // who provides the CORRECT credentials — i.e. the applicant themselves — can be told, distinctly,
+    // that they were rejected (deep-review: otherwise "pending forever"). This is NOT an enumeration
+    // leak: the distinct answer is returned ONLY on a correct-credential match (the owner), and it
+    // still costs exactly one Argon2 verify, so the timing/anti-enumeration invariant holds for every
+    // OTHER case (wrong PIN, pending, or unknown phone → generic 401 against real-or-dummy).
+    let rejected_hash = user
+        .as_ref()
+        .filter(|u| u.is_active && u.approval_status == "rejected")
+        .map(|u| u.password_hash.clone());
+
+    // Pick the hash to verify against: the real one (approved → eligible, or rejected → to detect
+    // an owner), or a constant dummy. Either way we spend the same Argon2 time.
     let (hash, eligible, identity) = match &user {
         Some(u) if u.is_active && u.approval_status == "approved" => (
             u.password_hash.clone(),
@@ -95,7 +106,10 @@ pub async fn verify_credentials(
                 token_revocation_version: u.token_revocation_version,
             }),
         ),
-        _ => (DUMMY_HASH.to_string(), false, None),
+        _ => match &rejected_hash {
+            Some(h) => (h.clone(), false, None),
+            None => (DUMMY_HASH.to_string(), false, None),
+        },
     };
 
     let password = password.to_string();
@@ -105,6 +119,13 @@ pub async fn verify_credentials(
 
     match (ok, eligible, identity) {
         (true, true, Some(id)) => Ok(id),
+        // Correct credentials for a REJECTED account → distinct, coded 409 so the app shows the
+        // rejection + a re-apply path instead of the generic "still pending". Owner-only (gated on
+        // `ok` against the real hash), so it reveals nothing to anyone who doesn't already hold the PIN.
+        (true, false, None) if rejected_hash.is_some() => Err(AppError::ConflictCode {
+            code: "ACCOUNT_REJECTED",
+            message: "This application was rejected".to_string(),
+        }),
         _ => Err(AppError::Unauthorized("Invalid credentials".to_string())),
     }
 }
@@ -113,11 +134,12 @@ pub async fn verify_credentials(
 /// its `user_id`. The PIN-hash supplied by the client (SHA-256 hex of the PIN) is Argon2'd
 /// here (CPU-bound → `spawn_blocking`) and stored as the password hash.
 ///
-/// `ON CONFLICT (phone)`: re-registering a phone that is STILL pending is allowed — it
-/// refreshes the credentials/role and keeps the account pending (a user who never finished
-/// onboarding can start over). A phone that already exists in a NON-pending state
-/// (approved/rejected) makes the `WHERE approval_status = 'pending'` predicate false, so the
-/// row is NOT touched and `RETURNING` yields no row → `Conflict` ("log in instead"). This is
+/// `ON CONFLICT (phone)`: re-registering a phone that is STILL pending OR was REJECTED is allowed
+/// — it refreshes the credentials/role and (re)sets the account to pending. A pending user who
+/// never finished onboarding can start over; a REJECTED applicant can re-apply (deep-review: a
+/// rejection was otherwise a permanent dead-end — the phone could never register again). Only an
+/// APPROVED phone makes the predicate false, so its row is NOT touched and `RETURNING` yields no
+/// row → `Conflict` ("log in instead"). This is
 /// the only place identity creates a user; profile/otp never write this schema.
 // `skip(db, phone, pin_hash)`: never log the phone (PII) or the pin hash; `role` is fine.
 #[tracing::instrument(skip(db, phone, pin_hash))]
@@ -141,7 +163,8 @@ pub async fn upsert_pending_user(
               role            = EXCLUDED.role,
               approval_status = 'pending'::identity.approval_status,
               updated_at      = now()
-          WHERE identity.users.approval_status = 'pending'::identity.approval_status
+          WHERE identity.users.approval_status
+                  IN ('pending'::identity.approval_status, 'rejected'::identity.approval_status)
         RETURNING id
         "#,
     )
@@ -358,6 +381,56 @@ pub async fn approve_user_on_event(
     // approve, each gated on the prior), so a 0-row match means a forged/stale/deleted-user
     // event — recording it (vs. rollback) prevents a bogus event from redelivering forever. The
     // caller logs UserNotFound loudly so a genuine anomaly is still visible.
+    tx.commit().await?;
+
+    if res.rows_affected() == 0 {
+        Ok(ApprovedOutcome::UserNotFound)
+    } else {
+        Ok(ApprovedOutcome::Applied)
+    }
+}
+
+/// Apply a `user.rejected` event: idempotently (by `event_id`) flip a live account's
+/// `approval_status` to `rejected`. Mirrors [`approve_user_on_event`] but does NOT enrol any role
+/// (a rejection grants nothing). Recording the flip lets the app show a distinct rejected state
+/// (instead of "pending forever") and, combined with the re-registerable-rejected upsert, lets the
+/// applicant re-apply. Login stays blocked either way (only `approved` passes `verify_credentials`).
+pub async fn reject_user_on_event(
+    db: &PgPool,
+    event_id: Uuid,
+    event_type: &str,
+    user_id: Uuid,
+) -> Result<ApprovedOutcome, AppError> {
+    let mut tx = db.begin().await?;
+
+    // 1) Claim the event_id (idempotency anchor). A redelivery inserts nothing → Duplicate.
+    let claim = sqlx::query(
+        "INSERT INTO identity.processed_events (event_id, event_type) \
+         VALUES ($1, $2) ON CONFLICT (event_id) DO NOTHING",
+    )
+    .bind(event_id)
+    .bind(event_type)
+    .execute(&mut *tx)
+    .await?;
+    if claim.rows_affected() == 0 {
+        tx.rollback().await?;
+        return Ok(ApprovedOutcome::Duplicate);
+    }
+
+    // 2) Flip to rejected — only a live, NOT-YET-approved account (never downgrade an approved
+    //    account via a stale/forged rejection; an erased account stays out).
+    let res = sqlx::query(
+        "UPDATE identity.users \
+         SET approval_status = 'rejected'::identity.approval_status, updated_at = now() \
+         WHERE id = $1 AND deleted_at IS NULL \
+           AND approval_status <> 'approved'::identity.approval_status",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Commit the claim even on a 0-row match (unknown/already-approved user) so a stale event does
+    // not redeliver forever; the caller logs UserNotFound.
     tx.commit().await?;
 
     if res.rows_affected() == 0 {
@@ -1005,6 +1078,26 @@ pub async fn account_id_and_role_by_phone(
     .fetch_optional(db)
     .await?;
     Ok(row)
+}
+
+/// Does an APPROVED (loginable) account hold this phone? Distinct from
+/// [`account_id_and_role_by_phone`] (which matches ANY live account, incl. `pending`/`rejected`):
+/// `phone_status` uses THIS so a still-pending registration is NOT reported as returning-loginable.
+/// Routing a pending phone to PIN-login strands it forever — `verify_credentials` requires
+/// `approval_status = 'approved'`, so the PIN always 401s and re-OTP is diverted back to the same
+/// PIN-login. Reporting the pending phone as ABSENT instead lets the client re-enter `register`,
+/// whose `ON CONFLICT … WHERE approval_status = 'pending'` refreshes the row (202) and mints a fresh
+/// profile token — the intended recovery. (Casts `::text` per this file's enum-comparison convention.)
+pub async fn approved_account_exists_by_phone(db: &PgPool, phone: &str) -> Result<bool, AppError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM identity.users \
+         WHERE phone = $1 AND is_active = TRUE AND deleted_at IS NULL \
+           AND approval_status::text = 'approved'",
+    )
+    .bind(phone)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
 }
 
 /// Reset the PIN of an EXISTING account BY PHONE — the "forgot PIN" flow, driven by a verified OTP

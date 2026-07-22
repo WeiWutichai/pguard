@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/auth_models.dart';
 import '../models/registration.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
@@ -210,6 +211,11 @@ class AuthController extends _$AuthController {
       await ref.read(appStoreProvider).clearRegistrationTokens();
       state = state.copyWith(
         step: AuthStep.otp,
+        // Drop the just-BURNED challenge (the server GETDEL-consumed it). If the user pops BACK from
+        // the OTP screen to the still-mounted captcha screen, a lingering challenge would render as
+        // answerable and a correct answer would be rejected — the captcha screen refetches on
+        // pop-return, and this null keeps the stale question from flashing meanwhile (deep-review).
+        challenge: null,
         otpSentAt: DateTime.now().toUtc(),
         otpRequestCount: state.otpRequestCount + 1,
       );
@@ -295,6 +301,31 @@ class AuthController extends _$AuthController {
   /// authenticated (router lands on the role dashboard).
   Future<bool> loginWithPin({required String phone, required String pin}) =>
       _guard(() => _performLogin(phone: phone, pin: pin));
+
+  /// Like [loginWithPin] but REPORTS THE SERVER CODE on failure, so the registration pending flow
+  /// can tell a REJECTED application (409 `ACCOUNT_REJECTED`) apart from a still-pending 401 (both
+  /// otherwise surface as a plain `false`). Returns `null` on success (the session is flipped), else
+  /// the error code (`''` for an uncoded / transport failure). Mirrors [loginWithPin]'s re-entrancy
+  /// latch + error localization.
+  Future<String?> loginWithPinOutcomeCode(
+      {required String phone, required String pin}) async {
+    if (state.busy) return '';
+    state = state.copyWith(busy: true, error: null);
+    try {
+      await _performLogin(phone: phone, pin: pin);
+      state = state.copyWith(busy: false);
+      return null;
+    } on ApiException catch (e) {
+      state = state.copyWith(busy: false, error: _localizeApiError(e));
+      return e.code ?? '';
+    } catch (_) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      state = state.copyWith(
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
+      return '';
+    }
+  }
 
   /// The login CORE (no [_guard] — callers wrap it). POSTs `/auth/login`, persists the token pair +
   /// phone + local PIN, and flips the session to authenticated. Shared by [loginWithPin] and
@@ -404,45 +435,14 @@ class AuthController extends _$AuthController {
   /// already-safe message.
   String _localizeApiError(ApiException e) {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    // Any 5xx is INFRASTRUCTURE (SMS gateway down / out of credits, DB, cache) — NEVER a problem
-    // with what the user typed. Confirmed on-device 2026-07-21: /otp/request 500 "Insufficient SMS
-    // Credits" surfaced the server's terse INTERNAL_ERROR text under the captcha at the same moment
-    // the challenge auto-refreshed (question swapped + answer field cleared) — which reads exactly
-    // like "answer rejected", so QA kept reporting a captcha bug that wasn't one. Say what it
-    // actually is, in the app's language, before the code switch (a 5xx carries no otp sub-code).
-    final status = e.statusCode;
-    if (status != null && status >= 500) {
-      return isThai
-          ? 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง'
-          : 'Temporary server problem — please try again later';
+    // Auth-flow-specific: a 401 on THIS flow is always wrong credentials (login / PIN-login), never
+    // a mid-session token expiry — localize it so the returning-login screen doesn't surface the raw
+    // English "Invalid credentials" (deep-review). Everything cross-cutting (transport/offline, 5xx
+    // infrastructure, OTP+captcha sub-codes) is handled by the shared helper — including the
+    // 2026-07-21 SMS-credits 5xx case that read as a false captcha rejection.
+    if (e.statusCode == 401) {
+      return isThai ? 'ข้อมูลเข้าสู่ระบบไม่ถูกต้อง' : 'Invalid credentials';
     }
-    switch (e.code) {
-      case 'CAPTCHA_INVALID':
-        return isThai
-            ? 'คำตอบไม่ถูกต้อง กรุณาลองอีกครั้ง'
-            : 'That answer is incorrect — please try again';
-      case 'OTP_COOLDOWN':
-        return isThai
-            ? 'กรุณารอสักครู่ก่อนขอรหัสใหม่'
-            : 'Please wait a moment before requesting another code';
-      case 'OTP_BURST_LOCK':
-        return isThai
-            ? 'ขอรหัส OTP บ่อยเกินไป กรุณาลองใหม่ในภายหลัง'
-            : 'Too many OTP requests — please try again later';
-      case 'OTP_ADMIN_LOCK':
-        return isThai
-            ? 'ขอรหัส OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่'
-            : 'OTP request limit reached — please contact support';
-      case 'OTP_INVALID':
-        return isThai
-            ? 'รหัส OTP ไม่ถูกต้องหรือหมดอายุ'
-            : 'The OTP is incorrect or has expired';
-      case 'OTP_MAX_ATTEMPTS':
-        return isThai
-            ? 'กรอกรหัสผิดเกินจำนวนครั้ง กรุณาขอรหัสใหม่'
-            : 'Too many attempts — please request a new OTP';
-      default:
-        return e.message;
-    }
+    return localizeApiError(isThai, e);
   }
 }

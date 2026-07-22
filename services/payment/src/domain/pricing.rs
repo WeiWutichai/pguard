@@ -24,6 +24,15 @@ pub fn is_payable_status(status: &str) -> bool {
     )
 }
 
+/// A booking that is DEAD in a negative sense: the guard withdrew (`declined`) or the customer
+/// `cancelled`. Used by the pay path to catch a pay-vs-cancel RACE: if a fresh pre-pay committed
+/// against a booking that had ALREADY gone terminal, the cancellation event was consumed (as a
+/// NoOp) before the payment row existed, so `refund_on_cancellation` never saw it — the pay path
+/// re-reads the booking after committing and compensates with an immediate full refund. Pure.
+pub fn is_negative_terminal(status: &str) -> bool {
+    matches!(status, "declined" | "cancelled")
+}
+
 /// The result of reconciling the actual-hours bill against the PRE-PAID amount on completion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reconciliation {
@@ -124,6 +133,28 @@ mod tests {
     fn expected_total_is_base_times_hours_times_guards_plus_tip() {
         // 500/hr × 4h × 2 guards + 100 tip = 4100.00
         assert_eq!(expected_total(dec("500"), 4, 2, dec("100")), dec("4100.00"));
+    }
+
+    #[test]
+    fn negative_terminal_is_only_declined_or_cancelled() {
+        assert!(is_negative_terminal("declined"));
+        assert!(is_negative_terminal("cancelled"));
+        // NOT negative-terminal: payable/active states, completion, and unknowns must never
+        // trigger the compensating refund (a legit paid booking advancing to en_route/arrived).
+        for s in [
+            "requested",
+            "accepted",
+            "en_route",
+            "arrived",
+            "pending_completion",
+            "completed",
+            "",
+        ] {
+            assert!(
+                !is_negative_terminal(s),
+                "{s} must not be negative-terminal"
+            );
+        }
     }
 
     #[test]

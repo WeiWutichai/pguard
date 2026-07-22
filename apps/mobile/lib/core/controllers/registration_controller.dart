@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/registration.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'auth_controller.dart';
@@ -16,6 +17,19 @@ import 'session_controller.dart';
 part 'registration_controller.g.dart';
 
 /// The result of [RegistrationController.register].
+/// How a pending-account "check status" resolved (see [RegistrationController.checkStatus]).
+enum CheckStatusOutcome {
+  /// The application was approved — the session is now authenticated; go to the dashboard.
+  approved,
+
+  /// Still awaiting an admin decision (login 401).
+  pending,
+
+  /// The admin REJECTED the application (a correct PIN gets a distinct 409 ACCOUNT_REJECTED). The
+  /// applicant can re-apply (a rejected phone is re-registerable).
+  rejected,
+}
+
 enum RegisterOutcome {
   /// 202 — pending account created; go submit the profile with the `profile_token`.
   needsProfile,
@@ -259,7 +273,10 @@ class RegistrationController extends _$RegistrationController {
                 : 'Verification expired — request a new code');
         return RegisterOutcome.error;
       }
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e));
       return RegisterOutcome.error;
     } catch (_) {
       state = state.copyWith(
@@ -310,9 +327,8 @@ class RegistrationController extends _$RegistrationController {
       // The OTP token is now consumed — drop it so a back-out can't re-present a spent token.
       _phoneVerifiedToken = null;
       await store.clearPhoneVerifiedToken();
-      // The account now holds BOTH roles — mark it so the pending screen hides the "add the other
-      // role" button (there is no third role; re-offering it only burns an OTP for a 409).
-      await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
+      // (kRegBothRolesKey is set only AFTER the second profile is actually submitted — see
+      // _submitProfile — so abandoning this form doesn't permanently hide the add-role button.)
       // Session is already `pendingApproval` — leave it. The profile submit below persists the
       // (new-role) pending summary and lands back on the pending screen.
       state = state.copyWith(busy: false);
@@ -624,13 +640,36 @@ class RegistrationController extends _$RegistrationController {
         final prefs = ref.read(prefsStoreProvider);
         await prefs.setString(kRegPendingRoleKey, summary.role.wire);
         await prefs.setString(kRegSummaryKey, jsonEncode(summary.toJson()));
+      } else {
+        // The second role's pending profile now EXISTS server-side → mark the account both-roles so
+        // the pending screen hides "add the other role". Set it HERE, not at the add-role 202 (which
+        // only mints a token): abandoning/expiring the form before this would otherwise hide the
+        // button forever with no second role ever created (deep-review).
+        await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
       }
       _profileToken = null; // consumed single-use
       _isAddRole = false; // the add-role write is done
       state = state.copyWith(busy: false, submitted: summary);
       return resp is Map<String, dynamic> ? resp : <String, dynamic>{};
     } on ApiException catch (e) {
-      state = state.copyWith(busy: false, error: e.message);
+      // A 401 means the single-use profile_token is spent OR expired — it can NEVER succeed on a
+      // retry, and re-presenting it (the resume path) loops forever (deep-review HIGH). Drop it so
+      // the next attempt starts clean, and point the user to a fresh OTP (re-registration then mints
+      // a new token). Other errors keep the localized message + the still-valid token for a retry.
+      if (e.statusCode == 401) {
+        await ref.read(appStoreProvider).clearRegistrationTokens();
+        _profileToken = null;
+        state = state.copyWith(
+            busy: false,
+            error: isThai
+                ? 'เซสชันหมดอายุ กรุณาขอรหัส OTP ใหม่อีกครั้ง'
+                : 'Your session expired — please request a new OTP');
+        return null;
+      }
+      state = state.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e));
       return null;
     } catch (_) {
       state = state.copyWith(
@@ -645,19 +684,20 @@ class RegistrationController extends _$RegistrationController {
   /// screen re-prompts the PIN and calls [checkStatusWithPin].
   bool get canCheckSilently => _phone != null && _pin != null;
 
-  /// Attempt `loginWithPin` to see if the pending account is now approved (login succeeds only
-  /// once approved; a pending account returns a generic 401 → stays pending). Uses the in-memory
-  /// PIN; returns false (no error) if it isn't available.
-  Future<bool> checkStatus() async {
+  /// Attempt `loginWithPin` to see how the pending account resolved: `approved` (login succeeds →
+  /// session flipped), `rejected` (the admin rejected it — a correct PIN gets a distinct 409
+  /// `ACCOUNT_REJECTED`), or still `pending` (generic 401). Uses the in-memory PIN; returns
+  /// `pending` if it isn't available (nothing to attempt).
+  Future<CheckStatusOutcome> checkStatus() async {
     final phone = _phone;
     final pin = _pin;
-    if (phone == null || pin == null) return false;
+    if (phone == null || pin == null) return CheckStatusOutcome.pending;
     return _attemptApprovedLogin(phone: phone, pin: pin);
   }
 
   /// Cold-start "check status": the PIN is re-entered on the pending screen; the phone comes from
   /// secure storage (persisted at register).
-  Future<bool> checkStatusWithPin(String pin) async {
+  Future<CheckStatusOutcome> checkStatusWithPin(String pin) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final phone = _phone ?? await ref.read(appStoreProvider).readPhone();
     if (phone == null) {
@@ -665,26 +705,32 @@ class RegistrationController extends _$RegistrationController {
           error: isThai
               ? 'ไม่พบเบอร์ กรุณาเริ่มใหม่'
               : 'Phone missing — start again');
-      return false;
+      return CheckStatusOutcome.pending;
     }
     return _attemptApprovedLogin(phone: phone, pin: pin);
   }
 
-  Future<bool> _attemptApprovedLogin({
+  Future<CheckStatusOutcome> _attemptApprovedLogin({
     required String phone,
     required String pin,
   }) async {
     state = state.copyWith(busy: true, error: null);
-    final ok = await ref
+    final code = await ref
         .read(authControllerProvider.notifier)
-        .loginWithPin(phone: phone, pin: pin);
-    if (ok) {
-      // Approved → now authenticated (loginWithPin flipped the session). Drop pending state.
+        .loginWithPinOutcomeCode(phone: phone, pin: pin);
+    if (code == null) {
+      // Approved → now authenticated (login flipped the session). Drop pending state.
       await _clearPending();
+      state = state.copyWith(busy: false);
+      return CheckStatusOutcome.approved;
     }
-    // A `false` here means "still pending" (generic 401), NOT an error to surface loudly.
     state = state.copyWith(busy: false);
-    return ok;
+    // A correct PIN on a REJECTED application returns 409 ACCOUNT_REJECTED; a still-pending account
+    // returns a generic 401 (no such code). Everything else is treated as still pending (not a loud
+    // error) — the user can re-check or re-apply.
+    return code == 'ACCOUNT_REJECTED'
+        ? CheckStatusOutcome.rejected
+        : CheckStatusOutcome.pending;
   }
 
   Future<void> _clearPending() async {
@@ -734,10 +780,39 @@ class RegistrationController extends _$RegistrationController {
     }
   }
 
+  /// True when a `profile_token` is past its JWT `exp` (or unparseable). Profile tokens live only
+  /// ~15 min, but a guard's 4-step form with 6 photo captures easily runs longer — an expired token
+  /// can NEVER authorize the submit (identity 401s), and re-presenting it loops the user forever
+  /// (deep-review HIGH). So an expired token is treated as ABSENT: dropped, never re-presented, and
+  /// the user is bounced to a clean re-OTP (which, with the phone-status pending fix, re-registers
+  /// and mints a fresh token). A 5s skew avoids optimistically using a token about to expire.
+  bool _isProfileTokenExpired(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return true;
+      final payload = jsonDecode(
+              utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))))
+          as Map<String, dynamic>;
+      final exp = payload['exp'];
+      if (exp is! num) return true;
+      final expMs = exp.toInt() * 1000;
+      return DateTime.now().toUtc().millisecondsSinceEpoch >= expMs - 5000;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<RegisterOutcome?> _resumeIfAlreadyRegistered() async {
     final store = ref.read(appStoreProvider);
     final existing = _profileToken ?? await store.readProfileToken();
     if (existing == null) return null;
+    // An EXPIRED profile_token can never authorize the submit (401), and re-presenting it loops the
+    // user forever. Treat it as absent: drop it and fall through to a clean re-OTP restart.
+    if (_isProfileTokenExpired(existing)) {
+      await store.clearRegistrationTokens();
+      _profileToken = null;
+      return null;
+    }
     // Switching roles after a prior register (the single-use phone-verify token is already spent):
     // the leftover token is for the OTHER role and must NOT be carried into this role's profile form
     // (the server rejects a wrong-purpose token). Re-issue a correct-role profile_token via the

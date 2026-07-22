@@ -19,7 +19,7 @@ use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
 use crate::domain::rotation::{decide, RotationDecision};
-use crate::domain::{mask, registration, token, twofactor};
+use crate::domain::{login_throttle, mask, registration, token, twofactor};
 use crate::models::{
     AddRoleRequest, ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest,
     CreateApiTokenResponse, Disable2faRequest, Enable2faRequest, Enable2faResponse,
@@ -137,12 +137,67 @@ pub async fn login(
     headers: HeaderMap,
     Json(req): Json<LoginRequest>,
 ) -> Result<axum::response::Response, AppError> {
-    if req.identifier.trim().is_empty() || req.password.is_empty() {
+    let identifier = req.identifier.trim();
+    if identifier.is_empty() || req.password.is_empty() {
         // Generic 401 — never reveal which field was the problem.
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
     }
 
-    let user = repo::verify_credentials(&state.db, req.identifier.trim(), &req.password).await?;
+    // Server-side per-account brute-force throttle. The app enforces a PIN lockout/wipe ENTIRELY
+    // client-side, so an attacker who scripts POST /auth/login directly bypasses it and faced only
+    // the gateway per-IP limit — with rotating IPs the 10^6 six-digit-PIN space is exhaustible. Key
+    // on the lowercased identifier (case variants share one bucket). A live lock short-circuits
+    // BEFORE the Argon2 verify (no cost/timing amplification) and returns the SAME generic 401 as a
+    // wrong password, so it is never a lock/existence oracle. All Redis ops are best-effort and
+    // FAIL OPEN: a cache blip must never lock everyone out or turn a wrong PIN into a 500 — the
+    // gateway per-IP limit remains as a floor. A targeted lock-out DoS is bounded by the 30-min cap.
+    let throttle_key = identifier.to_ascii_lowercase();
+    let fail_key = format!("login_fail:{throttle_key}");
+    let lock_key = format!("login_lock:{throttle_key}");
+    let mut redis = state.redis_conn.clone();
+
+    let lock_ttl: i64 = redis::cmd("TTL")
+        .arg(&lock_key)
+        .query_async(&mut redis)
+        .await
+        .unwrap_or(-2); // -2 = no key (redis convention) → treated as unlocked (fail open)
+    if lock_ttl > 0 {
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+
+    let user = match repo::verify_credentials(&state.db, identifier, &req.password).await {
+        Ok(u) => {
+            // Ownership proven — clear the failure counter and any lock.
+            let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+                .arg(&fail_key)
+                .arg(&lock_key)
+                .query_async(&mut redis)
+                .await;
+            u
+        }
+        Err(AppError::Unauthorized(msg)) => {
+            // Count the failure in a rolling window; arm/refresh a lock once over the threshold.
+            let fails: i64 = redis.incr(&fail_key, 1).await.unwrap_or(0);
+            if fails >= 1 {
+                let ttl: i64 = redis::cmd("TTL")
+                    .arg(&fail_key)
+                    .query_async(&mut redis)
+                    .await
+                    .unwrap_or(-2);
+                if ttl < 0 {
+                    // Anchor the window on the first failure; never refresh it on later INCRs.
+                    let _ = redis
+                        .expire::<_, ()>(&fail_key, login_throttle::LOGIN_FAIL_WINDOW_SECS as i64)
+                        .await;
+                }
+                if let Some(lock_secs) = login_throttle::login_lock_secs(fails) {
+                    let _ = redis.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await;
+                }
+            }
+            return Err(AppError::Unauthorized(msg));
+        }
+        Err(e) => return Err(e),
+    };
 
     // 2FA gate (#144): if the account has TOTP enabled, the password is NOT enough — issue a
     // single-use, short-lived challenge token (NO access/refresh tokens, NO session) that the
@@ -320,9 +375,11 @@ pub async fn phone_status<S: RegisterDeps>(
         PHONE_VERIFY_PURPOSE,
     )?;
     let phone = registration::validate_thai_phone(&phone)?;
-    let account_exists = repo::account_id_and_role_by_phone(state.db(), &phone)
-        .await?
-        .is_some();
+    // Only an APPROVED account is returning-loginable. A still-PENDING registration must report
+    // `false` so the client re-enters register (which 202-refreshes the pending row + mints a fresh
+    // profile token) instead of being routed to PIN-login, where the PIN can never succeed and the
+    // phone is stranded forever (deep-review HIGH, 2026-07-22).
+    let account_exists = repo::approved_account_exists_by_phone(state.db(), &phone).await?;
     Ok(Json(ApiResponse::success(PhoneStatusResponse {
         account_exists,
     })))

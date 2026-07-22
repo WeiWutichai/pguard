@@ -5,6 +5,7 @@ import '../models/auth_models.dart';
 import '../models/registration.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import '../push/push_registration_controller.dart';
 import 'active_job_controller.dart';
 import 'auth_controller.dart';
 
@@ -241,6 +242,16 @@ class Session extends _$Session {
     // Drop any client-side work-session residue (start stamps / in-flight markers) so the next
     // account in this process can't inherit them.
     ref.invalidate(workSessionStoreProvider);
+    // Rotate the OS push token on EVERY logout — crucially the AUTH-LOST / SESSION_SUPERSEDED path
+    // reaches logout() directly (not via profile_controller, which is the only place that did this),
+    // so a kicked device otherwise keeps receiving the account's chat/booking/call pushes on the PIN
+    // screen (deep-review). Best-effort: the stored backend token row goes stale + pruned on the next
+    // failed send. (Idempotent with profile_controller's own deleteToken on the user-tap path.)
+    try {
+      await ref.read(pushServiceProvider).deleteToken();
+    } catch (_) {
+      // No push / offline / already rotated — logout still proceeds.
+    }
     // Capture the login identifier BEFORE clearing storage — a remembered device re-authenticates
     // by PIN, which needs the phone.
     final phone = await store.readPhone();

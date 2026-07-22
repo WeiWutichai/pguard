@@ -97,7 +97,13 @@ class _Body extends ConsumerWidget {
       children: [
         _SummaryCard(booking: booking, estimateSatang: _estimateSatang),
         const SizedBox(height: PgTokens.space4),
-        if (paid)
+        // The booking DIED mid-flight (guard withdrew / cancelled elsewhere — folded live via the WS
+        // + reconnect re-pull). Never keep the pay CTA / live QR up on a dead booking (the customer
+        // could transfer real money to it, then 409 on upload); show a cancelled state + a refund
+        // note if they already paid (deep-review).
+        if (BookingLifecycle.isNegativeTerminal(booking.status))
+          _CancelledPanel(booking: booking, paid: paid, isThai: isThai)
+        else if (paid)
           _PaidPanel(booking: booking)
         else if (payState.slipRequired)
           // The provider requires a transfer slip (PAYMENT_PROVIDER=slip2go): `POST /payments`
@@ -113,6 +119,63 @@ class _Body extends ConsumerWidget {
             isThai: isThai,
           ),
       ],
+    );
+  }
+}
+
+/// Shown when the booking died mid-payment-flow (guard withdrew → declined, or cancelled): a clear
+/// cancelled state INSTEAD of the pay CTA/QR, with a full-refund note when the customer already paid.
+class _CancelledPanel extends StatelessWidget {
+  const _CancelledPanel(
+      {required this.booking, required this.paid, required this.isThai});
+
+  final Booking booking;
+  final bool paid;
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    final declined = booking.status == BookingStatus.declined;
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      decoration: BoxDecoration(
+        color: PgTokens.colorDangerBg,
+        borderRadius: BorderRadius.circular(PgTokens.radius2xl),
+        border: Border.all(color: PgTokens.colorDanger.withValues(alpha: 0.3)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Icon(Icons.cancel_outlined,
+              size: 40, color: PgTokens.colorDanger),
+          const SizedBox(height: PgTokens.space3),
+          Text(
+            declined
+                ? (isThai
+                    ? 'เจ้าหน้าที่ยกเลิกงานนี้'
+                    : 'The guard cancelled this job')
+                : (isThai ? 'การจองถูกยกเลิก' : 'This booking was cancelled'),
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
+          ),
+          if (paid) ...[
+            const SizedBox(height: PgTokens.space2),
+            Text(
+              isThai
+                  ? 'ระบบจะคืนเงินให้เต็มจำนวนภายใน 3–5 วันทำการ'
+                  : 'A full refund will be returned within 3–5 business days',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 13.5, color: PgTokens.colorTextMuted),
+            ),
+          ],
+          const SizedBox(height: PgTokens.space4),
+          PgPrimaryButton(
+            label: isThai ? 'กลับหน้าหลัก' : 'Back to home',
+            onPressed: () => context.go('/home/customer'),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -299,9 +362,9 @@ class _PayPanel extends ConsumerWidget {
           busy: busy,
           onPressed: busy
               ? null
-              : () =>
-                  ref.read(paymentControllerProvider(bookingId).notifier)
-                      .createPayment(),
+              : () => ref
+                  .read(paymentControllerProvider(bookingId).notifier)
+                  .createPayment(),
         ),
       ],
     );

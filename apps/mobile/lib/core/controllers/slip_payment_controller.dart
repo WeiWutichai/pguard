@@ -4,6 +4,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../media/image_mime.dart';
 import '../media/slip_picker.dart';
 import '../models/payment.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'booking_status_controller.dart';
@@ -133,7 +134,7 @@ class SlipPaymentController extends _$SlipPaymentController {
       state = state.copyWith(phase: SlipPhase.ready, info: info, error: null);
     } on ApiException catch (e) {
       if (_disposed) return;
-      state = state.copyWith(error: e.message);
+      state = state.copyWith(error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
     } catch (_) {
       if (_disposed) return;
       state = state.copyWith(

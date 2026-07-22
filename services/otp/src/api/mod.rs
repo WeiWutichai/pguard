@@ -96,16 +96,25 @@ pub async fn request(
         .arg(format!("otp_captcha:{}", req.challenge_id))
         .query_async(&mut conn)
         .await?;
-    let captcha_ok = expected
-        .as_deref()
-        .map(|e| e.trim() == req.answer.trim())
-        .unwrap_or(false);
-    if !captcha_ok {
-        // Coded so the client localizes to the app's language (the literal is a Thai fallback).
-        return Err(AppError::BadRequestCode {
-            code: "CAPTCHA_INVALID",
-            message: "รหัสยืนยันไม่ถูกต้อง กรุณาลองอีกครั้ง".to_string(),
-        });
+    // Distinguish an EXPIRED/missing challenge (GETDEL → None) from a genuinely WRONG answer. The
+    // 180s TTL easily lapses while an elderly user is interrupted; collapsing both into
+    // CAPTCHA_INVALID told a user who solved it CORRECTLY that their arithmetic was wrong
+    // (deep-review). A distinct CAPTCHA_EXPIRED lets the app say "the question expired — here's a new
+    // one" (the client already auto-refreshes on any failure). Both codes are localized client-side.
+    match expected.as_deref() {
+        None => {
+            return Err(AppError::BadRequestCode {
+                code: "CAPTCHA_EXPIRED",
+                message: "คำถามหมดอายุ กรุณาตอบคำถามใหม่".to_string(),
+            });
+        }
+        Some(ans) if ans.trim() == req.answer.trim() => {}
+        Some(_) => {
+            return Err(AppError::BadRequestCode {
+                code: "CAPTCHA_INVALID",
+                message: "รหัสยืนยันไม่ถูกต้อง กรุณาลองอีกครั้ง".to_string(),
+            });
+        }
     }
 
     // 2. Validate phone format (normalises to 10 digits).

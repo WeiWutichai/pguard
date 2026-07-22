@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/auth_models.dart';
 import '../models/registration.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
@@ -141,7 +142,7 @@ class RoleSwitchController extends _$RoleSwitchController {
         state = state.copyWith(busy: false, pendingRole: null);
         return enrol(role);
       }
-      state = state.copyWith(busy: false, pendingRole: null, error: e.message);
+      state = state.copyWith(busy: false, pendingRole: null, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
       return RoleActionOutcome.error;
     } catch (_) {
       state = state.copyWith(
@@ -188,7 +189,7 @@ class RoleSwitchController extends _$RoleSwitchController {
         state = state.copyWith(busy: false, pendingRole: null);
         return switchTo(role);
       }
-      state = state.copyWith(busy: false, pendingRole: null, error: e.message);
+      state = state.copyWith(busy: false, pendingRole: null, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
       return RoleActionOutcome.error;
     } catch (_) {
       state = state.copyWith(

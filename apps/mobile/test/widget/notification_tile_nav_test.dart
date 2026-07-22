@@ -86,7 +86,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
 
     // Opening the centre auto-marks everything read (badge clears without per-row taps).
-    expect(puts, contains('/notifications/read-all'));
+    // read-all is now scoped to the active role (deep-review): customer mode only clears customer rows.
+    expect(puts, contains('/notifications/read-all?role=customer'));
     expect(find.byType(NotificationTile), findsOneWidget);
 
     await tester.tap(find.byType(NotificationTile));
@@ -140,7 +141,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
 
     // Opening the centre auto-marks all read (read-all). `system` type keeps the server copy.
-    expect(puts, contains('/notifications/read-all'));
+    // read-all is now scoped to the active role (deep-review): customer mode only clears customer rows.
+    expect(puts, contains('/notifications/read-all?role=customer'));
     expect(find.textContaining('หัวข้อ n2'), findsOneWidget);
 
     await tester.tap(find.textContaining('หัวข้อ n2'));
