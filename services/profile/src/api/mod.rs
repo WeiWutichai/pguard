@@ -90,46 +90,58 @@ async fn resolve_profile_writer<S: HasJwtSecret + Send + Sync>(
     state: &S,
     purpose: &str,
     role: &str,
-) -> Result<Uuid, AppError> {
-    // 1) profile_token path — only if the Bearer decodes as a profile token of THIS purpose.
-    //    A wrong-purpose token does NOT decode here, so it is NOT consumed (it stays usable
-    //    on its correct route) — it simply falls through to (2) and is rejected there.
+) -> Result<(Uuid, Option<String>), AppError> {
+    // 1) profile_token path — DECODE ONLY here (signature + purpose + expiry). The atomic single-use
+    //    GETDEL claim is DEFERRED to the handler ([`claim_profile_jti`]) so it runs AFTER body
+    //    validation. Consuming it in the extractor (before Json deser + validate_*) meant ANY 400 —
+    //    e.g. a mis-formatted emergency phone — burned the one-shot token, so every retry 401'd and
+    //    the registrant was stranded with all typed data lost (deep-review HIGH, 2026-07-22). A
+    //    wrong-purpose token does NOT decode here (purpose isolation) and falls through to (2).
     if let Some(tok) = bearer_token(&parts.headers) {
         if let Ok((user_id, jti)) = decode_profile_token(&tok, state.decoding_key(), purpose) {
-            // GETDEL is the ATOMIC single-use claim (mirrors identity register): two concurrent
-            // submissions of the same token → exactly one winner, the other gets nil → 401.
-            // The token is consumed here in the extractor, i.e. BEFORE the repo write. A
-            // transient write failure (500) therefore burns the token — the deliberate, simpler
-            // trade-off (atomicity + replay-safety over retry-after-partial-failure), consistent
-            // with identity register's consume-before-UPSERT. Recovery is re-OTP → re-register
-            // (a still-pending phone re-registers fine and yields a fresh profile_token).
-            let mut redis = state.redis_conn().clone();
-            let status: Option<String> = redis::cmd("GETDEL")
-                .arg(format!("profile_jti:{jti}"))
-                .query_async(&mut redis)
-                .await?;
-            return match status.as_deref() {
-                Some("valid") => Ok(user_id),
-                _ => Err(AppError::Unauthorized(
-                    "Profile token is invalid, expired, or already used".to_string(),
-                )),
-            };
+            return Ok((user_id, Some(jti)));
         }
     }
     // 2) logged-in user path — standard AuthUser (Bearer or cookie + CSRF + revocation),
-    //    role-gated. A non-profile Bearer / cookie / wrong-role all resolve here.
+    //    role-gated. A non-profile Bearer / cookie / wrong-role all resolve here. No token to claim.
     let user = AuthUser::from_request_parts(parts, state).await?;
     if user.role != role {
         return Err(AppError::Forbidden(format!(
             "This action requires the {role} role"
         )));
     }
-    Ok(user.user_id)
+    Ok((user.user_id, None))
+}
+
+/// ATOMIC single-use claim (GETDEL) of a decoded registration `profile_token`'s jti. Called by the
+/// upsert handlers AFTER body validation passes, so a rejected body never spends the one-shot token
+/// — the registrant fixes the field and retries with the SAME token. Two concurrent submits of one
+/// token → exactly one "valid" winner; the loser (and any already-used token) gets nil → 401. A
+/// transient Redis error surfaces as 500 WITHOUT consuming the token, so it is still retryable.
+async fn claim_profile_jti<S: HasJwtSecret + Send + Sync>(
+    state: &S,
+    jti: &str,
+) -> Result<(), AppError> {
+    let mut redis = state.redis_conn().clone();
+    let status: Option<String> = redis::cmd("GETDEL")
+        .arg(format!("profile_jti:{jti}"))
+        .query_async(&mut redis)
+        .await?;
+    match status.as_deref() {
+        Some("valid") => Ok(()),
+        _ => Err(AppError::Unauthorized(
+            "Profile token is invalid, expired, or already used".to_string(),
+        )),
+    }
 }
 
 /// Authorized writer of a GUARD profile: a `guard_profile` token OR a logged-in guard.
 pub struct GuardProfileWriter {
     pub user_id: Uuid,
+    /// `Some(jti)` when authorized by a single-use registration `profile_token` — the handler
+    /// GETDEL-claims it via [`claim_profile_jti`] AFTER validation. `None` for a logged-in
+    /// self-edit (there is no one-shot token to consume).
+    pub token_jti: Option<String>,
 }
 
 impl<S> FromRequestParts<S> for GuardProfileWriter
@@ -138,15 +150,17 @@ where
 {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let user_id =
+        let (user_id, token_jti) =
             resolve_profile_writer(parts, state, PROFILE_PURPOSE_GUARD, ROLE_GUARD).await?;
-        Ok(Self { user_id })
+        Ok(Self { user_id, token_jti })
     }
 }
 
 /// Authorized writer of a CUSTOMER profile: a `customer_profile` token OR a logged-in customer.
 pub struct CustomerProfileWriter {
     pub user_id: Uuid,
+    /// See [`GuardProfileWriter::token_jti`].
+    pub token_jti: Option<String>,
 }
 
 impl<S> FromRequestParts<S> for CustomerProfileWriter
@@ -155,9 +169,9 @@ where
 {
     type Rejection = AppError;
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let user_id =
+        let (user_id, token_jti) =
             resolve_profile_writer(parts, state, PROFILE_PURPOSE_CUSTOMER, ROLE_CUSTOMER).await?;
-        Ok(Self { user_id })
+        Ok(Self { user_id, token_jti })
     }
 }
 
@@ -292,6 +306,11 @@ pub async fn upsert_guard_profile<S: ProfileDeps>(
     Json(req): Json<UpsertGuardProfileRequest>,
 ) -> Result<Json<ApiResponse<GuardProfileSubmitResponse>>, AppError> {
     validate_guard_req(&req)?;
+    // Only NOW that the body is valid, claim the single-use registration token — so a validation
+    // 400 above never burns it and the guard can fix a field + retry with the same token.
+    if let Some(jti) = writer.token_jti.as_deref() {
+        claim_profile_jti(&state, jti).await?;
+    }
     // Writes ONLY the profile schema (approval_status defaults to 'pending'); identity owns
     // the account role/state and is never touched here. Owner read-back is masked (PDPA).
     let profile = repo::upsert_guard_profile(state.db(), writer.user_id, &req).await?;
@@ -406,6 +425,11 @@ pub async fn upsert_customer_profile<S: ProfileDeps>(
     validate::validate_email(req.email.as_deref()).map_err(AppError::BadRequest)?;
     validate::validate_thai_phone(req.contact_phone.as_deref(), "contact_phone")
         .map_err(AppError::BadRequest)?;
+    // Claim the single-use registration token only AFTER validation passes (a 400 above must not
+    // burn it, so the customer can fix a field and retry with the same token).
+    if let Some(jti) = writer.token_jti.as_deref() {
+        claim_profile_jti(&state, jti).await?;
+    }
     // Writes ONLY the customer profile schema — never identity's. The new row defaults to
     // `pending` (no event emitted): customers are now admin-approved exactly like guards (no
     // longer auto-approved on first submission). An admin finalizes them via
@@ -3304,6 +3328,58 @@ mod tests {
             res2.status(),
             StatusCode::UNAUTHORIZED,
             "profile_token is single-use"
+        );
+    }
+
+    /// A body that FAILS validation (400) must NOT consume the single-use profile_token. This is the
+    /// deep-review HIGH fix: the token was formerly GETDEL-claimed in the extractor BEFORE body
+    /// validation, so one mistyped field (e.g. an emergency phone) burned the one-shot token and
+    /// every retry 401'd — stranding the registrant with all typed data lost. Now the claim runs
+    /// AFTER validation, so the SAME token still works on a corrected retry.
+    #[tokio::test]
+    async fn guard_profile_validation_400_does_not_consume_the_token() {
+        let Some((app, mut redis)) = token_router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, jti) =
+            encode_profile_token(Uuid::new_v4(), PROFILE_PURPOSE_GUARD, &ek, 15).unwrap();
+        let _: () = redis
+            .set_ex(format!("profile_jti:{jti}"), "valid", 600)
+            .await
+            .expect("seed jti");
+
+        // years_of_experience 9999 > MAX (80) → validate_guard_req rejects with 400 BEFORE the claim.
+        let bad = Body::from(serde_json::json!({ "years_of_experience": 9999 }).to_string());
+        let res = app
+            .clone()
+            .oneshot(post_with_bearer("/profile/guard", &tok, bad))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST, "bad body → 400");
+
+        // The jti must still be present (a 400 must NOT burn it)…
+        let still: Option<String> = redis::cmd("GET")
+            .arg(format!("profile_jti:{jti}"))
+            .query_async(&mut redis)
+            .await
+            .unwrap();
+        assert_eq!(
+            still.as_deref(),
+            Some("valid"),
+            "a validation 400 must not consume the single-use token"
+        );
+        // …and a valid retry with the SAME token passes auth (reaches the repo → 500 on the closed
+        // lazy pool), i.e. NOT 401 (which would mean the token had been consumed).
+        let res2 = app
+            .oneshot(post_with_bearer("/profile/guard", &tok, guard_body()))
+            .await
+            .unwrap();
+        assert_ne!(
+            res2.status(),
+            StatusCode::UNAUTHORIZED,
+            "the same token still authorizes a corrected retry"
         );
     }
 
