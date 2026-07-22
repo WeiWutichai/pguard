@@ -684,9 +684,13 @@ pub async fn transition(
         RequiredActor::ClaimUnassigned => {
             if existing_guard.is_some() {
                 tx.rollback().await?;
-                return Err(AppError::Conflict(
-                    "Booking already has an assigned guard".to_string(),
-                ));
+                // Typed: first-come-accept means losing the race is the NORMAL contention case, so
+                // the app must localize it ("งานนี้มีเจ้าหน้าที่รับไปแล้ว") rather than show the raw
+                // English sentence to a Thai guard (deep-review).
+                return Err(AppError::ConflictCode {
+                    code: "JOB_TAKEN",
+                    message: "Booking already has an assigned guard".to_string(),
+                });
             }
             // TIME-OVERLAP guard, race-proof. The handler pre-check (accept_booking) is a fast-fail
             // but is check-then-act OUTSIDE any lock, so two CONCURRENT accepts by the SAME guard for

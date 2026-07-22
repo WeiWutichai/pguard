@@ -630,9 +630,13 @@ pub async fn reconcile_on_completion(
             .await?;
 
             // emit refund_processed (booking un-gates on payment.completed, NOT this).
+            // customer_id/guard_id carried so the notification consumer can ROUTE the "you were
+            // refunded" push to the payer (the payload formerly had no recipient — deep-review HIGH).
             let payload = serde_json::json!({
                 "payment_id": payment.id,
                 "booking_id": booking_id,
+                "customer_id": payment.customer_id,
+                "guard_id": payment.guard_id,
                 "refund_amount": refund,
                 "final_amount": final_amount,
             });
@@ -750,9 +754,12 @@ pub async fn refund_on_cancellation(
     .execute(&mut *tx)
     .await?;
 
+    // customer_id/guard_id carried so notification can route the refund push to the payer.
     let payload = serde_json::json!({
         "payment_id": payment.id,
         "booking_id": booking_id,
+        "customer_id": payment.customer_id,
+        "guard_id": payment.guard_id,
         "refund_amount": refund,
         "final_amount": Decimal::ZERO,
     });
@@ -766,6 +773,70 @@ pub async fn refund_on_cancellation(
 
     tx.commit().await?;
     tracing::info!(booking_id = %booking_id, %refund, "full-refunded pre-pay on cancellation/decline");
+    Ok(CancelRefundOutcome::Refunded { refund })
+}
+
+/// Compensating FULL refund for a pre-pay that COMMITTED against a booking which had already gone
+/// terminal (guard withdrew / customer cancelled) — the pay-vs-cancel RACE. When the cancellation
+/// event is consumed BEFORE the payment row exists, `refund_on_cancellation` finds no row, NoOps,
+/// and claims the event_id, so nothing ever refunds the late charge. The pay path re-reads the
+/// booking after committing and calls THIS when it sees the booking terminal. Flips
+/// `status 'completed' → 'refunded'` by booking_id (full refund, `refund_status='pending'`) and
+/// emits `payment.refund_processed`. Idempotent via the `status='completed'` guard: if a concurrent
+/// cancel-consumer (or a repeat) already refunded, the row is `refunded` and the lookup matches
+/// nothing → NoOp, so no second refund_processed. NOT tied to an event_id (there is none — this is
+/// triggered by the pay path's own re-read, not a cancel event).
+#[tracing::instrument(skip(db), fields(booking_id = %booking_id))]
+pub async fn refund_race_lost_prepay(
+    db: &sqlx::PgPool,
+    booking_id: Uuid,
+    correlation_id: Uuid,
+) -> Result<CancelRefundOutcome, AppError> {
+    let mut tx = db.begin().await?;
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE"
+    );
+    let Some(payment) = sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(booking_id)
+        .fetch_optional(&mut *tx)
+        .await?
+    else {
+        // Already refunded (the cancel-consumer got there first, or a concurrent compensator) → NoOp.
+        tx.rollback().await?;
+        return Ok(CancelRefundOutcome::NoOp);
+    };
+
+    let refund = payment.amount;
+    sqlx::query(
+        "UPDATE payment.payments \
+           SET status = 'refunded'::payment.payment_status, final_amount = 0, \
+               refund_amount = $2, refund_status = 'pending', updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(payment.id)
+    .bind(refund)
+    .execute(&mut *tx)
+    .await?;
+
+    let payload = serde_json::json!({
+        "payment_id": payment.id,
+        "booking_id": booking_id,
+        "customer_id": payment.customer_id,
+        "guard_id": payment.guard_id,
+        "refund_amount": refund,
+        "final_amount": Decimal::ZERO,
+    });
+    enqueue_outbox(
+        &mut tx,
+        topics::PAYMENT_REFUND_PROCESSED,
+        payload,
+        correlation_id,
+    )
+    .await?;
+
+    tx.commit().await?;
+    tracing::warn!(booking_id = %booking_id, %refund, "pay-vs-cancel race: compensating full-refund of a pre-pay that committed on a terminal booking");
     Ok(CancelRefundOutcome::Refunded { refund })
 }
 

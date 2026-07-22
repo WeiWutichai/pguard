@@ -86,9 +86,11 @@ pub async fn create_payment<S: PaymentDeps>(
         ));
     }
     if !domain::is_payable_status(&booking.status) {
-        return Err(AppError::Conflict(
-            "This booking is not awaiting payment".to_string(),
-        ));
+        // Typed so the app localizes (a raw English 409 was showing under the Thai pay screen).
+        return Err(AppError::ConflictCode {
+            code: "BOOKING_NOT_PAYABLE",
+            message: "This booking is not awaiting payment".to_string(),
+        });
     }
 
     // (2) SERVER-computed estimate from the booking's own pricing (never the client body).
@@ -114,6 +116,19 @@ pub async fn create_payment<S: PaymentDeps>(
 
     let payment = match outcome {
         PrePayOutcome::Created(p) => {
+            // Pay-vs-cancel race guard: this fresh charge just committed. If the booking has since
+            // gone terminal (guard withdrew / customer cancelled on another device), the cancellation
+            // event may have been consumed BEFORE this row existed, so nothing would ever refund it
+            // (silent money limbo — deep-review HIGH). Re-read and compensate with an immediate full
+            // refund, then tell the customer their money is being returned (typed → app localizes).
+            let latest = state.booking_reader().get_booking(req.booking_id).await?;
+            if domain::is_negative_terminal(&latest.status) {
+                repo::refund_race_lost_prepay(state.db(), req.booking_id, Uuid::new_v4()).await?;
+                return Err(AppError::ConflictCode {
+                    code: "BOOKING_CANCELLED",
+                    message: "การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน".to_string(),
+                });
+            }
             tracing::info!(payment_id = %p.id, amount = %estimate, "pre-pay charged (estimate)");
             p
         }
@@ -178,9 +193,11 @@ pub async fn pay_with_slip<S: PaymentDeps>(
         ));
     }
     if !domain::is_payable_status(&booking.status) {
-        return Err(AppError::Conflict(
-            "This booking is not awaiting payment".to_string(),
-        ));
+        // Typed so the app localizes (a raw English 409 was showing under the Thai slip screen).
+        return Err(AppError::ConflictCode {
+            code: "BOOKING_NOT_PAYABLE",
+            message: "This booking is not awaiting payment".to_string(),
+        });
     }
 
     // (2) SERVER-computed estimate (never the client). The slip must cover at least this.
@@ -279,6 +296,19 @@ pub async fn pay_with_slip<S: PaymentDeps>(
 
     let payment = match outcome {
         SlipPayOutcome::Created(p) => {
+            // Pay-vs-cancel race guard (the slip path's window is seconds — Slip2Go verify + S3 —
+            // so the booking can go terminal between the payable-check and this commit). Re-read; if
+            // the booking is now declined/cancelled, compensate with an immediate full refund and
+            // tell the customer their money is coming back, instead of leaving a live charge on a
+            // dead booking that no cancellation event will ever refund (deep-review HIGH).
+            let latest = state.booking_reader().get_booking(id).await?;
+            if domain::is_negative_terminal(&latest.status) {
+                repo::refund_race_lost_prepay(state.db(), id, Uuid::new_v4()).await?;
+                return Err(AppError::ConflictCode {
+                    code: "BOOKING_CANCELLED",
+                    message: "การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน".to_string(),
+                });
+            }
             tracing::info!(payment_id = %p.id, amount = %estimate, trans_ref = %verified.trans_ref, "slip verified → paid");
             p
         }

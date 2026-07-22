@@ -142,8 +142,11 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             uuid_field(payload, "customer_id")?,
             Some("customer"),
             NotificationType::System,
-            "เจ้าหน้าที่ปฏิเสธงาน",
-            "กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ",
+            "เจ้าหน้าที่ยกเลิกงาน",
+            // `declined` is TERMINAL — the booking never re-enters discovery, so the old
+            // "กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ" was a lie (deep-review). State the truth: the job ended,
+            // a paid booking is refunded in full (see the refund_processed push), please book again.
+            "งานถูกยกเลิกโดยเจ้าหน้าที่ หากชำระเงินแล้วระบบจะคืนเงินให้เต็มจำนวน กรุณาจองใหม่อีกครั้ง",
         )),
         topics::BOOKING_GUARD_EN_ROUTE => Some(make(
             uuid_field(payload, "customer_id")?,
@@ -197,6 +200,25 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
         // NOT a single-recipient `plan_for_event` mapping — the consumer routes it to
         // `payment_completed_plans` (per-recipient idempotent claims, like the fan-out path).
         topics::PAYMENT_COMPLETED => None,
+        // A refund was queued — the full refund on a guard-withdraw/cancel, or the overpay refund on
+        // completion. Tell the customer their money is on the way (formerly dropped as `_ => None`,
+        // and the payload carried no customer_id to route to — both fixed, deep-review HIGH).
+        topics::PAYMENT_REFUND_PROCESSED => {
+            let amount = payload
+                .get("refund_amount")
+                .map(|v| v.to_string())
+                .map(|s| s.trim_matches('"').to_string())
+                .filter(|s| !s.is_empty() && s != "null")
+                .map(|s| format!(" ฿{s}"))
+                .unwrap_or_default();
+            Some(make(
+                uuid_field(payload, "customer_id")?,
+                Some("customer"),
+                NotificationType::System,
+                "กำลังคืนเงิน",
+                &format!("ระบบกำลังดำเนินการคืนเงิน{amount} ให้คุณ จะเข้าบัญชีภายใน 3–5 วันทำการ"),
+            ))
+        }
         topics::RATING_SUBMITTED => Some(make(
             uuid_field(payload, "guard_id")?,
             Some("guard"),
@@ -295,6 +317,48 @@ mod tests {
         assert_eq!(plan.notification_type, NotificationType::GuardAssigned);
         assert_eq!(plan.data["target_role"], "customer");
         assert_eq!(plan.data["booking_id"], json!(payload["booking_id"]));
+    }
+
+    #[test]
+    fn refund_processed_notifies_the_customer_with_the_amount() {
+        let customer = Uuid::new_v4();
+        let payload = json!({
+            "payment_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+            "customer_id": customer,
+            "guard_id": Uuid::new_v4(),
+            "refund_amount": "500.00",
+            "final_amount": "0",
+        });
+        let plan = plan_for_event(topics::PAYMENT_REFUND_PROCESSED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, customer);
+        assert_eq!(plan.data["target_role"], "customer");
+        assert_eq!(plan.title, "กำลังคืนเงิน");
+        assert!(
+            plan.body.contains("฿500.00"),
+            "body should carry the refund amount, got: {}",
+            plan.body
+        );
+    }
+
+    #[test]
+    fn refund_processed_without_customer_id_is_dropped() {
+        // Defensive: a legacy payload with no customer_id has no recipient → None (never panics).
+        let payload = json!({ "booking_id": Uuid::new_v4(), "refund_amount": "100" });
+        assert!(plan_for_event(topics::PAYMENT_REFUND_PROCESSED, &payload).is_none());
+    }
+
+    #[test]
+    fn declined_tells_the_truth_not_a_new_guard_search() {
+        let customer = Uuid::new_v4();
+        let payload = json!({ "customer_id": customer, "booking_id": Uuid::new_v4() });
+        let plan = plan_for_event(topics::BOOKING_DECLINED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, customer);
+        assert!(
+            !plan.body.contains("ค้นหาเจ้าหน้าที่ใหม่"),
+            "declined is terminal — must not promise a replacement guard"
+        );
+        assert!(plan.body.contains("คืนเงิน"), "should mention the refund");
     }
 
     #[test]
