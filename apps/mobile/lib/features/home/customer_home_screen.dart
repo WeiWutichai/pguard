@@ -172,7 +172,7 @@ class _CustomerHomeScreenState extends ConsumerState<CustomerHomeScreen>
                 const SizedBox(height: PgTokens.space6),
                 _SectionHeading(isThai ? 'งานที่กำลังดำเนิน' : 'Ongoing job'),
                 const SizedBox(height: PgTokens.space3),
-                _OngoingJobCard(booking: ongoing),
+                _OngoingJobCard(booking: ongoing, isThai: isThai),
               ],
               if (latest != null) ...[
                 const SizedBox(height: PgTokens.space6),
@@ -473,9 +473,10 @@ class _ServiceTile extends StatelessWidget {
 
 /// The "งานที่กำลังดำเนิน" card: deep-green surface, white text, right chevron → live status.
 class _OngoingJobCard extends StatelessWidget {
-  const _OngoingJobCard({required this.booking});
+  const _OngoingJobCard({required this.booking, required this.isThai});
 
   final Booking booking;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -507,7 +508,8 @@ class _OngoingJobCard extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      booking.address ?? 'งานรักษาความปลอดภัย',
+                      booking.address ??
+                          (isThai ? 'งานรักษาความปลอดภัย' : 'Security job'),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(
@@ -518,7 +520,9 @@ class _OngoingJobCard extends StatelessWidget {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      BookingLifecycle.labelTh(booking.status),
+                      isThai
+                          ? BookingLifecycle.labelTh(booking.status)
+                          : BookingLifecycle.labelEn(booking.status),
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.85),
                         fontSize: 12,

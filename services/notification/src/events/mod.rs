@@ -218,7 +218,7 @@ async fn fan_out_dispatch(
         online
     };
 
-    let pushed = dispatch_to_guards(
+    let (pushed, claim_failed) = dispatch_to_guards(
         online,
         booking_id,
         // Per-guard atomic claim + log (DB). `false` → already dispatched to this guard for this
@@ -251,6 +251,13 @@ async fn fan_out_dispatch(
     )
     .await;
     tracing::info!(booking = %booking_id, dispatched = pushed, "new-job dispatch fan-out complete");
+    if claim_failed {
+        // NACK so JetStream redelivers and the unclaimed guards get filled in; the per-(event,guard)
+        // ledger dedupes the guards already dispatched, so redelivery only covers the gaps.
+        return Err(AppError::Internal(
+            "new-job fan-out: a guard claim failed — redeliver".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -276,6 +283,7 @@ async fn payment_completed_dispatch(
         return Ok(());
     }
 
+    let mut claim_failed = false;
     for plan in plans {
         let recipient = plan.recipient_id;
         // Per-(event, recipient) claim → idempotent across redeliveries.
@@ -290,7 +298,12 @@ async fn payment_completed_dispatch(
         {
             Ok(won) => won,
             Err(e) => {
+                // A transient claim error must NOT be swallowed with an ack — the recipient (e.g. the
+                // guard whose payment push un-gates "Go en route") would lose the notification
+                // permanently. Mark the batch failed so it NACKs + redelivers; the per-(event,
+                // recipient) ledger keeps already-claimed recipients idempotent (deep-review).
                 tracing::warn!(recipient = %recipient, booking = %booking_id, "payment.completed claim failed: {e}");
+                claim_failed = true;
                 continue;
             }
         };
@@ -313,6 +326,12 @@ async fn payment_completed_dispatch(
             tracing::warn!(recipient = %recipient, booking = %booking_id, "payment.completed push failed: {e}");
         }
     }
+    if claim_failed {
+        // NACK → JetStream redelivers; the ledger dedupes the recipients that already succeeded.
+        return Err(AppError::Internal(
+            "payment.completed dispatch: a recipient claim failed — redeliver".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -326,7 +345,7 @@ async fn dispatch_to_guards<C, CF, P, PF>(
     booking_id: Uuid,
     claim: C,
     push: P,
-) -> usize
+) -> (usize, bool)
 where
     C: Fn(Uuid, domain::NotificationPlan) -> CF,
     CF: std::future::Future<Output = Result<bool, AppError>>,
@@ -334,14 +353,18 @@ where
     PF: std::future::Future<Output = Result<(), AppError>>,
 {
     let mut pushed = 0usize;
+    let mut claim_failed = false;
     for guard_id in online {
         let plan = domain::dispatch_plan_for_guard(guard_id, booking_id);
         let won = match claim(guard_id, plan.clone()).await {
             Ok(won) => won,
             Err(e) => {
-                // A DB error claiming ONE guard must not abort the fan-out; log + continue. The
-                // unclaimed guards stay unrecorded, so a redelivery can fill them in later.
+                // A DB error claiming ONE guard must not abort the fan-out (the other guards still
+                // get their push); log, continue, but REMEMBER the failure so the caller NACKs and a
+                // redelivery actually fills the unclaimed guards — the ledger dedupes the rest
+                // (deep-review: the old "redelivery fills in later" never happened, the batch acked).
                 tracing::warn!(guard = %guard_id, booking = %booking_id, "dispatch claim failed: {e}");
+                claim_failed = true;
                 continue;
             }
         };
@@ -354,7 +377,7 @@ where
         }
         pushed += 1;
     }
-    pushed
+    (pushed, claim_failed)
 }
 
 /// Parse a UUID string field out of an event payload (consumer-side helper, mirrors the pure
@@ -482,6 +505,7 @@ mod tests {
             },
         )
         .await
+        .0
     }
 
     #[tokio::test]

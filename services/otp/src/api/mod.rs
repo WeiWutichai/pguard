@@ -120,13 +120,15 @@ pub async fn request(
     // 2. Validate phone format (normalises to 10 digits).
     let phone = domain::validate_thai_phone(&req.phone)?;
 
-    // 3. Active-lock check (tiered). TTL discriminates burst vs admin tier.
+    // 3. Active-lock check (tiered). The VALUE names the tier ('admin'/'burst'); TTL is only the
+    //    remaining time (no longer used to infer the tier — see existing_lock_decision).
     let lock_key = format!("otp_lock:{phone}");
+    let lock_val: Option<String> = conn.get(&lock_key).await?;
     let lock_ttl: i64 = redis::cmd("TTL")
         .arg(&lock_key)
         .query_async(&mut conn)
         .await?;
-    match domain::existing_lock_decision(lock_ttl) {
+    match domain::existing_lock_decision(lock_val.as_deref(), lock_ttl) {
         ActiveLock::None => {}
         ActiveLock::AdminContact => {
             return Err(AppError::BadRequestCode {
@@ -199,14 +201,16 @@ pub async fn request(
     ) {
         LockoutDecision::Allow => {}
         LockoutDecision::TripAdminLock { lock_secs } => {
-            conn.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await?;
+            conn.set_ex::<_, _, ()>(&lock_key, "admin", lock_secs)
+                .await?;
             return Err(AppError::BadRequestCode {
                 code: "OTP_ADMIN_LOCK",
                 message: "ขอ OTP เกินจำนวนที่กำหนด กรุณาติดต่อเจ้าหน้าที่".to_string(),
             });
         }
         LockoutDecision::TripBurstLock { lock_secs } => {
-            conn.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await?;
+            conn.set_ex::<_, _, ()>(&lock_key, "burst", lock_secs)
+                .await?;
             return Err(AppError::BadRequestCode {
                 code: "OTP_BURST_LOCK",
                 message: "ขอ OTP บ่อยเกินไป กรุณาลองใหม่ในอีก 10 นาที".to_string(),

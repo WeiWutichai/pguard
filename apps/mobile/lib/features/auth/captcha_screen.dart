@@ -95,8 +95,8 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
               AuthHead(
                 title: isThai ? 'ยืนยันว่าไม่ใช่บอท' : 'Quick check',
                 subtitle: isThai
-                    ? 'ตอบคำถามเพื่อส่งรหัส OTP ไปที่ +66 ${state.phone}'
-                    : 'Solve to send the OTP to +66 ${state.phone}',
+                    ? 'ตอบคำถามเพื่อส่งรหัส OTP ไปที่ +66 ${AuthController.significantPhone(state.phone)}'
+                    : 'Solve to send the OTP to +66 ${AuthController.significantPhone(state.phone)}',
               ),
               const SizedBox(height: PgTokens.space6),
               // Design question card: white surface, 1.5px strong border, radius 16 (→ radiusXl).

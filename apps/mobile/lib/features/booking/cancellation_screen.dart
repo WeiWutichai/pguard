@@ -89,7 +89,12 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
   Future<void> _confirmAndCancel(int? totalSatang) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    final yes = await _showConfirmSheet(totalSatang, isThai);
+    final isPaid = ref
+            .read(bookingStatusControllerProvider(widget.bookingId))
+            .valueOrNull
+            ?.isPaid ??
+        false;
+    final yes = await _showConfirmSheet(totalSatang, isThai, isPaid);
     if (yes != true || !mounted) return;
 
     setState(() => _busy = true);
@@ -117,9 +122,14 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
   /// STATE 2 confirm sheet: grab handle, 60px danger-tinted warning circle, 19/600
   /// title, 13.5 muted body, stacked danger + sunken CTAs.
-  Future<bool?> _showConfirmSheet(int? totalSatang, bool isThai) {
+  Future<bool?> _showConfirmSheet(int? totalSatang, bool isThai, bool isPaid) {
     final String body;
-    if (totalSatang != null) {
+    if (!isPaid) {
+      // Nothing was charged → don't promise a refund.
+      body = isThai
+          ? 'ยังไม่มีการเรียกเก็บเงิน — ยกเลิกได้ฟรี และจะแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
+          : "You haven't been charged — cancelling is free. We'll notify the guard. This can't be undone.";
+    } else if (totalSatang != null) {
       body = isThai
           ? 'ระบบจะคืนเงิน ${Money.format(totalSatang)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
           : "We'll refund ${Money.format(totalSatang)} and notify the guard. This can't be undone.";
@@ -231,11 +241,13 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
         .valueOrNull;
     final address = widget.args?.address ?? booking?.address;
     final totalSatang = _totalSatang(booking);
+    final isPaid = booking?.isPaid ?? false;
     final reasons = _reasonsFor(isThai);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'ยกเลิกการจอง' : 'Cancellation',
         subtitle: address != null ? '$_shortId · $address' : _shortId,
         showBack: true,
@@ -267,8 +279,10 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
-                    child:
-                        _RefundNote(totalSatang: totalSatang, isThai: isThai),
+                    child: _RefundNote(
+                        totalSatang: totalSatang,
+                        isPaid: isPaid,
+                        isThai: isThai),
                   ),
                 ],
               ),
@@ -292,17 +306,25 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
 /// Design `.refund-note`: clock icon + 13px info-blue copy on the `--info-bg` wash.
 class _RefundNote extends StatelessWidget {
-  const _RefundNote({this.totalSatang, required this.isThai});
+  const _RefundNote(
+      {this.totalSatang, required this.isPaid, required this.isThai});
 
   final int? totalSatang;
+  final bool isPaid;
   final bool isThai;
 
   @override
   Widget build(BuildContext context) {
     final amount = totalSatang != null ? ' ${Money.format(totalSatang!)}' : '';
-    final copy = isThai
-        ? 'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ'
-        : 'Cancelled before start — full$amount refund in 3–5 business days';
+    // Only promise a refund when money was actually taken — an unpaid cancel (requested / accepted-
+    // before-pay) charges nothing, so "we'll refund ฿X in 3–5 days" was a lie (deep-review).
+    final copy = !isPaid
+        ? (isThai
+            ? 'ยังไม่มีการเรียกเก็บเงิน — ยกเลิกได้ฟรี'
+            : "You haven't been charged — cancelling is free")
+        : (isThai
+            ? 'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ'
+            : 'Cancelled before start — full$amount refund in 3–5 business days');
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
       decoration: BoxDecoration(

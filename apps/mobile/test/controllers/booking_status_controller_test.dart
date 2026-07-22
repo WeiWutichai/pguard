@@ -129,13 +129,14 @@ void main() {
   });
 
   test('markPaid marks the booking paid optimistically', () async {
-    final api = FakeApi(onGet: (_, __) async => {
-          'id': 'b1',
-          'customer_id': 'c1',
-          'status': 'accepted',
-          'guard_id': 'g1',
-          // No paid_at — the booking service sets it ASYNC after the charge.
-        });
+    final api = FakeApi(
+        onGet: (_, __) async => {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'accepted',
+              'guard_id': 'g1',
+              // No paid_at — the booking service sets it ASYNC after the charge.
+            });
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -158,12 +159,13 @@ void main() {
       'paid is MONOTONIC — a stale unpaid snapshot after a re-fetch does NOT '
       'un-pay an already-paid booking (no pay-loop)', () async {
     // The snapshot the server returns STAYS unpaid (simulates `paid_at` lagging the charge).
-    final api = FakeApi(onGet: (_, __) async => {
-          'id': 'b1',
-          'customer_id': 'c1',
-          'status': 'accepted',
-          'guard_id': 'g1',
-        });
+    final api = FakeApi(
+        onGet: (_, __) async => {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'accepted',
+              'guard_id': 'g1',
+            });
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -181,8 +183,7 @@ void main() {
 
     // Re-pull a FRESH snapshot (e.g. live-status resume) — it still lacks paid_at.
     c.invalidate(bookingStatusControllerProvider('b1'));
-    final reloaded =
-        await c.read(bookingStatusControllerProvider('b1').future);
+    final reloaded = await c.read(bookingStatusControllerProvider('b1').future);
     expect(reloaded.isPaid, isTrue,
         reason: 'a stale unpaid snapshot must NOT downgrade paid → unpaid');
   });
@@ -190,13 +191,14 @@ void main() {
   test(
       'a fresh snapshot that DOES carry paid_at stays paid (real server '
       'paid_at also honoured)', () async {
-    final api = FakeApi(onGet: (_, __) async => {
-          'id': 'b1',
-          'customer_id': 'c1',
-          'status': 'en_route',
-          'guard_id': 'g1',
-          'paid_at': '2026-06-05T10:05:00Z',
-        });
+    final api = FakeApi(
+        onGet: (_, __) async => {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'en_route',
+              'guard_id': 'g1',
+              'paid_at': '2026-06-05T10:05:00Z',
+            });
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
@@ -238,7 +240,9 @@ void main() {
 
     final error =
         await c.read(bookingStatusControllerProvider('b1').notifier).cancel();
-    expect(error, 'ยกเลิกไม่ได้หลังเจ้าหน้าที่ถึงแล้ว');
+    // A raced 409 is localized to a generic "state changed" message (Thai default) rather than the
+    // raw server contract sentence (deep-review); state is unchanged.
+    expect(error, 'สถานะงานเปลี่ยนไปแล้ว โหลดข้อมูลล่าสุดแล้วลองใหม่');
     expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
         BookingStatus.arrived,
         reason: 'state unchanged on failure');
@@ -294,9 +298,8 @@ void main() {
     // Initial pull: one report so far.
     final first = await c.read(progressReportsControllerProvider('b1').future);
     expect(first.reportedCount, 1);
-    final pullsBefore = api.calls
-        .where((x) => x == 'GET /bookings/b1/progress-reports')
-        .length;
+    final pullsBefore =
+        api.calls.where((x) => x == 'GET /bookings/b1/progress-reports').length;
 
     // The guard checks in hour 2 — the server now returns 2 reports.
     reportRows = [
@@ -329,9 +332,8 @@ void main() {
         await c.read(progressReportsControllerProvider('b1').future);
     expect(reloaded.reportedCount, 2,
         reason: 'the new check-in appears live, no manual refresh');
-    final pullsAfter = api.calls
-        .where((x) => x == 'GET /bookings/b1/progress-reports')
-        .length;
+    final pullsAfter =
+        api.calls.where((x) => x == 'GET /bookings/b1/progress-reports').length;
     expect(pullsAfter, greaterThan(pullsBefore),
         reason: 'the nudge forced a fresh progress-reports fetch');
   });

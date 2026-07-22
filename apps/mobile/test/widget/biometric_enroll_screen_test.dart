@@ -47,15 +47,15 @@ Future<({InMemoryStore store, FakeBiometricAuthenticator auth})> pumpScreen(
 void main() {
   testWidgets('renders the enrol prompt with Enable + Skip', (tester) async {
     await pumpScreen(tester);
-    expect(find.text('เปิดใช้ Face ID?'), findsOneWidget);
-    expect(find.text('เปิดใช้ Face ID'), findsOneWidget); // enable CTA
+    expect(find.text('เปิดใช้ไบโอเมตริก?'), findsOneWidget);
+    expect(find.text('เปิดใช้ไบโอเมตริก'), findsOneWidget); // enable CTA
     expect(find.text('ข้ามไปก่อน'), findsOneWidget); // skip
   });
 
   testWidgets('Enable persists the opt-in and continues to role-select',
       (tester) async {
     final h = await pumpScreen(tester, authResult: true);
-    await tester.tap(find.text('เปิดใช้ Face ID'));
+    await tester.tap(find.text('เปิดใช้ไบโอเมตริก'));
     await tester.pumpAndSettle();
 
     expect(h.auth.authCalls, 1);
@@ -66,12 +66,12 @@ void main() {
   testWidgets('a cancelled prompt does NOT opt in and keeps the user on screen',
       (tester) async {
     final h = await pumpScreen(tester, authResult: false);
-    await tester.tap(find.text('เปิดใช้ Face ID'));
+    await tester.tap(find.text('เปิดใช้ไบโอเมตริก'));
     await tester.pumpAndSettle();
 
     expect(h.store.biometricEnabled, isFalse);
     expect(find.text('ROLE STUB'), findsNothing);
-    expect(find.text('เปิดใช้ Face ID?'), findsOneWidget); // still here
+    expect(find.text('เปิดใช้ไบโอเมตริก?'), findsOneWidget); // still here
   });
 
   testWidgets('Skip continues without opting in', (tester) async {
@@ -89,6 +89,6 @@ void main() {
     await pumpScreen(tester, available: false);
     // initState's availability check skips the dead screen.
     expect(find.text('ROLE STUB'), findsOneWidget);
-    expect(find.text('เปิดใช้ Face ID?'), findsNothing);
+    expect(find.text('เปิดใช้ไบโอเมตริก?'), findsNothing);
   });
 }

@@ -77,14 +77,14 @@ class _BiometricEnrollScreenState extends ConsumerState<BiometricEnrollScreen> {
               const SizedBox(height: 60),
               AuthHead(
                 icon: const AuthHeadIconTile(icon: Icons.fingerprint),
-                title: isThai ? 'เปิดใช้ Face ID?' : 'Enable Face ID?',
+                title: isThai ? 'เปิดใช้ไบโอเมตริก?' : 'Enable biometric unlock?',
                 subtitle: isThai
                     ? 'เข้าแอปได้เร็วและปลอดภัยขึ้น\nโดยไม่ต้องพิมพ์ PIN ทุกครั้ง'
                     : 'Sign in faster and more securely\nwithout typing your PIN every time',
               ),
               const Spacer(),
               PgPrimaryButton(
-                label: isThai ? 'เปิดใช้ Face ID' : 'Enable Face ID',
+                label: isThai ? 'เปิดใช้ไบโอเมตริก' : 'Enable biometrics',
                 busy: _busy,
                 onPressed: _busy ? null : _enable,
               ),

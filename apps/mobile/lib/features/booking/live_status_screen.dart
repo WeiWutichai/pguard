@@ -1151,7 +1151,7 @@ Future<void> showBookingDetailsSheet(
   final s = booking.scheduledAt?.toLocal();
   if (s != null) {
     schedule =
-        '${s.day}/${two(s.month)}/${s.year}  ${two(s.hour)}:${two(s.minute)} น.';
+        '${s.day}/${two(s.month)}/${s.year}  ${two(s.hour)}:${two(s.minute)}${isThai ? ' น.' : ''}';
   }
   final hours = booking.hours;
   final guards = booking.guardCount;

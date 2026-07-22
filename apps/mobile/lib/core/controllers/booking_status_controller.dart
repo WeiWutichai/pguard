@@ -114,12 +114,24 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return localizeApiError(
-          ref.read(localeControllerProvider) == AppLocale.th, e);
+      return _localizeBookingConflict(e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
     }
+  }
+
+  /// A 409 here is a raced state transition (the guard flipped to arrived just as the customer
+  /// cancelled, or an approve/reject race) — the server's message is an English contract sentence,
+  /// so localize it for Thai users; every other case defers to the shared helper (deep-review).
+  String _localizeBookingConflict(ApiException e) {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    if (e.statusCode == 409) {
+      return isThai
+          ? 'สถานะงานเปลี่ยนไปแล้ว โหลดข้อมูลล่าสุดแล้วลองใหม่'
+          : localizeApiError(false, e);
+    }
+    return localizeApiError(isThai, e);
   }
 
   /// `PUT /v1/bookings/{id}/review-completion { action }` — the customer (request owner)
@@ -141,8 +153,7 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return localizeApiError(
-          ref.read(localeControllerProvider) == AppLocale.th, e);
+      return _localizeBookingConflict(e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
