@@ -206,8 +206,10 @@ void main() {
 
     expect(await ctrl.sendOtp('2'), isFalse);
     final st = c.read(authControllerProvider);
-    expect(st.error, 'Rate limit exceeded',
-        reason: 'the failure reason stays visible');
+    // A 429 is now LOCALIZED (Thai default) — not the raw English 'Rate limit exceeded' the gateway
+    // sends as a bare string (deep-review captcha/language fix).
+    expect(st.error, 'ส่งคำขอถี่เกินไป กรุณารอสักครู่แล้วลองใหม่',
+        reason: 'the failure reason stays visible, localized');
     expect(st.challenge?.challengeId, 'ch2',
         reason:
             'the burned ch1 is replaced by a fresh, usable challenge for the retry');

@@ -44,8 +44,33 @@ class BookingStatusController extends _$BookingStatusController {
     // charge) must never DOWNGRADE a paid booking back to unpaid (that flicker is the reported
     // pay-loop). [_mergePaid] keeps whichever side is paid.
     booking = _mergePaid(booking, state.valueOrNull);
+
+    // Recover status changes MISSED during a WS gap. The hub only forwards LIVE events and sends no
+    // snapshot on subscribe, so a transition that happened while the socket was down (a customer
+    // reject → arrived, a cancel) reaches nobody. On each RECONNECT edge, re-pull the REST snapshot
+    // (deep-review HIGH: the guard was otherwise stuck on 'รอลูกค้าตรวจสอบ' / drove to a cancelled
+    // site). Baseline `true` so the initial connect below — whose snapshot we JUST fetched — is not
+    // treated as a reconnect. Best-effort + monotonic-paid.
+    var wasConnected = true;
+    final StreamSubscription<bool> connSub =
+        feed.connectionChanges.listen((connected) async {
+      final reconnected = connected && !wasConnected;
+      wasConnected = connected;
+      if (!reconnected) return;
+      try {
+        final fresh = await api.get('/bookings/$bookingId');
+        final merged = _mergePaid(
+            Booking.fromJson(fresh as Map<String, dynamic>), state.valueOrNull);
+        booking = merged;
+        state = AsyncData(merged);
+      } catch (_) {
+        // Leave the last-known state; a live frame or a manual action will correct it.
+      }
+    });
+
     ref.onDispose(() {
       sub.cancel();
+      connSub.cancel();
       feed.close();
     });
     await feed.connect();
@@ -89,7 +114,8 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
+      return localizeApiError(
+          ref.read(localeControllerProvider) == AppLocale.th, e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
@@ -115,7 +141,8 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
+      return localizeApiError(
+          ref.read(localeControllerProvider) == AppLocale.th, e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';

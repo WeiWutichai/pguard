@@ -25,6 +25,11 @@ void main() {
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      // The controller now reads the active role off sessionProvider (to scope /notifications by
+      // role); sessionProvider.build loads SharedPreferences, so override the prefs store with a
+      // fake or the pure unit test crashes on an uninitialized binding. No session is seeded → role
+      // is null → the calls stay unscoped (exactly what these path assertions expect).
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ]);
     addTearDown(c.dispose);
     return c;
@@ -61,7 +66,8 @@ void main() {
     expect(api.calls, contains('PUT /notifications/n1/read'));
   });
 
-  test('markRead refreshes the bell badge (unread count) after the server write',
+  test(
+      'markRead refreshes the bell badge (unread count) after the server write',
       () async {
     var counts = 0;
     final api = FakeApi(
@@ -98,7 +104,8 @@ void main() {
     await c.read(notificationControllerProvider.notifier).markRead('n1');
 
     // The optimistic change was reverted — n1 is unread again.
-    expect(c.read(notificationControllerProvider).value!.single.isRead, isFalse);
+    expect(
+        c.read(notificationControllerProvider).value!.single.isRead, isFalse);
   });
 
   test('markAllRead marks everything (optimistic) and PUTs read-all', () async {
@@ -128,7 +135,8 @@ void main() {
     await c.read(notificationControllerProvider.future);
     await c.read(notificationControllerProvider.notifier).markAllRead();
 
-    expect(c.read(notificationControllerProvider).value!.every((n) => !n.isRead),
+    expect(
+        c.read(notificationControllerProvider).value!.every((n) => !n.isRead),
         isTrue);
   });
 

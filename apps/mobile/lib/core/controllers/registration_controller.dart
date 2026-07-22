@@ -314,9 +314,8 @@ class RegistrationController extends _$RegistrationController {
       // The OTP token is now consumed — drop it so a back-out can't re-present a spent token.
       _phoneVerifiedToken = null;
       await store.clearPhoneVerifiedToken();
-      // The account now holds BOTH roles — mark it so the pending screen hides the "add the other
-      // role" button (there is no third role; re-offering it only burns an OTP for a 409).
-      await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
+      // (kRegBothRolesKey is set only AFTER the second profile is actually submitted — see
+      // _submitProfile — so abandoning this form doesn't permanently hide the add-role button.)
       // Session is already `pendingApproval` — leave it. The profile submit below persists the
       // (new-role) pending summary and lands back on the pending screen.
       state = state.copyWith(busy: false);
@@ -628,6 +627,12 @@ class RegistrationController extends _$RegistrationController {
         final prefs = ref.read(prefsStoreProvider);
         await prefs.setString(kRegPendingRoleKey, summary.role.wire);
         await prefs.setString(kRegSummaryKey, jsonEncode(summary.toJson()));
+      } else {
+        // The second role's pending profile now EXISTS server-side → mark the account both-roles so
+        // the pending screen hides "add the other role". Set it HERE, not at the add-role 202 (which
+        // only mints a token): abandoning/expiring the form before this would otherwise hide the
+        // button forever with no second role ever created (deep-review).
+        await ref.read(prefsStoreProvider).setString(kRegBothRolesKey, '1');
       }
       _profileToken = null; // consumed single-use
       _isAddRole = false; // the add-role write is done

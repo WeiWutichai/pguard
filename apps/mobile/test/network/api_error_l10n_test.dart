@@ -50,5 +50,28 @@ void main() {
       expect(
           localizeApiError(true, e), 'Booking already has an assigned guard');
     });
+
+    test('gateway 429 (bare string, no code) → localized rate-limit message',
+        () {
+      const e = ApiException(message: 'Rate limit exceeded', statusCode: 429);
+      expect(localizeApiError(true, e),
+          'ส่งคำขอถี่เกินไป กรุณารอสักครู่แล้วลองใหม่');
+    });
+
+    test('the new typed backend codes are localized (TH)', () {
+      String th(String code) => localizeApiError(
+          true, ApiException(message: 'x', code: code, statusCode: 409));
+      expect(th('JOB_TAKEN'), 'งานนี้มีเจ้าหน้าที่รับไปแล้ว');
+      expect(th('BOOKING_NOT_PAYABLE'),
+          'สถานะการจองเปลี่ยนไปแล้ว ไม่ต้องชำระเงิน');
+      expect(th('BOOKING_CANCELLED'),
+          'การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน');
+      expect(
+          localizeApiError(
+              true,
+              const ApiException(
+                  message: 'x', code: 'CAPTCHA_EXPIRED', statusCode: 400)),
+          'คำถามหมดอายุ ระบบออกคำถามใหม่ให้แล้ว');
+    });
   });
 }

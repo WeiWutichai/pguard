@@ -211,6 +211,11 @@ class AuthController extends _$AuthController {
       await ref.read(appStoreProvider).clearRegistrationTokens();
       state = state.copyWith(
         step: AuthStep.otp,
+        // Drop the just-BURNED challenge (the server GETDEL-consumed it). If the user pops BACK from
+        // the OTP screen to the still-mounted captcha screen, a lingering challenge would render as
+        // answerable and a correct answer would be rejected — the captcha screen refetches on
+        // pop-return, and this null keeps the stale question from flashing meanwhile (deep-review).
+        challenge: null,
         otpSentAt: DateTime.now().toUtc(),
         otpRequestCount: state.otpRequestCount + 1,
       );

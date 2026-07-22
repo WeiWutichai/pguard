@@ -9,8 +9,16 @@ abstract class BiometricAuthenticator {
   /// The device has biometric hardware AND the OS can use it (or a device credential is set).
   Future<bool> isDeviceSupported();
 
-  /// At least one biometric (fingerprint/face) is currently enrolled and usable.
+  /// Hardware present + usable. NOTE: on Android this is true even when NOTHING is enrolled
+  /// (`canCheckBiometrics` → `hasBiometricHardware`), so it must NOT be used alone to decide whether
+  /// to offer biometrics — pair it with [hasEnrolledBiometrics].
   Future<bool> canCheckBiometrics();
+
+  /// At least one biometric (fingerprint/face) is actually ENROLLED (via `getAvailableBiometrics`).
+  /// This is the check that distinguishes "has a sensor" from "has a usable fingerprint/face" on
+  /// Android — the missing distinction that put a dead "Enable Face ID" button in front of users
+  /// with an unenrolled sensor (deep-review).
+  Future<bool> hasEnrolledBiometrics();
 
   /// Show the OS biometric prompt. Returns `true` on success, `false` on user cancel / failure.
   /// Implementations must NOT throw — platform errors are swallowed to `false`.
@@ -38,6 +46,15 @@ class LocalAuthAuthenticator implements BiometricAuthenticator {
   Future<bool> canCheckBiometrics() async {
     try {
       return await _auth.canCheckBiometrics;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Future<bool> hasEnrolledBiometrics() async {
+    try {
+      return (await _auth.getAvailableBiometrics()).isNotEmpty;
     } catch (_) {
       return false;
     }
@@ -80,7 +97,10 @@ class BiometricService {
   /// whether to even show the enroll screen / the lock-screen biometric key.
   Future<bool> isAvailable() async {
     if (!await _auth.isDeviceSupported()) return false;
-    return _auth.canCheckBiometrics();
+    // Require an actually-ENROLLED biometric, not just hardware presence — otherwise an Android
+    // device with an empty fingerprint sensor advertised a dead "Enable Face ID" button and a
+    // no-op lock-screen biometric key (deep-review).
+    return _auth.hasEnrolledBiometrics();
   }
 
   /// The user opted in. (UX flag only; meaningless unless [isAvailable] is also true.)

@@ -2,6 +2,7 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/notification.dart';
 import '../providers.dart';
+import 'session_controller.dart';
 
 part 'notification_controller.g.dart';
 
@@ -17,9 +18,13 @@ class NotificationController extends _$NotificationController {
   @override
   Future<List<AppNotification>> build() async {
     ref.onDispose(() => _disposed = true);
-    // No role filter: notifications are per-user; we fetch all the caller's own notifications
-    // (the contract's optional `role`/`unread_only` scoping is deferred).
-    final data = await ref.read(pguardApiProvider).get('/notifications');
+    // Scope to the ACTIVE role so a dual-role account in customer mode doesn't see the guard's
+    // new-job items (whose tap 403s on another customer's booking) — the backend keeps role-agnostic
+    // rows visible either way (deep-review). Omit when no session (defensive).
+    final role = ref.read(sessionProvider).user?.role;
+    final data = await ref
+        .read(pguardApiProvider)
+        .get('/notifications', query: role != null ? {'role': role} : null);
     final raw = data is List ? data : const [];
     return raw
         .whereType<Map<String, dynamic>>()
@@ -69,8 +74,14 @@ class NotificationController extends _$NotificationController {
     ]);
 
     try {
-      await ref.read(pguardApiProvider).put('/notifications/read-all');
-      if (!_disposed) ref.invalidate(unreadCountProvider); // clear the bell badge (→ 0)
+      // Read-all is scoped to the active role too, so customer mode never silently clears the
+      // guard-role notifications (and vice-versa). Role in the path (put takes no query param).
+      final role = ref.read(sessionProvider).user?.role;
+      await ref
+          .read(pguardApiProvider)
+          .put('/notifications/read-all${role != null ? '?role=$role' : ''}');
+      // clear the bell badge (→ 0)
+      if (!_disposed) ref.invalidate(unreadCountProvider);
     } catch (_) {
       if (!_disposed) state = AsyncData(original); // rollback
     }
@@ -85,8 +96,10 @@ class NotificationController extends _$NotificationController {
 class UnreadCount extends _$UnreadCount {
   @override
   Future<int> build() async {
-    final data =
-        await ref.read(pguardApiProvider).get('/notifications/unread-count');
+    final role = ref.read(sessionProvider).user?.role;
+    final data = await ref.read(pguardApiProvider).get(
+        '/notifications/unread-count',
+        query: role != null ? {'role': role} : null);
     if (data is Map<String, dynamic>) {
       return (data['count'] as num?)?.toInt() ?? 0;
     }

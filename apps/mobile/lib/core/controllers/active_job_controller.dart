@@ -310,6 +310,16 @@ class ActiveJobController extends _$ActiveJobController {
         // exists to re-anchor from).
         ref.read(workSessionStoreProvider).markStarted(booking.id, startedAt);
       }
+      // A completion request SUCCEEDED → the booking is now pending_completion, and the ONLY way
+      // back to the working stage is a customer reject. Record the auto-complete suppression NOW,
+      // not only when this same controller instance observes the reject: if the guard navigated away
+      // (the awaiting-stage CTA leaves the screen and disposes this autoDispose controller) before
+      // the reject landed, a later working-stage remount would otherwise re-fire /complete within ~1s
+      // and silently undo the customer's "keep working" (deep-review HIGH). The guard ends manually
+      // via จบงาน from here on.
+      if (action == 'complete') {
+        ref.read(workSessionStoreProvider).suppressAutoComplete(booking.id);
+      }
       // Rebase on the LATEST state, not the pre-await `current` — a terminal (e.g. a customer
       // cancel) folded by the WS listener while this PUT was in flight must win over our
       // just-succeeded transition (a dead job stays dead).
@@ -452,7 +462,10 @@ class ActiveJobController extends _$ActiveJobController {
       ));
       return true;
     } on ApiException catch (e) {
-      state = AsyncData(current.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e)));
+      state = AsyncData(current.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e)));
       return false;
     } catch (_) {
       state = AsyncData(current.copyWith(busy: false, error: _genericError()));

@@ -194,6 +194,15 @@ class _LiveBody extends ConsumerWidget {
                     _StatusTimelineSection(
                         status: booking.status, bookingId: booking.id),
                   ],
+                  // A PAID booking that DIED (guard withdrew → declined, or cancelled): the backend
+                  // queued a full refund, but no screen told the customer — apparent silent money
+                  // limbo (deep-review). Reassure them their money is coming back.
+                  if (isOwner &&
+                      booking.isPaid &&
+                      BookingLifecycle.isNegativeTerminal(booking.status)) ...[
+                    const SizedBox(height: PgTokens.space4),
+                    const _RefundComingBanner(),
+                  ],
                   const SizedBox(height: PgTokens.space4),
                   // PRE-PAY: the instant a guard ACCEPTS, the CUSTOMER pays the server-computed
                   // estimate. This is the prominent CTA into the PaymentScreen; it shows only while
@@ -1460,6 +1469,56 @@ class _AwaitingCustomerPaymentNotice extends ConsumerWidget {
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,
                   color: PgTokens.colorWarning),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A PAID booking that hit a NEGATIVE terminal (guard withdrew → declined, or cancelled): reassure
+/// the customer their money is coming back. The backend queues a full refund on cancel/decline, but
+/// no screen said so — apparent silent money limbo (deep-review). Owner-only, gated by the caller.
+class _RefundComingBanner extends ConsumerWidget {
+  const _RefundComingBanner();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.account_balance_wallet_outlined,
+              size: 16, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isThai ? 'กำลังคืนเงินให้คุณ' : 'A refund is on its way',
+                  style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: PgTokens.colorWarning),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  isThai
+                      ? 'งานถูกยกเลิก — ระบบจะคืนเงินเต็มจำนวนภายใน 3–5 วันทำการ'
+                      : 'The job was cancelled — a full refund will be returned within 3–5 business days',
+                  style: const TextStyle(
+                      fontSize: 11.5, color: PgTokens.colorTextMuted),
+                ),
+              ],
             ),
           ),
         ],

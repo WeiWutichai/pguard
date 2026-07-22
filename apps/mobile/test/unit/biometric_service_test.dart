@@ -8,6 +8,7 @@ void main() {
       build({
     bool deviceSupported = true,
     bool canCheck = true,
+    bool? enrolled,
     bool authResult = true,
     bool enabled = false,
   }) {
@@ -15,6 +16,7 @@ void main() {
     final auth = FakeBiometricAuthenticator(
       deviceSupported: deviceSupported,
       canCheck: canCheck,
+      enrolled: enrolled,
       authResult: authResult,
     );
     return (
@@ -25,7 +27,8 @@ void main() {
   }
 
   group('isAvailable', () {
-    test('true only when device supported AND a biometric is enrolled', () async {
+    test('true only when device supported AND a biometric is enrolled',
+        () async {
       expect(await build().svc.isAvailable(), isTrue);
     });
 
@@ -35,6 +38,15 @@ void main() {
 
     test('false when no biometric is enrolled', () async {
       expect(await build(canCheck: false).svc.isAvailable(), isFalse);
+    });
+
+    test('false when hardware is present but NOTHING is enrolled (Android)',
+        () async {
+      // The exact deep-review case: canCheckBiometrics is TRUE on Android for a sensor with no
+      // enrolled fingerprint. isAvailable must key off getAvailableBiometrics (enrolled), not
+      // canCheckBiometrics — otherwise the enroll screen shows a dead "Enable" button.
+      expect(await build(canCheck: true, enrolled: false).svc.isAvailable(),
+          isFalse);
     });
   });
 
@@ -48,8 +60,8 @@ void main() {
     });
 
     test('false when opted in but no longer available (unenrolled)', () async {
-      expect(
-          await build(enabled: true, canCheck: false).svc.shouldOffer(), isFalse);
+      expect(await build(enabled: true, canCheck: false).svc.shouldOffer(),
+          isFalse);
     });
   });
 

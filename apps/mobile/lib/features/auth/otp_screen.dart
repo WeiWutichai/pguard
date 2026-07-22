@@ -148,7 +148,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                 _ResendCountdown(
                   sentAt: sentAt,
                   policy: _resend,
-                  attempt: state.otpRequestCount.clamp(1, 5),
+                  attempt: state.otpRequestCount.clamp(1, 3),
                   isThai: isThai,
                 ),
               const SizedBox(height: PgTokens.space4),
@@ -166,7 +166,7 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   }
 }
 
-/// The design `.resend` line: "ส่งรหัสอีกครั้งใน 0:42 · พยายาม 1/5" centered, 13px muted, with the
+/// The design `.resend` line: "ส่งรหัสอีกครั้งใน 0:42 · พยายาม 1/3" centered, 13px muted, with the
 /// timer and attempt counter emphasized in the faint ink. Once elapsed it becomes a Resend action
 /// that returns to the captcha step to re-solve the bot-check (which re-sends the SMS to the same
 /// number). Rebuilds once per second via a display stream (no network poll).
@@ -201,13 +201,13 @@ class _ResendCountdown extends StatelessWidget {
                       const TextSpan(text: 'ส่งรหัสอีกครั้งใน '),
                       TextSpan(text: timer, style: _strong),
                       const TextSpan(text: ' · พยายาม '),
-                      TextSpan(text: '$attempt/5', style: _strong),
+                      TextSpan(text: '$attempt/3', style: _strong),
                     ]
                   : [
                       const TextSpan(text: 'Resend in '),
                       TextSpan(text: timer, style: _strong),
                       const TextSpan(text: ' · attempt '),
-                      TextSpan(text: '$attempt/5', style: _strong),
+                      TextSpan(text: '$attempt/3', style: _strong),
                     ],
             ),
             textAlign: TextAlign.center,

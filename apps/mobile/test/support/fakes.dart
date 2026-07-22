@@ -236,11 +236,16 @@ class FakeApi implements PguardApi {
 class FakeBookingFeed implements BookingStatusFeed {
   final StreamController<BookingStatusEvent> _controller =
       StreamController<BookingStatusEvent>.broadcast();
+  final StreamController<bool> _connController =
+      StreamController<bool>.broadcast();
   bool connected = false;
   bool closed = false;
 
   @override
   Stream<BookingStatusEvent> get events => _controller.stream;
+
+  @override
+  Stream<bool> get connectionChanges => _connController.stream;
 
   @override
   Future<void> connect() async => connected = true;
@@ -249,9 +254,13 @@ class FakeBookingFeed implements BookingStatusFeed {
   Future<void> close() async {
     closed = true;
     if (!_controller.isClosed) await _controller.close();
+    if (!_connController.isClosed) await _connController.close();
   }
 
   void emit(BookingStatusEvent event) => _controller.add(event);
+
+  /// Drive a connection-state edge (tests simulate a WS drop → reconnect).
+  void emitConnection(bool connected) => _connController.add(connected);
 }
 
 /// Fake [ChatFeed] — tests push incoming messages synchronously and inspect what was sent,
@@ -622,11 +631,16 @@ class FakeBiometricAuthenticator implements BiometricAuthenticator {
   FakeBiometricAuthenticator({
     this.deviceSupported = true,
     this.canCheck = true,
+    bool? enrolled,
     this.authResult = true,
-  });
+  }) : enrolled = enrolled ?? canCheck;
 
   bool deviceSupported;
   bool canCheck;
+
+  /// Whether a biometric is actually ENROLLED (defaults to [canCheck] so existing tests that only
+  /// set canCheck keep behaving as "available"; set false to simulate a sensor with no enrolment).
+  bool enrolled;
   bool authResult;
   int authCalls = 0;
   String? lastReason;
@@ -635,6 +649,8 @@ class FakeBiometricAuthenticator implements BiometricAuthenticator {
   Future<bool> isDeviceSupported() async => deviceSupported;
   @override
   Future<bool> canCheckBiometrics() async => canCheck;
+  @override
+  Future<bool> hasEnrolledBiometrics() async => enrolled;
   @override
   Future<bool> authenticate({required String localizedReason}) async {
     authCalls++;

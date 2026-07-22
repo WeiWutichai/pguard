@@ -25,11 +25,35 @@ String localizeApiError(bool isThai, ApiException e) {
         ? 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง'
         : 'Temporary server problem — please try again later';
   }
+  // Gateway rate-limit (429) carries no {code} object — key off the status. Plausible behind Thai
+  // carrier-NAT where many users share one IP; a raw English 'Rate limit exceeded' was leaking.
+  if (status == 429) {
+    return isThai
+        ? 'ส่งคำขอถี่เกินไป กรุณารอสักครู่แล้วลองใหม่'
+        : 'Too many requests — please wait a moment and try again';
+  }
   switch (e.code) {
     case 'CAPTCHA_INVALID':
       return isThai
           ? 'คำตอบไม่ถูกต้อง กรุณาลองอีกครั้ง'
           : 'That answer is incorrect — please try again';
+    case 'CAPTCHA_EXPIRED':
+      // The server burns the challenge on TTL lapse; the client already auto-loads a new question.
+      return isThai
+          ? 'คำถามหมดอายุ ระบบออกคำถามใหม่ให้แล้ว'
+          : 'The question expired — a new one has been loaded';
+    case 'JOB_TAKEN':
+      return isThai
+          ? 'งานนี้มีเจ้าหน้าที่รับไปแล้ว'
+          : 'This job was already taken by another guard';
+    case 'BOOKING_NOT_PAYABLE':
+      return isThai
+          ? 'สถานะการจองเปลี่ยนไปแล้ว ไม่ต้องชำระเงิน'
+          : 'This booking is no longer awaiting payment';
+    case 'BOOKING_CANCELLED':
+      return isThai
+          ? 'การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน'
+          : 'This booking was cancelled — a full refund is on its way';
     case 'OTP_COOLDOWN':
       return isThai
           ? 'กรุณารอสักครู่ก่อนขอรหัสใหม่'

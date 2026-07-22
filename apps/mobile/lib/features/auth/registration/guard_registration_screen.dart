@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../core/controllers/auth_controller.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../core/media/document_picker.dart';
@@ -159,7 +160,9 @@ class _GuardRegistrationScreenState
     }
     final exp = _experience.text.trim();
     if (exp.isEmpty) {
-      return isThai ? 'กรุณากรอกประสบการณ์ (ปี)' : 'Enter your experience (years)';
+      return isThai
+          ? 'กรุณากรอกประสบการณ์ (ปี)'
+          : 'Enter your experience (years)';
     }
     final n = int.tryParse(exp);
     if (n == null || n < 0 || n > 80) {
@@ -169,6 +172,15 @@ class _GuardRegistrationScreenState
     }
     if (_workplace.text.trim().isEmpty) {
       return isThai ? 'กรุณากรอกที่ทำงานเดิม' : 'Enter your previous workplace';
+    }
+    // Validate the emergency phone HERE (it rides the same profile submit), not three steps later at
+    // the server 400 that would burn the token. Optional field — but if FILLED it must be a valid
+    // 10-digit national number (digitsOnly already blocks the +/-/space that the backend rejects).
+    if (_ecPhone.text.trim().isNotEmpty &&
+        AuthController.normalizeThaiPhone(_ecPhone.text) == null) {
+      return isThai
+          ? 'เบอร์ผู้ติดต่อฉุกเฉินไม่ถูกต้อง (10 หลัก ขึ้นต้นด้วย 0)'
+          : 'Invalid emergency phone (10 digits starting with 0)';
     }
     return null;
   }
@@ -202,7 +214,8 @@ class _GuardRegistrationScreenState
       final acct = _normalizeName(_accountName.text);
       final reg = _normalizeName(_fullName.text);
       if (acct.isEmpty) {
-        nameErr = isThai ? 'กรุณากรอกชื่อบัญชี' : 'Enter the account holder name';
+        nameErr =
+            isThai ? 'กรุณากรอกชื่อบัญชี' : 'Enter the account holder name';
       } else if (reg.isEmpty || acct != reg) {
         nameErr = isThai
             ? 'ชื่อบัญชีต้องตรงกับชื่อ-นามสกุลที่สมัคร'
@@ -262,7 +275,8 @@ class _GuardRegistrationScreenState
     final now = DateTime.now();
     final picked = await showDatePicker(
       context: context,
-      initialDate: _docExpiry[kind] ?? DateTime(now.year + 1, now.month, now.day),
+      initialDate:
+          _docExpiry[kind] ?? DateTime(now.year + 1, now.month, now.day),
       firstDate: DateTime(now.year, now.month, now.day + 1),
       lastDate: DateTime(now.year + 20),
       helpText: isThai ? 'วันหมดอายุเอกสาร' : 'Document expiry date',
@@ -580,8 +594,8 @@ class _GuardRegistrationScreenState
                   LengthLimitingTextInputFormatter(2),
                 ],
                 decoration: InputDecoration(
-                    label:
-                        _reqLabel(isThai ? 'ประสบการณ์ (ปี)' : 'Experience (yrs)')),
+                    label: _reqLabel(
+                        isThai ? 'ประสบการณ์ (ปี)' : 'Experience (yrs)')),
               ),
             ),
           ],
@@ -597,8 +611,8 @@ class _GuardRegistrationScreenState
         TextField(
           controller: _address,
           maxLines: 2,
-          decoration: InputDecoration(
-              labelText: isThai ? 'ที่อยู่' : 'Address'),
+          decoration:
+              InputDecoration(labelText: isThai ? 'ที่อยู่' : 'Address'),
         ),
         const SizedBox(height: PgTokens.space4),
         _fieldLabel(isThai ? 'ผู้ติดต่อฉุกเฉิน' : 'Emergency contact'),
@@ -628,9 +642,13 @@ class _GuardRegistrationScreenState
         TextField(
           controller: _ecPhone,
           keyboardType: TextInputType.phone,
+          // Digits only (10, national 0XXXXXXXXX). Allowing '+', '-', spaces let a '+66 …' entry
+          // through every step, then the backend's validate_thai_phone rejected it at submit with a
+          // raw English 400 on the review step — after the single-use profile_token was already
+          // burned (deep-review). Restrict input + validate up front in _validPersonal.
           inputFormatters: [
-            FilteringTextInputFormatter.allow(RegExp(r'[0-9+\- ]')),
-            LengthLimitingTextInputFormatter(20),
+            FilteringTextInputFormatter.digitsOnly,
+            LengthLimitingTextInputFormatter(10),
           ],
           decoration: InputDecoration(
               labelText: isThai ? 'เบอร์ผู้ติดต่อฉุกเฉิน' : 'Emergency phone'),
@@ -859,11 +877,10 @@ class _GuardRegistrationScreenState
             Text(joinOrDash([if (exp != null) '$exp ปี' else '', workplace]),
                 style: valueStyle)),
         if (address.isNotEmpty)
-          _revRow(isThai ? 'ที่อยู่' : 'Address',
-              Text(address, style: valueStyle)),
-        if (ecName.isNotEmpty)
           _revRow(
-              isThai ? 'ติดต่อฉุกเฉิน' : 'Emergency',
+              isThai ? 'ที่อยู่' : 'Address', Text(address, style: valueStyle)),
+        if (ecName.isNotEmpty)
+          _revRow(isThai ? 'ติดต่อฉุกเฉิน' : 'Emergency',
               Text(joinOrDash([ecName, ecRel]), style: valueStyle)),
         _revRow(
           isThai ? 'เอกสาร' : 'Documents',

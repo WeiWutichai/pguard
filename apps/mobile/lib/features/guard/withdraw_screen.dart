@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/active_job_controller.dart';
+import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pguard_header.dart';
@@ -81,6 +82,9 @@ class _WithdrawScreenState extends ConsumerState<WithdrawScreen> {
       messenger.showSnackBar(SnackBar(
           content:
               Text(isThai ? 'ส่งคำขอถอนงานแล้ว' : 'Withdrawal submitted')));
+      // Drop the cached jobs list so the withdrawn job stops showing as active on the dashboard
+      // (mirrors _backToJobs; without this the guard lands on a stale 'งานที่กำลังทำ' — deep-review).
+      ref.invalidate(guardJobsControllerProvider);
       context.go('/home/guard');
     } else {
       final error = ref

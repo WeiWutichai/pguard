@@ -8,6 +8,11 @@ import 'ws_client.dart';
 abstract class BookingStatusFeed {
   /// Status transitions for the subscribed booking.
   Stream<BookingStatusEvent> get events;
+
+  /// Connection-state edges (`true` on (re)connect, `false` on drop). The controller re-pulls the
+  /// REST snapshot on each reconnect to recover any status change missed during the gap — the hub
+  /// only forwards LIVE events and sends no snapshot on subscribe.
+  Stream<bool> get connectionChanges;
   Future<void> connect();
   Future<void> close();
 }
@@ -55,6 +60,9 @@ class BookingStatusSocket implements BookingStatusFeed {
       .map(BookingStatusEvent.tryParse)
       .where((e) => e != null)
       .cast<BookingStatusEvent>();
+
+  @override
+  Stream<bool> get connectionChanges => _ws.connectionChanges;
 
   @override
   Future<void> connect() => _ws.connect();

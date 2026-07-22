@@ -91,6 +91,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
 
   Future<void> _verify() async {
     setState(() => _busy = true);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final outcome = await ref.read(pinServiceProvider).verify(_pin);
     if (!mounted) return;
     setState(() {
@@ -101,7 +102,9 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
           _error = null;
         case PinOutcomeKind.wrong:
           _attemptsRemaining = outcome.attemptsRemaining;
-          _error = 'PIN ไม่ถูกต้อง · เหลือ ${outcome.attemptsRemaining} ครั้ง';
+          _error = isThai
+              ? 'PIN ไม่ถูกต้อง · เหลือ ${outcome.attemptsRemaining} ครั้ง'
+              : 'Incorrect PIN · ${outcome.attemptsRemaining} left';
         case PinOutcomeKind.lockedOut:
           // The locking attempt itself consumed one try (the service only reports
           // attemptsRemaining on `wrong`); 5 is the design's first-lockout value.
@@ -347,6 +350,7 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
         until: _lockedUntil!,
         onElapsed: () => setState(() => _lockedUntil = null),
         attemptsRemaining: _attemptsRemaining ?? 5,
+        isThai: ref.read(localeControllerProvider) == AppLocale.th,
       );
     }
     if (_error != null) {
@@ -363,11 +367,13 @@ class _LockoutPanel extends StatelessWidget {
   const _LockoutPanel(
       {required this.until,
       required this.onElapsed,
-      required this.attemptsRemaining});
+      required this.attemptsRemaining,
+      required this.isThai});
 
   final DateTime until;
   final VoidCallback onElapsed;
   final int attemptsRemaining;
+  final bool isThai;
 
   static const ResendPolicy _format = ResendPolicy();
 
@@ -383,12 +389,16 @@ class _LockoutPanel extends StatelessWidget {
         }
         return Column(
           children: [
-            const _LockAlert(
+            _LockAlert(
               background: PgTokens.colorWarningBg,
               foreground: PgTokens.colorAmber700,
               icon: Icons.warning_amber_rounded,
-              strong: 'ผิด 5 ครั้ง — ล็อกชั่วคราว',
-              body: 'ลองใหม่อีกครั้งเมื่อหมดเวลา',
+              strong: isThai
+                  ? 'ผิด 5 ครั้ง — ล็อกชั่วคราว'
+                  : 'Locked temporarily — 5 wrong attempts',
+              body: isThai
+                  ? 'ลองใหม่อีกครั้งเมื่อหมดเวลา'
+                  : 'Try again when the timer ends',
             ),
             // Big danger countdown (design `.timer-big`: 40/600 mono m:ss, 8px vertical padding).
             Padding(
@@ -410,8 +420,12 @@ class _LockoutPanel extends StatelessWidget {
               background: PgTokens.colorDangerBg,
               foreground: PgTokens.colorDanger,
               icon: Icons.info_outline,
-              strong: 'คำเตือน: เหลืออีก $attemptsRemaining ครั้ง',
-              body: 'หากผิดครบ 10 ครั้ง ข้อมูลในเครื่องจะถูกล้าง',
+              strong: isThai
+                  ? 'คำเตือน: เหลืออีก $attemptsRemaining ครั้ง'
+                  : 'Warning: $attemptsRemaining attempts left',
+              body: isThai
+                  ? 'หากผิดครบ 10 ครั้ง ข้อมูลในเครื่องจะถูกล้าง'
+                  : 'On-device data is wiped after 10 wrong attempts',
             ),
           ],
         );
