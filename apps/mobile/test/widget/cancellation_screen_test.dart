@@ -20,6 +20,8 @@ Map<String, dynamic> bookingJson(String status) => {
       'base_fee': '500.00',
       'guard_count': 1,
       'tip': '295',
+      // PAID — the refund copy is now gated on isPaid (an unpaid cancel promises no refund).
+      'paid_at': '2026-07-21T10:00:00Z',
     };
 
 GoRouter buildRouter() => GoRouter(

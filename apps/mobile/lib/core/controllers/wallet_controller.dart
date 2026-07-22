@@ -74,14 +74,20 @@ class WalletController extends _$WalletController {
 
   /// Single-language status label for the row badge (locale-driven). "คืนเงินแล้ว" is the
   /// design's refunded wording (More_Screens.md Screen 5, cancelled row).
-  static String statusLabel(PaymentStatus status, {required bool isThai}) {
+  static String statusLabel(PaymentStatus status,
+      {RefundStatus? refundStatus, required bool isThai}) {
     switch (status) {
       case PaymentStatus.pending:
         return isThai ? 'รอดำเนินการ' : 'Pending';
       case PaymentStatus.completed:
         return isThai ? 'ชำระแล้ว' : 'Paid';
       case PaymentStatus.refunded:
-        return isThai ? 'คืนเงินแล้ว' : 'Refunded';
+        // A refund flips status='refunded' the instant it is QUEUED, with refund_status='pending'
+        // (the admin has not transferred yet). Don't claim "Refunded" (past tense) until it is
+        // actually processed — otherwise the customer checks their bank and sees nothing (deep-review).
+        return refundStatus == RefundStatus.pending
+            ? (isThai ? 'กำลังคืนเงิน' : 'Refund processing')
+            : (isThai ? 'คืนเงินแล้ว' : 'Refunded');
     }
   }
 }

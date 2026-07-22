@@ -73,9 +73,11 @@ class ProgressReportsController extends _$ProgressReportsController {
     final booking =
         await ref.watch(bookingStatusControllerProvider(bookingId).future);
 
-    final data = await ref
-        .read(pguardApiProvider)
-        .get('/bookings/$bookingId/progress-reports');
+    // limit=200 (> MAX_BOOKING_HOURS=168) so a long booking's check-ins beyond the server default
+    // page size (50) don't vanish from the timeline — mirrors ActiveJobController.build (deep-review).
+    final data = await ref.read(pguardApiProvider).get(
+        '/bookings/$bookingId/progress-reports',
+        query: const {'limit': 200});
     final reports = (data as List)
         .whereType<Map<String, dynamic>>()
         .map(ProgressReport.fromJson)

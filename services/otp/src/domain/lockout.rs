@@ -34,18 +34,25 @@ pub enum ActiveLock {
     AdminContact,
 }
 
-/// Interpret the TTL of an existing `otp_lock:{phone}` key. Mirrors v1: a TTL longer
-/// than the burst duration is the admin tier; otherwise it is the burst tier.
-pub fn existing_lock_decision(lock_ttl: i64) -> ActiveLock {
+/// Interpret an existing `otp_lock:{phone}` lock from its stored VALUE + TTL. The value now names
+/// the tier explicitly (`"admin"` / `"burst"`), so the burst/admin distinction no longer depends on
+/// TTL magnitude — which mis-reported a 24h admin lock as a burst lock during its final 10 minutes
+/// once its TTL fell below the burst duration (deep-review). TTL is used only for the burst tier's
+/// remaining-minutes display. A legacy `"1"` value (set by a pre-upgrade instance) falls back to the
+/// old TTL-magnitude heuristic until it expires, so the change is backward-compatible.
+pub fn existing_lock_decision(lock_value: Option<&str>, lock_ttl: i64) -> ActiveLock {
     if lock_ttl <= 0 {
-        ActiveLock::None
-    } else if lock_ttl > BURST_LOCK_SECS as i64 {
-        ActiveLock::AdminContact
-    } else {
-        // Round up to whole minutes (ceil) — matches v1's `(ttl + 59) / 60`.
-        ActiveLock::Burst {
-            remaining_minutes: (lock_ttl + 59) / 60,
-        }
+        return ActiveLock::None;
+    }
+    // Round up to whole minutes (ceil) — matches v1's `(ttl + 59) / 60`.
+    let remaining_minutes = (lock_ttl + 59) / 60;
+    match lock_value {
+        None => ActiveLock::None,
+        Some("admin") => ActiveLock::AdminContact,
+        Some("burst") => ActiveLock::Burst { remaining_minutes },
+        // Legacy/unknown value → old TTL-magnitude heuristic (transient; the lock self-expires).
+        _ if lock_ttl > BURST_LOCK_SECS as i64 => ActiveLock::AdminContact,
+        _ => ActiveLock::Burst { remaining_minutes },
     }
 }
 
@@ -87,30 +94,28 @@ mod tests {
     // ----- existing_lock_decision -----
 
     #[test]
-    fn no_lock_when_ttl_non_positive() {
-        assert_eq!(existing_lock_decision(0), ActiveLock::None);
-        assert_eq!(existing_lock_decision(-1), ActiveLock::None);
+    fn no_lock_when_ttl_non_positive_or_no_value() {
+        assert_eq!(existing_lock_decision(Some("burst"), 0), ActiveLock::None);
+        assert_eq!(existing_lock_decision(Some("admin"), -1), ActiveLock::None);
+        assert_eq!(existing_lock_decision(None, 100), ActiveLock::None);
     }
 
     #[test]
-    fn burst_lock_reports_ceil_minutes() {
-        // 600s remaining → 10 min.
+    fn burst_value_reports_ceil_minutes() {
         assert_eq!(
-            existing_lock_decision(600),
+            existing_lock_decision(Some("burst"), 600),
             ActiveLock::Burst {
                 remaining_minutes: 10
             }
         );
-        // 61s remaining → ceil to 2 min.
         assert_eq!(
-            existing_lock_decision(61),
+            existing_lock_decision(Some("burst"), 61),
             ActiveLock::Burst {
                 remaining_minutes: 2
             }
         );
-        // 1s remaining → ceil to 1 min.
         assert_eq!(
-            existing_lock_decision(1),
+            existing_lock_decision(Some("burst"), 1),
             ActiveLock::Burst {
                 remaining_minutes: 1
             }
@@ -118,11 +123,31 @@ mod tests {
     }
 
     #[test]
-    fn admin_lock_for_ttl_beyond_burst_window() {
-        assert_eq!(existing_lock_decision(601), ActiveLock::AdminContact);
+    fn admin_value_stays_admin_even_in_its_final_minutes() {
+        // THE FIX: an admin lock whose TTL has fallen BELOW the burst window is STILL admin (the
+        // value names the tier), not misreported as a burst lock (deep-review).
         assert_eq!(
-            existing_lock_decision(ADMIN_LOCK_SECS as i64),
+            existing_lock_decision(Some("admin"), 5),
             ActiveLock::AdminContact
+        );
+        assert_eq!(
+            existing_lock_decision(Some("admin"), ADMIN_LOCK_SECS as i64),
+            ActiveLock::AdminContact
+        );
+    }
+
+    #[test]
+    fn legacy_value_falls_back_to_ttl_magnitude() {
+        // A pre-upgrade `"1"` value uses the old TTL heuristic until it expires (backward-compat).
+        assert_eq!(
+            existing_lock_decision(Some("1"), 601),
+            ActiveLock::AdminContact
+        );
+        assert_eq!(
+            existing_lock_decision(Some("1"), 300),
+            ActiveLock::Burst {
+                remaining_minutes: 5
+            }
         );
     }
 

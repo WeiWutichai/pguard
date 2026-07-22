@@ -111,6 +111,11 @@ class AuthController extends _$AuthController {
   @override
   AuthFlowState build() => const AuthFlowState();
 
+  /// Monotonic fetch generation for `GET /otp/challenge`. Each (re)load claims a new gen; a response
+  /// whose gen is no longer the latest is DISCARDED — so a slow refresh landing after a manual reload
+  /// can't overwrite the newer challenge under the user's typed answer (deep-review single-flight).
+  int _challengeGen = 0;
+
   static final RegExp _thaiPhone = RegExp(r'^0\d{9}$');
 
   /// Canonicalize what the user typed into the backend's national format `0XXXXXXXXX`
@@ -135,6 +140,13 @@ class AuthController extends _$AuthController {
   }
 
   bool isValidPhone(String phone) => normalizeThaiPhone(phone) != null;
+
+  /// The significant number to DISPLAY behind the fixed `+66` prefix — i.e. the national number
+  /// with its trunk `0` dropped (`0812345678` → `812345678`). The `+66` country code REPLACES the
+  /// trunk 0, so `'+66 0812345678'` is a malformed 11-digit international number; the phone-entry
+  /// screen already strips it for display, and the captcha/OTP subtitles must match (deep-review).
+  static String significantPhone(String national) =>
+      national.startsWith('0') ? national.substring(1) : national;
 
   /// PURE display heuristic for the set-PIN strength line ("ความปลอดภัยดี · หลีกเลี่ยงเลขซ้ำ"):
   /// a typed PIN prefix is "weak" when its digits are all identical or form a strictly
@@ -169,8 +181,11 @@ class AuthController extends _$AuthController {
         // rejects a CORRECT answer as CAPTCHA_INVALID ("คำตอบไม่ถูกต้อง" on a right answer). Nulling it
         // makes the screen show its loading state and DISABLES submit (button gates on
         // `challenge == null`) until THIS fetch returns a live challenge.
+        final gen = ++_challengeGen;
         state = state.copyWith(challenge: null);
         final data = await ref.read(pguardApiProvider).get('/otp/challenge');
+        // a newer fetch superseded this one
+        if (gen != _challengeGen) return true;
         state = state.copyWith(
           challenge: OtpChallenge.fromJson(data as Map<String, dynamic>),
         );
@@ -239,9 +254,12 @@ class AuthController extends _$AuthController {
     // The just-submitted challenge is now burned server-side; drop it IMMEDIATELY so it can't be
     // re-submitted during the fetch below (the same correct-answer→CAPTCHA_INVALID trap). Keep the
     // existing error so the user still sees WHY the last attempt failed.
+    final gen = ++_challengeGen;
     state = state.copyWith(challenge: null);
     try {
       final data = await ref.read(pguardApiProvider).get('/otp/challenge');
+      // a newer fetch (e.g. a manual reload) won
+      if (gen != _challengeGen) return;
       state = state.copyWith(
         challenge: OtpChallenge.fromJson(data as Map<String, dynamic>),
       );

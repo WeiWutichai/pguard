@@ -121,8 +121,8 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
               AuthHead(
                 title: isThai ? 'กรอกรหัส 6 หลัก' : 'Enter 6-digit code',
                 subtitle: isThai
-                    ? 'ส่งไปที่ +66 ${state.phone}'
-                    : 'Sent to +66 ${state.phone}',
+                    ? 'ส่งไปที่ +66 ${AuthController.significantPhone(state.phone)}'
+                    : 'Sent to +66 ${AuthController.significantPhone(state.phone)}',
               ),
               const SizedBox(height: PgTokens.space6),
               OtpInput(

@@ -254,7 +254,10 @@ class _ReceiptRowState extends ConsumerState<_ReceiptRow> {
               ),
             ),
             const SizedBox(height: 3),
-            _PaymentBadge(status: payment.status, isThai: isThai),
+            _PaymentBadge(
+                status: payment.status,
+                refundStatus: payment.refundStatus,
+                isThai: isThai),
           ],
         ),
       ],
@@ -264,9 +267,11 @@ class _ReceiptRowState extends ConsumerState<_ReceiptRow> {
 
 /// 10px w600 status pill: pending → amber, completed → green, refunded → info blue.
 class _PaymentBadge extends StatelessWidget {
-  const _PaymentBadge({required this.status, required this.isThai});
+  const _PaymentBadge(
+      {required this.status, this.refundStatus, required this.isThai});
 
   final PaymentStatus status;
+  final RefundStatus? refundStatus;
   final bool isThai;
 
   @override
@@ -289,7 +294,8 @@ class _PaymentBadge extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusFull),
       ),
       child: Text(
-        WalletController.statusLabel(status, isThai: isThai),
+        WalletController.statusLabel(status,
+            refundStatus: refundStatus, isThai: isThai),
         style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: fg),
       ),
     );

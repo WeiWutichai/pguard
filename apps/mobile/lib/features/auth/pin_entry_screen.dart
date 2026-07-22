@@ -66,8 +66,9 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
     // authenticated and the router redirects; on failure surface the reason and let the user retry.
     if (auth.reset) {
       final newPin = _pin;
-      final ok =
-          await ref.read(authControllerProvider.notifier).resetPin(newPin: newPin);
+      final ok = await ref
+          .read(authControllerProvider.notifier)
+          .resetPin(newPin: newPin);
       if (!mounted) return;
       if (!ok) {
         final isThai = ref.read(localeControllerProvider) == AppLocale.th;
@@ -151,7 +152,9 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
                           : 'Re-enter your PIN')
                       : isReset
                           ? (isThai ? 'ตั้งรหัส PIN ใหม่' : 'Set a new PIN')
-                          : 'ตั้งรหัส PIN 6 หลัก',
+                          : (isThai
+                              ? 'ตั้งรหัส PIN 6 หลัก'
+                              : 'Set a 6-digit PIN'),
                   subtitle: _confirming
                       ? (isThai ? 'เพื่อความถูกต้อง' : 'To confirm it matches')
                       : (isThai

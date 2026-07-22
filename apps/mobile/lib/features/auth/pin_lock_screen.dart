@@ -48,7 +48,23 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
   @override
   void initState() {
     super.initState();
-    Future.microtask(_initBiometric);
+    Future.microtask(_rehydrateLockThenInitBiometric);
+  }
+
+  /// Seed the lockout from persisted storage BEFORE offering biometric. After an app kill DURING a
+  /// lockout the screen must present locked (countdown + disabled keypad) and the `_isLocked` guard
+  /// in [_authenticateBiometric] must hold, so a biometric unlock can't skip the remaining window
+  /// (deep-review — the UI otherwise presented fully unlocked on restart).
+  Future<void> _rehydrateLockThenInitBiometric() async {
+    final untilMs = await ref.read(appStoreProvider).readPinLockUntilMs();
+    if (!mounted) return;
+    if (untilMs != null) {
+      final until = DateTime.fromMillisecondsSinceEpoch(untilMs, isUtc: true);
+      if (until.isAfter(DateTime.now().toUtc())) {
+        setState(() => _lockedUntil = until);
+      }
+    }
+    await _initBiometric();
   }
 
   /// Show the biometric key when the user opted in and the device can still authenticate, then
@@ -332,8 +348,8 @@ class _PinLockScreenState extends ConsumerState<PinLockScreen> {
         Text(
             _bioAvailable
                 ? (isThai
-                    ? 'กรอก PIN หรือใช้ Face ID'
-                    : 'Enter PIN or use Face ID')
+                    ? 'กรอก PIN หรือใช้ไบโอเมตริก'
+                    : 'Enter PIN or use biometrics')
                 : (isThai
                     ? 'กรอก PIN เพื่อเข้าสู่ระบบ'
                     : 'Enter your PIN to sign in'),

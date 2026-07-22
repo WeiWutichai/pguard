@@ -81,7 +81,7 @@ pub fn dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> Notification
         recipient_id: guard_id,
         notification_type: NotificationType::BookingCreated,
         title: "งานใหม่ใกล้คุณ".to_string(),
-        body: "New job nearby".to_string(),
+        body: "มีงานใหม่ใกล้คุณ แตะเพื่อดูรายละเอียด".to_string(),
         data: Value::Object(data),
     }
 }
@@ -550,7 +550,7 @@ mod tests {
         assert_eq!(plan.data["target_role"], "guard");
         assert_eq!(plan.data["event_type"], topics::BOOKING_REQUESTED);
         assert_eq!(plan.title, "งานใหม่ใกล้คุณ");
-        assert_eq!(plan.body, "New job nearby");
+        assert_eq!(plan.body, "มีงานใหม่ใกล้คุณ แตะเพื่อดูรายละเอียด");
     }
 
     #[test]

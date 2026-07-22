@@ -685,6 +685,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
   /// so without this it would re-PUT /complete repeatedly. Set the instant we kick off the auto
   /// completion (BEFORE the await) so a re-entrant tick can never double-fire it.
   bool _autoCompleted = false;
+  int _autoCompleteFails = 0;
 
   @override
   void initState() {
@@ -747,6 +748,7 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
         .complete();
     if (!mounted) return;
     if (ok) {
+      _autoCompleteFails = 0;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(isThai
@@ -755,9 +757,15 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
         ),
       );
     } else {
-      // The PUT failed (e.g. transient/409 because the status already advanced). Release the flag
-      // so a later tick can retry; the controller already surfaced the error in state.error.
-      _autoCompleted = false;
+      // The PUT failed (transient/offline/409). Do NOT re-arm immediately — the 1s display ticker
+      // would otherwise hammer PUT /complete ~once a second, unbounded (deep-review). Keep the flag
+      // SET during a backoff, then release it once so exactly one retry happens per interval
+      // (15s → 30 → 60 → 120 cap). The controller already surfaced the error in state.error.
+      final backoffSecs = (15 << _autoCompleteFails.clamp(0, 3)).clamp(15, 120);
+      _autoCompleteFails++;
+      Future.delayed(Duration(seconds: backoffSecs), () {
+        if (mounted) _autoCompleted = false;
+      });
     }
   }
 

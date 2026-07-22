@@ -144,6 +144,7 @@ class ProfileScreen extends ConsumerWidget {
                     value: profile.phone ?? '—',
                   ),
                   const _LanguageRow(),
+                  const _BiometricRow(),
                 ],
               ),
               const SizedBox(height: PgTokens.space6),
@@ -628,6 +629,93 @@ class _LanguageRow extends ConsumerWidget {
             onChanged: (l) =>
                 ref.read(localeControllerProvider.notifier).setLocale(l),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Post-onboarding biometric toggle. The ONLY enable point used to be the registration enroll
+/// screen and `disable()` had zero callers, so a user who skipped it (or set their PIN via reset)
+/// could never turn biometric unlock on, and someone who enabled it could never turn it off
+/// (deep-review). Hidden when the device has no enrolled biometric. Enabling re-prompts the OS
+/// biometric (its own verification).
+class _BiometricRow extends ConsumerStatefulWidget {
+  const _BiometricRow();
+
+  @override
+  ConsumerState<_BiometricRow> createState() => _BiometricRowState();
+}
+
+class _BiometricRowState extends ConsumerState<_BiometricRow> {
+  bool _available = false;
+  bool _enabled = false;
+  bool _busy = false;
+
+  @override
+  void initState() {
+    super.initState();
+    Future.microtask(_load);
+  }
+
+  Future<void> _load() async {
+    final svc = ref.read(biometricServiceProvider);
+    final available = await svc.isAvailable();
+    final enabled = await svc.isEnabled();
+    if (!mounted) return;
+    setState(() {
+      _available = available;
+      _enabled = enabled;
+    });
+  }
+
+  Future<void> _toggle(bool want) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    final svc = ref.read(biometricServiceProvider);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    if (want) {
+      final ok = await svc.enable(
+          reason: isThai
+              ? 'ยืนยันตัวตนเพื่อเปิดใช้การปลดล็อกด้วยไบโอเมตริก'
+              : 'Authenticate to enable biometric unlock');
+      if (!mounted) return;
+      setState(() {
+        _enabled = ok;
+        _busy = false;
+      });
+      if (!ok) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(isThai
+                ? 'เปิดใช้ไม่สำเร็จ — ตรวจสอบไบโอเมตริกในเครื่อง'
+                : 'Could not enable — check your device biometrics')));
+      }
+    } else {
+      await svc.disable();
+      if (!mounted) return;
+      setState(() {
+        _enabled = false;
+        _busy = false;
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_available) return const SizedBox.shrink();
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return Padding(
+      padding: _rowPadding,
+      child: Row(
+        children: [
+          const _IconTile(icon: Icons.fingerprint),
+          const SizedBox(width: PgTokens.space3),
+          Expanded(
+            child: Text(isThai ? 'ปลดล็อกด้วยไบโอเมตริก' : 'Biometric unlock',
+                style: const TextStyle(
+                    fontSize: 14.5, fontWeight: FontWeight.w600)),
+          ),
+          Switch(value: _enabled, onChanged: _busy ? null : _toggle),
         ],
       ),
     );

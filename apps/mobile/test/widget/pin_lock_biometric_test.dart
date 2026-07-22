@@ -59,7 +59,7 @@ void main() {
     final h = await pumpLock(tester, biometricEnabled: true);
 
     expect(find.byIcon(Icons.fingerprint), findsOneWidget);
-    expect(find.text('กรอก PIN หรือใช้ Face ID'), findsOneWidget);
+    expect(find.text('กรอก PIN หรือใช้ไบโอเมตริก'), findsOneWidget);
     expect(h.auth.authCalls, 1); // auto-prompt fired exactly once
     expect(
         h.container.read(sessionProvider).status, SessionStatus.authenticated);
