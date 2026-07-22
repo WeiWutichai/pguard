@@ -1,6 +1,7 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/payment.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'booking_status_controller.dart';
@@ -104,7 +105,7 @@ class PaymentController extends _$PaymentController {
         state = state.copyWith(busy: false, slipRequired: true, error: null);
         return false;
       }
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
       return false;
     } catch (_) {
       state = state.copyWith(

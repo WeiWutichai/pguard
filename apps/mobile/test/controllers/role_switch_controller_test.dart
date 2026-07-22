@@ -28,8 +28,9 @@ void main() {
   /// Seed an authenticated dual-role (or single-role) session with the given active role.
   void seedSession(ProviderContainer c,
       {required String active, required List<String> roles}) {
-    c.read(sessionProvider.notifier).onLoggedIn(
-        AuthUser(userId: 'u1', role: active, roles: roles));
+    c
+        .read(sessionProvider.notifier)
+        .onLoggedIn(AuthUser(userId: 'u1', role: active, roles: roles));
   }
 
   group('switchTo (enrolled role)', () {
@@ -42,7 +43,8 @@ void main() {
         expect(path, '/auth/switch-role');
         body = data as Map<String, dynamic>;
         return {
-          'access_token': fakeJwt({'sub': 'u1', 'role': 'guard', 'exp': 9999999999}),
+          'access_token':
+              fakeJwt({'sub': 'u1', 'role': 'guard', 'exp': 9999999999}),
           'refresh_token': 'new-refresh',
           'expires_in': 3600,
         };
@@ -98,7 +100,8 @@ void main() {
   });
 
   group('enrol (not-yet-enrolled role)', () {
-    test('POST /auth/roles → profile_token handed to the registration flow', () async {
+    test('POST /auth/roles → profile_token handed to the registration flow',
+        () async {
       final store = InMemoryStore();
       Map<String, dynamic>? body;
       final api = FakeApi(onPost: (path, data) async {
@@ -116,14 +119,16 @@ void main() {
       expect(outcome, RoleActionOutcome.needsProfile);
       expect(body!['role'], 'guard');
       // The registration controller now holds the role + profile_token for the profile form.
-      expect(c.read(registrationControllerProvider).role, RegistrationRole.guard);
+      expect(
+          c.read(registrationControllerProvider).role, RegistrationRole.guard);
       expect(store.profileToken, 'ptok-guard');
       // The user stays AUTHENTICATED in their current role (NOT bounced to pendingApproval).
       expect(c.read(sessionProvider).status, SessionStatus.authenticated);
       expect(c.read(sessionProvider).user!.role, 'customer');
     });
 
-    test('add-role profile submit does NOT flip the session or set the pending markers',
+    test(
+        'add-role profile submit does NOT flip the session or set the pending markers',
         () async {
       final store = InMemoryStore();
       final prefs = FakePrefsStore();
@@ -183,21 +188,28 @@ void main() {
 
       // guard is enrolled → switch
       expect(
-        await c.read(roleSwitchControllerProvider.notifier).choose(RegistrationRole.guard),
+        await c
+            .read(roleSwitchControllerProvider.notifier)
+            .choose(RegistrationRole.guard),
         RoleActionOutcome.switched,
       );
 
       // Back to a single-role customer session: guard is NOT enrolled → add-role.
       seedSession(c, active: 'customer', roles: ['customer']);
       expect(
-        await c.read(roleSwitchControllerProvider.notifier).choose(RegistrationRole.guard),
+        await c
+            .read(roleSwitchControllerProvider.notifier)
+            .choose(RegistrationRole.guard),
         RoleActionOutcome.needsProfile,
       );
     });
   });
 
-  test('switchTo surfaces a non-409 server error and keeps the session', () async {
-    final store = InMemoryStore()..access = 'a'..refresh = 'r';
+  test('switchTo surfaces a non-409 server error and keeps the session',
+      () async {
+    final store = InMemoryStore()
+      ..access = 'a'
+      ..refresh = 'r';
     final api = FakeApi(onPost: (path, _) async {
       throw const ApiException(message: 'boom', statusCode: 500);
     });
@@ -209,7 +221,9 @@ void main() {
         .switchTo(RegistrationRole.guard);
 
     expect(outcome, RoleActionOutcome.error);
-    expect(c.read(roleSwitchControllerProvider).error, 'boom');
+    // A 5xx is localized (infrastructure), never the raw English server text (deep-review lang fix).
+    expect(c.read(roleSwitchControllerProvider).error,
+        'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง');
     expect(c.read(sessionProvider).user!.role, 'customer', reason: 'unchanged');
     expect(store.refresh, 'r', reason: 'old refresh kept');
   });

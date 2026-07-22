@@ -1,5 +1,6 @@
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'locale_controller.dart';
@@ -73,7 +74,7 @@ class ReviewController extends _$ReviewController {
         state = state.copyWith(busy: false);
         return ReviewOutcome.alreadyReviewed;
       }
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
       return ReviewOutcome.error;
     } catch (_) {
       state = state.copyWith(

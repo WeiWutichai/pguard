@@ -6,6 +6,7 @@ import '../models/booking_options.dart';
 import '../models/geo.dart';
 import '../models/money.dart';
 import '../models/service_catalog.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'locale_controller.dart';
@@ -370,7 +371,7 @@ class BookingFlowController extends _$BookingFlowController {
       state = state.copyWith(busy: false);
       return ok;
     } on ApiException catch (e) {
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
       return false;
     } catch (_) {
       state = state.copyWith(

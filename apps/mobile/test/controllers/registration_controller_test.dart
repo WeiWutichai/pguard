@@ -551,9 +551,14 @@ void main() {
       '(no bounce, no second register POST)', () async {
     final store = InMemoryStore();
     final prefs = FakePrefsStore();
+    // A REAL profile_token (JWT with a future exp) — the resume path now drops an expired/placeholder
+    // token, so the fixture must carry a live one to prove the resume (deep-review expiry fix).
     final api = FakeApi(
-        onPost: (path, data) async =>
-            {'user_id': 'u1', 'profile_token': 'ptok'});
+        onPost: (path, data) async => {
+              'user_id': 'u1',
+              'profile_token': fakeJwt(
+                  {'sub': 'u1', 'purpose': 'guard_profile', 'exp': 9999999999})
+            });
     final c = container(api: api, store: store, prefs: prefs);
     final ctrl = c.read(registrationControllerProvider.notifier);
     await ctrl.beginFromAuth(
@@ -581,7 +586,8 @@ void main() {
       ..phoneVerifiedToken = 'pvt-stale'
       ..onboardingPin = pin
       ..phone = phone
-      ..profileToken = 'ptok';
+      ..profileToken =
+          fakeJwt({'sub': 'u1', 'purpose': 'guard_profile', 'exp': 9999999999});
     final prefs = FakePrefsStore();
     final api = FakeApi(onPost: (_, __) async {
       throw const ApiException(message: 'already used', statusCode: 400);

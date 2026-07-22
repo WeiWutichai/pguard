@@ -6,6 +6,7 @@ import '../media/photo_capture.dart';
 import '../models/booking.dart';
 import '../models/progress_report.dart';
 import '../models/tracking.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'guard_clock.dart';
@@ -451,7 +452,7 @@ class ActiveJobController extends _$ActiveJobController {
       ));
       return true;
     } on ApiException catch (e) {
-      state = AsyncData(current.copyWith(busy: false, error: e.message));
+      state = AsyncData(current.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e)));
       return false;
     } catch (_) {
       state = AsyncData(current.copyWith(busy: false, error: _genericError()));

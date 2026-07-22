@@ -36,7 +36,8 @@ void main() {
   setUp(() async {
     tempSlip = File(
         '${Directory.systemTemp.path}/pg_slip_test_${DateTime.now().microsecondsSinceEpoch}.jpg');
-    await tempSlip.writeAsBytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46]);
+    await tempSlip
+        .writeAsBytes([0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46]);
   });
   tearDown(() async {
     if (await tempSlip.exists()) await tempSlip.delete();
@@ -52,7 +53,8 @@ void main() {
     return c;
   }
 
-  test('build fetches the PromptPay instructions → ready phase with QR/amount/account',
+  test(
+      'build fetches the PromptPay instructions → ready phase with QR/amount/account',
       () async {
     final api = FakeApi(onGet: (path, _) async {
       expect(path, '/payments/b1/promptpay');
@@ -76,7 +78,8 @@ void main() {
     expect(api.calls, contains('GET /payments/b1/promptpay'));
   });
 
-  test('a failed instructions fetch stays loading with a banner error (retryable)',
+  test(
+      'a failed instructions fetch stays loading with a banner error (retryable)',
       () async {
     var calls = 0;
     final api = FakeApi(onGet: (_, __) async {
@@ -93,7 +96,8 @@ void main() {
 
     var s = c.read(slipPaymentControllerProvider('b1'));
     expect(s.phase, SlipPhase.loading);
-    expect(s.error, 'temporarily down');
+    // A 5xx is localized (infrastructure), never the raw English server text (deep-review lang fix).
+    expect(s.error, 'ระบบขัดข้องชั่วคราว กรุณาลองใหม่ภายหลัง');
 
     // Retry succeeds.
     await c.read(slipPaymentControllerProvider('b1').notifier).loadInfo();
@@ -102,7 +106,8 @@ void main() {
     expect(s.error, isNull);
   });
 
-  test('a successful slip upload settles the payment → done phase, booking proceeds',
+  test(
+      'a successful slip upload settles the payment → done phase, booking proceeds',
       () async {
     Object? postPath;
     final api = FakeApi(
@@ -132,7 +137,8 @@ void main() {
     expect(s.error, isNull);
   });
 
-  test('a successful slip upload OPTIMISTICALLY marks the live booking paid', () async {
+  test('a successful slip upload OPTIMISTICALLY marks the live booking paid',
+      () async {
     final api = FakeApi(
       onGet: (path, _) async {
         if (path == '/payments/b1/promptpay') return promptpayJson();
@@ -156,14 +162,12 @@ void main() {
     addTearDown(c.dispose);
 
     // Keep BOTH controllers alive: the slip controller + the live booking the screen watches.
-    final slipSub =
-        c.listen(slipPaymentControllerProvider('b1'), (_, __) {});
+    final slipSub = c.listen(slipPaymentControllerProvider('b1'), (_, __) {});
     addTearDown(slipSub.close);
     final bookingSub =
         c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
     addTearDown(bookingSub.close);
-    final booking =
-        await c.read(bookingStatusControllerProvider('b1').future);
+    final booking = await c.read(bookingStatusControllerProvider('b1').future);
     expect(booking.isPaid, isFalse);
     await Future<void>.delayed(Duration.zero);
 
@@ -175,7 +179,8 @@ void main() {
         reason: 'slip verified → live booking marked paid → pay banner clears');
   });
 
-  test('each typed 409 renders its specific Thai message and returns to ready (re-pickable)',
+  test(
+      'each typed 409 renders its specific Thai message and returns to ready (re-pickable)',
       () async {
     final cases = <String, String>{
       'SLIP_VERIFY_FAILED': 'สลิปไม่ถูกต้อง',

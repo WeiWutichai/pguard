@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show debugPrint;
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/registration.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'auth_controller.dart';
@@ -259,7 +260,10 @@ class RegistrationController extends _$RegistrationController {
                 : 'Verification expired — request a new code');
         return RegisterOutcome.error;
       }
-      state = state.copyWith(busy: false, error: e.message);
+      state = state.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e));
       return RegisterOutcome.error;
     } catch (_) {
       state = state.copyWith(
@@ -630,7 +634,24 @@ class RegistrationController extends _$RegistrationController {
       state = state.copyWith(busy: false, submitted: summary);
       return resp is Map<String, dynamic> ? resp : <String, dynamic>{};
     } on ApiException catch (e) {
-      state = state.copyWith(busy: false, error: e.message);
+      // A 401 means the single-use profile_token is spent OR expired — it can NEVER succeed on a
+      // retry, and re-presenting it (the resume path) loops forever (deep-review HIGH). Drop it so
+      // the next attempt starts clean, and point the user to a fresh OTP (re-registration then mints
+      // a new token). Other errors keep the localized message + the still-valid token for a retry.
+      if (e.statusCode == 401) {
+        await ref.read(appStoreProvider).clearRegistrationTokens();
+        _profileToken = null;
+        state = state.copyWith(
+            busy: false,
+            error: isThai
+                ? 'เซสชันหมดอายุ กรุณาขอรหัส OTP ใหม่อีกครั้ง'
+                : 'Your session expired — please request a new OTP');
+        return null;
+      }
+      state = state.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e));
       return null;
     } catch (_) {
       state = state.copyWith(
@@ -734,10 +755,39 @@ class RegistrationController extends _$RegistrationController {
     }
   }
 
+  /// True when a `profile_token` is past its JWT `exp` (or unparseable). Profile tokens live only
+  /// ~15 min, but a guard's 4-step form with 6 photo captures easily runs longer — an expired token
+  /// can NEVER authorize the submit (identity 401s), and re-presenting it loops the user forever
+  /// (deep-review HIGH). So an expired token is treated as ABSENT: dropped, never re-presented, and
+  /// the user is bounced to a clean re-OTP (which, with the phone-status pending fix, re-registers
+  /// and mints a fresh token). A 5s skew avoids optimistically using a token about to expire.
+  bool _isProfileTokenExpired(String token) {
+    try {
+      final parts = token.split('.');
+      if (parts.length != 3) return true;
+      final payload = jsonDecode(
+              utf8.decode(base64Url.decode(base64Url.normalize(parts[1]))))
+          as Map<String, dynamic>;
+      final exp = payload['exp'];
+      if (exp is! num) return true;
+      final expMs = exp.toInt() * 1000;
+      return DateTime.now().toUtc().millisecondsSinceEpoch >= expMs - 5000;
+    } catch (_) {
+      return true;
+    }
+  }
+
   Future<RegisterOutcome?> _resumeIfAlreadyRegistered() async {
     final store = ref.read(appStoreProvider);
     final existing = _profileToken ?? await store.readProfileToken();
     if (existing == null) return null;
+    // An EXPIRED profile_token can never authorize the submit (401), and re-presenting it loops the
+    // user forever. Treat it as absent: drop it and fall through to a clean re-OTP restart.
+    if (_isProfileTokenExpired(existing)) {
+      await store.clearRegistrationTokens();
+      _profileToken = null;
+      return null;
+    }
     // Switching roles after a prior register (the single-use phone-verify token is already spent):
     // the leftover token is for the OTHER role and must NOT be carried into this role's profile form
     // (the server rejects a wrong-purpose token). Re-issue a correct-role profile_token via the

@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/booking.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'locale_controller.dart';
@@ -88,7 +89,7 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return e.message;
+      return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
@@ -114,7 +115,7 @@ class BookingStatusController extends _$BookingStatusController {
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {
-      return e.message;
+      return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
