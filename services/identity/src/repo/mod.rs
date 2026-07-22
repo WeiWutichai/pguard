@@ -1007,6 +1007,26 @@ pub async fn account_id_and_role_by_phone(
     Ok(row)
 }
 
+/// Does an APPROVED (loginable) account hold this phone? Distinct from
+/// [`account_id_and_role_by_phone`] (which matches ANY live account, incl. `pending`/`rejected`):
+/// `phone_status` uses THIS so a still-pending registration is NOT reported as returning-loginable.
+/// Routing a pending phone to PIN-login strands it forever — `verify_credentials` requires
+/// `approval_status = 'approved'`, so the PIN always 401s and re-OTP is diverted back to the same
+/// PIN-login. Reporting the pending phone as ABSENT instead lets the client re-enter `register`,
+/// whose `ON CONFLICT … WHERE approval_status = 'pending'` refreshes the row (202) and mints a fresh
+/// profile token — the intended recovery. (Casts `::text` per this file's enum-comparison convention.)
+pub async fn approved_account_exists_by_phone(db: &PgPool, phone: &str) -> Result<bool, AppError> {
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT 1 FROM identity.users \
+         WHERE phone = $1 AND is_active = TRUE AND deleted_at IS NULL \
+           AND approval_status::text = 'approved'",
+    )
+    .bind(phone)
+    .fetch_optional(db)
+    .await?;
+    Ok(row.is_some())
+}
+
 /// Reset the PIN of an EXISTING account BY PHONE — the "forgot PIN" flow, driven by a verified OTP
 /// token (the phone comes from that token, NEVER the request body). No current-PIN verify: phone
 /// ownership + the single-use token ARE the authorization. Stores the new Argon2 hash, bumps the

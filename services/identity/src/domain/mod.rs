@@ -7,6 +7,8 @@
 //! - [`revocation`] — the per-user force-revoke-all version helper.
 //! - [`token`]    — opaque `{rotation_id}.{secret}` refresh-token format helpers.
 
+/// Per-account failed-login lockout backoff (PURE); the API layer owns the Redis counter/lock.
+pub mod login_throttle;
 pub mod mask;
 pub mod password;
 pub mod registration;
