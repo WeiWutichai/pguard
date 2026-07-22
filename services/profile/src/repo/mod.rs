@@ -796,11 +796,10 @@ pub async fn set_approval_status(
         .fetch_one(&mut *tx)
         .await?;
 
-    // Atomic with the flip: enqueue the account event for identity to consume. Only an
-    // APPROVAL needs an event — it's the login UNBLOCKER identity must react to. A rejection
-    // needs none: login already blocks every non-`approved` account, so there is no consumer
-    // (emitting a consumer-less `user.rejected` would just accrue orphan messages). The
-    // `user.rejected` topic stays reserved in shared-events for a future audit/notify consumer.
+    // Atomic with the flip: enqueue the account event for identity to consume. APPROVAL unblocks
+    // login; REJECTION now also emits `user.rejected` so identity flips ITS OWN approval_status to
+    // 'rejected' — the applicant can then be shown a distinct rejected state (instead of "pending
+    // forever") and a rejected phone can be re-registered (deep-review).
     if let Some(topic) = approval_event_topic(&target) {
         let now = Utc::now();
         let envelope = EventEnvelope::new(
@@ -817,13 +816,14 @@ pub async fn set_approval_status(
     guard_row_from_tuple(row).into_response()
 }
 
-/// The account-event topic to emit for an approval transition. Only `Approved` produces an
-/// event (the login unblocker identity consumes); `Rejected`/`Pending` emit nothing (no
-/// consumer — login already blocks them).
+/// The account-event topic to emit for an approval transition. `Approved` → `user.approved` (the
+/// login unblocker); `Rejected` → `user.rejected` (identity flips its own status so the applicant
+/// sees a distinct rejected state + can re-apply). `Pending` emits nothing.
 fn approval_event_topic(target: &ApprovalStatus) -> Option<&'static str> {
     match target {
         ApprovalStatus::Approved => Some(topics::USER_APPROVED),
-        ApprovalStatus::Rejected | ApprovalStatus::Pending => None,
+        ApprovalStatus::Rejected => Some(topics::USER_REJECTED),
+        ApprovalStatus::Pending => None,
     }
 }
 

@@ -10,6 +10,9 @@
 //! the account can log in — closing the approval→login loop with no cross-schema write.
 
 pub mod approved;
+/// `user.rejected` consumer (profile → identity): flip approval_status to `rejected` so a rejected
+/// applicant sees a distinct state + can re-apply. Separate durable from [`approved`].
+pub mod rejected;
 
 use futures::StreamExt;
 use serde::Deserialize;

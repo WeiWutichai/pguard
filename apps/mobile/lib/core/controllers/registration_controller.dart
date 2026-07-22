@@ -17,6 +17,19 @@ import 'session_controller.dart';
 part 'registration_controller.g.dart';
 
 /// The result of [RegistrationController.register].
+/// How a pending-account "check status" resolved (see [RegistrationController.checkStatus]).
+enum CheckStatusOutcome {
+  /// The application was approved — the session is now authenticated; go to the dashboard.
+  approved,
+
+  /// Still awaiting an admin decision (login 401).
+  pending,
+
+  /// The admin REJECTED the application (a correct PIN gets a distinct 409 ACCOUNT_REJECTED). The
+  /// applicant can re-apply (a rejected phone is re-registerable).
+  rejected,
+}
+
 enum RegisterOutcome {
   /// 202 — pending account created; go submit the profile with the `profile_token`.
   needsProfile,
@@ -671,19 +684,20 @@ class RegistrationController extends _$RegistrationController {
   /// screen re-prompts the PIN and calls [checkStatusWithPin].
   bool get canCheckSilently => _phone != null && _pin != null;
 
-  /// Attempt `loginWithPin` to see if the pending account is now approved (login succeeds only
-  /// once approved; a pending account returns a generic 401 → stays pending). Uses the in-memory
-  /// PIN; returns false (no error) if it isn't available.
-  Future<bool> checkStatus() async {
+  /// Attempt `loginWithPin` to see how the pending account resolved: `approved` (login succeeds →
+  /// session flipped), `rejected` (the admin rejected it — a correct PIN gets a distinct 409
+  /// `ACCOUNT_REJECTED`), or still `pending` (generic 401). Uses the in-memory PIN; returns
+  /// `pending` if it isn't available (nothing to attempt).
+  Future<CheckStatusOutcome> checkStatus() async {
     final phone = _phone;
     final pin = _pin;
-    if (phone == null || pin == null) return false;
+    if (phone == null || pin == null) return CheckStatusOutcome.pending;
     return _attemptApprovedLogin(phone: phone, pin: pin);
   }
 
   /// Cold-start "check status": the PIN is re-entered on the pending screen; the phone comes from
   /// secure storage (persisted at register).
-  Future<bool> checkStatusWithPin(String pin) async {
+  Future<CheckStatusOutcome> checkStatusWithPin(String pin) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final phone = _phone ?? await ref.read(appStoreProvider).readPhone();
     if (phone == null) {
@@ -691,26 +705,32 @@ class RegistrationController extends _$RegistrationController {
           error: isThai
               ? 'ไม่พบเบอร์ กรุณาเริ่มใหม่'
               : 'Phone missing — start again');
-      return false;
+      return CheckStatusOutcome.pending;
     }
     return _attemptApprovedLogin(phone: phone, pin: pin);
   }
 
-  Future<bool> _attemptApprovedLogin({
+  Future<CheckStatusOutcome> _attemptApprovedLogin({
     required String phone,
     required String pin,
   }) async {
     state = state.copyWith(busy: true, error: null);
-    final ok = await ref
+    final code = await ref
         .read(authControllerProvider.notifier)
-        .loginWithPin(phone: phone, pin: pin);
-    if (ok) {
-      // Approved → now authenticated (loginWithPin flipped the session). Drop pending state.
+        .loginWithPinOutcomeCode(phone: phone, pin: pin);
+    if (code == null) {
+      // Approved → now authenticated (login flipped the session). Drop pending state.
       await _clearPending();
+      state = state.copyWith(busy: false);
+      return CheckStatusOutcome.approved;
     }
-    // A `false` here means "still pending" (generic 401), NOT an error to surface loudly.
     state = state.copyWith(busy: false);
-    return ok;
+    // A correct PIN on a REJECTED application returns 409 ACCOUNT_REJECTED; a still-pending account
+    // returns a generic 401 (no such code). Everything else is treated as still pending (not a loud
+    // error) — the user can re-check or re-apply.
+    return code == 'ACCOUNT_REJECTED'
+        ? CheckStatusOutcome.rejected
+        : CheckStatusOutcome.pending;
   }
 
   Future<void> _clearPending() async {

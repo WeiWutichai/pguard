@@ -70,28 +70,63 @@ class _RegistrationPendingScreenState
 
   Future<void> _checkStatus() async {
     final ctrl = ref.read(registrationControllerProvider.notifier);
-    final approved = ctrl.canCheckSilently
+    final outcome = ctrl.canCheckSilently
         ? await ctrl.checkStatus()
         : await _checkWithReenteredPin(ctrl);
-    if (!mounted || approved == null) return;
-    if (approved) {
-      // The login just flipped the session to authenticated — but the router's authenticated
-      // branch KEEPS `/auth/pending` in place (a carve-out for the add-role background flow), so it
-      // won't auto-redirect a first-role approval off this screen (the user otherwise had to
-      // force-close + reopen the app to get in). Navigate explicitly to the SAME destination the
-      // router picks for a fresh login (mode picker for multi-role, else the role home).
-      final user = ref.read(sessionProvider).user;
-      context.go(user?.hasMultipleRoles == true
-          ? '/auth/role'
-          : (user?.isGuard == true ? '/home/guard' : '/home/customer'));
-      return;
-    }
+    if (!mounted || outcome == null) return;
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-      content: Text(
-        isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
+    switch (outcome) {
+      case CheckStatusOutcome.approved:
+        // The login just flipped the session to authenticated — but the router's authenticated
+        // branch KEEPS `/auth/pending` in place (a carve-out for the add-role background flow), so it
+        // won't auto-redirect a first-role approval off this screen (the user otherwise had to
+        // force-close + reopen the app to get in). Navigate explicitly to the SAME destination the
+        // router picks for a fresh login (mode picker for multi-role, else the role home).
+        final user = ref.read(sessionProvider).user;
+        context.go(user?.hasMultipleRoles == true
+            ? '/auth/role'
+            : (user?.isGuard == true ? '/home/guard' : '/home/customer'));
+      case CheckStatusOutcome.rejected:
+        // No longer the "pending forever" lie: the application was rejected. Explain it + offer a
+        // re-apply (a rejected phone is now re-registerable — deep-review).
+        await _showRejectedDialog(isThai);
+      case CheckStatusOutcome.pending:
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+          content: Text(
+            isThai ? 'ยังรอการอนุมัติอยู่' : 'Still pending approval',
+          ),
+        ));
+    }
+  }
+
+  /// The application was rejected: a clear, non-dismissable-by-tap dialog with a re-apply CTA (full
+  /// sign-out → re-register the same phone, which the backend now permits for a rejected account).
+  Future<void> _showRejectedDialog(bool isThai) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogCtx) => AlertDialog(
+        title: Text(
+            isThai ? 'ใบสมัครไม่ผ่านการอนุมัติ' : 'Application not approved'),
+        content: Text(isThai
+            ? 'ใบสมัครของคุณไม่ผ่านการอนุมัติ คุณสามารถสมัครใหม่อีกครั้งด้วยเบอร์เดิมได้'
+            : 'Your application was not approved. You can apply again with the same phone number.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogCtx),
+            child: Text(isThai ? 'ปิด' : 'Close'),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(dialogCtx);
+              // Full sign-out drops the phone + pending flag and returns to the OTP flow, where
+              // re-registering the (rejected) phone now succeeds.
+              ref.read(sessionProvider.notifier).logout(forgetDevice: true);
+            },
+            child: Text(isThai ? 'สมัครใหม่' : 'Apply again'),
+          ),
+        ],
       ),
-    ));
+    );
   }
 
   /// Start the "register the OTHER role too" flow: re-verify the account's phone by OTP (a pending
@@ -120,7 +155,8 @@ class _RegistrationPendingScreenState
   }
 
   /// Cold start: the in-memory PIN is gone, so re-enter it to attempt the approved-login.
-  Future<bool?> _checkWithReenteredPin(RegistrationController ctrl) async {
+  Future<CheckStatusOutcome?> _checkWithReenteredPin(
+      RegistrationController ctrl) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
     final controller = TextEditingController();
     final pin = await showDialog<String>(

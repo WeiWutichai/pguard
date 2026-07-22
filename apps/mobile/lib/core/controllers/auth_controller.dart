@@ -302,6 +302,31 @@ class AuthController extends _$AuthController {
   Future<bool> loginWithPin({required String phone, required String pin}) =>
       _guard(() => _performLogin(phone: phone, pin: pin));
 
+  /// Like [loginWithPin] but REPORTS THE SERVER CODE on failure, so the registration pending flow
+  /// can tell a REJECTED application (409 `ACCOUNT_REJECTED`) apart from a still-pending 401 (both
+  /// otherwise surface as a plain `false`). Returns `null` on success (the session is flipped), else
+  /// the error code (`''` for an uncoded / transport failure). Mirrors [loginWithPin]'s re-entrancy
+  /// latch + error localization.
+  Future<String?> loginWithPinOutcomeCode(
+      {required String phone, required String pin}) async {
+    if (state.busy) return '';
+    state = state.copyWith(busy: true, error: null);
+    try {
+      await _performLogin(phone: phone, pin: pin);
+      state = state.copyWith(busy: false);
+      return null;
+    } on ApiException catch (e) {
+      state = state.copyWith(busy: false, error: _localizeApiError(e));
+      return e.code ?? '';
+    } catch (_) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      state = state.copyWith(
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
+      return '';
+    }
+  }
+
   /// The login CORE (no [_guard] — callers wrap it). POSTs `/auth/login`, persists the token pair +
   /// phone + local PIN, and flips the session to authenticated. Shared by [loginWithPin] and
   /// [resetPin] (which logs in with the just-reset PIN) so the persistence + session flip never drift.

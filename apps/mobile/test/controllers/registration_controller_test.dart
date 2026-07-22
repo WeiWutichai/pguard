@@ -435,16 +435,45 @@ void main() {
     await ctrl.register();
     expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
 
-    // Not approved yet → stays pending (false, not an error).
-    expect(await ctrl.checkStatus(), isFalse);
+    // Not approved yet → stays pending (not an error).
+    expect(await ctrl.checkStatus(), CheckStatusOutcome.pending);
     expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
 
     // Approved → login succeeds → authenticated + pending flags cleared.
     approved = true;
-    expect(await ctrl.checkStatus(), isTrue);
+    expect(await ctrl.checkStatus(), CheckStatusOutcome.approved);
     expect(c.read(sessionProvider).status, SessionStatus.authenticated);
     expect(store.access, isNotNull);
     expect(RegistrationRole.tryParse(prefs.values[kRegPendingRoleKey]), isNull);
+  });
+
+  test(
+      'checkStatus: a 409 ACCOUNT_REJECTED resolves to rejected (not "pending")',
+      () async {
+    final store = InMemoryStore();
+    final api = FakeApi(onPost: (path, data) async {
+      switch (path) {
+        case '/auth/register':
+          return {'user_id': 'u4', 'profile_token': 'ptok'};
+        case '/auth/login':
+          // A correct PIN on a REJECTED application gets the distinct coded 409.
+          throw const ApiException(
+              message: 'This application was rejected',
+              code: 'ACCOUNT_REJECTED',
+              statusCode: 409);
+        default:
+          throw StateError('unexpected POST $path');
+      }
+    });
+    final c = container(api: api, store: store, prefs: FakePrefsStore());
+    final ctrl = c.read(registrationControllerProvider.notifier);
+    await ctrl.beginFromAuth(phone: phone, phoneVerifiedToken: 'pvt', pin: pin);
+    ctrl.selectRole(RegistrationRole.guard);
+    await ctrl.register();
+
+    expect(await ctrl.checkStatus(), CheckStatusOutcome.rejected);
+    // Rejection is NOT an approval — the session stays pending (login didn't flip it).
+    expect(c.read(sessionProvider).status, SessionStatus.pendingApproval);
   });
 
   test('register without role/credentials → error outcome, no network',
