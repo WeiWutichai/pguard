@@ -29,15 +29,22 @@ class GuardEarnings {
   /// total is potentially incomplete. The UI surfaces a "ยอดอาจไม่ครบ / may be incomplete" caveat.
   static bool feedMayBeTruncated(List<Booking> all) => all.length >= feedRowCap;
 
-  /// One guard's estimated pay for a job, in satang: `base_fee × hours`.
-  static int jobEarningsSatang(Booking b) =>
-      Money.satangFromString(b.baseFee) * (b.hours ?? 0);
+  /// One guard's pay for a job, in satang: `base_fee × hours`. When [actualHours] carries an entry
+  /// for this booking (from `GET /payments/earnings` — the clamped hours ACTUALLY worked, persisted
+  /// at reconcile), that is used INSTEAD of the booked hours, so a job that finished early pays for
+  /// the hours worked — matching the customer's reconciled net — rather than the full booked
+  /// estimate that overstated it. Falls back to booked hours when there is no reconciled entry.
+  static int jobEarningsSatang(Booking b, {Map<String, double>? actualHours}) {
+    final hrs = actualHours?[b.id] ?? (b.hours ?? 0).toDouble();
+    return (Money.satangFromString(b.baseFee) * hrs).round();
+  }
 
   /// Σ [jobEarningsSatang] over the completed bookings in [all].
-  static int totalEarningsSatang(List<Booking> all) {
+  static int totalEarningsSatang(List<Booking> all,
+      {Map<String, double>? actualHours}) {
     var sum = 0;
     for (final b in completedJobs(all)) {
-      sum += jobEarningsSatang(b);
+      sum += jobEarningsSatang(b, actualHours: actualHours);
     }
     return sum;
   }
@@ -58,7 +65,7 @@ class GuardEarnings {
   /// completed jobs sitting in the list below.) ACCURACY caveat re the 100-row feed cap is unchanged
   /// ([feedMayBeTruncated]); every figure is labelled "ประมาณการ / Estimated" (method: base × hours).
   static int _sumCalendarDays(List<Booking> all, DateTime now, int days,
-      {int offsetDays = 0}) {
+      {int offsetDays = 0, Map<String, double>? actualHours}) {
     final local = now.toLocal();
     final end = DateTime(local.year, local.month, local.day - offsetDays);
     final start = DateTime(end.year, end.month, end.day - (days - 1));
@@ -68,22 +75,25 @@ class GuardEarnings {
       if (w == null) continue;
       final d = DateTime(w.year, w.month, w.day);
       if (!d.isBefore(start) && !d.isAfter(end)) {
-        sum += jobEarningsSatang(b);
+        sum += jobEarningsSatang(b, actualHours: actualHours);
       }
     }
     return sum;
   }
 
-  /// Σ estimated pay for completed jobs in the current window (today / last 7 / last 30 days).
-  static int sumInWindow(List<Booking> all, DateTime now, EarningsWindow w) =>
-      _sumCalendarDays(all, now, windowDays(w));
+  /// Σ pay for completed jobs in the current window (today / last 7 / last 30 days).
+  static int sumInWindow(List<Booking> all, DateTime now, EarningsWindow w,
+          {Map<String, double>? actualHours}) =>
+      _sumCalendarDays(all, now, windowDays(w), actualHours: actualHours);
 
   /// Growth fraction vs the immediately-prior window of the same length (e.g. +0.14 = +14%).
   /// `null` when the prior window had no earnings (no honest baseline to compare against).
-  static double? growth(List<Booking> all, DateTime now, EarningsWindow w) {
+  static double? growth(List<Booking> all, DateTime now, EarningsWindow w,
+      {Map<String, double>? actualHours}) {
     final days = windowDays(w);
-    final current = _sumCalendarDays(all, now, days);
-    final prior = _sumCalendarDays(all, now, days, offsetDays: days);
+    final current = _sumCalendarDays(all, now, days, actualHours: actualHours);
+    final prior = _sumCalendarDays(all, now, days,
+        offsetDays: days, actualHours: actualHours);
     if (prior == 0) return null;
     return (current - prior) / prior;
   }
@@ -103,7 +113,7 @@ class GuardEarnings {
   /// Estimated pay (satang) per day for the last [days] days ending today, OLDEST first.
   /// Bucketed by the job's scheduled LOCAL date against [seriesDates] — drives the 7-day bar chart.
   static List<int> dailySeries(List<Booking> all, DateTime now,
-      {int days = 7}) {
+      {int days = 7, Map<String, double>? actualHours}) {
     final dates = seriesDates(now, days: days);
     final buckets = List<int>.filled(days, 0);
     for (final b in completedJobs(all)) {
@@ -113,7 +123,7 @@ class GuardEarnings {
         if (when.year == dates[i].year &&
             when.month == dates[i].month &&
             when.day == dates[i].day) {
-          buckets[i] += jobEarningsSatang(b);
+          buckets[i] += jobEarningsSatang(b, actualHours: actualHours);
           break;
         }
       }

@@ -40,6 +40,33 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/payments/earnings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The assigned guard's earning basis (role=guard)
+         * @description The caller's COMPLETED (paid) jobs, newest first, each with the clamped `actual_hours`
+         *     ACTUALLY worked (persisted at reconcile; `null` for an even-match / not-yet-reconciled row).
+         *     GUARD-ONLY (keyed on the JWT `sub` → the assigned guard). The guard app pairs each
+         *     `booking_id` with the `base_fee` from its own booking feed and pays `base_fee × actual_hours`
+         *     (falling back to the booked hours when `actual_hours` is null), so a job that finished early
+         *     — and was overpay-refunded to the customer — pays the guard for the hours actually worked
+         *     rather than the full booked estimate. Cancelled/withdrawn (refunded) jobs are excluded (the
+         *     guard earned nothing there).
+         */
+        get: operations["listGuardEarnings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/payments": {
         parameters: {
             query?: never;
@@ -379,6 +406,21 @@ export interface components {
             total: string;
         };
         /**
+         * @description One completed job's earning basis for the assigned guard. `actual_hours` is the clamped
+         *     hours ACTUALLY worked (persisted at reconcile); `null` for an even-match / not-yet-reconciled
+         *     row, where the client falls back to the booked hours. The client multiplies `base_fee` (from
+         *     its own booking feed) × these hours to show the guard's pay for hours actually worked.
+         */
+        GuardEarning: {
+            /** Format: uuid */
+            booking_id: string;
+            /**
+             * @description Clamped hours actually worked (exact decimal as a string; money rule). Null when unreconciled.
+             * @example 2.50
+             */
+            actual_hours?: string | null;
+        };
+        /**
          * @description Refund-workflow state (NOT the payment status — a partial refund stays `completed`).
          * @enum {string}
          */
@@ -546,6 +588,30 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    listGuardEarnings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The caller-guard's completed-job earning rows */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["GuardEarning"][];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     adminListPayments: {

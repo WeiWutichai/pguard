@@ -105,6 +105,7 @@ Class | Method | HTTP request | Description
 [*PaymentsApi*](doc/PaymentsApi.md) | [**createPayment**](doc/PaymentsApi.md#createpayment) | **POST** /payments | PRE-PAY a booking&#39;s estimate (createPayment)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPayment**](doc/PaymentsApi.md#getpayment) | **GET** /payments/{id} | Get one payment the caller owns (or admin)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**getPromptPay**](doc/PaymentsApi.md#getpromptpay) | **GET** /payments/{id}/promptpay | PromptPay transfer instructions for a booking (where to pay)
+[*PaymentsApi*](doc/PaymentsApi.md) | [**listGuardEarnings**](doc/PaymentsApi.md#listguardearnings) | **GET** /payments/earnings | The assigned guard&#39;s earning basis (role&#x3D;guard)
 [*PaymentsApi*](doc/PaymentsApi.md) | [**listPayments**](doc/PaymentsApi.md#listpayments) | **GET** /payments | List the caller&#39;s payments
 [*PaymentsApi*](doc/PaymentsApi.md) | [**payWithSlip**](doc/PaymentsApi.md#paywithslip) | **POST** /payments/{id}/slip | Pay a booking with a Slip2Go-verified transfer slip (REAL money path)
 
@@ -120,7 +121,9 @@ Class | Method | HTTP request | Description
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetPromptPay200Response](doc/GetPromptPay200Response.md)
+ - [GuardEarning](doc/GuardEarning.md)
  - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
+ - [ListGuardEarnings200Response](doc/ListGuardEarnings200Response.md)
  - [ListPayments200Response](doc/ListPayments200Response.md)
  - [PayWithSlip200Response](doc/PayWithSlip200Response.md)
  - [Payment](doc/Payment.md)

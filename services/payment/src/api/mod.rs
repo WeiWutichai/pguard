@@ -469,6 +469,26 @@ pub async fn list_payments<S: PaymentDeps>(
     Ok(Json(ApiResponse::success(items)))
 }
 
+/// GET /payments/earnings — the assigned guard's earning basis: their completed jobs with the
+/// clamped `actual_hours` worked. GUARD-ONLY (own jobs, keyed on the JWT `sub`). The guard app pairs
+/// each `booking_id` with the `base_fee` from its booking feed and pays `base_fee × actual_hours`
+/// (booked hours as a fallback when `actual_hours` is NULL) — so a job that finished early (and was
+/// overpay-refunded to the customer) pays the guard for the hours ACTUALLY worked, no longer the
+/// full booked estimate that overstated it.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn guard_earnings<S: PaymentDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<Vec<crate::models::GuardEarningRow>>>, AppError> {
+    if user.role != "guard" {
+        return Err(AppError::Forbidden(
+            "Only guards have an earnings ledger".to_string(),
+        ));
+    }
+    let items = repo::guard_earnings(state.db_read(), user.user_id).await?;
+    Ok(Json(ApiResponse::success(items)))
+}
+
 /// Valid `?status=` filter values for the admin ledger (the payment.payment_status enum).
 const PAYMENT_STATUSES: &[&str] = &["pending", "completed", "refunded"];
 

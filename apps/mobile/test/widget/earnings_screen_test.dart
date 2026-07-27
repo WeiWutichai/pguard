@@ -35,7 +35,9 @@ final _now = DateTime.utc(2026, 6, 4, 12);
 String _jwt() => fakeJwt({
       'sub': 'g1',
       'role': 'guard',
-      'exp': DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/ 1000,
+      'exp':
+          DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
+              1000,
     });
 
 Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
@@ -82,8 +84,10 @@ void main() {
     expect(find.text('฿1,840'), findsOneWidget);
     expect(find.text('฿1,150'), findsOneWidget);
     expect(find.text('โรงงาน ปทุม'), findsNothing);
-    // Both feeds (/bookings + /bookings/open) fetched once each — no polling.
-    expect(api.getCount, 2);
+    // Three reads, each ONCE, no polling: /bookings (assigned feed) + /bookings/open (discovery) +
+    // /payments/earnings (actual worked hours for base×actual pay). The earnings map is empty here
+    // (the fake returns [] for it), so pay falls back to booked hours → the totals above are unchanged.
+    expect(api.getCount, 3);
   });
 
   testWidgets('surfaces the incompleteness caveat when the feed is at the cap',
