@@ -106,6 +106,18 @@ pub struct RevenueReport {
     pub mom_pct: Option<f64>,
 }
 
+/// One completed job's earning basis for the assigned guard. `actual_hours` is the clamped hours
+/// ACTUALLY worked (persisted at reconcile); NULL for an even-match / not-yet-reconciled row, where
+/// the client falls back to the booked hours. The client multiplies `base_fee` (from its own
+/// booking feed) × these hours to show the guard's pay for hours actually worked — so the guard's
+/// figure tracks what the customer was actually charged (net of the overpay refund), instead of the
+/// full booked estimate that used to overstate it.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct GuardEarningRow {
+    pub booking_id: Uuid,
+    pub actual_hours: Option<Decimal>,
+}
+
 // ----- booking internal read (deserialized from booking's /internal/bookings/{id}) -----
 
 /// The authoritative booking fields the PRE-PAY charge verifies + prices against. Mirrors the

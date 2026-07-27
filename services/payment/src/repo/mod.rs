@@ -67,6 +67,26 @@ pub async fn list_payments(
     Ok(rows)
 }
 
+/// The assigned guard's earning basis: their COMPLETED (paid) jobs, newest first, with the clamped
+/// `actual_hours` worked (persisted at reconcile). A `refunded` row (a cancelled/withdrawn job) is
+/// excluded — the guard earned nothing there, and it is not a `completed` job on their side either.
+/// The client pairs each `booking_id` with the `base_fee` from its own booking feed and pays
+/// `base_fee × actual_hours` (falling back to booked hours when `actual_hours` is NULL), so the
+/// guard's earnings reflect hours ACTUALLY worked — matching the customer's reconciled net.
+pub async fn guard_earnings(
+    db: &sqlx::PgPool,
+    guard_id: Uuid,
+) -> Result<Vec<crate::models::GuardEarningRow>, AppError> {
+    let rows = sqlx::query_as::<_, crate::models::GuardEarningRow>(
+        "SELECT booking_id, actual_hours FROM payment.payments \
+         WHERE guard_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 100",
+    )
+    .bind(guard_id)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
 /// Admin cross-user payment ledger — every payment (NO owner filter; the admin-role gate is
 /// the API layer's job), newest first, with optional `status` and `customer_id` (drill into one
 /// customer's spend) filters + limit/offset. Diverges from [`list_payments`] by dropping the
@@ -599,13 +619,26 @@ pub async fn reconcile_on_completion(
         actual_seconds,
     );
 
+    // The clamped hours ACTUALLY worked (min(worked, booked), ≥0) — persisted on the row so the
+    // guard-earnings endpoint can pay for actual, not booked, hours. This column existed but was
+    // never written; leaving it NULL is why the guard's earnings screen (base × BOOKED hours) showed
+    // more than the customer's reconciled net. `None` only when the guard never started (defensive —
+    // requesting completion requires a start), in which case the column stays NULL and the client
+    // falls back to booked hours.
+    let actual_hours: Option<Decimal> = actual_seconds.map(|secs| {
+        let booked_base =
+            crate::domain::expected_total(base_fee, booked_hours, guard_count, Decimal::ZERO);
+        crate::domain::proration::compute_proration(booked_base, booked_hours, secs).actual_hours
+    });
+
     let settle = match outcome {
         Reconciliation::Even => {
             // Record the (matching) final bill for the ledger; no money moves, no event.
             sqlx::query(
-                "UPDATE payment.payments SET final_amount = amount, updated_at = now() WHERE id = $1",
+                "UPDATE payment.payments SET final_amount = amount, actual_hours = $2, updated_at = now() WHERE id = $1",
             )
             .bind(payment.id)
+            .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
             SettleOutcome::NoOp
@@ -620,12 +653,13 @@ pub async fn reconcile_on_completion(
             sqlx::query(
                 "UPDATE payment.payments \
                    SET final_amount = $2, refund_amount = $3, refund_status = 'pending', \
-                       updated_at = now() \
+                       actual_hours = $4, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(payment.id)
             .bind(final_amount)
             .bind(refund)
+            .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
 
@@ -659,10 +693,11 @@ pub async fn reconcile_on_completion(
             // Customer owes more than pre-paid (e.g. a tip bump). Record the higher final_amount;
             // the delta is owed. No refund event. (A real gateway would capture the extra here.)
             sqlx::query(
-                "UPDATE payment.payments SET final_amount = $2, updated_at = now() WHERE id = $1",
+                "UPDATE payment.payments SET final_amount = $2, actual_hours = $3, updated_at = now() WHERE id = $1",
             )
             .bind(payment.id)
             .bind(final_amount)
+            .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
             SettleOutcome::ExtraCharged {
@@ -1544,6 +1579,88 @@ mod db_tests {
         .await
         .expect("count refunds after replay");
         assert_eq!(refunds2, 1, "still exactly one refund (idempotent)");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: reconcile PERSISTS `actual_hours` (the clamped worked hours) — the column was
+    /// declared but never written, which is why the guard-earnings screen (base × BOOKED hours)
+    /// overstated pay vs the customer's reconciled net. And `guard_earnings` returns exactly that
+    /// row so the guard app can pay `base × actual_hours`. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn reconcile_persists_actual_hours_and_guard_earnings_returns_it() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                customer_id,
+                Some(guard_id),
+                dec("2000.00"),
+                dec("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        // Worked 2h of 4h booked → actual_hours must persist as 2.00.
+        reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(7200),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile");
+
+        let ah: Option<Decimal> =
+            sqlx::query_scalar("SELECT actual_hours FROM payment.payments WHERE booking_id = $1")
+                .bind(booking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("read actual_hours");
+        assert_eq!(ah, Some(dec("2.00")), "actual_hours persisted at reconcile");
+
+        // The guard's earnings ledger surfaces the booking + its actual worked hours.
+        let earnings = guard_earnings(&pool, guard_id).await.expect("earnings");
+        let row = earnings
+            .iter()
+            .find(|e| e.booking_id == booking_id)
+            .expect("the completed job appears in the guard's earnings");
+        assert_eq!(row.actual_hours, Some(dec("2.00")));
+
+        // A DIFFERENT guard sees nothing for this booking (own-only scoping).
+        let other = guard_earnings(&pool, Uuid::new_v4()).await.expect("other");
+        assert!(!other.iter().any(|e| e.booking_id == booking_id));
 
         // cleanup
         let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")

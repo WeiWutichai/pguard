@@ -7,6 +7,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/customer_home_controller.dart'
     show thaiShortDate;
 import '../../core/controllers/earnings.dart';
+import '../../core/controllers/guard_earnings_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
@@ -51,6 +52,10 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(guardJobsControllerProvider);
+    // Actual worked hours per booking (GET /payments/earnings). Best-effort: while it loads / on
+    // error, fall back to an empty map → jobEarningsSatang uses booked hours (previous behaviour).
+    final actualHours =
+        ref.watch(guardEarningsHoursProvider).valueOrNull ?? const {};
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -89,15 +94,18 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                   _EarningsHero(
                     isThai: isThai,
                     window: _window,
-                    satang: GuardEarnings.sumInWindow(all, now, _window),
-                    growth: GuardEarnings.growth(all, now, _window),
+                    satang: GuardEarnings.sumInWindow(all, now, _window,
+                        actualHours: actualHours),
+                    growth: GuardEarnings.growth(all, now, _window,
+                        actualHours: actualHours),
                     mayBeIncomplete: GuardEarnings.feedMayBeTruncated(all),
                   ),
                   if (completed.isEmpty)
                     _EmptyEarnings(isThai: isThai)
                   else ...[
                     _EarningsChart(
-                      series: GuardEarnings.dailySeries(all, now),
+                      series: GuardEarnings.dailySeries(all, now,
+                          actualHours: actualHours),
                       dates: GuardEarnings.seriesDates(now),
                       isThai: isThai,
                     ),
@@ -105,8 +113,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                     // the Day/Week/Month selector above — matching the mockup's flat "รายการล่าสุด".
                     Padding(
                       // Design separates 'รายการล่าสุด' from the chart by ~28px above.
-                      padding: const EdgeInsets.fromLTRB(
-                          PgTokens.space5, 28, PgTokens.space5, PgTokens.space2),
+                      padding: const EdgeInsets.fromLTRB(PgTokens.space5, 28,
+                          PgTokens.space5, PgTokens.space2),
                       child: Text(
                         isThai ? 'รายการล่าสุด' : 'Recent',
                         style: const TextStyle(
@@ -116,7 +124,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       ),
                     ),
                     for (final b in completed)
-                      _EarningsRow(booking: b, isThai: isThai),
+                      _EarningsRow(
+                          booking: b, isThai: isThai, actualHours: actualHours),
                   ],
                 ],
               ),
@@ -322,10 +331,12 @@ class _Bar extends StatelessWidget {
 
 /// One earnings row per the design: green-100 shield icon, place, "date · N ชม.", mono ฿.
 class _EarningsRow extends StatelessWidget {
-  const _EarningsRow({required this.booking, required this.isThai});
+  const _EarningsRow(
+      {required this.booking, required this.isThai, this.actualHours});
 
   final Booking booking;
   final bool isThai;
+  final Map<String, double>? actualHours;
 
   @override
   Widget build(BuildContext context) {
@@ -380,7 +391,8 @@ class _EarningsRow extends StatelessWidget {
           ),
           const SizedBox(width: PgTokens.space2),
           Text(
-            Money.format(GuardEarnings.jobEarningsSatang(booking)),
+            Money.format(GuardEarnings.jobEarningsSatang(booking,
+                actualHours: actualHours)),
             style: const TextStyle(
               fontSize: 14,
               fontWeight: FontWeight.w600,

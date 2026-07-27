@@ -106,6 +106,37 @@ paths:
                         items: { $ref: '#/components/schemas/Payment' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /payments/earnings:
+    get:
+      tags: [Payments]
+      summary: The assigned guard's earning basis (role=guard)
+      description: |
+        The caller's COMPLETED (paid) jobs, newest first, each with the clamped `actual_hours`
+        ACTUALLY worked (persisted at reconcile; `null` for an even-match / not-yet-reconciled row).
+        GUARD-ONLY (keyed on the JWT `sub` → the assigned guard). The guard app pairs each
+        `booking_id` with the `base_fee` from its own booking feed and pays `base_fee × actual_hours`
+        (falling back to the booked hours when `actual_hours` is null), so a job that finished early
+        — and was overpay-refunded to the customer — pays the guard for the hours actually worked
+        rather than the full booked estimate. Cancelled/withdrawn (refunded) jobs are excluded (the
+        guard earned nothing there).
+      operationId: listGuardEarnings
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The caller-guard's completed-job earning rows
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/GuardEarning' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/payments:
     get:
       tags: [Admin]
@@ -591,6 +622,22 @@ components:
           type: string
           description: Lifetime spend — summed effective amount of the customer's completed payments (exact decimal as a string; money rule).
           example: "12400.00"
+
+    GuardEarning:
+      type: object
+      required: [booking_id]
+      description: |
+        One completed job's earning basis for the assigned guard. `actual_hours` is the clamped
+        hours ACTUALLY worked (persisted at reconcile); `null` for an even-match / not-yet-reconciled
+        row, where the client falls back to the booked hours. The client multiplies `base_fee` (from
+        its own booking feed) × these hours to show the guard's pay for hours actually worked.
+      properties:
+        booking_id: { type: string, format: uuid }
+        actual_hours:
+          type: string
+          nullable: true
+          description: Clamped hours actually worked (exact decimal as a string; money rule). Null when unreconciled.
+          example: "2.50"
 
     RefundStatus:
       type: string

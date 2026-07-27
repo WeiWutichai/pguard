@@ -12,6 +12,7 @@ import 'package:pguard_payment_api/src/api_util.dart';
 import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
+import 'package:pguard_payment_api/src/model/list_guard_earnings200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 
@@ -275,6 +276,85 @@ class PaymentsApi {
     }
 
     return Response<GetPromptPay200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// The assigned guard&#39;s earning basis (role&#x3D;guard)
+  /// The caller&#39;s COMPLETED (paid) jobs, newest first, each with the clamped &#x60;actual_hours&#x60; ACTUALLY worked (persisted at reconcile; &#x60;null&#x60; for an even-match / not-yet-reconciled row). GUARD-ONLY (keyed on the JWT &#x60;sub&#x60; → the assigned guard). The guard app pairs each &#x60;booking_id&#x60; with the &#x60;base_fee&#x60; from its own booking feed and pays &#x60;base_fee × actual_hours&#x60; (falling back to the booked hours when &#x60;actual_hours&#x60; is null), so a job that finished early — and was overpay-refunded to the customer — pays the guard for the hours actually worked rather than the full booked estimate. Cancelled/withdrawn (refunded) jobs are excluded (the guard earned nothing there). 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ListGuardEarnings200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ListGuardEarnings200Response>> listGuardEarnings({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/payments/earnings';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ListGuardEarnings200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ListGuardEarnings200Response),
+      ) as ListGuardEarnings200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ListGuardEarnings200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

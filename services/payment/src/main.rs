@@ -167,6 +167,9 @@ async fn main() -> anyhow::Result<()> {
             "/payments",
             post(api::create_payment::<AppState>).get(api::list_payments::<AppState>),
         )
+        // Guard earnings ledger (their completed jobs + actual worked hours). Registered before the
+        // `/payments/{id}` capture; axum 0.8 matches the static `earnings` segment first regardless.
+        .route("/payments/earnings", get(api::guard_earnings::<AppState>))
         .route("/payments/{id}", get(api::get_payment::<AppState>))
         // PromptPay transfer instructions for a booking (the customer's "where do I pay?" read):
         // the server estimate + our receiving account + the authoritative EMVCo QR payload. Own-only

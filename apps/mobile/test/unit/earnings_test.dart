@@ -46,6 +46,35 @@ void main() {
       expect(GuardEarnings.jobEarningsSatang(booking(hours: null)), 0);
       expect(GuardEarnings.jobEarningsSatang(booking(baseFee: null)), 0);
     });
+
+    test(
+        'actual_hours (reconciled) OVERRIDES booked hours — pays for hours worked',
+        () {
+      // Booked 8h but worked only 2h → ฿230 × 2 = ฿460, not the ฿1,840 booked estimate. This is the
+      // fix for "รปภ ได้เต็ม แต่ลูกค้าโดนคืนเงิน": pay tracks the customer's reconciled net.
+      expect(
+        GuardEarnings.jobEarningsSatang(booking(),
+            actualHours: const {'b1': 2.0}),
+        46000,
+      );
+    });
+
+    test('fractional actual_hours rounds to the nearest satang', () {
+      // ฿230 × 2.5h = ฿575.00 = 57500 satang.
+      expect(
+        GuardEarnings.jobEarningsSatang(booking(),
+            actualHours: const {'b1': 2.5}),
+        57500,
+      );
+    });
+
+    test('a booking absent from the map falls back to booked hours', () {
+      expect(
+        GuardEarnings.jobEarningsSatang(booking(),
+            actualHours: const {'other': 2.0}),
+        184000,
+      );
+    });
   });
 
   group('GuardEarnings totals', () {

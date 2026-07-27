@@ -23,7 +23,9 @@ lib/src/model/date.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
 lib/src/model/get_prompt_pay200_response.dart
+lib/src/model/guard_earning.dart
 lib/src/model/internal_export_user200_response.dart
+lib/src/model/list_guard_earnings200_response.dart
 lib/src/model/list_payments200_response.dart
 lib/src/model/pay_with_slip200_response.dart
 lib/src/model/payment.dart
