@@ -13,6 +13,7 @@ import '../../core/media/document_picker.dart';
 import '../../core/models/profile.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
+import '../../widgets/image_viewer.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -375,13 +376,21 @@ class _EditableAvatar extends ConsumerWidget {
     final url = async.valueOrNull;
     final uploading = async.isLoading;
 
-    return GestureDetector(
-      onTap: uploading ? null : () => _pickAndUpload(context, ref, isThai),
-      child: Stack(
-        clipBehavior: Clip.none,
-        alignment: Alignment.center,
-        children: [
-          ClipOval(
+    return Stack(
+      clipBehavior: Clip.none,
+      alignment: Alignment.center,
+      children: [
+        // TAP THE PICTURE = VIEW it full-screen (what a profile picture tap should do). Changing it
+        // is the camera badge below — tapping the whole avatar used to jump straight into the
+        // upload sheet, so there was no way to just look at the photo you uploaded.
+        // With no photo yet there is nothing to view, so the tap falls back to the upload flow.
+        GestureDetector(
+          onTap: uploading
+              ? null
+              : () => url != null
+                  ? showImageViewer(context, url: url, isThai: isThai)
+                  : _pickAndUpload(context, ref, isThai),
+          child: ClipOval(
             child: url != null
                 ? Image.network(
                     url,
@@ -393,28 +402,38 @@ class _EditableAvatar extends ConsumerWidget {
                   )
                 : _InitialsAvatar(initials: initials),
           ),
-          if (uploading)
-            const SizedBox(
-              width: 28,
-              height: 28,
-              child: CircularProgressIndicator(strokeWidth: 2.5),
-            ),
-          // Camera badge (bottom-right) — the affordance to (re)upload.
-          Positioned(
-            bottom: -2,
-            right: -2,
-            child: Container(
-              padding: const EdgeInsets.all(5),
-              decoration: const BoxDecoration(
-                color: PgTokens.colorPrimary,
-                shape: BoxShape.circle,
+        ),
+        if (uploading)
+          const SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(strokeWidth: 2.5),
+          ),
+        // Camera badge (bottom-right) — THE affordance to (re)upload, now the tap target for it
+        // (the picture itself opens the viewer). Wrapped so the small badge is comfortably tappable.
+        Positioned(
+          bottom: -2,
+          right: -2,
+          child: Semantics(
+            button: true,
+            label: isThai ? 'เปลี่ยนรูปโปรไฟล์' : 'Change profile picture',
+            child: InkResponse(
+              onTap:
+                  uploading ? null : () => _pickAndUpload(context, ref, isThai),
+              radius: 22,
+              child: Container(
+                padding: const EdgeInsets.all(5),
+                decoration: const BoxDecoration(
+                  color: PgTokens.colorPrimary,
+                  shape: BoxShape.circle,
+                ),
+                child: const Icon(Icons.photo_camera,
+                    size: 14, color: PgTokens.colorSurface),
               ),
-              child: const Icon(Icons.photo_camera,
-                  size: 14, color: PgTokens.colorSurface),
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

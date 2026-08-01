@@ -11,6 +11,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
+import '../../widgets/image_viewer.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
@@ -319,8 +320,9 @@ class _Sheet extends ConsumerWidget {
         icon: Icons.person_outline,
         label: isThai ? 'ลูกค้า' : 'Customer',
         value: customerValue,
-        // #163: the customer's real PHOTO (presigned), else the person glyph.
+        // #163: the customer's real PHOTO (presigned), else the person glyph. Tappable → viewer.
         leadingImageUrl: customerAvatarUrl,
+        isThai: isThai,
       ),
       _DetailRow(
         icon: Icons.calendar_today_outlined,
@@ -476,7 +478,8 @@ class _DetailRow extends StatelessWidget {
       required this.label,
       required this.value,
       this.trailing,
-      this.leadingImageUrl});
+      this.leadingImageUrl,
+      this.isThai = true});
 
   final IconData icon;
   final String label;
@@ -486,6 +489,9 @@ class _DetailRow extends StatelessWidget {
   /// When set, the leading 40px tile shows this presigned photo (rounded) instead of [icon],
   /// falling back to [icon] while it loads or on error. Used for the customer's avatar.
   final String? leadingImageUrl;
+
+  /// Only used to localize the picture viewer opened by tapping [leadingImageUrl].
+  final bool isThai;
 
   Widget _iconTile() => Container(
         width: 40,
@@ -506,16 +512,25 @@ class _DetailRow extends StatelessWidget {
           if (leadingImageUrl == null)
             _iconTile()
           else
-            ClipRRect(
-              borderRadius: BorderRadius.circular(12),
-              child: Image.network(
-                leadingImageUrl!,
-                width: 40,
-                height: 40,
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => _iconTile(),
-                loadingBuilder: (context, child, progress) =>
-                    progress == null ? child : _iconTile(),
+            // Tap the customer's picture to see it full-screen.
+            Semantics(
+              button: true,
+              label: isThai ? 'ดูรูปโปรไฟล์' : 'View profile picture',
+              child: GestureDetector(
+                onTap: () => showImageViewer(context,
+                    url: leadingImageUrl!, isThai: isThai),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: Image.network(
+                    leadingImageUrl!,
+                    width: 40,
+                    height: 40,
+                    fit: BoxFit.cover,
+                    errorBuilder: (_, __, ___) => _iconTile(),
+                    loadingBuilder: (context, child, progress) =>
+                        progress == null ? child : _iconTile(),
+                  ),
+                ),
               ),
             ),
           const SizedBox(width: 13),

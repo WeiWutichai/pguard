@@ -110,6 +110,31 @@ void main() {
         (img.image as NetworkImage).url, 'https://cdn.example/guard-cccc.jpg');
   });
 
+  testWidgets(
+      'tapping the guard PHOTO opens the full-screen viewer (not the card tap)',
+      (tester) async {
+    var cardTaps = 0;
+    await pumpCard(
+      tester,
+      const AvailableGuard(
+        guardId: 'guard-cccc-3333',
+        displayName: 'อนันต์ ศรีสุข',
+        avatarUrl: 'https://cdn.example/guard-cccc.jpg',
+        averageRating: '4.50',
+        reviewCount: 12,
+      ),
+      onTap: () => cardTaps++,
+    );
+
+    await tester.tap(find.byType(Image));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.byType(InteractiveViewer), findsOneWidget,
+        reason: 'the photo opens full-screen');
+    expect(cardTaps, 0, reason: 'the photo tap must not also select the card');
+  });
+
   testWidgets('shows the initials monogram (no Image) when there is no photo',
       (tester) async {
     await pumpCard(

@@ -4,6 +4,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/available_guard.dart';
+import '../../../widgets/image_viewer.dart';
 
 /// One guard in the discovery list. Renders the guard's REAL NAME + PHOTO when discovery provides
 /// them (falling back to an id handle + initials avatar otherwise), plus the rating summary
@@ -49,7 +50,7 @@ class GuardCard extends ConsumerWidget {
               // Design avatar: 50×50 rounded square (radius 14). Shows the guard's PHOTO when the
               // discovery list provides an avatar URL; falls back to the initials monogram on
               // green-100 when there is no photo (or the image fails to load).
-              _GuardAvatar(guard: guard),
+              _GuardAvatar(guard: guard, isThai: isThai),
               const SizedBox(width: PgTokens.space3),
               Expanded(
                 child: Column(
@@ -108,9 +109,10 @@ class GuardCard extends ConsumerWidget {
 /// frame and falls back to the monogram if it errors (a stale presigned URL or a dead link never
 /// leaves an empty box).
 class _GuardAvatar extends StatelessWidget {
-  const _GuardAvatar({required this.guard});
+  const _GuardAvatar({required this.guard, required this.isThai});
 
   final AvailableGuard guard;
+  final bool isThai;
 
   @override
   Widget build(BuildContext context) {
@@ -124,7 +126,7 @@ class _GuardAvatar extends StatelessWidget {
             fontSize: 17),
       ),
     );
-    return Container(
+    final avatar = Container(
       width: 50,
       height: 50,
       alignment: Alignment.center,
@@ -146,6 +148,18 @@ class _GuardAvatar extends StatelessWidget {
               errorBuilder: (context, _, __) => monogram,
             )
           : monogram,
+    );
+    // Tapping the PHOTO opens it full-screen (the card's own tap still opens the guard's details).
+    // With no photo there is nothing to view, so the tap falls through to the card.
+    if (!guard.hasPhoto) return avatar;
+    return Semantics(
+      button: true,
+      label: isThai ? 'ดูรูปโปรไฟล์' : 'View profile picture',
+      child: GestureDetector(
+        onTap: () =>
+            showImageViewer(context, url: guard.avatarUrl!, isThai: isThai),
+        child: avatar,
+      ),
     );
   }
 }
