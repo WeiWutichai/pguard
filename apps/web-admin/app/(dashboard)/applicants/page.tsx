@@ -192,16 +192,34 @@ export default function ApplicantsPage() {
     });
   }, []);
 
+  // PENDING counts for BOTH populations, from the dedicated count endpoint — so the Guards AND
+  // Customers tabs show their applicant numbers on arrival. Without this, a count only appeared
+  // after you clicked that tab (its list fetch is what filled the cache), so the Customers tab was
+  // permanently blank until visited — the reported "หน้าแอดมินไม่แสดงจำนวนผู้สมัคร". The per-tab list
+  // fetch still overwrites its own (entity, pending) entry, so the number stays authoritative.
+  const fetchPendingCounts = useCallback((alive: () => boolean) => {
+    return profileApi.GET("/admin/applicants/pending-count").then(({ data, error }) => {
+      if (!alive() || error) return;
+      const c = data?.data;
+      if (!c) return;
+      setCounts((cur) => ({
+        guard: { ...cur.guard, pending: c.guards },
+        customer: { ...cur.customer, pending: c.customers },
+      }));
+    });
+  }, []);
+
   // Re-runs on entity/status change AND on an explicit reload (reloadNonce). The cleanup flips
   // `alive` false, so a response from a superseded run (filter switched, stale retry) is dropped.
   useEffect(() => {
     let alive = true;
     void fetchInto(entity, status, () => alive);
     void fetchAvg(() => alive);
+    void fetchPendingCounts(() => alive);
     return () => {
       alive = false;
     };
-  }, [entity, status, reloadNonce, fetchInto, fetchAvg]);
+  }, [entity, status, reloadNonce, fetchInto, fetchAvg, fetchPendingCounts]);
 
   function selectEntity(next: EntityType) {
     if (next === entity) return;

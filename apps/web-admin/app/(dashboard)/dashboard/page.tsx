@@ -63,6 +63,9 @@ const ACTIVE_BOOKING_STATUSES = new Set([
 
 interface Metrics {
   pending: number | null;
+  /** Pending split by population, for the KPI caption (รปภ. X · ลูกค้า Y). */
+  pendingGuards: number | null;
+  pendingCustomers: number | null;
   approved: number | null;
   reviewsTotal: number | null;
   hidden: number | null;
@@ -86,6 +89,8 @@ interface Metrics {
 
 const EMPTY: Metrics = {
   pending: null,
+  pendingGuards: null,
+  pendingCustomers: null,
   approved: null,
   reviewsTotal: null,
   hidden: null,
@@ -130,9 +135,6 @@ export default function DashboardPage() {
     ).toISOString();
     return Promise.all([
       profileApi.GET("/admin/guard-profiles", {
-        params: { query: { approval_status: "pending" } },
-      }),
-      profileApi.GET("/admin/guard-profiles", {
         params: { query: { approval_status: "approved" } },
       }),
       ratingApi.GET("/admin/reviews", { params: { query: { limit: LIST_CAP } } }),
@@ -147,10 +149,9 @@ export default function DashboardPage() {
       profileApi.GET("/admin/applicants/pending-count"),
       // Recent-activity card — newest-first access-audit tail.
       profileApi.GET("/admin/access-audit", { params: { query: { limit: ACTIVITY_LIMIT } } }),
-    ]).then(([pend, appr, rev, online, bookings, revToday, rev7d, overdue, refunds, applicants, activity]) => {
+    ]).then(([appr, rev, online, bookings, revToday, rev7d, overdue, refunds, applicants, activity]) => {
       if (!alive()) return;
       const anyErr =
-        pend.error ||
         appr.error ||
         rev.error ||
         online.error ||
@@ -164,7 +165,11 @@ export default function DashboardPage() {
       const stats = rev.data?.data?.stats;
       setHasError(Boolean(anyErr));
       setM({
-        pending: pend.error ? null : (pend.data?.data?.length ?? 0),
+        // "รออนุมัติ" counts BOTH populations — customers are admin-reviewed too, so a
+        // guards-only count under-reported the queue (the reported missing customer applicants).
+        pending: applicants.error ? null : (applicants.data?.data?.total ?? 0),
+        pendingGuards: applicants.error ? null : (applicants.data?.data?.guards ?? 0),
+        pendingCustomers: applicants.error ? null : (applicants.data?.data?.customers ?? 0),
         approved: appr.error ? null : (appr.data?.data?.length ?? 0),
         reviewsTotal: rev.error ? null : (stats?.total ?? 0),
         hidden: rev.error || !stats ? null : Math.max(0, stats.total - stats.visible),
@@ -272,6 +277,11 @@ export default function DashboardPage() {
               icon={<Users />}
               label={c.kpiPendingApprovals}
               value={fmtCappedCount(m.pending)}
+              caption={
+                m.pendingGuards == null || m.pendingCustomers == null
+                  ? undefined
+                  : c.kpiPendingSplit(m.pendingGuards, m.pendingCustomers)
+              }
             />
             {/* Row 2 — cell borders re-anchored (KpiGrid's built-ins only cover one row of 4). */}
             <KpiCard

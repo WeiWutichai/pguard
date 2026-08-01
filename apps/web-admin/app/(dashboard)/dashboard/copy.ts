@@ -9,6 +9,9 @@ export const COPY = {
     kpiActiveJobs: "งานที่กำลังดำเนิน",
     kpiRevenueToday: "รายได้วันนี้",
     kpiPendingApprovals: "รออนุมัติ",
+    // Breakdown under the pending KPI so BOTH populations are visible (guards were the only
+    // ones counted before).
+    kpiPendingSplit: (g: number, c: number) => `รปภ. ${g} · ลูกค้า ${c}`,
     // Honest gap chip — these design cells/panels have no v2 admin endpoint yet.
     awaitingApi: "รอ API",
     noAdminEndpoint: "ยังไม่มี endpoint สำหรับแอดมินใน v2",
@@ -39,6 +42,7 @@ export const COPY = {
     kpiActiveJobs: "Active jobs",
     kpiRevenueToday: "Revenue today",
     kpiPendingApprovals: "Pending approvals",
+    kpiPendingSplit: (g: number, c: number) => `${g} guards · ${c} customers`,
     awaitingApi: "Awaiting API",
     noAdminEndpoint: "No v2 admin endpoint yet",
     mapTitle: "Live map",
