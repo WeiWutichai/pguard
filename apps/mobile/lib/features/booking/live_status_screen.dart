@@ -25,6 +25,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/booking_status_pill.dart';
 import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/image_viewer.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
@@ -627,15 +628,24 @@ class _GuardCard extends ConsumerWidget {
         if (avatarUrl == null)
           guardAvatar
         else
-          ClipOval(
-            child: Image.network(
-              avatarUrl,
-              width: 42,
-              height: 42,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => guardAvatar,
-              loadingBuilder: (context, child, progress) =>
-                  progress == null ? child : guardAvatar,
+          // Tap the guard's picture to see it full-screen.
+          Semantics(
+            button: true,
+            label: isThai ? 'ดูรูปโปรไฟล์' : 'View profile picture',
+            child: GestureDetector(
+              onTap: () =>
+                  showImageViewer(context, url: avatarUrl, isThai: isThai),
+              child: ClipOval(
+                child: Image.network(
+                  avatarUrl,
+                  width: 42,
+                  height: 42,
+                  fit: BoxFit.cover,
+                  errorBuilder: (_, __, ___) => guardAvatar,
+                  loadingBuilder: (context, child, progress) =>
+                      progress == null ? child : guardAvatar,
+                ),
+              ),
             ),
           ),
         const SizedBox(width: PgTokens.space3),

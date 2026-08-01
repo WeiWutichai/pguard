@@ -25,7 +25,8 @@ void main() {
               return {
                 'kind': 'customer',
                 'user_id': 'c1',
-                'full_name': 'นภา ศรี', // UserProfile.initials → "นศ" (first char of each word)
+                'full_name':
+                    'นภา ศรี', // UserProfile.initials → "นศ" (first char of each word)
               };
             case '/profile/customer/c1/avatar':
               if (avatarUrl == null) {
@@ -49,7 +50,8 @@ void main() {
             path: '/profile/edit',
             builder: (_, __) => const Scaffold(body: SizedBox())),
         GoRoute(
-            path: '/help', builder: (_, __) => const Scaffold(body: SizedBox())),
+            path: '/help',
+            builder: (_, __) => const Scaffold(body: SizedBox())),
       ],
     );
     await tester.pumpWidget(ProviderScope(
@@ -68,8 +70,7 @@ void main() {
 
   testWidgets('customer with an avatar set → renders the photo (NetworkImage)',
       (tester) async {
-    await pumpProfile(
-        tester, customerApi(avatarUrl: 'https://s3/cust-c1.jpg'));
+    await pumpProfile(tester, customerApi(avatarUrl: 'https://s3/cust-c1.jpg'));
 
     final images = tester
         .widgetList<Image>(find.byType(Image))
@@ -91,5 +92,45 @@ void main() {
       isEmpty,
     );
     expect(find.text('นศ'), findsOneWidget); // initials of "นภา ศรี"
+  });
+
+  testWidgets(
+      'tapping the PHOTO opens the full-screen viewer (not the upload sheet)',
+      (tester) async {
+    await pumpProfile(tester, customerApi(avatarUrl: 'https://s3/cust-c1.jpg'));
+
+    await tester.tap(find.byType(ClipOval));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The zoomable viewer is up; the upload sheet is NOT (that's the camera badge's job).
+    expect(find.byType(InteractiveViewer), findsOneWidget);
+    expect(find.text('ถ่ายรูป'), findsNothing);
+    expect(find.text('เลือกจากคลัง'), findsNothing);
+  });
+
+  testWidgets('tapping the CAMERA BADGE opens the upload sheet',
+      (tester) async {
+    await pumpProfile(tester, customerApi(avatarUrl: 'https://s3/cust-c1.jpg'));
+
+    await tester.tap(find.byIcon(Icons.photo_camera));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('ถ่ายรูป'), findsOneWidget);
+    expect(find.text('เลือกจากคลัง'), findsOneWidget);
+    expect(find.byType(InteractiveViewer), findsNothing);
+  });
+
+  testWidgets('no photo yet → tapping the avatar still opens the upload sheet',
+      (tester) async {
+    await pumpProfile(tester, customerApi(avatarUrl: null));
+
+    await tester.tap(find.byType(ClipOval));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // Nothing to view, so the tap falls back to the upload flow (never a dead tap).
+    expect(find.text('ถ่ายรูป'), findsOneWidget);
   });
 }
