@@ -287,6 +287,15 @@ class BookingLifecycle {
   static bool isActive(BookingStatus status) =>
       stepIndex(status) >= 0 && status != BookingStatus.completed;
 
+  /// Whether the CUSTOMER may cancel the booking — PRE-ARRIVAL only, exactly per the contract
+  /// (`cancelBooking` in booking.yaml: `requested`/`accepted`/`en_route`). Once the guard has
+  /// ARRIVED, no self-cancel. Shared by the live screen AND the payment screen so their cancel
+  /// affordances can never drift.
+  static bool isCancellable(BookingStatus status) =>
+      status == BookingStatus.requested ||
+      status == BookingStatus.accepted ||
+      status == BookingStatus.enRoute;
+
   /// Whether the guard is in the GPS-streaming window: en route → arrived → awaiting completion.
   /// Deliberately NARROWER than [isActive]: a merely-`accepted` job is NOT streaming yet (a standby
   /// guard may just be viewing the offer), so we DON'T take the location lease / prompt for the OS
