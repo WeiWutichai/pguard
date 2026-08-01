@@ -12,6 +12,7 @@ import '../../core/models/payment.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import 'widgets/job_receipt_sheet.dart';
 
 /// THE job-completion summary, reached when the customer APPROVES the guard's completion request
 /// (`pending_completion → completed`). Approval triggers the server-side RECONCILE on
@@ -99,14 +100,34 @@ class _Body extends ConsumerWidget {
           ),
           padding: const EdgeInsets.fromLTRB(
               20, PgTokens.space4, 20, PgTokens.space4),
-          child: PgPrimaryButton(
-            label: isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
-            color: PgTokens.colorAmber500,
-            foreground: PgTokens.colorOnAmber,
-            // Replace so the user can never come back to the summary AFTER rating (and the
-            // PopScope above blocks skipping it BEFORE rating).
-            onPressed: () =>
-                context.pushReplacement('/booking/$bookingId/review'),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // "ดูใบเสร็จ" HERE, on the summary itself — the summary IS the receipt, but rating
+              // pushReplaces it off the stack, so a customer who taps Rate (or later returns) had no
+              // way back to their settled bill (the reported "หลังจบงานไม่มีปุ่มดูใบเสร็จ"). This
+              // opens the same receipt sheet the live-status "View receipt" uses, with the owner's
+              // reconciled payment when it has propagated (else booking-derived).
+              PgGhostButton(
+                label: isThai ? 'ดูใบเสร็จ' : 'View receipt',
+                onPressed: () => showJobReceiptSheet(
+                  context,
+                  booking: booking,
+                  payment: payment,
+                  isThai: isThai,
+                ),
+              ),
+              const SizedBox(height: PgTokens.space2),
+              PgPrimaryButton(
+                label: isThai ? 'ให้คะแนนเจ้าหน้าที่' : 'Rate the guard',
+                color: PgTokens.colorAmber500,
+                foreground: PgTokens.colorOnAmber,
+                // Replace so the user can never come back to the summary AFTER rating (and the
+                // PopScope above blocks skipping it BEFORE rating).
+                onPressed: () =>
+                    context.pushReplacement('/booking/$bookingId/review'),
+              ),
+            ],
           ),
         ),
       ],
@@ -216,8 +237,9 @@ class _BreakdownCard extends ConsumerWidget {
           const SizedBox(height: PgTokens.space2),
           _Line(
             label: isThai ? 'ค่าบริการ (ตามจอง)' : 'Base charge (booked)',
-            value:
-                baseChargeSatang > 0 ? Money.format(baseChargeSatang, decimals: true) : '—',
+            value: baseChargeSatang > 0
+                ? Money.format(baseChargeSatang, decimals: true)
+                : '—',
           ),
           if (tipSatang > 0) ...[
             const SizedBox(height: PgTokens.space2),
