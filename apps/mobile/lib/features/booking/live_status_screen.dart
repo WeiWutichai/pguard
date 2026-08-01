@@ -715,14 +715,6 @@ class _Actions extends ConsumerWidget {
   /// see a "rate the guard" action; they get a neutral completion state + the receipt instead.
   final bool isOwner;
 
-  /// The cancellable window, exactly per the contract (`cancelBooking` in
-  /// booking.yaml): PRE-ARRIVAL only — `requested`/`accepted`/`en_route`.
-  static const Set<BookingStatus> _cancellable = {
-    BookingStatus.requested,
-    BookingStatus.accepted,
-    BookingStatus.enRoute,
-  };
-
   /// Display total in satang for the cancellation screen's refund banner + the booking-details
   /// sheet; `null` when the server-owned rate isn't known yet (callers then omit the amount).
   /// Shared with the guard's active-job details sheet via [Booking.displayTotalSatang] so the two
@@ -732,7 +724,7 @@ class _Actions extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    final canCancel = _cancellable.contains(booking.status);
+    final canCancel = BookingLifecycle.isCancellable(booking.status);
     final myUserId = ref.watch(sessionProvider).user?.userId;
     return Row(
       children: [

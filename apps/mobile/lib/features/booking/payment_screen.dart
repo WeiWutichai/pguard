@@ -12,6 +12,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import 'cancellation_screen.dart';
 import 'widgets/promptpay_slip_panel.dart';
 
 /// THE PRE-PAY step. The instant a guard ACCEPTS, the customer lands here to pay the ESTIMATE
@@ -118,6 +119,25 @@ class _Body extends ConsumerWidget {
             error: payState.error,
             isThai: isThai,
           ),
+        // Let the customer CANCEL from the payment screen itself while still unpaid + pre-arrival —
+        // the guard accepted but they changed their mind and haven't transferred yet (reported "กด
+        // ยกเลิกไม่ได้ … กรณียังไม่ได้โอนเงิน"). Without this the only exit was the back button →
+        // live-status → cancel, which read as "no cancel here". Opens the same cancellation flow;
+        // the sheet already shows "ยังไม่มีการเรียกเก็บเงิน — ยกเลิกได้ฟรี" for an unpaid booking.
+        if (!paid && BookingLifecycle.isCancellable(booking.status)) ...[
+          const SizedBox(height: PgTokens.space3),
+          TextButton(
+            onPressed: () => context.push(
+              '/booking/$bookingId/cancel',
+              extra: CancellationArgs(
+                address: booking.address,
+                totalSatang: booking.displayTotalSatang,
+              ),
+            ),
+            style: TextButton.styleFrom(foregroundColor: PgTokens.colorDanger),
+            child: Text(isThai ? 'ยกเลิกการจอง' : 'Cancel booking'),
+          ),
+        ],
       ],
     );
   }
