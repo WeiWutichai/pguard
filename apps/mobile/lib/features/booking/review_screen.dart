@@ -29,12 +29,30 @@ class ReviewScreen extends ConsumerStatefulWidget {
 }
 
 class _ReviewScreenState extends ConsumerState<ReviewScreen> {
-  int _overall = 0;
   int _punctuality = 0;
   int _professionalism = 0;
   int _communication = 0;
   int _appearance = 0;
   final _comment = TextEditingController();
+
+  /// The per-category scores that drive the OVERALL star (the customer rates each category; the
+  /// overall is their AVERAGE, not a separate tap).
+  List<int> get _categoryScores =>
+      [_punctuality, _professionalism, _communication, _appearance];
+
+  /// Every category must be rated before the overall (their average) is meaningful — the submit CTA
+  /// gates on this.
+  bool get _allRated => _categoryScores.every((s) => s > 0);
+
+  /// The precise average of the category scores (0 until all are rated) — shown numerically + as the
+  /// half-star overall display.
+  double get _average => _allRated
+      ? _categoryScores.reduce((a, b) => a + b) / _categoryScores.length
+      : 0;
+
+  /// The whole-star overall sent to the backend (`overall_rating` is a required 1..=5 int): the
+  /// average rounded to the nearest star.
+  int get _overallRounded => _average.round();
 
   @override
   void dispose() {
@@ -44,14 +62,14 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
 
   Future<void> _submit() async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-    int? opt(int v) => v > 0 ? v : null;
     final outcome = await ref.read(reviewControllerProvider.notifier).submit(
           assignmentId: widget.bookingId,
-          overallRating: _overall,
-          punctuality: opt(_punctuality),
-          professionalism: opt(_professionalism),
-          communication: opt(_communication),
-          appearance: opt(_appearance),
+          // Overall = the category average (rounded); the categories are the input.
+          overallRating: _overallRounded,
+          punctuality: _punctuality,
+          professionalism: _professionalism,
+          communication: _communication,
+          appearance: _appearance,
           reviewText: _comment.text,
         );
     if (!mounted) return;
@@ -260,20 +278,41 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                           fontSize: 13, color: PgTokens.colorTextMuted),
                     ),
                     const SizedBox(height: PgTokens.space5),
-                    // Overall (required).
+                    // Overall = the AVERAGE of the categories below (auto-computed, not tapped). Shown
+                    // as half-stars + the precise number; a hint stands in until every category is rated.
                     Center(
-                      child: StarRatingInput(
-                        value: _overall,
-                        size: 38,
-                        semanticPrefix: isThai ? 'คะแนนรวม' : 'Overall',
-                        onChanged: (v) => setState(() => _overall = v),
+                      child: Semantics(
+                        label: _allRated
+                            ? '${isThai ? 'คะแนนรวม' : 'Overall'} '
+                                '${_average.toStringAsFixed(2)}'
+                            : (isThai
+                                ? 'ให้คะแนนทุกหมวดด้านล่างเพื่อคิดคะแนนรวม'
+                                : 'Rate every category below to get the overall'),
+                        child: Column(
+                          children: [
+                            StarRatingAverage(value: _average, size: 38),
+                            const SizedBox(height: PgTokens.space2),
+                            Text(
+                              _allRated
+                                  ? _average.toStringAsFixed(2)
+                                  : (isThai
+                                      ? 'ให้คะแนนทุกหมวดด้านล่าง'
+                                      : 'Rate every category below'),
+                              style: TextStyle(
+                                fontSize: _allRated ? 22 : 13,
+                                fontWeight: FontWeight.w700,
+                                color: _allRated
+                                    ? PgTokens.colorText
+                                    : PgTokens.colorTextMuted,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
                     ),
                     const SizedBox(height: PgTokens.space5),
                     Text(
-                      isThai
-                          ? 'ให้คะแนนแยกหมวด (ไม่บังคับ)'
-                          : 'Rate by category (optional)',
+                      isThai ? 'ให้คะแนนทุกหมวด' : 'Rate every category',
                       style: const TextStyle(
                           fontSize: 12.5, color: PgTokens.colorTextMuted),
                     ),
@@ -329,7 +368,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                 ),
               ),
             ),
-            // Footer CTA — amber per the design `.cta-amber`; enabled once the overall is set.
+            // Footer CTA — amber per the design `.cta-amber`; enabled once EVERY category is rated
+            // (the overall is their average, so a partial rating has no meaningful overall).
             Container(
               decoration: const BoxDecoration(
                 color: PgTokens.colorSurface,
@@ -343,7 +383,7 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                 color: PgTokens.colorAmber500,
                 foreground: PgTokens.colorOnAmber,
                 busy: state.busy,
-                onPressed: _overall == 0 || state.busy ? null : _submit,
+                onPressed: !_allRated || state.busy ? null : _submit,
               ),
             ),
           ],

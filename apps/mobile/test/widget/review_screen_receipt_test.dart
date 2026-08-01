@@ -5,8 +5,21 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/review_screen.dart';
+import 'package:pguard_mobile/widgets/star_rating.dart';
 
 import '../support/fakes.dart';
+
+/// Rate all four categories 5★ (the overall is now their auto-computed average — no separate tap),
+/// which enables the "ส่งรีวิว" CTA. Taps the 5th (tappable) star of each category StarRatingInput.
+Future<void> rateAllCategories(WidgetTester tester) async {
+  final inputs = find.byType(StarRatingInput);
+  for (var i = 0; i < 4; i++) {
+    final stars =
+        find.descendant(of: inputs.at(i), matching: find.byType(InkResponse));
+    await tester.tap(stars.at(4));
+    await tester.pump();
+  }
+}
 
 /// The post-review thank-you dialog's "ดูใบเสร็จ / View receipt" action. Regression for the
 /// silent no-op: when the booking snapshot wasn't available the tap used to do NOTHING — it must
@@ -60,9 +73,8 @@ void main() {
     );
     await pumpReview(tester, api);
 
-    // Rate (tap the first overall star) and submit.
-    await tester.tap(find.byIcon(Icons.star_outline_rounded).first);
-    await tester.pump();
+    // Rate every category (the overall is their average now) and submit.
+    await rateAllCategories(tester);
     await tester.tap(find.text('ส่งรีวิว'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
@@ -110,8 +122,7 @@ void main() {
     );
     await pumpReview(tester, api);
 
-    await tester.tap(find.byIcon(Icons.star_outline_rounded).first);
-    await tester.pump();
+    await rateAllCategories(tester);
     await tester.tap(find.text('ส่งรีวิว'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
