@@ -10,6 +10,7 @@ import '../../../core/controllers/role_switch_controller.dart';
 import '../../../core/controllers/session_controller.dart';
 import '../../../core/models/auth_models.dart';
 import '../../../core/models/registration.dart';
+import '../../legal/terms_screen.dart';
 import '../../profile/widgets/lang_segmented.dart';
 
 /// Role chooser — TWO modes, switched by the session status:
@@ -60,6 +61,12 @@ class _ModePicker extends ConsumerWidget {
 
   Future<void> _tap(
       BuildContext context, WidgetRef ref, RegistrationRole role) async {
+    // Adding a role the account does NOT hold yet IS a registration → same terms gate. Switching
+    // between roles already enrolled is not, so it passes straight through.
+    if (user != null && !user!.isEnrolledIn(role.wire)) {
+      if (!await ensureTermsAccepted(context, ref)) return;
+      if (!context.mounted) return;
+    }
     final outcome =
         await ref.read(roleSwitchControllerProvider.notifier).choose(role);
     if (!context.mounted) return;
@@ -234,6 +241,10 @@ class _OnboardingChooser extends ConsumerWidget {
     final ctrl = ref.read(registrationControllerProvider.notifier);
 
     Future<void> choose(RegistrationRole role) async {
+      // THE terms gate. Nothing is registered until all three consents are accepted — a user who
+      // declines (or backs out) simply returns here with no account created and can try again.
+      if (!await ensureTermsAccepted(context, ref)) return;
+      if (!context.mounted) return;
       ctrl.selectRole(role);
       final outcome = await ctrl.register();
       if (!context.mounted) return;

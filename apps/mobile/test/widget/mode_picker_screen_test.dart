@@ -7,6 +7,7 @@ import 'package:pguard_mobile/core/controllers/session_controller.dart';
 import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/auth/registration/role_selection_screen.dart';
+import 'package:pguard_mobile/features/legal/terms_screen.dart';
 
 import '../support/fakes.dart';
 
@@ -26,6 +27,8 @@ GoRouter _router() => GoRouter(
         GoRoute(
             path: '/auth/register/guard',
             builder: (_, __) => const Scaffold(body: Text('GUARD FORM'))),
+        // Adding a role is a registration → it passes the terms gate.
+        GoRoute(path: '/auth/terms', builder: (_, __) => const TermsScreen()),
       ],
     );
 
@@ -39,6 +42,8 @@ Future<void> _pump(
     pguardApiProvider.overrideWithValue(api),
     appStoreProvider.overrideWithValue(store ?? InMemoryStore()),
     prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    termsDocumentProvider
+        .overrideWith((ref) async => 'ข้อกำหนด PGUARD (ทดสอบ)'),
   ]);
   addTearDown(c.dispose);
   c.read(sessionProvider.notifier).onLoggedIn(user);
@@ -112,9 +117,41 @@ void main() {
     await tester.tap(find.text('เจ้าหน้าที่ รปภ.'));
     await tester.pumpAndSettle();
 
+    // Adding a role you don't hold IS a registration, so the terms come FIRST and nothing is
+    // enrolled until they are accepted.
+    expect(find.text('ข้อกำหนดการใช้บริการ'), findsOneWidget);
+    expect(store.profileToken, isNull);
+    for (var i = 0; i < 3; i++) {
+      await tester.tap(find.byType(Checkbox).at(i));
+    }
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ยอมรับและดำเนินการต่อ'));
+    await tester.pumpAndSettle();
+
     // The profile_token was captured and the guard profile form opened.
     expect(store.profileToken, 'ptok-guard');
     expect(find.text('GUARD FORM'), findsOneWidget);
+  });
+
+  testWidgets('declining the terms enrols NOTHING (stays on the picker)',
+      (tester) async {
+    final store = InMemoryStore();
+    await _pump(
+      tester,
+      store: store,
+      api: FakeApi(onPost: (path, _) async {
+        fail('no role should be enrolled without accepting the terms');
+      }),
+      user: const AuthUser(userId: 'u1', role: 'customer', roles: ['customer']),
+    );
+
+    await tester.tap(find.text('เจ้าหน้าที่ รปภ.'));
+    await tester.pumpAndSettle();
+    await tester.binding.handlePopRoute();
+    await tester.pumpAndSettle();
+
+    expect(store.profileToken, isNull);
+    expect(find.text('GUARD FORM'), findsNothing);
   });
 
   testWidgets('the close button returns to the CURRENT role home (no logout)',
@@ -131,11 +168,12 @@ void main() {
     expect(find.text('CUSTOMER HOME'), findsOneWidget);
   });
 
-  testWidgets('UNauthenticated → the original onboarding chooser (single-role path intact)',
+  testWidgets(
+      'UNauthenticated → the original onboarding chooser (single-role path intact)',
       (tester) async {
     final c = ProviderContainer(overrides: [
-      pguardApiProvider
-          .overrideWithValue(FakeApi(onPost: (_, __) async => <String, dynamic>{})),
+      pguardApiProvider.overrideWithValue(
+          FakeApi(onPost: (_, __) async => <String, dynamic>{})),
       appStoreProvider.overrideWithValue(InMemoryStore()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
     ]);
