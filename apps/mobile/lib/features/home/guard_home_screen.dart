@@ -14,6 +14,8 @@ import '../../core/controllers/tracking_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/models/geo.dart';
+import '../../core/controllers/earnings.dart';
+import '../../core/controllers/guard_earnings_controller.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_bottom_nav.dart';
@@ -280,26 +282,42 @@ class GuardHomeStats {
         local.day == now.day;
   }
 
-  /// Today's earnings in satang: Σ base_fee × hours × guard_count over the guard's
-  /// completed/active jobs scheduled today.
-  static int earningsTodaySatang(List<Booking> all, DateTime now) {
+  /// Today's earnings in satang — the SAME number the earnings screen shows.
+  ///
+  /// This deliberately delegates to [GuardEarnings.jobEarningsSatang] instead of computing a total
+  /// of its own. It used to be `base_fee × hours × guard_count` over completed AND in-progress
+  /// jobs, which overstated pay three ways: `guard_count` is how many guards the CUSTOMER hired
+  /// (this guard is paid for one of them, not the whole crew), an unfinished job is money not yet
+  /// earned, and booked hours are an estimate the reconciliation can lower. The home card and the
+  /// earnings screen therefore disagreed on the same day's pay.
+  ///
+  /// [actualHours] comes from `GET /payments/earnings` (the hours actually worked, persisted at
+  /// reconciliation); without it each job falls back to its booked hours.
+  static int earningsTodaySatang(
+    List<Booking> all,
+    DateTime now, {
+    Map<String, double>? actualHours,
+  }) {
     var sum = 0;
-    for (final b in all) {
-      final earns = b.status == BookingStatus.completed ||
-          BookingLifecycle.isActive(b.status);
-      if (!earns || !_isToday(b.scheduledAt, now)) continue;
-      sum += Money.total(
-        baseFeeSatang: Money.satangFromString(b.baseFee),
-        hours: b.hours ?? 0,
-        guardCount: b.guardCount ?? 1,
-      );
+    for (final b in GuardEarnings.completedJobs(all)) {
+      if (!_isToday(b.scheduledAt, now)) continue;
+      sum += GuardEarnings.jobEarningsSatang(b, actualHours: actualHours);
     }
     return sum;
   }
 
-  /// Number of the guard's jobs scheduled today.
-  static int jobsToday(List<Booking> all, DateTime now) =>
-      all.where((b) => _isToday(b.scheduledAt, now)).length;
+  /// Number of jobs THIS GUARD is working today.
+  ///
+  /// The feed behind this screen is `[...open, ...assigned]` — open jobs are unassigned requests
+  /// from the discovery feed that belong to no guard yet. Counting the whole list made the number
+  /// climb whenever any customer booked, before this guard had accepted anything. `stepIndex >= 0`
+  /// admits exactly `accepted → completed` and excludes `requested` (not taken) along with
+  /// `cancelled`/`declined` (not worked).
+  static int jobsToday(List<Booking> all, DateTime now) => all
+      .where((b) =>
+          BookingLifecycle.stepIndex(b.status) >= 0 &&
+          _isToday(b.scheduledAt, now))
+      .length;
 
   /// HONEST guard→job-site distance+ETA label for the incoming card, or `null` when it can't be
   /// shown truthfully. Straight-line [TravelEstimate] (the `~` marks the ETA approximate — no
@@ -353,15 +371,18 @@ class _GuardProfileAvatarButton extends ConsumerWidget {
 }
 
 /// Screen 1 stats row — 3 equal cards: today's earnings / jobs today / rating.
-class _StatsRow extends StatelessWidget {
+class _StatsRow extends ConsumerWidget {
   const _StatsRow({required this.bookings, required this.isThai});
 
   final List<Booking> bookings;
   final bool isThai;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final now = DateTime.now();
+    // Same source as the earnings screen — hours ACTUALLY worked, so the two screens agree.
+    final actualHours =
+        ref.watch(guardEarningsHoursProvider).valueOrNull ?? const {};
     // Bound the row's height: CrossAxisAlignment.stretch (equal-height cards) needs a FINITE
     // height, but this Row sits directly in a ListView (UNBOUNDED height). Without IntrinsicHeight
     // the constraint is h=∞ → in release (asserts off) the row grows unbounded and pushes the jobs
@@ -372,8 +393,9 @@ class _StatsRow extends StatelessWidget {
         children: [
           Expanded(
             child: _StatCard(
-              value: Money.format(
-                  GuardHomeStats.earningsTodaySatang(bookings, now)),
+              value: Money.format(GuardHomeStats.earningsTodaySatang(
+                  bookings, now,
+                  actualHours: actualHours)),
               label: isThai ? 'รายได้วันนี้' : 'Today',
             ),
           ),

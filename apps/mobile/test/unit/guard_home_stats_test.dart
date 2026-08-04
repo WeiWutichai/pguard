@@ -31,28 +31,31 @@ void main() {
   final yesterday14 = DateTime(2026, 6, 10, 14, 0);
 
   final all = [
-    // Completed today: 500 × 8h × 1 guard = ฿4,000 → counts.
+    // Completed today: 500 × 8h = ฿4,000 → counts (guard_count is the customer's crew size,
+    // not a multiplier on one guard's pay).
     booking('b1',
         status: BookingStatus.completed,
         scheduledAt: today14,
         hours: 8,
         guardCount: 1,
         baseFee: '500.00'),
-    // Active (arrived) today: 500 × 2h × 2 guards = ฿2,000 → counts.
+    // Still WORKING today (arrived): money not earned yet → excluded from today's earnings,
+    // but it IS one of today's jobs.
     booking('b2',
         status: BookingStatus.arrived,
         scheduledAt: today14,
         hours: 2,
         guardCount: 2,
         baseFee: '500.00'),
-    // Incoming offer today: scheduled today but not accepted → no earnings.
+    // An OPEN request from the discovery feed — no guard has taken it. Neither earnings nor
+    // "jobs today": it is not this guard's job at all.
     booking('b3',
         status: BookingStatus.requested,
         scheduledAt: today14,
         hours: 8,
         guardCount: 1,
         baseFee: '500.00'),
-    // Cancelled today → no earnings.
+    // Cancelled today → neither earned nor worked.
     booking('b4',
         status: BookingStatus.cancelled,
         scheduledAt: today14,
@@ -70,22 +73,34 @@ void main() {
     booking('b6', status: BookingStatus.completed, hours: 8, baseFee: '500'),
   ];
 
-  test('earningsTodaySatang sums completed+active jobs scheduled today', () {
-    // ฿4,000 + ฿2,000 = ฿6,000 = 600,000 satang.
-    expect(GuardHomeStats.earningsTodaySatang(all, now), 600000);
+  test('earningsTodaySatang counts only jobs COMPLETED today', () {
+    // Only b1 (฿4,000). b2 is still being worked, b3 was never taken, b4 was cancelled, and
+    // b5/b6 are not today. guard_count is NOT a multiplier — this guard is paid for themselves.
+    expect(GuardHomeStats.earningsTodaySatang(all, now), 400000);
+  });
+
+  test('earningsTodaySatang prefers the hours ACTUALLY worked', () {
+    // The reconciliation clamped b1 to 6h, so today's pay is 500 × 6 — the same number the
+    // earnings screen shows. Before this the home card used booked hours and the two disagreed.
+    expect(
+      GuardHomeStats.earningsTodaySatang(all, now, actualHours: {'b1': 6}),
+      300000,
+    );
   });
 
   test('earningsTodaySatang is 0 for an empty list', () {
     expect(GuardHomeStats.earningsTodaySatang(const [], now), 0);
   });
 
-  test('jobsToday counts every booking scheduled today', () {
-    expect(GuardHomeStats.jobsToday(all, now), 4); // b1–b4
+  test('jobsToday counts only jobs this guard actually took', () {
+    // b1 (completed) + b2 (arrived). NOT b3 — an unassigned open request, which used to make the
+    // count climb whenever any customer booked — and not b4, which was cancelled.
+    expect(GuardHomeStats.jobsToday(all, now), 2);
   });
 
   group('incomingDistanceLabel — honest guard→job distance', () {
-    final pinned = booking('p',
-        status: BookingStatus.requested, lat: 13.75, lng: 100.50);
+    final pinned =
+        booking('p', status: BookingStatus.requested, lat: 13.75, lng: 100.50);
     const guardAt = GeoPoint(13.70, 100.50); // ~5.5 km south of the pin
 
     test('null when the guard has no GPS fix (offline / no fix)', () {
@@ -102,8 +117,8 @@ void main() {
         isNull,
       );
       // half-null (lat only) is also not a usable pin
-      final halfPin = booking('hp',
-          status: BookingStatus.requested, lat: 13.75);
+      final halfPin =
+          booking('hp', status: BookingStatus.requested, lat: 13.75);
       expect(
         GuardHomeStats.incomingDistanceLabel(guardAt, halfPin, isThai: true),
         isNull,
