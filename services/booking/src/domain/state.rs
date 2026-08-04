@@ -304,6 +304,51 @@ mod tests {
     }
 
     #[test]
+    fn reason_bearing_targets_match_their_actor_class() {
+        // The mandatory cancel/decline reason has TWO vocabularies, split by WHO ends the job:
+        // the customer cancels (RequestOwner → cancelled), the assigned guard withdraws
+        // (AssignedGuard → declined). If a future edit let, say, a guard drive `cancelled`, the
+        // endpoint would hand the wrong code set to `validate_cancellation` — fail loudly here.
+        use crate::domain::cancellation::{set_for_target, ReasonSet};
+        let all = [
+            Requested,
+            Accepted,
+            Declined,
+            EnRoute,
+            Arrived,
+            PendingCompletion,
+            Completed,
+            Cancelled,
+        ];
+        for from in all {
+            for to in all {
+                let Some(actor) = required_actor(from, to) else {
+                    continue;
+                };
+                match set_for_target(to) {
+                    Some(ReasonSet::CustomerCancel) => assert_eq!(
+                        actor,
+                        RequiredActor::RequestOwner,
+                        "{from} → {to} carries the CUSTOMER reason set, so only the request \
+                         owner may drive it"
+                    ),
+                    Some(ReasonSet::GuardDecline) => assert_eq!(
+                        actor,
+                        RequiredActor::AssignedGuard,
+                        "{from} → {to} carries the GUARD reason set, so only the assigned \
+                         guard may drive it"
+                    ),
+                    // Every other legal transition is reasonless (the happy path).
+                    None => assert!(
+                        !matches!(to, Cancelled | Declined),
+                        "{from} → {to} ends the job without work but carries no reason set"
+                    ),
+                }
+            }
+        }
+    }
+
+    #[test]
     fn db_str_roundtrips_through_from_str() {
         for s in [
             Requested,

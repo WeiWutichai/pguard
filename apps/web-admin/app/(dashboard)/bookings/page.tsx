@@ -27,8 +27,11 @@ import { BookingDetailModal } from "./booking-detail-modal";
 import {
   type BookingStatusKey,
   bookingTotal,
+  cancellationOf,
   COPY,
   fmtBaht,
+  isCancelledStatus,
+  reasonText,
   STATUS_TONE,
   STATUSES,
 } from "./copy";
@@ -235,6 +238,16 @@ export default function BookingsPage() {
                 {visible.map((b) => {
                   const status = b.status as BookingStatusKey;
                   const canAssign = status === "requested" && !b.guard_id;
+                  // Cancelled/declined rows carry WHY under the status badge — a sub-line rather
+                  // than a 7th column, which would be empty on every live booking. The label is
+                  // clamped; the full reason + note ride in the cell's tooltip.
+                  const cancellation = isCancelledStatus(status) ? cancellationOf(b) : null;
+                  const reasonLabel = cancellation?.reason
+                    ? reasonText(cancellation.reason, c)
+                    : null;
+                  const reasonTip = reasonLabel
+                    ? [reasonLabel, cancellation?.note].filter(Boolean).join(" — ")
+                    : null;
                   return (
                     <Tr key={b.id} onClick={() => setSelected(b)}>
                       <Td className="font-mono font-semibold text-text-strong">
@@ -279,9 +292,20 @@ export default function BookingsPage() {
                       </Td>
                       <Td className="font-mono tabular-nums">{fmtBaht(bookingTotal(b))}</Td>
                       <Td>
-                        <Badge tone={STATUS_TONE[status] ?? "gray"}>
+                        <Badge
+                          tone={STATUS_TONE[status] ?? "gray"}
+                          title={reasonTip ?? undefined}
+                        >
                           {c.statusLabel[status] ?? status}
                         </Badge>
+                        {reasonLabel && (
+                          <div
+                            className="mt-1 max-w-[180px] truncate text-[11.5px] text-muted"
+                            title={reasonTip ?? undefined}
+                          >
+                            {reasonLabel}
+                          </div>
+                        )}
                       </Td>
                     </Tr>
                   );

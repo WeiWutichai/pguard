@@ -56,6 +56,12 @@ export default function TasksPage() {
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [cancelling, setCancelling] = useState(false);
+  // Cancelling is now a two-step: the booking service requires a reason, and an admin cancelling
+  // someone else's job is exactly the case where the customer deserves to be told why. Admin
+  // cancellations always carry the `other` code — none of the customer-facing reasons
+  // (changed plans / booked by mistake / no longer needed) is true when an operator does it.
+  const [cancelNote, setCancelNote] = useState("");
+  const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [detail, setDetail] = useState<Booking | null>(null);
 
@@ -143,6 +149,8 @@ export default function TasksPage() {
   }
 
   async function bulkCancel() {
+    const note = cancelNote.trim();
+    if (!note) return; // the confirm button is disabled without one; this is the belt-and-braces
     setCancelling(true);
     setNotice(null);
     const ids = [...selected];
@@ -152,15 +160,22 @@ export default function TasksPage() {
     const skippedPre = ids.length - cancellable.length;
     const results = await Promise.allSettled(
       cancellable.map((id) =>
-        bookingApi.PUT("/bookings/{id}/cancel", { params: { path: { id } } }).then(({ error }) => {
-          if (error) throw error;
-        }),
+        bookingApi
+          .PUT("/bookings/{id}/cancel", {
+            params: { path: { id } },
+            body: { reason: "other", note },
+          })
+          .then(({ error }) => {
+            if (error) throw error;
+          }),
       ),
     );
     const ok = results.filter((r) => r.status === "fulfilled").length;
     const failed = results.length - ok;
     setNotice(c.cancelResult(ok, skippedPre + failed));
     setSelected(new Set());
+    setCancelNote("");
+    setConfirmingCancel(false);
     setCancelling(false);
     reload();
   }
@@ -257,8 +272,8 @@ export default function TasksPage() {
             </span>
             <button
               type="button"
-              onClick={bulkCancel}
-              disabled={cancelling}
+              onClick={() => setConfirmingCancel(true)}
+              disabled={cancelling || confirmingCancel}
               className="rounded-md bg-white/20 px-3 py-1.5 text-[13px] font-semibold hover:bg-white/30 disabled:opacity-60"
             >
               {cancelling ? c.cancelling : c.bulkCancel}
@@ -269,6 +284,45 @@ export default function TasksPage() {
             >
               {c.bulkRefund}
             </span>
+          </div>
+        </div>
+      )}
+      {view === "table" && selected.size > 0 && confirmingCancel && (
+        <div className="mb-3 rounded-lg border border-border bg-surface px-4 py-3">
+          <label htmlFor="cancel-note" className="text-[13px] font-semibold text-text-strong">
+            {c.cancelReasonLabel}
+          </label>
+          <p className="mt-0.5 text-xs text-text-muted">{c.cancelReasonHint}</p>
+          <div className="mt-2 flex items-center gap-2">
+            <input
+              id="cancel-note"
+              type="text"
+              value={cancelNote}
+              maxLength={500}
+              autoFocus
+              placeholder={c.cancelReasonPlaceholder}
+              onChange={(e) => setCancelNote(e.target.value)}
+              className="min-w-0 flex-1 rounded-md border border-border bg-bg px-3 py-1.5 text-[13px] text-text-strong"
+            />
+            <button
+              type="button"
+              onClick={bulkCancel}
+              disabled={cancelling || !cancelNote.trim()}
+              className="rounded-md bg-danger px-3 py-1.5 text-[13px] font-semibold text-white hover:opacity-90 disabled:opacity-50"
+            >
+              {cancelling ? c.cancelling : c.cancelConfirm}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmingCancel(false);
+                setCancelNote("");
+              }}
+              disabled={cancelling}
+              className="rounded-md border border-border px-3 py-1.5 text-[13px] font-semibold text-text-strong disabled:opacity-50"
+            >
+              {c.cancelBack}
+            </button>
           </div>
         </div>
       )}

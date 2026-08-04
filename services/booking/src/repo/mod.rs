@@ -19,8 +19,8 @@ use shared_events::EventEnvelope;
 use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{
-    event_for_booking_requested, event_for_progress_report, event_for_status, CompletionInfo,
-    EventMapping,
+    event_for_booking_requested, event_for_progress_report, event_for_status, Cancellation,
+    CompletionInfo, EventMapping,
 };
 use crate::models::{
     BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
@@ -30,7 +30,7 @@ use crate::models::{
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
      scheduled_at, hours, base_fee, guard_count, tip, lat, lng, work_started_at, paid_at, \
-     created_at, updated_at";
+     cancellation_reason, cancellation_note, created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -625,7 +625,13 @@ pub async fn get_booking_core(db: &sqlx::PgPool, id: Uuid) -> Result<BookingCore
 /// `actor == customer_id`; `ClaimUnassigned` needs the booking to have no guard yet. `is_admin`
 /// overrides the owner checks. Illegal transitions → `Conflict`. `assign_guard` (the accept
 /// path) sets the guard. Completing requires the job to have been started.
-#[tracing::instrument(skip(db), fields(booking_id = %id, new_status = %new_status))]
+///
+/// `cancellation` is the same kind of per-transition extra as `assign_guard`: the validated
+/// reason (+ optional note) for the two terminal "did not happen" targets (`cancelled` /
+/// `declined`). It is persisted on the row AND rides the emitted event; `None` on every other
+/// transition (and on legacy/admin paths), where it is simply not written.
+#[allow(clippy::too_many_arguments)] // per-transition extras (assign_guard, cancellation) + correlation
+#[tracing::instrument(skip(db, cancellation), fields(booking_id = %id, new_status = %new_status))]
 pub async fn transition(
     db: &sqlx::PgPool,
     id: Uuid,
@@ -633,6 +639,7 @@ pub async fn transition(
     is_admin: bool,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
+    cancellation: Option<Cancellation>,
     correlation_id: Uuid,
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
@@ -802,11 +809,15 @@ pub async fn transition(
     let guard_id = assign_guard.or(existing_guard);
 
     // 1) the business change. `work_started_at` is owned by `start_job`, never touched here.
+    // The cancellation columns follow `guard_id`'s COALESCE precedent: only a transition that
+    // CARRIES a reason writes one, so no other transition can blank a recorded reason.
     let sql = format!(
         r#"
         UPDATE booking.bookings
         SET status = $2::booking.booking_status,
             guard_id = COALESCE($3, guard_id),
+            cancellation_reason = COALESCE($4, cancellation_reason),
+            cancellation_note = COALESCE($5, cancellation_note),
             updated_at = now()
         WHERE id = $1
         RETURNING {BOOKING_COLUMNS}
@@ -816,6 +827,8 @@ pub async fn transition(
         .bind(id)
         .bind(new_status.as_db_str())
         .bind(assign_guard)
+        .bind(cancellation.as_ref().map(|c| c.reason))
+        .bind(cancellation.as_ref().and_then(|c| c.note.as_deref()))
         .fetch_one(&mut *tx)
         .await?;
 
@@ -841,9 +854,15 @@ pub async fn transition(
     // completion-reject bounce (`pending_completion → arrived`) emit `booking.arrived` — the
     // latter is what lets the guard's live screen leave "pending_completion" without a manual
     // refresh (see `event_for_status` + the `review_reject_returns_to_arrived_owner_only` test).
-    if let Some(EventMapping { topic, payload }) =
-        event_for_status(current, new_status, id, customer_id, guard_id, completion)
-    {
+    if let Some(EventMapping { topic, payload }) = event_for_status(
+        current,
+        new_status,
+        id,
+        customer_id,
+        guard_id,
+        completion,
+        cancellation.as_ref(),
+    ) {
         let envelope = EventEnvelope::new(topic, correlation_id, payload);
         let envelope_json = serde_json::to_value(&envelope)
             .map_err(|e| AppError::Internal(format!("serialize event envelope: {e}")))?;
@@ -1115,9 +1134,12 @@ pub async fn list_open_bookings(
         }) => {
             let sql = format!(
                 r#"
+                -- The outer projection exists ONLY to drop `distance_km` (the sort key) from the
+                -- row, so it must mirror BOOKING_COLUMNS field-for-field — `status` is already
+                -- text-cast + aliased by the inner select. Add new booking columns to BOTH.
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
                        base_fee, guard_count, tip, lat, lng, work_started_at, paid_at,
-                       created_at, updated_at
+                       cancellation_reason, cancellation_note, created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
                            2 * 6371 * asin(least(1, sqrt(
@@ -1549,6 +1571,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard_id),
+            None,
             correlation,
         )
         .await
@@ -1587,6 +1610,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::Arrived,
+            None,
             None,
             correlation,
         )
@@ -1818,6 +1842,7 @@ mod db_tests {
             true, // is_admin
             BookingStatus::Accepted,
             Some(target_guard),
+            None,
             correlation,
         )
         .await
@@ -1858,6 +1883,7 @@ mod db_tests {
             true,
             BookingStatus::Accepted,
             Some(other_guard),
+            None,
             Uuid::new_v4(),
         )
         .await
@@ -1922,6 +1948,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(owner),
+            None,
             correlation,
         )
         .await
@@ -1934,6 +1961,7 @@ mod db_tests {
             intruder,
             false,
             BookingStatus::EnRoute,
+            None,
             None,
             correlation,
         )
@@ -1953,6 +1981,7 @@ mod db_tests {
             owner,
             false,
             BookingStatus::EnRoute,
+            None,
             None,
             correlation,
         )
@@ -2026,6 +2055,7 @@ mod db_tests {
                 false,
                 status,
                 assign,
+                None,
                 correlation,
             )
             .await
@@ -2039,6 +2069,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::PendingCompletion,
+            None,
             None,
             correlation,
         )
@@ -2071,6 +2102,7 @@ mod db_tests {
             false,
             BookingStatus::PendingCompletion,
             None,
+            None,
             correlation,
         )
         .await
@@ -2098,6 +2130,7 @@ mod db_tests {
             customer_id,
             false,
             BookingStatus::Completed,
+            None,
             None,
             correlation,
         )
@@ -2187,6 +2220,7 @@ mod db_tests {
                 false,
                 status,
                 assign,
+                None,
                 correlation,
             )
             .await
@@ -2203,6 +2237,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::PendingCompletion,
+            None,
             None,
             correlation,
         )
@@ -2241,6 +2276,7 @@ mod db_tests {
             false,
             BookingStatus::PendingCompletion,
             None,
+            None,
             correlation,
         )
         .await
@@ -2265,7 +2301,9 @@ mod db_tests {
 
     /// Cancellation is the request OWNER's move: a non-owner (here the assigned guard) is
     /// rejected with Forbidden, while the customer succeeds and enqueues exactly one
-    /// `booking.cancelled` event. DATABASE_URL-gated (hermetic when unset).
+    /// `booking.cancelled` event. Also pins the migration-0009 reason: the validated code +
+    /// note are PERSISTED on the row (and served back by every read) AND ride the event.
+    /// DATABASE_URL-gated (hermetic when unset).
     #[tokio::test]
     async fn cancel_is_owner_only_and_emits_cancelled() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -2311,6 +2349,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard_id),
+            None,
             correlation,
         )
         .await
@@ -2324,6 +2363,7 @@ mod db_tests {
             false,
             BookingStatus::Cancelled,
             None,
+            None,
             correlation,
         )
         .await
@@ -2333,7 +2373,7 @@ mod db_tests {
             "expected Forbidden, got {err:?}"
         );
 
-        // The customer can cancel a PRE-ARRIVAL booking → cancelled.
+        // The customer can cancel a PRE-ARRIVAL booking → cancelled, WITH a reason.
         let cancelled = transition(
             &pool,
             created.id,
@@ -2341,22 +2381,44 @@ mod db_tests {
             false,
             BookingStatus::Cancelled,
             None,
+            Some(Cancellation {
+                reason: "changed_plan",
+                note: Some("เปลี่ยนวันแล้ว".to_string()),
+            }),
             correlation,
         )
         .await
         .expect("customer cancel");
         assert_eq!(cancelled.status, "cancelled");
+        // The reason is persisted on the row (and therefore served by every booking read).
+        assert_eq!(
+            cancelled.cancellation_reason.as_deref(),
+            Some("changed_plan")
+        );
+        assert_eq!(cancelled.cancellation_note.as_deref(), Some("เปลี่ยนวันแล้ว"));
+        let reread = get_booking(&pool, created.id).await.expect("re-read");
+        assert_eq!(reread.cancellation_reason.as_deref(), Some("changed_plan"));
+        assert_eq!(reread.cancellation_note.as_deref(), Some("เปลี่ยนวันแล้ว"));
 
         // Exactly one booking.cancelled event enqueued.
-        let cancelled_events: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        let cancelled_events: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
         )
         .bind(topics::BOOKING_CANCELLED)
         .bind(created.id.to_string())
-        .fetch_one(&pool)
+        .fetch_all(&pool)
         .await
-        .expect("count cancelled events");
-        assert_eq!(cancelled_events, 1, "exactly one booking.cancelled emitted");
+        .expect("read cancelled events");
+        assert_eq!(
+            cancelled_events.len(),
+            1,
+            "exactly one booking.cancelled emitted"
+        );
+        // ...carrying the reason (stable code) + note, so notification/the app never re-read
+        // booking to tell the customer WHY.
+        let payload = &cancelled_events[0].payload["payload"];
+        assert_eq!(payload["cancellation_reason"], "changed_plan");
+        assert_eq!(payload["cancellation_note"], "เปลี่ยนวันแล้ว");
 
         let _ =
             sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
@@ -2424,6 +2486,7 @@ mod db_tests {
                 false,
                 status,
                 assign,
+                None,
                 correlation,
             )
             .await
@@ -2443,6 +2506,7 @@ mod db_tests {
             false,
             BookingStatus::PendingCompletion,
             None,
+            None,
             correlation,
         )
         .await
@@ -2455,6 +2519,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::Arrived,
+            None,
             None,
             correlation,
         )
@@ -2472,6 +2537,7 @@ mod db_tests {
             customer_id,
             false,
             BookingStatus::Arrived,
+            None,
             None,
             correlation,
         )
@@ -2582,6 +2648,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard_id),
+            None,
             correlation,
         )
         .await
@@ -2596,6 +2663,7 @@ mod db_tests {
             stranger,
             false,
             BookingStatus::PendingCompletion,
+            None,
             None,
             correlation,
         )
@@ -2661,6 +2729,7 @@ mod db_tests {
                 false,
                 status,
                 assign,
+                None,
                 correlation,
             )
             .await
@@ -2940,6 +3009,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard2),
+            None,
             correlation,
         )
         .await
@@ -3030,6 +3100,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard),
+            None,
             Uuid::new_v4(),
         )
         .await
@@ -3165,6 +3236,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard_id),
+            None,
             correlation,
         )
         .await
@@ -3188,6 +3260,7 @@ mod db_tests {
                 guard_id,
                 false,
                 status,
+                None,
                 None,
                 correlation,
             )
@@ -3277,6 +3350,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard_id),
+            None,
             correlation,
         )
         .await
@@ -3291,6 +3365,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::EnRoute,
+            None,
             None,
             correlation,
         )
@@ -3324,6 +3399,7 @@ mod db_tests {
             guard_id,
             false,
             BookingStatus::EnRoute,
+            None,
             None,
             correlation,
         )
@@ -3456,6 +3532,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(busy_guard),
+            None,
             correlation,
         )
         .await
@@ -3480,6 +3557,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(free_guard),
+            None,
             correlation,
         )
         .await
@@ -3490,6 +3568,7 @@ mod db_tests {
             free_guard,
             false,
             BookingStatus::Declined,
+            None,
             None,
             correlation,
         )
@@ -3548,6 +3627,7 @@ mod db_tests {
             false,
             BookingStatus::Accepted,
             Some(guard),
+            None,
             correlation,
         )
         .await

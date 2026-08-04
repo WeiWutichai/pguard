@@ -99,18 +99,45 @@ class BookingStatusController extends _$BookingStatusController {
     return snapshot.withPaidAt(previous!.paidAt!);
   }
 
-  /// `PUT /v1/bookings/{id}/cancel` — the customer cancels PRE-ARRIVAL
+  /// `PUT /v1/bookings/{id}/cancel { reason, note? }` — the customer cancels PRE-ARRIVAL
   /// (`requested`/`accepted`/`en_route` → `cancelled`), per `cancelBooking` in
-  /// `contracts/openapi/booking.yaml`. The contract takes NO request body, so [reason]
-  /// is DISPLAY-ONLY (the cancellation screen collects it for UX; it is never sent —
-  /// no such API field exists). On success the returned booking is folded into state
-  /// immediately (the WS `cancelled` frame that follows is idempotent).
+  /// `contracts/openapi/booking.yaml`.
+  ///
+  /// [reason] is a STABLE CODE from `PgCancelReason.customer` (`changed_plan` | `mistake` |
+  /// `not_needed` | `other`) — never localized text: it is persisted on the booking and rides the
+  /// `booking.cancelled` event, so admin/reporting group on it. [note] is the optional free text
+  /// (≤500 chars, already trimmed by the caller; `null` when blank) and is REQUIRED by the server
+  /// when the code is `other` (400 `CANCEL_NOTE_REQUIRED`).
+  ///
+  /// On success the returned booking is folded into state immediately (the WS `cancelled` frame
+  /// that follows is idempotent).
   ///
   /// Returns `null` on success, else a human-readable error message for a SnackBar.
-  Future<String?> cancel({String? reason}) async {
+  Future<String?> cancel({required String reason, String? note}) =>
+      _cancelLike('cancel', reason: reason, note: note);
+
+  /// `PUT /v1/bookings/{id}/decline { reason, note? }` — the ASSIGNED guard withdraws after
+  /// accepting (`accepted`/`en_route` → `declined`), per `declineBooking` in `booking.yaml`.
+  /// Same body shape as [cancel], with a code from `PgCancelReason.guard` (`emergency` | `sick` |
+  /// `cannot_reach` | `other`); the note is what admin reads when reviewing the withdrawal.
+  ///
+  /// Returns `null` on success, else a human-readable error message for a SnackBar.
+  Future<String?> decline({required String reason, String? note}) =>
+      _cancelLike('decline', reason: reason, note: note);
+
+  /// Shared transport for the two negative-terminal transitions — identical body shape and error
+  /// handling, only the path segment differs. `note` is omitted entirely when null (the server
+  /// stores `None`), mirroring how the events omit it.
+  Future<String?> _cancelLike(
+    String action, {
+    required String reason,
+    String? note,
+  }) async {
     try {
-      final data =
-          await ref.read(pguardApiProvider).put('/bookings/$bookingId/cancel');
+      final data = await ref.read(pguardApiProvider).put(
+        '/bookings/$bookingId/$action',
+        data: {'reason': reason, if (note != null) 'note': note},
+      );
       state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
       return null;
     } on ApiException catch (e) {

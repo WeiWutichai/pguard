@@ -5,6 +5,7 @@ import 'package:pguard_mobile/core/controllers/progress_reports_controller.dart'
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/features/booking/widgets/cancel_reason.dart';
 
 import '../support/fakes.dart';
 
@@ -87,9 +88,8 @@ void main() {
   });
 
   test(
-      'cancel PUTs /bookings/{id}/cancel with NO body (contract: cancelBooking '
-      'takes none — reason is display-only) and folds the cancelled booking in',
-      () async {
+      'cancel PUTs /bookings/{id}/cancel WITH the reason code + note body and '
+      'folds the cancelled booking (incl. its reason) in', () async {
     final api = FakeApi(
       onGet: (_, __) async => {
         'id': 'b1',
@@ -99,12 +99,15 @@ void main() {
       },
       onPut: (path, data) async {
         expect(path, '/bookings/b1/cancel');
-        expect(data, isNull, reason: 'the contract endpoint takes no body');
+        // The CODE travels, never the localized label.
+        expect(data, {'reason': 'changed_plan', 'note': 'ไปต่างจังหวัด'});
         return {
           'id': 'b1',
           'customer_id': 'c1',
           'status': 'cancelled',
           'guard_id': null,
+          'cancellation_reason': 'changed_plan',
+          'cancellation_note': 'ไปต่างจังหวัด',
         };
       },
     );
@@ -121,11 +124,57 @@ void main() {
 
     final error = await c
         .read(bookingStatusControllerProvider('b1').notifier)
-        .cancel(reason: 'เปลี่ยนแผน');
+        .cancel(reason: PgCancelReason.changedPlan, note: 'ไปต่างจังหวัด');
     expect(error, isNull);
     expect(api.calls, contains('PUT /bookings/b1/cancel'));
-    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
-        BookingStatus.cancelled);
+    final booking = c.read(bookingStatusControllerProvider('b1')).value!;
+    expect(booking.status, BookingStatus.cancelled);
+    expect(booking.cancellationReason, PgCancelReason.changedPlan);
+    expect(booking.cancellationNote, 'ไปต่างจังหวัด');
+  });
+
+  test(
+      'decline PUTs /bookings/{id}/decline with the guard reason code and OMITS '
+      'note entirely when blank', () async {
+    final api = FakeApi(
+      onGet: (_, __) async => {
+        'id': 'b1',
+        'customer_id': 'c1',
+        'status': 'accepted',
+        'guard_id': 'g1',
+      },
+      onPut: (path, data) async {
+        expect(path, '/bookings/b1/decline');
+        expect(data, {'reason': 'sick'},
+            reason: 'a null note is omitted, not sent as ""');
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'declined',
+          'guard_id': 'g1',
+          'cancellation_reason': 'sick',
+        };
+      },
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(bookingStatusControllerProvider('b1').future);
+
+    final error = await c
+        .read(bookingStatusControllerProvider('b1').notifier)
+        .decline(reason: PgCancelReason.sick);
+    expect(error, isNull);
+    final booking = c.read(bookingStatusControllerProvider('b1')).value!;
+    expect(booking.status, BookingStatus.declined);
+    expect(booking.cancellationReason, PgCancelReason.sick);
+    expect(booking.cancellationNote, isNull);
   });
 
   test('markPaid marks the booking paid optimistically', () async {
@@ -238,8 +287,9 @@ void main() {
     addTearDown(sub.close);
     await c.read(bookingStatusControllerProvider('b1').future);
 
-    final error =
-        await c.read(bookingStatusControllerProvider('b1').notifier).cancel();
+    final error = await c
+        .read(bookingStatusControllerProvider('b1').notifier)
+        .cancel(reason: PgCancelReason.changedPlan);
     // A raced 409 is localized to a generic "state changed" message (Thai default) rather than the
     // raw server contract sentence (deep-review); state is unchanged.
     expect(error, 'สถานะงานเปลี่ยนไปแล้ว โหลดข้อมูลล่าสุดแล้วลองใหม่');

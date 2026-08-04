@@ -28,6 +28,7 @@ import '../../widgets/progress_report_viewer.dart';
 import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
 import '../booking/live_status_screen.dart' show showBookingDetailsSheet;
+import '../booking/widgets/cancel_reason.dart';
 import '../booking/widgets/job_receipt_sheet.dart';
 import '../booking/widgets/travel_map_preview.dart';
 import '../call/widgets/call_entry_button.dart';
@@ -1193,6 +1194,12 @@ class _CancelledBar extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // The CUSTOMER's reason for pulling the job (or the guard's own, on a self-withdraw) — the
+    // guard should never be left guessing why the job died under them. Null on a pre-migration
+    // booking that stored no code, in which case the banner reads exactly as it did before.
+    final reason =
+        PgCancelReason.labelFor(state.booking.cancellationReason, isThai);
+    final note = state.booking.cancellationNote?.trim();
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -1211,12 +1218,37 @@ class _CancelledBar extends ConsumerWidget {
                   size: 18, color: PgTokens.colorDanger),
               const SizedBox(width: PgTokens.space2),
               Expanded(
-                child: Text(
-                  isThai ? 'งานนี้ถูกยกเลิกแล้ว' : 'This job was cancelled',
-                  style: const TextStyle(
-                      fontSize: 13.5,
-                      fontWeight: FontWeight.w700,
-                      color: PgTokens.colorDanger),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      isThai ? 'งานนี้ถูกยกเลิกแล้ว' : 'This job was cancelled',
+                      style: const TextStyle(
+                          fontSize: 13.5,
+                          fontWeight: FontWeight.w700,
+                          color: PgTokens.colorDanger),
+                    ),
+                    // The reason lives INSIDE the same banner but in normal text colour, not the
+                    // danger red of the headline: the cancellation is the alert, the reason is
+                    // only the explanation for it.
+                    if (reason.isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        isThai ? 'เหตุผล: $reason' : 'Reason: $reason',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w600,
+                          color: PgTokens.colorText,
+                        ),
+                      ),
+                      if (note != null && note.isNotEmpty)
+                        Text(
+                          note,
+                          style: const TextStyle(
+                              fontSize: 12, color: PgTokens.colorTextMuted),
+                        ),
+                    ],
+                  ],
                 ),
               ),
             ],

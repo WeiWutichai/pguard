@@ -15,6 +15,7 @@ import '../../widgets/image_viewer.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
+import '../booking/widgets/cancel_reason.dart';
 import '../booking/widgets/pg_map.dart';
 
 /// Incoming-job detail (design `Mobile - Guard App.html` ③): a 160px map preview with a floating
@@ -313,6 +314,13 @@ class _Sheet extends ConsumerWidget {
         ? customerName
         : customerShortRef;
     final guardCount = booking.guardCount ?? 1;
+    // Why this job ended, shown next to the status on a read-only (already-cancelled/declined)
+    // job — the guard opens this same sheet from the work history and should find the answer
+    // here. Empty for a booking that predates the reason capture, which then renders as before.
+    final cancelReason = BookingLifecycle.isNegativeTerminal(booking.status)
+        ? PgCancelReason.labelFor(booking.cancellationReason, isThai)
+        : '';
+    final cancelNote = booking.cancellationNote?.trim();
 
     final rows = <Widget>[
       // Customer — the customer's real name (readable from the offer onwards), else a short id ref.
@@ -422,11 +430,40 @@ class _Sheet extends ConsumerWidget {
                   if (!canAccept)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-                      child: Text(
-                        isThai
-                            ? 'สถานะ: ${BookingLifecycle.labelTh(booking.status)}'
-                            : 'Status: ${BookingLifecycle.labelEn(booking.status)}',
-                        style: const TextStyle(color: PgTokens.colorTextMuted),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            isThai
+                                ? 'สถานะ: ${BookingLifecycle.labelTh(booking.status)}'
+                                : 'Status: ${BookingLifecycle.labelEn(booking.status)}',
+                            style:
+                                const TextStyle(color: PgTokens.colorTextMuted),
+                          ),
+                          // A cancelled/declined job explains itself right under the status it
+                          // qualifies — same quiet line, one step stronger so the reason reads as
+                          // the answer to "ยกเลิกแล้ว … ทำไม".
+                          if (cancelReason.isNotEmpty) ...[
+                            const SizedBox(height: 4),
+                            Text(
+                              isThai
+                                  ? 'เหตุผล: $cancelReason'
+                                  : 'Reason: $cancelReason',
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w600,
+                                color: PgTokens.colorText,
+                              ),
+                            ),
+                            if (cancelNote != null && cancelNote.isNotEmpty)
+                              Text(
+                                cancelNote,
+                                style: const TextStyle(
+                                    fontSize: 12.5,
+                                    color: PgTokens.colorTextMuted),
+                              ),
+                          ],
+                        ],
                       ),
                     ),
                 ],

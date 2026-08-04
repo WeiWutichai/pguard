@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/booking/cancellation_screen.dart';
 import 'package:pguard_mobile/features/booking/live_status_screen.dart';
+import 'package:pguard_mobile/features/booking/widgets/cancel_reason.dart';
 import 'package:pguard_mobile/features/booking/widgets/reason_tile.dart';
 
 import '../support/fakes.dart';
@@ -114,17 +115,24 @@ void main() {
   });
 
   testWidgets(
-      'confirm sheet → "ใช่ ยกเลิกงาน" PUTs /bookings/b1/cancel and pops back '
-      'to live status with a SnackBar', (tester) async {
+      'confirm sheet → "ใช่ ยกเลิกงาน" PUTs /bookings/b1/cancel WITH the reason '
+      'code + note and pops back to live status with a SnackBar', (tester) async {
+    Object? sentBody;
     final api = apiWith(onPut: (path, data) async {
       expect(path, '/bookings/b1/cancel');
-      expect(data, isNull, reason: 'contract endpoint takes no body');
+      sentBody = data;
       return bookingJson('cancelled');
     });
     await pumpFlow(tester, api);
 
     await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
     await tester.pumpAndSettle();
+    // Pick a NON-default reason + type a note, so the assertion below proves the actual
+    // selection travels (not just the pre-selected first code).
+    await tester.tap(find.text('ไม่ต้องการแล้ว'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), '  หาคนอื่นได้แล้ว  ');
+    await tester.pump();
     await tester.tap(find.text('ยืนยันยกเลิกงาน'));
     await tester.pumpAndSettle();
 
@@ -136,6 +144,12 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.calls, contains('PUT /bookings/b1/cancel'));
+    // THE fix: the reason the customer picked reaches the server as a STABLE CODE (never the
+    // Thai label), with the note trimmed.
+    expect(sentBody, {
+      'reason': PgCancelReason.notNeeded,
+      'note': 'หาคนอื่นได้แล้ว',
+    });
     expect(find.byType(CancellationScreen), findsNothing,
         reason: 'popped back to live status');
     expect(find.byType(LiveStatusScreen), findsOneWidget);
@@ -156,6 +170,64 @@ void main() {
     expect(api.calls.where((c) => c.startsWith('PUT')), isEmpty);
     expect(find.byType(CancellationScreen), findsOneWidget,
         reason: 'still on the reason screen');
+  });
+
+  testWidgets(
+      'a reason with no note omits `note` entirely (blank is not sent as "")',
+      (tester) async {
+    Object? sentBody;
+    final api = apiWith(onPut: (path, data) async {
+      sentBody = data;
+      return bookingJson('cancelled');
+    });
+    await pumpFlow(tester, api);
+
+    await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ยืนยันยกเลิกงาน'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ใช่ ยกเลิกงาน'));
+    await tester.pumpAndSettle();
+
+    expect(sentBody, {'reason': PgCancelReason.changedPlan});
+  });
+
+  testWidgets(
+      '"อื่นๆ" with a BLANK note blocks submit: no confirm sheet, NO PUT, and '
+      'an inline message — then filling the note lets it through', (tester) async {
+    Object? sentBody;
+    final api = apiWith(onPut: (path, data) async {
+      sentBody = data;
+      return bookingJson('cancelled');
+    });
+    await pumpFlow(tester, api);
+
+    await tester.tap(find.text('ยกเลิกและค้นหาใหม่'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('อื่นๆ'));
+    await tester.pump();
+    // Whitespace only — must be treated as blank (the server trims too).
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.pump();
+    await tester.tap(find.text('ยืนยันยกเลิกงาน'));
+    await tester.pumpAndSettle();
+
+    expect(api.calls.where((c) => c.startsWith('PUT')), isEmpty,
+        reason: 'other + blank note must never reach the API');
+    expect(find.text('ยกเลิกงานนี้?'), findsNothing,
+        reason: 'blocked BEFORE the destructive confirm sheet');
+    expect(find.text(PgCancelReason.noteMissingMessage(true)), findsOneWidget);
+
+    // Typing clears the complaint; submitting now goes through with the note.
+    await tester.enterText(find.byType(TextField), 'เหตุผลอื่น');
+    await tester.pump();
+    expect(find.text(PgCancelReason.noteMissingMessage(true)), findsNothing);
+    await tester.tap(find.text('ยืนยันยกเลิกงาน'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ใช่ ยกเลิกงาน'));
+    await tester.pumpAndSettle();
+
+    expect(sentBody, {'reason': PgCancelReason.other, 'note': 'เหตุผลอื่น'});
   });
 
   testWidgets('post-arrival there is no cancel affordance', (tester) async {

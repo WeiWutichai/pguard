@@ -45,10 +45,23 @@ channels:
     messages: { jobAccepted: { $ref: '#/components/messages/BookingJobAccepted' } }
   bookingDeclined:
     address: pguard.events.booking.declined
-    messages: { declined: { $ref: '#/components/messages/GenericBookingEvent' } }
+    description: >-
+      The ASSIGNED guard withdrew PRE-ARRIVAL (`accepted → declined` or `en_route → declined`)
+      → terminal `declined`. Producer = booking (transactional outbox, atomic with the status
+      write). Consumers = payment (FULL-REFUND when the booking was already paid) + notification
+      (tells the customer their guard backed out). Carries the mandatory `cancellation_reason`
+      on top of the shared booking-ref keys, so a consumer renders WHY without reading back
+      into booking.
+    messages: { declined: { $ref: '#/components/messages/BookingCancellation' } }
   bookingCancelled:
     address: pguard.events.booking.cancelled
-    messages: { cancelled: { $ref: '#/components/messages/GenericBookingEvent' } }
+    description: >-
+      The CUSTOMER (or an admin) cancelled a PRE-ARRIVAL booking → terminal `cancelled`.
+      Producer = booking (transactional outbox, atomic with the status write). Consumers =
+      payment (FULL-REFUND when the booking was already paid) + notification. Same
+      `cancellation_reason` payload extension as `booking.declined`, differing only in the
+      code set (customer codes, not guard ones).
+    messages: { cancelled: { $ref: '#/components/messages/BookingCancellation' } }
   bookingCompleted:
     address: pguard.events.booking.completed
     messages: { completed: { $ref: '#/components/messages/BookingCompleted' } }
@@ -199,6 +212,10 @@ components:
       name: GenericBookingEvent
       contentType: application/json
       payload: { $ref: '#/components/schemas/EnvelopeOf_BookingRef' }
+    BookingCancellation:
+      name: BookingCancellation
+      contentType: application/json
+      payload: { $ref: '#/components/schemas/EnvelopeOf_BookingCancellation' }
     BookingCompleted:
       name: BookingCompleted
       contentType: application/json
@@ -304,6 +321,44 @@ components:
                 booking_id: { type: string, format: uuid }
                 customer_id: { type: string, format: uuid }
                 guard_id: { type: string, format: uuid, nullable: true }
+
+    EnvelopeOf_BookingCancellation:
+      description: >-
+        The booking-ref keys plus the MANDATORY cancellation reason, shared by
+        `booking.cancelled` and `booking.declined`. `cancellation_reason` is always present
+        (the API rejects a cancel/decline without one — 400 CANCEL_REASON_REQUIRED), so a
+        consumer may rely on it for any event emitted after migration 0009.
+        `cancellation_note` is OMITTED ENTIRELY when the customer/guard gave none — the same
+        omit-when-absent convention `guard_id` already follows here.
+      allOf:
+        - $ref: '#/components/schemas/Envelope'
+        - type: object
+          properties:
+            payload:
+              type: object
+              required: [booking_id, cancellation_reason]
+              properties:
+                booking_id: { type: string, format: uuid }
+                customer_id: { type: string, format: uuid }
+                guard_id: { type: string, format: uuid, nullable: true }
+                cancellation_reason:
+                  type: string
+                  enum: [changed_plan, mistake, not_needed, emergency, sick, cannot_reach, other]
+                  description: >-
+                    Stable reason code — NEVER localized text (consumers map it to a label).
+                    `booking.cancelled` carries a CUSTOMER code (`changed_plan` เปลี่ยนแผน,
+                    `mistake` แจ้งผิดพลาด, `not_needed` ไม่ต้องการแล้ว, `other` อื่นๆ);
+                    `booking.declined` carries a GUARD code (`emergency` เหตุฉุกเฉินส่วนตัว,
+                    `sick` ป่วย, `cannot_reach` เดินทางไปไม่ได้, `other` อื่นๆ). The union is
+                    listed here because both events share this payload; treat an unrecognized
+                    code as "ไม่ระบุ"/"Not specified" rather than failing the message.
+                cancellation_note:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    Free-text detail (trimmed, ≤ 500 characters). OMITTED when none was given;
+                    always present when `cancellation_reason` is `other` (the API enforces it —
+                    400 CANCEL_NOTE_REQUIRED).
 
     EnvelopeOf_BookingCompleted:
       allOf:

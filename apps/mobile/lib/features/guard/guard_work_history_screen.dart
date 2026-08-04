@@ -3,7 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
-import '../../core/controllers/customer_home_controller.dart' show thaiShortDate;
+import '../../core/controllers/customer_home_controller.dart'
+    show thaiShortDate;
 import '../../core/controllers/earnings.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
@@ -13,6 +14,7 @@ import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
 import '../../widgets/pguard_header.dart';
+import '../booking/widgets/cancel_reason.dart';
 
 /// The guard's "ประวัติงาน / Work history" screen (design `Mobile - Guard App.html` ⑦): a
 /// Completed / Cancelled segmented control over the guard's past bookings (`GET /v1/bookings`,
@@ -51,7 +53,8 @@ class _GuardWorkHistoryScreenState
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'ประวัติงาน' : 'Work history',
         showBack: true,
       ),
@@ -64,8 +67,7 @@ class _GuardWorkHistoryScreenState
             onRetry: ctrl.refresh,
           ),
           data: (all) {
-            final completed =
-                _byRecent(GuardJobsController.completed(all));
+            final completed = _byRecent(GuardJobsController.completed(all));
             // A guard's "cancelled" archive: jobs the customer cancelled and jobs the guard
             // declined/withdrew from — both ended without completion.
             final cancelled = _byRecent(all.where((b) =>
@@ -122,9 +124,17 @@ class _HistoryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final when = booking.scheduledAt;
+    // On the Cancelled tab the reason rides the SAME compact meta line as the date + hours
+    // ("18 ก.ค. · 4 ชม. · เปลี่ยนแผน") instead of adding a block to a dense list row, so the row
+    // answers "why" at a glance; the free-text note follows on its own clipped line below.
+    final reason = completed
+        ? ''
+        : PgCancelReason.labelFor(booking.cancellationReason, isThai);
+    final note = completed ? null : booking.cancellationNote?.trim();
     final meta = [
       if (when != null) thaiShortDate(when, isThai: isThai),
       '${booking.hours ?? 0} ${isThai ? 'ชม.' : 'hrs'}',
+      if (reason.isNotEmpty) reason,
     ].join(' · ');
 
     return InkWell(
@@ -144,9 +154,7 @@ class _HistoryRow extends StatelessWidget {
                 borderRadius: BorderRadius.circular(11),
               ),
               child: Icon(
-                  completed
-                      ? Icons.shield_outlined
-                      : Icons.cancel_outlined,
+                  completed ? Icons.shield_outlined : Icons.cancel_outlined,
                   size: 18,
                   color: PgTokens.colorTextMuted),
             ),
@@ -169,6 +177,16 @@ class _HistoryRow extends StatelessWidget {
                   Text(meta,
                       style: const TextStyle(
                           fontSize: 11.5, color: PgTokens.colorTextMuted)),
+                  // The customer's own words, clipped to one line so the row keeps its height;
+                  // the full note is on the job detail this row opens.
+                  if (note != null && note.isNotEmpty)
+                    Text(
+                      note,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          fontSize: 11.5, color: PgTokens.colorTextFaint),
+                    ),
                 ],
               ),
             ),
@@ -211,12 +229,8 @@ class _Empty extends StatelessWidget {
       physics: const AlwaysScrollableScrollPhysics(),
       children: [
         const SizedBox(height: 96),
-        Icon(
-            completedTab
-                ? Icons.check_circle_outline
-                : Icons.cancel_outlined,
-            size: 48,
-            color: PgTokens.colorTextFaint),
+        Icon(completedTab ? Icons.check_circle_outline : Icons.cancel_outlined,
+            size: 48, color: PgTokens.colorTextFaint),
         const SizedBox(height: PgTokens.space3),
         Text(
           completedTab

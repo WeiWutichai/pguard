@@ -120,6 +120,8 @@ class Booking {
     this.lng,
     this.paidAt,
     this.workStartedAt,
+    this.cancellationReason,
+    this.cancellationNote,
   });
 
   final String id;
@@ -165,6 +167,19 @@ class Booking {
   /// timestamps or a client-only stamp.
   final DateTime? workStartedAt;
 
+  /// Why this booking ended negatively — a STABLE CODE (`changed_plan`, `sick`, `other`, …), never
+  /// localized text, so the same booking reads correctly in both languages and admin can group on
+  /// it. Set when the CUSTOMER cancels (`PUT /bookings/{id}/cancel`) or the assigned GUARD
+  /// withdraws (`PUT /bookings/{id}/decline`). `null` on every live booking — and on rows that
+  /// predate the column, so the UI must treat "cancelled with no reason" as normal.
+  /// Render it with `PgCancelReason.labelFor` (features/booking/widgets/cancel_reason.dart) — the
+  /// one canonical code→label map shared by the capture and display sides.
+  final String? cancellationReason;
+
+  /// Optional free text the canceller typed (≤500 chars, server-trimmed). Always present when the
+  /// reason is `other` (the server rejects a blank note for that code), optional otherwise.
+  final String? cancellationNote;
+
   /// DISPLAY-only charge estimate in satang — `base_fee × hours × guard_count + tip` — derived
   /// purely from this snapshot's server-owned fields (the same figure the customer's live screen
   /// shows). `null` when the rate/hours aren't known yet (a fresh `requested` snapshot), so a
@@ -206,6 +221,8 @@ class Booking {
         workStartedAt: json['work_started_at'] != null
             ? DateTime.tryParse(json['work_started_at'] as String)
             : null,
+        cancellationReason: json['cancellation_reason'] as String?,
+        cancellationNote: json['cancellation_note'] as String?,
       );
 
   /// A copy with [paidAt] set (everything else unchanged). Used to OPTIMISTICALLY mark a booking
@@ -227,6 +244,8 @@ class Booking {
         lng: lng,
         paidAt: paidAt,
         workStartedAt: workStartedAt,
+        cancellationReason: cancellationReason,
+        cancellationNote: cancellationNote,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -252,6 +271,11 @@ class Booking {
         lng: lng,
         paidAt: paidAt,
         workStartedAt: workStartedAt,
+        // The WS frame carries only the status — a `cancelled`/`declined` push therefore lands
+        // with NO reason. Carry whatever we already know forward; the reason arrives on the next
+        // REST snapshot (the reconnect re-pull, or the PUT response for the party who cancelled).
+        cancellationReason: cancellationReason,
+        cancellationNote: cancellationNote,
       );
 }
 

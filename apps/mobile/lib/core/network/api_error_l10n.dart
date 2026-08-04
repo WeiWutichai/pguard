@@ -54,6 +54,18 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน'
           : 'This booking was cancelled — a full refund is on its way';
+    case 'CANCEL_REASON_REQUIRED':
+      // The cancel/decline body carried no reason (or one that isn't valid for that endpoint) —
+      // a client bug or an old build; the screens always pre-select a code.
+      return isThai
+          ? 'กรุณาเลือกเหตุผลในการยกเลิก'
+          : 'Please choose a reason for cancelling';
+    case 'CANCEL_NOTE_REQUIRED':
+      // Reason "อื่นๆ / Other" needs the free-text note filled in (the screens block this locally;
+      // this is the server backstop for an out-of-sync client).
+      return isThai
+          ? 'เลือก "อื่นๆ" แล้ว กรุณาระบุรายละเอียดเพิ่มเติม'
+          : 'Please add a note when the reason is "Other"';
     case 'OTP_COOLDOWN':
       return isThai
           ? 'กรุณารอสักครู่ก่อนขอรหัสใหม่'

@@ -32,6 +32,50 @@ export const STATUS_TONE: Record<BookingStatusKey, "green" | "amber" | "red" | "
   declined: "red",
 };
 
+/** Cancellation / decline reason CODES (contract: `booking.bookings.cancellation_reason` is a
+ * STABLE lowercase snake_case code, never localized text). Customer cancel emits
+ * changed_plan|mistake|not_needed|other; guard decline emits emergency|sick|cannot_reach|other —
+ * the admin renders both sets from one table. */
+export const CANCEL_REASON_CODES = [
+  "changed_plan",
+  "mistake",
+  "not_needed",
+  "emergency",
+  "sick",
+  "cannot_reach",
+  "other",
+] as const;
+export type CancelReasonCode = (typeof CANCEL_REASON_CODES)[number];
+
+/** The statuses that can carry a cancellation reason. */
+export function isCancelledStatus(status: string): boolean {
+  return status === "cancelled" || status === "declined";
+}
+
+export interface BookingCancellation {
+  /** The raw wire CODE (not a label) — null for pre-migration rows and legacy bookings. */
+  reason: string | null;
+  note: string | null;
+}
+
+/** Read the cancellation fields off a booking. They ride on the booking JSON as
+ * `cancellation_reason` + `cancellation_note`; read STRUCTURALLY (not off the `Booking` type) so
+ * this compiles either side of the OpenAPI client regen that adds them, and so a pre-migration
+ * row (both NULL) degrades to `{ null, null }` instead of rendering "undefined". */
+export function cancellationOf(booking: unknown): BookingCancellation {
+  const b = booking as { cancellation_reason?: unknown; cancellation_note?: unknown } | null;
+  const reason = typeof b?.cancellation_reason === "string" ? b.cancellation_reason.trim() : "";
+  const note = typeof b?.cancellation_note === "string" ? b.cancellation_note.trim() : "";
+  return { reason: reason || null, note: note || null };
+}
+
+/** Localized label for a reason code. An UNKNOWN code (a newer client shipping a code this
+ * build predates) falls back to the raw code — the admin is an internal tool, so a visible
+ * `snake_case` code beats silently dropping the reason. */
+export function reasonText(code: string, c: BookingsCopy): string {
+  return (c.reasonLabel as Partial<Record<string, string>>)[code] ?? code;
+}
+
 export interface BookingsCopy {
   title: string;
   /** Subtitle carries the live count: "งานทั้งหมด 27 รายการ". */
@@ -61,6 +105,14 @@ export interface BookingsCopy {
   guardsCount: string;
   customer: string;
   assignedGuard: string;
+  /** Detail-panel heading when the CUSTOMER cancelled. */
+  cancelReason: string;
+  /** …and when the GUARD declined. */
+  declineReason: string;
+  cancellationNote: string;
+  /** Terminal booking with no reason on record (cancelled before the field existed). */
+  cancellationNone: string;
+  reasonLabel: Record<CancelReasonCode, string>;
   hoursUnit: string;
   peopleUnit: string;
   /** Pagination connector: "1–9 จาก 27". */
@@ -95,6 +147,19 @@ export const COPY: Record<Lang, BookingsCopy> = {
     guardsCount: "จำนวน",
     customer: "ลูกค้า",
     assignedGuard: "เจ้าหน้าที่ที่มอบหมาย",
+    cancelReason: "เหตุผลที่ลูกค้ายกเลิก",
+    declineReason: "เหตุผลที่เจ้าหน้าที่ยกเลิก",
+    cancellationNote: "หมายเหตุ",
+    cancellationNone: "ไม่ได้ระบุเหตุผล",
+    reasonLabel: {
+      changed_plan: "เปลี่ยนแผน",
+      mistake: "แจ้งผิดพลาด",
+      not_needed: "ไม่ต้องการแล้ว",
+      emergency: "เหตุฉุกเฉินส่วนตัว",
+      sick: "ป่วย",
+      cannot_reach: "เดินทางไปไม่ได้",
+      other: "อื่นๆ",
+    },
     hoursUnit: "ชม.",
     peopleUnit: "คน",
     of: "จาก",
@@ -135,6 +200,19 @@ export const COPY: Record<Lang, BookingsCopy> = {
     guardsCount: "Guards",
     customer: "Customer",
     assignedGuard: "Assigned guard",
+    cancelReason: "Cancellation reason",
+    declineReason: "Decline reason",
+    cancellationNote: "Note",
+    cancellationNone: "No reason recorded",
+    reasonLabel: {
+      changed_plan: "Changed plans",
+      mistake: "Booked by mistake",
+      not_needed: "No longer needed",
+      emergency: "Personal emergency",
+      sick: "Sick",
+      cannot_reach: "Can't reach site",
+      other: "Other",
+    },
     hoursUnit: "h",
     peopleUnit: "",
     of: "of",

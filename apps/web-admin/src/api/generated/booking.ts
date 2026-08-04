@@ -354,11 +354,27 @@ export interface paths {
         };
         get?: never;
         /**
-         * Assigned guard withdraws (after accepting)
+         * Assigned guard withdraws (after accepting, pre-arrival)
          * @description The ASSIGNED guard backs out → status `declined` (terminal). v2 is first-come-accept,
          *     so there is no per-guard offer to decline before accepting — decline is the assigned
-         *     guard withdrawing (`accepted → declined`). Enqueues `pguard.events.booking.declined`
-         *     in the same transaction. 403 if the caller is not the assigned guard.
+         *     guard withdrawing. Legal PRE-ARRIVAL only: `accepted → declined` AND
+         *     `en_route → declined` (the guard already set off but has not reached the site). Once
+         *     `arrived` the guard can no longer self-withdraw (409) — the job runs to completion
+         *     review. Enqueues `pguard.events.booking.declined` in the same transaction. 403 if the
+         *     caller is not the assigned guard.
+         *
+         *     **Money:** withdrawing from a PAID booking (`paid_at` set — the normal `en_route` case,
+         *     since pre-pay gates `accepted → en_route`) FULL-REFUNDS the customer via payment's
+         *     cancellation-refund consumer of `booking.declined`. The customer is never charged for a
+         *     job the guard abandoned.
+         *
+         *     **A reason is REQUIRED.** The body carries a stable `reason` code
+         *     (`emergency` | `sick` | `cannot_reach` | `other`) plus an optional `note` (≤ 500
+         *     characters). A missing reason — or one that is not a guard code — is 400 with
+         *     `error.code = CANCEL_REASON_REQUIRED`; `reason = other` with a blank note is 400 with
+         *     `error.code = CANCEL_NOTE_REQUIRED`. Clients branch on `error.code` and localize it —
+         *     never on the message. Reason + note are persisted on the booking
+         *     (`cancellation_reason` / `cancellation_note`) and carried on the event.
          */
         put: operations["declineBooking"];
         post?: never;
@@ -502,7 +518,16 @@ export interface paths {
          * Customer/admin cancels a pre-arrival booking
          * @description Status → `cancelled`. Allowed only PRE-ARRIVAL (`requested`/`accepted`/`en_route`) —
          *     once a guard is on-site the job runs to completion review. Enqueues
-         *     `pguard.events.booking.cancelled`. Customer (request owner) or admin only.
+         *     `pguard.events.booking.cancelled`. Customer (request owner) or admin only. Cancelling
+         *     a PAID booking FULL-REFUNDS the customer via payment's cancellation-refund consumer.
+         *
+         *     **A reason is REQUIRED.** The body carries a stable `reason` code
+         *     (`changed_plan` | `mistake` | `not_needed` | `other`) plus an optional `note` (≤ 500
+         *     characters). A missing reason — or one that is not a customer code — is 400 with
+         *     `error.code = CANCEL_REASON_REQUIRED`; `reason = other` with a blank note is 400 with
+         *     `error.code = CANCEL_NOTE_REQUIRED`. Clients branch on `error.code` and localize it —
+         *     never on the message. Reason + note are persisted on the booking
+         *     (`cancellation_reason` / `cancellation_note`) and carried on the event.
          */
         put: operations["cancelBooking"];
         post?: never;
@@ -690,6 +715,46 @@ export interface components {
             action: "approve" | "reject";
         };
         /**
+         * @description Why the CUSTOMER is cancelling. Mandatory (`requestBody.required: true`) — the reason is
+         *     an operational signal, not a nicety. `reason` is a STABLE CODE, never localized text: the
+         *     client renders the Thai/English label and sends the code, so labels can be reworded
+         *     without a data migration. Validation: an absent/unknown code → 400
+         *     `CANCEL_REASON_REQUIRED`; `other` without a note → 400 `CANCEL_NOTE_REQUIRED`.
+         */
+        CancelBookingRequest: {
+            /**
+             * @description Stable cancellation code (customer set):
+             *     `changed_plan` เปลี่ยนแผน / Changed plans ·
+             *     `mistake` แจ้งผิดพลาด / Booked by mistake ·
+             *     `not_needed` ไม่ต้องการแล้ว / No longer needed ·
+             *     `other` อื่นๆ / Other (REQUIRES `note`).
+             * @enum {string}
+             */
+            reason: "changed_plan" | "mistake" | "not_needed" | "other";
+            /** @description Optional free-text detail (trimmed; empty treated as absent; max 500 characters). REQUIRED when `reason = other` — a blank one is 400 `CANCEL_NOTE_REQUIRED`. */
+            note?: string;
+        };
+        /**
+         * @description Why the ASSIGNED GUARD is withdrawing pre-arrival. Mandatory
+         *     (`requestBody.required: true`); same code-not-text rule and the same
+         *     `CANCEL_REASON_REQUIRED` / `CANCEL_NOTE_REQUIRED` validation as
+         *     `CancelBookingRequest` — only the code set differs (guard reasons, not customer ones;
+         *     sending a customer code here is 400 `CANCEL_REASON_REQUIRED`).
+         */
+        DeclineBookingRequest: {
+            /**
+             * @description Stable withdrawal code (guard set):
+             *     `emergency` เหตุฉุกเฉินส่วนตัว / Personal emergency ·
+             *     `sick` ป่วย / Sick ·
+             *     `cannot_reach` เดินทางไปไม่ได้ / Can't reach site ·
+             *     `other` อื่นๆ / Other (REQUIRES `note`).
+             * @enum {string}
+             */
+            reason: "emergency" | "sick" | "cannot_reach" | "other";
+            /** @description Optional free-text detail (trimmed; empty treated as absent; max 500 characters). REQUIRED when `reason = other` — a blank one is 400 `CANCEL_NOTE_REQUIRED`. */
+            note?: string;
+        };
+        /**
          * @description The guard's GPS fix at the moment of pressing start, feeding the 50m start geofence.
          *     The whole body is OPTIONAL (older builds send none): no fix on a pinned booking →
          *     409 `GPS_REQUIRED`; on a legacy address-only booking the geofence skips. `lat`/`lng`
@@ -790,6 +855,10 @@ export interface components {
              * @description When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
              */
             paid_at?: string | null;
+            /** @description Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to "ไม่ระบุ"/"Not specified" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009). */
+            cancellation_reason?: string | null;
+            /** @description The optional free-text detail that came with `cancellation_reason` (trimmed, ≤ 500 characters). null when none was given; always present when the reason is `other`. */
+            cancellation_note?: string | null;
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -1536,9 +1605,22 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeclineBookingRequest"];
+            };
+        };
         responses: {
             200: components["responses"]["BookingOk"];
+            /** @description Invalid body — `error.code` is `CANCEL_REASON_REQUIRED` (reason missing, or not one of this endpoint's guard codes), `CANCEL_NOTE_REQUIRED` (`reason = other` with a blank/whitespace-only note), or `BAD_REQUEST` (note longer than 500 characters — counted in CHARACTERS, not bytes, so Thai text is not cut short). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
@@ -1662,9 +1744,22 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelBookingRequest"];
+            };
+        };
         responses: {
             200: components["responses"]["BookingOk"];
+            /** @description Invalid body — `error.code` is `CANCEL_REASON_REQUIRED` (reason missing, or not one of this endpoint's customer codes), `CANCEL_NOTE_REQUIRED` (`reason = other` with a blank/whitespace-only note), or `BAD_REQUEST` (note longer than 500 characters — counted in CHARACTERS, not bytes, so Thai text is not cut short). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];

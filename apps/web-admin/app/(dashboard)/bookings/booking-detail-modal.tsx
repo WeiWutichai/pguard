@@ -12,8 +12,11 @@ import { useLanguage } from "@/lib/i18n";
 import {
   type BookingStatusKey,
   bookingTotal,
+  cancellationOf,
   COPY,
   fmtBaht,
+  isCancelledStatus,
+  reasonText,
   STATUS_TONE,
 } from "./copy";
 
@@ -68,6 +71,9 @@ export function BookingDetailModal({
 
   const status = booking.status as BookingStatusKey;
   const assignable = status === "requested" && !booking.guard_id;
+  // Why the job ended — only meaningful on the two terminal-bad statuses. The reason is a wire
+  // CODE; `reasonText` localizes it (unknown codes show raw, see copy.ts).
+  const cancellation = isCancelledStatus(status) ? cancellationOf(booking) : null;
 
   const [guardId, setGuardId] = useState("");
   const [assigning, setAssigning] = useState(false);
@@ -134,6 +140,34 @@ export function BookingDetailModal({
           value={`${booking.guard_count}${c.peopleUnit ? ` ${c.peopleUnit}` : ""}`}
         />
       </div>
+
+      {/* Why it ended — cancelled/declined only. Sits above the parties because on a terminal
+          booking it is the first thing an admin (or a refund dispute) needs. */}
+      {cancellation && (
+        <div className="mt-4 rounded-lg border border-danger/40 px-4 py-3">
+          <div className="text-xs font-semibold uppercase tracking-[0.04em] text-danger">
+            {status === "declined" ? c.declineReason : c.cancelReason}
+          </div>
+          {cancellation.reason ? (
+            <div
+              className="mt-1.5 text-sm font-semibold text-text-strong"
+              title={cancellation.reason}
+            >
+              {reasonText(cancellation.reason, c)}
+            </div>
+          ) : (
+            <div className="mt-1.5 text-sm text-muted">{c.cancellationNone}</div>
+          )}
+          {cancellation.note && (
+            <div className="mt-2">
+              <div className="text-[11.5px] text-muted">{c.cancellationNote}</div>
+              <p className="mt-0.5 whitespace-pre-wrap break-words text-[12.5px] text-text-strong">
+                {cancellation.note}
+              </p>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Customer panel — name + phone (admin customer directory) + the booking address. */}
       <div className="mt-4 rounded-lg border border-border px-4 py-3">

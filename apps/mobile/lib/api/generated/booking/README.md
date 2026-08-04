@@ -94,7 +94,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**completeBooking**](doc/BookingsApi.md#completebooking) | **PUT** /bookings/{id}/complete | Assigned guard requests completion
 [*BookingsApi*](doc/BookingsApi.md) | [**createBooking**](doc/BookingsApi.md#createbooking) | **POST** /bookings | Create a booking request (customer only)
 [*BookingsApi*](doc/BookingsApi.md) | [**createProgressReport**](doc/BookingsApi.md#createprogressreport) | **POST** /bookings/{id}/progress-reports | Assigned guard submits an hourly check-in (photo + GPS)
-[*BookingsApi*](doc/BookingsApi.md) | [**declineBooking**](doc/BookingsApi.md#declinebooking) | **PUT** /bookings/{id}/decline | Assigned guard withdraws (after accepting)
+[*BookingsApi*](doc/BookingsApi.md) | [**declineBooking**](doc/BookingsApi.md#declinebooking) | **PUT** /bookings/{id}/decline | Assigned guard withdraws (after accepting, pre-arrival)
 [*BookingsApi*](doc/BookingsApi.md) | [**enRouteBooking**](doc/BookingsApi.md#enroutebooking) | **PUT** /bookings/{id}/en-route | Assigned guard is en route
 [*BookingsApi*](doc/BookingsApi.md) | [**getBooking**](doc/BookingsApi.md#getbooking) | **GET** /bookings/{id} | Get one booking the caller participates in
 [*BookingsApi*](doc/BookingsApi.md) | [**listAvailableGuards**](doc/BookingsApi.md#listavailableguards) | **GET** /available-guards | Discovery — ONLINE approved guards enriched with their rating summary
@@ -121,11 +121,13 @@ Class | Method | HTTP request | Description
  - [Booking](doc/Booking.md)
  - [BookingStatus](doc/BookingStatus.md)
  - [BookingsReport](doc/BookingsReport.md)
+ - [CancelBookingRequest](doc/CancelBookingRequest.md)
  - [CreateBookingRequest](doc/CreateBookingRequest.md)
  - [CreateProgressReport200Response](doc/CreateProgressReport200Response.md)
  - [CreateServiceRequest](doc/CreateServiceRequest.md)
  - [CustomerBookingStat](doc/CustomerBookingStat.md)
  - [DailyCount](doc/DailyCount.md)
+ - [DeclineBookingRequest](doc/DeclineBookingRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [GetInternalBooking200Response](doc/GetInternalBooking200Response.md)

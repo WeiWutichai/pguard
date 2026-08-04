@@ -24,12 +24,14 @@ lib/src/model/available_guard.dart
 lib/src/model/booking.dart
 lib/src/model/booking_status.dart
 lib/src/model/bookings_report.dart
+lib/src/model/cancel_booking_request.dart
 lib/src/model/create_booking_request.dart
 lib/src/model/create_progress_report200_response.dart
 lib/src/model/create_service_request.dart
 lib/src/model/customer_booking_stat.dart
 lib/src/model/daily_count.dart
 lib/src/model/date.dart
+lib/src/model/decline_booking_request.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
 lib/src/model/get_internal_booking200_response.dart

@@ -13,6 +13,7 @@ import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import 'cancellation_screen.dart';
+import 'widgets/cancel_reason.dart';
 import 'widgets/promptpay_slip_panel.dart';
 
 /// THE PRE-PAY step. The instant a guard ACCEPTS, the customer lands here to pay the ESTIMATE
@@ -156,6 +157,11 @@ class _CancelledPanel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final declined = booking.status == BookingStatus.declined;
+    // WHY the other party ended it — the whole point of collecting a reason. The customer reads
+    // the GUARD's reason here (declined = the guard withdrew). A pre-migration booking carries no
+    // code, so the label is empty and the panel renders exactly as it did before.
+    final reason = PgCancelReason.labelFor(booking.cancellationReason, isThai);
+    final note = booking.cancellationNote?.trim();
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
       decoration: BoxDecoration(
@@ -178,6 +184,29 @@ class _CancelledPanel extends StatelessWidget {
             textAlign: TextAlign.center,
             style: const TextStyle(fontSize: 17, fontWeight: FontWeight.w600),
           ),
+          // The reason, in the panel's own voice — normal text colour (NOT danger): it explains,
+          // it doesn't warn. The free-text note sits under the label when one was left.
+          if (reason.isNotEmpty) ...[
+            const SizedBox(height: PgTokens.space2),
+            Text(
+              isThai ? 'เหตุผล: $reason' : 'Reason: $reason',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: PgTokens.colorText,
+              ),
+            ),
+            if (note != null && note.isNotEmpty) ...[
+              const SizedBox(height: 2),
+              Text(
+                note,
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                    fontSize: 13, color: PgTokens.colorTextMuted),
+              ),
+            ],
+          ],
           if (paid) ...[
             const SizedBox(height: PgTokens.space2),
             Text(

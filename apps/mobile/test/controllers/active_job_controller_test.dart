@@ -89,30 +89,6 @@ void main() {
         ]));
   });
 
-  test('withdraw PUTs decline (assigned-guard withdraw → declined)', () async {
-    final api = FakeApi(
-      onGet: (path, _) async => path == '/bookings/b1'
-          ? bookingJson('b1', 'accepted')
-          : <Map<String, dynamic>>[],
-      onPut: (path, _) async {
-        expect(path, '/bookings/b1/decline');
-        return bookingJson('b1', 'declined');
-      },
-    );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
-    ]);
-    addTearDown(c.dispose);
-    await c.read(activeJobControllerProvider('b1').future);
-
-    expect(await c.read(activeJobControllerProvider('b1').notifier).withdraw(),
-        isTrue);
-    expect(c.read(activeJobControllerProvider('b1')).value!.booking.status,
-        BookingStatus.declined);
-    expect(api.calls, contains('PUT /bookings/b1/decline'));
-  });
-
   test(
       'submitCheckIn maps the 0-based UI slot to the 1-based server hour_number '
       '(slot N → hour N+1) and marks the slot (not the hour) done', () async {

@@ -44,6 +44,18 @@ pub struct BookingRef {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct BookingCancellation {
+    pub booking_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_id: Option<Uuid>,
+    pub cancellation_reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cancellation_note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BookingCompleted {
     pub booking_id: Uuid,
     pub customer_id: Uuid,
