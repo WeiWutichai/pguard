@@ -76,7 +76,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
           ),
           data: (all) {
             final now = widget.now ?? DateTime.now();
+            // Two different sets, deliberately: the empty state and the 7-day chart are about
+            // whether this guard has ANY finished work, while the rows below are the hero's own
+            // terms — see [GuardEarnings.jobsInWindow].
             final completed = GuardEarnings.completedJobs(all);
+            final inWindow = GuardEarnings.jobsInWindow(all, now, _window);
             return RefreshIndicator(
               onRefresh: () =>
                   ref.read(guardJobsControllerProvider.notifier).refresh(),
@@ -109,21 +113,32 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       dates: GuardEarnings.seriesDates(now),
                       isThai: isThai,
                     ),
-                    // The "Recent" list is an all-time activity feed (newest-first), independent of
-                    // the Day/Week/Month selector above — matching the mockup's flat "รายการล่าสุด".
+                    // The list is scoped to the selected window, so the rows sum to the hero.
                     Padding(
                       // Design separates 'รายการล่าสุด' from the chart by ~28px above.
                       padding: const EdgeInsets.fromLTRB(PgTokens.space5, 28,
                           PgTokens.space5, PgTokens.space2),
                       child: Text(
-                        isThai ? 'รายการล่าสุด' : 'Recent',
+                        isThai ? 'รายการในช่วงนี้' : 'In this period',
                         style: const TextStyle(
                             fontSize: 14,
                             fontWeight: FontWeight.w600,
                             color: PgTokens.colorTextStrong),
                       ),
                     ),
-                    for (final b in completed)
+                    if (inWindow.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(PgTokens.space5, 0,
+                            PgTokens.space5, PgTokens.space4),
+                        child: Text(
+                          isThai
+                              ? 'ยังไม่มีงานที่เสร็จในช่วงนี้'
+                              : 'No completed jobs in this period',
+                          style: const TextStyle(
+                              fontSize: 13, color: PgTokens.colorTextMuted),
+                        ),
+                      ),
+                    for (final b in inWindow)
                       _EarningsRow(
                           booking: b, isThai: isThai, actualHours: actualHours),
                   ],

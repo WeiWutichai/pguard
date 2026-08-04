@@ -91,7 +91,8 @@ void main() {
     await _pump(tester, api);
     await tester.pump(const Duration(seconds: 2));
 
-    // build fetches BOTH feeds (/bookings + /bookings/open) exactly once each — no timer re-fetch.
-    expect(api.getCount, 2);
+    // build fetches the two job feeds (/bookings + /bookings/open) plus /payments/earnings for
+    // the hours actually worked — once each, no timer re-fetch.
+    expect(api.getCount, 3);
   });
 }

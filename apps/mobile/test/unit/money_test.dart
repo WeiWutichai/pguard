@@ -48,6 +48,12 @@ void main() {
       expect(Money.format(184000), '฿1,840');
       expect(Money.format(184000, decimals: true), '฿1,840.00');
       expect(Money.format(50000, symbol: false), '500');
+      // Satang appear on their own when they carry value — a ฿0.04 job must never read as ฿0,
+      // which is what the guard earnings row was doing.
+      expect(Money.format(4), '฿0.04');
+      expect(Money.format(3), '฿0.03');
+      expect(Money.format(184050), '฿1,840.50');
+      expect(Money.format(-4), '-฿0.04');
     });
   });
 

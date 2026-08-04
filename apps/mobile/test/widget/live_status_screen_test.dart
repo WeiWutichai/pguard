@@ -644,11 +644,15 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
-    // The guard must NEVER see a rating CTA for their own job (#97) — only a receipt.
+    // The guard must NEVER see a rating CTA for their own job (#97), and never the customer's
+    // receipt either — that document totals the customer's bill (tip + the whole crew) and settles
+    // against a payment row the guard cannot read. Their own pay is on the earnings screen.
     expect(find.text('ให้คะแนนเจ้าหน้าที่'), findsNothing,
         reason: 'a guard must never see a rating CTA (#97)');
-    expect(find.text('ดูใบสรุปค่าบริการ'), findsOneWidget,
-        reason: 'the guard gets a receipt instead of a rating CTA');
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsNothing,
+        reason: "the receipt is the customer's document");
+    expect(find.text('ดูรายได้ของฉัน'), findsOneWidget,
+        reason: 'the guard gets their own earnings instead');
 
     await tester.pumpWidget(const SizedBox());
   });

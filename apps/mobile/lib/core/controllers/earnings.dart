@@ -86,6 +86,27 @@ class GuardEarnings {
           {Map<String, double>? actualHours}) =>
       _sumCalendarDays(all, now, windowDays(w), actualHours: actualHours);
 
+  /// The completed jobs that MAKE UP [sumInWindow] — same calendar-day rule, newest first.
+  ///
+  /// The "รายการล่าสุด" list used to be all-time regardless of the Day/Week/Month selector, so a
+  /// guard on the Day tab saw ฿0 sitting above a list of paid jobs and reasonably concluded the
+  /// total was broken. Now the rows are the total's own terms: they add up to the number above.
+  static List<Booking> jobsInWindow(
+      List<Booking> all, DateTime now, EarningsWindow w) {
+    final local = now.toLocal();
+    final end = DateTime(local.year, local.month, local.day);
+    final start = DateTime(end.year, end.month, end.day - (windowDays(w) - 1));
+    final rows = completedJobs(all).where((b) {
+      final t = b.scheduledAt?.toLocal();
+      if (t == null) return false;
+      final d = DateTime(t.year, t.month, t.day);
+      return !d.isBefore(start) && !d.isAfter(end);
+    }).toList()
+      ..sort((a, b) => (b.scheduledAt ?? DateTime(0))
+          .compareTo(a.scheduledAt ?? DateTime(0)));
+    return rows;
+  }
+
   /// Growth fraction vs the immediately-prior window of the same length (e.g. +0.14 = +14%).
   /// `null` when the prior window had no earnings (no honest baseline to compare against).
   static double? growth(List<Booking> all, DateTime now, EarningsWindow w,

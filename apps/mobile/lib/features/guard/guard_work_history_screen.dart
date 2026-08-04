@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/customer_home_controller.dart'
     show thaiShortDate;
 import '../../core/controllers/earnings.dart';
+import '../../core/controllers/guard_earnings_controller.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
@@ -48,6 +49,9 @@ class _GuardWorkHistoryScreenState
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    // Hours actually worked, so a completed row shows the SAME amount as the earnings screen.
+    final actualHours =
+        ref.watch(guardEarningsHoursProvider).valueOrNull ?? const {};
     final async = ref.watch(guardJobsControllerProvider);
     final ctrl = ref.read(guardJobsControllerProvider.notifier);
 
@@ -98,6 +102,7 @@ class _GuardWorkHistoryScreenState
                               booking: current[i],
                               isThai: isThai,
                               completed: _tab == 0,
+                              actualHours: actualHours,
                             ),
                           ),
                   ),
@@ -115,11 +120,18 @@ class _GuardWorkHistoryScreenState
 /// a "ยกเลิก / Cancelled" tag, and a chevron. Tapping opens the read-only job detail.
 class _HistoryRow extends StatelessWidget {
   const _HistoryRow(
-      {required this.booking, required this.isThai, required this.completed});
+      {required this.booking,
+      required this.isThai,
+      required this.completed,
+      required this.actualHours});
 
   final Booking booking;
   final bool isThai;
   final bool completed;
+
+  /// Hours ACTUALLY worked, keyed by booking id. Without it this row fell back to booked hours and
+  /// showed a different amount from the earnings screen for the very same job.
+  final Map<String, double> actualHours;
 
   @override
   Widget build(BuildContext context) {
@@ -193,7 +205,8 @@ class _HistoryRow extends StatelessWidget {
             const SizedBox(width: PgTokens.space2),
             if (completed)
               Text(
-                Money.format(GuardEarnings.jobEarningsSatang(booking)),
+                Money.format(GuardEarnings.jobEarningsSatang(booking,
+                    actualHours: actualHours)),
                 style: const TextStyle(
                   fontSize: 14,
                   fontWeight: FontWeight.w600,

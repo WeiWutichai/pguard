@@ -76,7 +76,9 @@ void main() {
     // ฿1,840 + ฿1,150 — per-guard share only: guard_count (2) and tip (฿500) excluded.
     expect(find.text('฿2,990'), findsOneWidget);
     expect(find.textContaining('ประมาณการ'), findsOneWidget);
-    expect(find.text('รายการล่าสุด'), findsOneWidget);
+    // The rows are the hero's own terms, so the heading names the selected window rather than
+    // promising an all-time feed — a Day tab reading ฿0 above paid rows was the reported bug.
+    expect(find.text('รายการในช่วงนี้'), findsOneWidget);
 
     // Per-job rows: place, "date · hours", mono amount; non-completed job absent.
     expect(find.text('หมู่บ้านลัดดารมย์'), findsOneWidget);

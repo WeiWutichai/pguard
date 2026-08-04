@@ -53,14 +53,22 @@ class Money {
     return negative ? '-$s' : s;
   }
 
-  /// satang → a localized display string. `฿1,840` by default; `฿1,840.00` when [decimals];
-  /// drop the symbol with `symbol: false`.
-  static String format(int satang, {bool decimals = false, bool symbol = true}) {
+  /// satang → a localized display string. `฿1,840`; `฿1,840.00` when [decimals]; drop the symbol
+  /// with `symbol: false`.
+  ///
+  /// Satang are shown WHENEVER dropping them would misstate the amount, [decimals] or not. A job
+  /// worth ฿0.04 used to render as `฿0` — money on screen that reads as no money at all — while the
+  /// receipt (which passes `decimals: true`) showed `฿0.04` for the same job. Round amounts stay
+  /// clean: `฿1,840`, not `฿1,840.00`. [decimals] still forces the two places on a round number,
+  /// which is what a receipt wants.
+  static String format(int satang,
+      {bool decimals = false, bool symbol = true}) {
     final negative = satang < 0;
     final v = satang.abs();
     final baht = _group(v ~/ 100);
-    final body =
-        decimals ? '$baht.${(v % 100).toString().padLeft(2, '0')}' : baht;
+    final body = decimals || v % 100 != 0
+        ? '$baht.${(v % 100).toString().padLeft(2, '0')}'
+        : baht;
     return '${negative ? '-' : ''}${symbol ? '฿' : ''}$body';
   }
 

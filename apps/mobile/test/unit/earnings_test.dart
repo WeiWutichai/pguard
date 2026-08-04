@@ -134,6 +134,24 @@ void main() {
           184000 * 3);
     });
 
+    test('jobsInWindow returns exactly the rows the window total is made of',
+        () {
+      // The rows under the hero must add up to it. They used to be all-time, so the Day tab
+      // showed ฿0 above a list of paid jobs and the screen contradicted itself.
+      for (final w in EarningsWindow.values) {
+        final rows = GuardEarnings.jobsInWindow(jobs, now, w);
+        final rowSum =
+            rows.fold(0, (a, b) => a + GuardEarnings.jobEarningsSatang(b));
+        expect(rowSum, GuardEarnings.sumInWindow(jobs, now, w),
+            reason: 'rows must sum to the hero for $w');
+      }
+    });
+
+    test('jobsInWindow excludes undated and unfinished jobs, newest first', () {
+      final rows = GuardEarnings.jobsInWindow(jobs, now, EarningsWindow.month);
+      expect(rows.map((b) => b.id), ['today', 'd3', 'd20']);
+    });
+
     test('a future-CALENDAR-DAY job is excluded from the window', () {
       final withFuture = [
         ...jobs,
