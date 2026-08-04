@@ -7,6 +7,7 @@ import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/registration_controller.dart';
 import '../../../widgets/pguard_header.dart';
 import '../../../widgets/primary_button.dart';
+import '../../legal/terms_screen.dart';
 
 /// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. v1-parity
 /// fields: `full_name` + `address` (required) + optional `company_name` / `email` / `contact_phone`.
@@ -222,29 +223,25 @@ class _CustomerRegistrationScreenState
                     child: Text(state.error!,
                         style: const TextStyle(color: PgTokens.colorDanger)),
                   ),
-                // Terms-acceptance notice (design footer) — the two policy phrases read as links.
+                // Terms-acceptance notice (design footer). Acceptance itself already happened at the
+                // gate before this form opened, so this restates it and the two policy phrases open
+                // the document read-only.
                 Padding(
                   padding: const EdgeInsets.only(bottom: PgTokens.space3),
                   child: Text.rich(
                     TextSpan(
-                      text: isThai
-                          ? 'การสร้างบัญชีหมายความว่าคุณยอมรับ '
-                          : 'By creating an account you accept the ',
+                      text: isThai ? 'คุณได้ยอมรับ ' : 'You have accepted the ',
                       children: [
-                        TextSpan(
-                            text: isThai ? 'ข้อตกลงการใช้งาน' : 'Terms of Use',
-                            style: const TextStyle(
-                                color: PgTokens.colorBrand,
-                                fontWeight: FontWeight.w600)),
+                        termsLinkSpan(context,
+                            isThai ? 'ข้อตกลงการใช้งาน' : 'Terms of Use'),
                         TextSpan(text: isThai ? ' และ ' : ' and '),
-                        TextSpan(
-                            text: isThai
+                        termsLinkSpan(
+                            context,
+                            isThai
                                 ? 'นโยบายความเป็นส่วนตัว'
-                                : 'Privacy Policy',
-                            style: const TextStyle(
-                                color: PgTokens.colorBrand,
-                                fontWeight: FontWeight.w600)),
-                        TextSpan(text: isThai ? ' ของ pguard' : ' of pguard'),
+                                : 'Privacy Policy'),
+                        TextSpan(
+                            text: isThai ? ' ของ pguard แล้ว' : ' of pguard'),
                       ],
                     ),
                     textAlign: TextAlign.center,

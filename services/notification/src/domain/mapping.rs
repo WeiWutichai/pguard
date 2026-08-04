@@ -52,6 +52,65 @@ fn build_data(target_role: Option<&str>, event_type: &str, payload: &Value) -> V
     Value::Object(m)
 }
 
+/// Thai label for a cancellation/decline reason CODE. The code is the STABLE wire value
+/// (`cancellation_reason` on the `booking.cancelled` / `booking.declined` payloads); this service
+/// renders Thai copy, so it owns its own rendering of the shared canonical table (customer:
+/// changed_plan | mistake | not_needed | other — guard: emergency | sick | cannot_reach | other).
+///
+/// Returns `None` for an unknown or unmapped code so callers can DEGRADE to the reason-less copy
+/// rather than pushing a raw `snake_case` code at a user.
+fn reason_label_th(code: &str) -> Option<&'static str> {
+    match code {
+        "changed_plan" => Some("เปลี่ยนแผน"),
+        "mistake" => Some("แจ้งผิดพลาด"),
+        "not_needed" => Some("ไม่ต้องการแล้ว"),
+        "emergency" => Some("เหตุฉุกเฉินส่วนตัว"),
+        "sick" => Some("ป่วย"),
+        "cannot_reach" => Some("เดินทางไปไม่ได้"),
+        "other" => Some("อื่นๆ"),
+        _ => None,
+    }
+}
+
+/// Max note characters carried into a push body. The note is free text (server-capped at 500
+/// chars) and a notification tray truncates mid-word anyway — cut it here, on a char boundary
+/// (`chars().count()`, Thai text), so the stored body stays readable in the in-app list too.
+const NOTE_PUSH_MAX_CHARS: usize = 120;
+
+fn truncate_note(note: &str) -> String {
+    if note.chars().count() <= NOTE_PUSH_MAX_CHARS {
+        return note.to_string();
+    }
+    let head: String = note.chars().take(NOTE_PUSH_MAX_CHARS).collect();
+    format!("{}…", head.trim_end())
+}
+
+/// The " (เหตุผล: …)" tail appended to the cancel/decline push body.
+///
+/// PURE + total: an absent field, a non-string, a blank string or an UNKNOWN code all yield `""`,
+/// which leaves the body byte-identical to the pre-`cancellation_reason` copy (pre-migration rows
+/// carry NULL, so this is the common path for old bookings). The note only rides along when a
+/// known code is present — a note without a code has no context to hang off.
+fn reason_suffix(payload: &Value) -> String {
+    let label = payload
+        .get("cancellation_reason")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .and_then(reason_label_th);
+    let Some(label) = label else {
+        return String::new();
+    };
+    let note = payload
+        .get("cancellation_note")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    match note {
+        Some(note) => format!(" (เหตุผล: {label} — {})", truncate_note(note)),
+        None => format!(" (เหตุผล: {label})"),
+    }
+}
+
 /// Build the per-guard dispatch plan for a `booking.requested` fan-out: one online guard gets the
 /// "new job nearby" alert. PURE (no DB/HTTP) so the fan-out copy + push `data` shape is
 /// unit-testable. This is the FAN-OUT counterpart to [`plan_for_event`] (which maps a single
@@ -146,7 +205,11 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             // `declined` is TERMINAL — the booking never re-enters discovery, so the old
             // "กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ" was a lie (deep-review). State the truth: the job ended,
             // a paid booking is refunded in full (see the refund_processed push), please book again.
-            "งานถูกยกเลิกโดยเจ้าหน้าที่ หากชำระเงินแล้วระบบจะคืนเงินให้เต็มจำนวน กรุณาจองใหม่อีกครั้ง",
+            // The guard's reason (+ note) tails the copy when the event carries a known code.
+            &format!(
+                "งานถูกยกเลิกโดยเจ้าหน้าที่ หากชำระเงินแล้วระบบจะคืนเงินให้เต็มจำนวน กรุณาจองใหม่อีกครั้ง{}",
+                reason_suffix(payload)
+            ),
         )),
         topics::BOOKING_GUARD_EN_ROUTE => Some(make(
             uuid_field(payload, "customer_id")?,
@@ -177,6 +240,9 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
             "งานของคุณเสร็จสมบูรณ์แล้ว",
         )),
         topics::BOOKING_CANCELLED => {
+            // The customer's reason (+ note) tails whichever body we send — the guard most needs
+            // to know WHY the job he accepted evaporated.
+            let why = reason_suffix(payload);
             // Prefer the assigned guard; fall back to the customer if no guard yet.
             if let Some(guard_id) = uuid_field(payload, "guard_id") {
                 Some(make(
@@ -184,7 +250,7 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
                     Some("guard"),
                     NotificationType::BookingCancelled,
                     "งานถูกยกเลิก",
-                    "ลูกค้ายกเลิกงานแล้ว",
+                    &format!("ลูกค้ายกเลิกงานแล้ว{why}"),
                 ))
             } else {
                 Some(make(
@@ -192,7 +258,7 @@ pub fn plan_for_event(event_type: &str, payload: &Value) -> Option<NotificationP
                     Some("customer"),
                     NotificationType::BookingCancelled,
                     "งานถูกยกเลิก",
-                    "งานของคุณถูกยกเลิกแล้ว",
+                    &format!("งานของคุณถูกยกเลิกแล้ว{why}"),
                 ))
             }
         }
@@ -483,6 +549,117 @@ mod tests {
                 .recipient_id,
             customer
         );
+    }
+
+    #[test]
+    fn cancelled_carries_the_reason_to_the_guard() {
+        // The guard whose accepted job evaporated is told WHY (customer code → Thai label).
+        let guard = Uuid::new_v4();
+        let payload = json!({
+            "guard_id": guard,
+            "customer_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+            "cancellation_reason": "changed_plan",
+        });
+        let plan = plan_for_event(topics::BOOKING_CANCELLED, &payload).expect("should map");
+        assert_eq!(plan.recipient_id, guard);
+        assert_eq!(plan.body, "ลูกค้ายกเลิกงานแล้ว (เหตุผล: เปลี่ยนแผน)");
+    }
+
+    #[test]
+    fn cancelled_appends_the_note_after_the_label() {
+        // `other` is the code that REQUIRES a note server-side — both must reach the push.
+        let payload = json!({
+            "customer_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+            "cancellation_reason": "other",
+            "cancellation_note": "ฝนตกหนักมาก",
+        });
+        let plan = plan_for_event(topics::BOOKING_CANCELLED, &payload).expect("should map");
+        assert_eq!(plan.body, "งานของคุณถูกยกเลิกแล้ว (เหตุผล: อื่นๆ — ฝนตกหนักมาก)");
+    }
+
+    #[test]
+    fn declined_carries_the_guard_reason() {
+        let payload = json!({
+            "customer_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+            "cancellation_reason": "sick",
+        });
+        let plan = plan_for_event(topics::BOOKING_DECLINED, &payload).expect("should map");
+        assert!(
+            plan.body.ends_with(" (เหตุผล: ป่วย)"),
+            "the reason tails the terminal-decline copy, got: {}",
+            plan.body
+        );
+        // The pre-existing truth-telling copy is kept in front of it (deep-review fix).
+        assert!(plan.body.contains("คืนเงิน"));
+        assert!(!plan.body.contains("ค้นหาเจ้าหน้าที่ใหม่"));
+    }
+
+    #[test]
+    fn unknown_or_missing_reason_degrades_to_the_old_copy() {
+        // Pre-migration events (no field), a code this service does not know, a blank code, and a
+        // non-string all render EXACTLY the reason-less body — never a raw code.
+        let base = json!({ "customer_id": Uuid::new_v4(), "booking_id": Uuid::new_v4() });
+        let plain = plan_for_event(topics::BOOKING_CANCELLED, &base)
+            .unwrap()
+            .body;
+        assert_eq!(plain, "งานของคุณถูกยกเลิกแล้ว");
+
+        for bad in [json!("teleported_away"), json!(""), json!(null), json!(42)] {
+            let mut p = base.clone();
+            p["cancellation_reason"] = bad.clone();
+            // A note with no usable code must not leak out on its own either.
+            p["cancellation_note"] = json!("บลาๆ");
+            let body = plan_for_event(topics::BOOKING_CANCELLED, &p).unwrap().body;
+            assert_eq!(body, plain, "unexpected body for reason {bad}");
+            assert!(!body.contains("teleported_away"));
+            assert!(!body.contains("บลาๆ"));
+        }
+    }
+
+    #[test]
+    fn reason_label_th_maps_every_contract_code() {
+        // The canonical table, shared verbatim with mobile + web admin.
+        for (code, label) in [
+            ("changed_plan", "เปลี่ยนแผน"),
+            ("mistake", "แจ้งผิดพลาด"),
+            ("not_needed", "ไม่ต้องการแล้ว"),
+            ("emergency", "เหตุฉุกเฉินส่วนตัว"),
+            ("sick", "ป่วย"),
+            ("cannot_reach", "เดินทางไปไม่ได้"),
+            ("other", "อื่นๆ"),
+        ] {
+            assert_eq!(reason_label_th(code), Some(label), "code {code}");
+        }
+        assert_eq!(reason_label_th("Changed_Plan"), None, "codes are exact");
+        assert_eq!(reason_label_th(""), None);
+    }
+
+    #[test]
+    fn a_long_note_is_truncated_on_a_char_boundary() {
+        // The server caps a note at 500 CHARS; a push body should not carry all of them. Thai is
+        // multi-byte — truncating by chars (not bytes) must never panic or split a character.
+        let long = "ก".repeat(500);
+        let payload = json!({
+            "customer_id": Uuid::new_v4(),
+            "booking_id": Uuid::new_v4(),
+            "cancellation_reason": "other",
+            "cancellation_note": long,
+        });
+        let body = plan_for_event(topics::BOOKING_CANCELLED, &payload)
+            .unwrap()
+            .body;
+        assert!(body.ends_with("…)"), "truncation is marked, got: {body}");
+        assert_eq!(
+            truncate_note(&long).chars().count(),
+            NOTE_PUSH_MAX_CHARS + 1,
+            "exactly the cap survives, plus the ellipsis"
+        );
+        // A note right AT the cap is passed through untouched.
+        let exact = "ข".repeat(NOTE_PUSH_MAX_CHARS);
+        assert_eq!(truncate_note(&exact), exact);
     }
 
     #[test]

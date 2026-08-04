@@ -34,6 +34,7 @@ import '../call/widgets/call_entry_button.dart';
 import '../chat/widgets/chat_entry_button.dart';
 import 'cancellation_screen.dart';
 import 'guard_map_screen.dart';
+import 'widgets/cancel_reason.dart';
 import 'widgets/job_receipt_sheet.dart';
 import 'widgets/travel_map_preview.dart';
 
@@ -1159,6 +1160,14 @@ Future<void> showBookingDetailsSheet(
   final guards = booking.guardCount;
   final addressRows = parseComposedAddress(booking.address, isThai: isThai);
   final tipSatang = Money.satangFromString(booking.tip);
+  // WHY the booking ended, for whichever side is reading this sheet: the customer sees the
+  // guard's decline reason, the guard (showCustomer) sees the customer's cancel reason. Only
+  // meaningful on a negative terminal, and empty for a pre-migration booking that stored no code
+  // — either way the sheet just omits the rows.
+  final cancelReason = BookingLifecycle.isNegativeTerminal(booking.status)
+      ? PgCancelReason.labelFor(booking.cancellationReason, isThai)
+      : '';
+  final cancelNote = booking.cancellationNote?.trim();
 
   return showModalBottomSheet<void>(
     context: context,
@@ -1252,6 +1261,22 @@ Future<void> showBookingDetailsSheet(
                 // ignorable row. The pill's colour is status-driven (amber for the awaiting state,
                 // green when completed, danger for terminals, blue/info while in flight).
                 _StatusDetailRow(status: booking.status, isThai: isThai),
+                // The cancellation reason reads as one more DETAIL PAIR, right under the status
+                // pill it explains — same [_DetailRow] rhythm as address/hours/payment, so it is
+                // information about the booking, not an error banner bolted onto the sheet.
+                if (cancelReason.isNotEmpty) ...[
+                  _DetailRow(
+                    icon: Icons.info_outline,
+                    label: isThai ? 'เหตุผล' : 'Reason',
+                    value: cancelReason,
+                  ),
+                  if (cancelNote != null && cancelNote.isNotEmpty)
+                    _DetailRow(
+                      icon: Icons.notes_outlined,
+                      label: isThai ? 'หมายเหตุ' : 'Note',
+                      value: cancelNote,
+                    ),
+                ],
                 // #129: the shared step timeline (accept → en route → arrived → working →
                 // completed) INSIDE the details sheet, shown the instant a guard is assigned — the
                 // SAME [BookingStatusTimeline] the main live + active-job screens render, so opening

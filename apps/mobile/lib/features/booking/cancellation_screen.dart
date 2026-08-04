@@ -9,6 +9,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
+import 'widgets/cancel_reason.dart';
 import 'widgets/reason_tile.dart';
 
 /// What the live-status screen already knows about the booking, passed via `extra` on
@@ -25,10 +26,16 @@ class CancellationArgs {
 }
 
 /// Customer cancellation flow (Mobile - Cancellation.html STATE 1 + STATE 2): pick a
-/// reason → confirm via the bottom sheet → `PUT /v1/bookings/{id}/cancel` (pre-arrival
-/// only, per the contract). The reason is DISPLAY-ONLY — the cancel endpoint takes no
-/// body. On success we pop back to live status, whose state is already updated (and the
-/// WS `cancelled` frame follows).
+/// reason (+ an optional note) → confirm via the bottom sheet →
+/// `PUT /v1/bookings/{id}/cancel { reason, note? }` (pre-arrival only, per the contract).
+///
+/// The picked reason is SENT as a stable code (`PgCancelReason.customer`) — it is persisted on
+/// the booking and rides `pguard.events.booking.cancelled`, so the guard, the notification and
+/// admin all see WHY. The note is required when the reason is `other` (the server backstops with
+/// 400 `CANCEL_NOTE_REQUIRED`; we block locally first so the user isn't bounced by a round-trip).
+///
+/// On success we pop back to live status, whose state is already updated (and the WS `cancelled`
+/// frame follows).
 class CancellationScreen extends ConsumerStatefulWidget {
   const CancellationScreen({super.key, required this.bookingId, this.args});
 
@@ -40,25 +47,28 @@ class CancellationScreen extends ConsumerStatefulWidget {
 }
 
 class _CancellationScreenState extends ConsumerState<CancellationScreen> {
-  /// Design STATE 1 reason options — "เปลี่ยนแผน" pre-selected. Rendered in the
-  /// active locale (the chosen reason is DISPLAY-ONLY — never sent — so the
-  /// single-language text is fine for the cancel call too).
-  static List<String> _reasonsFor(bool isThai) => isThai
-      ? const [
-          'เปลี่ยนแผน',
-          'แจ้งผิดพลาด',
-          'ไม่ต้องการแล้ว',
-          'อื่นๆ',
-        ]
-      : const [
-          'Changed plans',
-          'Booked by mistake',
-          'No longer needed',
-          'Other',
-        ];
+  /// The selected reason CODE — what actually goes on the wire. Defaults to the design's
+  /// pre-selected first option (`changed_plan`); the LABEL is looked up per-locale via
+  /// [PgCancelReason.labelFor], so the code and the copy can never drift.
+  String _reason = PgCancelReason.customer.first;
 
-  int _selected = 0;
+  /// Free-text detail (optional in general, REQUIRED when the reason is `other`).
+  final TextEditingController _note = TextEditingController();
+
+  /// Set when the user submits `other` with a blank note — drives the inline message under the
+  /// field. Cleared as soon as they type or switch reason (no nagging).
+  bool _noteMissing = false;
+
   bool _busy = false;
+
+  @override
+  void dispose() {
+    _note.dispose();
+    super.dispose();
+  }
+
+  /// Whether the current selection obliges a note (only `other` does).
+  bool get _noteRequired => PgCancelReason.requiresNote(_reason);
 
   /// Design subtitle shows a short booking code ("BK-48291"); v2 ids are UUIDs, so we
   /// show `BK-` + the first 5 hex chars (house pattern: AvailableGuard.shortId).
@@ -89,6 +99,13 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
 
   Future<void> _confirmAndCancel(int? totalSatang) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final note = PgCancelReason.normalizeNote(_note.text);
+    // Gate BEFORE the confirm sheet: a user who taps through the scary "Yes, cancel" only to be
+    // rejected by the server's CANCEL_NOTE_REQUIRED would have to redo the whole flow.
+    if (_noteRequired && note == null) {
+      setState(() => _noteMissing = true);
+      return;
+    }
     final isPaid = ref
             .read(bookingStatusControllerProvider(widget.bookingId))
             .valueOrNull
@@ -98,10 +115,10 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
     if (yes != true || !mounted) return;
 
     setState(() => _busy = true);
-    // The contract endpoint takes NO body — the reason rides along display-only.
+    // The CODE goes on the wire (never the localized label) + the trimmed note when present.
     final error = await ref
         .read(bookingStatusControllerProvider(widget.bookingId).notifier)
-        .cancel(reason: _reasonsFor(isThai)[_selected]);
+        .cancel(reason: _reason, note: note);
     if (!mounted) return;
     setState(() => _busy = false);
 
@@ -242,7 +259,6 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
     final address = widget.args?.address ?? booking?.address;
     final totalSatang = _totalSatang(booking);
     final isPaid = booking?.isPaid ?? false;
-    final reasons = _reasonsFor(isThai);
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -268,17 +284,33 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
                           fontSize: 14, color: PgTokens.colorTextMuted),
                     ),
                   ),
-                  for (var i = 0; i < reasons.length; i++)
+                  for (final code in PgCancelReason.customer)
                     Padding(
                       padding: const EdgeInsets.fromLTRB(24, 0, 24, 10),
                       child: PgReasonTile(
-                        label: reasons[i],
-                        selected: _selected == i,
-                        onTap: () => setState(() => _selected = i),
+                        label: PgCancelReason.labelFor(code, isThai),
+                        selected: _reason == code,
+                        onTap: () => setState(() {
+                          _reason = code;
+                          // Switching away from (or back to) `other` clears a stale complaint.
+                          _noteMissing = false;
+                        }),
                       ),
                     ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(24, 4, 24, 0),
+                    child: _NoteField(
+                      controller: _note,
+                      isThai: isThai,
+                      noteRequired: _noteRequired,
+                      showMissing: _noteMissing,
+                      onChanged: () {
+                        if (_noteMissing) setState(() => _noteMissing = false);
+                      },
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
                     child: _RefundNote(
                         totalSatang: totalSatang,
                         isPaid: isPaid,
@@ -300,6 +332,75 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
           ],
         ),
       ),
+    );
+  }
+}
+
+/// The free-text detail that rides along with the reason code (`note` on the cancel body).
+/// Styled on the review-screen comment precedent: a [PgTokens.colorSunken] card holding a
+/// borderless 2–5 line field capped at [PgCancelReason.maxNoteLength] with the counter hidden.
+/// Shown for EVERY reason (a note is always useful to the guard/admin) but only ENFORCED for
+/// `other`, where [showMissing] surfaces the inline danger message.
+class _NoteField extends StatelessWidget {
+  const _NoteField({
+    required this.controller,
+    required this.isThai,
+    required this.noteRequired,
+    required this.showMissing,
+    required this.onChanged,
+  });
+
+  final TextEditingController controller;
+  final bool isThai;
+  final bool noteRequired;
+  final bool showMissing;
+  final VoidCallback onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          PgCancelReason.noteLabel(isThai, required: noteRequired),
+          style: const TextStyle(fontSize: 14, color: PgTokens.colorTextMuted),
+        ),
+        const SizedBox(height: PgTokens.space2),
+        Container(
+          decoration: BoxDecoration(
+            color: PgTokens.colorSunken,
+            borderRadius: BorderRadius.circular(PgTokens.radiusXl),
+            // A missing required note is called out on the container itself, not just in words.
+            border: showMissing
+                ? Border.all(color: PgTokens.colorDanger, width: 1.5)
+                : null,
+          ),
+          padding: const EdgeInsets.symmetric(
+              horizontal: PgTokens.space4, vertical: 4),
+          child: TextField(
+            controller: controller,
+            minLines: 2,
+            maxLines: 5,
+            maxLength: PgCancelReason.maxNoteLength,
+            onChanged: (_) => onChanged(),
+            style: const TextStyle(fontSize: 14, color: PgTokens.colorText),
+            decoration: InputDecoration(
+              border: InputBorder.none,
+              counterText: '',
+              hintText: PgCancelReason.noteHint(isThai, required: noteRequired),
+              hintStyle:
+                  const TextStyle(fontSize: 14, color: PgTokens.colorTextFaint),
+            ),
+          ),
+        ),
+        if (showMissing) ...[
+          const SizedBox(height: PgTokens.space2),
+          Text(
+            PgCancelReason.noteMissingMessage(isThai),
+            style: const TextStyle(fontSize: 13, color: PgTokens.colorDanger),
+          ),
+        ],
+      ],
     );
   }
 }

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/permissions/permission_gate.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/features/booking/widgets/cancel_reason.dart';
 import 'package:pguard_mobile/features/booking/widgets/reason_tile.dart';
 import 'package:pguard_mobile/features/guard/active_job_screen.dart';
 import 'package:pguard_mobile/features/guard/withdraw_screen.dart';
@@ -55,6 +56,10 @@ Future<void> pumpFlow(WidgetTester tester, FakeApi api) async {
           .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
       presenceFeedBuilderProvider.overrideWithValue((_) => FakePresenceFeed()),
       locationServiceProvider.overrideWithValue(FakeLocationService()),
+      // The active-job screen (and now the withdraw PUT) go through the booking-status
+      // controller — keep its feed off a real WebSocket.
+      bookingStatusFeedBuilderProvider
+          .overrideWithValue((id, tp) => FakeBookingFeed()),
     ],
     child: MaterialApp.router(routerConfig: buildRouter()),
   ));
@@ -82,8 +87,8 @@ void main() {
             'การถอนงานเป็นกรณีพิเศษ จะถูกส่งให้แอดมินตรวจสอบ และอาจมีผลต่อคะแนนของคุณ'),
         findsOneWidget);
 
-    // 3 reasons, "เหตุฉุกเฉินส่วนตัว" pre-selected.
-    expect(find.byType(PgReasonTile), findsNWidgets(3));
+    // 4 reasons (the 3 design options + "อื่นๆ"), "เหตุฉุกเฉินส่วนตัว" pre-selected.
+    expect(find.byType(PgReasonTile), findsNWidgets(4));
     expect(
         tester
             .widget<PgReasonTile>(
@@ -92,27 +97,28 @@ void main() {
         isTrue);
     expect(find.text('ป่วย'), findsOneWidget);
     expect(find.text('เดินทางไปไม่ได้'), findsOneWidget);
+    expect(find.text('อื่นๆ'), findsOneWidget);
 
-    // Notes are optional (design): a reason is always pre-selected, so Submit is enabled
-    // from the start — even before any admin note is typed.
+    // Notes are optional for the three concrete reasons: a reason is always pre-selected, so
+    // Submit is enabled from the start — even before any admin note is typed.
     final submit = find.widgetWithText(ElevatedButton, 'ส่งคำขอถอนงาน');
     expect(tester.widget<ElevatedButton>(submit).onPressed, isNotNull);
 
-    // Typing a note keeps Submit enabled (notes are display-only — the decline endpoint
-    // takes no body — so they never gate or flow to the API).
+    // Typing a note keeps Submit enabled (the note now FLOWS to the API as `note`).
     await tester.enterText(find.byType(TextField), 'รถเสียกลางทาง');
     await tester.pump();
     expect(tester.widget<ElevatedButton>(submit).onPressed, isNotNull);
   });
 
   testWidgets(
-      'submit PUTs /bookings/b1/decline (reason/notes display-only — no API '
-      'fields) and returns to the guard dashboard', (tester) async {
+      'submit PUTs /bookings/b1/decline WITH the guard reason code + note and '
+      'returns to the guard dashboard', (tester) async {
+    Object? sentBody;
     final api = FakeApi(
       onGet: (_, __) async => bookingJson('accepted'),
       onPut: (path, data) async {
         expect(path, '/bookings/b1/decline');
-        expect(data, isNull, reason: 'decline takes no body');
+        sentBody = data;
         return bookingJson('declined');
       },
     );
@@ -121,7 +127,7 @@ void main() {
     await tester.tap(find.text('ปฏิเสธงาน'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('ป่วย'));
-    await tester.enterText(find.byType(TextField), 'มีไข้สูง');
+    await tester.enterText(find.byType(TextField), ' มีไข้สูง ');
     await tester.pump();
     await tester.tap(find.text('ส่งคำขอถอนงาน'));
     await tester.pumpAndSettle();
@@ -134,7 +140,50 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.calls, contains('PUT /bookings/b1/decline'));
+    // THE fix: the guard's reason CODE + trimmed note actually reach the server.
+    expect(sentBody, {'reason': PgCancelReason.sick, 'note': 'มีไข้สูง'});
     expect(find.text('GUARD HOME STUB'), findsOneWidget);
     expect(find.text('ส่งคำขอถอนงานแล้ว'), findsOneWidget);
+  });
+
+  testWidgets(
+      '"อื่นๆ" with a BLANK note blocks submit: no confirm dialog, NO PUT, and '
+      'an inline message — then filling the note lets it through', (tester) async {
+    Object? sentBody;
+    final api = FakeApi(
+      onGet: (_, __) async => bookingJson('accepted'),
+      onPut: (path, data) async {
+        sentBody = data;
+        return bookingJson('declined');
+      },
+    );
+    await pumpFlow(tester, api);
+
+    await tester.tap(find.text('ปฏิเสธงาน'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('อื่นๆ'));
+    await tester.pump();
+    // Whitespace only — blank after trim, exactly like the server's check.
+    await tester.enterText(find.byType(TextField), '   ');
+    await tester.pump();
+    await tester.tap(find.text('ส่งคำขอถอนงาน'));
+    await tester.pumpAndSettle();
+
+    expect(api.calls.where((c) => c.startsWith('PUT')), isEmpty,
+        reason: 'other + blank note must never reach the API');
+    expect(find.text('ยืนยันถอนตัวจากงานนี้?'), findsNothing,
+        reason: 'blocked BEFORE the destructive confirm dialog');
+    expect(find.text(PgCancelReason.noteMissingMessage(true)), findsOneWidget);
+
+    // Typing clears the complaint; the withdrawal then goes through carrying the note.
+    await tester.enterText(find.byType(TextField), 'ติดธุระด่วน');
+    await tester.pump();
+    expect(find.text(PgCancelReason.noteMissingMessage(true)), findsNothing);
+    await tester.tap(find.text('ส่งคำขอถอนงาน'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('ถอนตัว'));
+    await tester.pumpAndSettle();
+
+    expect(sentBody, {'reason': PgCancelReason.other, 'note': 'ติดธุระด่วน'});
   });
 }

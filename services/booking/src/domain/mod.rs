@@ -6,12 +6,16 @@
 //! - [`progress`] — hourly check-in rules (state gate, hour window, photo validation) +
 //!   open-job discovery query validation.
 //! - [`geo`] — start-work geofence (haversine + the 50m fence with capped accuracy allowance).
+//! - [`cancellation`] — the mandatory cancel/decline reason codes + their validator (the two
+//!   endpoints have DIFFERENT vocabularies).
 
+pub mod cancellation;
 pub mod events;
 pub mod geo;
 pub mod progress;
 pub mod state;
 
+pub use cancellation::{validate_cancellation, Cancellation, ReasonSet};
 pub use events::{
     event_for_booking_requested, event_for_progress_report, event_for_status, CompletionInfo,
     EventMapping,

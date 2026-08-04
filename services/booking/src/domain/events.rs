@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use shared_events::topics;
 
+use crate::domain::cancellation::{set_for_target, Cancellation};
 use crate::domain::state::BookingStatus;
 
 /// The decision for one status change: which NATS topic to publish + the payload object.
@@ -77,6 +78,14 @@ fn payload(booking_id: Uuid, customer_id: Uuid, guard_id: Option<Uuid>) -> Value
 /// `completion` is only meaningful for [`BookingStatus::Completed`]: it adds
 /// `booked_hours` + `actual_seconds` to the payload so the payment consumer can prorate.
 /// Other statuses ignore it.
+///
+/// `cancellation` is the same idea for the two terminal "did not happen" targets
+/// ([`BookingStatus::Cancelled`] / [`BookingStatus::Declined`], per
+/// [`set_for_target`]): it adds `cancellation_reason` (the stable code) and, only when the
+/// client wrote one, `cancellation_note`. The note key is OMITTED when `None` (the `guard_id`
+/// precedent — an absent note is no key at all, not a JSON null), so a consumer can render
+/// "reason only" without null-checking. Other statuses ignore it.
+#[allow(clippy::too_many_arguments)]
 pub fn event_for_status(
     // The source status. No longer gates the topic (target status alone decides), but kept in the
     // signature so callers stay explicit about the WHOLE transition and a future from-dependent
@@ -87,6 +96,7 @@ pub fn event_for_status(
     customer_id: Uuid,
     guard_id: Option<Uuid>,
     completion: Option<CompletionInfo>,
+    cancellation: Option<&Cancellation>,
 ) -> Option<EventMapping> {
     let topic = match new_status {
         BookingStatus::Accepted => topics::BOOKING_JOB_ACCEPTED,
@@ -116,6 +126,17 @@ pub fn event_for_status(
             payload["base_fee"] = json!(info.base_fee);
             payload["guard_count"] = json!(info.guard_count);
             payload["tip"] = json!(info.tip);
+        }
+    }
+    // WHY the job did not happen — only on the two terminal cancellation targets (a stray
+    // reason can never ride e.g. booking.arrived). The reason is the stable CODE, so the
+    // notification consumer localizes it; the note rides only when the client wrote one.
+    if set_for_target(new_status).is_some() {
+        if let Some(c) = cancellation {
+            payload["cancellation_reason"] = json!(c.reason);
+            if let Some(note) = &c.note {
+                payload["cancellation_note"] = json!(note);
+            }
         }
     }
     Some(EventMapping { topic, payload })
@@ -198,6 +219,7 @@ mod tests {
             customer,
             Some(guard),
             None,
+            None,
         )
         .expect("accepted must emit");
         assert_eq!(m.topic, topics::BOOKING_JOB_ACCEPTED);
@@ -215,11 +237,15 @@ mod tests {
             Uuid::new_v4(),
             None,
             None,
+            None,
         )
         .expect("declined must emit");
         assert_eq!(m.topic, topics::BOOKING_DECLINED);
         // declined before any guard assignment → no guard_id in payload
         assert!(m.payload.get("guard_id").is_none());
+        // ...and a pre-0009 decline (no reason recorded) carries neither cancellation key.
+        assert!(m.payload.get("cancellation_reason").is_none());
+        assert!(m.payload.get("cancellation_note").is_none());
     }
 
     #[test]
@@ -234,6 +260,7 @@ mod tests {
                 b,
                 c,
                 g,
+                None,
                 None
             )
             .unwrap()
@@ -248,6 +275,7 @@ mod tests {
                 b,
                 c,
                 g,
+                None,
                 None
             )
             .unwrap()
@@ -261,6 +289,7 @@ mod tests {
                 b,
                 c,
                 g,
+                None,
                 None
             )
             .unwrap()
@@ -282,6 +311,7 @@ mod tests {
             b,
             c,
             Some(g),
+            None,
             None,
         )
         .expect("pending_completion must emit");
@@ -310,6 +340,7 @@ mod tests {
             c,
             Some(g),
             None,
+            None,
         )
         .expect("completion-reject bounce must emit");
         assert_eq!(m.topic, topics::BOOKING_ARRIVED);
@@ -337,6 +368,7 @@ mod tests {
                 guard_count: 2,
                 tip,
             }),
+            None,
         )
         .expect("completed must emit");
         assert_eq!(m.topic, topics::BOOKING_COMPLETED);
@@ -364,6 +396,7 @@ mod tests {
                 guard_count: 1,
                 tip: Decimal::ZERO,
             }),
+            None,
         )
         .expect("completed must emit");
         assert_eq!(m.payload["booked_hours"], json!(3));
@@ -389,6 +422,7 @@ mod tests {
                 guard_count: 1,
                 tip: Decimal::ZERO,
             }),
+            None,
         )
         .expect("accepted must emit");
         assert!(m.payload.get("booked_hours").is_none());
@@ -407,10 +441,91 @@ mod tests {
             Uuid::new_v4(),
             Some(g),
             None,
+            None,
         )
         .expect("cancelled must emit");
         assert_eq!(m.topic, topics::BOOKING_CANCELLED);
         assert_eq!(m.payload["guard_id"], json!(g));
+    }
+
+    // ----- the cancellation reason rides the two terminal "did not happen" events -----
+
+    #[test]
+    fn cancelled_carries_reason_and_note() {
+        let m = event_for_status(
+            BookingStatus::EnRoute,
+            BookingStatus::Cancelled,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            None,
+            Some(&Cancellation {
+                reason: "other",
+                note: Some("ลูกค้าไม่อยู่บ้าน".to_string()),
+            }),
+        )
+        .expect("cancelled must emit");
+        assert_eq!(m.topic, topics::BOOKING_CANCELLED);
+        // The stable CODE rides the wire — notification/the app localize it.
+        assert_eq!(m.payload["cancellation_reason"], json!("other"));
+        assert_eq!(m.payload["cancellation_note"], json!("ลูกค้าไม่อยู่บ้าน"));
+    }
+
+    #[test]
+    fn declined_carries_reason_and_omits_an_absent_note() {
+        let m = event_for_status(
+            BookingStatus::EnRoute,
+            BookingStatus::Declined,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            None,
+            Some(&Cancellation {
+                reason: "sick",
+                note: None,
+            }),
+        )
+        .expect("declined must emit");
+        assert_eq!(m.topic, topics::BOOKING_DECLINED);
+        assert_eq!(m.payload["cancellation_reason"], json!("sick"));
+        // OMITTED entirely (the guard_id precedent) — not a JSON null.
+        assert!(
+            m.payload.get("cancellation_note").is_none(),
+            "an absent note must not appear as a null key: {}",
+            m.payload
+        );
+    }
+
+    #[test]
+    fn non_cancellation_statuses_ignore_the_reason() {
+        // A stray reason must never leak onto e.g. booking.arrived (set_for_target gates it).
+        let c = Cancellation {
+            reason: "sick",
+            note: Some("should not appear".to_string()),
+        };
+        for (from, to) in [
+            (BookingStatus::Requested, BookingStatus::Accepted),
+            (BookingStatus::EnRoute, BookingStatus::Arrived),
+            (BookingStatus::Arrived, BookingStatus::PendingCompletion),
+            (BookingStatus::PendingCompletion, BookingStatus::Completed),
+        ] {
+            let m = event_for_status(
+                from,
+                to,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                None,
+                Some(&c),
+            )
+            .expect("must emit");
+            assert!(
+                m.payload.get("cancellation_reason").is_none()
+                    && m.payload.get("cancellation_note").is_none(),
+                "{from} → {to} must carry no cancellation keys: {}",
+                m.payload
+            );
+        }
     }
 
     #[test]
@@ -482,6 +597,7 @@ mod tests {
             BookingStatus::Requested,
             Uuid::new_v4(),
             Uuid::new_v4(),
+            None,
             None,
             None
         )

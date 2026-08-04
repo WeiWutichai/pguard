@@ -20,13 +20,15 @@ use shared::service_jwt::ServiceCaller;
 use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
+use crate::domain::{validate_cancellation, Cancellation, ReasonSet};
 use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, AvailableGuardsQuery,
-    BookingResponse, BookingsReport, CreateBookingRequest, CreateServiceRequest,
-    CustomerBookingStat, InternalBooking, ListProgressReportsQuery, NewProgressReport,
-    OpenJobsQuery, OverdueCheckinsQuery, OverdueCheckinsResponse, ProgressReportResponse,
-    PublicServiceItem, ReportRangeQuery, RetentionPoint, ReviewCompletionRequest,
-    ServiceCatalogItem, StartJobRequest, UpdateServiceRequest,
+    BookingResponse, BookingsReport, CancelBookingRequest, CreateBookingRequest,
+    CreateServiceRequest, CustomerBookingStat, DeclineBookingRequest, InternalBooking,
+    ListProgressReportsQuery, NewProgressReport, OpenJobsQuery, OverdueCheckinsQuery,
+    OverdueCheckinsResponse, ProgressReportResponse, PublicServiceItem, ReportRangeQuery,
+    RetentionPoint, ReviewCompletionRequest, ServiceCatalogItem, StartJobRequest,
+    UpdateServiceRequest,
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
@@ -82,6 +84,7 @@ async fn do_transition<S: BookingDeps>(
     is_admin: bool,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
+    cancellation: Option<Cancellation>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let booking = repo::transition(
         state.db(),
@@ -90,6 +93,7 @@ async fn do_transition<S: BookingDeps>(
         is_admin,
         new_status,
         assign_guard,
+        cancellation,
         Uuid::new_v4(),
     )
     .await?;
@@ -187,18 +191,31 @@ pub async fn accept_booking<S: BookingDeps>(
         is_admin,
         BookingStatus::Accepted,
         Some(user.user_id),
+        None,
     )
     .await
 }
 
 /// PUT /bookings/{id}/decline — the ASSIGNED guard withdraws after accepting → declined.
-#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+///
+/// The body carries a MANDATORY reason from the GUARD code set (`emergency` | `sick` |
+/// `cannot_reach` | `other`); a customer code is a 400 `CANCEL_REASON_REQUIRED`, and `other`
+/// additionally requires a note (`CANCEL_NOTE_REQUIRED`). The customer is told WHY their guard
+/// withdrew — and a paid pre-arrival withdraw is full-refunded — so the reason is not optional
+/// UX polish: it is the record behind the refund.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %id))]
 pub async fn decline_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Json(req): Json<DeclineBookingRequest>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_GUARD)?;
+    let cancellation = validate_cancellation(
+        ReasonSet::GuardDecline,
+        req.reason.as_deref(),
+        req.note.as_deref(),
+    )?;
     do_transition(
         &state,
         id,
@@ -206,6 +223,7 @@ pub async fn decline_booking<S: BookingDeps>(
         is_admin,
         BookingStatus::Declined,
         None,
+        Some(cancellation),
     )
     .await
 }
@@ -225,6 +243,7 @@ pub async fn en_route_booking<S: BookingDeps>(
         is_admin,
         BookingStatus::EnRoute,
         None,
+        None,
     )
     .await
 }
@@ -243,6 +262,7 @@ pub async fn arrived_booking<S: BookingDeps>(
         user.user_id,
         is_admin,
         BookingStatus::Arrived,
+        None,
         None,
     )
     .await
@@ -297,6 +317,7 @@ pub async fn complete_booking<S: BookingDeps>(
         is_admin,
         BookingStatus::PendingCompletion,
         None,
+        None,
     )
     .await
 }
@@ -321,17 +342,28 @@ pub async fn review_completion<S: BookingDeps>(
             ))
         }
     };
-    do_transition(&state, id, user.user_id, is_admin, target, None).await
+    do_transition(&state, id, user.user_id, is_admin, target, None, None).await
 }
 
 /// PUT /bookings/{id}/cancel — the customer (or admin) cancels a PRE-ARRIVAL booking → cancelled.
-#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+///
+/// The body carries a MANDATORY reason from the CUSTOMER code set (`changed_plan` | `mistake` |
+/// `not_needed` | `other`); a guard code is a 400 `CANCEL_REASON_REQUIRED`, and `other`
+/// additionally requires a note (`CANCEL_NOTE_REQUIRED`). A paid pre-arrival cancel is
+/// full-refunded by payment's cancellation consumer, so the reason is the record behind the money.
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id, booking_id = %id))]
 pub async fn cancel_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    Json(req): Json<CancelBookingRequest>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_CUSTOMER)?;
+    let cancellation = validate_cancellation(
+        ReasonSet::CustomerCancel,
+        req.reason.as_deref(),
+        req.note.as_deref(),
+    )?;
     do_transition(
         &state,
         id,
@@ -339,6 +371,7 @@ pub async fn cancel_booking<S: BookingDeps>(
         is_admin,
         BookingStatus::Cancelled,
         None,
+        Some(cancellation),
     )
     .await
 }
@@ -583,6 +616,7 @@ pub async fn admin_assign_guard<S: BookingDeps>(
         true,
         BookingStatus::Accepted,
         Some(req.guard_id),
+        None,
     )
     .await
 }
@@ -1330,15 +1364,22 @@ mod tests {
             .method(method)
             .uri(format!("/bookings/{id}/{subpath}"))
             .header("authorization", format!("Bearer {}", user_token(role)));
-        // review-completion deserializes a JSON body; give it the right content-type so the
-        // Json extractor succeeds and execution reaches the handler's role gate.
-        if subpath == "review-completion" {
+        // These endpoints deserialize a JSON body (review-completion's verdict, cancel/decline's
+        // MANDATORY reason); give them the right content-type so the Json extractor succeeds and
+        // execution reaches the handler's role gate — extractors run BEFORE the handler body.
+        if matches!(subpath, "review-completion" | "cancel" | "decline") {
             builder = builder.header("content-type", "application/json");
         }
         app.oneshot(builder.body(body).unwrap())
             .await
             .unwrap()
             .status()
+    }
+
+    /// A valid cancel/decline body for the role gate tests (the reason only has to survive
+    /// deserialization — validation runs AFTER the role check).
+    fn reason_body(reason: &str) -> Body {
+        Body::from(serde_json::json!({ "reason": reason }).to_string())
     }
 
     #[tokio::test]
@@ -1348,7 +1389,7 @@ mod tests {
             return;
         };
         // a customer cannot drive a guard-only transition
-        let status = lifecycle_req(app, "PUT", "decline", "customer", Body::empty()).await;
+        let status = lifecycle_req(app, "PUT", "decline", "customer", reason_body("sick")).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -1388,9 +1429,113 @@ mod tests {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
-        // a guard cannot cancel a customer's booking
-        let status = lifecycle_req(app, "PUT", "cancel", "guard", Body::empty()).await;
+        // a guard cannot cancel a customer's booking (the body is well-formed: the 403 is the
+        // ROLE gate, not the reason validation, which runs after it)
+        let status =
+            lifecycle_req(app, "PUT", "cancel", "guard", reason_body("changed_plan")).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // ----- the MANDATORY cancellation reason (api-layer validation, before any DB access) -----
+
+    /// Send a cancel/decline body with a valid token for `role` and return (status, error code).
+    /// The lazy pool points at a closed port, so a 400 here also proves the reason was rejected
+    /// BEFORE the repo was ever called.
+    async fn cancellation_req(
+        app: Router,
+        subpath: &str,
+        role: &str,
+        body: serde_json::Value,
+    ) -> (StatusCode, String) {
+        let id = Uuid::new_v4();
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/bookings/{id}/{subpath}"))
+                    .header("authorization", format!("Bearer {}", user_token(role)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value =
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::json!({}));
+        let code = json["error"]["code"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string();
+        (status, code)
+    }
+
+    #[tokio::test]
+    async fn cancel_requires_a_customer_reason() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // No reason at all → the typed code the app localizes.
+        let (status, code) =
+            cancellation_req(app, "cancel", "customer", serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "CANCEL_REASON_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn cancel_rejects_a_guard_reason_code() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // "sick" is the GUARD vocabulary — invalid on the customer's endpoint.
+        let (status, code) = cancellation_req(
+            app,
+            "cancel",
+            "customer",
+            serde_json::json!({ "reason": "sick" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "CANCEL_REASON_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn decline_rejects_a_customer_reason_code() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let (status, code) = cancellation_req(
+            app,
+            "decline",
+            "guard",
+            serde_json::json!({ "reason": "changed_plan" }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "CANCEL_REASON_REQUIRED");
+    }
+
+    #[tokio::test]
+    async fn other_reason_requires_a_note() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let (status, code) = cancellation_req(
+            app,
+            "cancel",
+            "customer",
+            serde_json::json!({ "reason": "other", "note": "   " }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(code, "CANCEL_NOTE_REQUIRED");
     }
 
     #[tokio::test]
@@ -1847,6 +1992,7 @@ mod tests {
             false,
             BookingStatus::Accepted,
             Some(claimer),
+            None,
             Uuid::new_v4(),
         )
         .await
@@ -1906,6 +2052,7 @@ mod tests {
             false,
             BookingStatus::Accepted,
             Some(guard),
+            None,
             Uuid::new_v4(),
         )
         .await
@@ -1992,9 +2139,18 @@ mod tests {
             .await
             .expect("mark paid");
         for status in [BookingStatus::EnRoute, BookingStatus::Arrived] {
-            repo::transition(&db, created.id, guard, false, status, None, Uuid::new_v4())
-                .await
-                .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+            repo::transition(
+                &db,
+                created.id,
+                guard,
+                false,
+                status,
+                None,
+                None,
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
         }
         repo::start_job(&db, created.id, guard, false, None, None)
             .await
@@ -2168,6 +2324,7 @@ mod tests {
                         false,
                         status,
                         assign,
+                        None,
                         Uuid::new_v4(),
                     )
                     .await
@@ -2357,6 +2514,7 @@ mod tests {
             false,
             BookingStatus::Accepted,
             Some(guard_g),
+            None,
             Uuid::new_v4(),
         )
         .await

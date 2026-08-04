@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/controllers/relative_time.dart';
 import '../../../core/models/notification.dart';
+import '../../booking/widgets/cancel_reason.dart';
 
 /// One notification row: type-coloured icon tile, title + body, relative time, and an unread
 /// highlight + dot. The relative time follows the language toggle (locale-aware).
@@ -26,7 +27,10 @@ class NotificationTile extends ConsumerWidget {
     // Localize the copy by TYPE so it follows the language toggle. The notification service sends
     // server-rendered title/body that aren't all localized (e.g. `booking_created` arrives as the
     // English "New job nearby" even in Thai mode) — for the known types we render our own locale copy
-    // and keep the server strings only for `system` (reviews / calls / payments etc. we don't model).
+    // and keep the server strings for `system` (reviews / calls / payments etc. we don't model).
+    // The exception is the CANCELLATION kinds, whose body is not a constant: they read the payload
+    // (`target_role`, `cancellation_reason`/`_note`) and fall back to the server body — see
+    // [_cancelledCopy] / [_cancelBody].
     final copy = _copyFor(notification, thai);
 
     return Material(
@@ -139,9 +143,7 @@ _NotifCopy _copyFor(AppNotification n, bool thai) {
           ? const _NotifCopy('งานเสร็จสมบูรณ์', 'งานของคุณเสร็จสมบูรณ์แล้ว')
           : const _NotifCopy('Job completed', 'Your job is complete');
     case NotificationType.bookingCancelled:
-      return thai
-          ? const _NotifCopy('งานถูกยกเลิก', 'งานถูกยกเลิกแล้ว')
-          : const _NotifCopy('Booking cancelled', 'The booking was cancelled');
+      return _cancelledCopy(n, thai);
     case NotificationType.chatMessage:
       return thai
           ? const _NotifCopy('ข้อความใหม่', 'คุณมีข้อความใหม่')
@@ -155,14 +157,77 @@ _NotifCopy _copyFor(AppNotification n, bool thai) {
   }
 }
 
+/// A cancelled/declined notification's reason, ready to read: the localized label for the stable
+/// `cancellation_reason` CODE the event carries, with the free-text `cancellation_note` in
+/// parentheses when the canceller left one. Null when the notification carries no reason (a
+/// pre-migration booking, or a kind that has none) — callers then fall back to plain copy.
+///
+/// Deliberately built from the CODE rather than the server's sentence: the payload is
+/// locale-independent, so an English reader gets English here instead of the service's Thai.
+String? _reasonPhrase(AppNotification n, bool thai) {
+  final code = n.payload['cancellation_reason'];
+  final label = PgCancelReason.labelFor(code is String ? code : null, thai);
+  if (label.isEmpty) return null;
+  final raw = n.payload['cancellation_note'];
+  final note = raw is String ? raw.trim() : '';
+  return note.isEmpty ? label : '$label ($note)';
+}
+
+/// Body copy for a cancellation-shaped notification. Prefers OUR localized sentence carrying the
+/// payload's reason; with no structured reason it falls back to the SERVER's own body in Thai
+/// mode (that is the notification service's own rendering — the richest thing available, reason
+/// included when it interpolated one), and only then to the plain [head] + [tail].
+String _cancelBody(AppNotification n, bool thai,
+    {required String head, String? tail}) {
+  final reason = _reasonPhrase(n, thai);
+  if (reason == null) {
+    final server = n.body.trim();
+    if (thai && server.isNotEmpty) return server;
+    return [head, if (tail != null) tail].join(' ');
+  }
+  final withReason =
+      thai ? '$head — เหตุผล: $reason' : '$head — reason: $reason';
+  return [withReason, if (tail != null) tail].join(' ');
+}
+
+/// `booking_cancelled` copy. The server body for this type is NOT a constant — it names WHO
+/// cancelled (the guard reads "ลูกค้ายกเลิกงานแล้ว", the customer "งานของคุณถูกยกเลิกแล้ว") and now
+/// carries the reason the booking service interpolates; the old const `_NotifCopy` threw all of
+/// that away and always said "งานถูกยกเลิกแล้ว". Rebuild it from the payload instead: `target_role`
+/// picks the side, `cancellation_reason` supplies the why.
+_NotifCopy _cancelledCopy(AppNotification n, bool thai) {
+  final guardSide = n.payload['target_role'] == 'guard';
+  final head = guardSide
+      ? (thai ? 'ลูกค้ายกเลิกงานแล้ว' : 'The customer cancelled the job')
+      : (thai ? 'งานของคุณถูกยกเลิกแล้ว' : 'Your booking was cancelled');
+  return _NotifCopy(
+    thai ? 'งานถูกยกเลิก' : 'Booking cancelled',
+    _cancelBody(n, thai, head: head),
+  );
+}
+
 _NotifCopy _systemCopy(AppNotification n, bool thai) {
   final event = n.payload['event_type'] as String?;
   switch (event) {
     case 'pguard.events.booking.declined':
-      return thai
-          ? const _NotifCopy(
-              'เจ้าหน้าที่ปฏิเสธงาน', 'กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ')
-          : const _NotifCopy('Guard declined', 'Finding you another guard');
+      // `declined` is TERMINAL — the booking never re-enters discovery, so
+      // "กำลังค้นหาเจ้าหน้าที่ใหม่ให้คุณ" / "Finding you another guard" promised a search that never
+      // happens. The notification service already stopped claiming it (see
+      // `services/notification/src/domain/mapping.rs` BOOKING_DECLINED); this client copy was
+      // still lying over the top of it. Say what is true — the job ended, a paid booking is
+      // refunded in full — and carry the GUARD's reason through to the customer.
+      return _NotifCopy(
+        thai ? 'เจ้าหน้าที่ยกเลิกงาน' : 'Guard cancelled the job',
+        _cancelBody(
+          n,
+          thai,
+          head:
+              thai ? 'เจ้าหน้าที่ยกเลิกงานนี้' : 'The guard cancelled this job',
+          tail: thai
+              ? 'หากชำระเงินแล้วระบบจะคืนเงินให้เต็มจำนวน กรุณาจองใหม่อีกครั้ง'
+              : 'Any payment is refunded in full — please book again.',
+        ),
+      );
     case 'pguard.events.booking.completion_requested':
       return thai
           ? const _NotifCopy(

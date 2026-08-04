@@ -20,6 +20,7 @@ import '../features/auth/registration/customer_registration_screen.dart';
 import '../features/auth/registration/guard_registration_screen.dart';
 import '../features/auth/registration/registration_pending_screen.dart';
 import '../features/auth/registration/role_selection_screen.dart';
+import '../features/legal/terms_screen.dart';
 import '../features/booking/booking_form_screen.dart';
 import '../features/booking/bookings_list_screen.dart';
 import '../features/booking/cancellation_screen.dart';
@@ -83,6 +84,13 @@ GoRouter appRouter(AppRouterRef ref) {
       // Registration sub-flow (role-at-register): role → profile form → pending.
       GoRoute(
           path: '/auth/role', builder: (_, __) => const RoleSelectionScreen()),
+      // THE terms/privacy gate. Pushed (and awaited) by the registration paths BEFORE anything is
+      // registered — it pops `true` only once all three consents are ticked. Also opened read-only
+      // from the "ข้อตกลงการใช้งาน / นโยบายความเป็นส่วนตัว" links (`?read=1`), where nothing is accepted.
+      GoRoute(
+          path: '/auth/terms',
+          builder: (_, s) =>
+              TermsScreen(readOnly: s.uri.queryParameters['read'] == '1')),
       GoRoute(
           path: '/auth/register/guard',
           builder: (_, __) => const GuardRegistrationScreen()),
@@ -165,8 +173,7 @@ GoRouter appRouter(AppRouterRef ref) {
         ),
       ),
       // Guard's full tabbed jobs list (Pending / Active / Done) — the bottom-nav "งาน" tab.
-      GoRoute(
-          path: '/guard/jobs', builder: (_, __) => const GuardJobsScreen()),
+      GoRoute(path: '/guard/jobs', builder: (_, __) => const GuardJobsScreen()),
       // Guard's work history (Completed / Cancelled) — from the profile menu.
       GoRoute(
           path: '/guard/history',
@@ -309,7 +316,9 @@ String? sessionRedirect(SessionState session, String loc) {
       // Remembered device (login phone + local PIN, but NO tokens): PIN login mints a fresh token
       // pair. Allow the PIN-login screen AND the /auth/* OTP flow (reset-PIN / sign in as a
       // different account) to run from here; bounce anything else to the PIN-login screen.
-      return (loc == '/login/pin' || loc.startsWith('/auth')) ? null : '/login/pin';
+      return (loc == '/login/pin' || loc.startsWith('/auth'))
+          ? null
+          : '/login/pin';
     case SessionStatus.authenticated:
       final user = session.user;
       // The mode picker (`/auth/role`) is reachable WHILE authenticated — it's how an account

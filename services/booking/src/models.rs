@@ -46,6 +46,34 @@ pub struct ReviewCompletionRequest {
     pub action: String,
 }
 
+/// The customer cancels a PRE-ARRIVAL booking (`PUT /bookings/{id}/cancel`). The reason is
+/// MANDATORY (contract: `required: true`) but is typed `Option<String>` here on purpose: a body
+/// that omits it must fail with the typed 400 `CANCEL_REASON_REQUIRED` the app localizes, not
+/// with the Json extractor's untyped deserialization rejection. Validation (which set of codes,
+/// the note rules) is [`crate::domain::cancellation::validate_cancellation`] — pure, not here.
+#[derive(Debug, Deserialize)]
+pub struct CancelBookingRequest {
+    /// A stable CUSTOMER reason code: `changed_plan` | `mistake` | `not_needed` | `other`.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Optional free text (≤ 500 chars); REQUIRED when `reason == "other"`.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
+/// The ASSIGNED guard withdraws pre-arrival (`PUT /bookings/{id}/decline`). Same shape as
+/// [`CancelBookingRequest`] but a DIFFERENT code set — a customer code sent here is a 400
+/// (and vice versa), so the two vocabularies never mix in reporting.
+#[derive(Debug, Deserialize)]
+pub struct DeclineBookingRequest {
+    /// A stable GUARD reason code: `emergency` | `sick` | `cannot_reach` | `other`.
+    #[serde(default)]
+    pub reason: Option<String>,
+    /// Optional free text (≤ 500 chars); REQUIRED when `reason == "other"`.
+    #[serde(default)]
+    pub note: Option<String>,
+}
+
 /// The assigned guard starts the job (`PUT /bookings/{id}/start`) — their GPS fix at the
 /// moment of pressing start, feeding the 50m geofence (`domain::geo`). The WHOLE body is
 /// optional (older app builds send none): absent body/fields → no fix, which 409s
@@ -91,6 +119,14 @@ pub struct BookingResponse {
     /// = unpaid — the client uses this to know the `accepted → en_route` transition is gated
     /// (show the pay-step) vs. already paid.
     pub paid_at: Option<DateTime<Utc>>,
+    /// WHY the booking ended without work: the stable code recorded by `cancel` (customer) or
+    /// `decline` (assigned guard) — never localized text, so the client renders the TH/EN label
+    /// from the code. `None` for every booking that was not cancelled/declined, and for rows
+    /// terminated before migration 0009.
+    pub cancellation_reason: Option<String>,
+    /// The optional free-text elaboration on that reason (≤ 500 chars; required when the reason
+    /// is `other`). `None` when the customer/guard wrote nothing.
+    pub cancellation_note: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

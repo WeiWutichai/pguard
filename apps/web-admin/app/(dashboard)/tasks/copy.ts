@@ -21,6 +21,11 @@ export interface TasksCopy {
   bulkCancel: string;
   bulkRefund: string;
   cancelling: string;
+  cancelReasonLabel: string;
+  cancelReasonHint: string;
+  cancelReasonPlaceholder: string;
+  cancelConfirm: string;
+  cancelBack: string;
   cancelResult: (ok: number, skipped: number) => string;
   colRequest: string;
   colCustomer: string;
@@ -50,6 +55,11 @@ export const COPY: Record<Lang, TasksCopy> = {
     bulkCancel: "ยกเลิก",
     bulkRefund: "คืนเงิน",
     cancelling: "กำลังยกเลิก…",
+    cancelReasonLabel: "เหตุผลในการยกเลิก",
+    cancelReasonHint: "ลูกค้าและเจ้าหน้าที่จะเห็นข้อความนี้ จึงต้องระบุให้ชัดเจน",
+    cancelReasonPlaceholder: "เช่น ลูกค้าโทรแจ้งยกเลิกทางโทรศัพท์",
+    cancelConfirm: "ยืนยันยกเลิก",
+    cancelBack: "ย้อนกลับ",
     cancelResult: (ok, skipped) =>
       `ยกเลิกแล้ว ${ok} รายการ${skipped ? ` · ข้าม ${skipped} (สถานะไม่อนุญาต)` : ""}`,
     colRequest: "Request",
@@ -77,6 +87,11 @@ export const COPY: Record<Lang, TasksCopy> = {
     bulkCancel: "Cancel",
     bulkRefund: "Refund",
     cancelling: "Cancelling…",
+    cancelReasonLabel: "Reason for cancelling",
+    cancelReasonHint: "The customer and the guard both see this, so be specific.",
+    cancelReasonPlaceholder: "e.g. customer cancelled over the phone",
+    cancelConfirm: "Confirm cancellation",
+    cancelBack: "Back",
     cancelResult: (ok, skipped) =>
       `Cancelled ${ok}${skipped ? ` · skipped ${skipped} (status disallows)` : ""}`,
     colRequest: "Request",

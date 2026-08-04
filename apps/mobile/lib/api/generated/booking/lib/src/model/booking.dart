@@ -26,6 +26,8 @@ part 'booking.g.dart';
 /// * [lng] - Site longitude (null when not provided at create).
 /// * [workStartedAt] - When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
 /// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
+/// * [cancellationReason] - Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to \"ไม่ระบุ\"/\"Not specified\" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009).
+/// * [cancellationNote] - The optional free-text detail that came with `cancellation_reason` (trimmed, ≤ 500 characters). null when none was given; always present when the reason is `other`.
 /// * [createdAt] 
 /// * [updatedAt] 
 @BuiltValue()
@@ -78,6 +80,14 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
   @BuiltValueField(wireName: r'paid_at')
   DateTime? get paidAt;
+
+  /// Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to \"ไม่ระบุ\"/\"Not specified\" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009).
+  @BuiltValueField(wireName: r'cancellation_reason')
+  String? get cancellationReason;
+
+  /// The optional free-text detail that came with `cancellation_reason` (trimmed, ≤ 500 characters). null when none was given; always present when the reason is `other`.
+  @BuiltValueField(wireName: r'cancellation_note')
+  String? get cancellationNote;
 
   @BuiltValueField(wireName: r'created_at')
   DateTime get createdAt;
@@ -186,6 +196,20 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       yield serializers.serialize(
         object.paidAt,
         specifiedType: const FullType(DateTime),
+      );
+    }
+    if (object.cancellationReason != null) {
+      yield r'cancellation_reason';
+      yield serializers.serialize(
+        object.cancellationReason,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.cancellationNote != null) {
+      yield r'cancellation_note';
+      yield serializers.serialize(
+        object.cancellationNote,
+        specifiedType: const FullType(String),
       );
     }
     yield r'created_at';
@@ -318,6 +342,20 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(DateTime),
           ) as DateTime;
           result.paidAt = valueDes;
+          break;
+        case r'cancellation_reason':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationReason = valueDes;
+          break;
+        case r'cancellation_note':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationNote = valueDes;
           break;
         case r'created_at':
           final valueDes = serializers.deserialize(

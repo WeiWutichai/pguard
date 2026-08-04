@@ -9,8 +9,10 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_booking_api/src/api_util.dart';
+import 'package:pguard_booking_api/src/model/cancel_booking_request.dart';
 import 'package:pguard_booking_api/src/model/create_booking_request.dart';
 import 'package:pguard_booking_api/src/model/create_progress_report200_response.dart';
+import 'package:pguard_booking_api/src/model/decline_booking_request.dart';
 import 'package:pguard_booking_api/src/model/error_body.dart';
 import 'package:pguard_booking_api/src/model/inline_object.dart';
 import 'package:pguard_booking_api/src/model/list_available_guards200_response.dart';
@@ -192,10 +194,11 @@ class BookingsApi {
   }
 
   /// Customer/admin cancels a pre-arrival booking
-  /// Status → &#x60;cancelled&#x60;. Allowed only PRE-ARRIVAL (&#x60;requested&#x60;/&#x60;accepted&#x60;/&#x60;en_route&#x60;) — once a guard is on-site the job runs to completion review. Enqueues &#x60;pguard.events.booking.cancelled&#x60;. Customer (request owner) or admin only. 
+  /// Status → &#x60;cancelled&#x60;. Allowed only PRE-ARRIVAL (&#x60;requested&#x60;/&#x60;accepted&#x60;/&#x60;en_route&#x60;) — once a guard is on-site the job runs to completion review. Enqueues &#x60;pguard.events.booking.cancelled&#x60;. Customer (request owner) or admin only. Cancelling a PAID booking FULL-REFUNDS the customer via payment&#39;s cancellation-refund consumer.  **A reason is REQUIRED.** The body carries a stable &#x60;reason&#x60; code (&#x60;changed_plan&#x60; | &#x60;mistake&#x60; | &#x60;not_needed&#x60; | &#x60;other&#x60;) plus an optional &#x60;note&#x60; (≤ 500 characters). A missing reason — or one that is not a customer code — is 400 with &#x60;error.code &#x3D; CANCEL_REASON_REQUIRED&#x60;; &#x60;reason &#x3D; other&#x60; with a blank note is 400 with &#x60;error.code &#x3D; CANCEL_NOTE_REQUIRED&#x60;. Clients branch on &#x60;error.code&#x60; and localize it — never on the message. Reason + note are persisted on the booking (&#x60;cancellation_reason&#x60; / &#x60;cancellation_note&#x60;) and carried on the event. 
   ///
   /// Parameters:
   /// * [id] 
+  /// * [cancelBookingRequest] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -207,6 +210,7 @@ class BookingsApi {
   /// Throws [DioException] if API call or serialization fails
   Future<Response<InlineObject>> cancelBooking({ 
     required String id,
+    required CancelBookingRequest cancelBookingRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -230,11 +234,31 @@ class BookingsApi {
         ],
         ...?extra,
       },
+      contentType: 'application/json',
       validateStatus: validateStatus,
     );
 
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(CancelBookingRequest);
+      _bodyData = _serializers.serialize(cancelBookingRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
     final _response = await _dio.request<Object>(
       _path,
+      data: _bodyData,
       options: _options,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
@@ -573,11 +597,12 @@ class BookingsApi {
     );
   }
 
-  /// Assigned guard withdraws (after accepting)
-  /// The ASSIGNED guard backs out → status &#x60;declined&#x60; (terminal). v2 is first-come-accept, so there is no per-guard offer to decline before accepting — decline is the assigned guard withdrawing (&#x60;accepted → declined&#x60;). Enqueues &#x60;pguard.events.booking.declined&#x60; in the same transaction. 403 if the caller is not the assigned guard. 
+  /// Assigned guard withdraws (after accepting, pre-arrival)
+  /// The ASSIGNED guard backs out → status &#x60;declined&#x60; (terminal). v2 is first-come-accept, so there is no per-guard offer to decline before accepting — decline is the assigned guard withdrawing. Legal PRE-ARRIVAL only: &#x60;accepted → declined&#x60; AND &#x60;en_route → declined&#x60; (the guard already set off but has not reached the site). Once &#x60;arrived&#x60; the guard can no longer self-withdraw (409) — the job runs to completion review. Enqueues &#x60;pguard.events.booking.declined&#x60; in the same transaction. 403 if the caller is not the assigned guard.  **Money:** withdrawing from a PAID booking (&#x60;paid_at&#x60; set — the normal &#x60;en_route&#x60; case, since pre-pay gates &#x60;accepted → en_route&#x60;) FULL-REFUNDS the customer via payment&#39;s cancellation-refund consumer of &#x60;booking.declined&#x60;. The customer is never charged for a job the guard abandoned.  **A reason is REQUIRED.** The body carries a stable &#x60;reason&#x60; code (&#x60;emergency&#x60; | &#x60;sick&#x60; | &#x60;cannot_reach&#x60; | &#x60;other&#x60;) plus an optional &#x60;note&#x60; (≤ 500 characters). A missing reason — or one that is not a guard code — is 400 with &#x60;error.code &#x3D; CANCEL_REASON_REQUIRED&#x60;; &#x60;reason &#x3D; other&#x60; with a blank note is 400 with &#x60;error.code &#x3D; CANCEL_NOTE_REQUIRED&#x60;. Clients branch on &#x60;error.code&#x60; and localize it — never on the message. Reason + note are persisted on the booking (&#x60;cancellation_reason&#x60; / &#x60;cancellation_note&#x60;) and carried on the event. 
   ///
   /// Parameters:
   /// * [id] 
+  /// * [declineBookingRequest] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -589,6 +614,7 @@ class BookingsApi {
   /// Throws [DioException] if API call or serialization fails
   Future<Response<InlineObject>> declineBooking({ 
     required String id,
+    required DeclineBookingRequest declineBookingRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -612,11 +638,31 @@ class BookingsApi {
         ],
         ...?extra,
       },
+      contentType: 'application/json',
       validateStatus: validateStatus,
     );
 
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(DeclineBookingRequest);
+      _bodyData = _serializers.serialize(declineBookingRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
     final _response = await _dio.request<Object>(
       _path,
+      data: _bodyData,
       options: _options,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,

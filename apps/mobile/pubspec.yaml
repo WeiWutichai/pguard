@@ -110,6 +110,10 @@ flutter:
   # Bundled illustrations (role-chooser hero, etc.).
   assets:
     - assets/images/
+    # The service terms + privacy policy shown (and accepted) before registration. Extracted from
+    # docs/ข้อกำหนดและเงื่อนไขการใช้บริการ PGUARD(1).docx — the document's trailing acceptance form is
+    # deliberately NOT in the asset: the screen renders those three consents as real checkboxes.
+    - assets/legal/
   # Brand typefaces per the hi-fi design (tokens.css --font-thai / --font-mono): bundled
   # OFL TTFs (assets/fonts, from google/fonts) — self-contained, no runtime fetch.
   fonts:

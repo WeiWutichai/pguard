@@ -8,6 +8,7 @@ import '../providers.dart';
 import '../push/push_registration_controller.dart';
 import 'active_job_controller.dart';
 import 'auth_controller.dart';
+import 'terms_acceptance.dart';
 
 part 'session_controller.g.dart';
 
@@ -283,6 +284,9 @@ class Session extends _$Session {
     // phone-verified token) here — otherwise a next registration would start with the previous
     // user's phone/token lingering.
     ref.read(authControllerProvider.notifier).reset();
+    // Terms acceptance is PERSONAL, not device-wide: the next account registered on this device must
+    // accept for itself.
+    ref.invalidate(termsAcceptedVersionProvider);
     if (hasPin) {
       // Remembered device: re-persist the phone (clearSession dropped it) and land on the PIN-login
       // screen. The local PIN is untouched, so the returning login can proceed offline-then-online.

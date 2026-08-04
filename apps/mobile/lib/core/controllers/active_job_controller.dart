@@ -239,10 +239,6 @@ class ActiveJobController extends _$ActiveJobController {
     await _refreshBookingSnapshot();
   }
 
-  /// `PUT /v1/bookings/{id}/decline` — the assigned guard withdraws after accepting
-  /// (accepted → declined). Valid pre-arrival; the screen returns to the dashboard on success.
-  Future<bool> withdraw() => _transition('decline');
-
   /// `PUT /v1/bookings/{id}/en-route`.
   Future<bool> enRoute() => _transition('en-route');
 

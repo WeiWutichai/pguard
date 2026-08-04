@@ -285,3 +285,36 @@ fn user_approved_without_timestamp_omits_it() {
     assert!(env.payload.approved_at.is_none());
     assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
 }
+
+#[test]
+fn booking_cancellation_locks_the_reason_and_omits_an_absent_note() {
+    // cancelled/declined carry WHY, so the other party is told more than "the job is gone" — the
+    // notification service renders the code into Thai and the apps localize it. The code is a
+    // stable allowlisted string, never localized text, so it is safe to persist and match on.
+    let payload = json!({
+        "booking_id": B, "customer_id": C, "guard_id": G,
+        "cancellation_reason": "changed_plan"
+    });
+    let env: EventEnvelope<BookingCancellation> =
+        parse(&envelope(topics::BOOKING_CANCELLED, payload.clone()));
+    assert_eq!(env.payload.cancellation_reason, "changed_plan");
+    assert!(env.payload.cancellation_note.is_none());
+    // The note key must be ABSENT rather than null when unset — the guard_id precedent.
+    assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
+}
+
+#[test]
+fn booking_cancellation_carries_a_free_text_note() {
+    let payload = json!({
+        "booking_id": B, "customer_id": C, "guard_id": G,
+        "cancellation_reason": "other", "cancellation_note": "รถเสียระหว่างทาง"
+    });
+    let env: EventEnvelope<BookingCancellation> =
+        parse(&envelope(topics::BOOKING_DECLINED, payload.clone()));
+    assert_eq!(env.payload.cancellation_reason, "other");
+    assert_eq!(
+        env.payload.cancellation_note.as_deref(),
+        Some("รถเสียระหว่างทาง")
+    );
+    assert_eq!(serde_json::to_value(&env.payload).unwrap(), payload);
+}
