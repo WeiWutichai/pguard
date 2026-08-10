@@ -132,13 +132,63 @@ pub struct BookingResponse {
     /// the catalog next week cannot restate what a guard earned on this job. `None` only for a
     /// booking created before migration 0010 (read as 0); a booking made without a catalog
     /// service carries a real `0`.
+    #[serde(serialize_with = "money_2dp")]
     pub commission_percent: Option<Decimal>,
     /// SNAPSHOT of the chosen catalog service's flat cancellation fee (฿) at creation — what the
     /// customer forfeits by cancelling pre-arrival (capped at what they actually paid). Same
     /// `None` semantics as [`Self::commission_percent`].
+    #[serde(serialize_with = "money_2dp")]
     pub cancellation_fee: Option<Decimal>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// Serialize an optional money Decimal at EXACTLY 2dp.
+///
+/// Scale survives neither the value nor the round-trip: Postgres sends a `numeric` zero with no
+/// digits, so sqlx decodes `0.00` back as scale-0 `0`, while `12.50` keeps its two places. With
+/// `serde-str` rendering whatever scale it finds, one booking answered `"0"` and another `"12.50"`
+/// for the same column — a client comparing the strings sees a difference that is not there.
+/// Normalizing at the boundary fixes every read path at once, including rows written before
+/// migration 0010.
+fn money_2dp<S>(v: &Option<Decimal>, s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    match v {
+        Some(d) => {
+            let mut d = *d;
+            d.rescale(2);
+            serde::Serialize::serialize(&d, s)
+        }
+        None => s.serialize_none(),
+    }
+}
+
+#[cfg(test)]
+mod money_wire_tests {
+    use super::*;
+
+    fn ser(v: Option<Decimal>) -> String {
+        // A minimal stand-in for the field's position in BookingResponse.
+        #[derive(serde::Serialize)]
+        struct W {
+            #[serde(serialize_with = "money_2dp")]
+            v: Option<Decimal>,
+        }
+        serde_json::to_string(&W { v }).expect("serialize")
+    }
+
+    #[test]
+    fn money_is_two_decimals_whatever_scale_it_arrives_with() {
+        // A scale-0 zero is exactly what sqlx hands back for a `numeric` 0 from Postgres — the
+        // shape that made a no-service booking answer "0" while a catalog one answered "12.50".
+        assert_eq!(ser(Some(Decimal::ZERO)), r#"{"v":"0.00"}"#);
+        assert_eq!(ser(Some("5".parse().unwrap())), r#"{"v":"5.00"}"#);
+        assert_eq!(ser(Some("12.50".parse().unwrap())), r#"{"v":"12.50"}"#);
+        // A pre-migration row is absent, not zero — the client must be able to tell them apart.
+        assert_eq!(ser(None), r#"{"v":null}"#);
+    }
 }
 
 // ----- Progress reports (hourly check-in) -----
