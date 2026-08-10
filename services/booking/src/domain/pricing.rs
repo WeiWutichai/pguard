@@ -82,7 +82,7 @@ pub fn validate_cancellation_fee(fee: Decimal) -> Result<Decimal, AppError> {
 /// not import the DB-backed model). Absence of a snapshot — the customer picked no catalog
 /// service — is represented by `Option<PricingSnapshot>` at the call site, NOT by a variant
 /// here: in that case `base_fee` must fall to its server-owned column DEFAULT, which is a
-/// property of the INSERT, while commission/fee are simply [`PricingSnapshot::NONE_SELECTED`]'s
+/// property of the INSERT, while commission/fee are simply [`PricingSnapshot::none_selected`]'s
 /// zeroes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PricingSnapshot {
@@ -98,14 +98,24 @@ impl PricingSnapshot {
     /// What a booking created with NO catalog service snapshots for the two 0010 columns:
     /// literal zeroes, not NULL. NULL is reserved for pre-migration rows; a booking made today
     /// always states its terms, and "no service chosen" states them as "no cut, no fee".
-    pub const NONE_SELECTED: (Decimal, Decimal) = (Decimal::ZERO, Decimal::ZERO);
+    ///
+    /// Scaled to 2dp like every other money field. A bare `Decimal::ZERO` carries scale 0 and
+    /// serializes as `"0"`, so a no-service booking would answer `"0"` where a catalog booking
+    /// answers `"0.00"` — same value, two shapes, and a client comparing strings sees a
+    /// difference that isn't there.
+    pub fn none_selected() -> (Decimal, Decimal) {
+        (Decimal::ZERO.round_dp(2), Decimal::ZERO.round_dp(2))
+    }
 
     /// The `(commission_percent, cancellation_fee)` pair to persist — the snapshot's own values,
-    /// or [`Self::NONE_SELECTED`] when the customer picked no catalog service.
+    /// or [`Self::none_selected`] when the customer picked no catalog service.
     pub fn terms_or_zero(snapshot: Option<&Self>) -> (Decimal, Decimal) {
         match snapshot {
-            Some(s) => (s.commission_percent, s.cancellation_fee),
-            None => Self::NONE_SELECTED,
+            Some(s) => (
+                s.commission_percent.round_dp(2),
+                s.cancellation_fee.round_dp(2),
+            ),
+            None => Self::none_selected(),
         }
     }
 }
