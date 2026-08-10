@@ -8,13 +8,13 @@ import 'package:built_value/serializer.dart';
 
 part 'public_service_item.g.dart';
 
-/// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description.
+/// The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description. Neither money knob is exposed here. `commission_percent` never will be: it only changes what the GUARD is paid, never what the customer pays, so it is not the customer's business. `cancellation_fee` IS the customer's business but is not served yet — today the customer only learns it from their own booking's `cancellation_fee` snapshot after creation. Surfacing it on this picker (pre-booking disclosure) is a known gap.
 ///
 /// Properties:
 /// * [id] 
 /// * [nameTh] 
 /// * [nameEn] 
-/// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal string).
+/// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal string). VAT-EXCLUSIVE — VAT 7% is added on top at checkout, so the amount charged is higher than base_fee × hours.
 /// * [minHours] 
 /// * [notes] - Short customer-facing package description (the admin notes).
 @BuiltValue()
@@ -28,7 +28,7 @@ abstract class PublicServiceItem implements Built<PublicServiceItem, PublicServi
   @BuiltValueField(wireName: r'name_en')
   String get nameEn;
 
-  /// Server-owned ฿/hour/guard rate (exact decimal string).
+  /// Server-owned ฿/hour/guard rate (exact decimal string). VAT-EXCLUSIVE — VAT 7% is added on top at checkout, so the amount charged is higher than base_fee × hours.
   @BuiltValueField(wireName: r'base_fee')
   String get baseFee;
 

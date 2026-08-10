@@ -20,7 +20,7 @@ use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{
     event_for_booking_requested, event_for_progress_report, event_for_status, Cancellation,
-    CompletionInfo, EventMapping,
+    CompletionInfo, EventMapping, PricingSnapshot,
 };
 use crate::models::{
     BookingResponse, CreateBookingRequest, CreateServiceRequest, CustomerBookingStat, DailyCount,
@@ -30,7 +30,8 @@ use crate::models::{
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
      scheduled_at, hours, base_fee, guard_count, tip, lat, lng, work_started_at, paid_at, \
-     cancellation_reason, cancellation_note, created_at, updated_at";
+     cancellation_reason, cancellation_note, commission_percent, cancellation_fee, \
+     created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -59,12 +60,14 @@ pub async fn get_booking(db: &sqlx::PgPool, id: Uuid) -> Result<BookingResponse,
 
 /// Read the authoritative subset another service needs to make a decision about a booking
 /// (service-JWT'd internal read). Returns only `id, customer_id, guard_id, status, hours`
-/// — the fields the payment service verifies a charge against. No `SELECT *` (CLAUDE.md
-/// "Data"): the projection is explicit and narrow.
+/// — the fields the payment service verifies a charge against, plus the booking's own money
+/// SNAPSHOT (`commission_percent`, `cancellation_fee`) so payment splits the guard's pay and
+/// prices a cancellation from what this booking agreed to, not from today's catalog. No
+/// `SELECT *` (CLAUDE.md "Data"): the projection is explicit and narrow.
 pub async fn get_internal(db: &sqlx::PgPool, id: Uuid) -> Result<InternalBooking, AppError> {
     sqlx::query_as::<_, InternalBooking>(
         "SELECT id, customer_id, guard_id, status::text AS status, hours, \
-                base_fee, guard_count, tip \
+                base_fee, guard_count, tip, commission_percent, cancellation_fee \
          FROM booking.bookings WHERE id = $1",
     )
     .bind(id)
@@ -344,8 +347,8 @@ pub async fn overdue_checkins_count(db: &sqlx::PgPool) -> Result<i64, AppError> 
 
 // ----- Service catalog (admin pricing; standalone — not read by the charge path) -----
 
-const SERVICE_COLUMNS: &str =
-    "id, name_th, name_en, base_fee, min_hours, notes, is_active, created_at, updated_at";
+const SERVICE_COLUMNS: &str = "id, name_th, name_en, base_fee, min_hours, commission_percent, \
+     cancellation_fee, notes, is_active, created_at, updated_at";
 
 /// List catalog services for the admin (active-first, then newest).
 pub async fn list_services(db: &sqlx::PgPool) -> Result<Vec<ServiceCatalogItem>, AppError> {
@@ -373,7 +376,8 @@ pub async fn list_active_services(db: &sqlx::PgPool) -> Result<Vec<PublicService
 }
 
 /// Look up one ACTIVE catalog service by id (the charge-path resolution). Returns the full
-/// [`ServiceCatalogItem`] so the handler can read its authoritative `base_fee` + `min_hours`.
+/// [`ServiceCatalogItem`] so the handler can read its authoritative `base_fee` + `min_hours`
+/// and SNAPSHOT its `commission_percent` + `cancellation_fee` onto the booking.
 /// `None` if the id does not exist OR the service has been deactivated — the handler maps that
 /// to 404 (a customer must not be able to book against an inactive/unknown rate).
 pub async fn get_active_service(
@@ -390,20 +394,25 @@ pub async fn get_active_service(
     Ok(row)
 }
 
-/// Insert a new catalog service. Fields are validated by the handler before this call.
+/// Insert a new catalog service. Fields are validated by the handler before this call
+/// (`commission_percent`/`cancellation_fee` by the pure `domain::pricing` validators, which
+/// also round them to the columns' 2-dp scale).
 pub async fn create_service(
     db: &sqlx::PgPool,
     req: &CreateServiceRequest,
 ) -> Result<ServiceCatalogItem, AppError> {
     let sql = format!(
-        "INSERT INTO booking.service_catalog (name_th, name_en, base_fee, min_hours, notes) \
-         VALUES ($1, $2, $3, $4, $5) RETURNING {SERVICE_COLUMNS}"
+        "INSERT INTO booking.service_catalog \
+             (name_th, name_en, base_fee, min_hours, commission_percent, cancellation_fee, notes) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING {SERVICE_COLUMNS}"
     );
     let row = sqlx::query_as::<_, ServiceCatalogItem>(&sql)
         .bind(&req.name_th)
         .bind(&req.name_en)
         .bind(req.base_fee)
         .bind(req.min_hours)
+        .bind(req.commission_percent)
+        .bind(req.cancellation_fee)
         .bind(req.notes.as_deref())
         .fetch_one(db)
         .await?;
@@ -411,6 +420,10 @@ pub async fn create_service(
 }
 
 /// Replace the editable fields of a catalog service. 404 if it does not exist.
+///
+/// Editing the money knobs is safe by construction: every booking already created copied them
+/// at creation (see [`create_booking`]), so a new commission applies ONLY to bookings made from
+/// here on — it never restates what a guard earned on a job already worked.
 pub async fn update_service(
     db: &sqlx::PgPool,
     id: Uuid,
@@ -418,7 +431,8 @@ pub async fn update_service(
 ) -> Result<ServiceCatalogItem, AppError> {
     let sql = format!(
         "UPDATE booking.service_catalog \
-         SET name_th = $2, name_en = $3, base_fee = $4, min_hours = $5, notes = $6, updated_at = now() \
+         SET name_th = $2, name_en = $3, base_fee = $4, min_hours = $5, \
+             commission_percent = $6, cancellation_fee = $7, notes = $8, updated_at = now() \
          WHERE id = $1 RETURNING {SERVICE_COLUMNS}"
     );
     sqlx::query_as::<_, ServiceCatalogItem>(&sql)
@@ -427,6 +441,8 @@ pub async fn update_service(
         .bind(&req.name_en)
         .bind(req.base_fee)
         .bind(req.min_hours)
+        .bind(req.commission_percent)
+        .bind(req.cancellation_fee)
         .bind(req.notes.as_deref())
         .fetch_optional(db)
         .await?
@@ -458,11 +474,20 @@ pub async fn deactivate_service(
 /// queued for the relay (notification fans it out as a data-push to every online guard), and a
 /// rolled-back insert emits nothing. `correlation_id` threads the envelope for distributed tracing.
 ///
-/// `guard_count`/`tip` come from the request (defaulted by the handler). `base_fee` is ALWAYS
-/// server-resolved (the client never sends it — CLAUDE.md money rules): `Some(fee)` when the
-/// handler picked a catalog service (the catalog's authoritative rate), or `None` to fall to
-/// the server-owned column DEFAULT (the back-compat path, no service chosen). Either way the
-/// rate is server-owned, so the customer can never undercut the price.
+/// `guard_count`/`tip` come from the request (defaulted by the handler). `pricing` is the
+/// SNAPSHOT of the catalog service the handler resolved — `Some` when the customer picked one,
+/// `None` for the back-compat path (no service chosen). It is ALWAYS server-resolved (the
+/// client never sends money — CLAUDE.md money rules), so the customer can never undercut the
+/// price. It decides three columns:
+///
+/// * `base_fee` — the catalog's authoritative rate, or (when `None`) the column's server-owned
+///   DEFAULT, left to apply by omitting the column from the INSERT.
+/// * `commission_percent` + `cancellation_fee` — COPIED onto the booking, always written
+///   (0/0 when no service was chosen). This snapshot is the point: the catalog is editable, so
+///   an admin raising the commission next week would otherwise silently restate what a guard
+///   earned on a job booked — and worked, and paid — today. The money path reads the booking's
+///   copy, never the catalog. NULL in these columns means only "booking predates migration
+///   0010", never "look it up".
 #[tracing::instrument(skip(db, req), fields(customer_id = %customer_id))]
 pub async fn create_booking(
     db: &sqlx::PgPool,
@@ -470,27 +495,29 @@ pub async fn create_booking(
     req: &CreateBookingRequest,
     guard_count: i32,
     tip: rust_decimal::Decimal,
-    base_fee: Option<rust_decimal::Decimal>,
+    pricing: Option<PricingSnapshot>,
     correlation_id: Uuid,
 ) -> Result<BookingResponse, AppError> {
     let mut tx = db.begin().await?;
 
     // 1) the business row. `base_fee` is bound when a catalog service was picked; otherwise the
     // column is omitted so its server-owned DEFAULT applies (COALESCE($n, DEFAULT) is not valid,
-    // so branch the SQL).
-    let sql = if base_fee.is_some() {
+    // so branch the SQL). The two snapshot columns are bound on BOTH branches — a booking made
+    // today always states its terms, even when those terms are "no cut, no fee".
+    let (commission_percent, cancellation_fee) = PricingSnapshot::terms_or_zero(pricing.as_ref());
+    let sql = if pricing.is_some() {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, base_fee)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, commission_percent, cancellation_fee, base_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
     } else {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, commission_percent, cancellation_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
@@ -503,9 +530,11 @@ pub async fn create_booking(
         .bind(guard_count)
         .bind(tip)
         .bind(req.lat)
-        .bind(req.lng);
-    if let Some(fee) = base_fee {
-        query = query.bind(fee);
+        .bind(req.lng)
+        .bind(commission_percent)
+        .bind(cancellation_fee);
+    if let Some(snapshot) = pricing {
+        query = query.bind(snapshot.base_fee);
     }
     let created = query.fetch_one(&mut *tx).await.map_err(AppError::from)?;
 
@@ -1139,7 +1168,8 @@ pub async fn list_open_bookings(
                 -- text-cast + aliased by the inner select. Add new booking columns to BOTH.
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
                        base_fee, guard_count, tip, lat, lng, work_started_at, paid_at,
-                       cancellation_reason, cancellation_note, created_at, updated_at
+                       cancellation_reason, cancellation_note, commission_percent,
+                       cancellation_fee, created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
                            2 * 6371 * asin(least(1, sqrt(
@@ -3788,8 +3818,9 @@ mod db_tests {
 
     // ----- Service catalog → charge-path wiring (real DB; hermetic SKIP otherwise) -----
 
-    /// Seed a catalog service with the given fee/min_hours; the name carries a unique marker so
-    /// the assertions can isolate this test's rows from any pre-existing catalog data.
+    /// Seed a catalog service with the given fee/min_hours (and 0/0 money knobs — the tests that
+    /// care about those set them explicitly); the name carries a unique marker so the assertions
+    /// can isolate this test's rows from any pre-existing catalog data.
     async fn seed_service(
         pool: &sqlx::PgPool,
         marker: &str,
@@ -3801,6 +3832,8 @@ mod db_tests {
             name_en: format!("en-{marker}"),
             base_fee: base_fee.parse().expect("parse fee"),
             min_hours,
+            commission_percent: rust_decimal::Decimal::ZERO,
+            cancellation_fee: rust_decimal::Decimal::ZERO,
             notes: None,
         };
         create_service(pool, &req).await.expect("seed service")
@@ -3873,9 +3906,11 @@ mod db_tests {
         cleanup_service(&pool, inactive.id).await;
     }
 
-    /// The charge-path wiring: `create_booking` with `Some(base_fee)` (the catalog rate)
+    /// The charge-path wiring: `create_booking` with a [`PricingSnapshot`] (the catalog row)
     /// persists THAT rate, while `None` falls to the server-owned column DEFAULT (back-compat).
-    /// DATABASE_URL-gated.
+    /// Both branches also SNAPSHOT `commission_percent` + `cancellation_fee` onto the booking —
+    /// the catalog's values, or a real 0/0 when no service was chosen (never NULL, which is
+    /// reserved for pre-migration-0010 rows). DATABASE_URL-gated.
     #[tokio::test]
     async fn create_booking_uses_catalog_base_fee_else_default() {
         let Ok(url) = std::env::var("DATABASE_URL") else {
@@ -3891,15 +3926,21 @@ mod db_tests {
         let customer_id = Uuid::new_v4();
         let correlation = Uuid::new_v4();
         let catalog_fee: rust_decimal::Decimal = "230.00".parse().unwrap();
+        let commission: rust_decimal::Decimal = "12.50".parse().unwrap();
+        let cancel_fee: rust_decimal::Decimal = "150.00".parse().unwrap();
 
-        // With a catalog fee → the booking carries the catalog rate.
+        // With a catalog snapshot → the booking carries the catalog rate AND its money knobs.
         let priced = create_booking(
             &pool,
             customer_id,
             &booking_req("1 Catalog Rd", 4, None),
             1,
             rust_decimal::Decimal::ZERO,
-            Some(catalog_fee),
+            Some(PricingSnapshot {
+                base_fee: catalog_fee,
+                commission_percent: commission,
+                cancellation_fee: cancel_fee,
+            }),
             correlation,
         )
         .await
@@ -3908,8 +3949,19 @@ mod db_tests {
             priced.base_fee, catalog_fee,
             "the booking's base_fee is the catalog rate, not the column default"
         );
+        assert_eq!(
+            priced.commission_percent,
+            Some(commission),
+            "the catalog's commission is snapshot onto the booking"
+        );
+        assert_eq!(
+            priced.cancellation_fee,
+            Some(cancel_fee),
+            "the catalog's cancellation fee is snapshot onto the booking"
+        );
 
-        // Without a fee → the server-owned column DEFAULT (migration 0002 = 500.00).
+        // Without a snapshot → the server-owned column DEFAULT (migration 0002 = 500.00), and
+        // the money knobs are a real 0/0 ("no cut, no fee"), NOT NULL.
         let defaulted = create_booking(
             &pool,
             customer_id,
@@ -3926,8 +3978,131 @@ mod db_tests {
             "500.00".parse::<rust_decimal::Decimal>().unwrap(),
             "no service → the server-owned base_fee column DEFAULT (back-compat)"
         );
+        assert_eq!(
+            defaulted.commission_percent,
+            Some(rust_decimal::Decimal::ZERO),
+            "no service → a real 0 commission, not NULL"
+        );
+        assert_eq!(
+            defaulted.cancellation_fee,
+            Some(rust_decimal::Decimal::ZERO),
+            "no service → a real 0 cancellation fee, not NULL"
+        );
+
+        // The internal read (what payment sees over service-JWT) carries the same snapshot.
+        let internal = get_internal(&pool, priced.id)
+            .await
+            .expect("internal read of the priced booking");
+        assert_eq!(
+            (internal.commission_percent, internal.cancellation_fee),
+            (Some(commission), Some(cancel_fee)),
+            "payment reads the booking's OWN snapshot, not today's catalog"
+        );
 
         cleanup_booking(&pool, priced.id).await;
         cleanup_booking(&pool, defaulted.id).await;
+    }
+
+    /// The snapshot's REASON: an admin editing the catalog after the fact must not restate the
+    /// money of a booking already made. Create a booking from a service, then raise both knobs
+    /// on that same service — the booking's copies are unmoved, while a booking created AFTER
+    /// the edit picks up the new terms. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn editing_the_catalog_does_not_restate_an_existing_booking() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let marker = Uuid::new_v4().to_string();
+        let service = create_service(
+            &pool,
+            &CreateServiceRequest {
+                name_th: format!("th-{marker}"),
+                name_en: format!("en-{marker}"),
+                base_fee: "230.00".parse().unwrap(),
+                min_hours: 1,
+                commission_percent: "10.00".parse().unwrap(),
+                cancellation_fee: "150.00".parse().unwrap(),
+                notes: None,
+            },
+        )
+        .await
+        .expect("seed service with money knobs");
+
+        let snapshot_of = |s: &ServiceCatalogItem| PricingSnapshot {
+            base_fee: s.base_fee,
+            commission_percent: s.commission_percent,
+            cancellation_fee: s.cancellation_fee,
+        };
+
+        let customer_id = Uuid::new_v4();
+        let before = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("1 Old Terms Rd", 2, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            Some(snapshot_of(&service)),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("book under the old terms");
+
+        // The admin doubles the cut and the fee.
+        let edited = update_service(
+            &pool,
+            service.id,
+            &UpdateServiceRequest {
+                name_th: format!("th-{marker}"),
+                name_en: format!("en-{marker}"),
+                base_fee: "230.00".parse().unwrap(),
+                min_hours: 1,
+                commission_percent: "20.00".parse().unwrap(),
+                cancellation_fee: "300.00".parse().unwrap(),
+                notes: None,
+            },
+        )
+        .await
+        .expect("edit the catalog");
+        assert_eq!(edited.commission_percent, "20.00".parse().unwrap());
+        assert_eq!(edited.cancellation_fee, "300.00".parse().unwrap());
+
+        // The already-made booking is untouched — re-read from the DB, not from the handle.
+        let reread = get_booking(&pool, before.id).await.expect("re-read");
+        assert_eq!(
+            reread.commission_percent,
+            Some("10.00".parse().unwrap()),
+            "the guard's cut is the one agreed when the job was booked"
+        );
+        assert_eq!(
+            reread.cancellation_fee,
+            Some("150.00".parse().unwrap()),
+            "the customer's cancellation exposure is the one quoted at booking"
+        );
+
+        // A booking made AFTER the edit does get the new terms.
+        let after = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("2 New Terms Rd", 2, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            Some(snapshot_of(&edited)),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("book under the new terms");
+        assert_eq!(after.commission_percent, Some("20.00".parse().unwrap()));
+        assert_eq!(after.cancellation_fee, Some("300.00".parse().unwrap()));
+
+        cleanup_booking(&pool, before.id).await;
+        cleanup_booking(&pool, after.id).await;
+        cleanup_service(&pool, service.id).await;
     }
 }

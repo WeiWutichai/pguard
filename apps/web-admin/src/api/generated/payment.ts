@@ -300,14 +300,14 @@ export interface components {
          */
         PromptPayInfo: {
             /**
-             * @description The server-side estimate to transfer (exact decimal as a string; money rule).
-             * @example 2000.00
+             * @description The server-side estimate to transfer (exact decimal as a string; money rule) — VAT-INCLUSIVE (`grand_total`), because that is the sum the customer actually sends.
+             * @example 2140.00
              */
             amount: string;
             /**
              * Format: int64
-             * @description The estimate in satang (the smallest THB unit, ×100) — a convenience field.
-             * @example 200000
+             * @description The same VAT-inclusive estimate in satang (the smallest THB unit, ×100) — a convenience field.
+             * @example 214000
              */
             amount_satang: number;
             /**
@@ -327,6 +327,14 @@ export interface components {
          * @enum {string}
          */
         PaymentStatus: "pending" | "completed" | "refunded";
+        /**
+         * @description One booking's charge. MONEY VOCABULARY (all exact decimal strings; VAT rate 7%):
+         *       subtotal    = base_fee × hours × guard_count + tip   ← VAT-EXCLUSIVE, the catalog price
+         *       vat_amount  = subtotal × 0.07
+         *       grand_total = subtotal + vat_amount                  ← what the customer actually pays
+         *     `amount` (what was pre-paid) is the VAT-INCLUSIVE `grand_total`, not the subtotal — the
+         *     catalog's rates are quoted before VAT, so the charge is higher than base_fee × hours.
+         */
         Payment: {
             /** Format: uuid */
             id: string;
@@ -337,15 +345,35 @@ export interface components {
             /** Format: uuid */
             guard_id?: string | null;
             /**
-             * @description Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
-             * @example 2000.00
+             * @description Exact decimal PRE-PAID — the VAT-INCLUSIVE grand total. Never re-charged on settle.
+             * @example 2140.00
              */
             amount: string;
             /**
-             * @description Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
-             * @example 2000.00
+             * @description Server-computed authoritative charge at pre-pay time — the VAT-INCLUSIVE total ((base_fee × hours × guards + tip) + VAT 7%), i.e. the same figure as `grand_total`.
+             * @example 2140.00
              */
             expected_total?: string | null;
+            /**
+             * @description VAT-EXCLUSIVE service cost of the CURRENTLY SETTLED bill — base_fee × hours × guard_count + tip (booked hours until the completion settle, actual hours after). This is the "ราคาสินค้า/บริการ" line of the tax invoice, NOT what the customer pays. null on payments taken before VAT was itemized (their `amount` was the whole charge, VAT-free).
+             * @example 2000.00
+             */
+            subtotal?: string | null;
+            /**
+             * @description VAT charged ON TOP of `subtotal` at 7% (`subtotal × 0.07`, rounded to 2dp) — the "ภาษีมูลค่าเพิ่ม 7%" line of the tax invoice. Collected for the Revenue Department, so it is NOT platform revenue. null on pre-VAT payments.
+             * @example 140.00
+             */
+            vat_amount?: string | null;
+            /**
+             * @description `subtotal + vat_amount` — the VAT-INCLUSIVE amount the customer owes, and the "จำนวนเงินรวมทั้งสิ้น" line of the tax invoice. ALWAYS present (unlike the two fields it is made of): on a pre-VAT row it falls back to `amount`, so this is the payable figure for every payment ever taken. Tracks the SETTLED bill — it follows `final_amount` once the actual hours are reconciled, and equals `amount` until then.
+             * @example 2140.00
+             */
+            grand_total: string;
+            /**
+             * @description What was actually KEPT as a cancellation fee when the CUSTOMER cancelled before work started: `min(booking.cancellation_fee, amount_paid)` — capped at what was paid, so a cancellation can never leave the customer owing money (nothing paid → nothing charged, `"0.00"`). The refund is `amount_paid − cancellation_fee_charged`. Stays null/`"0.00"` when the GUARD withdrew (not the customer's fault → full refund) and on jobs that were never cancelled.
+             * @example 100.00
+             */
+            cancellation_fee_charged?: string | null;
             /**
              * @description How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
              * @example promptpay_slip
@@ -408,8 +436,13 @@ export interface components {
         /**
          * @description One completed job's earning basis for the assigned guard. `actual_hours` is the clamped
          *     hours ACTUALLY worked (persisted at reconcile); `null` for an even-match / not-yet-reconciled
-         *     row, where the client falls back to the booked hours. The client multiplies `base_fee` (from
-         *     its own booking feed) × these hours to show the guard's pay for hours actually worked.
+         *     row, where the client falls back to the booked hours. The client computes the guard's take
+         *     from its own booking feed:
+         *       gross      = base_fee × actual_hours          (this guard's share — no guard_count, no tip)
+         *       commission = gross × commission_percent / 100
+         *       net        = gross − commission               ← what the guard is actually paid
+         *     No VAT appears here: VAT is charged to the CUSTOMER on top of the bill and is not part of
+         *     the guard's pay.
          */
         GuardEarning: {
             /** Format: uuid */
@@ -419,6 +452,11 @@ export interface components {
              * @example 2.50
              */
             actual_hours?: string | null;
+            /**
+             * @description The booking's SNAPSHOT commission percent (0–100, exact decimal string) DEDUCTED from this guard's gross for this job — the platform's cut, taken out of the guard's pay, not added to the customer's bill. null on pre-feature bookings → treat as 0 (guard keeps the full gross).
+             * @example 10.00
+             */
+            commission_percent?: string | null;
         };
         /**
          * @description Refund-workflow state (NOT the payment status — a partial refund stays `completed`).
@@ -426,8 +464,10 @@ export interface components {
          */
         RefundStatus: "pending" | "processed";
         /**
-         * @description One refund-queue row — a payment whose settle left a refund owed. `amount` is the refund
-         *     owed (NOT the original charge); `status` is the refund-workflow state.
+         * @description One refund-queue row — a payment whose settle or cancellation left a refund owed. `amount`
+         *     is the refund owed (NOT the original charge); `status` is the refund-workflow state. On a
+         *     customer cancellation the row is already NET of the cancellation fee
+         *     (`amount_paid − cancellation_fee_charged`); on a guard withdrawal it is the full amount paid.
          */
         RefundQueueItem: {
             /** Format: uuid */
@@ -435,7 +475,7 @@ export interface components {
             /** Format: uuid */
             booking_id: string;
             /**
-             * @description The refund owed to the customer (exact decimal as a string; money rule).
+             * @description The refund owed to the customer (exact decimal as a string; money rule) — already net of any `cancellation_fee_charged`, so this is exactly what is sent back.
              * @example 1000.00
              */
             amount: string;

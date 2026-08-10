@@ -1,8 +1,13 @@
 // Screen-local bilingual copy for the pricing (จัดการราคา) screen — the admin service-catalog
-// CRUD (GET/POST/PUT/DELETE /admin/pricing/services). The catalog is STANDALONE: editing a
-// rate here does NOT change how bookings are charged yet (bookings keep their server-owned
-// base_fee) — a future "charge reads the catalog" integration is a separate decision. The
-// design's "Price Rules" tab is explicitly future → a coming-soon gap.
+// CRUD (GET/POST/PUT/DELETE /admin/pricing/services). The base RATE is still standalone
+// (bookings keep their own server-owned base_fee), but the two money knobs added in migration
+// 0010 are NOT: commission_percent + cancellation_fee are SNAPSHOTTED onto every booking at
+// creation, so an edit here prices new jobs and never restates a job already booked.
+//
+// The commission wording is the load-bearing part of this file: it is deducted from the GUARD's
+// pay, never added to the customer's bill. Every string that mentions it must say so — an admin
+// who reads it the other way will set a number that quietly cuts a guard's wage.
+// The design's "Price Rules" tab is explicitly future → a coming-soon gap.
 import type { Lang } from "@/lib/lang";
 
 export interface PricingCopy {
@@ -17,6 +22,8 @@ export interface PricingCopy {
   colName: string;
   colBaseFee: string;
   colMinHours: string;
+  colCommission: string;
+  colCancelFee: string;
   colNotes: string;
   colStatus: string;
   active: string;
@@ -34,6 +41,10 @@ export interface PricingCopy {
   feeHint: string;
   fieldMinHours: string;
   hoursHint: string;
+  fieldCommission: string;
+  commissionHint: string;
+  fieldCancelFee: string;
+  cancelFeeHint: string;
   fieldNotes: string;
   notesPlaceholder: string;
   save: string;
@@ -51,12 +62,14 @@ export const COPY: Record<Lang, PricingCopy> = {
     tabRules: "กฎราคา",
     rulesGap: "กฎราคาแบบมีเงื่อนไข — ฟีเจอร์อนาคต (รอ API)",
     standaloneNote:
-      "แคตตาล็อกนี้เป็นข้อมูลอ้างอิงสำหรับแอดมิน — การคิดเงินของงานยังใช้ base_fee ของ booking โดยตรง (ยังไม่ผูกกับแคตตาล็อก)",
+      "ค่าบริการพื้นฐานของงานยังอ่านจาก base_fee ของ booking โดยตรง — ส่วนคอมมิชชั่นและค่าธรรมเนียมยกเลิกจะถูกคัดลอกไปเก็บไว้ในงานตอนที่ลูกค้าจอง การแก้ที่นี่จึงมีผลกับงานใหม่เท่านั้น ไม่ย้อนไปเปลี่ยนเงินของงานที่จองไปแล้ว",
     addService: "เพิ่มบริการ",
     awaitingApi: "รอ API",
     colName: "บริการ",
     colBaseFee: "ค่าบริการ",
     colMinHours: "ชั่วโมงขั้นต่ำ",
+    colCommission: "คอมมิชชั่น",
+    colCancelFee: "ค่าธรรมเนียมยกเลิก",
     colNotes: "หมายเหตุ",
     colStatus: "สถานะ",
     active: "ใช้งาน",
@@ -70,9 +83,15 @@ export const COPY: Record<Lang, PricingCopy> = {
     fieldName: "ชื่อบริการ",
     namePlaceholder: "เช่น รปภ. ประจำหมู่บ้าน",
     fieldBaseFee: "ค่าบริการพื้นฐาน (฿/ชม.)",
-    feeHint: "0 ≤ ค่าบริการ ≤ 1,000,000",
+    feeHint: "ยังไม่รวม VAT 7% (ระบบบวกให้ตอนคิดเงิน) · 0 ≤ ค่าบริการ ≤ 1,000,000",
     fieldMinHours: "ชั่วโมงขั้นต่ำ",
     hoursHint: "1 ≤ ชม. ≤ 24",
+    fieldCommission: "คอมมิชชั่นแพลตฟอร์ม (%)",
+    commissionHint:
+      "หักจากค่าตอบแทนของ รปภ. ไม่ใช่บวกเพิ่มในบิลลูกค้า — ลูกค้าจ่ายเท่าเดิม แต่ รปภ. ได้รับน้อยลง · 0 ≤ % ≤ 100",
+    fieldCancelFee: "ค่าธรรมเนียมยกเลิก (฿)",
+    cancelFeeHint:
+      "เก็บเมื่อ “ลูกค้า” ยกเลิกก่อนเริ่มงาน สูงสุดไม่เกินยอดที่จ่ายมาแล้ว (ยังไม่จ่าย = ไม่เก็บ) — ถ้า รปภ. ถอนงานเอง คืนเต็มจำนวน · 0 ≤ ฿ ≤ 1,000,000",
     fieldNotes: "หมายเหตุ",
     notesPlaceholder: "รายละเอียดบริการ…",
     save: "บันทึก",
@@ -88,12 +107,14 @@ export const COPY: Record<Lang, PricingCopy> = {
     tabRules: "Price Rules",
     rulesGap: "Conditional price rules — a future feature (awaiting API)",
     standaloneNote:
-      "This catalog is an admin reference — jobs are still charged from the booking's own base_fee (not yet wired to the catalog)",
+      "A job's base fee still comes from the booking's own base_fee — but the commission and cancellation fee are copied onto each booking the moment it is created, so editing them here affects NEW bookings only and never rewrites the money of a job already booked.",
     addService: "Add service",
     awaitingApi: "awaiting API",
     colName: "Service",
     colBaseFee: "Base fee",
     colMinHours: "Min hours",
+    colCommission: "Commission",
+    colCancelFee: "Cancellation fee",
     colNotes: "Notes",
     colStatus: "Status",
     active: "Active",
@@ -107,9 +128,15 @@ export const COPY: Record<Lang, PricingCopy> = {
     fieldName: "Service name",
     namePlaceholder: "e.g. Neighbourhood guard",
     fieldBaseFee: "Base fee (฿/h)",
-    feeHint: "0 ≤ fee ≤ 1,000,000",
+    feeHint: "Excludes VAT 7% (added at checkout) · 0 ≤ fee ≤ 1,000,000",
     fieldMinHours: "Min hours",
     hoursHint: "1 ≤ hours ≤ 24",
+    fieldCommission: "Platform commission (%)",
+    commissionHint:
+      "Deducted from the GUARD's pay — not added to the customer's bill. The customer pays the same; the guard receives less · 0 ≤ % ≤ 100",
+    fieldCancelFee: "Cancellation fee (฿)",
+    cancelFeeHint:
+      "Charged when the CUSTOMER cancels before work starts, never more than they already paid (nothing paid → nothing charged). A guard withdrawing still refunds in full · 0 ≤ ฿ ≤ 1,000,000",
     fieldNotes: "Notes",
     notesPlaceholder: "Service details…",
     save: "Save",

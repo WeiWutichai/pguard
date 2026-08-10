@@ -17,10 +17,16 @@ export const COPY = {
     navTeam: "ทีม & สิทธิ์",
     // Company profile
     companyTitle: "โปรไฟล์บริษัท",
-    companySub: "ข้อมูลที่แสดงบนใบเสร็จและในแอป",
+    companySub: "ข้อมูลผู้ขายบนใบเสร็จ/ใบกำกับภาษี และในแอป",
     companyName: "ชื่อบริษัท",
     taxId: "เลขผู้เสียภาษี",
     address: "ที่อยู่",
+    companyWhy:
+      "ใบเสร็จของ pguard เป็นใบกำกับภาษีเต็มรูป (ใบเสร็จรับเงิน/ใบกำกับภาษี) ซึ่งกฎหมายกำหนดให้ต้องมีชื่อผู้ขาย เลขประจำตัวผู้เสียภาษี และที่อยู่ที่จดทะเบียน — สามช่องนี้คือข้อมูลผู้ขายนั้น",
+    companyIncomplete: (missing: string) =>
+      `ยังไม่ได้กรอก: ${missing} — ใบเสร็จที่ออกให้ลูกค้าคิด VAT 7% แต่ยังไม่มีข้อมูลผู้ขายครบ จึงยังใช้เป็นใบกำกับภาษีไม่ได้`,
+    companyNameHint: "ชื่อนิติบุคคลตามที่จดทะเบียน — พิมพ์เป็นชื่อผู้ขายบนใบกำกับภาษี",
+    addressHint: "ที่อยู่จดทะเบียนของบริษัท — กฎหมายกำหนดให้มีบนใบกำกับภาษีเต็มรูป",
     // Payment gateways
     payTitle: "ช่องทางชำระเงิน",
     paySub: "เปิด/ปิดวิธีชำระเงินที่ลูกค้าใช้ได้",
@@ -62,7 +68,8 @@ export const COPY = {
     companySaved: "บันทึกโปรไฟล์บริษัทแล้ว",
     companySaveError: "บันทึกไม่สำเร็จ กรุณาลองใหม่",
     companyLoadError: "โหลดโปรไฟล์บริษัทไม่สำเร็จ",
-    taxIdHint: "8–20 หลัก (เว้นวรรค/ขีดได้) — เลขผู้เสียภาษีไทยมี 13 หลัก",
+    taxIdHint:
+      "เลขประจำตัวผู้เสียภาษี — กฎหมายกำหนดให้มีบนใบกำกับภาษี (ของไทยมี 13 หลัก; กรอกได้ 8–20 หลัก เว้นวรรค/ขีดได้)",
     companyNamePlaceholder: "เช่น บริษัท พีการ์ด ซิเคียวริตี้ จำกัด",
     addressPlaceholder: "ที่อยู่บริษัทบนใบเสร็จ",
     lastSaved: "บันทึกล่าสุด",
@@ -83,10 +90,16 @@ export const COPY = {
     navSecurity: "Security",
     navTeam: "Team & roles",
     companyTitle: "Company profile",
-    companySub: "Shown on receipts and in-app",
+    companySub: "Seller details on receipts/tax invoices and in-app",
     companyName: "Company name",
     taxId: "Tax ID",
     address: "Address",
+    companyWhy:
+      "pguard receipts are full Thai tax invoices (ใบกำกับภาษี), which by law must carry the seller's name, tax ID and registered address — these three fields are that seller block.",
+    companyIncomplete: (missing: string) =>
+      `Not filled in yet: ${missing} — receipts charge the customer VAT 7% but carry no complete seller block, so they are not valid tax invoices.`,
+    companyNameHint: "Registered legal entity name — printed as the seller on the tax invoice.",
+    addressHint: "Registered company address — legally required on a full tax invoice.",
     payTitle: "Payment gateways",
     paySub: "Toggle available methods",
     payPromptpay: "PromptPay",
@@ -121,7 +134,8 @@ export const COPY = {
     companySaved: "Company profile saved",
     companySaveError: "Couldn't save — please try again",
     companyLoadError: "Couldn't load the company profile",
-    taxIdHint: "8–20 digits (spaces/hyphens allowed) — a Thai TIN is 13 digits",
+    taxIdHint:
+      "Legally required on a tax invoice — a Thai TIN is 13 digits (8–20 accepted, spaces/hyphens allowed)",
     companyNamePlaceholder: "e.g. pguard Security Co., Ltd.",
     addressPlaceholder: "Company address shown on receipts",
     lastSaved: "Last saved",

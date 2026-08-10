@@ -13,8 +13,10 @@ part 'create_service_request.g.dart';
 /// Properties:
 /// * [nameTh] 
 /// * [nameEn] 
-/// * [baseFee] - Exact decimal string in THB (0 to 1000000).
+/// * [baseFee] - VAT-exclusive ฿/hour/guard as an exact decimal string (0 to 1000000).
 /// * [minHours] 
+/// * [commissionPercent] - Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not change the customer's bill. Optional: omitted is stored as `\"0.00\"` (no commission).
+/// * [cancellationFee] - Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start cancellation. Optional: omitted is stored as `\"0.00\"` (free cancellation).
 /// * [notes] 
 @BuiltValue()
 abstract class CreateServiceRequest implements Built<CreateServiceRequest, CreateServiceRequestBuilder> {
@@ -24,12 +26,20 @@ abstract class CreateServiceRequest implements Built<CreateServiceRequest, Creat
   @BuiltValueField(wireName: r'name_en')
   String get nameEn;
 
-  /// Exact decimal string in THB (0 to 1000000).
+  /// VAT-exclusive ฿/hour/guard as an exact decimal string (0 to 1000000).
   @BuiltValueField(wireName: r'base_fee')
   String get baseFee;
 
   @BuiltValueField(wireName: r'min_hours')
   int get minHours;
+
+  /// Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not change the customer's bill. Optional: omitted is stored as `\"0.00\"` (no commission).
+  @BuiltValueField(wireName: r'commission_percent')
+  String? get commissionPercent;
+
+  /// Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start cancellation. Optional: omitted is stored as `\"0.00\"` (free cancellation).
+  @BuiltValueField(wireName: r'cancellation_fee')
+  String? get cancellationFee;
 
   @BuiltValueField(wireName: r'notes')
   String? get notes;
@@ -77,6 +87,20 @@ class _$CreateServiceRequestSerializer implements PrimitiveSerializer<CreateServ
       object.minHours,
       specifiedType: const FullType(int),
     );
+    if (object.commissionPercent != null) {
+      yield r'commission_percent';
+      yield serializers.serialize(
+        object.commissionPercent,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.cancellationFee != null) {
+      yield r'cancellation_fee';
+      yield serializers.serialize(
+        object.cancellationFee,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.notes != null) {
       yield r'notes';
       yield serializers.serialize(
@@ -134,6 +158,20 @@ class _$CreateServiceRequestSerializer implements PrimitiveSerializer<CreateServ
             specifiedType: const FullType(int),
           ) as int;
           result.minHours = valueDes;
+          break;
+        case r'commission_percent':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.commissionPercent = valueDes;
+          break;
+        case r'cancellation_fee':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationFee = valueDes;
           break;
         case r'notes':
           final valueDes = serializers.deserialize(

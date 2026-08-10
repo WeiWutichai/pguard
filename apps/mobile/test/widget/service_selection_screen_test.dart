@@ -40,7 +40,8 @@ const _catalog = [
 GoRouter _router() => GoRouter(
       initialLocation: '/book',
       routes: [
-        GoRoute(path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
+        GoRoute(
+            path: '/book', builder: (_, __) => const ServiceSelectionScreen()),
         GoRoute(
           path: '/book/detail',
           builder: (_, s) =>
@@ -48,8 +49,8 @@ GoRouter _router() => GoRouter(
         ),
         GoRoute(
           path: '/book/form',
-          builder: (_, __) =>
-              const Scaffold(body: Text('FORM', textDirection: TextDirection.ltr)),
+          builder: (_, __) => const Scaffold(
+              body: Text('FORM', textDirection: TextDirection.ltr)),
         ),
       ],
     );
@@ -107,6 +108,11 @@ void main() {
 
     // …and a free-quote service (base_fee 0) shows NO price line.
     expect(find.text('฿0 /ชม.'), findsNothing);
+
+    // The rates above are VAT-EXCLUSIVE, so the picker says so ONCE, above the prices it
+    // qualifies — the customer meets the 7% while comparing packages, not at checkout.
+    expect(find.textContaining('ราคาต่อชั่วโมงยังไม่รวมภาษีมูลค่าเพิ่ม 7%'),
+        findsOneWidget);
   });
 
   testWidgets(

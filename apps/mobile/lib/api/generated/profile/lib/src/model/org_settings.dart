@@ -8,21 +8,24 @@ import 'package:built_value/serializer.dart';
 
 part 'org_settings.g.dart';
 
-/// The org (company) profile shown on receipts + in-app. Every field is nullable: an all-null object (incl. `updated_at`) is the \"never saved yet\" state returned by GET. 
+/// The org (company) profile shown on receipts + in-app. These three fields are the SELLER block a Thai full tax invoice (ใบกำกับภาษีแบบเต็มรูป) must carry: issuer name, TIN and registered address. Every field is nullable: an all-null object (incl. `updated_at`) is the \"never saved yet\" state returned by GET — and any receipt issued in that state is missing its legally-required issuer block. 
 ///
 /// Properties:
-/// * [companyName] 
-/// * [taxId] 
-/// * [address] 
+/// * [companyName] - Issuer's legal name on the tax invoice; null = never filled in.
+/// * [taxId] - Issuer's TIN (Thai: 13 digits); null = never filled in.
+/// * [address] - Issuer's registered address; null = never filled in.
 /// * [updatedAt] - When last saved; null until first written.
 @BuiltValue()
 abstract class OrgSettings implements Built<OrgSettings, OrgSettingsBuilder> {
+  /// Issuer's legal name on the tax invoice; null = never filled in.
   @BuiltValueField(wireName: r'company_name')
   String? get companyName;
 
+  /// Issuer's TIN (Thai: 13 digits); null = never filled in.
   @BuiltValueField(wireName: r'tax_id')
   String? get taxId;
 
+  /// Issuer's registered address; null = never filled in.
   @BuiltValueField(wireName: r'address')
   String? get address;
 

@@ -24,4 +24,13 @@ ignore = [
     # `jsonwebtoken` → `ring`) — but that does NOT use the `rsa` crate, so the advisory is
     # unreachable. Drop if a fixed `rsa` ships or sqlx drops the dep. Review by 2026-09-30.
     "RUSTSEC-2023-0071",
+    # rkyv <0.8.17 out-of-bounds read when DEARCHIVING untrusted bytes containing Rc/Arc.
+    # `rkyv` arrives only as a `rust_decimal 1.42` transitive (the money type every service uses);
+    # pguard never calls it — no `rkyv::` import, no `archived_root`, no Archive derive anywhere in
+    # services/ or packages/ — so nothing here dearchives a byte, let alone an untrusted one. The
+    # advisory started failing CI without any dependency change on our side: the RustSec DB is
+    # re-fetched each run, and this Cargo.lock is byte-identical to main's. The real fix is
+    # rust_decimal adopting rkyv 0.8, which is a dependency-bump slice of its own.
+    # Ignored with the user's explicit approval on 2026-08-10. Review by 2026-09-30.
+    "RUSTSEC-2026-0235",
 ]

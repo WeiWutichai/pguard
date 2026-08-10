@@ -51,6 +51,10 @@ Future<void> pumpActiveJob(
         path: '/guard/jobs',
         builder: (_, __) => const Scaffold(body: Text('JOBS LIST')),
       ),
+      GoRoute(
+        path: '/earnings',
+        builder: (_, __) => const Scaffold(body: Text('EARNINGS')),
+      ),
       // _backToJobs resets the stack to the guard home then pushes /guard/jobs (so 'back' from the
       // jobs list returns home instead of being frozen) — the home route must exist for go() to land.
       GoRoute(
@@ -136,7 +140,7 @@ void main() {
   });
 
   testWidgets(
-      '#97/#99 done stage: neutral completion + receipt + take-new-jobs, NO rating CTA',
+      '#97/#99 done stage: neutral completion + own earnings + take-new-jobs, NO rating CTA',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson('completed');
@@ -150,9 +154,12 @@ void main() {
     expect(find.textContaining('ให้คะแนน'), findsNothing,
         reason: 'a guard must NEVER see a rating CTA for their own job (#97)');
 
-    // Not a dead-end (#99a): a clear path back to take new jobs, plus the receipt (#99c).
+    // Not a dead-end (#99a): a clear path back to take new jobs, plus this guard's own pay. NOT
+    // the receipt — that is the customer's document (it totals the customer's bill, tip and whole
+    // crew included, and settles against a payment row a guard cannot read).
     expect(find.text('กลับไปรับงานใหม่'), findsOneWidget);
-    expect(find.text('ดูใบสรุปค่าบริการ'), findsOneWidget);
+    expect(find.text('ดูใบสรุปค่าบริการ'), findsNothing);
+    expect(find.text('ดูรายได้ของฉัน'), findsOneWidget);
 
     // Tapping "take new jobs" navigates to the jobs list (no dead-end).
     await tester.tap(find.text('กลับไปรับงานใหม่'));
@@ -162,8 +169,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets(
-      '#99c done stage: View receipt opens the booking-derived receipt sheet',
+  testWidgets('#99c done stage: the guard is sent to their OWN earnings',
       (tester) async {
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') return bookingJson('completed');
@@ -172,16 +178,10 @@ void main() {
 
     await pumpActiveJob(tester, api: api);
 
-    await tester.tap(find.text('ดูใบสรุปค่าบริการ'));
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('ดูรายได้ของฉัน'));
+    await tester.pumpAndSettle();
 
-    // The receipt sheet opened with the cost breakdown derived from the booking.
-    expect(find.text('ใบสรุปค่าบริการ'), findsWidgets); // sheet title
-    expect(find.text('ค่าบริการ (ตามจอง)'), findsOneWidget);
-    // Booking-derived note flags that the settled bill is on the customer side.
-    expect(
-        find.textContaining('ยอดสุทธิเป็นยอดประมาณจากการจอง'), findsOneWidget);
+    expect(find.text('EARNINGS'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

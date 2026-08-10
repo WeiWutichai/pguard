@@ -90,7 +90,7 @@ void main() {
     // (never a dead-end).
     expect(find.text('โหลดใบเสร็จไม่สำเร็จ — ลองใหม่'), findsOneWidget,
         reason: 'the tap must never be a silent no-op');
-    expect(find.text('ใบสรุปค่าบริการ'), findsNothing,
+    expect(find.text('ใบสรุปค่าบริการ (ประมาณการ)'), findsNothing,
         reason: 'no sheet without a booking');
     expect(find.text('HOME'), findsOneWidget,
         reason: 'the thank-you flow still lands on home');
@@ -131,7 +131,7 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    expect(find.text('ใบสรุปค่าบริการ'), findsOneWidget,
+    expect(find.text('ใบสรุปค่าบริการ (ประมาณการ)'), findsOneWidget,
         reason: 'the receipt sheet opens with the booking snapshot');
 
     await tester.pumpWidget(const SizedBox());

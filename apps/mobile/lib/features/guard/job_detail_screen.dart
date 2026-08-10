@@ -155,12 +155,11 @@ class _Body extends StatelessWidget {
   final VoidCallback onAccept;
   final VoidCallback onSkip;
 
-  /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
-  int get _feeSatang => Money.total(
-        baseFeeSatang: Money.satangFromString(booking.baseFee),
-        hours: booking.hours ?? 0,
-        guardCount: booking.guardCount ?? 1,
-      );
+  /// What THIS guard earns, in satang — `base_fee × hours`, matching the job card and the earnings
+  /// screen. `guard_count` multiplies the CUSTOMER's bill, never one guard's pay, and is surfaced
+  /// separately as the "จำนวนเจ้าหน้าที่" row.
+  int get _feeSatang =>
+      Money.satangFromString(booking.baseFee) * (booking.hours ?? 0);
 
   @override
   Widget build(BuildContext context) {

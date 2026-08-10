@@ -70,7 +70,7 @@ void main() {
     await tester.tap(find.text('ดูใบเสร็จ'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
-    expect(find.text('ใบสรุปค่าบริการ'), findsOneWidget,
+    expect(find.text('ใบสรุปค่าบริการ (ประมาณการ)'), findsOneWidget,
         reason: 'the receipt sheet opens straight from the summary');
 
     await tester.pumpWidget(const SizedBox());

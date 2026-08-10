@@ -36,11 +36,15 @@ class GuardJobCard extends StatelessWidget {
   final String? statusLabel;
   final bool highlight;
 
-  /// Booking fee = base_fee × hours × guard_count (server-owned base_fee, in satang).
+  /// What THIS guard earns from the job, in satang — `base_fee × hours`.
+  ///
+  /// It used to multiply by `guard_count`, which is the crew size the CUSTOMER hired: on a 3-guard
+  /// booking the card showed the customer's whole bill while the earnings screen showed one share,
+  /// and the two numbers for the same job disagreed by 3×. `base_fee` is the ฿/hour/GUARD rate, so
+  /// one guard's pay never includes their colleagues'. Booked hours here (the job may not be
+  /// finished); the earnings screen refines completed jobs with the hours actually worked.
   int get _feeSatang =>
-      Money.satangFromString(booking.baseFee) *
-      (booking.hours ?? 0) *
-      (booking.guardCount ?? 1);
+      Money.satangFromString(booking.baseFee) * (booking.hours ?? 0);
 
   static String _two(int n) => n.toString().padLeft(2, '0');
 
@@ -68,9 +72,8 @@ class GuardJobCard extends StatelessWidget {
             borderRadius: BorderRadius.circular(PgTokens.radius2xl),
             // Design's soft amber-300 border (exact token since the full-ramp regen).
             border: Border.all(
-                color: highlight
-                    ? PgTokens.colorAmber300
-                    : PgTokens.colorBorder),
+                color:
+                    highlight ? PgTokens.colorAmber300 : PgTokens.colorBorder),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,

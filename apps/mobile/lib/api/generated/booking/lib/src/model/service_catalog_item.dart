@@ -14,8 +14,10 @@ part 'service_catalog_item.g.dart';
 /// * [id] 
 /// * [nameTh] 
 /// * [nameEn] 
-/// * [baseFee] - Base fee in THB per hour per guard (exact decimal string).
+/// * [baseFee] - Base fee in THB per hour per guard (exact decimal string). VAT-EXCLUSIVE — the customer's bill adds VAT 7% on top (see payment `subtotal`/`vat_amount`/`grand_total`).
 /// * [minHours] 
+/// * [commissionPercent] - The platform's cut, as a PERCENT (0–100, exact decimal string; `\"10.00\"` = 10%). Deducted from the GUARD's pay, NOT added to the customer's bill: the customer pays the same either way, the guard receives `base_fee × actual_hours` minus this percent. `\"0.00\"` = the guard keeps everything.
+/// * [cancellationFee] - Flat fee in THB (exact decimal string, ≥ 0) charged to the CUSTOMER when they cancel before work starts. Capped at what was actually paid (`min(fee, amount_paid)`), so an unpaid booking is never left owing anything. NOT charged when the guard withdraws — that is a full refund. `\"0.00\"` = free cancellation.
 /// * [notes] 
 /// * [isActive] 
 /// * [createdAt] 
@@ -31,12 +33,20 @@ abstract class ServiceCatalogItem implements Built<ServiceCatalogItem, ServiceCa
   @BuiltValueField(wireName: r'name_en')
   String get nameEn;
 
-  /// Base fee in THB per hour per guard (exact decimal string).
+  /// Base fee in THB per hour per guard (exact decimal string). VAT-EXCLUSIVE — the customer's bill adds VAT 7% on top (see payment `subtotal`/`vat_amount`/`grand_total`).
   @BuiltValueField(wireName: r'base_fee')
   String get baseFee;
 
   @BuiltValueField(wireName: r'min_hours')
   int get minHours;
+
+  /// The platform's cut, as a PERCENT (0–100, exact decimal string; `\"10.00\"` = 10%). Deducted from the GUARD's pay, NOT added to the customer's bill: the customer pays the same either way, the guard receives `base_fee × actual_hours` minus this percent. `\"0.00\"` = the guard keeps everything.
+  @BuiltValueField(wireName: r'commission_percent')
+  String get commissionPercent;
+
+  /// Flat fee in THB (exact decimal string, ≥ 0) charged to the CUSTOMER when they cancel before work starts. Capped at what was actually paid (`min(fee, amount_paid)`), so an unpaid booking is never left owing anything. NOT charged when the guard withdraws — that is a full refund. `\"0.00\"` = free cancellation.
+  @BuiltValueField(wireName: r'cancellation_fee')
+  String get cancellationFee;
 
   @BuiltValueField(wireName: r'notes')
   String? get notes;
@@ -97,6 +107,16 @@ class _$ServiceCatalogItemSerializer implements PrimitiveSerializer<ServiceCatal
     yield serializers.serialize(
       object.minHours,
       specifiedType: const FullType(int),
+    );
+    yield r'commission_percent';
+    yield serializers.serialize(
+      object.commissionPercent,
+      specifiedType: const FullType(String),
+    );
+    yield r'cancellation_fee';
+    yield serializers.serialize(
+      object.cancellationFee,
+      specifiedType: const FullType(String),
     );
     if (object.notes != null) {
       yield r'notes';
@@ -177,6 +197,20 @@ class _$ServiceCatalogItemSerializer implements PrimitiveSerializer<ServiceCatal
             specifiedType: const FullType(int),
           ) as int;
           result.minHours = valueDes;
+          break;
+        case r'commission_percent':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.commissionPercent = valueDes;
+          break;
+        case r'cancellation_fee':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationFee = valueDes;
           break;
         case r'notes':
           final valueDes = serializers.deserialize(

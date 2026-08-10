@@ -348,14 +348,19 @@ mod e2e_tests {
         let event_id = Uuid::new_v4();
         let correlation = Uuid::new_v4();
 
-        // 0) PRE-PAY the estimate up front (500×4×1 + 0 = 2000.00) — the settle basis.
+        // 0) PRE-PAY the estimate up front (500×4×1 + 0 = 2000.00 subtotal → 2140.00 with 7% VAT)
+        //    — the settle basis.
+        let terms = crate::domain::ChargeTerms::new(
+            crate::domain::PriceBreakdown::from_subtotal(dec("2000.00")),
+            Decimal::ZERO,
+            Decimal::ZERO,
+        );
         let _ = crate::repo::prepay_idempotent(
             &pool,
             booking_id,
             customer_id,
             Some(guard_id),
-            dec("2000.00"),
-            dec("2000.00"),
+            &terms,
             "promptpay",
             correlation,
         )
@@ -390,7 +395,8 @@ mod e2e_tests {
         tokio::time::sleep(Duration::from_millis(500)).await;
 
         // 2) publish booking.completed with a FIXED event_id (so the replay dedupes): 500/hr × 4h
-        //    × 1, worked 2h (7200s), no tip → actual 1000.00, refund 1000.00 of the 2000.00 paid.
+        //    × 1, worked 2h (7200s), no tip → settled 1000.00 + 70.00 VAT = 1070.00, refunding
+        //    1070.00 of the 2140.00 paid.
         //    Money fields are JSON STRINGS (rust_decimal serde-str, matching booking's emission).
         let mut envelope = EventEnvelope::new(
             topics::BOOKING_COMPLETED,
@@ -434,11 +440,15 @@ mod e2e_tests {
             settled.expect("reconcile refund recorded via NATS within timeout");
         assert_eq!(
             amount,
-            dec("2000.00"),
+            dec("2140.00"),
             "pre-paid base unchanged (never re-charged)"
         );
-        assert_eq!(final_amount, Some(dec("1000.00")), "final = 2h of 4h × 500");
-        assert_eq!(refund_amount, Some(dec("1000.00")), "overpay refunded");
+        assert_eq!(
+            final_amount,
+            Some(dec("1070.00")),
+            "final = 2h of 4h × 500, + VAT on that"
+        );
+        assert_eq!(refund_amount, Some(dec("1070.00")), "overpay refunded");
 
         // 4) replay the SAME event → idempotent: still ONE refund_processed event.
         shared_events::publish_signed(&js, topics::BOOKING_COMPLETED, &bytes)

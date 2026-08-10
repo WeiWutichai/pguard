@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CalendarCog, Loader2, Plus, RefreshCw, Tag } from "lucide-react";
+import { AlertTriangle, CalendarCog, Info, Loader2, Plus, RefreshCw, Tag } from "lucide-react";
 
 import type { components } from "@/api/generated/booking";
 import {
@@ -126,9 +126,11 @@ export default function PricingPage() {
         </Panel>
       ) : (
         <>
-          {/* Standalone-catalog note (editing a rate doesn't change charging yet). */}
+          {/* What an edit here actually does: the base rate is still standalone, but commission
+              and cancellation fee are snapshotted onto new bookings — so this is a live money
+              knob, not a reference table. No "awaiting API" chip: nothing here is unbuilt. */}
           <div className="mb-4 flex items-start gap-2 rounded-lg border border-border bg-sunken px-4 py-2.5 text-[12.5px] text-muted">
-            <Badge tone="gray">{c.awaitingApi}</Badge>
+            <Info className="mt-0.5 size-4 flex-none" />
             <span>{c.standaloneNote}</span>
           </div>
 
@@ -147,6 +149,8 @@ export default function PricingPage() {
                     <Th>{c.colName}</Th>
                     <Th>{c.colBaseFee}</Th>
                     <Th>{c.colMinHours}</Th>
+                    <Th>{c.colCommission}</Th>
+                    <Th>{c.colCancelFee}</Th>
                     <Th>{c.colNotes}</Th>
                     <Th>{c.colStatus}</Th>
                     <Th aria-label={c.edit} />
@@ -165,6 +169,14 @@ export default function PricingPage() {
                       </Td>
                       <Td className="font-mono tabular-nums">
                         {s.min_hours} {c.hoursUnit}
+                      </Td>
+                      {/* 0 = the no-op value (guard keeps everything / free cancellation) — kept
+                          visible but muted so a real cut stands out at a glance. */}
+                      <Td className={cn("font-mono tabular-nums", !Number(s.commission_percent) && "text-muted")}>
+                        {Number(s.commission_percent ?? 0)}%
+                      </Td>
+                      <Td className={cn("font-mono tabular-nums", !Number(s.cancellation_fee) && "text-muted")}>
+                        {fmtBaht(Number(s.cancellation_fee ?? 0))}
                       </Td>
                       <Td className="max-w-[220px] truncate text-muted">
                         {s.notes ?? t("common.none")}

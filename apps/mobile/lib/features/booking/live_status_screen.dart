@@ -806,11 +806,14 @@ class _Actions extends ConsumerWidget {
                                 child: _RateGuardButton(bookingId: booking.id)),
                             const SizedBox(width: PgTokens.space2),
                             Expanded(
-                                child: _ViewReceiptButton(
-                                    booking: booking, isOwner: true)),
+                                child: _ViewReceiptButton(booking: booking)),
                           ],
                         )
-                      : _ViewReceiptButton(booking: booking, isOwner: false))
+                      // No receipt for the guard — it is the CUSTOMER's document (it totals the
+                      // customer's bill, including the tip and the whole crew) and it can only be
+                      // settled against the customer's payment, which a guard cannot read. The
+                      // guard's own pay lives on the earnings screen.
+                      : const _MyEarningsButton())
                   // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
                   // trailing action opens the booking-details sheet (address / schedule /
                   // hours / guards / price). Was a dead `onPressed: () {}` no-op (Build #80).
@@ -877,25 +880,19 @@ class _RateGuardButton extends ConsumerWidget {
   }
 }
 
-/// A "ดูใบสรุป/View receipt" action that opens the shared [showJobReceiptSheet] for a completed
-/// booking (#99c). [isOwner] decides whether to feed the sheet the settled payment: the CUSTOMER
-/// (owner) reads their own `GET /v1/payments` row for the authoritative reconciled bill; the GUARD
-/// (non-owner) cannot read the customer's payment, so the sheet is booking-derived only (and says
-/// so). Either way the guard now has a non-dead-end completed view (receipt, not a rating CTA).
+/// The CUSTOMER's "ดูใบสรุป/View receipt" action, opening the shared [showJobReceiptSheet] for a
+/// completed booking. Owner-only by construction: the receipt is settled against the customer's own
+/// `GET /v1/payments` row, which nobody else can read.
 class _ViewReceiptButton extends ConsumerWidget {
-  const _ViewReceiptButton({required this.booking, required this.isOwner});
+  const _ViewReceiptButton({required this.booking});
 
   final Booking booking;
-  final bool isOwner;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
-    // Owner-only payment read — a guard's `GET /payments` would return their own (empty) list,
-    // so don't even fetch it for a non-owner; pass null → booking-derived receipt.
-    final payment = isOwner
-        ? ref.watch(bookingPaymentControllerProvider(booking.id)).valueOrNull
-        : null;
+    final payment =
+        ref.watch(bookingPaymentControllerProvider(booking.id)).valueOrNull;
     return PgPrimaryButton(
       label: isThai ? 'ดูใบสรุปค่าบริการ' : 'View receipt',
       color: PgTokens.colorGreen700,
@@ -905,6 +902,21 @@ class _ViewReceiptButton extends ConsumerWidget {
         payment: payment,
         isThai: isThai,
       ),
+    );
+  }
+}
+
+/// The guard's counterpart to the customer's receipt: their own pay, not the customer's bill.
+class _MyEarningsButton extends ConsumerWidget {
+  const _MyEarningsButton();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    return PgPrimaryButton(
+      label: isThai ? 'ดูรายได้ของฉัน' : 'My earnings',
+      color: PgTokens.colorGreen700,
+      onPressed: () => context.push('/earnings'),
     );
   }
 }

@@ -40,6 +40,7 @@ export 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dar
 export 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 export 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 export 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+export 'package:pguard_profile_api/src/model/get_org_settings200_response.dart';
 export 'package:pguard_profile_api/src/model/get_public_customer_profile200_response.dart';
 export 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 export 'package:pguard_profile_api/src/model/guard_avatar_response.dart';

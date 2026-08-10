@@ -14,6 +14,7 @@ import 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dar
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_document200_response.dart';
 import 'package:pguard_profile_api/src/model/get_my_profile200_response.dart';
+import 'package:pguard_profile_api/src/model/get_org_settings200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_customer_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/get_public_guard_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
@@ -351,6 +352,85 @@ class ProfileApi {
     }
 
     return Response<GetMyProfile200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// The company block printed on receipts (any signed-in user)
+  /// The seller identity a Thai tax invoice (ใบกำกับภาษี) legally requires — company name, tax ID and address. Readable by ANY authenticated role, unlike the admin twin below: the receipt is rendered on the customer&#39;s device, so gating this to admins would mean shipping a document that cannot legally be one. Org-wide public-facing config, not personal data, so it is not §30-audited. Never 404s — an unset row returns all-&#x60;null&#x60; fields so the client can state the document is incomplete instead of printing a blank header. 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [GetOrgSettings200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<GetOrgSettings200Response>> getOrgSettings({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/org-settings';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    GetOrgSettings200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(GetOrgSettings200Response),
+      ) as GetOrgSettings200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<GetOrgSettings200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

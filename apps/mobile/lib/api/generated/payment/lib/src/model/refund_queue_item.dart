@@ -9,12 +9,12 @@ import 'package:built_value/serializer.dart';
 
 part 'refund_queue_item.g.dart';
 
-/// One refund-queue row — a payment whose settle left a refund owed. `amount` is the refund owed (NOT the original charge); `status` is the refund-workflow state. 
+/// One refund-queue row — a payment whose settle or cancellation left a refund owed. `amount` is the refund owed (NOT the original charge); `status` is the refund-workflow state. On a customer cancellation the row is already NET of the cancellation fee (`amount_paid − cancellation_fee_charged`); on a guard withdrawal it is the full amount paid. 
 ///
 /// Properties:
 /// * [paymentId] 
 /// * [bookingId] 
-/// * [amount] - The refund owed to the customer (exact decimal as a string; money rule).
+/// * [amount] - The refund owed to the customer (exact decimal as a string; money rule) — already net of any `cancellation_fee_charged`, so this is exactly what is sent back.
 /// * [status] 
 /// * [createdAt] 
 @BuiltValue()
@@ -25,7 +25,7 @@ abstract class RefundQueueItem implements Built<RefundQueueItem, RefundQueueItem
   @BuiltValueField(wireName: r'booking_id')
   String get bookingId;
 
-  /// The refund owed to the customer (exact decimal as a string; money rule).
+  /// The refund owed to the customer (exact decimal as a string; money rule) — already net of any `cancellation_fee_charged`, so this is exactly what is sent back.
   @BuiltValueField(wireName: r'amount')
   String get amount;
 

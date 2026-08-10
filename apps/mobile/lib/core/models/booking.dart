@@ -122,6 +122,8 @@ class Booking {
     this.workStartedAt,
     this.cancellationReason,
     this.cancellationNote,
+    this.commissionPercent,
+    this.cancellationFee,
   });
 
   final String id;
@@ -180,13 +182,32 @@ class Booking {
   /// reason is `other` (the server rejects a blank note for that code), optional otherwise.
   final String? cancellationNote;
 
-  /// DISPLAY-only charge estimate in satang — `base_fee × hours × guard_count + tip` — derived
-  /// purely from this snapshot's server-owned fields (the same figure the customer's live screen
-  /// shows). `null` when the rate/hours aren't known yet (a fresh `requested` snapshot), so a
-  /// caller can omit the total rather than print ฿0. NOT authoritative: the payment service
-  /// re-computes + verifies the real charge (see [Money]). Reused by BOTH the customer's
-  /// booking-details sheet and the guard's active-job details sheet so they never drift.
-  int? get displayTotalSatang {
+  /// The platform's commission for this job as a NUMERIC(5,2) decimal STRING ("12.50"), SNAPSHOT
+  /// onto the booking at creation from the catalog service — so editing the catalog later never
+  /// rewrites the money of a job already booked. It is deducted from the GUARD's pay
+  /// (`guard_gross × pct/100`); the customer pays the same either way. `null` on a pre-migration
+  /// booking → treat as 0 ([commissionPercentHundredths]).
+  final String? commissionPercent;
+
+  /// The flat fee charged when the CUSTOMER cancels before work starts, as a decimal STRING
+  /// ("200.00"), snapshot at creation like [commissionPercent]. Charged as
+  /// `min(cancellation_fee, amount_paid)` — never more than the customer actually paid — and a
+  /// GUARD withdrawing is not the customer's fault, so that path still refunds in full. `null` on
+  /// a pre-migration booking → 0.
+  final String? cancellationFee;
+
+  /// [commissionPercent] in HUNDREDTHS of a percent (1250 = 12.50%); 0 when unset.
+  int get commissionPercentHundredths =>
+      Money.percentHundredths(commissionPercent);
+
+  /// [cancellationFee] in satang; 0 when unset.
+  int get cancellationFeeSatang => Money.satangFromString(cancellationFee);
+
+  /// DISPLAY-only SUBTOTAL in satang — `base_fee × hours × guard_count + tip`, VAT-EXCLUSIVE.
+  /// This is the taxable base, NOT what the customer pays; see [displayGrandTotalSatang].
+  /// `null` when the rate/hours aren't known yet (a fresh `requested` snapshot), so a caller can
+  /// omit the figure rather than print ฿0.
+  int? get displaySubtotalSatang {
     final baseFeeSatang = Money.satangFromString(baseFee);
     final h = hours ?? 0;
     if (baseFeeSatang <= 0 || h <= 0) return null;
@@ -197,6 +218,29 @@ class Booking {
       tipSatang: Money.satangFromString(tip),
     );
   }
+
+  /// DISPLAY-only VAT (7%) on [displaySubtotalSatang]; `null` when the subtotal is unknown.
+  int? get displayVatSatang {
+    final sub = displaySubtotalSatang;
+    return sub == null ? null : Money.vat(sub);
+  }
+
+  /// DISPLAY-only charge estimate in satang — the VAT-INCLUSIVE **grand total**
+  /// (`subtotal + 7% VAT`), i.e. THE figure the customer is actually charged. Catalog prices are
+  /// VAT-exclusive, so anything that quotes a price to a customer must use this, never the bare
+  /// [displaySubtotalSatang] (which understates the bill).
+  ///
+  /// NOT authoritative: the payment service re-computes + verifies the real charge (see [Money] and
+  /// `Payment.grandTotal`). Reused by BOTH the customer's booking-details sheet and the guard's
+  /// active-job details sheet so they never drift.
+  int? get displayGrandTotalSatang {
+    final sub = displaySubtotalSatang;
+    return sub == null ? null : Money.grandTotal(sub);
+  }
+
+  /// Alias of [displayGrandTotalSatang] kept for the existing call sites that show "the total":
+  /// they must all read the VAT-INCLUSIVE figure.
+  int? get displayTotalSatang => displayGrandTotalSatang;
 
   factory Booking.fromJson(Map<String, dynamic> json) => Booking(
         id: json['id'] as String,
@@ -223,6 +267,10 @@ class Booking {
             : null,
         cancellationReason: json['cancellation_reason'] as String?,
         cancellationNote: json['cancellation_note'] as String?,
+        // NUMERIC snapshots — decimal strings on the wire, parsed defensively (a numeric type
+        // from a misbehaving backend degrades instead of throwing); absent on pre-migration rows.
+        commissionPercent: (json['commission_percent'] as Object?)?.toString(),
+        cancellationFee: (json['cancellation_fee'] as Object?)?.toString(),
       );
 
   /// A copy with [paidAt] set (everything else unchanged). Used to OPTIMISTICALLY mark a booking
@@ -246,6 +294,8 @@ class Booking {
         workStartedAt: workStartedAt,
         cancellationReason: cancellationReason,
         cancellationNote: cancellationNote,
+        commissionPercent: commissionPercent,
+        cancellationFee: cancellationFee,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -276,6 +326,9 @@ class Booking {
         // REST snapshot (the reconnect re-pull, or the PUT response for the party who cancelled).
         cancellationReason: cancellationReason,
         cancellationNote: cancellationNote,
+        // Money SNAPSHOTS never change over a booking's life, so they ride every WS-folded copy.
+        commissionPercent: commissionPercent,
+        cancellationFee: cancellationFee,
       );
 }
 

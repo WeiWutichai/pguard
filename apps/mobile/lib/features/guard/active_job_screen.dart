@@ -29,7 +29,6 @@ import '../../widgets/status_stepper.dart';
 import '../../widgets/work_progress.dart';
 import '../booking/live_status_screen.dart' show showBookingDetailsSheet;
 import '../booking/widgets/cancel_reason.dart';
-import '../booking/widgets/job_receipt_sheet.dart';
 import '../booking/widgets/travel_map_preview.dart';
 import '../call/widgets/call_entry_button.dart';
 import '../chat/chat_routes.dart';
@@ -1152,17 +1151,14 @@ class _TransitionBar extends ConsumerWidget {
               onPressed: () => _backToJobs(context, ref),
             ),
             const SizedBox(height: PgTokens.space1),
-            // The receipt the guard can see (booking-derived — a guard cannot read the customer's
-            // payment; the settled bill needs a participants-scoped endpoint, flagged as a backend
-            // follow-up in job_receipt_sheet.dart).
+            // The guard's OWN pay for this job — not the customer's receipt. The receipt is the
+            // customer's document: it totals base × hours × guard_count + tip, which is the
+            // customer's bill and not what this guard is paid, and it can only be settled against
+            // the customer's payment record (which a guard cannot read). Showing it here presented
+            // the crew's whole bill as though it were this guard's earnings.
             PgGhostButton(
-              label: isThai ? 'ดูใบสรุปค่าบริการ' : 'View receipt',
-              onPressed: () => showJobReceiptSheet(
-                context,
-                booking: state.booking,
-                payment: null,
-                isThai: isThai,
-              ),
+              label: isThai ? 'ดูรายได้ของฉัน' : 'My earnings',
+              onPressed: () => context.push('/earnings'),
             ),
             // No "ดูสถานะสด" here either — it routed the guard into the customer live screen
             // (/booking/{id}/live). The completed job's summary + receipt live on this guard screen.

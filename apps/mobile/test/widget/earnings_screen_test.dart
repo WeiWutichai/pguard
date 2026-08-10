@@ -13,6 +13,7 @@ Map<String, dynamic> jobJson(
   String baseFee = '230.00',
   int hours = 8,
   int guards = 2,
+  String? commissionPercent,
 }) =>
     {
       'id': id,
@@ -26,6 +27,7 @@ Map<String, dynamic> jobJson(
       'guard_count': guards,
       'base_fee': baseFee,
       'tip': '500.00',
+      if (commissionPercent != null) 'commission_percent': commissionPercent,
     };
 
 // Pin "now" to the day after the jobs' fixed scheduled_at (2026-06-03T12:00Z) so the
@@ -76,7 +78,9 @@ void main() {
     // ฿1,840 + ฿1,150 — per-guard share only: guard_count (2) and tip (฿500) excluded.
     expect(find.text('฿2,990'), findsOneWidget);
     expect(find.textContaining('ประมาณการ'), findsOneWidget);
-    expect(find.text('รายการล่าสุด'), findsOneWidget);
+    // The rows are the hero's own terms, so the heading names the selected window rather than
+    // promising an all-time feed — a Day tab reading ฿0 above paid rows was the reported bug.
+    expect(find.text('รายการในช่วงนี้'), findsOneWidget);
 
     // Per-job rows: place, "date · hours", mono amount; non-completed job absent.
     expect(find.text('หมู่บ้านลัดดารมย์'), findsOneWidget);
@@ -88,6 +92,75 @@ void main() {
     // /payments/earnings (actual worked hours for base×actual pay). The earnings map is empty here
     // (the fake returns [] for it), so pay falls back to booked hours → the totals above are unchanged.
     expect(api.getCount, 3);
+  });
+
+  testWidgets(
+      'commission is shown as gross → deduction → net, never a silent smaller number',
+      (tester) async {
+    // One ฿1,840 job at 10%: the guard takes home ฿1,656 — and must be able to SEE why.
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [jobJson('b1', 'completed', commissionPercent: '10.00')]
+          : const <Map<String, dynamic>>[],
+    );
+    await pumpScreen(tester, api);
+
+    // The hero prints the NET big — and so does the single row that makes it up (the hero and its
+    // own terms must agree, which is why this is 2 and not 1).
+    expect(find.text('฿1,656'), findsNWidgets(2));
+    // …with the arithmetic that produced it right underneath.
+    expect(find.text('รายได้ก่อนหัก'), findsOneWidget);
+    expect(find.text('฿1,840.00'), findsOneWidget);
+    expect(find.text('หักค่าคอมมิชชั่น'), findsOneWidget);
+    expect(find.text('-฿184.00'), findsOneWidget);
+    expect(find.text('รับสุทธิ'), findsOneWidget);
+    expect(find.text('฿1,656.00'), findsOneWidget);
+    expect(find.textContaining('หักค่าคอมมิชชั่น)'), findsOneWidget,
+        reason: 'the method caption says the figure is net of commission');
+
+    // The per-job row shows the same split: net, then "gross − commission".
+    expect(find.text('฿1,840 − ฿184 ค่าคอม'), findsOneWidget);
+  });
+
+  testWidgets('the settle commission overrides the booking snapshot on screen',
+      (tester) async {
+    // Booked at 10%, actually settled at 20% (and 4 of the 8 hours worked): the screen must show
+    // what was really taken — gross ฿920, commission ฿184, net ฿736.
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings') {
+          return [jobJson('b1', 'completed', commissionPercent: '10.00')];
+        }
+        if (path == '/payments/earnings') {
+          return [
+            {
+              'booking_id': 'b1',
+              'actual_hours': '4.00',
+              'commission_percent': '20.00',
+            }
+          ];
+        }
+        return const <Map<String, dynamic>>[];
+      },
+    );
+    await pumpScreen(tester, api);
+
+    expect(find.text('฿736'), findsNWidgets(2)); // hero + its one row
+    expect(find.text('฿920 − ฿184 ค่าคอม'), findsOneWidget);
+  });
+
+  testWidgets('a 0% service shows no deduction line at all', (tester) async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [jobJson('b1', 'completed', commissionPercent: '0.00')]
+          : const <Map<String, dynamic>>[],
+    );
+    await pumpScreen(tester, api);
+
+    expect(find.text('฿1,840'),
+        findsNWidgets(2)); // hero + its one row, gross == net
+    expect(find.text('หักค่าคอมมิชชั่น'), findsNothing);
+    expect(find.text('รายได้ก่อนหัก'), findsNothing);
   });
 
   testWidgets('surfaces the incompleteness caveat when the feed is at the cap',

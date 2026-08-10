@@ -70,20 +70,12 @@ class _Body extends ConsumerWidget {
   final String bookingId;
   final Booking booking;
 
-  /// The PRE-PAY estimate in satang: `base_fee × booked-hours × guard_count + tip`, all from the
-  /// authoritative booking. DISPLAY only — the server re-computes and charges this; the client
-  /// sends only the booking id.
-  int? get _estimateSatang {
-    final baseFeeSatang = Money.satangFromString(booking.baseFee);
-    final hours = booking.hours ?? 0;
-    if (baseFeeSatang <= 0 || hours <= 0) return null;
-    return Money.total(
-      baseFeeSatang: baseFeeSatang,
-      hours: hours,
-      guardCount: booking.guardCount ?? 1,
-      tipSatang: Money.satangFromString(booking.tip),
-    );
-  }
+  /// The PRE-PAY estimate in satang the customer is ACTUALLY charged: the VAT-INCLUSIVE grand
+  /// total — `(base_fee × booked-hours × guard_count + tip) + 7% VAT`, all from the authoritative
+  /// booking. Catalog rates are quoted VAT-exclusive, so the bare subtotal would understate the
+  /// charge; the CTA and the summary card both quote this. DISPLAY only — the server re-computes
+  /// and charges it; the client sends only the booking id.
+  int? get _estimateSatang => booking.displayGrandTotalSatang;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -230,7 +222,11 @@ class _CancelledPanel extends StatelessWidget {
 }
 
 /// The booking + price breakdown card: the per-hour rate, the booked hours, the guard count, the
-/// tip and the server-computed total — the ESTIMATE the customer is about to pay.
+/// tip, the VAT and the server-computed total — the ESTIMATE the customer is about to pay.
+///
+/// VAT (7%) is a LINE OF ITS OWN between the subtotal and the total: catalog prices are quoted
+/// VAT-exclusive, so tax is a real, visible addition to the bill and never gets folded silently
+/// into a single number.
 class _SummaryCard extends ConsumerWidget {
   const _SummaryCard({required this.booking, required this.estimateSatang});
 
@@ -244,6 +240,8 @@ class _SummaryCard extends ConsumerWidget {
     final hours = booking.hours ?? 0;
     final guardCount = booking.guardCount ?? 1;
     final tipSatang = Money.satangFromString(booking.tip);
+    final subtotalSatang = booking.displaySubtotalSatang;
+    final vatSatang = booking.displayVatSatang;
 
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
@@ -302,6 +300,25 @@ class _SummaryCard extends ConsumerWidget {
             padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
             child: Divider(height: 1, color: PgTokens.colorBorder),
           ),
+          _Line(
+            label: isThai ? 'รวมเป็นเงิน' : 'Subtotal',
+            value: subtotalSatang != null
+                ? Money.format(subtotalSatang, decimals: true)
+                : '—',
+          ),
+          const SizedBox(height: PgTokens.space2),
+          _Line(
+            label: isThai
+                ? 'ภาษีมูลค่าเพิ่ม ${Money.vatPercent}%'
+                : 'VAT ${Money.vatPercent}%',
+            value: vatSatang != null
+                ? Money.format(vatSatang, decimals: true)
+                : '—',
+          ),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
+            child: Divider(height: 1, color: PgTokens.colorBorder),
+          ),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -325,9 +342,10 @@ class _SummaryCard extends ConsumerWidget {
           const SizedBox(height: PgTokens.space2),
           Text(
             isThai
-                ? 'คิดตามชั่วโมงที่จองไว้ — เมื่อจบงานจะปรับตามเวลาจริง และคืนเงินส่วนต่างหากใช้น้อยกว่า'
-                : 'Charged for the booked hours — settled to the actual hours at completion '
-                    '(any over-charge is refunded).',
+                ? 'ยอดนี้รวมภาษีมูลค่าเพิ่ม ${Money.vatPercent}% แล้ว · คิดตามชั่วโมงที่จองไว้ — '
+                    'เมื่อจบงานจะปรับตามเวลาจริง และคืนเงินส่วนต่างหากใช้น้อยกว่า'
+                : 'Includes ${Money.vatPercent}% VAT · charged for the booked hours — settled to '
+                    'the actual hours at completion (any over-charge is refunded).',
             style:
                 const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
           ),

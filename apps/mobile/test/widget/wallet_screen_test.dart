@@ -124,10 +124,12 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 300));
 
-    // The shared job-receipt sheet opened with the booking + this row's payment.
-    expect(find.text('ใบสรุปค่าบริการ'), findsOneWidget,
+    // The shared job-receipt sheet opened with the booking + this row's payment. This payment
+    // predates the VAT split (no `vat_amount`), so the document is titled a plain receipt — it
+    // must not claim to be a ใบกำกับภาษี for tax that was never charged.
+    expect(find.text('ต้นฉบับ ใบเสร็จรับเงิน'), findsOneWidget,
         reason: 'the receipt sheet title');
-    expect(find.text('ชั่วโมงที่จอง'), findsOneWidget);
+    expect(find.text('ค่าบริการรักษาความปลอดภัย'), findsOneWidget);
     expect(api.calls, contains('GET /bookings/$bookingId'),
         reason: 'the tap fetched the booking snapshot');
 
@@ -148,7 +150,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 300));
 
     expect(find.text('โหลดใบเสร็จไม่สำเร็จ — ลองใหม่'), findsOneWidget);
-    expect(find.text('ใบสรุปค่าบริการ'), findsNothing,
+    expect(find.text('ต้นฉบับ ใบเสร็จรับเงิน'), findsNothing,
         reason: 'no sheet on failure');
 
     await tester.pumpWidget(const SizedBox());

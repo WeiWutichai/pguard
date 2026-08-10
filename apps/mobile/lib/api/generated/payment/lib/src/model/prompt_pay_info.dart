@@ -11,17 +11,17 @@ part 'prompt_pay_info.g.dart';
 /// PromptPay transfer instructions for a booking. `qr_payload` is the authoritative EMVCo PromptPay QR string, generated server-side from `RECEIVING_ACCOUNT` + the estimate — the client renders it as a QR and never rebuilds it. 
 ///
 /// Properties:
-/// * [amount] - The server-side estimate to transfer (exact decimal as a string; money rule).
-/// * [amountSatang] - The estimate in satang (the smallest THB unit, ×100) — a convenience field.
+/// * [amount] - The server-side estimate to transfer (exact decimal as a string; money rule) — VAT-INCLUSIVE (`grand_total`), because that is the sum the customer actually sends.
+/// * [amountSatang] - The same VAT-inclusive estimate in satang (the smallest THB unit, ×100) — a convenience field.
 /// * [receivingAccount] - OUR receiving PromptPay account, formatted for human display.
 /// * [qrPayload] - The authoritative EMVCo PromptPay QR payload (render as a QR; do NOT rebuild). Encodes the PromptPay AID + our proxy + the amount + currency THB + country TH + CRC. 
 @BuiltValue()
 abstract class PromptPayInfo implements Built<PromptPayInfo, PromptPayInfoBuilder> {
-  /// The server-side estimate to transfer (exact decimal as a string; money rule).
+  /// The server-side estimate to transfer (exact decimal as a string; money rule) — VAT-INCLUSIVE (`grand_total`), because that is the sum the customer actually sends.
   @BuiltValueField(wireName: r'amount')
   String get amount;
 
-  /// The estimate in satang (the smallest THB unit, ×100) — a convenience field.
+  /// The same VAT-inclusive estimate in satang (the smallest THB unit, ×100) — a convenience field.
   @BuiltValueField(wireName: r'amount_satang')
   int get amountSatang;
 

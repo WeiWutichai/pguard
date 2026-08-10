@@ -1,6 +1,8 @@
 // Payment domain model — mirrors `contracts/openapi/payment.yaml` (THE MONEY PATH).
 // Money fields are exact decimal STRINGS. Pure (no Flutter) → unit-testable.
 
+import 'money.dart';
+
 /// Payment lifecycle status (snake_case wire values).
 enum PaymentStatus {
   pending('pending'),
@@ -57,6 +59,10 @@ class Payment {
     this.refundStatus,
     this.paidAt,
     this.createdAt,
+    this.subtotal,
+    this.vatAmount,
+    this.grandTotal,
+    this.cancellationFeeCharged,
   });
 
   final String id;
@@ -89,7 +95,40 @@ class Payment {
   final DateTime? paidAt;
   final DateTime? createdAt;
 
+  /// The VAT-EXCLUSIVE taxable base (decimal string): `base_fee × hours × guards + tip`. `null`
+  /// on a payment that predates the tax split.
+  final String? subtotal;
+
+  /// 7% VAT on [subtotal] (decimal string) — the tax line of the tax invoice. `null` when the
+  /// payment predates the tax split.
+  final String? vatAmount;
+
+  /// `subtotal + vat_amount` (decimal string) — THE amount the customer is charged. `null` when
+  /// the payment predates the tax split, in which case [amount] is the charged figure.
+  final String? grandTotal;
+
+  /// What was actually KEPT when the customer cancelled pre-arrival (decimal string):
+  /// `min(cancellation_fee, amount_paid)` — nothing paid means nothing charged, so this is never
+  /// a debt. `null`/0 when nothing was withheld (incl. a guard withdrawal, which refunds in full).
+  final String? cancellationFeeCharged;
+
   bool get isCompleted => status == PaymentStatus.completed;
+
+  /// The VAT-EXCLUSIVE base in satang, or `null` when the payment carries no tax split.
+  int? get subtotalSatang =>
+      subtotal == null ? null : Money.satangFromString(subtotal);
+
+  /// The VAT line in satang, or `null` when the payment carries no tax split.
+  int? get vatSatang =>
+      vatAmount == null ? null : Money.satangFromString(vatAmount);
+
+  /// The charged, VAT-INCLUSIVE total in satang. Falls back to [amount] for a pre-tax-split
+  /// payment so a receipt never shows a blank where a real charge happened.
+  int get grandTotalSatang => Money.satangFromString(grandTotal ?? amount);
+
+  /// The withheld cancellation fee in satang (0 when none).
+  int get cancellationFeeChargedSatang =>
+      Money.satangFromString(cancellationFeeCharged);
 
   factory Payment.fromJson(Map<String, dynamic> json) => Payment(
         id: json['id'] as String,
@@ -113,5 +152,10 @@ class Payment {
         createdAt: json['created_at'] != null
             ? DateTime.tryParse(json['created_at'] as String)
             : null,
+        subtotal: (json['subtotal'] as Object?)?.toString(),
+        vatAmount: (json['vat_amount'] as Object?)?.toString(),
+        grandTotal: (json['grand_total'] as Object?)?.toString(),
+        cancellationFeeCharged:
+            (json['cancellation_fee_charged'] as Object?)?.toString(),
       );
 }
