@@ -51,8 +51,7 @@ class ServiceDetailScreen extends ConsumerWidget {
                 children: [
                   _HeroCard(service: service, isThai: isThai),
                   const SizedBox(height: PgTokens.space5),
-                  _SectionLabel(
-                      text: isThai ? 'รวมในแพ็กเกจ' : 'Included'),
+                  _SectionLabel(text: isThai ? 'รวมในแพ็กเกจ' : 'Included'),
                   const SizedBox(height: PgTokens.space3),
                   _IncludedList(isThai: isThai),
                   const SizedBox(height: PgTokens.space5),
@@ -192,8 +191,7 @@ class _IncludedList extends StatelessWidget {
       child: Column(
         children: [
           for (var i = 0; i < rows.length; i++) ...[
-            if (i > 0)
-              const Divider(height: 1, color: PgTokens.colorBorder),
+            if (i > 0) const Divider(height: 1, color: PgTokens.colorBorder),
             _IncludedRow(title: rows[i].$1, subtitle: rows[i].$2),
           ],
         ],
@@ -272,6 +270,10 @@ class _PricingCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Catalog rates are VAT-EXCLUSIVE, so the "เริ่มต้น" figure a customer reads as the price must
+    // carry the 7% they will actually be charged — with the tax on its own row above it.
+    final vatSatang = Money.vat(startingSatang);
+    final startingWithVatSatang = startingSatang + vatSatang;
     return Container(
       decoration: BoxDecoration(
         color: PgTokens.colorSurface,
@@ -295,6 +297,15 @@ class _PricingCard extends StatelessWidget {
             label: isThai ? 'ชั่วโมงขั้นต่ำ' : 'Minimum hours',
             value: isThai ? '$minHours ชม.' : '$minHours hr',
           ),
+          if (hasEstimate) ...[
+            const SizedBox(height: PgTokens.space2),
+            _PriceRow(
+              label: isThai
+                  ? 'ภาษีมูลค่าเพิ่ม ${Money.vatPercent}%'
+                  : 'VAT ${Money.vatPercent}%',
+              value: Money.format(vatSatang),
+            ),
+          ],
           const Padding(
             padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
             child: Divider(height: 1, color: PgTokens.colorBorder),
@@ -306,11 +317,11 @@ class _PricingCard extends StatelessWidget {
             children: [
               Text(
                 isThai ? 'เริ่มต้น' : 'Starting at',
-                style: const TextStyle(
-                    fontSize: 14, fontWeight: FontWeight.w600),
+                style:
+                    const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
               ),
               Text(
-                hasEstimate ? Money.format(startingSatang) : '—',
+                hasEstimate ? Money.format(startingWithVatSatang) : '—',
                 style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.w700,
@@ -324,8 +335,8 @@ class _PricingCard extends StatelessWidget {
             const SizedBox(height: PgTokens.space2),
             Text(
               isThai
-                  ? '${Money.format(baseFeeSatang)} × $minHours ชม. · ยอดจริงคำนวณตามเวลาทำงานจริง'
-                  : '${Money.format(baseFeeSatang)} × $minHours hr · final total is billed by actual time',
+                  ? '${Money.format(baseFeeSatang)} × $minHours ชม. + VAT ${Money.vatPercent}% · ยอดจริงคำนวณตามเวลาทำงานจริง'
+                  : '${Money.format(baseFeeSatang)} × $minHours hr + ${Money.vatPercent}% VAT · final total is billed by actual time',
               style: const TextStyle(
                   fontSize: 11.5, height: 1.4, color: PgTokens.colorTextFaint),
             ),
@@ -348,8 +359,8 @@ class _PriceRow extends StatelessWidget {
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
         Text(label,
-            style: const TextStyle(
-                fontSize: 14, color: PgTokens.colorTextMuted)),
+            style:
+                const TextStyle(fontSize: 14, color: PgTokens.colorTextMuted)),
         Text(
           value,
           style: const TextStyle(

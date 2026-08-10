@@ -12,6 +12,12 @@
 //!    (`domain::reconcile`) against the pre-paid amount in ONE transaction and refund the overpay
 //!    (`payment.refund_processed`) / record the shortfall. Idempotent via the `processed_events`
 //!    event-id claim; the base is never double-charged.
+//!
+//! MONEY-COLUMN INVARIANT every write path here maintains (relied on by the revenue/spend reports
+//! and by the tax invoice): `subtotal + vat_amount = COALESCE(final_amount, amount)`, i.e. the VAT
+//! split always describes the CURRENTLY SETTLED bill — the estimate at pre-pay, the prorated bill
+//! after the completion reconcile, the retained cancellation fee after a cancel. Rows written
+//! before VAT existed have a NULL split and are read with `COALESCE(..., 0)`.
 
 use chrono::{DateTime, Utc};
 use rust_decimal::Decimal;
@@ -22,11 +28,17 @@ use shared::error::AppError;
 use shared_events::topics;
 use shared_events::EventEnvelope;
 
+use crate::domain::ChargeTerms;
 use crate::models::{CustomerSpend, PaymentResponse, RefundQueueItem, RevenuePoint};
 
+/// The payment row as clients see it. `grand_total` is DERIVED, not stored: the VAT split
+/// (`subtotal + vat_amount`) always equals the currently-settled bill, and pre-VAT rows (both
+/// columns NULL) fall back to the charged `amount` — so the field is never NULL and is always
+/// "the payable figure", whatever era the row is from.
 const PAYMENT_COLUMNS: &str = "id, booking_id, customer_id, guard_id, amount, expected_total, \
-     payment_method, status::text AS status, final_amount, refund_amount, actual_hours, \
-     refund_status, paid_at, created_at, updated_at";
+     subtotal, vat_amount, COALESCE(subtotal + vat_amount, amount) AS grand_total, \
+     cancellation_fee_charged, payment_method, status::text AS status, final_amount, \
+     refund_amount, actual_hours, refund_status, paid_at, created_at, updated_at";
 
 // ----- Outbox row (for the relay) -----
 
@@ -68,17 +80,25 @@ pub async fn list_payments(
 }
 
 /// The assigned guard's earning basis: their COMPLETED (paid) jobs, newest first, with the clamped
-/// `actual_hours` worked (persisted at reconcile). A `refunded` row (a cancelled/withdrawn job) is
-/// excluded — the guard earned nothing there, and it is not a `completed` job on their side either.
+/// `actual_hours` worked (persisted at reconcile) and the `commission_percent` deducted from that
+/// job's pay (snapshotted from the booking at charge time). A `refunded` row (a cancelled/withdrawn
+/// job — including one where the platform retained a cancellation fee) is excluded: the guard
+/// earned nothing there, and it is not a `completed` job on their side either.
+///
+/// NB `status = 'completed'` is the PAYMENT status (stamped at pre-pay), not the booking's — a job
+/// still in progress is already `completed` here. That is pre-existing behaviour and deliberately
+/// left alone; this query only carries the new column.
+///
 /// The client pairs each `booking_id` with the `base_fee` from its own booking feed and pays
-/// `base_fee × actual_hours` (falling back to booked hours when `actual_hours` is NULL), so the
-/// guard's earnings reflect hours ACTUALLY worked — matching the customer's reconciled net.
+/// `base_fee × actual_hours` (falling back to booked hours when `actual_hours` is NULL) minus
+/// `commission_percent`, so the guard's earnings reflect hours ACTUALLY worked — matching the
+/// customer's reconciled net — and show what the platform took.
 pub async fn guard_earnings(
     db: &sqlx::PgPool,
     guard_id: Uuid,
 ) -> Result<Vec<crate::models::GuardEarningRow>, AppError> {
     let rows = sqlx::query_as::<_, crate::models::GuardEarningRow>(
-        "SELECT booking_id, actual_hours FROM payment.payments \
+        "SELECT booking_id, actual_hours, commission_percent FROM payment.payments \
          WHERE guard_id = $1 AND status = 'completed' ORDER BY created_at DESC LIMIT 100",
     )
     .bind(guard_id)
@@ -192,17 +212,31 @@ pub async fn admin_count_refund_queue(
 
 // ----- Revenue report (admin analytics) -----
 
-/// Net revenue expression shared by the series + total queries: completed charges' effective
-/// amount (prorated `final_amount` when set, else `amount`) minus any refunds. Kept as one
-/// constant so the per-day series and the MoM total compute identically.
+/// Net revenue expression shared by the series + total queries. Kept as ONE constant so the
+/// per-day chart and the MoM total can never disagree.
 ///
-/// BOTH terms are status-gated to `completed`: a PARTIAL refund stays `completed` (so its
-/// `refund_amount` is subtracted here), but a FULL refund flips the row to `refunded` — its charge
-/// already drops out of the positive term, so its `refund_amount` must NOT be subtracted too
-/// (otherwise the row would net to −(pre-pay) instead of 0). Mirrors `customer_spend`'s exclusion.
-const NET_REVENUE_EXPR: &str =
-    "COALESCE(SUM(CASE WHEN status = 'completed' THEN COALESCE(final_amount, amount) ELSE 0 END), 0) \
-     - COALESCE(SUM(CASE WHEN status = 'completed' THEN COALESCE(refund_amount, 0) ELSE 0 END), 0)";
+/// DECISION (2026-08-10): platform revenue is **VAT-EXCLUSIVE**. The 7% is collected FOR the
+/// Revenue Department — it is a liability the moment we take it, not income — so counting it as
+/// revenue would inflate every chart by 7% and make the number useless for deciding anything
+/// (margin, runway, commission policy). We therefore subtract `vat_amount` from each row.
+///
+/// Per row we count what the platform ULTIMATELY KEPT, VAT-inclusive, then strip its VAT:
+///  - `COALESCE(final_amount, amount)` — `final_amount` is the SETTLED bill and is ALREADY net of
+///    any refund (reconcile sets `final = paid − refund`; a cancellation sets it to the retained
+///    cancellation fee, or 0 for a full refund). `amount` is the fallback for a charge that has
+///    not been settled yet. A separate `− refund_amount` term would therefore subtract the same
+///    money twice: the old expression netted a half-worked 2000-job (final 1000, refund 1000) to
+///    ZERO instead of 1000. Refunds are still fully reflected — through `final_amount`.
+///  - `− COALESCE(vat_amount, 0)` — the VAT inside that kept amount. Every write path keeps the
+///    split in step with `final_amount` (INVARIANT: `subtotal + vat_amount = COALESCE(final_amount,
+///    amount)`), so this term is exactly the settled row's `subtotal`. Pre-VAT rows have a NULL
+///    split → COALESCE 0 → they count in full, which is correct: no VAT was ever charged on them.
+///  - `status <> 'pending'` — a reserved-but-uncaptured charge is not money. `refunded` rows are
+///    now INCLUDED (they contribute their `final_amount`: 0 for a full refund, the retained
+///    cancellation fee otherwise) — a fee we keep on a cancellation IS revenue, and the old
+///    blanket exclusion would have silently dropped it.
+const NET_REVENUE_EXPR: &str = "COALESCE(SUM(CASE WHEN status <> 'pending' \
+     THEN COALESCE(final_amount, amount) - COALESCE(vat_amount, 0) ELSE 0 END), 0)";
 
 /// Daily net revenue over `[from, to)`, grouped by the day the money landed
 /// (`paid_at`, falling back to `created_at`). `payments` = completed charges that day. Newest
@@ -254,20 +288,22 @@ pub async fn revenue_total(
 
 // ----- Customer-spend report (admin analytics) -----
 
-/// Per-customer lifetime spend: the summed effective amount of each customer's actually-charged
-/// (completed) payments (prorated `final_amount` when set, else `amount`). Powers the web-admin
-/// customers page's spend column. Only `completed` rows count (pending/refunded excluded); the
-/// status enum cast mirrors `admin_list_payments`' `::payment.payment_status`. No owner filter —
-/// the admin-role gate is the API layer's job. Customers with no completed payment do not appear.
+/// Per-customer lifetime spend: what each customer is ultimately OUT OF POCKET, summed over their
+/// settled payments. Powers the web-admin customers page's spend column. No owner filter — the
+/// admin-role gate is the API layer's job.
+///
+/// Same per-row "what was kept" basis as [`NET_REVENUE_EXPR`] (`final_amount` is already net of any
+/// refund; no second `− refund_amount` term, which used to net a half-worked job to zero) — but
+/// deliberately VAT-INCLUSIVE: the customer really did pay the VAT, even though it is not the
+/// platform's revenue. `pending` (never captured) is excluded; a `refunded` row contributes its
+/// `final_amount`, i.e. 0 for a full refund and the retained cancellation fee otherwise. The status
+/// enum cast mirrors `admin_list_payments`' `::payment.payment_status`.
 pub async fn customer_spend(db: &sqlx::PgPool) -> Result<Vec<CustomerSpend>, AppError> {
     let rows = sqlx::query_as::<_, CustomerSpend>(
-        // Net of refunds, mirroring NET_REVENUE_EXPR: a PARTIAL refund stays `completed` with
-        // refund_amount set, so subtract it; a FULL refund flips the row to `refunded` (excluded).
         "SELECT customer_id, \
-                (COALESCE(SUM(COALESCE(final_amount, amount)), 0) \
-                 - COALESCE(SUM(COALESCE(refund_amount, 0)), 0))::numeric AS total \
+                COALESCE(SUM(COALESCE(final_amount, amount)), 0)::numeric AS total \
          FROM payment.payments \
-         WHERE status = 'completed'::payment.payment_status \
+         WHERE status <> 'pending'::payment.payment_status \
          GROUP BY customer_id",
     )
     .fetch_all(db)
@@ -321,34 +357,39 @@ pub enum PrePayOutcome {
 /// `pguard.events.payment.completed` outbox event in ONE transaction. At most one completed
 /// payment per booking — enforced by the UNIQUE partial index + `ON CONFLICT DO NOTHING`.
 ///
-/// v2 is PRE-PAY: the customer pays the ESTIMATE (`base_fee × hours × guard_count + tip`) once a
-/// guard has accepted; that payment GATES the booking's `en_route` transition (booking learns it
-/// is paid by consuming `payment.completed`). A repeat POST cannot double-charge: on conflict the
-/// INSERT returns no row, we roll the (empty) tx back, and return [`PrePayOutcome::AlreadyPaid`]
-/// (no second event emitted). `amount == expected_total ==` the estimate — both server-computed
-/// from booking's authoritative read, never a client value. The completion-time SETTLE
-/// ([`reconcile_on_completion`]) later refunds/charges the difference vs the actual hours.
-#[tracing::instrument(skip(db), fields(booking_id = %booking_id, customer_id = %customer_id))]
-#[allow(clippy::too_many_arguments)]
+/// v2 is PRE-PAY: the customer pays the ESTIMATE (`base_fee × hours × guard_count + tip`, **plus
+/// 7% VAT**) once a guard has accepted; that payment GATES the booking's `en_route` transition
+/// (booking learns it is paid by consuming `payment.completed`). A repeat POST cannot double-charge:
+/// on conflict the INSERT returns no row, we roll the (empty) tx back, and return
+/// [`PrePayOutcome::AlreadyPaid`] (no second event emitted). `amount == expected_total ==
+/// terms.breakdown.grand_total` — all server-computed from booking's authoritative read, never a
+/// client value — and the VAT split behind it is persisted alongside for the tax invoice. The
+/// booking's commission / cancellation-fee snapshot rides along on the row so the guard's earnings
+/// ledger and the (HTTP-less) cancellation consumer never need a cross-service read. The
+/// completion-time SETTLE ([`reconcile_on_completion`]) later refunds/charges the difference vs the
+/// actual hours.
+#[tracing::instrument(skip(db, terms), fields(booking_id = %booking_id, customer_id = %customer_id))]
 pub async fn prepay_idempotent(
     db: &sqlx::PgPool,
     booking_id: Uuid,
     customer_id: Uuid,
     guard_id: Option<Uuid>,
-    amount: Decimal,
-    expected_total: Decimal,
+    terms: &ChargeTerms,
     payment_method: &str,
     correlation_id: Uuid,
 ) -> Result<PrePayOutcome, AppError> {
+    let amount = terms.breakdown.grand_total;
     let mut tx = db.begin().await?;
 
     // 1) the business change — idempotent insert. ON CONFLICT (the UNIQUE partial index)
     //    DO NOTHING means a concurrent/repeat pre-pay inserts nothing. `amount` == `expected_total`
-    //    == the PRE-PAY estimate; the actual-hours SETTLE happens later in reconcile_on_completion.
+    //    == the PRE-PAY estimate (VAT included); the actual-hours SETTLE happens later in
+    //    reconcile_on_completion, which rewrites subtotal/vat_amount to the settled figures.
     let sql = format!(
         "INSERT INTO payment.payments \
-           (booking_id, customer_id, guard_id, amount, expected_total, payment_method, status, paid_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'completed'::payment.payment_status, now()) \
+           (booking_id, customer_id, guard_id, amount, expected_total, subtotal, vat_amount, \
+            commission_percent, cancellation_fee, payment_method, status, paid_at) \
+         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, 'completed'::payment.payment_status, now()) \
          ON CONFLICT (booking_id) WHERE status = 'completed' DO NOTHING \
          RETURNING {PAYMENT_COLUMNS}"
     );
@@ -357,7 +398,10 @@ pub async fn prepay_idempotent(
         .bind(customer_id)
         .bind(guard_id)
         .bind(amount)
-        .bind(expected_total)
+        .bind(terms.breakdown.subtotal)
+        .bind(terms.breakdown.vat)
+        .bind(terms.commission_percent)
+        .bind(terms.cancellation_fee)
         .bind(payment_method)
         .fetch_optional(&mut *tx)
         .await?;
@@ -420,28 +464,31 @@ pub enum SlipPayOutcome {
 /// returning the existing payment (no double-charge, no second event) — distinguished from the
 /// cross-booking reuse above by checking, on a payment conflict, whether the already-recorded slip
 /// for THIS booking carries the same `trans_ref`.
-#[tracing::instrument(skip(db), fields(booking_id = %booking_id, customer_id = %customer_id))]
+#[tracing::instrument(skip(db, terms), fields(booking_id = %booking_id, customer_id = %customer_id))]
 #[allow(clippy::too_many_arguments)]
 pub async fn pay_with_slip(
     db: &sqlx::PgPool,
     booking_id: Uuid,
     customer_id: Uuid,
     guard_id: Option<Uuid>,
-    amount: Decimal,
-    expected_total: Decimal,
+    terms: &ChargeTerms,
     reference_id: &str,
     trans_ref: &str,
     slip_amount: Decimal,
     slip_key: &str,
     correlation_id: Uuid,
 ) -> Result<SlipPayOutcome, AppError> {
+    let amount = terms.breakdown.grand_total;
     let mut tx = db.begin().await?;
 
-    // 1) idempotent payment insert. ON CONFLICT (one completed per booking) DO NOTHING.
+    // 1) idempotent payment insert. ON CONFLICT (one completed per booking) DO NOTHING. Identical
+    //    money shape to the simulated pre-pay: `amount` = `expected_total` = the VAT-INCLUSIVE
+    //    grand total, with its split + the booking's commission/cancellation snapshot alongside.
     let sql = format!(
         "INSERT INTO payment.payments \
-           (booking_id, customer_id, guard_id, amount, expected_total, payment_method, status, paid_at) \
-         VALUES ($1, $2, $3, $4, $5, $6, 'completed'::payment.payment_status, now()) \
+           (booking_id, customer_id, guard_id, amount, expected_total, subtotal, vat_amount, \
+            commission_percent, cancellation_fee, payment_method, status, paid_at) \
+         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, 'completed'::payment.payment_status, now()) \
          ON CONFLICT (booking_id) WHERE status = 'completed' DO NOTHING \
          RETURNING {PAYMENT_COLUMNS}"
     );
@@ -450,7 +497,10 @@ pub async fn pay_with_slip(
         .bind(customer_id)
         .bind(guard_id)
         .bind(amount)
-        .bind(expected_total)
+        .bind(terms.breakdown.subtotal)
+        .bind(terms.breakdown.vat)
+        .bind(terms.commission_percent)
+        .bind(terms.cancellation_fee)
         .bind(SLIP_PAYMENT_METHOD)
         .fetch_optional(&mut *tx)
         .await?;
@@ -556,6 +606,11 @@ pub enum SettleOutcome {
 ///    is NEVER re-charged — only the delta is recorded.
 ///  - equal → record `final_amount` only.
 ///
+/// EVERY arm also rewrites `subtotal`/`vat_amount` to the SETTLED split (the prorated subtotal and
+/// the VAT recomputed on it), keeping the row invariant `subtotal + vat_amount = final_amount`.
+/// That is what the tax invoice must print — VAT on the hours actually worked, not on the original
+/// estimate — and it is what makes the VAT-exclusive revenue expression exact.
+///
 /// Dedup: the event_id is claimed in `processed_events` inside the same tx; a redelivery finds it
 /// claimed and is a NoOp (the refund is never double-applied). If no pre-pay row exists (defensive
 /// — the en_route gate means a completed booking was paid), this is a NoOp: there is nothing to
@@ -624,41 +679,49 @@ pub async fn reconcile_on_completion(
     // never written; leaving it NULL is why the guard's earnings screen (base × BOOKED hours) showed
     // more than the customer's reconciled net. `None` only when the guard never started (defensive —
     // requesting completion requires a start), in which case the column stays NULL and the client
-    // falls back to booked hours.
+    // falls back to booked hours. Priced off the VAT-EXCLUSIVE subtotal — only the hours ratio is
+    // read out, but VAT has no business in an hours calculation.
     let actual_hours: Option<Decimal> = actual_seconds.map(|secs| {
         let booked_base =
-            crate::domain::expected_total(base_fee, booked_hours, guard_count, Decimal::ZERO);
+            crate::domain::pricing::subtotal(base_fee, booked_hours, guard_count, Decimal::ZERO);
         crate::domain::proration::compute_proration(booked_base, booked_hours, secs).actual_hours
     });
 
     let settle = match outcome {
-        Reconciliation::Even => {
-            // Record the (matching) final bill for the ledger; no money moves, no event.
+        Reconciliation::Even { settled } => {
+            // Record the (matching) final bill for the ledger; no money moves, no event. The split
+            // is still written: `amount` alone cannot tell the tax invoice how much of it was VAT.
             sqlx::query(
-                "UPDATE payment.payments SET final_amount = amount, actual_hours = $2, updated_at = now() WHERE id = $1",
+                "UPDATE payment.payments \
+                   SET final_amount = amount, subtotal = $2, vat_amount = $3, actual_hours = $4, \
+                       updated_at = now() \
+                 WHERE id = $1",
             )
             .bind(payment.id)
+            .bind(settled.subtotal)
+            .bind(settled.vat)
             .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
             SettleOutcome::NoOp
         }
-        Reconciliation::Refund {
-            final_amount,
-            refund,
-        } => {
-            // The base is NOT re-charged — only the overpay is returned. refund_status='pending'
-            // (an admin/real-gateway marks 'processed'); the row stays 'completed' (a PARTIAL
-            // refund) so the revenue report nets it out.
+        Reconciliation::Refund { settled, refund } => {
+            // The base is NOT re-charged — only the overpay is returned (including the VAT on the
+            // hours that were never worked). refund_status='pending' (an admin/real-gateway marks
+            // 'processed'); the row stays 'completed' (a PARTIAL refund) and `final_amount` — now
+            // net of the refund — is what the revenue report counts.
+            let final_amount = settled.grand_total;
             sqlx::query(
                 "UPDATE payment.payments \
                    SET final_amount = $2, refund_amount = $3, refund_status = 'pending', \
-                       actual_hours = $4, updated_at = now() \
+                       subtotal = $4, vat_amount = $5, actual_hours = $6, updated_at = now() \
                  WHERE id = $1",
             )
             .bind(payment.id)
             .bind(final_amount)
             .bind(refund)
+            .bind(settled.subtotal)
+            .bind(settled.vat)
             .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
@@ -686,17 +749,21 @@ pub async fn reconcile_on_completion(
                 refund,
             }
         }
-        Reconciliation::Extra {
-            final_amount,
-            extra,
-        } => {
-            // Customer owes more than pre-paid (e.g. a tip bump). Record the higher final_amount;
-            // the delta is owed. No refund event. (A real gateway would capture the extra here.)
+        Reconciliation::Extra { settled, extra } => {
+            // Customer owes more than pre-paid (e.g. a tip bump — and the VAT on it). Record the
+            // higher final_amount + its split; the delta is owed. No refund event. (A real gateway
+            // would capture the extra here.)
+            let final_amount = settled.grand_total;
             sqlx::query(
-                "UPDATE payment.payments SET final_amount = $2, actual_hours = $3, updated_at = now() WHERE id = $1",
+                "UPDATE payment.payments \
+                   SET final_amount = $2, subtotal = $3, vat_amount = $4, actual_hours = $5, \
+                       updated_at = now() \
+                 WHERE id = $1",
             )
             .bind(payment.id)
             .bind(final_amount)
+            .bind(settled.subtotal)
+            .bind(settled.vat)
             .bind(actual_hours)
             .execute(&mut *tx)
             .await?;
@@ -711,28 +778,58 @@ pub async fn reconcile_on_completion(
     Ok(settle)
 }
 
-/// The outcome of a cancellation/decline FULL refund against the pre-paid amount.
+/// The outcome of settling a pre-pay when the job was cancelled before it ran.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CancelRefundOutcome {
-    /// Nothing to refund (no PAID pre-pay on file, or the event was already processed).
+    /// Nothing to settle (no PAID pre-pay on file, or the event was already processed).
     NoOp,
-    /// The whole pre-paid `refund` was returned (status → `refunded`, refund_status = 'pending',
-    /// emitted `payment.refund_processed`).
-    Refunded { refund: Decimal },
+    /// The pre-pay was unwound: `fee_charged` was retained (always 0 when the GUARD withdrew) and
+    /// `refund` returned to the customer. The row is `refunded`; `refund_status='pending'` and a
+    /// `payment.refund_processed` event were only produced when `refund > 0`.
+    Refunded {
+        refund: Decimal,
+        fee_charged: Decimal,
+    },
 }
 
-/// FULL-REFUND a pre-paid booking whose job was CANCELLED or DECLINED before it ran — a guard
-/// withdrawing en_route, or a customer cancelling after paying — in ONE transaction. No work was
-/// done, so the ENTIRE pre-pay is returned: the payment row flips `status → refunded`,
-/// `final_amount → 0`, `refund_amount → the whole paid amount`, `refund_status → 'pending'` (an
-/// admin / real gateway later marks it 'processed'), and a `payment.refund_processed` event is
-/// enqueued. Excluding the `refunded` row from revenue nets the booking to zero.
+/// The few columns the cancellation settle needs off the paid pre-pay (no `SELECT *` on the money
+/// path). `cancellation_fee` is the booking's SNAPSHOT, copied onto the row at charge time — which
+/// is why this consumer needs no cross-service read, and why editing the catalog later cannot
+/// change the terms of a booking that is already paid for.
+#[derive(Debug, sqlx::FromRow)]
+struct CancelSettleRow {
+    id: Uuid,
+    customer_id: Uuid,
+    guard_id: Option<Uuid>,
+    amount: Decimal,
+    cancellation_fee: Option<Decimal>,
+}
+
+/// REFUND a pre-paid booking whose job was CANCELLED or DECLINED before it ran, in ONE transaction.
+/// No work was done, so nothing is charged for labour — but WHO backed out decides whether a
+/// cancellation fee is retained:
+///  - `booking.cancelled` — the CUSTOMER backed out. Retain
+///    `min(cancellation_fee, amount_paid)` ([`crate::domain::cancellation_fee_charged`] — "take
+///    what is there, never leave a debt": nothing paid → nothing charged, and the fee can never
+///    exceed the payment) and refund the rest.
+///  - `booking.declined` — the GUARD withdrew. The customer did nothing wrong → FULL refund, no
+///    fee. Anything other than the cancelled topic is treated this way (fail-open toward the
+///    customer).
+///
+/// The row always ends `refunded` (the booking is dead; this also keeps a cancelled job out of the
+/// guard's `completed` earnings ledger). `final_amount` = the retained fee, `refund_amount` = what
+/// went back, `cancellation_fee_charged` = the fee for the audit trail, and `subtotal`/`vat_amount`
+/// are rewritten to the fee's own VAT split — the fee is carved out of VAT-INCLUSIVE money, so the
+/// platform keeps `fee − VAT`, not the whole fee. `refund_status='pending'` + the
+/// `payment.refund_processed` event are produced ONLY when money actually goes back: a fee that
+/// absorbs the entire payment must not queue a ฿0 refund or push "you were refunded ฿0".
 ///
 /// Idempotent via the `processed_events` ledger: the event_id is claimed in the same tx, so a
 /// JetStream redelivery is a NoOp (the refund is never applied twice). NoOp when there is no PAID
 /// pre-pay on file — an UNPAID cancel (e.g. cancelled at `accepted`, before the pre-pay) has
-/// nothing to return. `status = 'completed'` in the lookup already excludes an already-`refunded`
-/// row, so a double-refund is impossible even independent of the event-id claim.
+/// nothing to return and, per the rule above, nothing to charge either. `status = 'completed'` in
+/// the lookup already excludes an already-`refunded` row, so a double-refund is impossible even
+/// independent of the event-id claim.
 #[tracing::instrument(skip(db), fields(booking_id = %booking_id, event_id = %event_id))]
 pub async fn refund_on_cancellation(
     db: &sqlx::PgPool,
@@ -758,15 +855,14 @@ pub async fn refund_on_cancellation(
         return Ok(CancelRefundOutcome::NoOp);
     }
 
-    // 2) the PAID pre-pay to return (FOR UPDATE locks it for the write).
-    let sql = format!(
-        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
-         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE"
-    );
-    let Some(payment) = sqlx::query_as::<_, PaymentResponse>(&sql)
-        .bind(booking_id)
-        .fetch_optional(&mut *tx)
-        .await?
+    // 2) the PAID pre-pay to settle (FOR UPDATE locks it for the write).
+    let Some(payment) = sqlx::query_as::<_, CancelSettleRow>(
+        "SELECT id, customer_id, guard_id, amount, cancellation_fee FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE",
+    )
+    .bind(booking_id)
+    .fetch_optional(&mut *tx)
+    .await?
     else {
         // No paid pre-pay — an unpaid cancel (nothing to return). Commit the claim so a replay
         // stays a NoOp.
@@ -775,40 +871,73 @@ pub async fn refund_on_cancellation(
         return Ok(CancelRefundOutcome::NoOp);
     };
 
-    // FULL refund — no work was done. Flip to `refunded` (excluded from revenue → nets to 0),
-    // return the whole amount, and queue it for the refund workflow.
-    let refund = payment.amount;
+    // 3) WHO cancelled decides the fee. Only the customer's own cancellation carries one; a guard
+    //    withdrawal (`booking.declined`) — and any unexpected type — refunds in full.
+    let fee_charged = if event_type == topics::BOOKING_CANCELLED {
+        crate::domain::cancellation_fee_charged(
+            payment.cancellation_fee.unwrap_or(Decimal::ZERO),
+            payment.amount,
+        )
+    } else {
+        Decimal::ZERO
+    };
+    let refund = (payment.amount - fee_charged).max(Decimal::ZERO);
+    // What we keep is VAT-INCLUSIVE money, so split the VAT back out of it (a fully-refunded
+    // cancellation keeps nothing → the all-zero split).
+    let kept = crate::domain::PriceBreakdown::from_gross(fee_charged);
+    // Only queue the refund workflow when money is actually going back.
+    let refund_status = if refund > Decimal::ZERO {
+        Some("pending")
+    } else {
+        None
+    };
+
     sqlx::query(
         "UPDATE payment.payments \
-           SET status = 'refunded'::payment.payment_status, final_amount = 0, \
-               refund_amount = $2, refund_status = 'pending', updated_at = now() \
+           SET status = 'refunded'::payment.payment_status, final_amount = $2, \
+               refund_amount = $3, refund_status = $4, cancellation_fee_charged = $5, \
+               subtotal = $6, vat_amount = $7, updated_at = now() \
          WHERE id = $1",
     )
     .bind(payment.id)
+    .bind(fee_charged)
     .bind(refund)
+    .bind(refund_status)
+    .bind(fee_charged)
+    .bind(kept.subtotal)
+    .bind(kept.vat)
     .execute(&mut *tx)
     .await?;
 
-    // customer_id/guard_id carried so notification can route the refund push to the payer.
-    let payload = serde_json::json!({
-        "payment_id": payment.id,
-        "booking_id": booking_id,
-        "customer_id": payment.customer_id,
-        "guard_id": payment.guard_id,
-        "refund_amount": refund,
-        "final_amount": Decimal::ZERO,
-    });
-    enqueue_outbox(
-        &mut tx,
-        topics::PAYMENT_REFUND_PROCESSED,
-        payload,
-        correlation_id,
-    )
-    .await?;
+    if refund > Decimal::ZERO {
+        // customer_id/guard_id carried so notification can route the refund push to the payer.
+        // `final_amount` is the retained fee, so the customer can be told what was kept and why.
+        let payload = serde_json::json!({
+            "payment_id": payment.id,
+            "booking_id": booking_id,
+            "customer_id": payment.customer_id,
+            "guard_id": payment.guard_id,
+            "refund_amount": refund,
+            "final_amount": fee_charged,
+        });
+        enqueue_outbox(
+            &mut tx,
+            topics::PAYMENT_REFUND_PROCESSED,
+            payload,
+            correlation_id,
+        )
+        .await?;
+    }
 
     tx.commit().await?;
-    tracing::info!(booking_id = %booking_id, %refund, "full-refunded pre-pay on cancellation/decline");
-    Ok(CancelRefundOutcome::Refunded { refund })
+    tracing::info!(
+        booking_id = %booking_id, %refund, %fee_charged, event_type,
+        "settled pre-pay on cancellation/decline"
+    );
+    Ok(CancelRefundOutcome::Refunded {
+        refund,
+        fee_charged,
+    })
 }
 
 /// Compensating FULL refund for a pre-pay that COMMITTED against a booking which had already gone
@@ -821,6 +950,11 @@ pub async fn refund_on_cancellation(
 /// cancel-consumer (or a repeat) already refunded, the row is `refunded` and the lookup matches
 /// nothing → NoOp, so no second refund_processed. NOT tied to an event_id (there is none — this is
 /// triggered by the pay path's own re-read, not a cancel event).
+///
+/// NO cancellation fee is ever retained here, even when the terminal status is the customer's own
+/// `cancelled`: this charge landed on a booking that was ALREADY dead, so the customer never had a
+/// live booking to cancel — the fee belongs to the cancel-consumer's path, which prices the real
+/// cancellation. Charging here would double-dip (the consumer's settle already ran, or will).
 #[tracing::instrument(skip(db), fields(booking_id = %booking_id))]
 pub async fn refund_race_lost_prepay(
     db: &sqlx::PgPool,
@@ -828,14 +962,13 @@ pub async fn refund_race_lost_prepay(
     correlation_id: Uuid,
 ) -> Result<CancelRefundOutcome, AppError> {
     let mut tx = db.begin().await?;
-    let sql = format!(
-        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
-         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE"
-    );
-    let Some(payment) = sqlx::query_as::<_, PaymentResponse>(&sql)
-        .bind(booking_id)
-        .fetch_optional(&mut *tx)
-        .await?
+    let Some(payment) = sqlx::query_as::<_, CancelSettleRow>(
+        "SELECT id, customer_id, guard_id, amount, cancellation_fee FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE",
+    )
+    .bind(booking_id)
+    .fetch_optional(&mut *tx)
+    .await?
     else {
         // Already refunded (the cancel-consumer got there first, or a concurrent compensator) → NoOp.
         tx.rollback().await?;
@@ -846,7 +979,8 @@ pub async fn refund_race_lost_prepay(
     sqlx::query(
         "UPDATE payment.payments \
            SET status = 'refunded'::payment.payment_status, final_amount = 0, \
-               refund_amount = $2, refund_status = 'pending', updated_at = now() \
+               refund_amount = $2, refund_status = 'pending', cancellation_fee_charged = 0, \
+               subtotal = 0, vat_amount = 0, updated_at = now() \
          WHERE id = $1",
     )
     .bind(payment.id)
@@ -872,7 +1006,10 @@ pub async fn refund_race_lost_prepay(
 
     tx.commit().await?;
     tracing::warn!(booking_id = %booking_id, %refund, "pay-vs-cancel race: compensating full-refund of a pre-pay that committed on a terminal booking");
-    Ok(CancelRefundOutcome::Refunded { refund })
+    Ok(CancelRefundOutcome::Refunded {
+        refund,
+        fee_charged: Decimal::ZERO,
+    })
 }
 
 /// Insert one outbox row (a fully-formed EventEnvelope) inside the caller's transaction.
@@ -922,8 +1059,57 @@ mod db_tests {
     use sqlx::postgres::PgPoolOptions;
     use std::time::Duration;
 
+    use crate::domain::PriceBreakdown;
+
     fn dec(s: &str) -> Decimal {
         s.parse().unwrap()
+    }
+
+    /// Charge terms for a VAT-EXCLUSIVE `subtotal` with no commission and no cancellation fee —
+    /// what the API layer assembles from a booking that carries neither snapshot. The charged
+    /// `amount` is the GRAND TOTAL (`subtotal` + 7%), e.g. `terms_of("2000.00")` charges 2140.00.
+    fn terms_of(subtotal: &str) -> ChargeTerms {
+        ChargeTerms::new(
+            PriceBreakdown::from_subtotal(dec(subtotal)),
+            Decimal::ZERO,
+            Decimal::ZERO,
+        )
+    }
+
+    /// Charge terms carrying the booking's commission % + cancellation-fee snapshot.
+    fn terms_with(subtotal: &str, commission_percent: &str, cancellation_fee: &str) -> ChargeTerms {
+        ChargeTerms::new(
+            PriceBreakdown::from_subtotal(dec(subtotal)),
+            dec(commission_percent),
+            dec(cancellation_fee),
+        )
+    }
+
+    /// The money columns a settle/cancel assertion reads back off the row (a named struct rather
+    /// than an 8-wide tuple, so the assertions say what they mean).
+    #[derive(Debug, sqlx::FromRow)]
+    struct SettledRow {
+        status: String,
+        amount: Decimal,
+        final_amount: Option<Decimal>,
+        refund_amount: Option<Decimal>,
+        refund_status: Option<String>,
+        cancellation_fee_charged: Option<Decimal>,
+        subtotal: Option<Decimal>,
+        vat_amount: Option<Decimal>,
+    }
+
+    /// Read the settled money state of one payment row.
+    async fn settled_row(pool: &sqlx::PgPool, payment_id: Uuid) -> SettledRow {
+        sqlx::query_as::<_, SettledRow>(
+            "SELECT status::text AS status, amount, final_amount, refund_amount, refund_status, \
+                    cancellation_fee_charged, subtotal, vat_amount \
+             FROM payment.payments WHERE id = $1",
+        )
+        .bind(payment_id)
+        .fetch_one(pool)
+        .await
+        .expect("read settled row")
     }
 
     /// Unwrap the payment out of a [`PrePayOutcome`] (tests don't care which arm here).
@@ -964,8 +1150,7 @@ mod db_tests {
             booking_id,
             customer_id,
             guard_id,
-            dec("400.00"),
-            dec("400.00"),
+            &terms_of("400.00"),
             "promptpay",
             correlation,
         )
@@ -977,8 +1162,16 @@ mod db_tests {
         );
         let first = payment_of(first_out);
         assert_eq!(first.status, "completed");
-        assert_eq!(first.amount, dec("400.00"));
-        assert_eq!(first.expected_total, Some(dec("400.00")));
+        // The customer is charged the GRAND TOTAL (400.00 + 7% VAT), with the split persisted.
+        assert_eq!(first.amount, dec("428.00"));
+        assert_eq!(first.expected_total, Some(dec("428.00")));
+        assert_eq!(first.subtotal, Some(dec("400.00")));
+        assert_eq!(first.vat_amount, Some(dec("28.00")));
+        assert_eq!(
+            first.grand_total,
+            dec("428.00"),
+            "grand_total is derived from the split"
+        );
         assert_eq!(first.guard_id, guard_id);
 
         // Retry — must be AlreadyPaid with the SAME payment, not a new one.
@@ -987,8 +1180,7 @@ mod db_tests {
             booking_id,
             customer_id,
             guard_id,
-            dec("400.00"),
-            dec("400.00"),
+            &terms_of("400.00"),
             "promptpay",
             Uuid::new_v4(),
         )
@@ -1068,11 +1260,10 @@ mod db_tests {
                 booking_id,
                 customer_id,
                 guard_id,
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 &reference_id,
                 &trans_ref,
-                dec("2000.00"),
+                dec("2140.00"),
                 "payment/x/slips/a.jpg",
                 Uuid::new_v4(),
             )
@@ -1081,7 +1272,10 @@ mod db_tests {
         );
         assert_eq!(first.status, "completed");
         assert_eq!(first.payment_method.as_deref(), Some("promptpay_slip"));
-        assert_eq!(first.amount, dec("2000.00"));
+        // The real money path charges the same VAT-inclusive grand total as the simulated one.
+        assert_eq!(first.amount, dec("2140.00"));
+        assert_eq!(first.subtotal, Some(dec("2000.00")));
+        assert_eq!(first.vat_amount, Some(dec("140.00")));
 
         // The slip row was recorded with the trans_ref.
         let slip_count: i64 = sqlx::query_scalar(
@@ -1100,11 +1294,10 @@ mod db_tests {
             booking_id,
             customer_id,
             guard_id,
-            dec("2000.00"),
-            dec("2000.00"),
+            &terms_of("2000.00"),
             &reference_id,
             &trans_ref,
-            dec("2000.00"),
+            dec("2140.00"),
             "payment/x/slips/b.jpg",
             Uuid::new_v4(),
         )
@@ -1169,11 +1362,10 @@ mod db_tests {
                 booking_a,
                 Uuid::new_v4(),
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 &ref_a,
                 &trans_ref,
-                dec("2000.00"),
+                dec("2140.00"),
                 "payment/a/slips/a.jpg",
                 Uuid::new_v4(),
             )
@@ -1187,11 +1379,10 @@ mod db_tests {
             booking_b,
             Uuid::new_v4(),
             Some(Uuid::new_v4()),
-            dec("2000.00"),
-            dec("2000.00"),
+            &terms_of("2000.00"),
             &ref_b,
             &trans_ref, // REUSED
-            dec("2000.00"),
+            dec("2140.00"),
             "payment/b/slips/b.jpg",
             Uuid::new_v4(),
         )
@@ -1222,11 +1413,10 @@ mod db_tests {
             booking_b,
             Uuid::new_v4(),
             Some(Uuid::new_v4()),
-            dec("2000.00"),
-            dec("2000.00"),
+            &terms_of("2000.00"),
             &ref_a, // REUSED reference_id
             &format!("TR-{}", Uuid::new_v4()),
-            dec("2000.00"),
+            dec("2140.00"),
             "payment/b/slips/c.jpg",
             Uuid::new_v4(),
         )
@@ -1274,8 +1464,7 @@ mod db_tests {
                 booking_a,
                 customer_a,
                 Some(Uuid::new_v4()),
-                dec("400.00"),
-                dec("400.00"),
+                &terms_of("400.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1288,8 +1477,7 @@ mod db_tests {
                 booking_b,
                 customer_b,
                 Some(Uuid::new_v4()),
-                dec("250.00"),
-                dec("250.00"),
+                &terms_of("250.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1359,7 +1547,8 @@ mod db_tests {
             eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
             return;
         };
-        // Booking A: pre-pay 2000, work 2h of 4h → refund 1000 owed (refund_status='pending').
+        // Booking A: pre-pay 2140.00 (2000 + VAT), work 2h of 4h → settled 1070.00 → refund
+        // 1070.00 owed (refund_status='pending').
         let booking_a = Uuid::new_v4();
         let event_a = Uuid::new_v4();
         let pay_a = payment_of(
@@ -1368,8 +1557,7 @@ mod db_tests {
                 booking_a,
                 Uuid::new_v4(),
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1391,7 +1579,7 @@ mod db_tests {
         .await
         .expect("reconcile A");
 
-        // Booking B: pre-pay 2000, work the full 4h → no refund (must NOT appear in the queue).
+        // Booking B: pre-pay 2140.00, work the full 4h → no refund (must NOT appear in the queue).
         let booking_b = Uuid::new_v4();
         let event_b = Uuid::new_v4();
         let pay_b = payment_of(
@@ -1400,8 +1588,7 @@ mod db_tests {
                 booking_b,
                 Uuid::new_v4(),
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1432,7 +1619,7 @@ mod db_tests {
             .find(|r| r.payment_id == pay_a.id)
             .expect("A in pending queue");
         assert_eq!(row_a.booking_id, booking_a);
-        assert_eq!(row_a.amount, dec("1000.00"), "amount = the refund owed");
+        assert_eq!(row_a.amount, dec("1070.00"), "amount = the refund owed");
         assert_eq!(row_a.status, "pending");
         assert!(
             !pending.iter().any(|r| r.payment_id == pay_b.id),
@@ -1488,15 +1675,14 @@ mod db_tests {
         let customer_id = Uuid::new_v4();
         let event_id = Uuid::new_v4();
 
-        // Pre-pay the estimate 500×4×1 + 0 = 2000.00.
+        // Pre-pay the estimate 500×4×1 + 0 = 2000.00 subtotal → 2140.00 charged with VAT.
         let paid = payment_of(
             prepay_idempotent(
                 &pool,
                 booking_id,
                 customer_id,
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1504,7 +1690,8 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
-        // Complete after working only 2h of 4h → actual 1000.00 → refund 1000.00.
+        // Complete after working only 2h of 4h → settled subtotal 1000.00 + VAT 70.00 = 1070.00
+        // → refund 1070.00 (the unused VAT goes back with the unused base).
         let out = reconcile_on_completion(
             &pool,
             event_id,
@@ -1522,24 +1709,41 @@ mod db_tests {
         assert_eq!(
             out,
             SettleOutcome::Refunded {
-                final_amount: dec("1000.00"),
-                refund: dec("1000.00"),
+                final_amount: dec("1070.00"),
+                refund: dec("1070.00"),
             }
         );
 
-        // The row reflects the refund; the base was never re-charged (amount unchanged).
-        let row: (Decimal, Option<Decimal>, Option<Decimal>, Option<String>) = sqlx::query_as(
-            "SELECT amount, final_amount, refund_amount, refund_status \
-             FROM payment.payments WHERE id = $1",
-        )
-        .bind(paid.id)
-        .fetch_one(&pool)
-        .await
-        .expect("read row");
-        assert_eq!(row.0, dec("2000.00"), "amount (pre-paid) unchanged");
-        assert_eq!(row.1, Some(dec("1000.00")), "final_amount = actual bill");
-        assert_eq!(row.2, Some(dec("1000.00")), "refund_amount = overpay");
-        assert_eq!(row.3.as_deref(), Some("pending"));
+        // The row reflects the refund; the base was never re-charged (amount unchanged). The VAT
+        // split is REWRITTEN to the settled bill and still reconstructs it exactly.
+        let row = settled_row(&pool, paid.id).await;
+        assert_eq!(row.amount, dec("2140.00"), "amount (pre-paid) unchanged");
+        assert_eq!(
+            row.final_amount,
+            Some(dec("1070.00")),
+            "final_amount = actual bill"
+        );
+        assert_eq!(
+            row.refund_amount,
+            Some(dec("1070.00")),
+            "refund_amount = overpay"
+        );
+        assert_eq!(row.refund_status.as_deref(), Some("pending"));
+        assert_eq!(
+            row.subtotal,
+            Some(dec("1000.00")),
+            "subtotal = prorated base"
+        );
+        assert_eq!(
+            row.vat_amount,
+            Some(dec("70.00")),
+            "VAT recomputed on the prorated subtotal"
+        );
+        assert_eq!(
+            row.subtotal.unwrap() + row.vat_amount.unwrap(),
+            row.final_amount.unwrap(),
+            "the persisted split must reconstruct final_amount exactly"
+        );
 
         // exactly ONE refund_processed event.
         let refunds: i64 = sqlx::query_scalar(
@@ -1617,8 +1821,7 @@ mod db_tests {
                 booking_id,
                 customer_id,
                 Some(guard_id),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_with("2000.00", "10.00", "300.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1650,13 +1853,20 @@ mod db_tests {
                 .expect("read actual_hours");
         assert_eq!(ah, Some(dec("2.00")), "actual_hours persisted at reconcile");
 
-        // The guard's earnings ledger surfaces the booking + its actual worked hours.
+        // The guard's earnings ledger surfaces the booking, its actual worked hours AND the
+        // commission % snapshotted from the booking, so the app can show what was deducted
+        // (500 × 2.00 = 1000.00 gross → 10% = 100.00 commission → 900.00 net).
         let earnings = guard_earnings(&pool, guard_id).await.expect("earnings");
         let row = earnings
             .iter()
             .find(|e| e.booking_id == booking_id)
             .expect("the completed job appears in the guard's earnings");
         assert_eq!(row.actual_hours, Some(dec("2.00")));
+        assert_eq!(
+            row.commission_percent,
+            Some(dec("10.00")),
+            "the booking's commission snapshot rides along on the payment row"
+        );
 
         // A DIFFERENT guard sees nothing for this booking (own-only scoping).
         let other = guard_earnings(&pool, Uuid::new_v4()).await.expect("other");
@@ -1678,10 +1888,12 @@ mod db_tests {
             .await;
     }
 
-    /// Real-Postgres: PRE-PAY a booking, then CANCEL/DECLINE it before it ran → the WHOLE pre-pay is
-    /// FULL-refunded (status → refunded, refund_amount = the full amount, final_amount 0,
-    /// refund_status='pending', a `payment.refund_processed` emitted). Idempotent (a redelivery is a
-    /// NoOp). An UNPAID booking (no pre-pay on file) → NoOp. DATABASE_URL-gated.
+    /// Real-Postgres: PRE-PAY a booking, then the GUARD WITHDRAWS (`booking.declined`) before it
+    /// ran → the WHOLE pre-pay is FULL-refunded with NO cancellation fee, even though the booking
+    /// carries one: the customer did nothing wrong (status → refunded, refund_amount = the full
+    /// amount, final_amount 0, cancellation_fee_charged 0, refund_status='pending', a
+    /// `payment.refund_processed` emitted). Idempotent (a redelivery is a NoOp). An UNPAID booking
+    /// (no pre-pay on file) → NoOp. DATABASE_URL-gated.
     #[tokio::test]
     async fn refund_on_cancellation_full_refunds_and_is_idempotent() {
         let Some(pool) = pool().await else {
@@ -1692,15 +1904,14 @@ mod db_tests {
         let customer_id = Uuid::new_v4();
         let event_id = Uuid::new_v4();
 
-        // A paid pre-pay of 2000.00.
+        // A paid pre-pay of 2140.00 (2000 + VAT) on a booking WITH a 300.00 cancellation fee.
         let paid = payment_of(
             prepay_idempotent(
                 &pool,
                 booking_id,
                 customer_id,
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_with("2000.00", "10.00", "300.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1708,7 +1919,7 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
-        // Guard withdraws en_route (booking.declined) → the WHOLE pre-pay is refunded.
+        // Guard withdraws en_route (booking.declined) → the WHOLE pre-pay is refunded, fee-free.
         let out = refund_on_cancellation(
             &pool,
             event_id,
@@ -1721,30 +1932,33 @@ mod db_tests {
         assert_eq!(
             out,
             CancelRefundOutcome::Refunded {
-                refund: dec("2000.00")
-            }
+                refund: dec("2140.00"),
+                fee_charged: Decimal::ZERO,
+            },
+            "a guard withdrawal never charges the customer a cancellation fee"
         );
 
         // The row: status refunded, full refund_amount, final_amount 0, pending refund workflow.
-        let row: (String, Option<Decimal>, Option<Decimal>, Option<String>) = sqlx::query_as(
-            "SELECT status::text, final_amount, refund_amount, refund_status \
-             FROM payment.payments WHERE id = $1",
-        )
-        .bind(paid.id)
-        .fetch_one(&pool)
-        .await
-        .expect("read row");
-        assert_eq!(row.0, "refunded", "a FULL refund flips status → refunded");
+        let row = settled_row(&pool, paid.id).await;
+        assert_eq!(
+            row.status, "refunded",
+            "a FULL refund flips status → refunded"
+        );
         assert!(
-            row.1.expect("final_amount").is_zero(),
+            row.final_amount.expect("final_amount").is_zero(),
             "final_amount 0 (no work)"
         );
         assert_eq!(
-            row.2,
-            Some(dec("2000.00")),
+            row.refund_amount,
+            Some(dec("2140.00")),
             "refund_amount = the full pre-pay"
         );
-        assert_eq!(row.3.as_deref(), Some("pending"));
+        assert_eq!(row.refund_status.as_deref(), Some("pending"));
+        assert_eq!(
+            row.cancellation_fee_charged,
+            Some(Decimal::ZERO),
+            "no fee retained when the guard withdrew"
+        );
 
         // Shows in the admin refund queue with amount = the full refund.
         let pending = admin_list_refund_queue(&pool, Some("pending"), 200, 0)
@@ -1754,7 +1968,7 @@ mod db_tests {
             .iter()
             .find(|r| r.payment_id == paid.id)
             .expect("in refund queue");
-        assert_eq!(qrow.amount, dec("2000.00"));
+        assert_eq!(qrow.amount, dec("2140.00"));
 
         // exactly ONE refund_processed event.
         let refunds: i64 = sqlx::query_scalar(
@@ -1839,15 +2053,14 @@ mod db_tests {
         let customer_id = Uuid::new_v4();
         let event_id = Uuid::new_v4();
 
-        // Pre-pay 500×4×1 + 0 = 2000.00 (no tip).
+        // Pre-pay 500×4×1 + 0 = 2000.00 subtotal → 2140.00 with VAT (no tip).
         let paid = payment_of(
             prepay_idempotent(
                 &pool,
                 booking_id,
                 customer_id,
                 Some(Uuid::new_v4()),
-                dec("2000.00"),
-                dec("2000.00"),
+                &terms_of("2000.00"),
                 "promptpay",
                 Uuid::new_v4(),
             )
@@ -1855,7 +2068,8 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
-        // Complete the full 4h WITH a 300 tip → actual 2300.00, extra 300.00 owed.
+        // Complete the full 4h WITH a 300 tip → settled 2300.00 + 161.00 VAT = 2461.00, so
+        // 321.00 is owed (the tip AND the VAT on it).
         let out = reconcile_on_completion(
             &pool,
             event_id,
@@ -1873,21 +2087,31 @@ mod db_tests {
         assert_eq!(
             out,
             SettleOutcome::ExtraCharged {
-                final_amount: dec("2300.00"),
-                extra: dec("300.00"),
+                final_amount: dec("2461.00"),
+                extra: dec("321.00"),
             }
         );
 
-        let row: (Decimal, Option<Decimal>, Option<Decimal>) = sqlx::query_as(
-            "SELECT amount, final_amount, refund_amount FROM payment.payments WHERE id = $1",
+        let row: (Decimal, Option<Decimal>, Option<Decimal>, Option<Decimal>) = sqlx::query_as(
+            "SELECT amount, final_amount, refund_amount, vat_amount \
+             FROM payment.payments WHERE id = $1",
         )
         .bind(paid.id)
         .fetch_one(&pool)
         .await
         .expect("read row");
-        assert_eq!(row.0, dec("2000.00"), "amount (pre-paid base) unchanged");
-        assert_eq!(row.1, Some(dec("2300.00")), "final_amount = actual + tip");
+        assert_eq!(row.0, dec("2140.00"), "amount (pre-paid base) unchanged");
+        assert_eq!(
+            row.1,
+            Some(dec("2461.00")),
+            "final_amount = actual + tip + VAT"
+        );
         assert!(row.2.is_none(), "no refund on an under-payment");
+        assert_eq!(
+            row.3,
+            Some(dec("161.00")),
+            "VAT rewritten for the higher settled subtotal"
+        );
 
         // No refund event emitted.
         let refunds: i64 = sqlx::query_scalar(
@@ -1900,6 +2124,298 @@ mod db_tests {
         .await
         .expect("count refunds");
         assert_eq!(refunds, 0, "an extra charge emits no refund event");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: the CUSTOMER cancels a paid booking (`booking.cancelled`) → the booking's
+    /// cancellation fee is RETAINED and the rest refunded. The row keeps the fee as `final_amount`
+    /// + `cancellation_fee_charged`, splits the fee's own VAT out (the fee is carved from
+    /// VAT-inclusive money), and still queues + emits the partial refund. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn customer_cancellation_retains_the_fee_and_refunds_the_rest() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // Paid 2140.00 on a booking whose cancellation fee is 300.00.
+        let paid = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_with("2000.00", "10.00", "300.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_CANCELLED,
+            booking_id,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("cancel settle");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: dec("1840.00"),
+                fee_charged: dec("300.00"),
+            },
+            "min(fee, paid) is kept; the remainder goes back"
+        );
+
+        let row = settled_row(&pool, paid.id).await;
+        assert_eq!(row.status, "refunded", "the booking is dead either way");
+        assert_eq!(
+            row.final_amount,
+            Some(dec("300.00")),
+            "final_amount = the retained fee"
+        );
+        assert_eq!(
+            row.refund_amount,
+            Some(dec("1840.00")),
+            "refund_amount = 2140 − 300"
+        );
+        assert_eq!(
+            row.refund_status.as_deref(),
+            Some("pending"),
+            "a real refund is queued"
+        );
+        assert_eq!(
+            row.cancellation_fee_charged,
+            Some(dec("300.00")),
+            "the fee is recorded for audit"
+        );
+        // The fee is VAT-INCLUSIVE money: 300.00 × 7/107 = 19.63 VAT, 280.37 actual revenue.
+        assert_eq!(
+            row.subtotal,
+            Some(dec("280.37")),
+            "fee subtotal (VAT carved out)"
+        );
+        assert_eq!(
+            row.vat_amount,
+            Some(dec("19.63")),
+            "VAT inside the retained fee"
+        );
+        assert_eq!(
+            row.subtotal.unwrap() + row.vat_amount.unwrap(),
+            row.final_amount.unwrap(),
+            "the split must still reconstruct final_amount"
+        );
+
+        // Exactly one refund_processed event (money DID go back).
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds");
+        assert_eq!(refunds, 1, "the partial refund is announced once");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: a cancellation fee LARGER than what the customer paid is clamped to the
+    /// payment ("take what is there, never leave a debt") — nothing is refunded, and crucially no
+    /// ฿0 refund is queued or announced (that would push "you were refunded ฿0" and pollute the
+    /// admin refund queue). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn cancellation_fee_is_clamped_to_the_payment_and_emits_no_zero_refund() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // Paid only 107.00 (100.00 + VAT) against a 5000.00 cancellation fee.
+        let paid = payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_with("100.00", "0", "5000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_CANCELLED,
+            booking_id,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("cancel settle");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: Decimal::ZERO,
+                fee_charged: dec("107.00"),
+            },
+            "the fee never exceeds what was actually paid"
+        );
+
+        let row = settled_row(&pool, paid.id).await;
+        assert_eq!(row.status, "refunded");
+        assert_eq!(
+            row.refund_amount,
+            Some(Decimal::ZERO),
+            "nothing to give back"
+        );
+        assert_eq!(
+            row.cancellation_fee_charged,
+            Some(dec("107.00")),
+            "the whole payment was retained"
+        );
+        assert!(
+            row.refund_status.is_none(),
+            "a ฿0 refund must NOT enter the admin refund queue"
+        );
+
+        // And no refund_processed event was emitted for a ฿0 refund.
+        let refunds: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.outbox \
+             WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::PAYMENT_REFUND_PROCESSED)
+        .bind(booking_id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count refunds");
+        assert_eq!(refunds, 0, "no ฿0 refund is announced to the customer");
+
+        // cleanup
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")
+            .bind(event_id)
+            .execute(&pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres: the revenue report is VAT-EXCLUSIVE and counts what was actually KEPT.
+    /// A half-worked job that pre-paid 2140.00 and was refunded 1070.00 contributes its 1000.00
+    /// settled SUBTOTAL — not 1070.00 (that would count the Revenue Department's VAT as income)
+    /// and not 0.00 (the old double-subtraction of `final_amount − refund_amount`). The daily
+    /// series and the window total must agree, since both use the same expression.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn revenue_is_vat_exclusive_and_nets_refunds_once() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_of("2000.00"),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+        reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(7200), // worked 2h of 4h → settled 1070.00, refunded 1070.00
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile");
+
+        // Park the row at a UNIQUE instant somewhere in 1970..2000 and aggregate a ±1s window
+        // around it: `revenue_total` has no owner filter, so a "last 5 minutes" window would pick
+        // up rows from tests running in parallel. This makes the assertion exact.
+        let anchor = DateTime::from_timestamp((Uuid::new_v4().as_u128() % 946_684_800) as i64, 0)
+            .expect("anchor timestamp");
+        sqlx::query("UPDATE payment.payments SET paid_at = $2 WHERE booking_id = $1")
+            .bind(booking_id)
+            .bind(anchor)
+            .execute(&pool)
+            .await
+            .expect("park the row in an isolated window");
+        let from = anchor - chrono::TimeDelta::seconds(1);
+        let to = anchor + chrono::TimeDelta::seconds(1);
+
+        let total = revenue_total(&pool, from, to).await.expect("total");
+        assert_eq!(
+            total,
+            dec("1000.00"),
+            "revenue = the settled VAT-EXCLUSIVE subtotal, counted once"
+        );
+
+        // The chart must not disagree with the headline number.
+        let series = revenue_series(&pool, from, to).await.expect("series");
+        let series_total: Decimal = series.iter().map(|p| p.revenue).sum();
+        assert_eq!(
+            series_total, total,
+            "the daily series must sum to the window total (one shared expression)"
+        );
 
         // cleanup
         let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = $1")

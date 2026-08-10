@@ -8,11 +8,12 @@ import 'package:built_value/serializer.dart';
 
 part 'guard_earning.g.dart';
 
-/// One completed job's earning basis for the assigned guard. `actual_hours` is the clamped hours ACTUALLY worked (persisted at reconcile); `null` for an even-match / not-yet-reconciled row, where the client falls back to the booked hours. The client multiplies `base_fee` (from its own booking feed) × these hours to show the guard's pay for hours actually worked. 
+/// One completed job's earning basis for the assigned guard. `actual_hours` is the clamped hours ACTUALLY worked (persisted at reconcile); `null` for an even-match / not-yet-reconciled row, where the client falls back to the booked hours. The client computes the guard's take from its own booking feed:   gross      = base_fee × actual_hours          (this guard's share — no guard_count, no tip)   commission = gross × commission_percent / 100   net        = gross − commission               ← what the guard is actually paid No VAT appears here: VAT is charged to the CUSTOMER on top of the bill and is not part of the guard's pay. 
 ///
 /// Properties:
 /// * [bookingId] 
 /// * [actualHours] - Clamped hours actually worked (exact decimal as a string; money rule). Null when unreconciled.
+/// * [commissionPercent] - The booking's SNAPSHOT commission percent (0–100, exact decimal string) DEDUCTED from this guard's gross for this job — the platform's cut, taken out of the guard's pay, not added to the customer's bill. null on pre-feature bookings → treat as 0 (guard keeps the full gross).
 @BuiltValue()
 abstract class GuardEarning implements Built<GuardEarning, GuardEarningBuilder> {
   @BuiltValueField(wireName: r'booking_id')
@@ -21,6 +22,10 @@ abstract class GuardEarning implements Built<GuardEarning, GuardEarningBuilder> 
   /// Clamped hours actually worked (exact decimal as a string; money rule). Null when unreconciled.
   @BuiltValueField(wireName: r'actual_hours')
   String? get actualHours;
+
+  /// The booking's SNAPSHOT commission percent (0–100, exact decimal string) DEDUCTED from this guard's gross for this job — the platform's cut, taken out of the guard's pay, not added to the customer's bill. null on pre-feature bookings → treat as 0 (guard keeps the full gross).
+  @BuiltValueField(wireName: r'commission_percent')
+  String? get commissionPercent;
 
   GuardEarning._();
 
@@ -54,6 +59,13 @@ class _$GuardEarningSerializer implements PrimitiveSerializer<GuardEarning> {
       yield r'actual_hours';
       yield serializers.serialize(
         object.actualHours,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.commissionPercent != null) {
+      yield r'commission_percent';
+      yield serializers.serialize(
+        object.commissionPercent,
         specifiedType: const FullType(String),
       );
     }
@@ -93,6 +105,13 @@ class _$GuardEarningSerializer implements PrimitiveSerializer<GuardEarning> {
             specifiedType: const FullType(String),
           ) as String;
           result.actualHours = valueDes;
+          break;
+        case r'commission_percent':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.commissionPercent = valueDes;
           break;
         default:
           unhandled.add(key);

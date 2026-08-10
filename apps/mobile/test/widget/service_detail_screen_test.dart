@@ -25,8 +25,8 @@ GoRouter _router() => GoRouter(
         ),
         GoRoute(
           path: '/book/form',
-          builder: (_, __) =>
-              const Scaffold(body: Text('FORM', textDirection: TextDirection.ltr)),
+          builder: (_, __) => const Scaffold(
+              body: Text('FORM', textDirection: TextDirection.ltr)),
         ),
       ],
     );
@@ -61,9 +61,12 @@ void main() {
     expect(find.text('฿250 /ชม.'), findsOneWidget);
     expect(find.text('6 ชม.'), findsOneWidget);
 
-    // เริ่มต้น = ฿250 × 6 = ฿1,500 (the brand-green starting total) + the actual-time footnote.
-    expect(find.text('฿1,500'), findsOneWidget);
-    expect(find.textContaining('฿250 × 6 ชม.'), findsOneWidget);
+    // เริ่มต้น = (฿250 × 6) + 7% VAT = ฿1,605. Catalog rates are VAT-EXCLUSIVE, so the figure a
+    // customer reads as "the price" must be the VAT-INCLUSIVE one they are actually charged — with
+    // the tax on its own row above it, never folded in silently.
+    expect(find.text('฿105'), findsOneWidget); // VAT row: ฿1,500 × 7%
+    expect(find.text('฿1,605'), findsOneWidget);
+    expect(find.textContaining('฿250 × 6 ชม. + VAT 7%'), findsOneWidget);
     expect(find.textContaining('ยอดจริงคำนวณตามเวลาทำงานจริง'), findsOneWidget);
   });
 
@@ -85,7 +88,8 @@ void main() {
     // we advanced to the booking form.
     final state = c.read(bookingFlowControllerProvider);
     expect(state.service?.id, 'svc-2');
-    expect(state.minHours, 6); // the service's min_hours, enforced on the form + server
+    expect(state.minHours,
+        6); // the service's min_hours, enforced on the form + server
     expect(find.text('FORM'), findsOneWidget);
   });
 }

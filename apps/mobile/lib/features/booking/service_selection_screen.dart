@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/locale_controller.dart';
 import '../../core/controllers/services_controller.dart';
+import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -58,9 +59,8 @@ class _ServiceSelectionScreenState
             if (options.isEmpty) return _EmptyState(isThai: isThai);
             // Drop a stale selection if the catalog changed under us (e.g. retry returned a
             // different set), so the bottom CTA can't carry a no-longer-present id.
-            final selected = options.any((o) => o.id == _selectedId)
-                ? _selectedId
-                : null;
+            final selected =
+                options.any((o) => o.id == _selectedId) ? _selectedId : null;
             return Column(
               children: [
                 Expanded(
@@ -79,13 +79,18 @@ class _ServiceSelectionScreenState
                           ),
                         ),
                       ),
+                      // VAT DISCLOSURE, above the prices it qualifies: the catalog's ฿/hr rates
+                      // are VAT-EXCLUSIVE, and 7% is added at checkout — so the customer meets
+                      // that fact while comparing packages, not as a surprise on the payment
+                      // screen (where the tax is itemised as its own line).
+                      _VatNote(isThai: isThai),
+                      const SizedBox(height: PgTokens.space3),
                       for (final service in options) ...[
                         ServicePackageCard(
                           service: service,
                           isThai: isThai,
                           selected: service.id == selected,
-                          onTap: () =>
-                              setState(() => _selectedId = service.id),
+                          onTap: () => setState(() => _selectedId = service.id),
                           trailing: _RadioDot(selected: service.id == selected),
                         ),
                         const SizedBox(height: PgTokens.space3),
@@ -105,6 +110,45 @@ class _ServiceSelectionScreenState
             );
           },
         ),
+      ),
+    );
+  }
+}
+
+/// "ราคายังไม่รวม VAT 7%" — the one honest sentence that keeps the ฿/hr rates on these cards from
+/// reading as the whole price. VAT is charged on top of the catalog rate and is itemised on the
+/// payment screen; saying so here is cheaper than a surprise at checkout.
+class _VatNote extends StatelessWidget {
+  const _VatNote({required this.isThai});
+
+  final bool isThai;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorSunken,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.receipt_long_outlined,
+              size: 15, color: PgTokens.colorTextMuted),
+          const SizedBox(width: PgTokens.space2),
+          Expanded(
+            child: Text(
+              isThai
+                  ? 'ราคาต่อชั่วโมงยังไม่รวมภาษีมูลค่าเพิ่ม ${Money.vatPercent}% '
+                      '— ยอดที่ต้องชำระจะแสดง VAT แยกบรรทัดในหน้าชำระเงิน'
+                  : 'Hourly rates exclude ${Money.vatPercent}% VAT — the amount you pay shows VAT '
+                      'as its own line at checkout.',
+              style: const TextStyle(
+                  fontSize: 11.5, height: 1.4, color: PgTokens.colorTextMuted),
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -182,12 +226,9 @@ class _ErrorState extends StatelessWidget {
                 size: 40, color: PgTokens.colorTextMuted),
             const SizedBox(height: PgTokens.space3),
             Text(
-              isThai
-                  ? 'โหลดรายการบริการไม่สำเร็จ'
-                  : 'Could not load services',
+              isThai ? 'โหลดรายการบริการไม่สำเร็จ' : 'Could not load services',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 15, fontWeight: FontWeight.w600),
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: PgTokens.space4),
             PgPrimaryButton(
@@ -223,8 +264,8 @@ class _EmptyState extends StatelessWidget {
                   ? 'ยังไม่มีบริการให้เลือกในขณะนี้'
                   : 'No services available right now',
               textAlign: TextAlign.center,
-              style: const TextStyle(
-                  fontSize: 15, color: PgTokens.colorTextMuted),
+              style:
+                  const TextStyle(fontSize: 15, color: PgTokens.colorTextMuted),
             ),
           ],
         ),

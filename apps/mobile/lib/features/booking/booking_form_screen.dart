@@ -213,8 +213,9 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
                   ),
                   // 4 — อุปกรณ์รักษาความปลอดภัย / security equipment
                   _Section(
-                    title:
-                        isThai ? 'อุปกรณ์รักษาความปลอดภัย' : 'Security equipment',
+                    title: isThai
+                        ? 'อุปกรณ์รักษาความปลอดภัย'
+                        : 'Security equipment',
                     child: _CheckboxGroup(
                       options: kSecurityEquipment,
                       selected: state.equipment,
@@ -391,7 +392,9 @@ class _TimeSection extends StatelessWidget {
             ),
           ],
         ),
-        if (state.startAt != null && state.endAt != null && !state.meetsMinHours) ...[
+        if (state.startAt != null &&
+            state.endAt != null &&
+            !state.meetsMinHours) ...[
           const SizedBox(height: PgTokens.space2),
           _InlineWarning(
             text: isThai
@@ -629,8 +632,7 @@ class _CheckboxGroup extends StatelessWidget {
             onTap: () => onToggle(o.id),
             borderRadius: BorderRadius.circular(PgTokens.radiusLg),
             child: Padding(
-              padding:
-                  const EdgeInsets.symmetric(vertical: PgTokens.space1),
+              padding: const EdgeInsets.symmetric(vertical: PgTokens.space1),
               child: Row(
                 children: [
                   Checkbox(
@@ -810,7 +812,13 @@ class _PriceBreakdown extends StatelessWidget {
     final guards = state.guardCount;
     final base = hourly * hours; // per-guard line
     final tip = state.tipSatang;
-    final total = base * guards + tip;
+    // Catalog rates are VAT-EXCLUSIVE: this is the taxable subtotal, and 7% is ADDED on top. The
+    // headline "รวมทั้งหมด" must be the VAT-inclusive figure the customer is actually charged,
+    // with the tax shown as its own row — otherwise this screen quotes one number and the payment
+    // screen charges a bigger one.
+    final subtotal = base * guards + tip;
+    final vat = Money.vat(subtotal);
+    final total = subtotal + vat;
 
     return Container(
       padding: const EdgeInsets.all(PgTokens.space4),
@@ -827,8 +835,8 @@ class _PriceBreakdown extends StatelessWidget {
               isThai
                   ? 'คิดเงินเมื่องานเสร็จตามเวลาจริง'
                   : 'Charged on completion (actual hours)',
-              style: const TextStyle(
-                  fontSize: 12, color: PgTokens.colorTextMuted),
+              style:
+                  const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
             )
           else ...[
             _PriceRow(
@@ -849,6 +857,18 @@ class _PriceBreakdown extends StatelessWidget {
                 value: Money.format(tip),
               ),
             ],
+            const SizedBox(height: PgTokens.space2),
+            _PriceRow(
+              label: isThai ? 'รวมเป็นเงิน' : 'Subtotal',
+              value: Money.format(subtotal),
+            ),
+            const SizedBox(height: PgTokens.space2),
+            _PriceRow(
+              label: isThai
+                  ? 'ภาษีมูลค่าเพิ่ม ${Money.vatPercent}%'
+                  : 'VAT ${Money.vatPercent}%',
+              value: Money.format(vat),
+            ),
             const Padding(
               padding: EdgeInsets.symmetric(vertical: PgTokens.space3),
               child: Divider(height: 1, color: PgTokens.colorBorder),

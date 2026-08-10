@@ -23,8 +23,13 @@ import '../../widgets/pguard_header.dart';
 /// bar chart, and "รายการล่าสุด" per-job rows. Shares [guardJobsControllerProvider] with the
 /// guard dashboard (same endpoint — one cache); pull-to-refresh re-pulls, no polling.
 ///
+/// COMMISSION: the platform's per-service cut comes out of the GUARD's pay, so every figure on
+/// this screen is NET of it — and the gross and the deduction are shown NEXT TO the net, on the
+/// hero and on every row. A payout screen that quietly prints a smaller number than the guard
+/// expects is how a payout screen loses its guard's trust; the arithmetic is on the page.
+///
 /// HONESTY NOTE: v2 has no earnings/settlement ledger — every figure is a client-side ESTIMATE
-/// (`base_fee × hours` per completed job, tip + guard_count excluded) labelled
+/// (`base_fee × hours × (1 − commission)` per completed job, tip + guard_count excluded) labelled
 /// "ประมาณการ / Estimated". The figures come from `GET /v1/bookings`, which is
 /// `ORDER BY created_at DESC LIMIT 100` ([GuardEarnings.feedRowCap]): below the cap the feed is
 /// complete and the windowed totals are exact; AT the cap the server has dropped the oldest-created
@@ -56,6 +61,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
     // error, fall back to an empty map → jobEarningsSatang uses booked hours (previous behaviour).
     final actualHours =
         ref.watch(guardEarningsHoursProvider).valueOrNull ?? const {};
+    // The commission actually applied at settle, same endpoint. Absent (still loading / older
+    // settle) → the booking's own creation-time `commission_percent` snapshot is used instead, so
+    // the deduction is never invisible just because this read hasn't landed.
+    final commissionPercent =
+        ref.watch(guardCommissionPercentProvider).valueOrNull ?? const {};
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -98,10 +108,12 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                   _EarningsHero(
                     isThai: isThai,
                     window: _window,
-                    satang: GuardEarnings.sumInWindow(all, now, _window,
-                        actualHours: actualHours),
+                    pay: GuardEarnings.payInWindow(all, now, _window,
+                        actualHours: actualHours,
+                        commissionPercent: commissionPercent),
                     growth: GuardEarnings.growth(all, now, _window,
-                        actualHours: actualHours),
+                        actualHours: actualHours,
+                        commissionPercent: commissionPercent),
                     mayBeIncomplete: GuardEarnings.feedMayBeTruncated(all),
                   ),
                   if (completed.isEmpty)
@@ -109,7 +121,8 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                   else ...[
                     _EarningsChart(
                       series: GuardEarnings.dailySeries(all, now,
-                          actualHours: actualHours),
+                          actualHours: actualHours,
+                          commissionPercent: commissionPercent),
                       dates: GuardEarnings.seriesDates(now),
                       isThai: isThai,
                     ),
@@ -140,7 +153,11 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
                       ),
                     for (final b in inWindow)
                       _EarningsRow(
-                          booking: b, isThai: isThai, actualHours: actualHours),
+                        booking: b,
+                        isThai: isThai,
+                        actualHours: actualHours,
+                        commissionPercent: commissionPercent,
+                      ),
                   ],
                 ],
               ),
@@ -159,14 +176,17 @@ class _EarningsHero extends StatelessWidget {
   const _EarningsHero({
     required this.isThai,
     required this.window,
-    required this.satang,
+    required this.pay,
     required this.growth,
     required this.mayBeIncomplete,
   });
 
   final bool isThai;
   final EarningsWindow window;
-  final int satang;
+
+  /// Gross, commission and net for the window — the hero prints the NET big and the gross and the
+  /// deduction that produced it right underneath.
+  final GuardPay pay;
   final double? growth;
 
   /// The feed hit the row cap, so older jobs may be missing — the total can under-report.
@@ -199,7 +219,7 @@ class _EarningsHero extends StatelessWidget {
           ),
           const SizedBox(height: PgTokens.space1),
           Text(
-            Money.format(satang),
+            Money.format(pay.netSatang),
             style: const TextStyle(
               fontSize: 34,
               fontWeight: FontWeight.w600,
@@ -208,6 +228,27 @@ class _EarningsHero extends StatelessWidget {
               color: PgTokens.colorTextStrong,
             ),
           ),
+          // THE DEDUCTION, in the open: gross → commission → net, so the big number above is never
+          // a smaller figure than the guard expected with no explanation attached.
+          if (pay.hasCommission) ...[
+            const SizedBox(height: PgTokens.space2),
+            _HeroBreakdownLine(
+              label: isThai ? 'รายได้ก่อนหัก' : 'Gross',
+              satang: pay.grossSatang,
+            ),
+            const SizedBox(height: 2),
+            _HeroBreakdownLine(
+              label: isThai ? 'หักค่าคอมมิชชั่น' : 'Platform commission',
+              satang: -pay.commissionSatang,
+              color: PgTokens.colorDanger,
+            ),
+            const SizedBox(height: 2),
+            _HeroBreakdownLine(
+              label: isThai ? 'รับสุทธิ' : 'Net paid to you',
+              satang: pay.netSatang,
+              bold: true,
+            ),
+          ],
           if (g != null) ...[
             const SizedBox(height: PgTokens.space1),
             Text(
@@ -221,9 +262,13 @@ class _EarningsHero extends StatelessWidget {
           ],
           const SizedBox(height: PgTokens.space1),
           Text(
-            isThai
-                ? 'ประมาณการจากงานที่เสร็จสิ้น (฿ พื้นฐาน × ชม.)'
-                : 'Estimated from completed jobs (base ฿ × hours)',
+            pay.hasCommission
+                ? (isThai
+                    ? 'ประมาณการจากงานที่เสร็จสิ้น (฿ พื้นฐาน × ชม. หักค่าคอมมิชชั่น)'
+                    : 'Estimated from completed jobs (base ฿ × hours, less commission)')
+                : (isThai
+                    ? 'ประมาณการจากงานที่เสร็จสิ้น (฿ พื้นฐาน × ชม.)'
+                    : 'Estimated from completed jobs (base ฿ × hours)'),
             style:
                 const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
           ),
@@ -250,6 +295,51 @@ class _EarningsHero extends StatelessWidget {
           ],
         ],
       ),
+    );
+  }
+}
+
+/// One line of the hero's gross → deduction → net arithmetic. Mono, tabular figures, so the three
+/// amounts line up as a sum a guard can check at a glance.
+class _HeroBreakdownLine extends StatelessWidget {
+  const _HeroBreakdownLine({
+    required this.label,
+    required this.satang,
+    this.color,
+    this.bold = false,
+  });
+
+  final String label;
+  final int satang;
+  final Color? color;
+  final bool bold;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: bold ? FontWeight.w700 : FontWeight.w500,
+              color: color ?? PgTokens.colorTextMuted,
+            ),
+          ),
+        ),
+        Text(
+          Money.format(satang, decimals: true),
+          style: TextStyle(
+            fontSize: 12.5,
+            fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+            fontFamily: 'IBMPlexMono',
+            fontFeatures: const [FontFeature.tabularFigures()],
+            color: color ?? PgTokens.colorText,
+          ),
+        ),
+      ],
     );
   }
 }
@@ -345,13 +435,20 @@ class _Bar extends StatelessWidget {
 }
 
 /// One earnings row per the design: green-100 shield icon, place, "date · N ชม.", mono ฿.
+/// The ฿ is the guard's NET for that job; when commission was deducted the row also spells out
+/// `gross − commission` underneath, so a row can never disagree with the guard's own arithmetic.
 class _EarningsRow extends StatelessWidget {
-  const _EarningsRow(
-      {required this.booking, required this.isThai, this.actualHours});
+  const _EarningsRow({
+    required this.booking,
+    required this.isThai,
+    this.actualHours,
+    this.commissionPercent,
+  });
 
   final Booking booking;
   final bool isThai;
   final Map<String, double>? actualHours;
+  final Map<String, int>? commissionPercent;
 
   @override
   Widget build(BuildContext context) {
@@ -360,6 +457,8 @@ class _EarningsRow extends StatelessWidget {
       if (when != null) thaiShortDate(when, isThai: isThai),
       '${booking.hours ?? 0} ${isThai ? 'ชม.' : 'hrs'}',
     ].join(' · ');
+    final pay = GuardEarnings.jobPay(booking,
+        actualHours: actualHours, commissionPercent: commissionPercent);
 
     return Container(
       // Design `.prow` insets rows by 16px horizontally (align with the section header edge).
@@ -405,16 +504,30 @@ class _EarningsRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: PgTokens.space2),
-          Text(
-            Money.format(GuardEarnings.jobEarningsSatang(booking,
-                actualHours: actualHours)),
-            style: const TextStyle(
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
-              fontFamily: 'IBMPlexMono',
-              fontFeatures: [FontFeature.tabularFigures()],
-              color: PgTokens.colorTextStrong,
-            ),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                Money.format(pay.netSatang),
+                style: const TextStyle(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'IBMPlexMono',
+                  fontFeatures: [FontFeature.tabularFigures()],
+                  color: PgTokens.colorTextStrong,
+                ),
+              ),
+              if (pay.hasCommission) ...[
+                const SizedBox(height: 1),
+                Text(
+                  isThai
+                      ? '${Money.format(pay.grossSatang)} − ${Money.format(pay.commissionSatang)} ค่าคอม'
+                      : '${Money.format(pay.grossSatang)} − ${Money.format(pay.commissionSatang)} fee',
+                  style: const TextStyle(
+                      fontSize: 10.5, color: PgTokens.colorTextMuted),
+                ),
+              ],
+            ],
           ),
         ],
       ),

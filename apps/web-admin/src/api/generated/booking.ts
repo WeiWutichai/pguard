@@ -657,12 +657,22 @@ export interface components {
             name_th: string;
             name_en: string;
             /**
-             * @description Base fee in THB per hour per guard (exact decimal string).
+             * @description Base fee in THB per hour per guard (exact decimal string). VAT-EXCLUSIVE — the customer's bill adds VAT 7% on top (see payment `subtotal`/`vat_amount`/`grand_total`).
              * @example 230.00
              */
             base_fee: string;
             /** Format: int32 */
             min_hours: number;
+            /**
+             * @description The platform's cut, as a PERCENT (0–100, exact decimal string; `"10.00"` = 10%). Deducted from the GUARD's pay, NOT added to the customer's bill: the customer pays the same either way, the guard receives `base_fee × actual_hours` minus this percent. `"0.00"` = the guard keeps everything.
+             * @example 10.00
+             */
+            commission_percent: string;
+            /**
+             * @description Flat fee in THB (exact decimal string, ≥ 0) charged to the CUSTOMER when they cancel before work starts. Capped at what was actually paid (`min(fee, amount_paid)`), so an unpaid booking is never left owing anything. NOT charged when the guard withdraws — that is a full refund. `"0.00"` = free cancellation.
+             * @example 100.00
+             */
+            cancellation_fee: string;
             notes?: string | null;
             is_active: boolean;
             /** Format: date-time */
@@ -670,14 +680,17 @@ export interface components {
             /** Format: date-time */
             updated_at: string;
         };
-        /** @description The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description. */
+        /**
+         * @description The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) — a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced as the customer-facing package description.
+         *     Neither money knob is exposed here. `commission_percent` never will be: it only changes what the GUARD is paid, never what the customer pays, so it is not the customer's business. `cancellation_fee` IS the customer's business but is not served yet — today the customer only learns it from their own booking's `cancellation_fee` snapshot after creation. Surfacing it on this picker (pre-booking disclosure) is a known gap.
+         */
         PublicServiceItem: {
             /** Format: uuid */
             id: string;
             name_th: string;
             name_en: string;
             /**
-             * @description Server-owned ฿/hour/guard rate (exact decimal string).
+             * @description Server-owned ฿/hour/guard rate (exact decimal string). VAT-EXCLUSIVE — VAT 7% is added on top at checkout, so the amount charged is higher than base_fee × hours.
              * @example 230.00
              */
             base_fee: string;
@@ -690,21 +703,45 @@ export interface components {
             name_th: string;
             name_en: string;
             /**
-             * @description Exact decimal string in THB (0 to 1000000).
+             * @description VAT-exclusive ฿/hour/guard as an exact decimal string (0 to 1000000).
              * @example 230.00
              */
             base_fee: string;
             /** Format: int32 */
             min_hours: number;
+            /**
+             * @description Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not change the customer's bill. Optional: omitted is stored as `"0.00"` (no commission).
+             * @example 10.00
+             */
+            commission_percent?: string;
+            /**
+             * @description Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start cancellation. Optional: omitted is stored as `"0.00"` (free cancellation).
+             * @example 100.00
+             */
+            cancellation_fee?: string;
             notes?: string | null;
         };
+        /** @description Full replacement of a catalog row (PUT semantics). Editing money here only affects bookings created AFTERWARDS — `commission_percent`/`cancellation_fee` are snapshotted onto each booking at creation, so jobs already booked keep the terms they were sold at. */
         UpdateServiceRequest: {
             name_th: string;
             name_en: string;
-            /** @example 230.00 */
+            /**
+             * @description VAT-exclusive ฿/hour/guard (exact decimal string).
+             * @example 230.00
+             */
             base_fee: string;
             /** Format: int32 */
             min_hours: number;
+            /**
+             * @description Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not change the customer's bill. Optional: omitted RESETS it to `"0.00"` (PUT replaces).
+             * @example 10.00
+             */
+            commission_percent?: string;
+            /**
+             * @description Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start cancellation. Optional: omitted RESETS it to `"0.00"` (PUT replaces).
+             * @example 100.00
+             */
+            cancellation_fee?: string;
             notes?: string | null;
         };
         ReviewCompletionRequest: {
@@ -824,17 +861,27 @@ export interface components {
             /** Format: int32 */
             hours: number;
             /**
-             * @description Server-owned ฿/hour/guard rate (exact decimal)
+             * @description Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal). VAT 7% is added on the payment, not here.
              * @example 500.00
              */
             base_fee: string;
             /** Format: int32 */
             guard_count: number;
             /**
-             * @description Up-front tip (exact decimal)
+             * @description Up-front tip (exact decimal, VAT-exclusive like base_fee)
              * @example 0
              */
             tip: string;
+            /**
+             * @description SNAPSHOT of the catalog's commission percent (0–100, exact decimal string) taken when this booking was created, so a later catalog edit never rewrites the money of a job already booked. Deducted from the GUARD's pay only — the customer's bill is identical with or without it. null on bookings created before the feature existed → treat as 0.
+             * @example 10.00
+             */
+            commission_percent?: string | null;
+            /**
+             * @description SNAPSHOT of the catalog's cancellation fee (฿, exact decimal string, ≥ 0) taken at creation. Charged to the CUSTOMER only when the CUSTOMER cancels before work starts, and only up to what was actually paid; a guard withdrawal is still a full refund. What was really kept is the payment's `cancellation_fee_charged`. null on pre-feature bookings → treat as 0.
+             * @example 100.00
+             */
+            cancellation_fee?: string | null;
             /**
              * Format: double
              * @description Site latitude (null when not provided at create).
@@ -927,8 +974,9 @@ export interface components {
         };
         /**
          * @description The authoritative subset exposed to internal (service-JWT'd) callers — the fields the
-         *     payment service needs to verify a charge, compute the expected total
-         *     (`base_fee × hours × guard_count + tip`), and carry the guard into the payment event.
+         *     payment service needs to compute the subtotal
+         *     (`base_fee × hours × guard_count + tip`, VAT-exclusive), add VAT on top, split the guard's
+         *     commission, price a cancellation, and carry the guard into the payment event.
          *     Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is
          *     server-owned — the client never sets it.
          */
@@ -943,17 +991,27 @@ export interface components {
             /** Format: int32 */
             hours: number;
             /**
-             * @description Server-owned ฿/hour/guard rate (exact decimal)
+             * @description Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal)
              * @example 500.00
              */
             base_fee: string;
             /** Format: int32 */
             guard_count: number;
             /**
-             * @description Up-front tip (exact decimal)
+             * @description Up-front tip (exact decimal, VAT-exclusive)
              * @example 0
              */
             tip: string;
+            /**
+             * @description The booking's SNAPSHOT commission percent (0–100, exact decimal string) — the payment service's basis for `guard_gross × percent / 100`, deducted from the GUARD's pay and never added to the customer's bill. null on pre-feature bookings → treat as 0.
+             * @example 10.00
+             */
+            commission_percent?: string | null;
+            /**
+             * @description The booking's SNAPSHOT cancellation fee (฿, exact decimal string, ≥ 0) — the payment service keeps `min(fee, amount_paid)` when the CUSTOMER cancels pre-start (never more than was paid, so a cancellation cannot create a debt) and refunds the rest. null on pre-feature bookings → treat as 0.
+             * @example 100.00
+             */
+            cancellation_fee?: string | null;
         };
         /** @description An approved guard (profile catalog) enriched with their rating summary (rating). `display_name` + `avatar_url` are the same approved-guard exposure as `GET /guards/{id}/public` — the guard the customer is choosing — so the selection card shows a real name + photo instead of an id + initials. Both are omitted when absent (`avatar_url` is a short-lived presigned GET URL, null/omitted when no avatar is set). `has_documents` says WHETHER the guard's five credential documents are on file (profile-derived boolean) — the documents themselves are never exposed to customers. OMITTED when unknown (an older profile that doesn't emit the field), so a client must render "unknown" as nothing, never as "no documents". */
         AvailableGuard: {

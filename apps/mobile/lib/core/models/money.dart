@@ -72,8 +72,13 @@ class Money {
     return '${negative ? '-' : ''}${symbol ? '฿' : ''}$body';
   }
 
-  /// Charge total in satang: `base_fee × hours × guard_count + tip`. All operands are satang
-  /// except the integer multipliers [hours] and [guardCount].
+  /// SUBTOTAL in satang: `base_fee × hours × guard_count + tip`. All operands are satang except
+  /// the integer multipliers [hours] and [guardCount].
+  ///
+  /// VAT-EXCLUSIVE — catalog prices are quoted without tax and 7% is ADDED on top ([vat]), so the
+  /// figure the customer is actually charged is [grandTotal], never this. Kept as `total` because
+  /// it is the same subtotal the payment service computes; use [grandTotal] for anything a
+  /// customer reads as "what I pay".
   static int total({
     required int baseFeeSatang,
     required int hours,
@@ -81,6 +86,38 @@ class Money {
     int tipSatang = 0,
   }) =>
       baseFeeSatang * hours * guardCount + tipSatang;
+
+  /// Thai VAT rate as a whole PERCENT. Mirrors the ONE server-side constant
+  /// (`services/payment/src/domain/pricing.rs::VAT_RATE = 0.07`) — the client only ever DISPLAYS
+  /// tax; the payment service computes and charges the authoritative figure.
+  static const int vatPercent = 7;
+
+  /// VAT on a VAT-EXCLUSIVE [subtotalSatang], rounded half-away-from-zero to the satang — the same
+  /// rule as the server's `rust_decimal` `round_dp(2)`, so client and server agree to the satang.
+  static int vat(int subtotalSatang) =>
+      _divRound(subtotalSatang * vatPercent, 100);
+
+  /// What the customer actually pays: `subtotal + VAT`.
+  static int grandTotal(int subtotalSatang) =>
+      subtotalSatang + vat(subtotalSatang);
+
+  /// Parse a NUMERIC(5,2) percent string ("12.50", "0", null) into HUNDREDTHS of a percent
+  /// (1250 = 12.50%). Reuses the exact 2dp decimal parser — a percent with two decimal places has
+  /// exactly the same shape as money, and integer hundredths keep [percentOf] float-free.
+  static int percentHundredths(String? decimal) => satangFromString(decimal);
+
+  /// [amountSatang] × [percentHundredths]/100 %, rounded half-away-from-zero to the satang.
+  /// Used for the guard's per-service commission: `guard_gross × commission_percent / 100`.
+  static int percentOf(int amountSatang, int percentHundredths) =>
+      _divRound(amountSatang * percentHundredths, 10000);
+
+  /// Integer division rounding halves AWAY FROM ZERO (matching `rust_decimal`'s default), so a
+  /// client-side figure never lands a satang below the server's.
+  static int _divRound(int numerator, int divisor) {
+    final n = numerator.abs();
+    final r = (n + divisor ~/ 2) ~/ divisor;
+    return numerator < 0 ? -r : r;
+  }
 
   /// Group the integer part with thousands separators ("1840" → "1,840").
   static String _group(int n) {

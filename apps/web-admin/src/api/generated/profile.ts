@@ -355,6 +355,31 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/org-settings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * The company block printed on receipts (any signed-in user)
+         * @description The seller identity a Thai tax invoice (ใบกำกับภาษี) legally requires — company name, tax
+         *     ID and address. Readable by ANY authenticated role, unlike the admin twin below: the
+         *     receipt is rendered on the customer's device, so gating this to admins would mean shipping
+         *     a document that cannot legally be one. Org-wide public-facing config, not personal data, so
+         *     it is not §30-audited. Never 404s — an unset row returns all-`null` fields so the client can
+         *     state the document is incomplete instead of printing a blank header.
+         */
+        get: operations["getOrgSettings"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/org-settings": {
         parameters: {
             query?: never;
@@ -369,9 +394,16 @@ export interface paths {
          *     config (edited at runtime, no redeploy), so unlike the env-config Settings tabs it has a
          *     real single-row store owned by the profile service. Admin only (else 403).
          *
+         *     WHY THE THREE FIELDS MATTER: they are the SELLER block that a Thai full tax invoice
+         *     (ใบเสร็จรับเงิน/ใบกำกับภาษี) is legally required to carry — the issuer's name, TIN
+         *     (เลขประจำตัวผู้เสียภาษี) and registered address. While they are null, every receipt the
+         *     platform issues is missing its issuer block and is not a valid tax invoice, even though
+         *     VAT 7% was collected from the customer.
+         *
          *     NEVER 404s: when nothing has been saved yet, every field is `null` and `updated_at` is
-         *     `null` (an "unset" default) — the admin UI renders blank inputs. Reading the company
-         *     profile is org config, not PII, so it is NOT §30 access-audited.
+         *     `null` (an "unset" default) — the admin UI renders blank inputs and warns that receipts
+         *     are incomplete. Reading the company profile is org config, not PII, so it is NOT
+         *     §30 access-audited.
          */
         get: operations["adminGetOrgSettings"];
         /**
@@ -767,21 +799,30 @@ export interface components {
         /**
          * @description The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the
          *     admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens
-         *     allowed — not a checksum); `company_name`/`address` are bounded to 500 chars.
+         *     allowed — not a checksum); `company_name`/`address` are bounded to 500 chars. Sending
+         *     `null` CLEARS a field — which also removes it from every receipt issued afterwards.
          */
         UpdateOrgSettingsRequest: {
+            /** @description Legal entity name as registered — the issuer line of the tax invoice (ผู้ประกอบการ). */
             company_name?: string | null;
-            /** @description 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. */
+            /** @description 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice. */
             tax_id?: string | null;
+            /** @description Registered address of the issuer — legally required on a full tax invoice. */
             address?: string | null;
         };
         /**
-         * @description The org (company) profile shown on receipts + in-app. Every field is nullable: an
-         *     all-null object (incl. `updated_at`) is the "never saved yet" state returned by GET.
+         * @description The org (company) profile shown on receipts + in-app. These three fields are the SELLER
+         *     block a Thai full tax invoice (ใบกำกับภาษีแบบเต็มรูป) must carry: issuer name, TIN and
+         *     registered address. Every field is nullable: an all-null object (incl. `updated_at`) is
+         *     the "never saved yet" state returned by GET — and any receipt issued in that state is
+         *     missing its legally-required issuer block.
          */
         OrgSettings: {
+            /** @description Issuer's legal name on the tax invoice; null = never filled in. */
             company_name?: string | null;
+            /** @description Issuer's TIN (Thai: 13 digits); null = never filled in. */
             tax_id?: string | null;
+            /** @description Issuer's registered address; null = never filled in. */
             address?: string | null;
             /**
              * Format: date-time
@@ -1738,6 +1779,29 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getOrgSettings: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The company profile (fields may be null when unset) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        data?: components["schemas"]["OrgSettings"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
         };
     };
     adminGetOrgSettings: {

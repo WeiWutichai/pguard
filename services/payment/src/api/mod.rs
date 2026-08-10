@@ -41,6 +41,28 @@ use crate::state::PaymentInternalDeps;
 /// integration would replace this with the captured method (PromptPay/card/…).
 const PREPAID_METHOD: &str = "prepaid";
 
+/// The money terms for a charge, assembled from the AUTHORITATIVE booking read: the VAT-inclusive
+/// estimate split for the tax invoice, plus the booking's commission / cancellation-fee SNAPSHOT.
+///
+/// Both snapshot fields are absent on a booking created before those columns existed (or served by
+/// a booking deploy that predates them) — `None` means "no such term", i.e. zero, and
+/// [`domain::ChargeTerms::new`] additionally clamps whatever arrives into range. Copying them onto
+/// the payment row is what lets the guard-earnings ledger show the deducted commission, and lets
+/// the cancellation consumer (a NATS handler with no HTTP) price a cancellation without a
+/// cross-service read.
+fn charge_terms(booking: &crate::models::InternalBooking) -> domain::ChargeTerms {
+    domain::ChargeTerms::new(
+        domain::price_breakdown(
+            booking.base_fee,
+            booking.hours,
+            booking.guard_count,
+            booking.tip,
+        ),
+        booking.commission_percent.unwrap_or(Decimal::ZERO),
+        booking.cancellation_fee.unwrap_or(Decimal::ZERO),
+    )
+}
+
 /// POST /payments — PRE-PAY a booking's estimate (createPayment). THE MONEY PATH (write).
 ///
 /// v2 is PRE-PAY: after a guard ACCEPTS, the customer pays the estimate up front, which GATES the
@@ -51,7 +73,9 @@ const PREPAID_METHOD: &str = "prepaid";
 ///     the booking's customer AND the booking must be in a payable state (post-accept,
 ///     pre-complete).
 ///  3. The amount is the SERVER-computed estimate `base_fee × hours × guard_count + tip` from the
-///     booking's own pricing — exact `Decimal`, NEVER an f64, NEVER the client body.
+///     booking's own pricing, **plus 7% VAT** — exact `Decimal`, NEVER an f64, NEVER the client
+///     body. The VAT split and the booking's commission/cancellation-fee snapshot are persisted
+///     alongside the charge (tax invoice + the cancellation refund's fee basis).
 ///  4. Idempotent per booking (DB UNIQUE partial index): a repeat is a no-op returning the
 ///     existing payment (no second charge, no second `payment.completed`).
 #[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
@@ -93,13 +117,10 @@ pub async fn create_payment<S: PaymentDeps>(
         });
     }
 
-    // (2) SERVER-computed estimate from the booking's own pricing (never the client body).
-    let estimate = domain::expected_total(
-        booking.base_fee,
-        booking.hours,
-        booking.guard_count,
-        booking.tip,
-    );
+    // (2) SERVER-computed terms from the booking's own pricing (never the client body): the
+    //     VAT-INCLUSIVE grand total to charge, its split, and the commission/cancellation snapshot.
+    let terms = charge_terms(&booking);
+    let estimate = terms.breakdown.grand_total;
 
     // (3) idempotent pre-pay + payment.completed outbox event, in ONE tx. A repeat is a no-op.
     let outcome = repo::prepay_idempotent(
@@ -107,8 +128,7 @@ pub async fn create_payment<S: PaymentDeps>(
         req.booking_id,
         user.user_id,
         booking.guard_id,
-        estimate,
-        estimate,
+        &terms,
         PREPAID_METHOD,
         Uuid::new_v4(),
     )
@@ -154,8 +174,8 @@ pub const MAX_SLIP_BODY_BYTES: usize = 12 * 1024 * 1024;
 ///  1. role=customer; feature flag = slip2go (else 409 — the slip path is off / simulated).
 ///  2. Verify against the authoritative booking (service-JWT'd internal read): the caller must be
 ///     the booking's customer AND the booking must be in a payable state.
-///  3. The amount to cover is the SERVER-computed estimate (`base_fee × hours × guards + tip`),
-///     exact `Decimal` — NEVER from the client.
+///  3. The amount to cover is the SERVER-computed estimate (`base_fee × hours × guards + tip`,
+///     VAT INCLUDED), exact `Decimal` — NEVER from the client.
 ///  4. Send the slip to Slip2Go with conditions `{ checkReceiver:[OUR account], checkAmount:gte
 ///     estimate, checkDuplicate }`. On `code==200000`, RE-VALIDATE on our side (defence in depth):
 ///     amount ≥ estimate, receiver == RECEIVING_ACCOUNT.
@@ -200,13 +220,11 @@ pub async fn pay_with_slip<S: PaymentDeps>(
         });
     }
 
-    // (2) SERVER-computed estimate (never the client). The slip must cover at least this.
-    let estimate = domain::expected_total(
-        booking.base_fee,
-        booking.hours,
-        booking.guard_count,
-        booking.tip,
-    );
+    // (2) SERVER-computed terms (never the client). The slip must cover at least the grand total —
+    //     the SAME VAT-inclusive figure the PromptPay QR quotes, so a customer who scans the QR and
+    //     pays exactly that always clears this check.
+    let terms = charge_terms(&booking);
+    let estimate = terms.breakdown.grand_total;
 
     // (3) read the slip image (magic-byte validated — size before bytes; declared must match).
     let (declared_mime, bytes) = parse_slip_form(multipart).await?;
@@ -273,8 +291,7 @@ pub async fn pay_with_slip<S: PaymentDeps>(
         id,
         user.user_id,
         booking.guard_id,
-        estimate,
-        estimate,
+        &terms,
         &verified.reference_id,
         &verified.trans_ref,
         verified.amount,
@@ -376,7 +393,9 @@ async fn parse_slip_form(mut multipart: Multipart) -> Result<(String, Vec<u8>), 
 ///  2. Verify against the authoritative booking (service-JWT'd internal read): the caller must be
 ///     the booking's customer AND the booking must be in a payable state.
 ///  3. The amount is the SAME server-computed estimate the slip + prepay handlers use
-///     (`domain::expected_total` — `base_fee × hours × guards + tip`), exact `Decimal`.
+///     (`domain::expected_total` — `base_fee × hours × guards + tip`, VAT INCLUDED), exact
+///     `Decimal`. One funnel: the QR, the charge and the slip's minimum can never quote different
+///     figures.
 ///  4. The `qr_payload` is built SERVER-SIDE (`domain::promptpay`) from `RECEIVING_ACCOUNT` + that
 ///     estimate — the ONE authoritative place; the client never composes a payload. If
 ///     `RECEIVING_ACCOUNT` is not a PromptPay-addressable proxy (a phone or national/tax id), this
@@ -470,11 +489,14 @@ pub async fn list_payments<S: PaymentDeps>(
 }
 
 /// GET /payments/earnings — the assigned guard's earning basis: their completed jobs with the
-/// clamped `actual_hours` worked. GUARD-ONLY (own jobs, keyed on the JWT `sub`). The guard app pairs
-/// each `booking_id` with the `base_fee` from its booking feed and pays `base_fee × actual_hours`
-/// (booked hours as a fallback when `actual_hours` is NULL) — so a job that finished early (and was
+/// clamped `actual_hours` worked and the `commission_percent` deducted from that job. GUARD-ONLY
+/// (own jobs, keyed on the JWT `sub`). The guard app pairs each `booking_id` with the `base_fee`
+/// from its booking feed and pays `base_fee × actual_hours` (booked hours as a fallback when
+/// `actual_hours` is NULL) LESS the commission — so a job that finished early (and was
 /// overpay-refunded to the customer) pays the guard for the hours ACTUALLY worked, no longer the
-/// full booked estimate that overstated it.
+/// full booked estimate that overstated it, and the deduction is visible instead of unexplained.
+/// The commission comes out of the guard's pay only; it never changed what the customer paid. VAT
+/// is not part of this figure — the guard is paid on the VAT-exclusive service price.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn guard_earnings<S: PaymentDeps>(
     State(state): State<S>,
@@ -794,12 +816,14 @@ mod tests {
         }
     }
 
-    /// A canned verified slip paying our `1234567890` account `amount` (default 2000).
+    /// A canned verified slip paying our `1234567890` account the FULL VAT-inclusive estimate for
+    /// [`payable_booking`] (2000.00 subtotal + 140.00 VAT = 2140.00) — enough to clear the
+    /// minimum-amount re-validation.
     fn sample_verified(trans_ref: &str) -> VerifiedSlip {
         VerifiedSlip {
             reference_id: Uuid::new_v4().to_string(),
             trans_ref: trans_ref.to_string(),
-            amount: "2000.00".parse().unwrap(),
+            amount: "2140.00".parse().unwrap(),
             receiver_accounts: vec!["1234567890".to_string()],
         }
     }
@@ -871,7 +895,9 @@ mod tests {
         tok
     }
 
-    /// A payable booking (guard accepted) owned by `customer_id`, priced 500×4×1 + 0 = 2000.00.
+    /// A payable booking (guard accepted) owned by `customer_id`, priced 500×4×1 + 0 = 2000.00
+    /// subtotal → 2140.00 charged with 7% VAT. Carries a 10% commission + a 300 cancellation fee
+    /// snapshot (neither changes what the customer pays).
     fn payable_booking(customer_id: Uuid) -> InternalBooking {
         InternalBooking {
             customer_id,
@@ -881,6 +907,8 @@ mod tests {
             base_fee: "500".parse().unwrap(),
             guard_count: 1,
             tip: rust_decimal::Decimal::ZERO,
+            commission_percent: Some("10.00".parse().unwrap()),
+            cancellation_fee: Some("300.00".parse().unwrap()),
         }
     }
 
@@ -1126,12 +1154,13 @@ mod tests {
 
     #[tokio::test]
     async fn slip_underpay_is_rejected_by_our_revalidation() {
-        // Slip2Go said 200000 but the verified amount (1999) is BELOW the server estimate (2000) →
-        // our-side re-validation rejects with SLIP_AMOUNT_TOO_LOW, before any S3/DB write. (The
-        // booking prices to 500×4×1 = 2000.)
+        // Slip2Go said 200000 but the verified amount is BELOW the server estimate → our-side
+        // re-validation rejects with SLIP_AMOUNT_TOO_LOW, before any S3/DB write. The booking
+        // prices to 500×4×1 = 2000.00 + 7% VAT = 2140.00, so a slip for the OLD (VAT-free) 2000.00
+        // is now an underpay — the VAT must be collected, not silently absorbed.
         let me = Uuid::new_v4();
         let mut v = sample_verified("tr-underpay");
-        v.amount = "1999.00".parse().unwrap();
+        v.amount = "2000.00".parse().unwrap();
         let Some((status, code)) = run_slip(
             Some(payable_booking(me)),
             StubVerifier::ok(v),
@@ -1404,10 +1433,11 @@ mod tests {
 
     #[tokio::test]
     async fn promptpay_returns_server_estimate_account_and_valid_qr() {
-        // Happy path: the booking prices 500×4×1 + 0 = 2000.00. The response carries that exact
-        // amount (string), 200000 satang, the display-formatted account, and a QR payload that
-        // contains the PromptPay AID + the 2000.00 amount field — proving the QR is built
-        // SERVER-SIDE from the estimate (no DB/S3/Slip2Go touched).
+        // Happy path: the booking prices 500×4×1 + 0 = 2000.00 subtotal, +7% VAT = 2140.00 to
+        // transfer. The response carries that exact GRAND TOTAL (string), 214000 satang, the
+        // display-formatted account, and a QR payload that contains the PromptPay AID + the
+        // 2140.00 amount field — proving the QR is built SERVER-SIDE from the same one estimate
+        // the charge uses, VAT included (no DB/S3/Slip2Go touched).
         let me = Uuid::new_v4();
         let Some((status, json)) = run_promptpay(
             Some(payable_booking(me)),
@@ -1423,10 +1453,10 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         let data = &json["data"];
         assert_eq!(
-            data["amount"], "2000",
-            "exact estimate as a money string (raw Decimal serde-str, like the prepay path — the QR's tag-54 carries the 2-dp form)"
+            data["amount"], "2140.00",
+            "exact VAT-inclusive estimate as a money string (raw Decimal serde-str, like the prepay path — the QR's tag-54 carries the 2-dp form)"
         );
-        assert_eq!(data["amount_satang"], 200000, "estimate in satang");
+        assert_eq!(data["amount_satang"], 214000, "estimate in satang");
         assert_eq!(
             data["receiving_account"], "081-234-5678",
             "account formatted for display"
@@ -1436,7 +1466,7 @@ mod tests {
             qr.contains(crate::domain::promptpay::PROMPTPAY_AID),
             "QR carries the PromptPay AID"
         );
-        assert!(qr.contains("54072000.00"), "QR amount field = the estimate");
+        assert!(qr.contains("54072140.00"), "QR amount field = the estimate");
     }
 
     #[test]

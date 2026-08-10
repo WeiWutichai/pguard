@@ -127,6 +127,16 @@ pub struct BookingResponse {
     /// The optional free-text elaboration on that reason (≤ 500 chars; required when the reason
     /// is `other`). `None` when the customer/guard wrote nothing.
     pub cancellation_note: Option<String>,
+    /// SNAPSHOT of the chosen catalog service's platform commission (%) at creation — deducted
+    /// from the GUARD's pay, never added to the customer's bill. Frozen here so an admin editing
+    /// the catalog next week cannot restate what a guard earned on this job. `None` only for a
+    /// booking created before migration 0010 (read as 0); a booking made without a catalog
+    /// service carries a real `0`.
+    pub commission_percent: Option<Decimal>,
+    /// SNAPSHOT of the chosen catalog service's flat cancellation fee (฿) at creation — what the
+    /// customer forfeits by cancelling pre-arrival (capped at what they actually paid). Same
+    /// `None` semantics as [`Self::commission_percent`].
+    pub cancellation_fee: Option<Decimal>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -348,6 +358,12 @@ pub struct ServiceCatalogItem {
     /// ฿ per hour per guard.
     pub base_fee: Decimal,
     pub min_hours: i32,
+    /// The platform's cut of the GUARD's pay for this service, in percent (0..=100). The
+    /// customer's bill is unaffected — the commission comes out of what the guard receives.
+    pub commission_percent: Decimal,
+    /// Flat ฿ kept when the CUSTOMER cancels this service pre-arrival (0 = free cancellation).
+    /// Charged as `min(fee, amount_paid)`, so it can never leave the customer in debt.
+    pub cancellation_fee: Decimal,
     pub notes: Option<String>,
     pub is_active: bool,
     pub created_at: DateTime<Utc>,
@@ -371,13 +387,24 @@ pub struct PublicServiceItem {
 }
 
 /// Create a catalog service (admin). Validated in the handler (non-empty names, fee ≥ 0,
-/// min_hours 1..=24).
+/// min_hours 1..=24) plus the pure `domain::pricing` validators for the two money knobs.
 #[derive(Debug, Deserialize)]
 pub struct CreateServiceRequest {
     pub name_th: String,
     pub name_en: String,
     pub base_fee: Decimal,
     pub min_hours: i32,
+    /// Platform commission on the GUARD's pay, in percent (0..=100).
+    ///
+    /// `#[serde(default)]` → 0 when absent, on purpose: during a mixed deploy an older
+    /// web-admin build still sends the pre-0010 body, and the safe reading of "the admin did
+    /// not say" is "the platform takes nothing" — not a 422 that bricks the pricing screen.
+    #[serde(default)]
+    pub commission_percent: Decimal,
+    /// Flat ฿ cancellation fee (≥ 0). Same absent-means-zero rationale as
+    /// [`Self::commission_percent`].
+    #[serde(default)]
+    pub cancellation_fee: Decimal,
     pub notes: Option<String>,
 }
 
@@ -388,6 +415,14 @@ pub struct UpdateServiceRequest {
     pub name_en: String,
     pub base_fee: Decimal,
     pub min_hours: i32,
+    /// Platform commission on the GUARD's pay, in percent (0..=100); absent → 0 (see
+    /// [`CreateServiceRequest::commission_percent`]). This is a FULL replace, so an omitted
+    /// value clears a previously-set commission — bookings already made keep their snapshot.
+    #[serde(default)]
+    pub commission_percent: Decimal,
+    /// Flat ฿ cancellation fee (≥ 0); absent → 0, same full-replace semantics.
+    #[serde(default)]
+    pub cancellation_fee: Decimal,
     pub notes: Option<String>,
 }
 
@@ -449,4 +484,13 @@ pub struct InternalBooking {
     pub base_fee: Decimal,
     pub guard_count: i32,
     pub tip: Decimal,
+    /// The booking's SNAPSHOT of the platform commission (%). Payment needs it to split a
+    /// completed job's money (`guard_net = guard_gross − guard_gross × pct / 100`) — from the
+    /// booking, never from today's catalog, so a settled job's numbers never move. `None` for a
+    /// pre-migration-0010 booking; payment reads that as 0 (no cut).
+    pub commission_percent: Option<Decimal>,
+    /// The booking's SNAPSHOT of the flat cancellation fee (฿). Payment charges
+    /// `min(cancellation_fee, amount_paid)` on a CUSTOMER pre-arrival cancel (a guard
+    /// withdrawing still refunds in full). Same `None`-is-zero semantics.
+    pub cancellation_fee: Option<Decimal>,
 }

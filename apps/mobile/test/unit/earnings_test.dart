@@ -10,6 +10,7 @@ Booking booking({
   int? guardCount = 1,
   String? tip,
   DateTime? scheduledAt,
+  String? commissionPercent,
 }) =>
     Booking(
       id: id,
@@ -20,6 +21,7 @@ Booking booking({
       guardCount: guardCount,
       tip: tip,
       scheduledAt: scheduledAt,
+      commissionPercent: commissionPercent,
     );
 
 void main() {
@@ -74,6 +76,128 @@ void main() {
             actualHours: const {'other': 2.0}),
         184000,
       );
+    });
+  });
+
+  group('commission — gross, deduction, net', () {
+    test('a 0%/absent commission leaves the gross untouched', () {
+      final pay = GuardEarnings.jobPay(booking());
+      expect(pay.grossSatang, 184000);
+      expect(pay.commissionSatang, 0);
+      expect(pay.netSatang, 184000);
+      expect(pay.hasCommission, isFalse,
+          reason: 'no deduction line when nothing is deducted');
+    });
+
+    test("the booking's SNAPSHOT percent is deducted from the guard's pay", () {
+      // ฿230 × 8h = ฿1,840 gross; 10% = ฿184 commission; ฿1,656 net.
+      final pay = GuardEarnings.jobPay(booking(commissionPercent: '10.00'));
+      expect(pay.grossSatang, 184000);
+      expect(pay.commissionSatang, 18400);
+      expect(pay.netSatang, 165600);
+      expect(pay.hasCommission, isTrue);
+      // The three figures must always reconcile — a net that isn't gross − commission is exactly
+      // the silent smaller number a payout screen must never show.
+      expect(pay.netSatang, pay.grossSatang - pay.commissionSatang);
+    });
+
+    test('jobEarningsSatang IS the net (every guard screen shows take-home)',
+        () {
+      expect(
+        GuardEarnings.jobEarningsSatang(booking(commissionPercent: '12.50')),
+        184000 - 23000,
+      );
+    });
+
+    test('commission applies to the RECONCILED hours, not the booked ones', () {
+      // Worked 2h of an 8h booking: gross ฿460, 10% = ฿46, net ฿414.
+      final pay = GuardEarnings.jobPay(
+        booking(commissionPercent: '10.00'),
+        actualHours: const {'b1': 2.0},
+      );
+      expect(pay.grossSatang, 46000);
+      expect(pay.commissionSatang, 4600);
+      expect(pay.netSatang, 41400);
+    });
+
+    test("the settle's percent OVERRIDES the booking snapshot", () {
+      // The booking was snapshotted at 10% but the settle actually applied 20%: show what was
+      // actually taken, not what was quoted.
+      final pay = GuardEarnings.jobPay(
+        booking(commissionPercent: '10.00'),
+        commissionPercent: const {'b1': 2000},
+      );
+      expect(pay.commissionSatang, 36800); // 20% of ฿1,840
+      expect(pay.netSatang, 184000 - 36800);
+    });
+
+    test('a booking absent from the settle map keeps its own snapshot', () {
+      final pay = GuardEarnings.jobPay(
+        booking(commissionPercent: '10.00'),
+        commissionPercent: const {'other': 2000},
+      );
+      expect(pay.commissionSatang, 18400);
+    });
+
+    test('totals and windows carry gross, commission AND net together', () {
+      final now = DateTime.utc(2026, 6, 17, 12);
+      final jobs = [
+        booking(
+            id: 'a',
+            commissionPercent: '10.00',
+            scheduledAt: now.subtract(const Duration(hours: 2))),
+        booking(
+            id: 'b',
+            hours: 5,
+            commissionPercent: '10.00',
+            scheduledAt: now.subtract(const Duration(days: 2))),
+      ];
+      // ฿1,840 + ฿1,150 = ฿2,990 gross; 10% = ฿299; ฿2,691 net.
+      final total = GuardEarnings.totalPay(jobs);
+      expect(total.grossSatang, 299000);
+      expect(total.commissionSatang, 29900);
+      expect(total.netSatang, 269100);
+
+      final window = GuardEarnings.payInWindow(jobs, now, EarningsWindow.week);
+      expect(window.grossSatang, 299000);
+      expect(window.commissionSatang, 29900);
+      // The windowed sum the hero prints is the NET.
+      expect(GuardEarnings.sumInWindow(jobs, now, EarningsWindow.week), 269100);
+      // …and the bars add up to it.
+      expect(
+        GuardEarnings.dailySeries(jobs, now).fold<int>(0, (a, b) => a + b),
+        269100,
+      );
+      // Growth compares take-home with take-home (no prior window here → no baseline).
+      expect(GuardEarnings.growth(jobs, now, EarningsWindow.week), isNull);
+    });
+  });
+
+  group('GuardEarningsRow (GET /payments/earnings)', () {
+    test('parses hours + commission from decimal strings', () {
+      final row = GuardEarningsRow.tryParse(const {
+        'booking_id': 'b1',
+        'actual_hours': '2.50',
+        'commission_percent': '12.50',
+      })!;
+      expect(row.bookingId, 'b1');
+      expect(row.actualHours, 2.5);
+      expect(row.commissionPercentHundredths, 1250);
+    });
+
+    test('tolerates numbers on the wire and null fields', () {
+      final row = GuardEarningsRow.tryParse(const {
+        'booking_id': 'b1',
+        'actual_hours': 3,
+        'commission_percent': null,
+      })!;
+      expect(row.actualHours, 3.0);
+      expect(row.commissionPercentHundredths, isNull,
+          reason: 'null → fall back to the booking snapshot, not to 0%');
+    });
+
+    test('a row without a booking id is dropped', () {
+      expect(GuardEarningsRow.tryParse(const {'actual_hours': '2'}), isNull);
     });
   });
 

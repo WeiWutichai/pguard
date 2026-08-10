@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, LogOut, Plus, Save } from "lucide-react";
+import { AlertTriangle, Loader2, LogOut, Plus, Save } from "lucide-react";
 
 import { identityApi, profileApi } from "@/lib/api";
 import { useAuth } from "@/components/auth-provider";
@@ -82,6 +82,22 @@ export default function SettingsPage() {
       alive = false;
     };
   }, [loadOrg]);
+
+  // Which parts of the tax-invoice seller block are still blank. Live off the inputs (not the
+  // loaded row) so the warning clears as the admin types, and empty while loading/failed —
+  // "missing" must mean "really empty", never "not fetched".
+  const missingOrg: string[] =
+    orgLoading || orgLoadError
+      ? []
+      : (
+          [
+            [companyName, c.companyName],
+            [taxId, c.taxId],
+            [address, c.address],
+          ] as const
+        )
+          .filter(([value]) => value.trim() === "")
+          .map(([, label]) => label);
 
   async function saveOrg() {
     setOrgSaving(true);
@@ -219,8 +235,22 @@ export default function SettingsPage() {
                         {c.companyLoadError}
                       </p>
                     )}
+                    {/* WHY these three fields exist, stated before the inputs — they are the
+                        seller block a full Thai tax invoice is legally required to carry. */}
+                    <p className="mb-3 text-[12.5px] leading-relaxed text-muted">{c.companyWhy}</p>
+                    {/* The org_settings row ships EMPTY, and an empty row silently produces
+                        receipts with no issuer — so name what is still missing, loudly. */}
+                    {missingOrg.length > 0 && (
+                      <div
+                        role="alert"
+                        className="mb-4 flex items-start gap-2 rounded-lg border border-warning-bg bg-warning-bg px-3.5 py-2.5 text-[12.5px] text-amber-700 dark:text-amber-300"
+                      >
+                        <AlertTriangle className="mt-0.5 size-4 flex-none" />
+                        <span>{c.companyIncomplete(missingOrg.join(" · "))}</span>
+                      </div>
+                    )}
                     <div className="grid gap-x-4 sm:grid-cols-2">
-                      <Field label={c.companyName}>
+                      <Field label={c.companyName} hint={c.companyNameHint}>
                         <Input
                           value={companyName}
                           onChange={(e) => setCompanyName(e.target.value)}
@@ -239,7 +269,7 @@ export default function SettingsPage() {
                         />
                       </Field>
                     </div>
-                    <Field label={c.address} className="mb-0">
+                    <Field label={c.address} hint={c.addressHint} className="mb-0">
                       <Textarea
                         rows={2}
                         value={address}

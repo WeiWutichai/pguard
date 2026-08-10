@@ -1015,16 +1015,34 @@ components:
 
     ServiceCatalogItem:
       type: object
-      required: [id, name_th, name_en, base_fee, min_hours, is_active, created_at, updated_at]
+      required: [id, name_th, name_en, base_fee, min_hours, commission_percent, cancellation_fee, is_active, created_at, updated_at]
       properties:
         id: { type: string, format: uuid }
         name_th: { type: string }
         name_en: { type: string }
         base_fee:
           type: string
-          description: Base fee in THB per hour per guard (exact decimal string).
+          description: >-
+            Base fee in THB per hour per guard (exact decimal string). VAT-EXCLUSIVE — the
+            customer's bill adds VAT 7% on top (see payment `subtotal`/`vat_amount`/`grand_total`).
           example: "230.00"
         min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        commission_percent:
+          type: string
+          description: >-
+            The platform's cut, as a PERCENT (0–100, exact decimal string; `"10.00"` = 10%).
+            Deducted from the GUARD's pay, NOT added to the customer's bill: the customer pays
+            the same either way, the guard receives `base_fee × actual_hours` minus this percent.
+            `"0.00"` = the guard keeps everything.
+          example: "10.00"
+        cancellation_fee:
+          type: string
+          description: >-
+            Flat fee in THB (exact decimal string, ≥ 0) charged to the CUSTOMER when they cancel
+            before work starts. Capped at what was actually paid (`min(fee, amount_paid)`), so an
+            unpaid booking is never left owing anything. NOT charged when the guard withdraws —
+            that is a full refund. `"0.00"` = free cancellation.
+          example: "100.00"
         notes: { type: string, nullable: true }
         is_active: { type: boolean }
         created_at: { type: string, format: date-time }
@@ -1036,6 +1054,12 @@ components:
         The customer-facing view of an ACTIVE catalog service (the `GET /services` picker) —
         a narrow subset of `ServiceCatalogItem` (no `is_active`/timestamps). `notes` is surfaced
         as the customer-facing package description.
+
+        Neither money knob is exposed here. `commission_percent` never will be: it only changes
+        what the GUARD is paid, never what the customer pays, so it is not the customer's
+        business. `cancellation_fee` IS the customer's business but is not served yet — today the
+        customer only learns it from their own booking's `cancellation_fee` snapshot after
+        creation. Surfacing it on this picker (pre-booking disclosure) is a known gap.
       required: [id, name_th, name_en, base_fee, min_hours]
       properties:
         id: { type: string, format: uuid }
@@ -1043,7 +1067,9 @@ components:
         name_en: { type: string }
         base_fee:
           type: string
-          description: Server-owned ฿/hour/guard rate (exact decimal string).
+          description: >-
+            Server-owned ฿/hour/guard rate (exact decimal string). VAT-EXCLUSIVE — VAT 7% is
+            added on top at checkout, so the amount charged is higher than base_fee × hours.
           example: "230.00"
         min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
         notes:
@@ -1059,19 +1085,47 @@ components:
         name_en: { type: string }
         base_fee:
           type: string
-          description: Exact decimal string in THB (0 to 1000000).
+          description: VAT-exclusive ฿/hour/guard as an exact decimal string (0 to 1000000).
           example: "230.00"
         min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        commission_percent:
+          type: string
+          description: >-
+            Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not
+            change the customer's bill. Optional: omitted is stored as `"0.00"` (no commission).
+          example: "10.00"
+        cancellation_fee:
+          type: string
+          description: >-
+            Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start
+            cancellation. Optional: omitted is stored as `"0.00"` (free cancellation).
+          example: "100.00"
         notes: { type: string, nullable: true }
 
     UpdateServiceRequest:
       type: object
+      description: >-
+        Full replacement of a catalog row (PUT semantics). Editing money here only affects
+        bookings created AFTERWARDS — `commission_percent`/`cancellation_fee` are snapshotted onto
+        each booking at creation, so jobs already booked keep the terms they were sold at.
       required: [name_th, name_en, base_fee, min_hours]
       properties:
         name_th: { type: string }
         name_en: { type: string }
-        base_fee: { type: string, example: "230.00" }
+        base_fee: { type: string, description: 'VAT-exclusive ฿/hour/guard (exact decimal string).', example: "230.00" }
         min_hours: { type: integer, format: int32, minimum: 1, maximum: 24 }
+        commission_percent:
+          type: string
+          description: >-
+            Percent 0–100 (exact decimal string) deducted from the GUARD's pay — it does not
+            change the customer's bill. Optional: omitted RESETS it to `"0.00"` (PUT replaces).
+          example: "10.00"
+        cancellation_fee:
+          type: string
+          description: >-
+            Flat ฿ (exact decimal string, ≥ 0) charged to the customer for a pre-start
+            cancellation. Optional: omitted RESETS it to `"0.00"` (PUT replaces).
+          example: "100.00"
         notes: { type: string, nullable: true }
 
     ReviewCompletionRequest:
@@ -1219,9 +1273,28 @@ components:
         address: { type: string }
         scheduled_at: { type: string, format: date-time }
         hours: { type: integer, format: int32 }
-        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        base_fee: { type: string, description: "Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal). VAT 7% is added on the payment, not here.", example: "500.00" }
         guard_count: { type: integer, format: int32 }
-        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+        tip: { type: string, description: "Up-front tip (exact decimal, VAT-exclusive like base_fee)", example: "0" }
+        commission_percent:
+          type: string
+          nullable: true
+          description: >-
+            SNAPSHOT of the catalog's commission percent (0–100, exact decimal string) taken when
+            this booking was created, so a later catalog edit never rewrites the money of a job
+            already booked. Deducted from the GUARD's pay only — the customer's bill is identical
+            with or without it. null on bookings created before the feature existed → treat as 0.
+          example: "10.00"
+        cancellation_fee:
+          type: string
+          nullable: true
+          description: >-
+            SNAPSHOT of the catalog's cancellation fee (฿, exact decimal string, ≥ 0) taken at
+            creation. Charged to the CUSTOMER only when the CUSTOMER cancels before work starts,
+            and only up to what was actually paid; a guard withdrawal is still a full refund. What
+            was really kept is the payment's `cancellation_fee_charged`. null on pre-feature
+            bookings → treat as 0.
+          example: "100.00"
         lat: { type: number, format: double, nullable: true, description: Site latitude (null when not provided at create). }
         lng: { type: number, format: double, nullable: true, description: Site longitude (null when not provided at create). }
         work_started_at:
@@ -1305,8 +1378,9 @@ components:
       type: object
       description: |
         The authoritative subset exposed to internal (service-JWT'd) callers — the fields the
-        payment service needs to verify a charge, compute the expected total
-        (`base_fee × hours × guard_count + tip`), and carry the guard into the payment event.
+        payment service needs to compute the subtotal
+        (`base_fee × hours × guard_count + tip`, VAT-exclusive), add VAT on top, split the guard's
+        commission, price a cancellation, and carry the guard into the payment event.
         Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is
         server-owned — the client never sets it.
       required: [id, customer_id, status, hours, base_fee, guard_count, tip]
@@ -1316,9 +1390,26 @@ components:
         guard_id: { type: string, format: uuid, nullable: true }
         status: { $ref: '#/components/schemas/BookingStatus' }
         hours: { type: integer, format: int32 }
-        base_fee: { type: string, description: "Server-owned ฿/hour/guard rate (exact decimal)", example: "500.00" }
+        base_fee: { type: string, description: "Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal)", example: "500.00" }
         guard_count: { type: integer, format: int32 }
-        tip: { type: string, description: "Up-front tip (exact decimal)", example: "0" }
+        tip: { type: string, description: "Up-front tip (exact decimal, VAT-exclusive)", example: "0" }
+        commission_percent:
+          type: string
+          nullable: true
+          description: >-
+            The booking's SNAPSHOT commission percent (0–100, exact decimal string) — the payment
+            service's basis for `guard_gross × percent / 100`, deducted from the GUARD's pay and
+            never added to the customer's bill. null on pre-feature bookings → treat as 0.
+          example: "10.00"
+        cancellation_fee:
+          type: string
+          nullable: true
+          description: >-
+            The booking's SNAPSHOT cancellation fee (฿, exact decimal string, ≥ 0) — the payment
+            service keeps `min(fee, amount_paid)` when the CUSTOMER cancels pre-start (never more
+            than was paid, so a cancellation cannot create a debt) and refunds the rest. null on
+            pre-feature bookings → treat as 0.
+          example: "100.00"
 
     AvailableGuard:
       type: object

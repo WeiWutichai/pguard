@@ -4,6 +4,70 @@
 import '../models/booking.dart';
 import '../models/money.dart';
 
+/// One row of `GET /payments/earnings` — the settle-time truth for a COMPLETED booking of the
+/// signed-in guard. Pure parse (tolerant of decimal STRINGS or numbers on the wire).
+class GuardEarningsRow {
+  const GuardEarningsRow({
+    required this.bookingId,
+    this.actualHours,
+    this.commissionPercentHundredths,
+  });
+
+  final String bookingId;
+
+  /// Clamped hours ACTUALLY worked, persisted at reconcile; `null` when unreconciled.
+  final double? actualHours;
+
+  /// The commission applied to this job, in HUNDREDTHS of a percent (1250 = 12.50%); `null` when
+  /// the row carries none (pre-migration settle) → the booking's own snapshot is used instead.
+  final int? commissionPercentHundredths;
+
+  static GuardEarningsRow? tryParse(Map<String, dynamic> json) {
+    final id = json['booking_id'] as String?;
+    if (id == null) return null;
+    final rawHours = json['actual_hours'];
+    final rawPct = json['commission_percent'];
+    return GuardEarningsRow(
+      bookingId: id,
+      actualHours: rawHours is String
+          ? double.tryParse(rawHours)
+          : (rawHours is num ? rawHours.toDouble() : null),
+      // NUMERIC(5,2) → integer hundredths; a number on the wire is stringified first so the
+      // 2dp parser stays the single rounding rule.
+      commissionPercentHundredths:
+          rawPct == null ? null : Money.percentHundredths(rawPct.toString()),
+    );
+  }
+}
+
+/// A guard's pay for a job (or a window of jobs), split the way a payout screen must show it:
+/// what was EARNED, what was TAKEN, and what LANDS. A net figure with no visible deduction is
+/// exactly the kind of silent smaller number that destroys trust in a payout screen.
+class GuardPay {
+  const GuardPay({required this.grossSatang, required this.commissionSatang});
+
+  const GuardPay.zero()
+      : grossSatang = 0,
+        commissionSatang = 0;
+
+  /// `base_fee × actual_hours` — one guard's share before the platform's cut.
+  final int grossSatang;
+
+  /// The platform's per-service commission: `gross × commission_percent / 100`.
+  final int commissionSatang;
+
+  /// What the guard is actually paid.
+  int get netSatang => grossSatang - commissionSatang;
+
+  /// Whether anything was deducted at all (a 0% service shows no deduction line).
+  bool get hasCommission => commissionSatang != 0;
+
+  GuardPay operator +(GuardPay other) => GuardPay(
+        grossSatang: grossSatang + other.grossSatang,
+        commissionSatang: commissionSatang + other.commissionSatang,
+      );
+}
+
 /// Earnings derivations from the guard's assigned bookings (`GET /v1/bookings`).
 ///
 /// HONESTY NOTE: v2 has no earnings/settlement endpoint — every figure here is a client-side
@@ -12,6 +76,13 @@ import '../models/money.dart';
 /// job is `base_fee × hours` — `guard_count` multiplies the customer's bill, never this
 /// guard's pay. Tips are EXCLUDED: the design's earnings rows equal base × hours exactly
 /// (Guard_App.md Screen 6: ฿230/h × 8h = ฿1,840) and v2 defines no per-guard tip split.
+///
+/// COMMISSION (2026-08): the platform's per-service commission is deducted from the GUARD's pay
+/// (the customer pays the same either way), so every earnings figure here is NET of it —
+/// `base_fee × actual_hours × (1 − pct/100)`. The percent is the BOOKING's own snapshot
+/// (`commission_percent`, frozen at creation so a catalog edit never rewrites a booked job),
+/// overridden by the settle's value from `GET /payments/earnings` when present. Screens render
+/// [GuardPay] so the gross and the deduction stay visible next to the net.
 class GuardEarnings {
   const GuardEarnings._();
 
@@ -29,25 +100,65 @@ class GuardEarnings {
   /// total is potentially incomplete. The UI surfaces a "ยอดอาจไม่ครบ / may be incomplete" caveat.
   static bool feedMayBeTruncated(List<Booking> all) => all.length >= feedRowCap;
 
-  /// One guard's pay for a job, in satang: `base_fee × hours`. When [actualHours] carries an entry
-  /// for this booking (from `GET /payments/earnings` — the clamped hours ACTUALLY worked, persisted
-  /// at reconcile), that is used INSTEAD of the booked hours, so a job that finished early pays for
-  /// the hours worked — matching the customer's reconciled net — rather than the full booked
-  /// estimate that overstated it. Falls back to booked hours when there is no reconciled entry.
-  static int jobEarningsSatang(Booking b, {Map<String, double>? actualHours}) {
-    final hrs = actualHours?[b.id] ?? (b.hours ?? 0).toDouble();
-    return (Money.satangFromString(b.baseFee) * hrs).round();
+  /// The hours a job PAYS for: the reconciled [actualHours] when the settle recorded them (from
+  /// `GET /payments/earnings` — the clamped hours ACTUALLY worked), else the booked hours. A job
+  /// that finished early pays for the hours worked — matching the customer's reconciled net —
+  /// rather than the full booked estimate that overstated it.
+  static double payableHours(Booking b, {Map<String, double>? actualHours}) =>
+      actualHours?[b.id] ?? (b.hours ?? 0).toDouble();
+
+  /// The commission applied to this job, in HUNDREDTHS of a percent. The settle's value
+  /// ([commissionPercent], keyed by booking id, from `GET /payments/earnings`) wins when present;
+  /// otherwise the booking's own creation-time snapshot; 0 for a pre-migration job with neither.
+  static int commissionHundredths(Booking b,
+          {Map<String, int>? commissionPercent}) =>
+      commissionPercent?[b.id] ?? b.commissionPercentHundredths;
+
+  /// One guard's pay for a job, split gross / commission / net.
+  ///   gross      = base_fee × payable hours
+  ///   commission = gross × commission_percent / 100     (the platform's per-service cut)
+  ///   net        = gross − commission                   ← what the guard is paid
+  static GuardPay jobPay(Booking b,
+      {Map<String, double>? actualHours, Map<String, int>? commissionPercent}) {
+    final hrs = payableHours(b, actualHours: actualHours);
+    final gross = (Money.satangFromString(b.baseFee) * hrs).round();
+    final pct = commissionHundredths(b, commissionPercent: commissionPercent);
+    return GuardPay(
+      grossSatang: gross,
+      commissionSatang: Money.percentOf(gross, pct),
+    );
   }
 
-  /// Σ [jobEarningsSatang] over the completed bookings in [all].
-  static int totalEarningsSatang(List<Booking> all,
-      {Map<String, double>? actualHours}) {
-    var sum = 0;
+  /// One guard's NET pay for a job, in satang — `base_fee × hours × (1 − pct/100)`.
+  ///
+  /// THE default figure every guard-facing screen shows, so "รายได้" means the same number
+  /// everywhere (home stats, work history, earnings). The gross and the deduction behind it are
+  /// available via [jobPay] and are itemised on the earnings screen.
+  static int jobEarningsSatang(Booking b,
+          {Map<String, double>? actualHours,
+          Map<String, int>? commissionPercent}) =>
+      jobPay(b, actualHours: actualHours, commissionPercent: commissionPercent)
+          .netSatang;
+
+  /// Σ [jobPay] over the completed bookings in [all] (gross + commission + net).
+  static GuardPay totalPay(List<Booking> all,
+      {Map<String, double>? actualHours, Map<String, int>? commissionPercent}) {
+    var sum = const GuardPay.zero();
     for (final b in completedJobs(all)) {
-      sum += jobEarningsSatang(b, actualHours: actualHours);
+      sum = sum +
+          jobPay(b,
+              actualHours: actualHours, commissionPercent: commissionPercent);
     }
     return sum;
   }
+
+  /// Σ NET pay over the completed bookings in [all].
+  static int totalEarningsSatang(List<Booking> all,
+          {Map<String, double>? actualHours,
+          Map<String, int>? commissionPercent}) =>
+      totalPay(all,
+              actualHours: actualHours, commissionPercent: commissionPercent)
+          .netSatang;
 
   /// Window length in CALENDAR days. Day = today, Week = last 7 days, Month = last 30 days.
   static int windowDays(EarningsWindow w) => switch (w) {
@@ -64,27 +175,42 @@ class GuardEarnings {
   /// dropped a job booked for, say, 14:00 today when the clock read 11:58 → "฿0 today" despite
   /// completed jobs sitting in the list below.) ACCURACY caveat re the 100-row feed cap is unchanged
   /// ([feedMayBeTruncated]); every figure is labelled "ประมาณการ / Estimated" (method: base × hours).
-  static int _sumCalendarDays(List<Booking> all, DateTime now, int days,
-      {int offsetDays = 0, Map<String, double>? actualHours}) {
+  static GuardPay _sumCalendarDays(List<Booking> all, DateTime now, int days,
+      {int offsetDays = 0,
+      Map<String, double>? actualHours,
+      Map<String, int>? commissionPercent}) {
     final local = now.toLocal();
     final end = DateTime(local.year, local.month, local.day - offsetDays);
     final start = DateTime(end.year, end.month, end.day - (days - 1));
-    var sum = 0;
+    var sum = const GuardPay.zero();
     for (final b in completedJobs(all)) {
       final w = b.scheduledAt?.toLocal();
       if (w == null) continue;
       final d = DateTime(w.year, w.month, w.day);
       if (!d.isBefore(start) && !d.isAfter(end)) {
-        sum += jobEarningsSatang(b, actualHours: actualHours);
+        sum = sum +
+            jobPay(b,
+                actualHours: actualHours, commissionPercent: commissionPercent);
       }
     }
     return sum;
   }
 
-  /// Σ pay for completed jobs in the current window (today / last 7 / last 30 days).
+  /// Gross / commission / net for the current window (today / last 7 / last 30 days) — the hero
+  /// shows all three, so the windowed total never hides its deduction either.
+  static GuardPay payInWindow(List<Booking> all, DateTime now, EarningsWindow w,
+          {Map<String, double>? actualHours,
+          Map<String, int>? commissionPercent}) =>
+      _sumCalendarDays(all, now, windowDays(w),
+          actualHours: actualHours, commissionPercent: commissionPercent);
+
+  /// Σ NET pay for completed jobs in the current window (today / last 7 / last 30 days).
   static int sumInWindow(List<Booking> all, DateTime now, EarningsWindow w,
-          {Map<String, double>? actualHours}) =>
-      _sumCalendarDays(all, now, windowDays(w), actualHours: actualHours);
+          {Map<String, double>? actualHours,
+          Map<String, int>? commissionPercent}) =>
+      payInWindow(all, now, w,
+              actualHours: actualHours, commissionPercent: commissionPercent)
+          .netSatang;
 
   /// The completed jobs that MAKE UP [sumInWindow] — same calendar-day rule, newest first.
   ///
@@ -108,13 +234,19 @@ class GuardEarnings {
   }
 
   /// Growth fraction vs the immediately-prior window of the same length (e.g. +0.14 = +14%).
-  /// `null` when the prior window had no earnings (no honest baseline to compare against).
+  /// Compares NET against NET (take-home vs take-home). `null` when the prior window had no
+  /// earnings (no honest baseline to compare against).
   static double? growth(List<Booking> all, DateTime now, EarningsWindow w,
-      {Map<String, double>? actualHours}) {
+      {Map<String, double>? actualHours, Map<String, int>? commissionPercent}) {
     final days = windowDays(w);
-    final current = _sumCalendarDays(all, now, days, actualHours: actualHours);
+    final current = _sumCalendarDays(all, now, days,
+            actualHours: actualHours, commissionPercent: commissionPercent)
+        .netSatang;
     final prior = _sumCalendarDays(all, now, days,
-        offsetDays: days, actualHours: actualHours);
+            offsetDays: days,
+            actualHours: actualHours,
+            commissionPercent: commissionPercent)
+        .netSatang;
     if (prior == 0) return null;
     return (current - prior) / prior;
   }
@@ -131,10 +263,13 @@ class GuardEarnings {
     ];
   }
 
-  /// Estimated pay (satang) per day for the last [days] days ending today, OLDEST first.
+  /// Estimated NET pay (satang) per day for the last [days] days ending today, OLDEST first.
   /// Bucketed by the job's scheduled LOCAL date against [seriesDates] — drives the 7-day bar chart.
+  /// Net, like every other figure on the screen, so the bars add up to the hero.
   static List<int> dailySeries(List<Booking> all, DateTime now,
-      {int days = 7, Map<String, double>? actualHours}) {
+      {int days = 7,
+      Map<String, double>? actualHours,
+      Map<String, int>? commissionPercent}) {
     final dates = seriesDates(now, days: days);
     final buckets = List<int>.filled(days, 0);
     for (final b in completedJobs(all)) {
@@ -144,7 +279,8 @@ class GuardEarnings {
         if (when.year == dates[i].year &&
             when.month == dates[i].month &&
             when.day == dates[i].day) {
-          buckets[i] += jobEarningsSatang(b, actualHours: actualHours);
+          buckets[i] += jobEarningsSatang(b,
+              actualHours: actualHours, commissionPercent: commissionPercent);
           break;
         }
       }

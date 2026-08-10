@@ -78,24 +78,28 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
     return 'BK-${tail.toUpperCase()}';
   }
 
-  /// The refundable display total: prefer what live status passed via `extra`, else
-  /// derive from the watched booking (same satang math as the home/payment screens).
-  /// `null` → unknown → the banner omits the amount.
+  /// What was PAID, in satang (VAT included — it is what actually left the customer's account):
+  /// prefer what live status passed via `extra`, else derive from the watched booking.
+  /// `null` → unknown → the copy omits the amount rather than guessing.
   int? _totalSatang(Booking? booking) {
     final fromArgs = widget.args?.totalSatang;
     if (fromArgs != null) return fromArgs;
-    final b = booking;
-    if (b == null || b.baseFee == null) return null;
-    final baseFeeSatang = Money.satangFromString(b.baseFee);
-    final hours = b.hours ?? 0;
-    if (baseFeeSatang <= 0 || hours <= 0) return null;
-    return Money.total(
-      baseFeeSatang: baseFeeSatang,
-      hours: hours,
-      guardCount: b.guardCount ?? 1,
-      tipSatang: Money.satangFromString(b.tip),
-    );
+    return booking?.displayTotalSatang;
   }
+
+  /// The cancellation fee this booking was sold under, clamped to what was actually paid.
+  ///
+  /// "Take what is there, never leave a debt" — the server applies the same `min()`, so a ฿1 job
+  /// with a ฿100 fee keeps ฿1 and refunds ฿0 rather than billing ฿99. Nothing paid → no fee.
+  int _feeSatang(Booking? booking, int? paidSatang, bool isPaid) {
+    if (!isPaid || paidSatang == null) return 0;
+    final fee = booking?.cancellationFeeSatang ?? 0;
+    return fee < paidSatang ? fee : paidSatang;
+  }
+
+  /// The live booking, or null while it loads — the confirm copy needs its cancellation fee.
+  Booking? get _currentBooking =>
+      ref.read(bookingStatusControllerProvider(widget.bookingId)).valueOrNull;
 
   Future<void> _confirmAndCancel(int? totalSatang) async {
     final isThai = ref.read(localeControllerProvider) == AppLocale.th;
@@ -147,9 +151,17 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
           ? 'ยังไม่มีการเรียกเก็บเงิน — ยกเลิกได้ฟรี และจะแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
           : "You haven't been charged — cancelling is free. We'll notify the guard. This can't be undone.";
     } else if (totalSatang != null) {
-      body = isThai
-          ? 'ระบบจะคืนเงิน ${Money.format(totalSatang)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
-          : "We'll refund ${Money.format(totalSatang)} and notify the guard. This can't be undone.";
+      final fee = _feeSatang(_currentBooking, totalSatang, isPaid);
+      final refund = totalSatang - fee;
+      body = fee > 0
+          ? (isThai
+              ? 'ยกเลิกก่อนเริ่มงานมีค่าธรรมเนียม ${Money.format(fee)} — ระบบจะคืนเงิน '
+                  '${Money.format(refund)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
+              : 'Cancelling costs a ${Money.format(fee)} fee — we\'ll refund '
+                  "${Money.format(refund)} and notify the guard. This can't be undone.")
+          : (isThai
+              ? 'ระบบจะคืนเงิน ${Money.format(refund)} และแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
+              : "We'll refund ${Money.format(refund)} and notify the guard. This can't be undone.");
     } else {
       body = isThai
           ? 'ระบบจะคืนเงินและแจ้งเจ้าหน้าที่ การกระทำนี้ย้อนกลับไม่ได้'
@@ -313,6 +325,7 @@ class _CancellationScreenState extends ConsumerState<CancellationScreen> {
                     padding: const EdgeInsets.fromLTRB(24, 14, 24, 0),
                     child: _RefundNote(
                         totalSatang: totalSatang,
+                        feeSatang: _feeSatang(booking, totalSatang, isPaid),
                         isPaid: isPaid,
                         isThai: isThai),
                   ),
@@ -408,24 +421,40 @@ class _NoteField extends StatelessWidget {
 /// Design `.refund-note`: clock icon + 13px info-blue copy on the `--info-bg` wash.
 class _RefundNote extends StatelessWidget {
   const _RefundNote(
-      {this.totalSatang, required this.isPaid, required this.isThai});
+      {this.totalSatang,
+      required this.feeSatang,
+      required this.isPaid,
+      required this.isThai});
 
+  /// What was PAID (VAT included), not what will be refunded — the refund is this minus the fee.
   final int? totalSatang;
+
+  /// The cancellation fee, already clamped to what was paid (0 when unpaid or no fee).
+  final int feeSatang;
   final bool isPaid;
   final bool isThai;
 
   @override
   Widget build(BuildContext context) {
-    final amount = totalSatang != null ? ' ${Money.format(totalSatang!)}' : '';
+    // The figure quoted is the REFUND — what comes back — not what was paid.
+    final refund = totalSatang == null ? null : totalSatang! - feeSatang;
+    final amount = refund != null ? ' ${Money.format(refund)}' : '';
     // Only promise a refund when money was actually taken — an unpaid cancel (requested / accepted-
     // before-pay) charges nothing, so "we'll refund ฿X in 3–5 days" was a lie (deep-review).
+    final feeText = feeSatang > 0 ? ' ${Money.format(feeSatang)}' : '';
     final copy = !isPaid
         ? (isThai
             ? 'ยังไม่มีการเรียกเก็บเงิน — ยกเลิกได้ฟรี'
             : "You haven't been charged — cancelling is free")
-        : (isThai
-            ? 'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ'
-            : 'Cancelled before start — full$amount refund in 3–5 business days');
+        : feeSatang > 0
+            // Say the fee out loud here, not only in the confirm sheet: the amount changes what a
+            // reasonable person decides, so it belongs where they are still deciding.
+            ? (isThai
+                ? 'ยกเลิกก่อนเริ่มงาน — มีค่าธรรมเนียม$feeText คืนเงิน$amount ภายใน 3–5 วันทำการ'
+                : 'Cancelled before start —$feeText fee,$amount refunded in 3–5 business days')
+            : (isThai
+                ? 'ยกเลิกก่อนเริ่มงาน — คืนเงินเต็มจำนวน$amount ภายใน 3–5 วันทำการ'
+                : 'Cancelled before start — full$amount refund in 3–5 business days');
     return Container(
       padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
       decoration: BoxDecoration(

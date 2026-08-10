@@ -19,9 +19,11 @@ part 'booking.g.dart';
 /// * [address] 
 /// * [scheduledAt] 
 /// * [hours] 
-/// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal)
+/// * [baseFee] - Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal). VAT 7% is added on the payment, not here.
 /// * [guardCount] 
-/// * [tip] - Up-front tip (exact decimal)
+/// * [tip] - Up-front tip (exact decimal, VAT-exclusive like base_fee)
+/// * [commissionPercent] - SNAPSHOT of the catalog's commission percent (0–100, exact decimal string) taken when this booking was created, so a later catalog edit never rewrites the money of a job already booked. Deducted from the GUARD's pay only — the customer's bill is identical with or without it. null on bookings created before the feature existed → treat as 0.
+/// * [cancellationFee] - SNAPSHOT of the catalog's cancellation fee (฿, exact decimal string, ≥ 0) taken at creation. Charged to the CUSTOMER only when the CUSTOMER cancels before work starts, and only up to what was actually paid; a guard withdrawal is still a full refund. What was really kept is the payment's `cancellation_fee_charged`. null on pre-feature bookings → treat as 0.
 /// * [lat] - Site latitude (null when not provided at create).
 /// * [lng] - Site longitude (null when not provided at create).
 /// * [workStartedAt] - When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
@@ -54,16 +56,24 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   @BuiltValueField(wireName: r'hours')
   int get hours;
 
-  /// Server-owned ฿/hour/guard rate (exact decimal)
+  /// Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal). VAT 7% is added on the payment, not here.
   @BuiltValueField(wireName: r'base_fee')
   String get baseFee;
 
   @BuiltValueField(wireName: r'guard_count')
   int get guardCount;
 
-  /// Up-front tip (exact decimal)
+  /// Up-front tip (exact decimal, VAT-exclusive like base_fee)
   @BuiltValueField(wireName: r'tip')
   String get tip;
+
+  /// SNAPSHOT of the catalog's commission percent (0–100, exact decimal string) taken when this booking was created, so a later catalog edit never rewrites the money of a job already booked. Deducted from the GUARD's pay only — the customer's bill is identical with or without it. null on bookings created before the feature existed → treat as 0.
+  @BuiltValueField(wireName: r'commission_percent')
+  String? get commissionPercent;
+
+  /// SNAPSHOT of the catalog's cancellation fee (฿, exact decimal string, ≥ 0) taken at creation. Charged to the CUSTOMER only when the CUSTOMER cancels before work starts, and only up to what was actually paid; a guard withdrawal is still a full refund. What was really kept is the payment's `cancellation_fee_charged`. null on pre-feature bookings → treat as 0.
+  @BuiltValueField(wireName: r'cancellation_fee')
+  String? get cancellationFee;
 
   /// Site latitude (null when not provided at create).
   @BuiltValueField(wireName: r'lat')
@@ -170,6 +180,20 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       object.tip,
       specifiedType: const FullType(String),
     );
+    if (object.commissionPercent != null) {
+      yield r'commission_percent';
+      yield serializers.serialize(
+        object.commissionPercent,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.cancellationFee != null) {
+      yield r'cancellation_fee';
+      yield serializers.serialize(
+        object.cancellationFee,
+        specifiedType: const FullType(String),
+      );
+    }
     if (object.lat != null) {
       yield r'lat';
       yield serializers.serialize(
@@ -314,6 +338,20 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(String),
           ) as String;
           result.tip = valueDes;
+          break;
+        case r'commission_percent':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.commissionPercent = valueDes;
+          break;
+        case r'cancellation_fee':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationFee = valueDes;
           break;
         case r'lat':
           final valueDes = serializers.deserialize(

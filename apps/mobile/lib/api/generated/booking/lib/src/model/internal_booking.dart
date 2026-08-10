@@ -9,7 +9,7 @@ import 'package:built_value/serializer.dart';
 
 part 'internal_booking.g.dart';
 
-/// The authoritative subset exposed to internal (service-JWT'd) callers — the fields the payment service needs to verify a charge, compute the expected total (`base_fee × hours × guard_count + tip`), and carry the guard into the payment event. Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is server-owned — the client never sets it. 
+/// The authoritative subset exposed to internal (service-JWT'd) callers — the fields the payment service needs to compute the subtotal (`base_fee × hours × guard_count + tip`, VAT-exclusive), add VAT on top, split the guard's commission, price a cancellation, and carry the guard into the payment event. Deliberately narrower than `Booking` (no address/timestamps). `base_fee` is server-owned — the client never sets it. 
 ///
 /// Properties:
 /// * [id] 
@@ -17,9 +17,11 @@ part 'internal_booking.g.dart';
 /// * [guardId] 
 /// * [status] 
 /// * [hours] 
-/// * [baseFee] - Server-owned ฿/hour/guard rate (exact decimal)
+/// * [baseFee] - Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal)
 /// * [guardCount] 
-/// * [tip] - Up-front tip (exact decimal)
+/// * [tip] - Up-front tip (exact decimal, VAT-exclusive)
+/// * [commissionPercent] - The booking's SNAPSHOT commission percent (0–100, exact decimal string) — the payment service's basis for `guard_gross × percent / 100`, deducted from the GUARD's pay and never added to the customer's bill. null on pre-feature bookings → treat as 0.
+/// * [cancellationFee] - The booking's SNAPSHOT cancellation fee (฿, exact decimal string, ≥ 0) — the payment service keeps `min(fee, amount_paid)` when the CUSTOMER cancels pre-start (never more than was paid, so a cancellation cannot create a debt) and refunds the rest. null on pre-feature bookings → treat as 0.
 @BuiltValue()
 abstract class InternalBooking implements Built<InternalBooking, InternalBookingBuilder> {
   @BuiltValueField(wireName: r'id')
@@ -38,16 +40,24 @@ abstract class InternalBooking implements Built<InternalBooking, InternalBooking
   @BuiltValueField(wireName: r'hours')
   int get hours;
 
-  /// Server-owned ฿/hour/guard rate (exact decimal)
+  /// Server-owned VAT-EXCLUSIVE ฿/hour/guard rate (exact decimal)
   @BuiltValueField(wireName: r'base_fee')
   String get baseFee;
 
   @BuiltValueField(wireName: r'guard_count')
   int get guardCount;
 
-  /// Up-front tip (exact decimal)
+  /// Up-front tip (exact decimal, VAT-exclusive)
   @BuiltValueField(wireName: r'tip')
   String get tip;
+
+  /// The booking's SNAPSHOT commission percent (0–100, exact decimal string) — the payment service's basis for `guard_gross × percent / 100`, deducted from the GUARD's pay and never added to the customer's bill. null on pre-feature bookings → treat as 0.
+  @BuiltValueField(wireName: r'commission_percent')
+  String? get commissionPercent;
+
+  /// The booking's SNAPSHOT cancellation fee (฿, exact decimal string, ≥ 0) — the payment service keeps `min(fee, amount_paid)` when the CUSTOMER cancels pre-start (never more than was paid, so a cancellation cannot create a debt) and refunds the rest. null on pre-feature bookings → treat as 0.
+  @BuiltValueField(wireName: r'cancellation_fee')
+  String? get cancellationFee;
 
   InternalBooking._();
 
@@ -114,6 +124,20 @@ class _$InternalBookingSerializer implements PrimitiveSerializer<InternalBooking
       object.tip,
       specifiedType: const FullType(String),
     );
+    if (object.commissionPercent != null) {
+      yield r'commission_percent';
+      yield serializers.serialize(
+        object.commissionPercent,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.cancellationFee != null) {
+      yield r'cancellation_fee';
+      yield serializers.serialize(
+        object.cancellationFee,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
@@ -192,6 +216,20 @@ class _$InternalBookingSerializer implements PrimitiveSerializer<InternalBooking
             specifiedType: const FullType(String),
           ) as String;
           result.tip = valueDes;
+          break;
+        case r'commission_percent':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.commissionPercent = valueDes;
+          break;
+        case r'cancellation_fee':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationFee = valueDes;
           break;
         default:
           unhandled.add(key);

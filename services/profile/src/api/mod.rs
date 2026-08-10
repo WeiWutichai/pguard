@@ -1156,6 +1156,24 @@ pub async fn admin_get_org_settings<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(settings)))
 }
 
+/// GET `/org-settings` — the SELLER block every tax invoice needs: company name, tax ID, address.
+///
+/// Readable by any signed-in user, unlike the admin twin above. A Thai ใบกำกับภาษี is not valid
+/// without the issuer's legal name, TIN and address, and the receipt is rendered on the customer's
+/// device — so gating this to admins would mean shipping a document that cannot legally be one.
+/// This is org-wide public-facing config (the same three lines printed on every receipt), not
+/// personal data, so it carries no §30 audit. Replica read; an unset row returns all-`null` so the
+/// client can say the document is incomplete rather than print a blank header.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn get_org_settings<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+) -> Result<Json<ApiResponse<OrgSettingsResponse>>, AppError> {
+    let _ = &user; // any authenticated role — see the doc comment
+    let settings = repo::get_org_settings(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(settings)))
+}
+
 /// PUT `/admin/org-settings` — set/replace the org (company) profile. Admin only (else 403).
 /// Validates a lenient `tax_id` (8–20 digits, separators allowed — not a checksum) + bounded
 /// lengths for company_name/address, then upserts the single row (records the acting admin in

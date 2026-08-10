@@ -100,8 +100,10 @@ void main() {
             .selected,
         isFalse);
 
-    // Refund banner with the dynamic total (500×3×1 + 295 = ฿1,795).
-    expect(find.textContaining('คืนเงินเต็มจำนวน ฿1,795'), findsOneWidget);
+    // Refund banner with the dynamic total: the customer paid the VAT-INCLUSIVE amount
+    // (500×3×1 + 295 = ฿1,795 subtotal, + 7% VAT = ฿1,920.65), so the refund quoted back to them
+    // is that same figure — quoting the pre-tax subtotal would promise less than they handed over.
+    expect(find.textContaining('คืนเงินเต็มจำนวน ฿1,920.65'), findsOneWidget);
 
     // Selecting another reason moves the radio.
     await tester.tap(find.text('ไม่ต้องการแล้ว'));
@@ -116,7 +118,8 @@ void main() {
 
   testWidgets(
       'confirm sheet → "ใช่ ยกเลิกงาน" PUTs /bookings/b1/cancel WITH the reason '
-      'code + note and pops back to live status with a SnackBar', (tester) async {
+      'code + note and pops back to live status with a SnackBar',
+      (tester) async {
     Object? sentBody;
     final api = apiWith(onPut: (path, data) async {
       expect(path, '/bookings/b1/cancel');
@@ -138,7 +141,8 @@ void main() {
 
     // STATE 2 sheet content.
     expect(find.text('ยกเลิกงานนี้?'), findsOneWidget);
-    expect(find.textContaining('ระบบจะคืนเงิน ฿1,795'), findsOneWidget);
+    // VAT-inclusive, like the banner above: ฿1,795 subtotal + 7% = ฿1,920.65 actually charged.
+    expect(find.textContaining('ระบบจะคืนเงิน ฿1,920.65'), findsOneWidget);
 
     await tester.tap(find.text('ใช่ ยกเลิกงาน'));
     await tester.pumpAndSettle();
@@ -194,7 +198,8 @@ void main() {
 
   testWidgets(
       '"อื่นๆ" with a BLANK note blocks submit: no confirm sheet, NO PUT, and '
-      'an inline message — then filling the note lets it through', (tester) async {
+      'an inline message — then filling the note lets it through',
+      (tester) async {
     Object? sentBody;
     final api = apiWith(onPut: (path, data) async {
       sentBody = data;

@@ -20,7 +20,10 @@ use shared::service_jwt::ServiceCaller;
 use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, RatingReader};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
-use crate::domain::{validate_cancellation, Cancellation, ReasonSet};
+use crate::domain::{
+    validate_cancellation, validate_cancellation_fee, validate_commission_percent, Cancellation,
+    PricingSnapshot, ReasonSet,
+};
 use crate::models::{
     AdminListBookingsQuery, AssignGuardRequest, AvailableGuard, AvailableGuardsQuery,
     BookingResponse, BookingsReport, CancelBookingRequest, CreateBookingRequest,
@@ -131,11 +134,14 @@ pub async fn create_booking<S: BookingDeps>(
     }
     // Optional site coordinates: both-or-neither, in range (feeds open-job radius discovery).
     progress::validate_coords(req.lat, req.lng)?;
-    // Optional catalog service: when picked, the booking's base_fee is resolved SERVER-SIDE
-    // from the active catalog entry (never the client body — never trust a client-sent fee),
-    // and the service's min_hours floor is enforced. Absent → base_fee falls to the column
-    // DEFAULT (back-compat, unchanged). A missing/inactive service id is 404.
-    let base_fee = match req.service_id {
+    // Optional catalog service: when picked, the booking's money is resolved SERVER-SIDE from
+    // the active catalog entry (never the client body — never trust a client-sent fee), and the
+    // service's min_hours floor is enforced. Absent → base_fee falls to the column DEFAULT
+    // (back-compat, unchanged) and the snapshot is 0/0. A missing/inactive service id is 404.
+    //
+    // The commission + cancellation fee are SNAPSHOT here, not looked up later: the catalog is
+    // admin-editable, and a booking's terms must be the ones in force the moment it was made.
+    let pricing = match req.service_id {
         None => None,
         Some(service_id) => {
             let service = repo::get_active_service(state.db(), service_id)
@@ -147,7 +153,11 @@ pub async fn create_booking<S: BookingDeps>(
                     service.min_hours
                 )));
             }
-            Some(service.base_fee)
+            Some(PricingSnapshot {
+                base_fee: service.base_fee,
+                commission_percent: service.commission_percent,
+                cancellation_fee: service.cancellation_fee,
+            })
         }
     };
     // A fresh correlation id threads the booking.requested event (atomic with the insert via
@@ -158,7 +168,7 @@ pub async fn create_booking<S: BookingDeps>(
         &req,
         guard_count,
         tip,
-        base_fee,
+        pricing,
         Uuid::new_v4(),
     )
     .await?;
@@ -642,13 +652,21 @@ const MAX_SERVICE_BASE_FEE: i64 = 1_000_000;
 const MAX_SERVICE_NOTES_LEN: usize = 2000;
 
 /// Validate the editable fields shared by create + update.
+///
+/// Returns the NORMALIZED `(commission_percent, cancellation_fee)` — the pure
+/// `domain::pricing` validators round both to their columns' 2-dp scale, so the caller must
+/// persist what comes back rather than what the admin sent (otherwise Postgres rounds silently
+/// and the response echoes a value that is not what was stored). Both are typed 400s
+/// (`COMMISSION_PERCENT_INVALID` / `CANCELLATION_FEE_INVALID`) so the admin UI localizes them.
 fn validate_service_fields(
     name_th: &str,
     name_en: &str,
     base_fee: rust_decimal::Decimal,
     min_hours: i32,
     notes: Option<&str>,
-) -> Result<(), AppError> {
+    commission_percent: rust_decimal::Decimal,
+    cancellation_fee: rust_decimal::Decimal,
+) -> Result<(rust_decimal::Decimal, rust_decimal::Decimal), AppError> {
     if name_th.trim().is_empty() || name_en.trim().is_empty() {
         return Err(AppError::BadRequest(
             "name_th and name_en are required".to_string(),
@@ -669,7 +687,10 @@ fn validate_service_fields(
     if notes.is_some_and(|n| n.len() > MAX_SERVICE_NOTES_LEN) {
         return Err(AppError::BadRequest("notes too long".to_string()));
     }
-    Ok(())
+    Ok((
+        validate_commission_percent(commission_percent)?,
+        validate_cancellation_fee(cancellation_fee)?,
+    ))
 }
 
 /// GET /admin/pricing/services — list the service catalog (admin). Read → replica.
@@ -688,15 +709,18 @@ pub async fn admin_list_services<S: BookingDeps>(
 pub async fn admin_create_service<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
-    Json(req): Json<CreateServiceRequest>,
+    Json(mut req): Json<CreateServiceRequest>,
 ) -> Result<Json<ApiResponse<ServiceCatalogItem>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
-    validate_service_fields(
+    // Write the NORMALIZED money knobs back onto the request — that is what gets persisted.
+    (req.commission_percent, req.cancellation_fee) = validate_service_fields(
         &req.name_th,
         &req.name_en,
         req.base_fee,
         req.min_hours,
         req.notes.as_deref(),
+        req.commission_percent,
+        req.cancellation_fee,
     )?;
     let item = repo::create_service(state.db(), &req).await?;
     Ok(Json(ApiResponse::success(item)))
@@ -708,15 +732,19 @@ pub async fn admin_update_service<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
-    Json(req): Json<UpdateServiceRequest>,
+    Json(mut req): Json<UpdateServiceRequest>,
 ) -> Result<Json<ApiResponse<ServiceCatalogItem>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
-    validate_service_fields(
+    // Same normalization as create. Changing these knobs only affects bookings made AFTER the
+    // edit — every existing booking carries its own snapshot (migration 0010).
+    (req.commission_percent, req.cancellation_fee) = validate_service_fields(
         &req.name_th,
         &req.name_en,
         req.base_fee,
         req.min_hours,
         req.notes.as_deref(),
+        req.commission_percent,
+        req.cancellation_fee,
     )?;
     let item = repo::update_service(state.db(), id, &req).await?;
     Ok(Json(ApiResponse::success(item)))
@@ -3324,14 +3352,105 @@ mod tests {
         );
     }
 
+    // ----- Catalog field validation (hermetic — no DB) -----
+
+    /// The shared create/update validator DELEGATES the two money knobs to the pure
+    /// `domain::pricing` rules (their own exhaustive tests live there) and returns the
+    /// NORMALIZED pair the handler persists. This asserts the wiring: a bad commission /
+    /// cancellation fee is a TYPED 400 the admin UI can localize, and a good one comes back
+    /// rounded to the columns' 2-dp scale rather than being silently rounded by Postgres.
+    #[test]
+    fn service_fields_validate_and_normalize_the_money_knobs() {
+        let ok = |pct: &str, fee: &str| {
+            validate_service_fields(
+                "ชื่อ",
+                "name",
+                "230.00".parse().unwrap(),
+                3,
+                None,
+                pct.parse().unwrap(),
+                fee.parse().unwrap(),
+            )
+        };
+
+        let (pct, fee) = ok("12.506", "150.004").expect("in-range values are accepted");
+        assert_eq!(pct, "12.51".parse::<rust_decimal::Decimal>().unwrap());
+        assert_eq!(fee, "150.00".parse::<rust_decimal::Decimal>().unwrap());
+
+        for bad in ["-1", "100.01"] {
+            let err = ok(bad, "0").expect_err("out-of-range commission must be refused");
+            assert!(
+                matches!(
+                    err,
+                    AppError::BadRequestCode {
+                        code: crate::domain::pricing::COMMISSION_PERCENT_INVALID_CODE,
+                        ..
+                    }
+                ),
+                "commission {bad} → typed 400, got {err:?}"
+            );
+        }
+        let err = ok("0", "-0.01").expect_err("a negative cancellation fee must be refused");
+        assert!(
+            matches!(
+                err,
+                AppError::BadRequestCode {
+                    code: crate::domain::pricing::CANCELLATION_FEE_INVALID_CODE,
+                    ..
+                }
+            ),
+            "negative fee → typed 400, got {err:?}"
+        );
+    }
+
+    /// The WIRE shape of the two snapshot fields, which mobile + web-admin parse: money is a
+    /// JSON STRING (the workspace `serde-str` money rule, like `base_fee`/`tip`), and a
+    /// pre-migration-0010 booking sends `null` — never a silently-invented `0`, which would tell
+    /// a client "these terms were agreed" about a booking that never saw them. Hermetic.
+    #[test]
+    fn booking_snapshot_serializes_as_money_strings_or_null() {
+        let mut booking = BookingResponse {
+            id: Uuid::new_v4(),
+            customer_id: Uuid::new_v4(),
+            guard_id: None,
+            status: "requested".to_string(),
+            address: "1 Wire Rd".to_string(),
+            scheduled_at: Utc::now(),
+            hours: 4,
+            base_fee: "230.00".parse().unwrap(),
+            guard_count: 1,
+            tip: rust_decimal::Decimal::ZERO,
+            lat: None,
+            lng: None,
+            work_started_at: None,
+            paid_at: None,
+            cancellation_reason: None,
+            cancellation_note: None,
+            commission_percent: Some("12.50".parse().unwrap()),
+            cancellation_fee: Some("150.00".parse().unwrap()),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+        let v = serde_json::to_value(&booking).expect("serialize");
+        assert_eq!(v["commission_percent"], serde_json::json!("12.50"));
+        assert_eq!(v["cancellation_fee"], serde_json::json!("150.00"));
+
+        booking.commission_percent = None;
+        booking.cancellation_fee = None;
+        let v = serde_json::to_value(&booking).expect("serialize");
+        assert!(v["commission_percent"].is_null(), "pre-0010 booking → null");
+        assert!(v["cancellation_fee"].is_null(), "pre-0010 booking → null");
+    }
+
     // ----- Service catalog → charge-path wiring (full router; real DB + Redis) -----
 
     /// End-to-end over the router: `GET /services` is reachable by a NON-admin customer (no
     /// admin gate) and lists the seeded ACTIVE service; `POST /bookings` with that
     /// `service_id` uses the catalog's `base_fee` (not the column default) and enforces its
-    /// `min_hours` floor (below-min → 400); an unknown/inactive `service_id` → 404; and a
-    /// booking WITHOUT a `service_id` still works (back-compat). Gated on DATABASE_URL +
-    /// Redis (hermetic SKIP otherwise).
+    /// `min_hours` floor (below-min → 400); an unknown/inactive `service_id` → 404; a booking
+    /// WITHOUT a `service_id` still works (back-compat) and snapshots 0/0; and the catalog's
+    /// `commission_percent`/`cancellation_fee` land on the booking it was created from. Gated on
+    /// DATABASE_URL + Redis (hermetic SKIP otherwise).
     #[tokio::test]
     async fn services_list_and_booking_charge_wiring() {
         let Some((app, db)) = router_with_real_db().await else {
@@ -3339,7 +3458,8 @@ mod tests {
             return;
         };
 
-        // Seed one active service (min 3h, ฿230/hr) and one deactivated service.
+        // Seed one active service (min 3h, ฿230/hr, 12.5% commission, ฿150 cancellation fee)
+        // and one deactivated service.
         let marker = Uuid::new_v4().to_string();
         let active = repo::create_service(
             &db,
@@ -3348,6 +3468,8 @@ mod tests {
                 name_en: format!("en-{marker}"),
                 base_fee: "230.00".parse().unwrap(),
                 min_hours: 3,
+                commission_percent: "12.50".parse().unwrap(),
+                cancellation_fee: "150.00".parse().unwrap(),
                 notes: Some(format!("desc-{marker}")),
             },
         )
@@ -3360,6 +3482,8 @@ mod tests {
                 name_en: format!("en-x-{marker}"),
                 base_fee: "999.00".parse().unwrap(),
                 min_hours: 1,
+                commission_percent: rust_decimal::Decimal::ZERO,
+                cancellation_fee: rust_decimal::Decimal::ZERO,
                 notes: None,
             },
         )
@@ -3461,6 +3585,17 @@ mod tests {
             serde_json::json!("230.00"),
             "the booking's base_fee is the catalog rate"
         );
+        // …and so are the two money knobs — SNAPSHOT onto the booking, visible to the apps.
+        assert_eq!(
+            v["data"]["commission_percent"],
+            serde_json::json!("12.50"),
+            "the catalog's commission is snapshot onto the booking"
+        );
+        assert_eq!(
+            v["data"]["cancellation_fee"],
+            serde_json::json!("150.00"),
+            "the catalog's cancellation fee is snapshot onto the booking"
+        );
 
         // (b) below the service minimum → 400 (and no booking is created).
         let res = create(Some(active.id), 2).await;
@@ -3482,7 +3617,8 @@ mod tests {
             "an inactive service_id is 404"
         );
 
-        // (d) back-compat: no service_id still works (200; server-owned default base_fee).
+        // (d) back-compat: no service_id still works (200; server-owned default base_fee) and
+        // snapshots real ZEROES — "no cut, no fee" — never NULL (NULL is only a pre-0010 row).
         let res = create(None, 1).await;
         assert_eq!(res.status(), StatusCode::OK, "no service_id still works");
         let body = axum::body::to_bytes(res.into_body(), 1 << 20)
@@ -3490,6 +3626,47 @@ mod tests {
             .unwrap();
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         let plain_id: Uuid = serde_json::from_value(v["data"]["id"].clone()).unwrap();
+        assert_eq!(
+            v["data"]["commission_percent"],
+            serde_json::json!("0.00"),
+            "no service → a real 0 commission, not null"
+        );
+        assert_eq!(
+            v["data"]["cancellation_fee"],
+            serde_json::json!("0.00"),
+            "no service → a real 0 cancellation fee, not null"
+        );
+
+        // (e) editing the catalog AFTERWARDS must not move the money of the booking already
+        // made — the whole reason the values are snapshot rather than looked up.
+        repo::update_service(
+            &db,
+            active.id,
+            &UpdateServiceRequest {
+                name_th: format!("th-{marker}"),
+                name_en: format!("en-{marker}"),
+                base_fee: "230.00".parse().unwrap(),
+                min_hours: 3,
+                commission_percent: "40.00".parse().unwrap(),
+                cancellation_fee: "900.00".parse().unwrap(),
+                notes: Some(format!("desc-{marker}")),
+            },
+        )
+        .await
+        .expect("raise the commission after the fact");
+        let after = repo::get_booking(&db, booking_id)
+            .await
+            .expect("re-read the booking made under the OLD terms");
+        assert_eq!(
+            after.commission_percent,
+            Some("12.50".parse().unwrap()),
+            "raising the catalog commission must not restate what the guard earned"
+        );
+        assert_eq!(
+            after.cancellation_fee,
+            Some("150.00".parse().unwrap()),
+            "raising the catalog cancellation fee must not re-price an existing booking"
+        );
 
         // cleanup
         for id in [booking_id, plain_id] {

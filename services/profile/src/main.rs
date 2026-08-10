@@ -207,6 +207,9 @@ async fn main() -> anyhow::Result<()> {
             get(api::admin_get_org_settings::<AppState>)
                 .put(api::admin_update_org_settings::<AppState>),
         )
+        // The same company block, readable by any signed-in user: the customer's device renders
+        // the tax invoice and cannot issue a valid one without the seller's name/TIN/address.
+        .route("/org-settings", get(api::get_org_settings::<AppState>))
         // Admin batch name-resolver: id[] → { id: { role, display_name } } for the admin lists
         // (jobs/reviews/calls/activity log) that otherwise render raw UUIDs. Admin-gated in the
         // handler; profile owns the only stored display names (guard/customer full_name).

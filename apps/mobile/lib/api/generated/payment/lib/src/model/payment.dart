@@ -10,15 +10,19 @@ import 'package:built_value/serializer.dart';
 
 part 'payment.g.dart';
 
-/// Payment
+/// One booking's charge. MONEY VOCABULARY (all exact decimal strings; VAT rate 7%):   subtotal    = base_fee × hours × guard_count + tip   ← VAT-EXCLUSIVE, the catalog price   vat_amount  = subtotal × 0.07   grand_total = subtotal + vat_amount                  ← what the customer actually pays `amount` (what was pre-paid) is the VAT-INCLUSIVE `grand_total`, not the subtotal — the catalog's rates are quoted before VAT, so the charge is higher than base_fee × hours. 
 ///
 /// Properties:
 /// * [id] 
 /// * [bookingId] 
 /// * [customerId] 
 /// * [guardId] 
-/// * [amount] - Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
-/// * [expectedTotal] - Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
+/// * [amount] - Exact decimal PRE-PAID — the VAT-INCLUSIVE grand total. Never re-charged on settle.
+/// * [expectedTotal] - Server-computed authoritative charge at pre-pay time — the VAT-INCLUSIVE total ((base_fee × hours × guards + tip) + VAT 7%), i.e. the same figure as `grand_total`.
+/// * [subtotal] - VAT-EXCLUSIVE service cost of the CURRENTLY SETTLED bill — base_fee × hours × guard_count + tip (booked hours until the completion settle, actual hours after). This is the \"ราคาสินค้า/บริการ\" line of the tax invoice, NOT what the customer pays. null on payments taken before VAT was itemized (their `amount` was the whole charge, VAT-free).
+/// * [vatAmount] - VAT charged ON TOP of `subtotal` at 7% (`subtotal × 0.07`, rounded to 2dp) — the \"ภาษีมูลค่าเพิ่ม 7%\" line of the tax invoice. Collected for the Revenue Department, so it is NOT platform revenue. null on pre-VAT payments.
+/// * [grandTotal] - `subtotal + vat_amount` — the VAT-INCLUSIVE amount the customer owes, and the \"จำนวนเงินรวมทั้งสิ้น\" line of the tax invoice. ALWAYS present (unlike the two fields it is made of): on a pre-VAT row it falls back to `amount`, so this is the payable figure for every payment ever taken. Tracks the SETTLED bill — it follows `final_amount` once the actual hours are reconciled, and equals `amount` until then.
+/// * [cancellationFeeCharged] - What was actually KEPT as a cancellation fee when the CUSTOMER cancelled before work started: `min(booking.cancellation_fee, amount_paid)` — capped at what was paid, so a cancellation can never leave the customer owing money (nothing paid → nothing charged, `\"0.00\"`). The refund is `amount_paid − cancellation_fee_charged`. Stays null/`\"0.00\"` when the GUARD withdrew (not the customer's fault → full refund) and on jobs that were never cancelled.
 /// * [paymentMethod] - How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
 /// * [status] 
 /// * [finalAmount] - The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).
@@ -42,13 +46,29 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   @BuiltValueField(wireName: r'guard_id')
   String? get guardId;
 
-  /// Exact decimal PRE-PAID (the estimate). Never re-charged on settle.
+  /// Exact decimal PRE-PAID — the VAT-INCLUSIVE grand total. Never re-charged on settle.
   @BuiltValueField(wireName: r'amount')
   String get amount;
 
-  /// Server-computed authoritative estimate at pre-pay time (base_fee × hours × guards + tip).
+  /// Server-computed authoritative charge at pre-pay time — the VAT-INCLUSIVE total ((base_fee × hours × guards + tip) + VAT 7%), i.e. the same figure as `grand_total`.
   @BuiltValueField(wireName: r'expected_total')
   String? get expectedTotal;
+
+  /// VAT-EXCLUSIVE service cost of the CURRENTLY SETTLED bill — base_fee × hours × guard_count + tip (booked hours until the completion settle, actual hours after). This is the \"ราคาสินค้า/บริการ\" line of the tax invoice, NOT what the customer pays. null on payments taken before VAT was itemized (their `amount` was the whole charge, VAT-free).
+  @BuiltValueField(wireName: r'subtotal')
+  String? get subtotal;
+
+  /// VAT charged ON TOP of `subtotal` at 7% (`subtotal × 0.07`, rounded to 2dp) — the \"ภาษีมูลค่าเพิ่ม 7%\" line of the tax invoice. Collected for the Revenue Department, so it is NOT platform revenue. null on pre-VAT payments.
+  @BuiltValueField(wireName: r'vat_amount')
+  String? get vatAmount;
+
+  /// `subtotal + vat_amount` — the VAT-INCLUSIVE amount the customer owes, and the \"จำนวนเงินรวมทั้งสิ้น\" line of the tax invoice. ALWAYS present (unlike the two fields it is made of): on a pre-VAT row it falls back to `amount`, so this is the payable figure for every payment ever taken. Tracks the SETTLED bill — it follows `final_amount` once the actual hours are reconciled, and equals `amount` until then.
+  @BuiltValueField(wireName: r'grand_total')
+  String get grandTotal;
+
+  /// What was actually KEPT as a cancellation fee when the CUSTOMER cancelled before work started: `min(booking.cancellation_fee, amount_paid)` — capped at what was paid, so a cancellation can never leave the customer owing money (nothing paid → nothing charged, `\"0.00\"`). The refund is `amount_paid − cancellation_fee_charged`. Stays null/`\"0.00\"` when the GUARD withdrew (not the customer's fault → full refund) and on jobs that were never cancelled.
+  @BuiltValueField(wireName: r'cancellation_fee_charged')
+  String? get cancellationFeeCharged;
 
   /// How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
   @BuiltValueField(wireName: r'payment_method')
@@ -138,6 +158,32 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
       yield r'expected_total';
       yield serializers.serialize(
         object.expectedTotal,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.subtotal != null) {
+      yield r'subtotal';
+      yield serializers.serialize(
+        object.subtotal,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.vatAmount != null) {
+      yield r'vat_amount';
+      yield serializers.serialize(
+        object.vatAmount,
+        specifiedType: const FullType(String),
+      );
+    }
+    yield r'grand_total';
+    yield serializers.serialize(
+      object.grandTotal,
+      specifiedType: const FullType(String),
+    );
+    if (object.cancellationFeeCharged != null) {
+      yield r'cancellation_fee_charged';
+      yield serializers.serialize(
+        object.cancellationFeeCharged,
         specifiedType: const FullType(String),
       );
     }
@@ -262,6 +308,34 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
             specifiedType: const FullType(String),
           ) as String;
           result.expectedTotal = valueDes;
+          break;
+        case r'subtotal':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.subtotal = valueDes;
+          break;
+        case r'vat_amount':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.vatAmount = valueDes;
+          break;
+        case r'grand_total':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.grandTotal = valueDes;
+          break;
+        case r'cancellation_fee_charged':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.cancellationFeeCharged = valueDes;
           break;
         case r'payment_method':
           final valueDes = serializers.deserialize(

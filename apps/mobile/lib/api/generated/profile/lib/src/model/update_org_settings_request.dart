@@ -8,21 +8,23 @@ import 'package:built_value/serializer.dart';
 
 part 'update_org_settings_request.g.dart';
 
-/// The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens allowed — not a checksum); `company_name`/`address` are bounded to 500 chars. 
+/// The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens allowed — not a checksum); `company_name`/`address` are bounded to 500 chars. Sending `null` CLEARS a field — which also removes it from every receipt issued afterwards. 
 ///
 /// Properties:
-/// * [companyName] 
-/// * [taxId] - 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits.
-/// * [address] 
+/// * [companyName] - Legal entity name as registered — the issuer line of the tax invoice (ผู้ประกอบการ).
+/// * [taxId] - 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice.
+/// * [address] - Registered address of the issuer — legally required on a full tax invoice.
 @BuiltValue()
 abstract class UpdateOrgSettingsRequest implements Built<UpdateOrgSettingsRequest, UpdateOrgSettingsRequestBuilder> {
+  /// Legal entity name as registered — the issuer line of the tax invoice (ผู้ประกอบการ).
   @BuiltValueField(wireName: r'company_name')
   String? get companyName;
 
-  /// 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits.
+  /// 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice.
   @BuiltValueField(wireName: r'tax_id')
   String? get taxId;
 
+  /// Registered address of the issuer — legally required on a full tax invoice.
   @BuiltValueField(wireName: r'address')
   String? get address;
 
