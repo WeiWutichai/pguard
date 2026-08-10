@@ -57,7 +57,7 @@ pub fn validate_commission_percent(percent: Decimal) -> Result<Decimal, AppError
             message: format!("commission_percent must be between 0 and {MAX_COMMISSION_PERCENT}"),
         });
     }
-    Ok(percent.round_dp(MONEY_SCALE))
+    Ok(money_scale(percent))
 }
 
 /// Validate an admin-supplied flat cancellation fee and normalize it to the column's scale.
@@ -72,7 +72,7 @@ pub fn validate_cancellation_fee(fee: Decimal) -> Result<Decimal, AppError> {
             message: format!("cancellation_fee must be between 0 and {MAX_CANCELLATION_FEE}"),
         });
     }
-    Ok(fee.round_dp(MONEY_SCALE))
+    Ok(money_scale(fee))
 }
 
 /// The catalog money COPIED onto a booking at creation — the whole point being that the money
@@ -82,7 +82,7 @@ pub fn validate_cancellation_fee(fee: Decimal) -> Result<Decimal, AppError> {
 /// not import the DB-backed model). Absence of a snapshot — the customer picked no catalog
 /// service — is represented by `Option<PricingSnapshot>` at the call site, NOT by a variant
 /// here: in that case `base_fee` must fall to its server-owned column DEFAULT, which is a
-/// property of the INSERT, while commission/fee are simply [`PricingSnapshot::none_selected`]'s
+/// property of the INSERT, while commission/fee are simply [`PricingSnapshot::terms_or_zero`]'s
 /// zeroes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PricingSnapshot {
@@ -94,29 +94,36 @@ pub struct PricingSnapshot {
     pub cancellation_fee: Decimal,
 }
 
+/// Force a money Decimal to EXACTLY 2dp, so the wire shape never depends on how the value was
+/// built.
+///
+/// `serde-str` renders a Decimal at whatever scale it happens to carry, and scale is not implied
+/// by value: `Decimal::ZERO` is scale 0 and goes out as `"0"`, an admin's `5` as `"5"`, while the
+/// same numbers read back from `NUMERIC(x,2)` return as `"0.00"` / `"5.00"`. A booking would then
+/// describe its own terms differently depending on whether the client asked before or after a
+/// round-trip. `round_dp` cannot fix this — it only ever removes digits; `rescale` also pads.
+fn money_scale(d: Decimal) -> Decimal {
+    // Round FIRST with `round_dp` — half-to-even, the convention payment's proration already uses,
+    // so the two services never disagree on a half. `rescale` alone would round half AWAY from
+    // zero (150.005 → 150.01 instead of 150.00). Then pad, which is all `rescale` is left to do
+    // once the value is already within 2dp.
+    let mut d = d.round_dp(MONEY_SCALE);
+    d.rescale(MONEY_SCALE);
+    d
+}
+
 impl PricingSnapshot {
     /// What a booking created with NO catalog service snapshots for the two 0010 columns:
     /// literal zeroes, not NULL. NULL is reserved for pre-migration rows; a booking made today
     /// always states its terms, and "no service chosen" states them as "no cut, no fee".
     ///
-    /// Scaled to 2dp like every other money field. A bare `Decimal::ZERO` carries scale 0 and
-    /// serializes as `"0"`, so a no-service booking would answer `"0"` where a catalog booking
-    /// answers `"0.00"` — same value, two shapes, and a client comparing strings sees a
-    /// difference that isn't there.
-    pub fn none_selected() -> (Decimal, Decimal) {
-        (Decimal::ZERO.round_dp(2), Decimal::ZERO.round_dp(2))
-    }
-
-    /// The `(commission_percent, cancellation_fee)` pair to persist — the snapshot's own values,
-    /// or [`Self::none_selected`] when the customer picked no catalog service.
+    /// The `(commission_percent, cancellation_fee)` pair to persist, both at exactly 2dp.
     pub fn terms_or_zero(snapshot: Option<&Self>) -> (Decimal, Decimal) {
-        match snapshot {
-            Some(s) => (
-                s.commission_percent.round_dp(2),
-                s.cancellation_fee.round_dp(2),
-            ),
-            None => Self::none_selected(),
-        }
+        let (pct, fee) = match snapshot {
+            Some(s) => (s.commission_percent, s.cancellation_fee),
+            None => (Decimal::ZERO, Decimal::ZERO),
+        };
+        (money_scale(pct), money_scale(fee))
     }
 }
 
@@ -232,6 +239,37 @@ mod tests {
         assert_eq!(
             validate_cancellation_fee(dec("150.015")).unwrap(),
             dec("150.02")
+        );
+    }
+
+    #[test]
+    fn money_always_serializes_at_two_decimals() {
+        // The Redis-gated router test caught this on CI, where a no-service booking answered
+        // `"0"` and a catalog booking `"0.00"` for the same value. Scale is not implied by value,
+        // so assert the WIRE shape here, hermetically, instead of finding out in CI again.
+        let json = |d: Decimal| serde_json::to_string(&d).expect("serialize");
+        let (pct, fee) = PricingSnapshot::terms_or_zero(None);
+        assert_eq!(json(pct), "\"0.00\"", "no service → 0.00, never 0");
+        assert_eq!(json(fee), "\"0.00\"");
+
+        let snap = PricingSnapshot {
+            base_fee: dec("500"),
+            // Whole numbers as an admin would type them — scale 0 going in.
+            commission_percent: dec("5"),
+            cancellation_fee: dec("100"),
+        };
+        let (pct, fee) = PricingSnapshot::terms_or_zero(Some(&snap));
+        assert_eq!(json(pct), "\"5.00\"");
+        assert_eq!(json(fee), "\"100.00\"");
+
+        // Straight off the validators too — the other way these values reach the DB.
+        assert_eq!(
+            json(validate_commission_percent(dec("12.5")).unwrap()),
+            "\"12.50\""
+        );
+        assert_eq!(
+            json(validate_cancellation_fee(dec("0")).unwrap()),
+            "\"0.00\""
         );
     }
 
