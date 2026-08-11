@@ -20,6 +20,7 @@ import 'network/sockets/booking_status_socket.dart';
 import 'network/sockets/call_socket.dart';
 import 'network/sockets/chat_socket.dart';
 import 'network/sockets/presence_socket.dart';
+import 'pdf/document_sharer.dart';
 import 'permissions/permission_gate.dart';
 import 'storage/prefs_store.dart';
 import 'storage/secure_store.dart' show AppStore, SecureStore;
@@ -182,3 +183,11 @@ DocumentPicker documentPicker(DocumentPickerRef ref) =>
 /// plugin. Tests override this with a fake so the slip-pay flow is exercisable without channels.
 @Riverpod(keepAlive: true)
 SlipPicker slipPicker(SlipPickerRef ref) => ImagePickerSlipPicker();
+
+/// Hands a generated document (the receipt PDF) to the OS: a temp file + the system share sheet,
+/// so the customer can save / LINE / mail / print it. Tests override this with a fake, which keeps
+/// the download exercisable end-to-end (the PDF is really built) without `path_provider` or
+/// `share_plus` platform channels.
+@Riverpod(keepAlive: true)
+DocumentSharer documentSharer(DocumentSharerRef ref) =>
+    const TempFileDocumentSharer();

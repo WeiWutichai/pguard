@@ -298,3 +298,113 @@ class ReceiptData {
     }
   }
 }
+
+/// The document's WORDS, in one place, for the same reason [ReceiptData] holds its figures in one
+/// place: the tax invoice is rendered twice — on screen
+/// (`features/booking/widgets/job_receipt_sheet.dart`) and into a downloadable PDF
+/// (`core/pdf/receipt_pdf.dart`) — and the two copies must be the same document.
+///
+/// The strings that matter most here are the judgement-carrying ones: the TITLE (which claims, or
+/// refuses to claim, that this is a ใบกำกับภาษี) and the honesty notices (missing company block,
+/// estimate, post-charge adjustments). A screen that says "ประมาณการ" while its PDF says
+/// "ใบกำกับภาษี" would be a worse bug than any layout glitch.
+class ReceiptCopy {
+  const ReceiptCopy._();
+
+  /// The Thai title line — `ต้นฉบับ ใบเสร็จรับเงิน / ใบกำกับภาษี` only when the document really is
+  /// one (see [ReceiptKind]).
+  static String titleTh(ReceiptKind kind) => switch (kind) {
+        ReceiptKind.taxInvoice => 'ต้นฉบับ ใบเสร็จรับเงิน / ใบกำกับภาษี',
+        ReceiptKind.receiptNoVat => 'ต้นฉบับ ใบเสร็จรับเงิน',
+        ReceiptKind.estimate => 'ใบสรุปค่าบริการ (ประมาณการ)',
+      };
+
+  /// The English sub-title, always printed under [titleTh] — a Thai tax invoice is routinely read
+  /// by non-Thai accountants, so the document names itself in both languages regardless of locale.
+  static String titleEn(ReceiptKind kind) => switch (kind) {
+        ReceiptKind.taxInvoice => 'Original Receipt / Tax Invoice',
+        ReceiptKind.receiptNoVat => 'Original Receipt',
+        ReceiptKind.estimate => 'Estimated statement',
+      };
+
+  /// What stands in for the seller's legal name when the org profile is unset — the gap is NAMED,
+  /// never left as an empty letterhead that merely looks like a broken document.
+  static String companyUnset(bool isThai) =>
+      isThai ? 'ยังไม่ได้ตั้งค่าข้อมูลบริษัท' : 'Company details not set up';
+
+  /// …and why that matters: without the seller's name/TIN/address the paper is not a valid
+  /// ใบกำกับภาษี, which the reader must be told rather than left to discover at the revenue office.
+  static String companyIncompleteNotice(bool isThai) => isThai
+      ? 'ยังไม่มีชื่อบริษัท เลขประจำตัวผู้เสียภาษี และที่อยู่ในระบบ — '
+          'เอกสารนี้จึงยังไม่สมบูรณ์ตามข้อกำหนดของใบกำกับภาษี '
+          'กรุณาติดต่อผู้ดูแลระบบเพื่อขอใบกำกับภาษีฉบับเต็ม'
+      : "The company name, tax ID and address aren't configured, so this document is "
+          'not a complete tax invoice. Contact support for a full copy.';
+
+  /// Printed on a [ReceiptKind.estimate]: these figures were derived from the booking, no charge
+  /// was read, and the document is therefore not a tax invoice.
+  static String estimateNotice(bool isThai) => isThai
+      ? 'เอกสารนี้เป็นยอดประมาณจากการจอง ไม่ใช่ใบกำกับภาษีที่ออกจากยอดที่เรียกเก็บจริง — '
+          'ยอดที่ชำระจริงดูได้จากฝั่งลูกค้า'
+      : 'These figures are estimated from the booking — this copy is not issued against '
+          "a settled charge. The amount actually paid is on the customer's side.";
+
+  /// The footnote under the post-charge adjustment block.
+  static String adjustmentNote(bool isThai,
+      {required bool hasCancellationFee}) {
+    if (hasCancellationFee) {
+      return isThai
+          ? 'ยกเลิกก่อนเริ่มงาน — หักค่าธรรมเนียมไม่เกินยอดที่ชำระไว้ ส่วนที่เหลือคืนเงินเต็มจำนวน'
+          : 'Cancelled before the job started — the fee is capped at what was paid and '
+              'the remainder is refunded in full.';
+    }
+    return isThai
+        ? 'ยอดคืนเงินจะถูกดำเนินการโดยทีมแอดมินภายหลัง'
+        : 'The refund is processed by the admin team.';
+  }
+
+  /// "คิดตามชั่วโมงจริง … (จองไว้ … ชม.)" — a reconcile that CHANGED the bill is stated, not
+  /// silently restated.
+  static String reconciledHours(
+    bool isThai, {
+    required String actualHours,
+    required int bookedHours,
+  }) =>
+      isThai
+          ? 'คิดตามชั่วโมงจริง $actualHours ชม. (จองไว้ $bookedHours ชม.)'
+          : 'Billed on the actual $actualHours hr worked ($bookedHours hr booked)';
+
+  // ---- Field labels shared by both renderings -------------------------------------------------
+
+  static String number(bool isThai) => isThai ? 'เลขที่ / No.' : 'No.';
+  static String date(bool isThai) => isThai ? 'วันที่ / Date' : 'Date';
+  static String customer(bool isThai) =>
+      isThai ? 'ลูกค้า / Customer' : 'Customer';
+  static String paymentMethod(bool isThai) =>
+      isThai ? 'ชำระโดย / Payment method' : 'Payment method';
+  static String colDescription(bool isThai) =>
+      isThai ? 'รายการ' : 'Description';
+  static String colAmount(bool isThai) => isThai ? 'จำนวนเงิน' : 'Amount';
+  static String colVat(bool isThai) => isThai ? 'ภาษีมูลค่าเพิ่ม' : 'VAT';
+  static String colTotal(bool isThai) => isThai ? 'รวมเงิน' : 'Total';
+  static String subtotal(bool isThai) => isThai ? 'รวมเป็นเงิน' : 'Subtotal';
+  static String vat(bool isThai, int percent) =>
+      isThai ? 'ภาษีมูลค่าเพิ่ม $percent%' : 'VAT $percent%';
+  static String grandTotal(bool isThai) =>
+      isThai ? 'จำนวนเงินรวมทั้งสิ้น' : 'Grand Total';
+  static String taxIdLine(bool isThai, String taxId) =>
+      isThai ? 'เลขประจำตัวผู้เสียภาษี $taxId' : 'Tax ID $taxId';
+  static String cancellationFee(bool isThai) =>
+      isThai ? 'ค่าธรรมเนียมการยกเลิก' : 'Cancellation fee withheld';
+  static String refund(bool isThai) => isThai ? 'ยอดคืนเงิน' : 'Refund';
+  static String netPaid(bool isThai) => isThai ? 'ยอดชำระสุทธิ' : 'Net paid';
+
+  /// The download CTA + its states.
+  static String download(bool isThai) =>
+      isThai ? 'ดาวน์โหลดใบเสร็จ' : 'Download receipt';
+  static String downloading(bool isThai) =>
+      isThai ? 'กำลังสร้างไฟล์ PDF…' : 'Building the PDF…';
+  static String downloadFailed(bool isThai) => isThai
+      ? 'สร้างไฟล์ใบเสร็จไม่สำเร็จ — ลองใหม่อีกครั้ง'
+      : 'Could not build the receipt file — try again';
+}
