@@ -111,7 +111,7 @@ Class | Method | HTTP request | Description
 [*AuthApi*](doc/AuthApi.md) | [**switchRole**](doc/AuthApi.md#switchrole) | **POST** /auth/switch-role | Switch the caller&#39;s ACTIVE role (multi-role, Option A)
 [*AuthApi*](doc/AuthApi.md) | [**updateMe**](doc/AuthApi.md#updateme) | **PUT** /auth/me | Update the caller&#39;s OWN display_name + email (#144 admin self-profile)
 [*AuthApi*](doc/AuthApi.md) | [**verify2fa**](doc/AuthApi.md#verify2fa) | **POST** /auth/2fa/verify | Complete a 2FA login (second step) — issues the token pair (#144)
-[*InternalApi*](doc/InternalApi.md) | [**internalResolveUserNames**](doc/InternalApi.md#internalresolveusernames) | **POST** /internal/users/names | Batch-resolve user_ids to { role, display_name } (service-JWT only)
+[*InternalApi*](doc/InternalApi.md) | [**internalResolveUserNames**](doc/InternalApi.md#internalresolveusernames) | **POST** /internal/users/names | Batch-resolve user_ids to { role, display_name, phone } (service-JWT only)
 [*InternalApi*](doc/InternalApi.md) | [**internalRevokeAll**](doc/InternalApi.md#internalrevokeall) | **POST** /internal/users/{id}/revoke-all | Force-revoke all of a user&#39;s tokens (service-JWT only)
 
 

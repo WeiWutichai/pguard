@@ -16,7 +16,7 @@ part 'customer_profile.g.dart';
 /// * [address] 
 /// * [companyName] 
 /// * [email] 
-/// * [contactPhone] 
+/// * [contactPhone] - OPTIONAL extra number the customer typed into their own profile (an office line, a site contact, a relative). Frequently blank, and not necessarily this person's own number — it is NOT the account's login phone. See `LoginPhone`. 
 @BuiltValue(instantiable: false)
 abstract class CustomerProfile  {
   @BuiltValueField(wireName: r'user_id')
@@ -34,6 +34,7 @@ abstract class CustomerProfile  {
   @BuiltValueField(wireName: r'email')
   String? get email;
 
+  /// OPTIONAL extra number the customer typed into their own profile (an office line, a site contact, a relative). Frequently blank, and not necessarily this person's own number — it is NOT the account's login phone. See `LoginPhone`. 
   @BuiltValueField(wireName: r'contact_phone')
   String? get contactPhone;
 

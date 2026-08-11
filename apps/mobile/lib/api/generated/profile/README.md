@@ -168,6 +168,7 @@ Class | Method | HTTP request | Description
  - [GuardDocumentPresence](doc/GuardDocumentPresence.md)
  - [GuardDocumentResponse](doc/GuardDocumentResponse.md)
  - [GuardProfile](doc/GuardProfile.md)
+ - [GuardProfileAdmin](doc/GuardProfileAdmin.md)
  - [InlineObject](doc/InlineObject.md)
  - [InlineObject1](doc/InlineObject1.md)
  - [InlineObject1AllOfData](doc/InlineObject1AllOfData.md)

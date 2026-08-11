@@ -9,11 +9,12 @@ import 'package:built_value/serializer.dart';
 
 part 'resolved_user.g.dart';
 
-/// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }` (least-privilege; NEVER phone/email). `display_name` is `null` when none is set. 
+/// One resolved identity for the internal name-resolver — `{ role, display_name, phone }` and nothing else (least-privilege: still NEVER email, bank or address). `display_name` is `null` when none is set. 
 ///
 /// Properties:
 /// * [role] 
 /// * [displayName] 
+/// * [phone] - The account's LOGIN phone (`identity.users.phone`) — the number this person registered with and signs in with. It is the OTP login key, so every live account has exactly one and it is always populated; `null` would mean a malformed row.  DISTINCT from a customer profile's `contact_phone`, which is an OPTIONAL extra the customer may type into their profile (often blank, sometimes a third party's number). Consumers surfacing \"how do I reach this person\" want THIS field. Admin-surface PII — never log it or expose it outside an admin-authenticated view. 
 @BuiltValue()
 abstract class ResolvedUser implements Built<ResolvedUser, ResolvedUserBuilder> {
   @BuiltValueField(wireName: r'role')
@@ -22,6 +23,10 @@ abstract class ResolvedUser implements Built<ResolvedUser, ResolvedUserBuilder> 
 
   @BuiltValueField(wireName: r'display_name')
   String? get displayName;
+
+  /// The account's LOGIN phone (`identity.users.phone`) — the number this person registered with and signs in with. It is the OTP login key, so every live account has exactly one and it is always populated; `null` would mean a malformed row.  DISTINCT from a customer profile's `contact_phone`, which is an OPTIONAL extra the customer may type into their profile (often blank, sometimes a third party's number). Consumers surfacing \"how do I reach this person\" want THIS field. Admin-surface PII — never log it or expose it outside an admin-authenticated view. 
+  @BuiltValueField(wireName: r'phone')
+  String? get phone;
 
   ResolvedUser._();
 
@@ -55,6 +60,13 @@ class _$ResolvedUserSerializer implements PrimitiveSerializer<ResolvedUser> {
       yield r'display_name';
       yield serializers.serialize(
         object.displayName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.phone != null) {
+      yield r'phone';
+      yield serializers.serialize(
+        object.phone,
         specifiedType: const FullType(String),
       );
     }
@@ -94,6 +106,13 @@ class _$ResolvedUserSerializer implements PrimitiveSerializer<ResolvedUser> {
             specifiedType: const FullType(String),
           ) as String;
           result.displayName = valueDes;
+          break;
+        case r'phone':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.phone = valueDes;
           break;
         default:
           unhandled.add(key);

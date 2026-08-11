@@ -5,7 +5,7 @@
 // ignore_for_file: unused_element
 import 'package:built_collection/built_collection.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
-import 'package:pguard_profile_api/src/model/guard_profile.dart';
+import 'package:pguard_profile_api/src/model/guard_profile_admin.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -20,7 +20,7 @@ part 'admin_list_guard_profiles200_response.g.dart';
 @BuiltValue()
 abstract class AdminListGuardProfiles200Response implements ApiResponseEnvelope, Built<AdminListGuardProfiles200Response, AdminListGuardProfiles200ResponseBuilder> {
   @BuiltValueField(wireName: r'data')
-  BuiltList<GuardProfile>? get data;
+  BuiltList<GuardProfileAdmin>? get data;
 
   AdminListGuardProfiles200Response._();
 
@@ -49,7 +49,7 @@ class _$AdminListGuardProfiles200ResponseSerializer implements PrimitiveSerializ
       yield r'data';
       yield serializers.serialize(
         object.data,
-        specifiedType: const FullType(BuiltList, [FullType(GuardProfile)]),
+        specifiedType: const FullType(BuiltList, [FullType(GuardProfileAdmin)]),
       );
     }
     if (object.error != null) {
@@ -90,8 +90,8 @@ class _$AdminListGuardProfiles200ResponseSerializer implements PrimitiveSerializ
         case r'data':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(BuiltList, [FullType(GuardProfile)]),
-          ) as BuiltList<GuardProfile>;
+            specifiedType: const FullType(BuiltList, [FullType(GuardProfileAdmin)]),
+          ) as BuiltList<GuardProfileAdmin>;
           result.data.replace(valueDes);
           break;
         case r'error':

@@ -531,7 +531,7 @@ class AdminApi {
   }
 
   /// List customer profiles (role&#x3D;admin)
-  /// Lists customer profiles, newest first (capped at 200, not paginated), optionally filtered by &#x60;approval_status&#x60;. Admin only (else 403). Each row carries &#x60;approval_status&#x60; (pending/approved/rejected) so the admin can see who is still awaiting review — customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert). The ผู้สมัคร page&#39;s \&quot;ผู้เรียก รปภ.\&quot; (customer) tab passes &#x60;?approval_status&#x3D;pending&#x60;. Records a PDPA §30 read-audit row. 
+  /// Lists customer profiles, newest first (capped at 200, not paginated), optionally filtered by &#x60;approval_status&#x60;. Admin only (else 403). Each row carries &#x60;approval_status&#x60; (pending/approved/rejected) so the admin can see who is still awaiting review — customers are now admin-approved exactly like guards (no longer auto-approved on first profile insert). The ผู้สมัคร page&#39;s \&quot;ผู้เรียก รปภ.\&quot; (customer) tab passes &#x60;?approval_status&#x3D;pending&#x60;. Records a PDPA §30 read-audit row.  Each row also carries &#x60;login_phone&#x60; (the account&#39;s own number, resolved from identity) — distinct from the optional, often-blank &#x60;contact_phone&#x60; on the profile itself. 
   ///
   /// Parameters:
   /// * [approvalStatus] - Filter by status. An unrecognized value returns 400.
@@ -703,7 +703,7 @@ class AdminApi {
   }
 
   /// List guard profiles for onboarding review (role&#x3D;admin; FULL bank details)
-  /// Lists guard profiles, newest first, optionally filtered by &#x60;approval_status&#x60;. Admin only (else 403). **Returns the FULL, UN-masked &#x60;account_number&#x60;** — the reviewer needs it to verify payout details. 
+  /// Lists guard profiles, newest first, optionally filtered by &#x60;approval_status&#x60;. Admin only (else 403). **Returns the FULL, UN-masked &#x60;account_number&#x60;** — the reviewer needs it to verify payout details.  Rows are &#x60;GuardProfileAdmin&#x60;: the profile PLUS &#x60;created_at&#x60; (signup time) and &#x60;login_phone&#x60; (the account&#39;s own number, resolved from identity) so the approval queue can show a reachable human instead of a short id. 
   ///
   /// Parameters:
   /// * [approvalStatus] - Filter by status. An unrecognized value returns 400.

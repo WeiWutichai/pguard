@@ -49,6 +49,7 @@ import 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
 import 'package:pguard_profile_api/src/model/guard_document_presence.dart';
 import 'package:pguard_profile_api/src/model/guard_document_response.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
+import 'package:pguard_profile_api/src/model/guard_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
 import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
@@ -114,6 +115,7 @@ part 'serializers.g.dart';
   GuardDocumentPresence,
   GuardDocumentResponse,
   GuardProfile,$GuardProfile,
+  GuardProfileAdmin,
   InlineObject,
   InlineObject1,
   InlineObject1AllOfData,

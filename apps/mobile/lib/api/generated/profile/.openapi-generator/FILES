@@ -49,6 +49,7 @@ lib/src/model/guard_document_expiry.dart
 lib/src/model/guard_document_presence.dart
 lib/src/model/guard_document_response.dart
 lib/src/model/guard_profile.dart
+lib/src/model/guard_profile_admin.dart
 lib/src/model/inline_object.dart
 lib/src/model/inline_object1.dart
 lib/src/model/inline_object1_all_of_data.dart

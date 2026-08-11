@@ -34,7 +34,7 @@ part 'my_profile.g.dart';
 /// * [approvalStatus] 
 /// * [companyName] 
 /// * [email] 
-/// * [contactPhone] 
+/// * [contactPhone] - OPTIONAL extra number the customer typed into their own profile (an office line, a site contact, a relative). Frequently blank, and not necessarily this person's own number — it is NOT the account's login phone. See `LoginPhone`. 
 @BuiltValue()
 abstract class MyProfile implements Built<MyProfile, MyProfileBuilder> {
   /// One Of [MyCustomerProfile], [MyGuardProfile]
