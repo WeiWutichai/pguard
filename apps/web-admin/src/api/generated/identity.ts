@@ -630,16 +630,23 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Batch-resolve user_ids to { role, display_name } (service-JWT only)
-         * @description Resolve a batch of `user_id`s to `{ role, display_name }` for an internal caller. This is
-         *     identity's OWN schema, so it answers EVERY role — including ADMINS, who have no profile row
-         *     (the gap that left admin names blank on the web admin lists / Activity Log #142). The
-         *     profile service's `POST /admin/users/resolve` resolves guard/customer locally, then calls
-         *     this for the still-unresolved ids and merges admin names in.
+         * Batch-resolve user_ids to { role, display_name, phone } (service-JWT only)
+         * @description Resolve a batch of `user_id`s to `{ role, display_name, phone }` for an internal caller.
+         *     This is identity's OWN schema, so it answers EVERY role — including ADMINS, who have no
+         *     profile row (the gap that left admin names blank on the web admin lists / Activity Log
+         *     #142). The profile service's `POST /admin/users/resolve` resolves guard/customer locally,
+         *     then calls this for the still-unresolved ids and merges admin names in.
+         *
+         *     `phone` is the account's LOGIN number (`identity.users.phone`) — what the person registered
+         *     and signs in with. profile surfaces it on its admin list rows as `login_phone`, because an
+         *     applicant who skipped the optional profile fields is otherwise unidentifiable in the
+         *     approval queue. It is NOT a customer profile's optional `contact_phone`.
          *
          *     **Requires a service-JWT** (`serviceAuth`, audience `pguard-internal`); blocked at the
          *     public gateway (`/internal/`). Returns a MAP keyed by id; unknown/deleted ids are OMITTED.
-         *     ONLY `role` + `display_name` — NEVER phone/email. Bounded to 500 ids (a larger batch → 400).
+         *     `role` + `display_name` + `phone` ONLY — still NEVER email or any other PII, and `phone`
+         *     is admin-surface material: never log it or return it on a non-admin path. Bounded to 500
+         *     ids (a larger batch → 400).
          */
         post: operations["internalResolveUserNames"];
         delete?: never;
@@ -819,19 +826,32 @@ export interface components {
             new_pin_hash: string;
         };
         /**
-         * @description Batch of user_ids to resolve to `{ role, display_name }`. Duplicates are de-duplicated
-         *     server-side; an empty list → an empty map. Bounded to 500 ids (a larger batch → 400).
+         * @description Batch of user_ids to resolve to `{ role, display_name, phone }`. Duplicates are
+         *     de-duplicated server-side; an empty list → an empty map. Bounded to 500 ids (a larger
+         *     batch → 400).
          */
         ResolveUsersRequest: {
             ids: string[];
         };
         /**
-         * @description One resolved identity for the internal name-resolver — ONLY `{ role, display_name }`
-         *     (least-privilege; NEVER phone/email). `display_name` is `null` when none is set.
+         * @description One resolved identity for the internal name-resolver — `{ role, display_name, phone }`
+         *     and nothing else (least-privilege: still NEVER email, bank or address). `display_name` is
+         *     `null` when none is set.
          */
         ResolvedUser: {
             role: components["schemas"]["UserRole"];
             display_name?: string | null;
+            /**
+             * @description The account's LOGIN phone (`identity.users.phone`) — the number this person registered
+             *     with and signs in with. It is the OTP login key, so every live account has exactly one
+             *     and it is always populated; `null` would mean a malformed row.
+             *
+             *     DISTINCT from a customer profile's `contact_phone`, which is an OPTIONAL extra the
+             *     customer may type into their profile (often blank, sometimes a third party's number).
+             *     Consumers surfacing "how do I reach this person" want THIS field. Admin-surface PII —
+             *     never log it or expose it outside an admin-authenticated view.
+             */
+            phone?: string | null;
         };
         /**
          * @description One admin user-search hit (#138). `phone_masked` keeps only the last 4 digits; NO other
@@ -1779,7 +1799,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description Map keyed by id → `{ role, display_name }`. Ids with no live row are omitted. */
+            /** @description Map keyed by id → `{ role, display_name, phone }`. Ids with no live row are omitted. */
             200: {
                 headers: {
                     [name: string]: unknown;

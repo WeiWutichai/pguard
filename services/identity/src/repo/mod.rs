@@ -1192,26 +1192,31 @@ async fn record_credential_event(
 
 // ----- Internal name resolution (POST /internal/users/names) + admin search -----
 
-/// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }` (least-
-/// privilege; never phone/email). `display_name` is `None` when the account has no name set yet.
+/// One resolved identity for the internal name-resolver — `{ role, display_name, phone }`.
+/// `display_name` is `None` when the account has no name set yet; `phone` is the LOGIN phone and
+/// is always present (`identity.users.phone` is `NOT NULL`).
 pub struct ResolvedUser {
     pub user_id: Uuid,
     pub role: String,
     pub display_name: Option<String>,
+    pub phone: String,
 }
 
-/// Resolve a batch of `user_id`s to `{ role, display_name }` (`POST /internal/users/names`). This
-/// is identity's OWN schema, so it answers EVERY role — including admins, who have no profile row
-/// (the gap the profile resolver fills by merging this). Soft-deleted rows are excluded; unknown
-/// ids simply don't come back (the caller omits them). Lean projection — NEVER phone/email. The
-/// ids are a single bound array (`= ANY($1)`), never interpolated. Empty input short-circuits.
+/// Resolve a batch of `user_id`s to `{ role, display_name, phone }` (`POST /internal/users/names`).
+/// This is identity's OWN schema, so it answers EVERY role — including admins, who have no profile
+/// row (the gap the profile resolver fills by merging this). Soft-deleted rows are excluded;
+/// unknown ids simply don't come back (the caller omits them). `phone` is the account's LOGIN
+/// number — the identity every pguard account is keyed on (see [`ResolvedUser`] in `models.rs` for
+/// why the resolver answers with it); the projection stays lean otherwise — never email, never
+/// credential material. The ids are a single bound array (`= ANY($1)`), never interpolated. Empty
+/// input short-circuits.
 pub async fn resolve_users(db: &PgPool, ids: &[Uuid]) -> Result<Vec<ResolvedUser>, AppError> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let rows: Vec<(Uuid, String, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(Uuid, String, Option<String>, String)> = sqlx::query_as(
         r#"
-        SELECT id, role::text AS role, display_name
+        SELECT id, role::text AS role, display_name, phone
         FROM identity.users
         WHERE id = ANY($1) AND deleted_at IS NULL
         "#,
@@ -1221,10 +1226,11 @@ pub async fn resolve_users(db: &PgPool, ids: &[Uuid]) -> Result<Vec<ResolvedUser
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(user_id, role, display_name)| ResolvedUser {
+        .map(|(user_id, role, display_name, phone)| ResolvedUser {
             user_id,
             role,
             display_name,
+            phone,
         })
         .collect())
 }

@@ -11,8 +11,13 @@ import '../../legal/terms_screen.dart';
 
 /// Customer profile form — `POST /profile/customer` with the single-use `profile_token`. v1-parity
 /// fields: `full_name` + `address` (required) + optional `company_name` / `email` / `contact_phone`.
-/// Address is required (min length, with a live ✓ helper once valid); the rest follow the design's
-/// "(ไม่บังคับ)" pattern. The CTA is the customer-flow amber (`.cta-amber`) — guard flow keeps green.
+/// Both required fields use the same pattern: red `*` on the label, a validator, and a live ✓ helper
+/// once valid; the rest follow the design's "(ไม่บังคับ)" pattern. The CTA is the customer-flow amber
+/// (`.cta-amber`) — guard flow keeps green.
+///
+/// `full_name` is REQUIRED (it was "(ไม่บังคับ)" with no validator, so customers signed up anonymous
+/// and the admin approval queue showed a bare id like "#5680b50f" with nothing to identify them).
+/// The guard flow already requires its `full_name`; this brings the customer flow in line.
 class CustomerRegistrationScreen extends ConsumerStatefulWidget {
   const CustomerRegistrationScreen({super.key});
 
@@ -24,6 +29,14 @@ class CustomerRegistrationScreen extends ConsumerStatefulWidget {
 class _CustomerRegistrationScreenState
     extends ConsumerState<CustomerRegistrationScreen> {
   static const int _minAddress = 10;
+
+  /// A name needs at least this many characters (after trimming) — enough to reject "x" / "." while
+  /// still accepting the shortest real Thai given names.
+  static const int _minName = 2;
+
+  /// At least one LETTER in any script — rejects "12" / "--" without discriminating against
+  /// non-Latin/non-Thai names (this app has foreign customers too).
+  static final RegExp _hasLetter = RegExp(r'\p{L}', unicode: true);
 
   final _formKey = GlobalKey<FormState>();
   final _name = TextEditingController();
@@ -43,6 +56,11 @@ class _CustomerRegistrationScreenState
   }
 
   bool get _addressValid => _address.text.trim().length >= _minAddress;
+
+  bool get _nameValid {
+    final t = _name.text.trim();
+    return t.length >= _minName && _hasLetter.hasMatch(t);
+  }
 
   /// Label with the design's faint "(ไม่บังคับ)/(optional)" suffix — for the non-required fields.
   InputDecoration _optionalDecoration(String label, bool isThai,
@@ -152,25 +170,46 @@ class _CustomerRegistrationScreenState
                   },
                 ),
                 const SizedBox(height: PgTokens.space4),
+                // REQUIRED — same pattern as the address above (red `*` + validator + live ✓).
+                // Without a name the admin approval queue has nothing to identify the applicant by.
                 TextFormField(
+                  key: const Key('reg_full_name'),
                   controller: _name,
-                  textInputAction: TextInputAction.done,
+                  textCapitalization: TextCapitalization.words,
+                  textInputAction: TextInputAction.next,
+                  // Rebuild on change so the ✓ helper appears live once the name is valid.
+                  onChanged: (_) => setState(() {}),
                   decoration: InputDecoration(
                     label: Text.rich(
                       TextSpan(
                         text: isThai ? 'ชื่อ-นามสกุล ' : 'Full name ',
-                        children: [
+                        children: const [
                           TextSpan(
-                            text: isThai ? '(ไม่บังคับ)' : '(optional)',
-                            style: const TextStyle(
-                              color: PgTokens.colorTextFaint,
-                              fontWeight: FontWeight.w400,
-                            ),
-                          ),
+                              text: '*',
+                              style: TextStyle(color: PgTokens.colorDanger)),
                         ],
                       ),
                     ),
+                    helperText: _nameValid
+                        ? (isThai ? '✓ ชื่อครบถ้วน' : '✓ Valid')
+                        : null,
+                    helperStyle: const TextStyle(
+                        fontSize: 11.5, color: PgTokens.colorSuccess),
                   ),
+                  validator: (v) {
+                    final t = (v ?? '').trim();
+                    if (t.isEmpty) {
+                      return isThai
+                          ? 'กรุณากรอกชื่อ-นามสกุล'
+                          : 'Enter your full name';
+                    }
+                    if (t.length < _minName || !_hasLetter.hasMatch(t)) {
+                      return isThai
+                          ? 'กรุณากรอกชื่อจริง อย่างน้อย $_minName ตัวอักษร'
+                          : 'Enter your real name (at least $_minName letters)';
+                    }
+                    return null;
+                  },
                 ),
                 const SizedBox(height: PgTokens.space4),
                 TextFormField(

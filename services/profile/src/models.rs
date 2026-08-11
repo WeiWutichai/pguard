@@ -410,6 +410,23 @@ pub struct GuardProfileSubmitResponse {
     pub doc_upload_token: String,
 }
 
+/// A guard profile row as returned to an ADMIN list (`GET /admin/guard-profiles` — the onboarding
+/// review queue): the owner-facing [`GuardProfileResponse`] (with the FULL account number) PLUS
+/// `created_at`, the signup time. Flattened, so the JSON is the profile's own fields with
+/// `created_at` alongside.
+///
+/// A SEPARATE shape from the owner read for the same reason [`CustomerProfileAdminResponse`] is:
+/// queue metadata has no business on `GET /profile/me`. The customer admin list already carried
+/// `created_at`; the guard one did not — so the reviewer had no idea how long an applicant had
+/// been waiting (and the admin UI's "สมัครเมื่อ" column had nothing to render).
+#[derive(Debug, Serialize)]
+pub struct GuardProfileAdminResponse {
+    #[serde(flatten)]
+    pub profile: GuardProfileResponse,
+    /// When the applicant signed up (`guard_profiles.created_at`) — also the list's order-by key.
+    pub created_at: DateTime<Utc>,
+}
+
 /// A customer profile as returned to the owner.
 #[derive(Debug, Serialize)]
 pub struct CustomerProfileResponse {
@@ -439,6 +456,31 @@ pub struct CustomerProfileAdminResponse {
     pub created_at: DateTime<Utc>,
     /// `pending` | `approved` | `rejected` (read as text from the schema-qualified enum).
     pub approval_status: String,
+}
+
+/// An admin-list row PLUS the applicant's **login phone** — `identity.users.phone`, the number
+/// they signed up and log in with. Wraps [`GuardProfileResponse`] / [`CustomerProfileAdminResponse`]
+/// with `#[serde(flatten)]`, so the JSON is the profile's own fields with `login_phone` alongside
+/// (same trick as [`GuardProfileSubmitResponse`]). Wrapping rather than adding the field to the
+/// profile structs keeps it OFF the owner-facing reads (`GET /profile/me`, the submit response),
+/// which have no business carrying an identity-owned column.
+///
+/// WHY: profile's own `contact_phone` is an OPTIONAL extra a customer may never fill in, and
+/// `full_name` is optional too — so the approval queue was showing `#5680b50f` / "—" for real
+/// applicants and admins were approving blind. The login phone is the one contact detail every
+/// account is guaranteed to have (it IS the account), and profile does not store it — hence the
+/// cross-service resolve.
+///
+/// `login_phone` is `Option` for exactly one reason: the lookup is **best-effort**. `null` means
+/// identity was unreachable (or the account is gone), NOT that the person has no phone — a healthy
+/// row always carries one. An approval queue that 500s because a name lookup failed is strictly
+/// worse than one that renders with a blank phone column.
+#[derive(Debug, Serialize)]
+pub struct WithLoginPhone<T> {
+    #[serde(flatten)]
+    pub profile: T,
+    /// The account's login phone from identity, or `null` when the resolve did not answer.
+    pub login_phone: Option<String>,
 }
 
 /// One PDPA §30 data-access audit row (`GET /admin/access-audit`). Records WHO (an admin)

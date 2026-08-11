@@ -9,7 +9,7 @@ import 'package:built_value/serializer.dart';
 
 part 'resolve_users_request.g.dart';
 
-/// Batch of user_ids to resolve to `{ role, display_name }`. Duplicates are de-duplicated server-side; an empty list → an empty map. Bounded to 500 ids (a larger batch → 400). 
+/// Batch of user_ids to resolve to `{ role, display_name, phone }`. Duplicates are de-duplicated server-side; an empty list → an empty map. Bounded to 500 ids (a larger batch → 400). 
 ///
 /// Properties:
 /// * [ids] 

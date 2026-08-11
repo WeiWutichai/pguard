@@ -48,6 +48,7 @@ export 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
 export 'package:pguard_profile_api/src/model/guard_document_presence.dart';
 export 'package:pguard_profile_api/src/model/guard_document_response.dart';
 export 'package:pguard_profile_api/src/model/guard_profile.dart';
+export 'package:pguard_profile_api/src/model/guard_profile_admin.dart';
 export 'package:pguard_profile_api/src/model/inline_object.dart';
 export 'package:pguard_profile_api/src/model/inline_object1.dart';
 export 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';

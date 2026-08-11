@@ -21,6 +21,8 @@ import { GuardDetailModal } from "../guards/guard-detail-modal";
 import { initialsOf } from "../guards/guard-identity";
 import { useLanguage, type TKey } from "@/lib/i18n";
 import { fmtCappedCount } from "@/lib/format";
+import { shortId, useNameResolver } from "@/lib/use-names";
+import { COPY, fmtPhone, fmtSignup } from "./copy";
 import {
   Avatar,
   Badge,
@@ -38,7 +40,7 @@ import {
   Tr,
 } from "@/components/ui";
 
-type GuardProfile = components["schemas"]["GuardProfile"];
+type GuardProfileAdmin = components["schemas"]["GuardProfileAdmin"];
 type CustomerProfileAdmin = components["schemas"]["CustomerProfileAdmin"];
 type ApprovalStatus = components["schemas"]["ApprovalStatus"];
 
@@ -66,67 +68,72 @@ const STATUS_DOT: Record<ApprovalStatus, string> = {
   rejected: "bg-danger",
 };
 
-// Screen-local design copy (exact TH/EN strings from the hi-fi spec). Shared i18n.tsx is
-// single-writer — new design copy must NOT be added there.
-const COPY = {
-  th: {
-    title: "ผู้สมัคร",
-    lead: "อนุมัติเจ้าหน้าที่และลูกค้าใหม่",
-    kpiPending: "รออนุมัติ",
-    kpiApproved: "อนุมัติแล้ว (รวม)",
-    kpiRejected: "ปฏิเสธ",
-    kpiAvgTime: "เวลาอนุมัติเฉลี่ย",
-    awaitingApi: "รอ API",
-    typeGuards: "เจ้าหน้าที่ รปภ.",
-    typeCustomers: "ผู้เรียก รปภ.",
-    statusRejected: "ปฏิเสธ",
-    typeGuard: "เจ้าหน้าที่ รปภ.",
-    typeCustomer: "ผู้เรียก รปภ.",
-    colApplicant: "ผู้สมัคร",
-    colType: "ประเภท",
-    colStatus: "สถานะ",
-    colContact: "ติดต่อ",
-    colCompany: "บริษัท",
-    view: "ดู",
-    avgEmpty: "—",
-    avgHours: (h: number) => `${h} ชม.`,
-    avgSample: (n: number) => `จาก ${n} รายการ`,
-  },
-  en: {
-    title: "Applicants",
-    lead: "Approve new guards & customers",
-    kpiPending: "Pending",
-    kpiApproved: "Approved total",
-    kpiRejected: "Rejected",
-    kpiAvgTime: "Avg. approval time",
-    awaitingApi: "awaiting API",
-    typeGuards: "Guards",
-    typeCustomers: "Customers",
-    statusRejected: "Rejected",
-    typeGuard: "Guard",
-    typeCustomer: "Customer",
-    colApplicant: "Applicant",
-    colType: "Type",
-    colStatus: "Status",
-    colContact: "Contact",
-    colCompany: "Company",
-    view: "View",
-    avgEmpty: "—",
-    avgHours: (h: number) => `${h}h`,
-    avgSample: (n: number) => `over ${n} approved`,
-  },
-} as const;
-
 // Design paginates the list at 12 rows ("แสดง 1–12 จาก 12 รายการ"). Pagination is
 // CLIENT-SIDE over the already-fetched list — the admin list endpoints have no page param.
 const PAGE_SIZE = 12;
+
+/**
+ * The `.cell-user` identity block: avatar + who this applicant IS, in the order an admin can act
+ * on. The name leads when we have one — from THIS profile, or (via the name resolver, which UNIONs
+ * guard + customer profiles) from the same person's OTHER role. With no name anywhere the LOGIN
+ * PHONE leads instead: a number an admin can dial reads as a real person, whereas a bare
+ * "#5680b50f" reads as a broken record. The short id stays as the last line either way — it is
+ * how an admin cross-references this applicant on every other screen.
+ *
+ * `phone` is `login_phone` (the account's own number from identity), never a customer's optional
+ * `contact_phone`.
+ */
+function ApplicantIdentity({
+  name,
+  phone,
+  userId,
+  hint,
+  initialsName,
+}: {
+  name: string | null;
+  phone: string | null | undefined;
+  userId: string;
+  hint: string;
+  /** Only seeds the avatar initials — a name we are NOT confident enough to display as the
+   *  applicant's own (a guard's bank account holder). Never reaches the identity lines. */
+  initialsName?: string | null;
+}) {
+  const short = shortId(userId);
+  const phoneText = fmtPhone(phone);
+  // Name → phone → short id. The phone only repeats on its own line when a name took the lead.
+  const primary = name ?? phoneText ?? short;
+  const primaryIsPhone = !name && phoneText != null;
+  return (
+    <div className="flex items-center gap-[11px]">
+      <Avatar>{initialsOf(name ?? initialsName, userId)}</Avatar>
+      <div className="min-w-0">
+        <div
+          className={
+            primaryIsPhone
+              ? "truncate font-mono text-sm font-medium tabular-nums text-text-strong"
+              : "truncate text-sm font-medium text-text-strong"
+          }
+          title={primaryIsPhone ? hint : undefined}
+        >
+          {primary}
+        </div>
+        {name && phoneText && (
+          <div className="font-mono text-xs tabular-nums text-muted" title={hint}>
+            {phoneText}
+          </div>
+        )}
+        {primary !== short && <div className="font-mono text-xs text-faint">{short}</div>}
+      </div>
+    </div>
+  );
+}
 
 export default function ApplicantsPage() {
   const { t, lang } = useLanguage();
   const copy = COPY[lang];
   const [entity, setEntity] = useState<EntityType>("guard");
   const [status, setStatus] = useState<ApprovalStatus>("pending");
-  const [guards, setGuards] = useState<GuardProfile[]>([]);
+  const [guards, setGuards] = useState<GuardProfileAdmin[]>([]);
   const [customers, setCustomers] = useState<CustomerProfileAdmin[]>([]);
   // Per-(entity,status) counts, cached from each tab's last successful fetch. Tab pills + KPI
   // values only show a number once that status' data has actually been loaded — counts for
@@ -143,7 +150,7 @@ export default function ApplicantsPage() {
   const [page, setPage] = useState(1);
   // The guard whose full profile is open in the review modal (null = closed). Customers reuse no
   // modal here — they're approved/rejected inline (no customer detail modal yet).
-  const [selected, setSelected] = useState<GuardProfile | null>(null);
+  const [selected, setSelected] = useState<GuardProfileAdmin | null>(null);
 
   function statusLabel(s: ApprovalStatus): string {
     const key = STATUS_TKEY[s];
@@ -161,7 +168,7 @@ export default function ApplicantsPage() {
               .GET("/admin/guard-profiles", { params: { query: { approval_status: s } } })
               .then(({ data, error }) => ({
                 error,
-                list: (error ? [] : (data?.data ?? [])) as GuardProfile[],
+                list: (error ? [] : (data?.data ?? [])) as GuardProfileAdmin[],
               }))
           : profileApi
               .GET("/admin/customer-profiles", { params: { query: { approval_status: s } } })
@@ -172,7 +179,7 @@ export default function ApplicantsPage() {
       return req.then(({ error, list }) => {
         if (!alive()) return;
         setHasError(Boolean(error));
-        if (e === "guard") setGuards(list as GuardProfile[]);
+        if (e === "guard") setGuards(list as GuardProfileAdmin[]);
         else setCustomers(list as CustomerProfileAdmin[]);
         setCounts((cur) => ({
           ...cur,
@@ -314,6 +321,26 @@ export default function ApplicantsPage() {
     [customers, curPage],
   );
 
+  // Resolve every loaded applicant id → display name in ONE batch call (the same hook the other
+  // admin lists use). The resolver UNIONs guard + customer profiles, so a customer who skipped the
+  // optional name at signup still shows the name on their guard profile (and vice versa) instead
+  // of a bare short id. Best-effort enrichment: a failed resolve just leaves `name` null and the
+  // row falls back to the login phone.
+  const applicantIds = useMemo(
+    () => (entity === "guard" ? guards : customers).map((p) => p.user_id),
+    [entity, guards, customers],
+  );
+  const { resolve } = useNameResolver(applicantIds, lang);
+
+  /** Best name for a row: this profile's own `full_name` wins, then the resolver's cross-role name
+   *  (`.name`, NOT `.label` — the label's "ลูกค้า #5680b50f" fallback is the broken-record string
+   *  this screen exists to avoid). Null when nobody anywhere knows this person's name. */
+  const bestName = useCallback(
+    (userId: string, ownName: string | null | undefined): string | null =>
+      ownName?.trim() || resolve(userId).name,
+    [resolve],
+  );
+
   // Avg approval time KPI value (em-dash + sample caption when no approvals yet).
   const avgValue =
     avg && avg.avg_hours != null ? copy.avgHours(avg.avg_hours) : copy.avgEmpty;
@@ -422,6 +449,7 @@ export default function ApplicantsPage() {
                 <tr>
                   <Th>{copy.colApplicant}</Th>
                   <Th>{copy.colType}</Th>
+                  <Th>{copy.colSignedUp}</Th>
                   <Th>{t("applicants.col.experience")}</Th>
                   <Th>{t("applicants.col.workplace")}</Th>
                   <Th>{t("applicants.col.bank")}</Th>
@@ -433,23 +461,23 @@ export default function ApplicantsPage() {
                 {guardRows.map((p) => (
                   <Tr key={p.user_id} className="cursor-default">
                     <Td>
-                      {/* Design `.cell-user`: avatar + name + ID sub. Registration now captures
-                          full_name → it leads; the short id is the mono sub (a guard registered
-                          before name capture falls back to the short id as the name). */}
-                      <div className="flex items-center gap-[11px]">
-                        <Avatar>{initialsOf(p.full_name ?? p.account_name, p.user_id)}</Avatar>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-text-strong">
-                            {p.full_name ?? `#${p.user_id.slice(0, 8)}`}
-                          </div>
-                          <div className="font-mono text-xs text-muted">
-                            #{p.user_id.slice(0, 8)}
-                          </div>
-                        </div>
-                      </div>
+                      {/* Name (own, else cross-role) → login phone → short id. `account_name` is
+                          the bank ACCOUNT HOLDER — often the guard, sometimes a relative — so it
+                          stays the avatar-initials backstop it always was and never claims to be
+                          the applicant's name. */}
+                      <ApplicantIdentity
+                        name={bestName(p.user_id, p.full_name)}
+                        phone={p.login_phone}
+                        userId={p.user_id}
+                        hint={copy.loginPhoneHint}
+                        initialsName={p.account_name}
+                      />
                     </Td>
                     <Td>
                       <Badge tone="blue">{copy.typeGuard}</Badge>
+                    </Td>
+                    <Td className="whitespace-nowrap text-muted tabular-nums">
+                      {fmtSignup(p.created_at, lang)}
                     </Td>
                     <Td>
                       {p.years_of_experience != null
@@ -527,7 +555,8 @@ export default function ApplicantsPage() {
                 <tr>
                   <Th>{copy.colApplicant}</Th>
                   <Th>{copy.colType}</Th>
-                  <Th>{copy.colContact}</Th>
+                  <Th>{copy.colSignedUp}</Th>
+                  <Th title={copy.colOtherContactHint}>{copy.colOtherContact}</Th>
                   <Th>{copy.colCompany}</Th>
                   <Th>{copy.colStatus}</Th>
                   <Th className="text-right">{t("applicants.col.actions")}</Th>
@@ -537,24 +566,27 @@ export default function ApplicantsPage() {
                 {customerRows.map((p) => (
                   <Tr key={p.user_id} className="cursor-default">
                     <Td>
-                      <div className="flex items-center gap-[11px]">
-                        <Avatar>{initialsOf(p.full_name, p.user_id)}</Avatar>
-                        <div className="min-w-0">
-                          <div className="truncate text-sm font-medium text-text-strong">
-                            {p.full_name ?? `#${p.user_id.slice(0, 8)}`}
-                          </div>
-                          <div className="font-mono text-xs text-muted">
-                            #{p.user_id.slice(0, 8)}
-                          </div>
-                        </div>
-                      </div>
+                      {/* full_name is optional at signup for customers, so this is the row that
+                          used to read "#5680b50f" — the cross-role name and the login phone are
+                          what make it a person again. */}
+                      <ApplicantIdentity
+                        name={bestName(p.user_id, p.full_name)}
+                        phone={p.login_phone}
+                        userId={p.user_id}
+                        hint={copy.loginPhoneHint}
+                      />
                     </Td>
                     <Td>
                       <Badge tone="gray">{copy.typeCustomer}</Badge>
                     </Td>
+                    <Td className="whitespace-nowrap text-muted tabular-nums">
+                      {fmtSignup(p.created_at, lang)}
+                    </Td>
                     <Td>
+                      {/* The OPTIONAL extra the customer typed in — deliberately NOT the identity
+                          line above. Conflating the two is what hid the applicant's real number. */}
                       <div>
-                        <div>{p.contact_phone ?? p.email ?? t("common.none")}</div>
+                        <div>{fmtPhone(p.contact_phone) ?? p.email ?? t("common.none")}</div>
                         {p.contact_phone && p.email && (
                           <div className="text-xs text-muted">{p.email}</div>
                         )}

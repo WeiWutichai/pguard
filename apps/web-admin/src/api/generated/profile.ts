@@ -297,6 +297,10 @@ export interface paths {
          * @description Lists guard profiles, newest first, optionally filtered by `approval_status`. Admin
          *     only (else 403). **Returns the FULL, UN-masked `account_number`** — the reviewer
          *     needs it to verify payout details.
+         *
+         *     Rows are `GuardProfileAdmin`: the profile PLUS `created_at` (signup time) and
+         *     `login_phone` (the account's own number, resolved from identity) so the approval queue
+         *     can show a reachable human instead of a short id.
          */
         get: operations["adminListGuardProfiles"];
         put?: never;
@@ -322,6 +326,9 @@ export interface paths {
          *     are now admin-approved exactly like guards (no longer auto-approved on first profile
          *     insert). The ผู้สมัคร page's "ผู้เรียก รปภ." (customer) tab passes
          *     `?approval_status=pending`. Records a PDPA §30 read-audit row.
+         *
+         *     Each row also carries `login_phone` (the account's own number, resolved from identity) —
+         *     distinct from the optional, often-blank `contact_phone` on the profile itself.
          */
         get: operations["adminListCustomerProfiles"];
         put?: never;
@@ -987,6 +994,22 @@ export interface components {
             emergency_contact_relationship?: string | null;
             approval_status: components["schemas"]["ApprovalStatus"];
         };
+        /**
+         * @description A guard profile row as returned to an ADMIN (`GET /admin/guard-profiles` — the approval
+         *     queue). Everything in the owner-facing `GuardProfile` (with the FULL account number) PLUS
+         *     the two fields a reviewer needs to know WHO they are approving: `created_at` (when the
+         *     person signed up) and `login_phone` (the number that person can actually be called on).
+         *     A SEPARATE shape from `GuardProfile` so the owner-facing read stays additive-only and
+         *     never carries the identity-owned phone.
+         */
+        GuardProfileAdmin: components["schemas"]["GuardProfile"] & {
+            /**
+             * Format: date-time
+             * @description Signup time (`guard_profiles.created_at`) — also the list's order-by key.
+             */
+            created_at: string;
+            login_phone?: components["schemas"]["LoginPhone"];
+        };
         CustomerProfile: {
             /** Format: uuid */
             user_id: string;
@@ -994,14 +1017,23 @@ export interface components {
             address?: string | null;
             company_name?: string | null;
             email?: string | null;
+            /**
+             * @description OPTIONAL extra number the customer typed into their own profile (an office line, a
+             *     site contact, a relative). Frequently blank, and not necessarily this person's own
+             *     number — it is NOT the account's login phone. See `LoginPhone`.
+             */
             contact_phone?: string | null;
         };
         /**
          * @description A customer profile row in the admin directory. Adds `created_at` (signup time / the
-         *     list's order key) and `approval_status` (the customer review queue's pending/approved
-         *     filter) to the owner-facing shape. Customers are now admin-approved exactly like guards
-         *     (no longer auto-approved on first profile insert); `approval_status` is owned on
-         *     `profile.customer_profiles`.
+         *     list's order key), `approval_status` (the customer review queue's pending/approved
+         *     filter) and `login_phone` (the account's own number, from identity) to the owner-facing
+         *     shape. Customers are now admin-approved exactly like guards (no longer auto-approved on
+         *     first profile insert); `approval_status` is owned on `profile.customer_profiles`.
+         *
+         *     NOTE for consumers: `login_phone` and `contact_phone` are DIFFERENT numbers. Reading
+         *     `contact_phone` as "the applicant's phone" is what left the approval queue showing a bare
+         *     short id and a "—" contact for a real, reachable person.
          */
         CustomerProfileAdmin: {
             /** Format: uuid */
@@ -1010,11 +1042,34 @@ export interface components {
             address?: string | null;
             company_name?: string | null;
             email?: string | null;
+            /**
+             * @description OPTIONAL extra number the customer typed into their own profile (an office line, a
+             *     site contact, a relative). Frequently blank, and not necessarily this person's own
+             *     number — it is NOT the account's login phone. Use `login_phone` to reach the
+             *     applicant; show `contact_phone` only as an additional detail.
+             */
             contact_phone?: string | null;
-            /** Format: date-time */
+            login_phone?: components["schemas"]["LoginPhone"];
+            /**
+             * Format: date-time
+             * @description Signup time — also the list's order-by key.
+             */
             created_at: string;
             approval_status: components["schemas"]["ApprovalStatus"];
         };
+        /**
+         * @description The ACCOUNT'S OWN phone number — `identity.users.phone`, the number this person registered
+         *     with and signs in with (it is the OTP login key, so every live account has exactly one and
+         *     it is always present). Resolved per request from identity's service-JWT'd
+         *     `POST /internal/users/names`; `null` ONLY when identity is unreachable or the account no
+         *     longer exists — never for a healthy row.
+         *
+         *     NOT to be confused with `contact_phone` on a customer profile, which is an OPTIONAL extra
+         *     the customer may type in (often blank, and may be a third party's number), nor with a
+         *     guard's `emergency_contact_phone`. When an admin needs to CALL an applicant, this is the
+         *     number. Admin-surface PII: never log it or expose it outside the admin SPA.
+         */
+        LoginPhone: string | null;
         /** @description One PDPA §30 data-access audit row (who accessed what PII, and when). */
         AccessAuditEntry: {
             /** Format: int64 */
@@ -1708,14 +1763,14 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Matching guard profiles (FULL account numbers) */
+            /** @description Matching guard profiles (FULL account numbers + login phone + signup time) */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["ApiResponseEnvelope"] & {
-                        data?: components["schemas"]["GuardProfile"][];
+                        data?: components["schemas"]["GuardProfileAdmin"][];
                     };
                 };
             };

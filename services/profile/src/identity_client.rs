@@ -7,6 +7,11 @@
 //! service-JWT and POSTs the unresolved ids; it is **best-effort** — an identity outage degrades to
 //! "admin ids omitted" (the web hook already renders a fallback) rather than failing the whole
 //! resolve, mirroring identity's own best-effort export fan-out.
+//!
+//! The same client also feeds the admin approval queues (`GET /admin/customer-profiles` /
+//! `/admin/guard-profiles`) the applicant's LOGIN phone — the number on `identity.users`, which
+//! profile does not (and must not) store. Same best-effort contract: an unreachable identity means
+//! `login_phone: null` on those rows, never a failed list.
 
 use std::collections::HashMap;
 
@@ -16,11 +21,20 @@ use uuid::Uuid;
 
 use shared::service_jwt::encode_service_jwt;
 
-/// One resolved identity from identity's `/internal/users/names` — `{ role, display_name }` only.
+/// One resolved identity from identity's `/internal/users/names` — `{ role, display_name, phone }`.
+///
+/// `phone` is the account's LOGIN number (`identity.users.phone`, `NOT NULL` there) — the identity
+/// every pguard account is keyed on. It is `Option` on THIS side purely for resilience, not because
+/// identity may omit it: during a rolling deploy an older identity build answers without the field,
+/// and the whole envelope must still decode (a hard-required field would turn one stale pod into a
+/// blank admin list). A `None` therefore means "identity didn't tell us", never "this user has no
+/// phone".
 #[derive(Debug, Clone, Deserialize)]
 pub struct IdentityName {
     pub role: String,
     pub display_name: Option<String>,
+    #[serde(default)]
+    pub phone: Option<String>,
 }
 
 /// `{ success, data }` envelope: `data` is the id → name map (unknown ids omitted upstream).
@@ -29,14 +43,15 @@ struct Envelope {
     data: Option<HashMap<Uuid, IdentityName>>,
 }
 
-/// Resolves user ids to `{ role, display_name }` against identity over a service-JWT. Decoupled
-/// behind [`IdentityResolver`] so the profile handler is unit-testable with a stub (no live
-/// identity / network), mirroring profile's `BookingAuthz` seam.
+/// Resolves user ids to `{ role, display_name, phone }` against identity over a service-JWT.
+/// Decoupled behind [`IdentityResolver`] so the profile handler is unit-testable with a stub (no
+/// live identity / network), mirroring profile's `BookingAuthz` seam.
 #[allow(async_fn_in_trait)] // internal trait, never `dyn`.
 pub trait IdentityResolver: Send + Sync {
-    /// Resolve `ids` to a map id → `{ role, display_name }`. Best-effort: on ANY failure (token
-    /// mint, transport, non-2xx, decode) returns an EMPTY map so the caller's local resolution
-    /// still stands. An empty `ids` short-circuits without a network call.
+    /// Resolve `ids` to a map id → `{ role, display_name, phone }` in ONE round-trip — callers pass
+    /// a whole page of ids, never one id at a time. Best-effort: on ANY failure (token mint,
+    /// transport, non-2xx, decode) returns an EMPTY map so the caller's local resolution still
+    /// stands. An empty `ids` short-circuits without a network call.
     async fn resolve(&self, ids: &[Uuid]) -> HashMap<Uuid, IdentityName>;
 }
 
@@ -78,7 +93,7 @@ impl IdentityResolver for HttpIdentityResolver {
         ) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("admin name-resolver: could not mint service token: {e}");
+                tracing::warn!("identity resolver: could not mint service token: {e}");
                 return HashMap::new();
             }
         };
@@ -96,16 +111,16 @@ impl IdentityResolver for HttpIdentityResolver {
             Ok(resp) if resp.status().is_success() => match resp.json::<Envelope>().await {
                 Ok(env) => env.data.unwrap_or_default(),
                 Err(e) => {
-                    tracing::warn!("admin name-resolver: identity decode error: {e}");
+                    tracing::warn!("identity resolver: identity decode error: {e}");
                     HashMap::new()
                 }
             },
             Ok(resp) => {
-                tracing::warn!(status = %resp.status(), "admin name-resolver: identity non-success");
+                tracing::warn!(status = %resp.status(), "identity resolver: identity non-success");
                 HashMap::new()
             }
             Err(e) => {
-                tracing::warn!("admin name-resolver: identity transport error: {e}");
+                tracing::warn!("identity resolver: identity transport error: {e}");
                 HashMap::new()
             }
         }
