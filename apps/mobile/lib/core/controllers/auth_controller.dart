@@ -15,6 +15,25 @@ part 'auth_controller.g.dart';
 /// The onboarding step the UI is on.
 enum AuthStep { phone, otp, pin }
 
+/// What a forgot-PIN reset actually achieved.
+///
+/// The reset and the sign-in that follows it fail differently: the reset is irreversible (the PIN
+/// has changed, the OTP token is spent), the sign-in is merely a step that can be repeated. Telling
+/// the user "could not reset the PIN" when their PIN HAS changed sends them back to a screen whose
+/// only possible answer is "token already used".
+enum ResetPinOutcome {
+  /// PIN changed and the session is live — the router lands on the dashboard.
+  loggedIn,
+
+  /// PIN changed, but signing in right afterwards did not go through. The new PIN is valid; the
+  /// user simply needs to log in with it. Never offer to reset again from here.
+  pinChangedSignInNeeded,
+
+  /// Nothing changed — the token was missing, expired, already used, or the call failed. The user
+  /// needs a fresh OTP.
+  failed,
+}
+
 const Object _unset = Object();
 
 /// Cross-screen state for the phone → OTP → PIN/login flow.
@@ -397,27 +416,55 @@ class AuthController extends _$AuthController {
 
   /// `POST /auth/reset-pin` — the forgot-PIN reset. Exchanges the single-use `phone_verified_token`
   /// (from the just-completed OTP verify) for the NEW PIN, then logs in with it so the session flips
-  /// to authenticated (the router lands on the dashboard). One [_guard]-wrapped op: the nested
-  /// [_performLogin] shares this guard (never a second in-flight call).
-  Future<bool> resetPin({required String newPin}) => _guard(() async {
-        final token = state.phoneVerifiedToken;
-        final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-        if (token == null) {
-          state = state.copyWith(
-              error: isThai
-                  ? 'การยืนยันหมดอายุ กรุณาขอ OTP ใหม่'
-                  : 'Verification expired — request a new OTP');
-          return false;
-        }
-        final phone = normalizeThaiPhone(state.phone) ?? state.phone;
-        await ref.read(pguardApiProvider).post('/auth/reset-pin', data: {
-          'phone_verified_token': token,
-          'new_pin_hash': const PinHasher().pinHash(newPin),
-        });
-        // The token is now consumed server-side; log in with the new PIN to mint tokens + flip
-        // the session (reuses the exact persistence + session-flip path as a normal login).
-        return _performLogin(phone: phone, pin: newPin);
+  /// to authenticated (the router lands on the dashboard).
+  ///
+  /// The two steps are NOT equally reversible, and the caller must be able to tell them apart. The
+  /// reset itself is a one-way, single-use credential change: the moment it returns, the PIN really
+  /// is the new one and the token is spent (server-side `GETDEL`). The login that follows can still
+  /// fail — and when it did, the screen reported "could not reset the PIN" and invited a retry that
+  /// could only ever answer "token already used", stranding someone whose PIN had in fact changed.
+  /// Hence [ResetPinOutcome] instead of a bool.
+  Future<ResetPinOutcome> resetPin({required String newPin}) async {
+    if (state.busy) return ResetPinOutcome.failed;
+    state = state.copyWith(busy: true, error: null);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final token = state.phoneVerifiedToken;
+    if (token == null) {
+      state = state.copyWith(
+          busy: false,
+          error: isThai
+              ? 'การยืนยันหมดอายุ กรุณาขอ OTP ใหม่'
+              : 'Verification expired — request a new OTP');
+      return ResetPinOutcome.failed;
+    }
+    final phone = normalizeThaiPhone(state.phone) ?? state.phone;
+    try {
+      await ref.read(pguardApiProvider).post('/auth/reset-pin', data: {
+        'phone_verified_token': token,
+        'new_pin_hash': const PinHasher().pinHash(newPin),
       });
+    } on ApiException catch (e) {
+      state = state.copyWith(busy: false, error: _localizeApiError(e));
+      return ResetPinOutcome.failed;
+    } catch (_) {
+      state = state.copyWith(
+          busy: false,
+          error: isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong');
+      return ResetPinOutcome.failed;
+    }
+    // PAST THIS LINE THE PIN HAS CHANGED. The token is spent and every session was revoked
+    // server-side, so nothing below can be retried by re-submitting this screen.
+    try {
+      final ok = await _performLogin(phone: phone, pin: newPin);
+      state = state.copyWith(busy: false);
+      return ok
+          ? ResetPinOutcome.loggedIn
+          : ResetPinOutcome.pinChangedSignInNeeded;
+    } catch (_) {
+      state = state.copyWith(busy: false);
+      return ResetPinOutcome.pinChangedSignInNeeded;
+    }
+  }
 
   Future<bool> _guard(Future<bool> Function() op) async {
     // Re-entrancy latch: if an op is already in flight, ignore this duplicate rather than
