@@ -4,11 +4,14 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../../core/controllers/org_settings_controller.dart';
 import '../../../core/controllers/profile_controller.dart';
-import '../../../core/controllers/receipt.dart' show ReceiptData, ReceiptKind;
+import '../../../core/controllers/receipt.dart'
+    show ReceiptCopy, ReceiptData, ReceiptKind;
 import '../../../core/models/booking.dart';
 import '../../../core/models/money.dart';
 import '../../../core/models/org_settings.dart';
 import '../../../core/models/payment.dart';
+import '../../../core/pdf/receipt_pdf.dart';
+import '../../../core/providers.dart';
 import '../../../widgets/pg_logo_mark.dart';
 
 /// The job receipt, rendered as a FULL THAI TAX INVOICE
@@ -20,6 +23,12 @@ import '../../../widgets/pg_logo_mark.dart';
 /// WHY IT IS A TAX INVOICE NOW: catalog prices went VAT-EXCLUSIVE and 7% VAT is charged on top, so
 /// the platform collects tax and must document it. All amounts print to TWO DECIMALS here — a tax
 /// document is not the place to round.
+///
+/// KEEPING IT: the foot of the sheet carries "ดาวน์โหลดใบเสร็จ / Download receipt", which renders
+/// this very same [ReceiptData] into a PDF (`core/pdf/receipt_pdf.dart`) and hands it to the OS
+/// share sheet — reading a receipt on screen is not the same as having the document. The wording
+/// both renderings use lives in [ReceiptCopy] so the paper can never claim something the screen
+/// doesn't.
 ///
 /// RECEIPT SOURCE (a deliberate, flagged limitation):
 ///   • The CUSTOMER passes their settled [payment] (from owner-scoped `GET /v1/payments`) so the
@@ -107,12 +116,12 @@ class JobReceiptBody extends ConsumerWidget {
         _DocumentTitle(isThai: isThai, kind: data.kind),
         const SizedBox(height: PgTokens.space3),
         _MetaRow(
-          label: isThai ? 'เลขที่ / No.' : 'No.',
+          label: ReceiptCopy.number(isThai),
           value: data.documentNumber,
         ),
         const SizedBox(height: PgTokens.space1),
         _MetaRow(
-          label: isThai ? 'วันที่ / Date' : 'Date',
+          label: ReceiptCopy.date(isThai),
           value: data.issuedAt != null
               ? ReceiptData.formatIssuedDate(data.issuedAt!, isThai: isThai)
               : '—',
@@ -129,10 +138,11 @@ class JobReceiptBody extends ConsumerWidget {
         if (data.actualHours != null && data.bookedHours != null) ...[
           const SizedBox(height: PgTokens.space2),
           Text(
-            isThai
-                ? 'คิดตามชั่วโมงจริง ${data.actualHours} ชม. (จองไว้ ${data.bookedHours} ชม.)'
-                : 'Billed on the actual ${data.actualHours} hr worked '
-                    '(${data.bookedHours} hr booked)',
+            ReceiptCopy.reconciledHours(
+              isThai,
+              actualHours: data.actualHours!,
+              bookedHours: data.bookedHours!,
+            ),
             style:
                 const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
           ),
@@ -146,7 +156,7 @@ class JobReceiptBody extends ConsumerWidget {
           child: Divider(height: 1, color: PgTokens.colorBorder),
         ),
         _MetaRow(
-          label: isThai ? 'ชำระโดย / Payment method' : 'Payment method',
+          label: ReceiptCopy.paymentMethod(isThai),
           value: ReceiptData.paymentMethodLabel(data.paymentMethod,
               isThai: isThai),
         ),
@@ -154,13 +164,109 @@ class JobReceiptBody extends ConsumerWidget {
           const SizedBox(height: PgTokens.space3),
           _Notice(
             icon: Icons.info_outline,
-            text: isThai
-                ? 'เอกสารนี้เป็นยอดประมาณจากการจอง ไม่ใช่ใบกำกับภาษีที่ออกจากยอดที่เรียกเก็บจริง — '
-                    'ยอดที่ชำระจริงดูได้จากฝั่งลูกค้า'
-                : 'These figures are estimated from the booking — this copy is not issued against '
-                    "a settled charge. The amount actually paid is on the customer's side.",
+            text: ReceiptCopy.estimateNotice(isThai),
           ),
         ],
+        const SizedBox(height: PgTokens.space4),
+        // KEEP THE DOCUMENT. Reading it on screen is not the same as having it: the reported gap
+        // was "ใบเสร็จยังไม่สามารถดาวโหลดได้จาก app หลังจบงาน". This renders the very same
+        // [ReceiptData] into a PDF and hands it to the OS share sheet, so the customer can file it,
+        // LINE it to their accountant, mail it or print it.
+        _DownloadReceiptButton(
+          document: ReceiptPdfDocument(
+            data: data,
+            isThai: isThai,
+            org: org,
+            buyerName: buyerName,
+            buyerAddress: buyerAddress,
+            siteAddress: booking.address,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// "ดาวน์โหลดใบเสร็จ / Download receipt" — builds the PDF from the SAME [ReceiptPdfDocument] the
+/// sheet just laid out, then hands it to the OS share sheet.
+///
+/// Building embeds three Thai TTF faces and lays out the page, which is slow enough to see, so the
+/// button shows its progress and blocks a second tap. A failure is reported INLINE (not via a
+/// snackbar, which a modal sheet would cover) and in the reader's own language.
+class _DownloadReceiptButton extends ConsumerStatefulWidget {
+  const _DownloadReceiptButton({required this.document});
+
+  final ReceiptPdfDocument document;
+
+  @override
+  ConsumerState<_DownloadReceiptButton> createState() =>
+      _DownloadReceiptButtonState();
+}
+
+class _DownloadReceiptButtonState
+    extends ConsumerState<_DownloadReceiptButton> {
+  bool _busy = false;
+  String? _error;
+
+  Future<void> _download() async {
+    if (_busy) return;
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final bytes = await buildReceiptPdf(widget.document);
+      if (!mounted) return;
+      await ref.read(documentSharerProvider).shareBytes(
+            bytes: bytes,
+            fileName: widget.document.fileName,
+            subject: widget.document.shareSubject,
+          );
+    } catch (_) {
+      if (!mounted) return;
+      setState(
+          () => _error = ReceiptCopy.downloadFailed(widget.document.isThai));
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isThai = widget.document.isThai;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_error != null) ...[
+          _Notice(icon: Icons.error_outline, text: _error!, warn: true),
+          const SizedBox(height: PgTokens.space2),
+        ],
+        OutlinedButton.icon(
+          onPressed: _busy ? null : _download,
+          icon: _busy
+              ? const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                      strokeWidth: 2, color: PgTokens.colorGreen800),
+                )
+              : const Icon(Icons.file_download_outlined, size: 18),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: PgTokens.colorGreen800,
+            side: const BorderSide(color: PgTokens.colorGreen800),
+            minimumSize: const Size.fromHeight(46),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+            ),
+            textStyle: const TextStyle(
+                fontFamily: 'IBMPlexSansThai',
+                fontSize: 14,
+                fontWeight: FontWeight.w600),
+          ),
+          label: Text(_busy
+              ? ReceiptCopy.downloading(isThai)
+              : ReceiptCopy.download(isThai)),
+        ),
       ],
     );
   }
@@ -193,10 +299,7 @@ class _IssuerHeader extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    org?.companyName ??
-                        (isThai
-                            ? 'ยังไม่ได้ตั้งค่าข้อมูลบริษัท'
-                            : 'Company details not set up'),
+                    org?.companyName ?? ReceiptCopy.companyUnset(isThai),
                     style: TextStyle(
                       fontSize: 15,
                       fontWeight: FontWeight.w700,
@@ -208,9 +311,7 @@ class _IssuerHeader extends StatelessWidget {
                   if (org?.taxId != null) ...[
                     const SizedBox(height: 2),
                     Text(
-                      isThai
-                          ? 'เลขประจำตัวผู้เสียภาษี ${org!.taxId}'
-                          : 'Tax ID ${org!.taxId}',
+                      ReceiptCopy.taxIdLine(isThai, org!.taxId!),
                       style: const TextStyle(
                           fontSize: 12, color: PgTokens.colorTextMuted),
                     ),
@@ -235,12 +336,7 @@ class _IssuerHeader extends StatelessWidget {
           _Notice(
             icon: Icons.warning_amber_outlined,
             warn: true,
-            text: isThai
-                ? 'ยังไม่มีชื่อบริษัท เลขประจำตัวผู้เสียภาษี และที่อยู่ในระบบ — '
-                    'เอกสารนี้จึงยังไม่สมบูรณ์ตามข้อกำหนดของใบกำกับภาษี '
-                    'กรุณาติดต่อผู้ดูแลระบบเพื่อขอใบกำกับภาษีฉบับเต็ม'
-                : "The company name, tax ID and address aren't configured, so this document is "
-                    'not a complete tax invoice. Contact support for a full copy.',
+            text: ReceiptCopy.companyIncompleteNotice(isThai),
           ),
         ],
       ],
@@ -256,20 +352,9 @@ class _DocumentTitle extends StatelessWidget {
   final bool isThai;
 
   /// A booking-derived copy is an estimate and a pre-VAT charge is a plain receipt; neither is
-  /// titled as a tax invoice.
+  /// titled as a tax invoice. The wording lives in [ReceiptCopy] so the downloadable PDF makes
+  /// exactly the same claim.
   final ReceiptKind kind;
-
-  String get _th => switch (kind) {
-        ReceiptKind.taxInvoice => 'ต้นฉบับ ใบเสร็จรับเงิน / ใบกำกับภาษี',
-        ReceiptKind.receiptNoVat => 'ต้นฉบับ ใบเสร็จรับเงิน',
-        ReceiptKind.estimate => 'ใบสรุปค่าบริการ (ประมาณการ)',
-      };
-
-  String get _en => switch (kind) {
-        ReceiptKind.taxInvoice => 'Original Receipt / Tax Invoice',
-        ReceiptKind.receiptNoVat => 'Original Receipt',
-        ReceiptKind.estimate => 'Estimated statement',
-      };
 
   @override
   Widget build(BuildContext context) {
@@ -283,7 +368,7 @@ class _DocumentTitle extends StatelessWidget {
       child: Column(
         children: [
           Text(
-            _th,
+            ReceiptCopy.titleTh(kind),
             textAlign: TextAlign.center,
             style: const TextStyle(
               fontSize: 15,
@@ -293,7 +378,7 @@ class _DocumentTitle extends StatelessWidget {
           ),
           const SizedBox(height: 2),
           Text(
-            _en,
+            ReceiptCopy.titleEn(kind),
             textAlign: TextAlign.center,
             style: const TextStyle(
                 fontSize: 11.5,
@@ -330,7 +415,7 @@ class _BuyerBlock extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          isThai ? 'ลูกค้า / Customer' : 'Customer',
+          ReceiptCopy.customer(isThai),
           style: const TextStyle(
               fontSize: 11.5,
               fontWeight: FontWeight.w600,
@@ -385,14 +470,14 @@ class _ItemsTable extends StatelessWidget {
                 Expanded(
                   flex: 5,
                   child: Text(
-                    isThai ? 'รายการ' : 'Description',
+                    ReceiptCopy.colDescription(isThai),
                     style: _headStyle,
                   ),
                 ),
                 Expanded(
                   flex: 3,
                   child: Text(
-                    isThai ? 'จำนวนเงิน' : 'Amount',
+                    ReceiptCopy.colAmount(isThai),
                     textAlign: TextAlign.right,
                     style: _headStyle,
                   ),
@@ -400,7 +485,7 @@ class _ItemsTable extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Text(
-                    isThai ? 'ภาษีมูลค่าเพิ่ม' : 'VAT',
+                    ReceiptCopy.colVat(isThai),
                     textAlign: TextAlign.right,
                     style: _headStyle,
                   ),
@@ -408,7 +493,7 @@ class _ItemsTable extends StatelessWidget {
                 Expanded(
                   flex: 3,
                   child: Text(
-                    isThai ? 'รวมเงิน' : 'Total',
+                    ReceiptCopy.colTotal(isThai),
                     textAlign: TextAlign.right,
                     style: _headStyle,
                   ),
@@ -459,14 +544,12 @@ class _ItemsTable extends StatelessWidget {
             child: Column(
               children: [
                 _SummaryRow(
-                  label: isThai ? 'รวมเป็นเงิน' : 'Subtotal',
+                  label: ReceiptCopy.subtotal(isThai),
                   satang: data.subtotalSatang,
                 ),
                 const SizedBox(height: PgTokens.space2),
                 _SummaryRow(
-                  label: isThai
-                      ? 'ภาษีมูลค่าเพิ่ม ${Money.vatPercent}%'
-                      : 'VAT ${Money.vatPercent}%',
+                  label: ReceiptCopy.vat(isThai, Money.vatPercent),
                   satang: data.vatSatang,
                 ),
               ],
@@ -486,7 +569,7 @@ class _ItemsTable extends StatelessWidget {
               children: [
                 Expanded(
                   child: Text(
-                    isThai ? 'จำนวนเงินรวมทั้งสิ้น' : 'Grand Total',
+                    ReceiptCopy.grandTotal(isThai),
                     style: const TextStyle(
                         fontSize: 14,
                         fontWeight: FontWeight.w700,
@@ -539,9 +622,7 @@ class _AdjustmentsBlock extends StatelessWidget {
         children: [
           if (data.cancellationFeeSatang > 0) ...[
             _SummaryRow(
-              label: isThai
-                  ? 'ค่าธรรมเนียมการยกเลิก'
-                  : 'Cancellation fee withheld',
+              label: ReceiptCopy.cancellationFee(isThai),
               satang: data.cancellationFeeSatang,
               color: PgTokens.colorAmber700,
             ),
@@ -549,27 +630,21 @@ class _AdjustmentsBlock extends StatelessWidget {
           ],
           if (data.refundSatang > 0) ...[
             _SummaryRow(
-              label: isThai ? 'ยอดคืนเงิน' : 'Refund',
+              label: ReceiptCopy.refund(isThai),
               satang: data.refundSatang,
               color: PgTokens.colorAmber700,
             ),
             const SizedBox(height: PgTokens.space2),
             _SummaryRow(
-              label: isThai ? 'ยอดชำระสุทธิ' : 'Net paid',
+              label: ReceiptCopy.netPaid(isThai),
               satang: data.netPaidSatang,
               bold: true,
             ),
             const SizedBox(height: PgTokens.space2),
           ],
           Text(
-            data.cancellationFeeSatang > 0
-                ? (isThai
-                    ? 'ยกเลิกก่อนเริ่มงาน — หักค่าธรรมเนียมไม่เกินยอดที่ชำระไว้ ส่วนที่เหลือคืนเงินเต็มจำนวน'
-                    : 'Cancelled before the job started — the fee is capped at what was paid and '
-                        'the remainder is refunded in full.')
-                : (isThai
-                    ? 'ยอดคืนเงินจะถูกดำเนินการโดยทีมแอดมินภายหลัง'
-                    : 'The refund is processed by the admin team.'),
+            ReceiptCopy.adjustmentNote(isThai,
+                hasCancellationFee: data.cancellationFeeSatang > 0),
             style:
                 const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
           ),

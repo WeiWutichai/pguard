@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/biometric_service.dart';
@@ -24,6 +25,7 @@ import 'package:pguard_mobile/core/network/sockets/booking_status_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/call_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/chat_socket.dart';
 import 'package:pguard_mobile/core/network/sockets/presence_socket.dart';
+import 'package:pguard_mobile/core/pdf/document_sharer.dart';
 import 'package:pguard_mobile/core/storage/prefs_store.dart';
 import 'package:pguard_mobile/core/storage/secure_store.dart';
 
@@ -693,5 +695,40 @@ class FakePermissionGate implements PermissionGate {
   Future<bool> openSettings() async {
     openSettingsCount++;
     return true;
+  }
+}
+
+/// In-memory [DocumentSharer] — records the bytes and filename the app would have handed to the
+/// OS, so the receipt download is exercisable end-to-end (the PDF is REALLY built) without the
+/// `path_provider` / `share_plus` platform channels. Set [throwOnShare] to drive the failure path;
+/// set [hold] to keep the share in flight so the caller's in-progress UI can be inspected.
+class FakeDocumentSharer implements DocumentSharer {
+  Uint8List? bytes;
+  String? fileName;
+  String? mimeType;
+  String? subject;
+  int calls = 0;
+  bool throwOnShare = false;
+
+  /// When set, `shareBytes` records its arguments and then blocks until [release] — the app stays
+  /// in its "working…" state deterministically, instead of the test racing a real future.
+  Completer<void>? hold;
+
+  void release() => hold?.complete();
+
+  @override
+  Future<void> shareBytes({
+    required Uint8List bytes,
+    required String fileName,
+    String mimeType = 'application/pdf',
+    String? subject,
+  }) async {
+    calls++;
+    this.bytes = bytes;
+    this.fileName = fileName;
+    this.mimeType = mimeType;
+    this.subject = subject;
+    if (hold != null) await hold!.future;
+    if (throwOnShare) throw StateError('no share target');
   }
 }
