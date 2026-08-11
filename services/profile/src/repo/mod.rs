@@ -23,9 +23,9 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileResponse, InternalGuardRow, OrgSettingsResponse, PublicCustomerProfileRow,
-    PublicGuardProfileRow, RecruitCandidate, ResolvedNameRow, UpdateOrgSettingsRequest,
-    UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    GuardProfileAdminResponse, GuardProfileResponse, InternalGuardRow, OrgSettingsResponse,
+    PublicCustomerProfileRow, PublicGuardProfileRow, RecruitCandidate, ResolvedNameRow,
+    UpdateOrgSettingsRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -319,6 +319,25 @@ type GuardTuple = (
     Option<String>, // emergency_contact_phone
     Option<String>, // emergency_contact_relationship
     String,         // approval_status
+);
+
+/// [`GuardTuple`] + the admin queue's `created_at` (appended LAST — see [`list_guard_profiles`]).
+type GuardAdminTuple = (
+    Uuid,
+    Option<String>, // full_name
+    Option<String>, // gender
+    Option<NaiveDate>,
+    Option<i32>,
+    Option<String>, // previous_workplace
+    Option<String>, // bank_name
+    Option<String>, // account_number
+    Option<String>, // account_name
+    Option<String>, // address
+    Option<String>, // emergency_contact_name
+    Option<String>, // emergency_contact_phone
+    Option<String>, // emergency_contact_relationship
+    String,         // approval_status
+    DateTime<Utc>,  // created_at
 );
 
 fn guard_row_from_tuple(t: GuardTuple) -> GuardRow {
@@ -676,24 +695,38 @@ pub async fn upsert_assignment(
 
 /// List guard profiles for the admin onboarding queue, newest first. An optional
 /// `status` filters by approval_status (compared as text against the enum cast).
+///
+/// Selects `created_at` ON TOP of [`GUARD_COLUMNS`] (the shared projection the owner-facing
+/// reads reuse) so the queue can show HOW LONG an applicant has been waiting — the customer
+/// admin list already returned it, the guard one didn't. Hence the `+ 1` tuple element; the
+/// order stays positional, so the extra column is appended LAST, after `approval_status`.
 pub async fn list_guard_profiles(
     db: &PgPool,
     status: Option<ApprovalStatus>,
-) -> Result<Vec<GuardProfileResponse>, AppError> {
-    let mut sql = format!("SELECT {GUARD_COLUMNS} FROM profile.guard_profiles");
+) -> Result<Vec<GuardProfileAdminResponse>, AppError> {
+    let mut sql = format!("SELECT {GUARD_COLUMNS}, created_at FROM profile.guard_profiles");
     if status.is_some() {
         sql.push_str(" WHERE approval_status = $1::profile.approval_status");
     }
     sql.push_str(" ORDER BY created_at DESC LIMIT 200");
 
-    let mut query = sqlx::query_as::<_, GuardTuple>(&sql);
+    let mut query = sqlx::query_as::<_, GuardAdminTuple>(&sql);
     if let Some(s) = &status {
         query = query.bind(s.to_string());
     }
     let rows = query.fetch_all(db).await?;
     rows.into_iter()
-        .map(guard_row_from_tuple)
-        .map(GuardRow::into_response)
+        .map(|row| {
+            let created_at = row.14;
+            let base: GuardTuple = (
+                row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
+                row.11, row.12, row.13,
+            );
+            Ok(GuardProfileAdminResponse {
+                profile: guard_row_from_tuple(base).into_response()?,
+                created_at,
+            })
+        })
         .collect()
 }
 
@@ -1453,11 +1486,20 @@ mod db_tests {
             .expect_err("approved is terminal");
         assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
 
-        // 5) list with the approved filter includes our row.
+        // 5) list with the approved filter includes our row — and the ADMIN queue row carries the
+        //    signup time (the reviewer's "how long has this person been waiting?"), which the
+        //    owner-facing shape does not.
         let listed = list_guard_profiles(&pool, Some(ApprovalStatus::Approved))
             .await
             .expect("list");
-        assert!(listed.iter().any(|p| p.user_id == user_id));
+        let row = listed
+            .iter()
+            .find(|p| p.profile.user_id == user_id)
+            .expect("approved guard is listed");
+        assert!(
+            row.created_at <= Utc::now(),
+            "the admin queue row carries a real signup timestamp"
+        );
 
         // 6) the internal catalog returns the approved guard (with experience + name for the
         //    customer's selection card) — and the projection carries no bank fields (it's

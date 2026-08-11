@@ -28,11 +28,11 @@ use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, CustomerAvatarResponse,
     CustomerProfileAdminResponse, CustomerProfileResponse, ExpiringDocumentsResponse,
     GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentPresence, GuardDocumentResponse,
-    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, MyProfile,
-    OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
+    GuardProfileAdminResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
+    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
     RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
     SetDocumentExpiryRequest, StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
+    UpsertGuardProfileRequest, WithLoginPhone, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -1056,12 +1056,51 @@ pub struct ListQuery {
     pub approval_status: Option<String>,
 }
 
+/// Attach each row's LOGIN phone (`identity.users.phone`) in ONE batched resolve for the whole
+/// page — never a call per row (a 200-row approval queue would otherwise fan out 200 HTTP hops).
+///
+/// BEST-EFFORT by construction: [`IdentityResolver::resolve`] swallows every failure into an empty
+/// map, so an identity outage yields `login_phone: null` on every row and the list still renders.
+/// The admin queue is how applicants get approved; degrading a column beats 500-ing the page.
+///
+/// An empty page short-circuits inside `resolve` (no network call). Both admin lists are capped at
+/// 200 rows by the repo, comfortably under identity's 500-id `RESOLVE_USERS_LIMIT`, so one call
+/// always covers a page; if that cap were ever raised past 500, identity 400s the batch and this
+/// degrades to all-null rather than breaking the list.
+///
+/// Takes the RESOLVER rather than the whole state so it is hermetically unit-testable (no Redis /
+/// DB / network needed to prove the batching + the outage fallback).
+async fn attach_login_phones<R: IdentityResolver, T>(
+    resolver: &R,
+    rows: Vec<T>,
+    user_id_of: fn(&T) -> Uuid,
+) -> Vec<WithLoginPhone<T>> {
+    let ids: Vec<Uuid> = rows.iter().map(user_id_of).collect();
+    let resolved = resolver.resolve(&ids).await;
+    rows.into_iter()
+        .map(|row| {
+            let login_phone = resolved
+                .get(&user_id_of(&row))
+                .and_then(|entry| entry.phone.clone());
+            WithLoginPhone {
+                profile: row,
+                login_phone,
+            }
+        })
+        .collect()
+}
+
+/// List guard profiles for the onboarding review queue. Admin-only. Rows are the profile plus the
+/// two things a reviewer needs to know WHO they are approving: `created_at` (how long this person
+/// has been waiting) and `login_phone` — the applicant's identity-owned login number, batched in
+/// via [`attach_login_phones`], because the profile's own `emergency_contact_phone` is somebody
+/// else's number.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn admin_list_guard_profiles<S: ProfileDeps>(
     State(state): State<S>,
     user: AuthUser,
     Query(q): Query<ListQuery>,
-) -> Result<Json<ApiResponse<Vec<GuardProfileResponse>>>, AppError> {
+) -> Result<Json<ApiResponse<Vec<WithLoginPhone<GuardProfileAdminResponse>>>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
     let status = match q.approval_status.as_deref() {
         None => None,
@@ -1073,7 +1112,8 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
     // Admin sees the FULL account number (not masked) — onboarding review needs it.
     // List read → replica (C5.3); the §30 read-audit below is a WRITE → primary.
     let profiles = repo::list_guard_profiles(state.db_read(), status).await?;
-    // PDPA §30: record this admin read of personal data (who accessed what).
+    // PDPA §30: record this admin read of personal data (who accessed what). Audited BEFORE the
+    // identity hop, so a failed audit aborts the disclosure instead of leaking a resolved phone.
     repo::record_access(
         state.db(),
         user.user_id,
@@ -1081,7 +1121,9 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
         q.approval_status.as_deref(),
     )
     .await?;
-    Ok(Json(ApiResponse::success(profiles)))
+    let rows =
+        attach_login_phones(state.identity_resolver(), profiles, |p| p.profile.user_id).await;
+    Ok(Json(ApiResponse::success(rows)))
 }
 
 // ----- GET /admin/customer-profiles — admin list (cross-user) -----
@@ -1093,12 +1135,18 @@ pub async fn admin_list_guard_profiles<S: ProfileDeps>(
 /// is this service's job). An unknown filter value → 400. Mirrors [`admin_list_guard_profiles`]:
 /// list read on the replica (C5.3), PDPA §30 read-audit WRITE on the primary. No masking —
 /// customer profiles hold no bank field (`full_name`/`address` are the only PII).
+///
+/// Each row also carries `login_phone`, batched in from identity by [`attach_login_phones`]. This
+/// is the fix for the queue showing "#5680b50f / —": customer `full_name` and `contact_phone` are
+/// both optional here, so a customer who skipped them was unidentifiable even though the system
+/// held their login number all along. `contact_phone` stays exactly as it was — a DIFFERENT,
+/// optional field; the two must not be conflated.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn admin_list_customer_profiles<S: ProfileDeps>(
     State(state): State<S>,
     user: AuthUser,
     Query(q): Query<ListQuery>,
-) -> Result<Json<ApiResponse<Vec<CustomerProfileAdminResponse>>>, AppError> {
+) -> Result<Json<ApiResponse<Vec<WithLoginPhone<CustomerProfileAdminResponse>>>>, AppError> {
     require_role(&user, ROLE_ADMIN)?;
     let status = match q.approval_status.as_deref() {
         None => None,
@@ -1109,6 +1157,7 @@ pub async fn admin_list_customer_profiles<S: ProfileDeps>(
     };
     let profiles = repo::list_customer_profiles(state.db_read(), status).await?;
     // PDPA §30: record this admin read of personal data (who accessed what — log the filter).
+    // Audited BEFORE the identity hop (same order as the guard list).
     repo::record_access(
         state.db(),
         user.user_id,
@@ -1116,7 +1165,8 @@ pub async fn admin_list_customer_profiles<S: ProfileDeps>(
         q.approval_status.as_deref(),
     )
     .await?;
-    Ok(Json(ApiResponse::success(profiles)))
+    let rows = attach_login_phones(state.identity_resolver(), profiles, |p| p.user_id).await;
+    Ok(Json(ApiResponse::success(rows)))
 }
 
 // ----- GET /admin/access-audit — PDPA §30 data-access audit log (admin) -----
@@ -1597,18 +1647,49 @@ mod tests {
         }
     }
 
-    /// Hermetic identity name-resolver stub — returns a fixed id → {role, display_name} map with no
-    /// network. The admin-resolve role-gate + DB-short-circuit tests never reach it; the merge tests
-    /// (DB-gated) seed it to prove the admin merge.
+    /// Hermetic identity name-resolver stub — returns a fixed id → {role, display_name, phone} map
+    /// with no network. The admin-resolve role-gate + DB-short-circuit tests never reach it; the
+    /// merge tests (DB-gated) seed it to prove the admin merge.
+    ///
+    /// It also RECORDS every batch it is handed (`calls`), so the admin-list tests can prove the
+    /// login-phone lookup is ONE call for the whole page — never one per row.
     #[derive(Clone, Default)]
     struct StubResolver {
         names: std::collections::HashMap<Uuid, crate::identity_client::IdentityName>,
+        calls: Arc<std::sync::Mutex<Vec<Vec<Uuid>>>>,
+    }
+    impl StubResolver {
+        /// A stub resolving each `(id, phone)` to a customer with NO display name — the exact
+        /// shape of the applicant who skipped the optional name and showed up as `#5680b50f`.
+        fn with_phones(entries: &[(Uuid, &str)]) -> Self {
+            Self {
+                names: entries
+                    .iter()
+                    .map(|(id, phone)| {
+                        (
+                            *id,
+                            crate::identity_client::IdentityName {
+                                role: ROLE_CUSTOMER.to_string(),
+                                display_name: None,
+                                phone: Some((*phone).to_string()),
+                            },
+                        )
+                    })
+                    .collect(),
+                calls: Arc::default(),
+            }
+        }
+        /// The batches this stub was asked to resolve, in order.
+        fn calls(&self) -> Vec<Vec<Uuid>> {
+            self.calls.lock().unwrap().clone()
+        }
     }
     impl crate::identity_client::IdentityResolver for StubResolver {
         async fn resolve(
             &self,
             ids: &[Uuid],
         ) -> std::collections::HashMap<Uuid, crate::identity_client::IdentityName> {
+            self.calls.lock().unwrap().push(ids.to_vec());
             ids.iter()
                 .filter_map(|id| self.names.get(id).map(|n| (*id, n.clone())))
                 .collect()
@@ -1786,6 +1867,73 @@ mod tests {
         )
     }
 
+    /// A REAL Postgres pool + Redis connection for the end-to-end admin-list tests (the list read
+    /// and the PDPA §30 audit write both hit the DB; the `AuthUser` extractor needs Redis).
+    /// Returns `None` — after printing why — when either is absent, so the suite stays hermetic
+    /// by default (same gating as `resolve_names_merges_admin_from_identity`).
+    async fn real_db_and_redis() -> Option<(sqlx::PgPool, redis::aio::ConnectionManager)> {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the admin-list login_phone tests");
+            return None;
+        };
+        let Ok(redis_url) =
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL"))
+        else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return None;
+        };
+        let Ok(redis) = shared::redis_client::create_connection_manager(&redis_url).await else {
+            eprintln!("SKIP: could not connect to test Redis");
+            return None;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+        Some((pool, redis))
+    }
+
+    /// Just the two admin approval-queue lists, over a real pool + a seeded identity resolver.
+    fn admin_list_router(
+        db: sqlx::PgPool,
+        redis: redis::aio::ConnectionManager,
+        resolver: StubResolver,
+    ) -> Router {
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db,
+            redis,
+            authz: StubAuthz { allow: false },
+            s3: test_s3(),
+            resolver,
+        };
+        Router::new()
+            .route(
+                "/admin/guard-profiles",
+                get(admin_list_guard_profiles::<TestDeps>),
+            )
+            .route(
+                "/admin/customer-profiles",
+                get(admin_list_customer_profiles::<TestDeps>),
+            )
+            .with_state(deps)
+    }
+
+    /// Pull the row for `user_id` out of an admin-list `{ success, data: [...] }` response.
+    async fn find_row(res: axum::response::Response, user_id: Uuid) -> Option<serde_json::Value> {
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["user_id"] == serde_json::json!(user_id.to_string()))
+            .cloned()
+    }
+
     fn token(role: &str) -> String {
         let ek = EncodingKey::from_secret(SECRET.as_bytes());
         let (tok, _) = encode_jwt_with_key(Uuid::new_v4(), role, 0, &ek, 60).unwrap();
@@ -1959,6 +2107,271 @@ mod tests {
             StatusCode::FORBIDDEN,
             "a guard must not list the admin onboarding queue"
         );
+    }
+
+    // ----- login_phone on the admin approval queues (batched, best-effort) -----
+
+    /// A customer admin-list row with NOTHING filled in — the applicant who skipped the optional
+    /// `full_name`/`contact_phone` and rendered as "#5680b50f / —" in the queue.
+    fn bare_customer_row(user_id: Uuid) -> CustomerProfileAdminResponse {
+        CustomerProfileAdminResponse {
+            user_id,
+            full_name: None,
+            address: None,
+            company_name: None,
+            email: None,
+            contact_phone: None,
+            created_at: chrono::Utc::now(),
+            approval_status: "pending".to_string(),
+        }
+    }
+
+    /// The login-phone lookup is ONE batched call for the WHOLE page (never one per row), and each
+    /// row gets its OWN phone back — keyed by user_id, not by position. A row identity doesn't know
+    /// about simply comes back `null` while its neighbours still resolve.
+    #[tokio::test]
+    async fn attach_login_phones_resolves_the_page_in_one_batched_call() {
+        let (a, b, c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let resolver = StubResolver::with_phones(&[(a, "0828917380"), (b, "0891112222")]);
+        let rows = vec![
+            bare_customer_row(a),
+            bare_customer_row(b),
+            bare_customer_row(c),
+        ];
+
+        let out = attach_login_phones(&resolver, rows, |p| p.user_id).await;
+
+        let calls = resolver.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "a 3-row page must cost ONE identity call, not one per row"
+        );
+        assert_eq!(
+            calls[0],
+            vec![a, b, c],
+            "the single batch carries every id on the page"
+        );
+        assert_eq!(out[0].login_phone.as_deref(), Some("0828917380"));
+        assert_eq!(out[1].login_phone.as_deref(), Some("0891112222"));
+        assert_eq!(
+            out[2].login_phone, None,
+            "an id identity doesn't answer for is null, not a neighbour's phone"
+        );
+    }
+
+    /// BEST-EFFORT: identity unreachable (the client turns every failure into an empty map) →
+    /// every row still comes back, with `login_phone: null`. An approval queue that 500s because a
+    /// phone lookup failed is worse than one missing a phone number.
+    #[tokio::test]
+    async fn attach_login_phones_still_returns_rows_when_identity_is_down() {
+        // `StubResolver::default()` resolves nothing — exactly what an outage produces.
+        let resolver = StubResolver::default();
+        let (a, b) = (Uuid::new_v4(), Uuid::new_v4());
+        let rows = vec![bare_customer_row(a), bare_customer_row(b)];
+
+        let out = attach_login_phones(&resolver, rows, |p| p.user_id).await;
+
+        assert_eq!(out.len(), 2, "the list still renders in full");
+        assert!(
+            out.iter().all(|r| r.login_phone.is_none()),
+            "an unreachable identity degrades the column to null"
+        );
+        assert_eq!(out[0].profile.user_id, a);
+        assert_eq!(out[1].profile.user_id, b);
+    }
+
+    /// An empty page asks identity for nothing — the batch is empty, and the real HTTP client
+    /// short-circuits an empty batch without any network call at all.
+    #[tokio::test]
+    async fn attach_login_phones_empty_page_asks_for_nothing() {
+        let resolver = StubResolver::default();
+        let out = attach_login_phones(&resolver, Vec::<CustomerProfileAdminResponse>::new(), |p| {
+            p.user_id
+        })
+        .await;
+        assert!(out.is_empty());
+        assert!(
+            resolver.calls().iter().all(|batch| batch.is_empty()),
+            "no page → no ids requested"
+        );
+    }
+
+    /// WIRE SHAPE: `login_phone` sits FLAT alongside the profile's own fields (serde flatten), and
+    /// it does NOT replace or shadow `contact_phone` — they are two different fields (an optional
+    /// extra vs. the account's login number) and the UI must be able to tell them apart.
+    #[test]
+    fn login_phone_serializes_flat_next_to_contact_phone() {
+        let row = WithLoginPhone {
+            profile: CustomerProfileAdminResponse {
+                contact_phone: Some("021112222".to_string()),
+                full_name: Some("ploy".to_string()),
+                ..bare_customer_row(Uuid::new_v4())
+            },
+            login_phone: Some("0828917380".to_string()),
+        };
+        let json = serde_json::to_value(&row).unwrap();
+        assert_eq!(json["login_phone"], "0828917380");
+        assert_eq!(
+            json["contact_phone"], "021112222",
+            "the optional contact number is untouched"
+        );
+        assert_eq!(json["full_name"], "ploy");
+        assert_eq!(json["approval_status"], "pending");
+        assert!(
+            json.get("profile").is_none(),
+            "flattened — never nested under `profile`"
+        );
+
+        // Null when identity didn't answer: the key is still PRESENT (an absent key would be
+        // indistinguishable from an old server that never sends it).
+        let unresolved = WithLoginPhone {
+            profile: bare_customer_row(Uuid::new_v4()),
+            login_phone: None,
+        };
+        let json = serde_json::to_value(&unresolved).unwrap();
+        assert!(json["login_phone"].is_null());
+        assert!(json.as_object().unwrap().contains_key("login_phone"));
+    }
+
+    /// End-to-end through `GET /admin/customer-profiles`: a seeded customer with NO name and NO
+    /// contact phone still shows the admin a reachable number, resolved from identity. DB-gated
+    /// (real pool: the list read + the PDPA §30 audit write) + Redis-gated (the AuthUser
+    /// extractor); hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn admin_list_customers_carries_login_phone() {
+        let Some((pool, redis)) = real_db_and_redis().await else {
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO profile.customer_profiles (user_id) VALUES ($1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed customer profile");
+
+        let resolver = StubResolver::with_phones(&[(user_id, "0828917380")]);
+        let app = admin_list_router(pool.clone(), redis, resolver.clone());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/customer-profiles?approval_status=pending")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let row = find_row(res, user_id).await.expect("seeded row is listed");
+        assert_eq!(
+            row["login_phone"], "0828917380",
+            "the admin sees the applicant's LOGIN phone"
+        );
+        assert!(
+            row["full_name"].is_null() && row["contact_phone"].is_null(),
+            "…even though the profile itself is empty (the bug this fixes)"
+        );
+        assert_eq!(
+            resolver.calls().len(),
+            1,
+            "one identity call for the whole page"
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// End-to-end through `GET /admin/guard-profiles` — same login-phone enrichment on the guard
+    /// onboarding queue. DB + Redis gated (see [`admin_list_customers_carries_login_phone`]).
+    #[tokio::test]
+    async fn admin_list_guards_carries_login_phone() {
+        let Some((pool, redis)) = real_db_and_redis().await else {
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO profile.guard_profiles (user_id, full_name) VALUES ($1, $2)")
+            .bind(user_id)
+            .bind("ploy")
+            .execute(&pool)
+            .await
+            .expect("seed guard profile");
+
+        let resolver = StubResolver::with_phones(&[(user_id, "0828917380")]);
+        let app = admin_list_router(pool.clone(), redis, resolver.clone());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/guard-profiles")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let row = find_row(res, user_id).await.expect("seeded row is listed");
+        assert_eq!(row["login_phone"], "0828917380");
+        assert_eq!(row["full_name"], "ploy");
+        assert!(
+            row["created_at"].is_string(),
+            "the guard queue row carries the signup time too"
+        );
+        assert_eq!(
+            resolver.calls().len(),
+            1,
+            "one identity call for the whole page"
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The queue must RENDER when identity is unreachable: the list is a 200 with `login_phone:
+    /// null`, never a 5xx. DB + Redis gated.
+    #[tokio::test]
+    async fn admin_list_customers_renders_when_identity_is_unreachable() {
+        let Some((pool, redis)) = real_db_and_redis().await else {
+            return;
+        };
+        let user_id = Uuid::new_v4();
+        sqlx::query("INSERT INTO profile.customer_profiles (user_id) VALUES ($1)")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("seed customer profile");
+
+        // A resolver that answers nothing == identity down (the client swallows failures).
+        let app = admin_list_router(pool.clone(), redis, StubResolver::default());
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/customer-profiles?approval_status=pending")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "an identity outage must NOT 500 the approval queue"
+        );
+        let row = find_row(res, user_id).await.expect("seeded row is listed");
+        assert!(row["login_phone"].is_null());
+
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
     }
 
     #[tokio::test]
@@ -2166,6 +2579,7 @@ mod tests {
             crate::identity_client::IdentityName {
                 role: "admin".to_string(),
                 display_name: Some("Boss Admin".to_string()),
+                phone: Some("0800000001".to_string()),
             },
         );
         names.insert(
@@ -2173,6 +2587,7 @@ mod tests {
             crate::identity_client::IdentityName {
                 role: "guard".to_string(),
                 display_name: Some("WRONG (identity)".to_string()),
+                phone: Some("0800000002".to_string()),
             },
         );
 
@@ -2182,7 +2597,10 @@ mod tests {
             redis,
             authz: StubAuthz { allow: false },
             s3: test_s3(),
-            resolver: StubResolver { names },
+            resolver: StubResolver {
+                names,
+                calls: Arc::default(),
+            },
         };
         let app = Router::new()
             .route(
@@ -2208,6 +2626,12 @@ mod tests {
         // Admin merged from identity.
         assert_eq!(data[admin_id.to_string()]["role"], "admin");
         assert_eq!(data[admin_id.to_string()]["display_name"], "Boss Admin");
+        // The name-resolver's own contract is `{ role, display_name }`: identity now ALSO answers
+        // with a phone (for the admin approval queues), but this endpoint must keep dropping it.
+        assert!(
+            data[admin_id.to_string()].get("phone").is_none(),
+            "the name resolver must not start leaking phones"
+        );
         // Unknown id stays omitted.
         assert!(data.get(unknown.to_string()).is_none());
 

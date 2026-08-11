@@ -103,13 +103,27 @@ pub struct ResolveUsersRequest {
     pub ids: Vec<Uuid>,
 }
 
-/// One resolved identity for the internal name-resolver — ONLY `{ role, display_name }`
-/// (least-privilege; never phone/email). Keyed by id in the response map.
+/// One resolved identity for the internal name-resolver — `{ role, display_name, phone }`.
+/// Keyed by id in the response map.
+///
+/// WHY A RESOLVER RETURNS A PHONE NUMBER: in pguard the phone IS the account's identity. People
+/// sign up with it, log in with it (OTP + PIN on that number) and are contacted on it; it is the
+/// one field `identity.users` guarantees is present and unique for EVERY account (`TEXT UNIQUE NOT
+/// NULL`), while `display_name` is optional and frequently null mid-onboarding. So "resolve these
+/// ids to who they are" is only answerable with the phone — a name alone leaves the admin approval
+/// queue staring at `#5680b50f` with no way to reach the applicant. Still least-privilege: `email`,
+/// password/2FA material and everything else stay home, and this endpoint is service-JWT'd +
+/// blocked at the public edge, so the phone never leaves the internal mesh through here. Callers
+/// that only need a label (profile's `POST /admin/users/resolve`) simply drop the field.
 #[derive(Debug, Serialize)]
 pub struct ResolvedUser {
     pub role: String,
     /// The user's display name, or `null` when none is set yet.
     pub display_name: Option<String>,
+    /// The account's LOGIN phone (`identity.users.phone`) — always present for a live account
+    /// (the column is `NOT NULL`); this is the number the person registered and signs in with,
+    /// NOT any optional contact number a profile may separately hold.
+    pub phone: String,
 }
 
 /// Query for `GET /admin/users/search?q=&limit=`.

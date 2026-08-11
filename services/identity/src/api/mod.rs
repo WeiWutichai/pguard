@@ -1666,13 +1666,22 @@ pub async fn internal_revoke_all<S: RevokeAllDeps>(
 
 // ----- POST /internal/users/names (service-JWT only) -----
 
-/// Resolve a batch of `user_id`s to `{ role, display_name }` for an internal caller (the profile
-/// service's `/admin/users/resolve` merges admin names from here — closing the Activity Log #142
-/// gap where admins had no name). Service-JWT-gated ([`ServiceCaller`]; blocked at the edge), so it
-/// is never publicly reachable. Returns a MAP keyed by id; unknown/deleted ids are OMITTED. ONLY
-/// `role` + `display_name` — NEVER phone/email. Bounded to `RESOLVE_USERS_LIMIT` ids; a larger
-/// batch → 400 (page it). Generic over [`RevokeAllDeps`] so the service-JWT guard is testable
-/// in isolation (reuses the same `db()` + `HasServiceJwt` seam as `internal_revoke_all`).
+/// Resolve a batch of `user_id`s to `{ role, display_name, phone }` for an internal caller (the
+/// profile service's `/admin/users/resolve` merges admin names from here — closing the Activity Log
+/// #142 gap where admins had no name — and its admin approval queues read the `phone`).
+/// Service-JWT-gated ([`ServiceCaller`]; blocked at the edge), so it is never publicly reachable.
+/// Returns a MAP keyed by id; unknown/deleted ids are OMITTED.
+///
+/// The response carries the account's LOGIN `phone`. That is not an accident of convenience: in
+/// this system the phone IS the account's identity — people sign up by it, log in with it and are
+/// contacted on it — and it is the only human-meaningful field guaranteed non-null for every user,
+/// so a resolver that omitted it could not actually answer "who is this id?" for the very rows that
+/// need it most (an applicant who skipped the optional name). See [`ResolvedUser`] for the full
+/// rationale + the least-privilege boundary (no email / credentials, internal-only, service-JWT'd).
+///
+/// Bounded to `RESOLVE_USERS_LIMIT` ids; a larger batch → 400 (page it). Generic over
+/// [`RevokeAllDeps`] so the service-JWT guard is testable in isolation (reuses the same `db()` +
+/// `HasServiceJwt` seam as `internal_revoke_all`).
 pub async fn internal_resolve_users<S: RevokeAllDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
@@ -1698,6 +1707,7 @@ pub async fn internal_resolve_users<S: RevokeAllDeps>(
                 ResolvedUser {
                     role: r.role,
                     display_name: r.display_name,
+                    phone: r.phone,
                 },
             )
         })
@@ -1788,6 +1798,12 @@ mod tests {
             .acquire_timeout(Duration::from_millis(200))
             .connect_lazy("postgres://invalid:invalid@127.0.0.1:1/none")
             .expect("lazy pool");
+        router_over(db)
+    }
+
+    /// The same internal router over a caller-supplied pool — the happy-path resolver test hands
+    /// it a REAL one so the query actually runs.
+    fn router_over(db: sqlx::PgPool) -> Router {
         let deps = TestDeps {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db,
@@ -1899,6 +1915,156 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "valid service token must pass the guard"
         );
+    }
+
+    /// The resolver answers `{ role, display_name, phone }` — the LOGIN phone included. This is the
+    /// field the admin approval queue needs: the seeded account has NO `display_name` (the optional
+    /// name an applicant skipped), so the phone is the ONLY thing that identifies the person, and
+    /// `identity.users.phone` is `NOT NULL` so it is always there. Also pins the map's null-safety:
+    /// an unknown id is OMITTED, never a null entry. DATABASE_URL-gated; hermetic SKIP otherwise.
+    #[tokio::test]
+    async fn resolve_users_returns_login_phone() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the resolve-users phone test");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        // A unique 10-digit phone, no display_name — an applicant who skipped the optional name.
+        let user_id = Uuid::new_v4();
+        let phone: String = format!(
+            "0{}",
+            Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role) \
+             VALUES ($1, $2, 'x', 'customer'::identity.user_role)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .execute(&pool)
+        .await
+        .expect("seed user");
+
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let tok = encode_service_jwt("profile", &ek, 60).unwrap();
+        let unknown = Uuid::new_v4();
+        let res = router_over(pool.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(NAMES_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "ids": [user_id, unknown] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let entry = &json["data"][user_id.to_string()];
+        assert_eq!(
+            entry["phone"], phone,
+            "the resolver carries the account's LOGIN phone"
+        );
+        assert_eq!(entry["role"], "customer");
+        assert!(
+            entry["display_name"].is_null(),
+            "no name set — the phone is all the admin has to go on"
+        );
+        assert!(
+            json["data"].get(unknown.to_string()).is_none(),
+            "an unknown id stays omitted"
+        );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// A SOFT-DELETED account is not resolvable at all — its phone must not keep leaking through
+    /// the resolver after the user is gone (the `deleted_at IS NULL` filter, now that the response
+    /// carries PII worth protecting). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn resolve_users_omits_soft_deleted_account() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the soft-delete resolve test");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let phone: String = format!(
+            "0{}",
+            Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .take(9)
+                .collect::<String>()
+        );
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, deleted_at) \
+             VALUES ($1, $2, 'x', 'customer'::identity.user_role, now())",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .execute(&pool)
+        .await
+        .expect("seed deleted user");
+
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let tok = encode_service_jwt("profile", &ek, 60).unwrap();
+        let res = router_over(pool.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(NAMES_URI)
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "ids": [user_id] }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            json["data"].get(user_id.to_string()).is_none(),
+            "a soft-deleted account resolves to nothing — no role, no name, no phone"
+        );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
     }
 
     /// An over-cap batch is rejected with 400 (page it) — checked AFTER the service-JWT guard but
