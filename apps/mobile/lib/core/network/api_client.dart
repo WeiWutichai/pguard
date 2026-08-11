@@ -90,11 +90,19 @@ class ApiClient implements PguardApi {
   /// Paths that must NOT carry a Bearer and must NOT trigger refresh (they mint tokens / run
   /// pre-session). `/auth/register` is token-minting (it returns a profile_token, not a session)
   /// and runs before the user can log in — never attach a (possibly stale) access token to it.
+  ///
+  /// `/auth/reset-pin` belongs here for the same reason and was missing: it authenticates with the
+  /// single-use `phone_verified_token` from a just-completed OTP, NOT with a session. Someone who
+  /// has genuinely forgotten their PIN has no session at all, so treating it as authenticated sent
+  /// the interceptor off to refresh a token that isn't there — the forgot-PIN flow failed before
+  /// the request was ever sent. It also revokes every session server-side as it succeeds, so any
+  /// Bearer we attached would be dead by the time the response came back.
   static bool _isPublic(String path) {
     return path.startsWith('/otp/') ||
         path == '/auth/login' ||
         path == '/auth/refresh' ||
-        path == '/auth/register';
+        path == '/auth/register' ||
+        path == '/auth/reset-pin';
   }
 
   // ---------- interceptors ----------
