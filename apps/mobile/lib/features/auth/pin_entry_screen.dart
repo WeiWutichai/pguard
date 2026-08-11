@@ -66,23 +66,40 @@ class _PinEntryScreenState extends ConsumerState<PinEntryScreen> {
     // authenticated and the router redirects; on failure surface the reason and let the user retry.
     if (auth.reset) {
       final newPin = _pin;
-      final ok = await ref
+      final outcome = await ref
           .read(authControllerProvider.notifier)
           .resetPin(newPin: newPin);
       if (!mounted) return;
-      if (!ok) {
-        final isThai = ref.read(localeControllerProvider) == AppLocale.th;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text(ref.read(authControllerProvider).error ??
-              (isThai ? 'ตั้ง PIN ใหม่ไม่สำเร็จ' : 'Could not reset the PIN')),
-        ));
-        setState(() {
-          _pin = '';
-          _firstPin = null;
-          _mismatch = false;
-        });
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      switch (outcome) {
+        case ResetPinOutcome.loggedIn:
+          // Session flipped; the router redirects.
+          return;
+        case ResetPinOutcome.pinChangedSignInNeeded:
+          // The PIN really did change — the reset is single-use and every session was revoked as
+          // it succeeded. Re-submitting this screen could only answer "token already used", so
+          // send them to sign in with the PIN they just chose and say plainly that it worked.
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(isThai
+                ? 'ตั้ง PIN ใหม่เรียบร้อย — เข้าสู่ระบบด้วย PIN ใหม่ได้เลย'
+                : 'Your new PIN is set — sign in with it'),
+          ));
+          context.go('/login/pin');
+          return;
+        case ResetPinOutcome.failed:
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+            content: Text(ref.read(authControllerProvider).error ??
+                (isThai
+                    ? 'ตั้ง PIN ใหม่ไม่สำเร็จ'
+                    : 'Could not reset the PIN')),
+          ));
+          setState(() {
+            _pin = '';
+            _firstPin = null;
+            _mismatch = false;
+          });
+          return;
       }
-      return;
     }
     // Persist the resume state (phone + raw PIN + marker) BEFORE navigating, so a kill at the
     // role screen resumes here instead of bouncing to phone entry. Awaited (a few keychain

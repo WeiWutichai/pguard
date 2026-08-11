@@ -154,7 +154,7 @@ void main() {
     expect(await ctrl.verifyOtp('123456'), isTrue);
 
     // Reset the PIN → POST /auth/reset-pin, then log in with the NEW PIN → session authenticated.
-    expect(await ctrl.resetPin(newPin: '654321'), isTrue);
+    expect(await ctrl.resetPin(newPin: '654321'), ResetPinOutcome.loggedIn);
     expect(calls,
         ['/otp/request', '/otp/verify', '/auth/reset-pin', '/auth/login']);
     expect(store.refresh, 'r-new',
@@ -169,7 +169,8 @@ void main() {
     final c = container(api: api, store: InMemoryStore());
     final ctrl = c.read(authControllerProvider.notifier);
     ctrl.startReset('0812345678'); // no verifyOtp → no phone_verified_token
-    expect(await ctrl.resetPin(newPin: '654321'), isFalse);
+    expect(await ctrl.resetPin(newPin: '654321'), ResetPinOutcome.failed,
+        reason: 'no token → nothing was changed, so this is a plain failure');
     expect(c.read(authControllerProvider).error, isNotNull);
   });
 
@@ -594,6 +595,85 @@ void main() {
             'rejection when the question refreshes at the same moment)');
     expect(served, 2,
         reason: 'the burned challenge is still auto-refreshed after the 500');
+  });
+
+  test(
+      'forgot-PIN: a reset that succeeds but cannot sign in reports the PIN AS CHANGED',
+      () async {
+    // The incident: reset-pin succeeded (PIN changed, token spent, every session revoked) and the
+    // login right after it did not go through. The screen said "could not reset the PIN", so the
+    // user re-submitted — and the only possible answer was "token already used", while their PIN
+    // had in fact changed. The outcome must tell the two apart.
+    final calls = <String>[];
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          {'challenge_id': 'chR', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, _) async {
+        calls.add(path);
+        switch (path) {
+          case '/otp/request':
+            return {'message': 'sent', 'expires_in': 300};
+          case '/otp/verify':
+            return {'phone_verified_token': 'PVT'};
+          case '/auth/reset-pin':
+            return <String, dynamic>{'pin_reset': true};
+          case '/auth/login':
+            throw const ApiException(
+                message: 'Invalid credentials', statusCode: 401);
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+    );
+    final c = container(api: api, store: InMemoryStore());
+    c.listen(sessionProvider, (_, __) {});
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.startReset('0812345678');
+    expect(await ctrl.loadChallenge(), isTrue);
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(await ctrl.verifyOtp('123456'), isTrue);
+
+    expect(await ctrl.resetPin(newPin: '654321'),
+        ResetPinOutcome.pinChangedSignInNeeded,
+        reason: 'the PIN changed — never report this as a failed reset');
+    expect(calls.last, '/auth/login',
+        reason: 'the reset itself was reached and did succeed');
+  });
+
+  test('forgot-PIN: a rejected reset leaves the PIN alone and never logs in',
+      () async {
+    final calls = <String>[];
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          {'challenge_id': 'chR', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, _) async {
+        calls.add(path);
+        switch (path) {
+          case '/otp/request':
+            return {'message': 'sent', 'expires_in': 300};
+          case '/otp/verify':
+            return {'phone_verified_token': 'PVT'};
+          case '/auth/reset-pin':
+            throw const ApiException(
+                message:
+                    'Phone verification token is invalid, expired, or already used',
+                statusCode: 400);
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+    );
+    final c = container(api: api, store: InMemoryStore());
+    c.listen(sessionProvider, (_, __) {});
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.startReset('0812345678');
+    expect(await ctrl.loadChallenge(), isTrue);
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(await ctrl.verifyOtp('123456'), isTrue);
+
+    expect(await ctrl.resetPin(newPin: '654321'), ResetPinOutcome.failed);
+    expect(calls, isNot(contains('/auth/login')),
+        reason: 'nothing changed, so there is no new PIN to sign in with');
   });
 }
 
