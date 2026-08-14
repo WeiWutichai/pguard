@@ -323,8 +323,12 @@ async fn issue_login_tokens(
         &state.jwt_config.encoding_key,
         state.jwt_config.expiry_minutes,
     )?;
+    // The family is stamped with the role we JUST minted the access token with (`active` — the
+    // ENROLLED role, never the raw primary `role` argument), so the session's own refreshes keep
+    // re-minting it. Passing the raw primary here would re-introduce the switch-undone bug for
+    // any account whose primary role isn't the one it can actually use.
     let refresh_token =
-        repo::create_refresh_family(&state.db, user_id, &device_context(headers)).await?;
+        repo::create_refresh_family(&state.db, user_id, &active, &device_context(headers)).await?;
 
     let pair = TokenPair {
         access_token,
@@ -734,12 +738,24 @@ pub async fn refresh(
                 );
                 return Err(generic_401());
             };
-            // Same anti-escalation gate as login: re-mint the access token ONLY for an ENROLLED
-            // (approved) role, never the raw primary `users.role` (which may be a pending/rejected
-            // role on an account that is `approved` account-level via a different role). Without
-            // this a refresh would revert an approved user to their unvetted primary role.
+            // WHICH role does this refresh re-mint? The SESSION's active role — the one stamped
+            // on the refresh family at login/switch-role and carried forward by every rotation
+            // (identity/0009). Reading the account's PRIMARY `users.role` here instead is the
+            // production bug: a dual-role user with a `customer` primary who switched to guard
+            // got a `customer` token back on their next silent refresh, ~15 min into the job, and
+            // every guard action then 403'd. A pre-0009 row carries no role → fall back to
+            // `meta.role`, i.e. exactly today's behaviour, so sessions live across the deploy.
+            //
+            // The stored role is a HINT, not a grant: it still goes through the SAME
+            // anti-escalation gate as login — `active_role_for` re-mints ONLY a role the account
+            // is currently ENROLLED in (approved, `user_roles`), never a raw/unvetted one. So a
+            // role that was un-enrolled or rejected since the switch DEGRADES to an enrolled role
+            // rather than being re-minted from the session. Do not weaken this: the primary role
+            // of an `approved` account can itself be a pending/rejected role (the add-role
+            // vetting bypass), which is why neither source is ever trusted unchecked.
             let enrolled = repo::list_user_roles(&state.db, located.user_id).await?;
-            let active = active_role_for(&meta.role, &enrolled).ok_or_else(generic_401)?;
+            let session_role = located.active_role.as_deref().unwrap_or(&meta.role);
+            let active = active_role_for(session_role, &enrolled).ok_or_else(generic_401)?;
             let (access_token, _jti) = encode_jwt_with_key(
                 meta.id,
                 &active,
@@ -1161,8 +1177,14 @@ pub async fn switch_role(
         &state.jwt_config.encoding_key,
         state.jwt_config.expiry_minutes,
     )?;
+    // Stamp the switch target onto the new family: THIS is what makes the switch survive the
+    // access token's 15-minute expiry. Before identity/0009 the family carried no role at all, so
+    // the app's next silent refresh re-derived `users.role` (the primary) and threw the switch
+    // away mid-job — a guard who had switched from a customer-primary account started 403'ing on
+    // every guard action.
     let refresh_token =
-        repo::create_refresh_family(&state.db, user.user_id, &device_context(&headers)).await?;
+        repo::create_refresh_family(&state.db, user.user_id, &role, &device_context(&headers))
+            .await?;
 
     let pair = TokenPair {
         access_token,
@@ -3306,9 +3328,10 @@ mod multi_role_tests {
         let app = auth_router(state(pool.clone(), redis.clone()));
 
         // The "old device": a pre-existing session (refresh family) from an earlier login.
-        let old_refresh = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
-            .await
-            .expect("old family");
+        let old_refresh =
+            repo::create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                .await
+                .expect("old family");
 
         // Fresh login on a "new device" (seed_user's password is "x").
         let res = app.clone().oneshot(post_login(&phone, "x")).await.unwrap();
@@ -3376,9 +3399,10 @@ mod multi_role_tests {
         let phone = digits_phone(&pool, user_id).await;
         let app = auth_router(state(pool.clone(), redis.clone()));
 
-        let old_refresh = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
-            .await
-            .expect("old family");
+        let old_refresh =
+            repo::create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                .await
+                .expect("old family");
         let trv_before = db_trv(&pool, user_id).await;
 
         let res = app.clone().oneshot(post_login(&phone, "x")).await.unwrap();
@@ -3464,9 +3488,10 @@ mod multi_role_tests {
         let user_id = seed_user(&pool, "guard", &["guard"]).await;
         let app = auth_router(state(pool.clone(), redis.clone()));
 
-        let first = repo::create_refresh_family(&pool, user_id, &DeviceContext::default())
-            .await
-            .expect("family");
+        let first =
+            repo::create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                .await
+                .expect("family");
 
         // Legit rotation: `first` is consumed, a successor is minted (family stays live).
         let res = app.clone().oneshot(post_refresh(&first)).await.unwrap();
@@ -3492,6 +3517,251 @@ mod multi_role_tests {
         assert_eq!(
             json["error"]["code"], "SESSION_SUPERSEDED",
             "after the reuse kill the family is fully revoked"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    // ===================== Session-scoped active role (identity/0009) =====================
+    //
+    // THE PRODUCTION BUG these lock down: the active role used to be re-derived from
+    // `identity.users.role` (the PRIMARY/registration role) on every refresh. A dual-role user
+    // whose primary is `customer` switched to guard, worked for ~15 minutes, the access token
+    // expired, the app silently refreshed — and got a `customer` token back. Every guard action
+    // then 403'd mid-job. The role now rides on the refresh FAMILY (`refresh_tokens.active_role`)
+    // and is carried forward by rotation, so a session stays in the role it was started in.
+    //
+    // Every assertion below is on the DECODED JWT, not on a response flag — the JWT `role` claim
+    // is what the other services actually gate on (`require_role`), so that is the contract.
+
+    /// Decode a freshly-minted access token and return its `role` claim.
+    fn jwt_role(access_token: &str) -> String {
+        let dk = jsonwebtoken::DecodingKey::from_secret(SECRET.as_bytes());
+        shared::auth::decode_jwt_with_key(access_token, &dk)
+            .expect("decode minted access token")
+            .role
+    }
+
+    /// The `active_role` stamped on the live rows of a user's refresh families (distinct values).
+    async fn stored_active_roles(pool: &sqlx::PgPool, user_id: Uuid) -> Vec<Option<String>> {
+        let rows: Vec<(Option<String>,)> = sqlx::query_as(
+            "SELECT DISTINCT active_role::text FROM identity.refresh_tokens \
+             WHERE user_id = $1 AND revoked = FALSE ORDER BY 1",
+        )
+        .bind(user_id)
+        .fetch_all(pool)
+        .await
+        .expect("read stored active roles");
+        rows.into_iter().map(|(r,)| r).collect()
+    }
+
+    /// THE regression: login as a customer-primary dual-role user, switch to guard, then REFRESH.
+    /// The refreshed access token must still be `guard`. Before identity/0009 this came back
+    /// `customer` and the guard started 403ing 15 minutes into the job.
+    #[tokio::test]
+    async fn refresh_after_switch_role_keeps_the_switched_role() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        // Exactly the production shape: PRIMARY role customer, enrolled in BOTH.
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let json = body_json(app.clone().oneshot(post_login(&phone, "x")).await.unwrap()).await;
+        let access = json["data"]["access_token"].as_str().unwrap().to_string();
+        assert_eq!(
+            jwt_role(&access),
+            "customer",
+            "login mints the primary role"
+        );
+
+        let json = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/auth/switch-role",
+                    &access,
+                    serde_json::json!({ "role": "guard" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let switched = json["data"]["access_token"].as_str().unwrap().to_string();
+        let refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+        assert_eq!(
+            jwt_role(&switched),
+            "guard",
+            "the switch itself mints guard"
+        );
+
+        // The switch stamped its role on the new family (the persistence the fix turns on).
+        assert!(
+            stored_active_roles(&pool, user_id)
+                .await
+                .contains(&Some("guard".to_string())),
+            "switch-role must persist active_role=guard on the new refresh family"
+        );
+
+        let res = app.oneshot(post_refresh(&refresh_tok)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the refresh itself succeeds");
+        let refreshed = body_json(res).await["data"]["access_token"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            jwt_role(&refreshed),
+            "guard",
+            "REGRESSION: refreshing a switched session must NOT revert to the primary role — \
+             this is the bug that 403'd guards mid-job"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// Rotation carries the role forward: a SECOND refresh (the successor row, not the row the
+    /// switch wrote) still mints guard. Without the carry-forward in `repo::rotate` the successor
+    /// would be NULL-role and the bug would simply come back one rotation later.
+    #[tokio::test]
+    async fn second_refresh_still_keeps_the_switched_role() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let json = body_json(app.clone().oneshot(post_login(&phone, "x")).await.unwrap()).await;
+        let access = json["data"]["access_token"].as_str().unwrap().to_string();
+        let json = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/auth/switch-role",
+                    &access,
+                    serde_json::json!({ "role": "guard" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let mut refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+
+        // Three rotations — well past the first successor, so a one-shot carry can't fake it.
+        for round in 1..=3 {
+            let res = app
+                .clone()
+                .oneshot(post_refresh(&refresh_tok))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK, "refresh {round} succeeds");
+            let json = body_json(res).await;
+            assert_eq!(
+                jwt_role(json["data"]["access_token"].as_str().unwrap()),
+                "guard",
+                "rotation {round} must carry the session's role forward"
+            );
+            refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+        }
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// ANTI-ESCALATION: the stored role is a memory, not a grant. If the guard role is
+    /// un-enrolled (approval revoked / rejected) AFTER the switch, the next refresh must DEGRADE
+    /// to a role the account is still enrolled in — never re-mint guard off the session row.
+    #[tokio::test]
+    async fn refresh_degrades_a_stored_role_that_is_no_longer_enrolled() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let json = body_json(app.clone().oneshot(post_login(&phone, "x")).await.unwrap()).await;
+        let access = json["data"]["access_token"].as_str().unwrap().to_string();
+        let json = body_json(
+            app.clone()
+                .oneshot(json_post(
+                    "/auth/switch-role",
+                    &access,
+                    serde_json::json!({ "role": "guard" }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+
+        // The guard enrolment goes away (admin revoked it / the profile was rejected) while the
+        // session is still live and still STAMPED guard.
+        sqlx::query("DELETE FROM identity.user_roles WHERE user_id = $1 AND role = 'guard'")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("un-enrol guard");
+
+        let res = app.oneshot(post_refresh(&refresh_tok)).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the session still refreshes");
+        assert_eq!(
+            jwt_role(
+                body_json(res).await["data"]["access_token"]
+                    .as_str()
+                    .unwrap()
+            ),
+            "customer",
+            "a stored role that is no longer ENROLLED must degrade to an enrolled role, never be \
+             re-minted from the session row (the vetting bypass this gate exists to stop)"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// DEPLOY SAFETY: a session that predates identity/0009 has `active_role = NULL`. It must
+    /// still refresh, falling back to today's behaviour (the account's primary role) rather than
+    /// 401ing — nobody logged in across the deploy gets kicked.
+    #[tokio::test]
+    async fn pre_migration_null_active_role_falls_back_to_the_primary_role() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer", "guard"]).await;
+        let phone = digits_phone(&pool, user_id).await;
+        let app = auth_router(state(pool.clone(), redis.clone()));
+
+        let json = body_json(app.clone().oneshot(post_login(&phone, "x")).await.unwrap()).await;
+        let refresh_tok = json["data"]["refresh_token"].as_str().unwrap().to_string();
+
+        // Rewrite the freshly-issued row into a PRE-migration one: no role recorded at all.
+        sqlx::query("UPDATE identity.refresh_tokens SET active_role = NULL WHERE user_id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await
+            .expect("simulate a pre-0009 row");
+        assert_eq!(
+            stored_active_roles(&pool, user_id).await,
+            vec![None],
+            "the row now looks exactly like one issued before the migration"
+        );
+
+        let res = app.oneshot(post_refresh(&refresh_tok)).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "a pre-migration session must NOT be broken by the deploy"
+        );
+        assert_eq!(
+            jwt_role(
+                body_json(res).await["data"]["access_token"]
+                    .as_str()
+                    .unwrap()
+            ),
+            "customer",
+            "NULL means unknown → fall back to the pre-fix behaviour (the primary role)"
         );
 
         cleanup(&pool, user_id).await;

@@ -79,3 +79,4 @@ redesign-pguard/
 # Firebase mobile config (client API key; local build only — CI does not build the APK)
 apps/mobile/android/app/google-services.json
 apps/mobile/ios/Runner/GoogleService-Info.plist
+dump.rdb
