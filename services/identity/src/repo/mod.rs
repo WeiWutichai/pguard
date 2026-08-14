@@ -458,14 +458,22 @@ pub struct DeviceContext {
 /// token the client receives (`{rotation_id}.{secret}`). Enforces the per-user session cap
 /// first (evict oldest beyond the cap). `device` stamps the login's UA/IP onto the family's
 /// first row so the sessions list (#144) can show it.
+///
+/// `active_role` is the role the caller just minted the ACCESS token with — the session's
+/// active role, stamped onto the family so `/auth/refresh` re-mints THAT role instead of
+/// re-deriving the account's primary `users.role` (which silently undid a role switch on the
+/// first token refresh). Every caller passes the role it actually minted: `login` passes the
+/// ENROLLED role it resolved via `active_role_for` (never the raw primary), `switch_role` passes
+/// the switch target. See `contracts/db/migrations/identity/0009_session_active_role.sql`.
 pub async fn create_refresh_family(
     db: &PgPool,
     user_id: Uuid,
+    active_role: &str,
     device: &DeviceContext,
 ) -> Result<String, AppError> {
     enforce_session_cap(db, user_id).await?;
     let family_id = Uuid::new_v4();
-    issue_refresh(db, user_id, family_id, device).await
+    issue_refresh(db, user_id, family_id, active_role, device).await
 }
 
 /// Revoke the least-recently-active refresh families beyond `MAX_SESSIONS_PER_USER - 1`, so that
@@ -499,11 +507,13 @@ async fn enforce_session_cap(db: &PgPool, user_id: Uuid) -> Result<(), AppError>
 
 /// Insert one refresh-token row in `family_id` and return its opaque token. Used for the
 /// initial login token (rotation uses its own in-tx insert). Stamps the login `device` context
-/// (UA/IP) + `last_used_at = now()` so the sessions list (#144) shows the device + freshness.
+/// (UA/IP) + `last_used_at = now()` so the sessions list (#144) shows the device + freshness,
+/// and the session's `active_role` (see [`create_refresh_family`]).
 async fn issue_refresh(
     db: &PgPool,
     user_id: Uuid,
     family_id: Uuid,
+    active_role: &str,
     device: &DeviceContext,
 ) -> Result<String, AppError> {
     let rotation_id = Uuid::new_v4();
@@ -520,8 +530,8 @@ async fn issue_refresh(
         r#"
         INSERT INTO identity.refresh_tokens
             (user_id, family_id, rotation_id, jti, secret_hash, expires_at,
-             user_agent, ip, last_used_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+             user_agent, ip, last_used_at, active_role)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9::identity.user_role)
         "#,
     )
     .bind(user_id)
@@ -532,6 +542,7 @@ async fn issue_refresh(
     .bind(expires_at)
     .bind(device.user_agent.as_deref())
     .bind(device.ip.as_deref())
+    .bind(active_role)
     .execute(db)
     .await?;
 
@@ -546,6 +557,13 @@ pub struct LocatedRefresh {
     /// Rotation-decision inputs (revoked/expiry/family age) — the family-age ceiling now lives in
     /// `StoredRefresh::family_started_at` so `domain::rotation::decide` owns the whole decision.
     pub stored: StoredRefresh,
+    /// The role this SESSION is active in (stamped at login/switch-role, carried forward by every
+    /// rotation). `/auth/refresh` re-mints THIS role rather than re-deriving the account's primary
+    /// `users.role`, which used to silently undo a role switch on the first token refresh.
+    /// `None` = a pre-migration row (issued before identity/0009) → the caller falls back to
+    /// today's behaviour (`users.role`). It is a HINT, not a grant: the caller still runs it
+    /// through the enrolled-set gate, so an un-enrolled stored role degrades, never escalates.
+    pub active_role: Option<String>,
     secret_hash: String,
 }
 
@@ -561,18 +579,28 @@ impl LocatedRefresh {
 }
 
 /// Locate a refresh-token row by its public `rotation_id`.
-// The row tuple gains a 6th column (family_started_at) for the absolute-rotation ceiling; the
-// file consistently uses positional tuples for ad-hoc row reads, so allow the wider shape here.
+// The row tuple gains a 6th column (family_started_at) for the absolute-rotation ceiling and a
+// 7th (active_role) for the session's active role; the file consistently uses positional tuples
+// for ad-hoc row reads, so allow the wider shape here.
 #[allow(clippy::type_complexity)]
 pub async fn find_refresh_by_rotation(
     db: &PgPool,
     rotation_id: Uuid,
 ) -> Result<Option<LocatedRefresh>, AppError> {
-    let row: Option<(Uuid, Uuid, bool, DateTime<Utc>, DateTime<Utc>, String)> = sqlx::query_as(
+    let row: Option<(
+        Uuid,
+        Uuid,
+        bool,
+        DateTime<Utc>,
+        DateTime<Utc>,
+        Option<String>,
+        String,
+    )> = sqlx::query_as(
         r#"
         SELECT rt.user_id, rt.family_id, rt.revoked, rt.expires_at,
                (SELECT MIN(created_at) FROM identity.refresh_tokens f
                 WHERE f.family_id = rt.family_id) AS family_started_at,
+               rt.active_role::text AS active_role,
                rt.secret_hash
         FROM identity.refresh_tokens rt
         WHERE rt.rotation_id = $1
@@ -583,7 +611,7 @@ pub async fn find_refresh_by_rotation(
     .await?;
 
     Ok(row.map(
-        |(user_id, family_id, revoked, expires_at, family_started_at, secret_hash)| {
+        |(user_id, family_id, revoked, expires_at, family_started_at, active_role, secret_hash)| {
             LocatedRefresh {
                 user_id,
                 family_id,
@@ -592,6 +620,7 @@ pub async fn find_refresh_by_rotation(
                     expires_at,
                     family_started_at,
                 },
+                active_role,
                 secret_hash,
             }
         },
@@ -642,15 +671,21 @@ pub async fn rotate(
         .map_err(|e| AppError::Internal(format!("hash task failed: {e}")))??;
 
     // Carry the family's existing UA/IP forward when this refresh didn't supply one (so the
-    // session's device label doesn't blank out on a UA-less token refresh).
-    let prior: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT user_agent, ip FROM identity.refresh_tokens \
+    // session's device label doesn't blank out on a UA-less token refresh) — and, from the same
+    // row, the family's `active_role`. CARRYING THE ROLE IS LOAD-BEARING: without it the
+    // successor row would be NULL-role and the very NEXT refresh would fall back to the
+    // account's primary `users.role`, re-breaking the role switch one rotation later (the exact
+    // production bug 0009 fixes). The family's FIRST row is the authority (it was stamped at
+    // login/switch-role); NULL there = a pre-0009 family, and NULL propagates unchanged so those
+    // sessions keep the documented fall-back behaviour instead of being guessed at.
+    let prior: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT user_agent, ip, active_role::text FROM identity.refresh_tokens \
          WHERE family_id = $1 ORDER BY created_at ASC LIMIT 1",
     )
     .bind(family_id)
     .fetch_optional(&mut *tx)
     .await?;
-    let (prior_ua, prior_ip) = prior.unwrap_or((None, None));
+    let (prior_ua, prior_ip, family_role) = prior.unwrap_or((None, None, None));
     let ua = device.user_agent.clone().or(prior_ua);
     let ip = device.ip.clone().or(prior_ip);
 
@@ -658,8 +693,8 @@ pub async fn rotate(
         r#"
         INSERT INTO identity.refresh_tokens
             (user_id, family_id, rotation_id, jti, secret_hash, expires_at,
-             user_agent, ip, last_used_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+             user_agent, ip, last_used_at, active_role)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9::identity.user_role)
         "#,
     )
     .bind(user_id)
@@ -670,6 +705,7 @@ pub async fn rotate(
     .bind(expires_at)
     .bind(ua.as_deref())
     .bind(ip.as_deref())
+    .bind(family_role.as_deref())
     .execute(&mut *tx)
     .await?;
 
@@ -703,11 +739,16 @@ pub async fn family_has_live_token(db: &PgPool, family_id: Uuid) -> Result<bool,
     Ok(exists)
 }
 
-/// The user's current role (re-read at rotation so a role change since login is honoured
-/// in the freshly-issued access token). `None` if the user is gone, deactivated, or no
-/// longer approved — so a refresh cannot mint a fresh access token for an account that has
-/// become pending/rejected since login (defense-in-depth; a pending account never had a
-/// refresh token to begin with).
+/// The user's PRIMARY (registration) role + current revocation version. `None` if the user is
+/// gone, deactivated, or no longer approved — so a refresh cannot mint a fresh access token for
+/// an account that has become pending/rejected since login (defense-in-depth; a pending account
+/// never had a refresh token to begin with). This liveness check is why `/auth/refresh` still
+/// calls it.
+///
+/// NOTE the `role` here is the account's primary role, NOT the session's active role. Since
+/// identity/0009 the refresh path prefers `refresh_tokens.active_role` (the role the session was
+/// logged in / switched into) and only falls back to this one for a pre-0009 row — reading it
+/// unconditionally is what silently undid a role switch on the first token refresh.
 pub async fn user_auth_meta(db: &PgPool, user_id: Uuid) -> Result<Option<AuthUserRow>, AppError> {
     let row: Option<(String, i32)> = sqlx::query_as(
         r#"
@@ -2156,9 +2197,10 @@ mod tests {
         let user_id = Uuid::new_v4();
 
         for i in 0..20 {
-            let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
-                .await
-                .expect("login");
+            let opaque =
+                create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                    .await
+                    .expect("login");
             let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
 
             // Two tasks rotate the very same rotation_id, released together by a barrier.
@@ -2226,7 +2268,7 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+        let opaque = create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
             .await
             .expect("login");
         let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
@@ -2297,9 +2339,10 @@ mod tests {
         // DISTINCT created_at so the LRU order is deterministic (oldest = the first one).
         let mut fams: Vec<(Uuid, Uuid)> = Vec::new(); // (rotation_id, family_id)
         for i in 0..MAX_SESSIONS_PER_USER {
-            let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
-                .await
-                .expect("login");
+            let opaque =
+                create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                    .await
+                    .expect("login");
             let (rid, fid) = ids_of(&pool, &opaque).await;
             // family 0 oldest … family 4 newest (minutes ago: 50,40,30,20,10).
             let mins_ago = (MAX_SESSIONS_PER_USER - i) as i32 * 10;
@@ -2321,9 +2364,10 @@ mod tests {
         );
 
         // The cap+1'th login: evict the oldest (fams[0]), keep the rest, add the new one.
-        let new_opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
-            .await
-            .expect("cap+1 login");
+        let new_opaque =
+            create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
+                .await
+                .expect("cap+1 login");
         let (_new_rid, new_fid) = ids_of(&pool, &new_opaque).await;
 
         assert_eq!(
@@ -2377,7 +2421,7 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+        let opaque = create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
             .await
             .expect("login");
         let (rotation_id, family_id) = ids_of(&pool, &opaque).await;
@@ -2424,7 +2468,7 @@ mod tests {
             return;
         };
         let user_id = Uuid::new_v4();
-        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+        let opaque = create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
             .await
             .expect("login");
         let (rid0, family_id) = ids_of(&pool, &opaque).await;
@@ -2556,7 +2600,7 @@ mod tests {
         let user_id = seed_user(&pool, "guard", &pw_hash, None).await;
 
         // Open a refresh family so we can prove it gets revoked.
-        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+        let opaque = create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
             .await
             .expect("login");
         let (rid, _) = ids_of(&pool, &opaque).await;
@@ -2632,7 +2676,7 @@ mod tests {
         let phone = phone_of(&pool, user_id).await;
 
         // Open a refresh family so we can prove the reset revokes it.
-        let opaque = create_refresh_family(&pool, user_id, &DeviceContext::default())
+        let opaque = create_refresh_family(&pool, user_id, "customer", &DeviceContext::default())
             .await
             .expect("login");
         let (rid, _) = ids_of(&pool, &opaque).await;

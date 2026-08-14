@@ -1,0 +1,50 @@
+-- pguard identity-service — the ACTIVE role is a property of the SESSION, not of the user.
+--
+-- BUG THIS FIXES (production): a user enrolled in BOTH roles whose PRIMARY role
+-- (`identity.users.role`, the registration role) is `customer` switches to guard via
+-- `POST /auth/switch-role` — the access token is correctly minted `role=guard`. ~15 minutes
+-- later that access token expires and the app silently refreshes. `POST /auth/refresh` re-read
+-- the role from `identity.users` (`repo::user_auth_meta` = `SELECT role FROM identity.users`),
+-- i.e. the PRIMARY role, so the new access token came back `role=customer` — the switch was
+-- silently undone. Every guard action then 403'd ("Only guards can do this"), which is why the
+-- staging logs show the same user switching to guard three times in a row and why their last
+-- three jobs ended cancelled/declined. Nothing in `identity.refresh_tokens` recorded WHICH role
+-- the session was switched into, so refresh had nothing better to read.
+--
+-- `active_role` closes that: the role the access token was minted with is stamped onto the
+-- refresh row at family creation (login and switch-role), CARRIED FORWARD by every rotation
+-- (RFC 6749 §6 — a rotated successor inherits its family's role, or the bug returns on the
+-- second refresh), and read back by `/auth/refresh` instead of `users.role`. One family = one
+-- active role = one session; `switch_role` already mints a NEW family per switch, so a switch
+-- is exactly "start a session in the other role" and the user's other sessions keep theirs.
+--
+-- NULL means UNKNOWN — never "no role":
+--   * every refresh row issued BEFORE this migration (pre-migration rows: live sessions of
+--     users who are logged in across the deploy);
+--   * that is the whole of the existing table, which is why the column is added nullable with
+--     NO backfill and NO default. Backfilling from `users.role` would be a guess that
+--     re-asserts exactly the wrong answer for the very sessions this bug is about (a switched
+--     session would be stamped back to its primary role), so we record "unknown" honestly.
+--   The service reads NULL as "fall back to today's behaviour" — refresh re-derives the role
+--   from `identity.users.role` exactly as it does today — so the deploy breaks NO live session;
+--   those sessions merely keep the old (pre-fix) behaviour until their next login/switch, both
+--   of which mint a family that DOES carry the role.
+--
+-- SECURITY — a stored role is a MEMORY, never a GRANT. The value here is only ever a hint fed
+-- into the service's existing anti-escalation gate (`active_role_for`), which still checks it
+-- against the account's currently-ENROLLED set (`identity.user_roles`) at every refresh. A role
+-- that has since been un-enrolled/rejected therefore DEGRADES to an enrolled role — it can
+-- never be re-minted from this column. Writing the column is not, and must not become, a way to
+-- bypass approval; the only path into `user_roles` is still admin approval (0007).
+--
+-- TYPE: `identity.user_role` (the same enum as `users.role` / `user_roles.role`), so the DB
+-- itself rejects a typo'd or invented role and no separate named CHECK is warranted here (the
+-- enum IS the constraint). No new index: the refresh path reads this column off rows already
+-- located by `rotation_id` (UNIQUE) or `family_id` (idx_refresh_tokens_family).
+--
+-- Statement is idempotent (ADD COLUMN IF NOT EXISTS) — migrate.sh applies files via psql
+-- WITHOUT --single-transaction (statement auto-commit), and a mid-file failure would otherwise
+-- commit earlier statements with no ledger row (see tooling/scripts/migrate.sh).
+
+ALTER TABLE identity.refresh_tokens
+    ADD COLUMN IF NOT EXISTS active_role identity.user_role;  -- NULL = pre-migration session, role unknown → service falls back to users.role
