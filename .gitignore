@@ -80,3 +80,6 @@ redesign-pguard/
 apps/mobile/android/app/google-services.json
 apps/mobile/ios/Runner/GoogleService-Info.plist
 dump.rdb
+
+# Versioned APK build artifacts + local build log (tooling/scripts/build-apk.sh)
+apps/mobile/dist/
