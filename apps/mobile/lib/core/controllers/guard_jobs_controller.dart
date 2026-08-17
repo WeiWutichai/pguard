@@ -3,9 +3,9 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../models/booking.dart';
 import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
-import '../network/jwt.dart';
 import '../providers.dart';
 import 'active_job_controller.dart';
+import 'session_controller.dart';
 import 'locale_controller.dart';
 
 part 'guard_jobs_controller.g.dart';
@@ -26,10 +26,16 @@ class GuardJobsController extends _$GuardJobsController {
     final api = ref.read(pguardApiProvider);
     // GET /bookings returns customer_id = me OR guard_id = me (both roles for a dual-role account).
     // The guard's job lists must show ONLY jobs THIS guard is assigned to — not the account's own
-    // customer hires — so scope the assigned feed to guard_id = me (the token subject). Open jobs
-    // come from the separate /bookings/open feed below.
-    final token = await ref.read(appStoreProvider).readAccessToken();
-    final me = token != null ? Jwt.subject(token) : null;
+    // customer hires — so scope the assigned feed to guard_id = me. Open jobs come from the
+    // separate /bookings/open feed below.
+    //
+    // `me` is the SESSION's user id — the single source of truth the rest of the app uses (e.g. the
+    // rating card). It used to be re-derived from `Jwt.subject(readAccessToken())`, a SECOND source
+    // that can diverge: a token read that returns null mid-rotation, or a token that fails to
+    // decode, yields `me == null` → the fail-closed branch below empties the guard's ENTIRE job
+    // list and zeroes their "today" stats, while the session-based rating still renders. That was a
+    // real on-device report — a guard who had just finished a job saw ฿0 / 0 jobs / no active work.
+    final me = ref.read(sessionProvider).user?.userId;
     final assignedData = await api.get('/bookings');
     // Fail CLOSED: no resolvable subject → no assigned jobs (never fall through to the unfiltered
     // OR-list, which would leak the account's own customer hires into the guard's job list).
@@ -150,7 +156,8 @@ class GuardJobsController extends _$GuardJobsController {
               ? 'คุณมีงานในช่วงเวลานี้อยู่แล้ว — เลือกงานที่เวลาไม่ทับซ้อนกัน'
               : e.message;
         default:
-          return localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e);
+          return localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e);
       }
     } catch (_) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
