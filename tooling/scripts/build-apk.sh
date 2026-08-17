@@ -12,11 +12,13 @@
 # The artifact is renamed `pguard-v<name>+<build>-<shortsha>[-dirty]-<UTCdate>.apk`, so
 # every file self-identifies which commit produced it.
 #
-# Upload: `rclone copy` to a Google Drive remote. Configure it ONCE (browser OAuth):
-#     rclone config create pguard-drive drive     # then authorize in the browser
-# Override the target with PGUARD_DRIVE_REMOTE (default pguard-drive:) and
-# PGUARD_DRIVE_DIR (default pguard-apk). If the remote isn't configured the build still
-# succeeds — it just skips the upload and says so.
+# Upload: `rclone copy` to a Google Drive remote. Configure it ONCE (browser OAuth),
+# rooting the remote at the target Drive FOLDER by id so uploads land there directly:
+#     rclone config create pguard-drive drive \
+#         root_folder_id 1AKXMRJwzjf-5YaTWwAW0odvt4NZ3cP34 config_is_local false
+# Override the target with PGUARD_DRIVE_REMOTE (default pguard-drive:) and PGUARD_DRIVE_DIR
+# (default empty — the remote is already rooted at the folder). If the remote isn't
+# configured the build still succeeds — it just skips the upload and says so.
 #
 # Every build appends one row to dist/BUILDS.tsv (local record; dist/ is gitignored).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -27,7 +29,7 @@ MOBILE="$ROOT/apps/mobile"
 DIST="$MOBILE/dist"
 API_HOST="${PGUARD_API_HOST:-https://pguard.innoveraappcenter.com}"
 DRIVE_REMOTE="${PGUARD_DRIVE_REMOTE:-pguard-drive:}"
-DRIVE_DIR="${PGUARD_DRIVE_DIR:-pguard-apk}"
+DRIVE_DIR="${PGUARD_DRIVE_DIR:-}"
 
 cd "$ROOT"
 
@@ -80,6 +82,7 @@ if ! rclone listremotes 2>/dev/null | grep -qx "${REMOTE_NAME}:"; then
   echo "    configure it once:  rclone config create ${REMOTE_NAME} drive   (then authorize in the browser)"
   exit 0
 fi
-echo "==> uploading to ${DRIVE_REMOTE}${DRIVE_DIR}/"
-rclone copyto "$DIST/$OUT" "${DRIVE_REMOTE}${DRIVE_DIR}/${OUT}" --progress
-echo "==> uploaded ${OUT} to Drive (${DRIVE_REMOTE}${DRIVE_DIR}/)"
+DEST="${DRIVE_REMOTE}${DRIVE_DIR:+$DRIVE_DIR/}${OUT}"
+echo "==> uploading to ${DEST}"
+rclone copyto "$DIST/$OUT" "$DEST" --progress
+echo "==> uploaded ${OUT} to Drive (${DEST})"
