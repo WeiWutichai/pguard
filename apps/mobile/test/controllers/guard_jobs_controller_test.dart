@@ -2,6 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pguard_mobile/core/controllers/active_job_controller.dart';
 import 'package:pguard_mobile/core/controllers/guard_jobs_controller.dart';
+import 'package:pguard_mobile/core/controllers/session_controller.dart';
+import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -33,6 +35,22 @@ String _guardJwt() => fakeJwt({
               1000,
     });
 
+/// A container whose SESSION is guard `g1` (matching the bookings' `guard_id`), so the assigned-feed
+/// filter (`guard_id == me`) keeps them. The store still holds a guard JWT because the API client
+/// attaches it, but the controller now reads identity from the SESSION, not the token — see the
+/// on-device bug where a null token read emptied the guard's whole job list.
+ProviderContainer _guardContainer(FakeApi api) {
+  final c = ProviderContainer(overrides: [
+    pguardApiProvider.overrideWithValue(api),
+    appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
+    prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+  ]);
+  c.read(sessionProvider.notifier).onLoggedIn(
+        const AuthUser(userId: 'g1', role: 'guard', roles: ['guard']),
+      );
+  return c;
+}
+
 void main() {
   test(
       'merges assigned (/bookings) + open discovery (/bookings/open) and partitions '
@@ -53,10 +71,7 @@ void main() {
         }
       },
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     final list = await c.read(guardJobsControllerProvider.future);
@@ -70,6 +85,55 @@ void main() {
   });
 
   test(
+      'REGRESSION: the guard id comes from the SESSION, not a re-read of the token — a job the '
+      'guard is assigned to must still show even if the stored token is momentarily unreadable',
+      () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [bookingJson('b2', 'arrived'), bookingJson('b3', 'completed')]
+          : const <Map<String, dynamic>>[],
+    );
+    // Store has NO token (the exact null-read that used to empty the whole list); the session is
+    // still a valid guard `g1`. The assigned jobs must survive.
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    ]);
+    addTearDown(c.dispose);
+    c.read(sessionProvider.notifier).onLoggedIn(
+          const AuthUser(userId: 'g1', role: 'guard', roles: ['guard']),
+        );
+
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(GuardJobsController.active(list).map((b) => b.id), ['b2'],
+        reason: 'the arrived job the guard is working must appear');
+    expect(GuardJobsController.completed(list).map((b) => b.id), ['b3'],
+        reason: 'the completed job (feeds today-earnings) must appear');
+  });
+
+  test('no session user → assigned feed is empty (fail closed, no leak)',
+      () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [bookingJson('b2', 'arrived')]
+          : const <Map<String, dynamic>>[],
+    );
+    // Authenticated-guard container but the session user is never set → me == null.
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    ]);
+    addTearDown(c.dispose);
+
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(list, isEmpty,
+        reason:
+            'no resolvable identity → never fall through to the unfiltered OR-list');
+  });
+
+  test(
       'a pending_completion job (guard requested completion) stays in the ACTIVE '
       'tab — not lost from in-progress and not yet in Done', () async {
     // After PUT /complete the booking is `pending_completion` in the guard's assigned feed; it must
@@ -79,10 +143,7 @@ void main() {
           ? [bookingJson('b9', 'pending_completion')]
           : const <Map<String, dynamic>>[],
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     final list = await c.read(guardJobsControllerProvider.future);
@@ -110,10 +171,7 @@ void main() {
           ? [bookingJson('b1', 'en_route')]
           : const <Map<String, dynamic>>[],
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     final b = (await c.read(guardJobsControllerProvider.future)).single;
@@ -130,10 +188,7 @@ void main() {
             message: 'discovery down', code: 'UNAVAILABLE', statusCode: 503);
       },
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     final list = await c.read(guardJobsControllerProvider.future);
@@ -152,10 +207,7 @@ void main() {
         return bookingJson('b1', 'accepted');
       },
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
 
@@ -180,10 +232,7 @@ void main() {
         return {'skipped': true};
       },
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
 
@@ -219,10 +268,7 @@ void main() {
         return bookingJson('b1', 'accepted');
       },
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     // The detail screen reads the active-job provider FIRST, while the booking is still
@@ -258,10 +304,7 @@ void main() {
             ]
           : const <Map<String, dynamic>>[],
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
 
     final list = await c.read(guardJobsControllerProvider.future);
@@ -280,10 +323,7 @@ void main() {
       onPost: (_, __) async => throw const ApiException(
           message: 'Already taken', code: 'CONFLICT', statusCode: 409),
     );
-    final c = ProviderContainer(overrides: [
-      pguardApiProvider.overrideWithValue(api),
-      appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
-    ]);
+    final c = _guardContainer(api);
     addTearDown(c.dispose);
     await c.read(guardJobsControllerProvider.future);
     final err = await c.read(guardJobsControllerProvider.notifier).accept('b1');

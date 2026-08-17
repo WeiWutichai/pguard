@@ -2,6 +2,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pguard_mobile/core/controllers/session_controller.dart';
+import 'package:pguard_mobile/core/models/auth_models.dart';
 import 'package:pguard_mobile/core/calling/call_engine.dart';
 import 'package:pguard_mobile/core/controllers/biometric_service.dart';
 import 'package:pguard_mobile/core/location/location_service.dart';
@@ -731,4 +734,19 @@ class FakeDocumentSharer implements DocumentSharer {
     if (hold != null) await hold!.future;
     if (throwOnShare) throw StateError('no share target');
   }
+}
+
+/// A `sessionProvider` override that boots straight into an AUTHENTICATED guard, so a widget test
+/// can render a guard screen whose data (jobs/earnings) is scoped by the SESSION user id without
+/// driving the whole login flow. `guardJobsController` reads identity from the session, so screens
+/// that list a guard's jobs need this seeded BEFORE they build.
+Override seededGuardSession() =>
+    sessionProvider.overrideWith(_SeededGuardSession.new);
+
+class _SeededGuardSession extends Session {
+  @override
+  SessionState build() => const SessionState(
+        SessionStatus.authenticated,
+        user: AuthUser(userId: 'g1', role: 'guard', roles: ['guard']),
+      );
 }

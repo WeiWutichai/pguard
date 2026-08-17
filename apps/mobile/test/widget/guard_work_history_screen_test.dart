@@ -36,6 +36,7 @@ Future<void> _pump(WidgetTester tester, FakeApi api) async {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      seededGuardSession(),
     ],
     child: const MaterialApp(home: GuardWorkHistoryScreen()),
   ));

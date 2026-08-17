@@ -35,6 +35,7 @@ Future<void> _pump(WidgetTester tester, FakeApi api) async {
       appStoreProvider.overrideWithValue(InMemoryStore()..access = _guardJwt()),
       // Locale defaults to Thai; the fake prefs store keeps the locale load hermetic.
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      seededGuardSession(),
     ],
     child: const MaterialApp(home: GuardJobsScreen()),
   ));

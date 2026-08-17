@@ -48,6 +48,7 @@ Future<void> pumpScreen(WidgetTester tester, FakeApi api) async {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = _jwt()),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      seededGuardSession(),
     ],
     child: MaterialApp(home: EarningsScreen(now: _now)),
   ));
