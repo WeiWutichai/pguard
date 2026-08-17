@@ -42,8 +42,11 @@ DIRTY=""
 [ -n "$(git status --porcelain)" ] && DIRTY="-dirty"
 # Date passed in (Date.now() is fine in bash); UTC so it sorts and matches server logs.
 DATE="$(date -u +%Y%m%d-%H%M)"
-LABEL="v${NAME}+${BUILD}-${SHA}${DIRTY}-${DATE}"
-OUT="pguard-${LABEL}.apk"
+# The uploaded file is named by VERSION ONLY (pguard-v<name>+<build>.apk) — the build number is
+# git-derived so it still points at a unique commit, and the exact sha/date/dirty are kept in
+# BUILDS.tsv for tracing. A dirty build keeps a `-dirty` marker so it can't be mistaken for a clean
+# release of the same version.
+OUT="pguard-v${NAME}+${BUILD}${DIRTY}.apk"
 
 echo "==> building pguard APK"
 echo "    version : ${NAME}+${BUILD} (${SHA}${DIRTY})"
