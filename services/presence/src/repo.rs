@@ -171,31 +171,34 @@ pub async fn list_locations(
     Ok(rows)
 }
 
-/// The ids of guards who are currently LIVE — `is_online` AND the last fix is fresh (within
+/// The guards who are currently LIVE — `is_online` AND the last fix is fresh (within
 /// `freshness_minutes`): the discovery "พร้อมรับงาน" rule ([`crate::domain::is_live`]), applied
 /// in SQL so booking's `/available-guards` filter is one cheap round-trip (not a bulk PII pull).
+/// Each row is `(guard_id, lat, lng)` — the latest fix position, which booking uses BOTH to
+/// filter offline guards AND to sort the customer's list nearest-to-meetup (C2).
 ///
 /// Stricter than the `online_only` bulk read, which checks `is_online` alone: a guard who holds
 /// the socket but lost GPS (stale `recorded_at`) is online-but-not-live and is excluded here, so
 /// discovery never offers a guard whose position has gone cold. Served by the partial
 /// `idx_guard_locations_online`; the `recorded_at` recency predicate is the freshness half.
-/// Returns ONLY ids (no lat/lng/PII) — least-privilege for the cross-service consult.
-pub async fn online_guard_ids(
+/// Narrow projection (id + position only, no heading/speed/accuracy) — least-privilege for the
+/// cross-service consult.
+pub async fn online_guard_locations(
     db: &PgPool,
     now: DateTime<Utc>,
     freshness_minutes: i64,
-) -> Result<Vec<Uuid>, AppError> {
+) -> Result<Vec<(Uuid, f64, f64)>, AppError> {
     let cutoff = now - chrono::Duration::minutes(freshness_minutes);
-    let ids: Vec<Uuid> = sqlx::query_scalar(
+    let rows: Vec<(Uuid, f64, f64)> = sqlx::query_as(
         // Strict `>` to match domain::is_fresh (`now - recorded_at < freshness`): a fix exactly
         // `freshness_minutes` old is NOT live, so the SQL cutoff and the read-time rule agree.
-        "SELECT guard_id FROM presence.guard_locations \
+        "SELECT guard_id, lat, lng FROM presence.guard_locations \
          WHERE is_online AND recorded_at > $1",
     )
     .bind(cutoff)
     .fetch_all(db)
     .await?;
-    Ok(ids)
+    Ok(rows)
 }
 
 /// Paginated GPS history for a guard, newest first. `limit` is clamped to [1, 1000].
@@ -481,11 +484,12 @@ mod tests {
             .await;
     }
 
-    /// `online_guard_ids` is the discovery "live" set: a guard with a FRESH online fix is
-    /// included; a guard whose only fix is STALE (older than the freshness window) is excluded
-    /// even while `is_online` — so booking's discovery never offers a guard whose GPS went cold.
+    /// `online_guard_locations` is the discovery "live" set: a guard with a FRESH online fix is
+    /// included (carrying its latest coordinates, for booking's nearest-first sort); a guard whose
+    /// only fix is STALE (older than the freshness window) is excluded even while `is_online` — so
+    /// booking's discovery never offers a guard whose GPS went cold.
     #[tokio::test]
-    async fn online_guard_ids_includes_fresh_excludes_stale() {
+    async fn online_guard_locations_includes_fresh_excludes_stale() {
         let Some(pool) = pool().await else {
             eprintln!("SKIP: DATABASE_URL required for the online-guards freshness test");
             return;
@@ -510,10 +514,19 @@ mod tests {
         .await
         .expect("stale upsert");
 
-        let ids = online_guard_ids(&pool, now, 5).await.expect("online ids");
-        assert!(ids.contains(&fresh_guard), "a fresh online guard is live");
+        let live = online_guard_locations(&pool, now, 5)
+            .await
+            .expect("online locations");
+        let fresh = live.iter().find(|(id, _, _)| *id == fresh_guard);
+        assert!(fresh.is_some(), "a fresh online guard is live");
+        // The live row carries the guard's latest fix coordinates (for the nearest-first sort).
+        let (_, lat, lng) = fresh.unwrap();
         assert!(
-            !ids.contains(&stale_guard),
+            (*lat - 13.75).abs() < 1e-6 && (*lng - 100.50).abs() < 1e-6,
+            "live row carries the latest fix coords, got ({lat}, {lng})"
+        );
+        assert!(
+            !live.iter().any(|(id, _, _)| *id == stale_guard),
             "an online-but-stale guard is NOT live (lost-GPS guard excluded from discovery)"
         );
 
@@ -521,9 +534,11 @@ mod tests {
         set_offline(&pool, fresh_guard, session)
             .await
             .expect("offline");
-        let ids2 = online_guard_ids(&pool, now, 5).await.expect("online ids 2");
+        let live2 = online_guard_locations(&pool, now, 5)
+            .await
+            .expect("online locations 2");
         assert!(
-            !ids2.contains(&fresh_guard),
+            !live2.iter().any(|(id, _, _)| *id == fresh_guard),
             "an offline guard is never live, even with a fresh last fix"
         );
 

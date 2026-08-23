@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use shared::error::AppError;
 
-use crate::domain::NotificationPlan;
+use crate::domain::{CheckinLedgerOp, NotificationPlan};
 use crate::models::{
     AutomationRule, BroadcastResponse, ListNotificationsQuery, NotificationLogResponse,
 };
@@ -502,15 +502,23 @@ pub enum Processed {
     Duplicate,
 }
 
-/// Atomically claim `event_id` and, if newly claimed and `plan` is `Some`, insert the
-/// notification log — both in one transaction. Idempotent: a redelivered `event_id`
-/// returns [`Processed::Duplicate`] and writes nothing.
-#[tracing::instrument(skip(db, plan), fields(event_id = %event_id, event_type = %event_type))]
+/// Atomically claim `event_id` and, if newly claimed, insert the notification log (when `plan`
+/// is `Some`) AND apply the check-in ledger mutation (when `ledger_op` is `Some`) — ALL in one
+/// transaction. Idempotent: a redelivered `event_id` returns [`Processed::Duplicate`] and writes
+/// nothing (so a JetStream redelivery never double-notifies NOR double-mutates the check-in
+/// ledger — e.g. a re-`arrived` cannot wipe a real check-in). Because both the log and the ledger
+/// op ride the same event_id claim, a failure rolls the whole event back → clean NACK/redeliver.
+///
+/// `plan` and `ledger_op` are independent: `booking.progress_reported` carries a `ledger_op` but
+/// no `plan` (it notifies no one, yet must record the check-in), while `booking.arrived` carries
+/// both (notify the customer + open the ledger).
+#[tracing::instrument(skip(db, plan, ledger_op), fields(event_id = %event_id, event_type = %event_type))]
 pub async fn process_event(
     db: &PgPool,
     event_id: Uuid,
     event_type: &str,
     plan: Option<&NotificationPlan>,
+    ledger_op: Option<&CheckinLedgerOp>,
 ) -> Result<Processed, AppError> {
     let mut tx = db.begin().await?;
 
@@ -551,8 +559,149 @@ pub async fn process_event(
         None => Processed::Ignored,
     };
 
+    // Maintain the check-in reminder ledger in the SAME claim tx (atomic + idempotent).
+    if let Some(op) = ledger_op {
+        apply_checkin_ledger_op(&mut tx, op).await?;
+    }
+
     tx.commit().await?;
     Ok(outcome)
+}
+
+/// Apply one [`CheckinLedgerOp`] to `notification.checkin_reminders` inside the caller's tx.
+/// All three ops are idempotent-safe under redelivery (they ride the event_id claim in
+/// [`process_event`], so they only run on the FIRST delivery of an event):
+///   * `Open` — UPSERT + RESET the clock (a re-`arrived` restarts the work session);
+///   * `RecordCheckin` — UPSERT so a check-in that somehow precedes `arrived` still opens a row,
+///     otherwise just push `last_checkin_at` forward (never reopens a closed row);
+///   * `Close` — stamp `closed_at` on the still-open row (no-op if missing/already closed).
+async fn apply_checkin_ledger_op(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    op: &CheckinLedgerOp,
+) -> Result<(), AppError> {
+    match op {
+        CheckinLedgerOp::Open {
+            booking_id,
+            guard_id,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO notification.checkin_reminders (booking_id, guard_id, in_progress_since)
+                VALUES ($1, $2, now())
+                ON CONFLICT (booking_id) DO UPDATE
+                SET guard_id          = EXCLUDED.guard_id,
+                    in_progress_since = now(),
+                    last_checkin_at   = NULL,
+                    last_reminded_at  = NULL,
+                    closed_at         = NULL
+                "#,
+            )
+            .bind(booking_id)
+            .bind(guard_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        CheckinLedgerOp::RecordCheckin {
+            booking_id,
+            guard_id,
+        } => {
+            sqlx::query(
+                r#"
+                INSERT INTO notification.checkin_reminders
+                    (booking_id, guard_id, in_progress_since, last_checkin_at)
+                VALUES ($1, $2, now(), now())
+                ON CONFLICT (booking_id) DO UPDATE
+                SET last_checkin_at = now()
+                "#,
+            )
+            .bind(booking_id)
+            .bind(guard_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        CheckinLedgerOp::Close { booking_id } => {
+            sqlx::query(
+                r#"
+                UPDATE notification.checkin_reminders
+                SET closed_at = now()
+                WHERE booking_id = $1 AND closed_at IS NULL
+                "#,
+            )
+            .bind(booking_id)
+            .execute(&mut **tx)
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+// ----- Check-in reminders (hourly nudge — N3a) -----
+
+/// One OPEN work session the scheduler considers for a reminder. Carries every input to the pure
+/// DUE rule (`domain::checkin::is_due`) so the scheduler can re-verify each row against that single
+/// source of truth (the SQL below is an efficient PRE-FILTER; the pure rule is the authority), and
+/// `in_progress_since` so the dispatcher can name the hour via `domain::checkin::checkin_hour`.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct DueCheckin {
+    pub booking_id: Uuid,
+    pub guard_id: Uuid,
+    pub in_progress_since: DateTime<Utc>,
+    pub last_checkin_at: Option<DateTime<Utc>>,
+    pub last_reminded_at: Option<DateTime<Utc>>,
+    pub closed_at: Option<DateTime<Utc>>,
+}
+
+/// Pre-filter work sessions DUE a check-in reminder AS OF `now` — the SQL mirror of
+/// `domain::checkin::is_due`: open, ≥ 1h since the later of {last check-in, work start} AND ≥ 1h
+/// since the later of {last reminder, work start}. Bounded by `limit` (the partial index on open
+/// rows keeps this cheap). A single notification instance runs the scheduler, so a plain SELECT (no
+/// row-lock) is sufficient; the scheduler re-checks each row against the pure `is_due` and then
+/// claims it via `mark_reminded` before pushing.
+pub async fn due_checkins(
+    db: &PgPool,
+    now: DateTime<Utc>,
+    limit: i64,
+) -> Result<Vec<DueCheckin>, AppError> {
+    let rows = sqlx::query_as::<_, DueCheckin>(
+        r#"
+        SELECT booking_id, guard_id, in_progress_since, last_checkin_at, last_reminded_at, closed_at
+        FROM notification.checkin_reminders
+        WHERE closed_at IS NULL
+          AND $1 - COALESCE(last_checkin_at, in_progress_since)  >= interval '1 hour'
+          AND $1 - COALESCE(last_reminded_at, in_progress_since) >= interval '1 hour'
+        ORDER BY in_progress_since
+        LIMIT $2
+        "#,
+    )
+    .bind(now)
+    .bind(limit)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Stamp `last_reminded_at = now` for one still-open session — the reminder CLAIM. Returns `true`
+/// if a row was updated (the caller then pushes), `false` if the row was closed between the scan
+/// and the claim (skip). Claiming BEFORE the push means a transient push failure won't re-fire the
+/// same hour (the nudge is best-effort), and the 1h cooldown in `due_checkins` won't re-select this
+/// row until the next hour.
+pub async fn mark_reminded(
+    db: &PgPool,
+    booking_id: Uuid,
+    now: DateTime<Utc>,
+) -> Result<bool, AppError> {
+    let result = sqlx::query(
+        r#"
+        UPDATE notification.checkin_reminders
+        SET last_reminded_at = $2
+        WHERE booking_id = $1 AND closed_at IS NULL
+        "#,
+    )
+    .bind(booking_id)
+    .bind(now)
+    .execute(db)
+    .await?;
+    Ok(result.rows_affected() > 0)
 }
 
 // ----- Dispatch fan-out (booking.requested → all online guards) -----
@@ -648,9 +797,15 @@ mod db_tests {
         let plan = domain::plan_for_event(topics::BOOKING_JOB_ACCEPTED, &payload).expect("maps");
 
         // First delivery → Created.
-        let first = process_event(&pool, event_id, topics::BOOKING_JOB_ACCEPTED, Some(&plan))
-            .await
-            .expect("process #1");
+        let first = process_event(
+            &pool,
+            event_id,
+            topics::BOOKING_JOB_ACCEPTED,
+            Some(&plan),
+            None,
+        )
+        .await
+        .expect("process #1");
         assert_eq!(
             first,
             Processed::Created(customer_id),
@@ -658,9 +813,15 @@ mod db_tests {
         );
 
         // Redelivery (same event_id) → Duplicate, writes nothing.
-        let second = process_event(&pool, event_id, topics::BOOKING_JOB_ACCEPTED, Some(&plan))
-            .await
-            .expect("process #2");
+        let second = process_event(
+            &pool,
+            event_id,
+            topics::BOOKING_JOB_ACCEPTED,
+            Some(&plan),
+            None,
+        )
+        .await
+        .expect("process #2");
         assert_eq!(second, Processed::Duplicate, "redelivery deduped");
 
         // Exactly one log row + one ledger row despite two deliveries.
@@ -755,6 +916,162 @@ mod db_tests {
             .await;
         let _ = sqlx::query("DELETE FROM notification.dispatch_recipients WHERE event_id = $1")
             .bind(event_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres integration test for the check-in reminder ledger (N3a): `arrived` OPENS the
+    /// row, `progress_reported` records last_checkin_at, `completed` CLOSES it, and the DUE scan
+    /// returns exactly the right rows across each stage. No-op unless `DATABASE_URL` is set. Run
+    /// against a migrated DB (incl. 0007):
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5432/pguard_test \
+    ///     cargo test -p pguard-notification -- checkin_reminder_ledger_lifecycle_against_real_db --nocapture
+    #[tokio::test]
+    async fn checkin_reminder_ledger_lifecycle_against_real_db() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let booking_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+
+        // arrived → OPEN the ledger (fresh event_id; no user notification needed here).
+        let open = CheckinLedgerOp::Open {
+            booking_id,
+            guard_id,
+        };
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_ARRIVED,
+            None,
+            Some(&open),
+        )
+        .await
+        .expect("open");
+
+        // Just opened → NOT due now, but DUE two hours later. Use the real `now` as the origin.
+        let (in_progress_since,): (chrono::DateTime<chrono::Utc>,) = sqlx::query_as(
+            "SELECT in_progress_since FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row opened");
+        let now0 = in_progress_since;
+        let two_hours_later = now0 + chrono::Duration::hours(2);
+
+        assert!(
+            due_checkins(&pool, now0, 50)
+                .await
+                .expect("scan now")
+                .iter()
+                .all(|r| r.booking_id != booking_id),
+            "a freshly-arrived session is NOT due yet"
+        );
+        assert!(
+            due_checkins(&pool, two_hours_later, 50)
+                .await
+                .expect("scan +2h")
+                .iter()
+                .any(|r| r.booking_id == booking_id),
+            "an open session with no check-in is due 2h later"
+        );
+
+        // progress_reported → record a check-in (stamps last_checkin_at).
+        let record = CheckinLedgerOp::RecordCheckin {
+            booking_id,
+            guard_id,
+        };
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_PROGRESS_REPORTED,
+            None,
+            Some(&record),
+        )
+        .await
+        .expect("record checkin");
+        let (last_checkin,): (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
+            "SELECT last_checkin_at FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        assert!(
+            last_checkin.is_some(),
+            "progress_reported stamps last_checkin_at"
+        );
+
+        // Within an hour of that check-in → NOT due (the check-in deferred the next nudge).
+        let just_after = last_checkin.unwrap() + chrono::Duration::minutes(30);
+        assert!(
+            due_checkins(&pool, just_after, 50)
+                .await
+                .expect("scan +30m")
+                .iter()
+                .all(|r| r.booking_id != booking_id),
+            "a session that just checked in is not due"
+        );
+
+        // Claim + mark reminded → the 1h cooldown then blocks re-selection at +2h.
+        let claimed = mark_reminded(&pool, booking_id, two_hours_later)
+            .await
+            .expect("mark reminded");
+        assert!(claimed, "an open session is claimable");
+        assert!(
+            due_checkins(&pool, two_hours_later, 50)
+                .await
+                .expect("scan after remind")
+                .iter()
+                .all(|r| r.booking_id != booking_id),
+            "the reminder cooldown blocks a re-fire within the hour"
+        );
+
+        // completed → CLOSE the ledger; never due again, even hours overdue.
+        let close = CheckinLedgerOp::Close { booking_id };
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_COMPLETED,
+            None,
+            Some(&close),
+        )
+        .await
+        .expect("close");
+        let (closed_at,): (Option<chrono::DateTime<chrono::Utc>>,) = sqlx::query_as(
+            "SELECT closed_at FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        assert!(closed_at.is_some(), "completed closes the ledger");
+        assert!(
+            due_checkins(&pool, now0 + chrono::Duration::hours(6), 50)
+                .await
+                .expect("scan +6h")
+                .iter()
+                .all(|r| r.booking_id != booking_id),
+            "a closed session is never due"
+        );
+        assert!(
+            !mark_reminded(&pool, booking_id, two_hours_later)
+                .await
+                .expect("mark closed"),
+            "a closed session is not claimable"
+        );
+
+        // Dev-DB hygiene.
+        let _ = sqlx::query("DELETE FROM notification.checkin_reminders WHERE booking_id = $1")
+            .bind(booking_id)
             .execute(&pool)
             .await;
     }

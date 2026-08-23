@@ -21,6 +21,7 @@ class AvailableGuard {
     required this.reviewCount,
     this.hasDocuments,
     this.documents,
+    this.distanceMeters,
   });
 
   final String guardId;
@@ -55,6 +56,12 @@ class AvailableGuard {
   /// window) — the card renders nothing then, never an all-false "has none".
   final GuardDocuments? documents;
 
+  /// Straight-line distance (meters) from the guard's LIVE position to the booking's meetup point
+  /// (C2, booking's `distance_m`). Present ONLY when discovery was called WITH the meetup `lat`/
+  /// `lng` AND the guard's live position was known — the server then returns the list already
+  /// sorted nearest-first. NULL otherwise; the card shows a distance only when it is meaningful.
+  final double? distanceMeters;
+
   factory AvailableGuard.fromJson(Map<String, dynamic> json) => AvailableGuard(
         guardId: json['guard_id'] as String,
         // Optional enrichment — trim to null so an empty/whitespace name never wins over the
@@ -73,6 +80,8 @@ class AvailableGuard {
         documents: json['documents'] is Map<String, dynamic>
             ? GuardDocuments.fromJson(json['documents'] as Map<String, dynamic>)
             : null,
+        // Nearest-first distance (meters); absent → null (no meetup sent or position unknown).
+        distanceMeters: (json['distance_m'] as num?)?.toDouble(),
       );
 
   static String? _nonEmpty(Object? v) {

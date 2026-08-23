@@ -293,10 +293,17 @@ pub struct OpenJobsQuery {
 /// Query params for `GET /available-guards`. When BOTH `scheduled_at` + `hours` are present, the
 /// busy-guard exclusion is scoped to that time window (a guard free at the requested time is still
 /// offered). Omitting them falls back to the coarse "any active job" exclusion (back-compat).
+///
+/// `lat`/`lng` are the optional MEETUP point (the booking's site pin, both-or-neither): when
+/// present the discovery list is sorted NEAREST-to-meetup (C2) by the guards' live positions and
+/// each entry carries `distance_m`; absent → today's order (catalog order) with `distance_m`
+/// omitted (backward compatible).
 #[derive(Debug, Deserialize)]
 pub struct AvailableGuardsQuery {
     pub scheduled_at: Option<DateTime<Utc>>,
     pub hours: Option<i32>,
+    pub lat: Option<f64>,
+    pub lng: Option<f64>,
 }
 
 /// Query params for `GET /admin/bookings` (admin cross-user list). `status` is validated
@@ -519,6 +526,13 @@ pub struct AvailableGuard {
     /// so the app renders "unknown" as nothing rather than a false "has none".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub documents: Option<GuardDocuments>,
+
+    /// Straight-line distance (meters) from the guard's LIVE position (per presence) to the
+    /// booking's meetup point — set ONLY when the discovery query carried a meetup `lat`/`lng`
+    /// AND this guard's live position is known; the list is then sorted by it ascending
+    /// (nearest first). OMITTED otherwise, so the UI shows "~1.2 กม." only when it is meaningful.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub distance_m: Option<f64>,
 }
 
 /// Per-credential presence flags for the five customer-relevant credential documents. Booleans

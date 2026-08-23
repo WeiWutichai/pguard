@@ -294,8 +294,8 @@ class LocationsApi {
     );
   }
 
-  /// Live guard ids (service-to-service)
-  /// Internal read for booking&#39;s discovery (&#x60;/available-guards&#x60;) — the ids of guards who are currently LIVE (&#x60;is_online&#x60; AND a fresh GPS fix within the 5-minute freshness window, \&quot;พร้อมรับงาน\&quot;). Guarded by a **service-JWT** (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). Returns ONLY ids — no lat/lng/PII (unlike the admin &#x60;/locations&#x60; bulk read); least-privilege for the cross-service consult. Documented here for the contract; not part of the user-facing client. 
+  /// Live guards + positions (service-to-service)
+  /// Internal read for booking&#39;s discovery (&#x60;/available-guards&#x60;) — the guards who are currently LIVE (&#x60;is_online&#x60; AND a fresh GPS fix within the 5-minute freshness window, \&quot;พร้อมรับงาน\&quot;), each with their LATEST fix position. Guarded by a **service-JWT** (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). booking uses membership for the online filter AND the coordinates to sort the customer&#39;s list nearest-to-meetup (C2). Narrow projection — id + position only, none of the heading/speed/accuracy the admin &#x60;/locations&#x60; bulk read carries (least-privilege). Documented here for the contract; not part of the user-facing client. 
   ///
   /// Parameters:
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation

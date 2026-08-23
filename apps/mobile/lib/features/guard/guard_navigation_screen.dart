@@ -11,6 +11,7 @@ import '../../core/controllers/tracking_controller.dart';
 import '../../core/location/routing_service.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/geo.dart';
+import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
@@ -73,13 +74,18 @@ class GuardNavigationScreen extends ConsumerWidget {
   /// advanced from another screen/frame), then return to the active-job screen. It deliberately
   /// does NOT start the work clock: starting + the checkpoint photo now happen on the active screen
   /// ("เช็คอินเริ่มงาน"), so the timer only runs once the guard has filed the start check-in on
-  /// site — the active screen lands on `JobStage.start` after this pops. STATUS-GATED: pressed
-  /// while the booking is no longer en_route/arrived (cancelled during a WS gap, still merely
-  /// accepted) it explains instead of firing a guaranteed-409 PUT. The failure message prefers the
-  /// controller's localized transition error over the generic fallback.
+  /// site — the active screen lands on `JobStage.start` after this pops.
+  ///
+  /// PROXIMITY (G4): the arrive PUT now carries the guard's FRESH GPS fix — the backend enforces
+  /// the 120m arrive geofence against the booking's meetup pin. A fix outside the fence is a 409
+  /// `NOT_AT_SITE` (and a pinned booking with no fix a 409 `GPS_REQUIRED`); the guard sees a
+  /// localized "move closer" message and STAYS en_route (no pop) so they can walk in and retry.
+  /// STATUS-GATED: pressed while the booking is no longer en_route/arrived (cancelled during a WS
+  /// gap, still merely accepted) it explains instead of firing a guaranteed-409 PUT. The arrived
+  /// transition is issued directly (not through the controller, which sends a bodiless PUT) so the
+  /// GPS body reaches the server; on success the controller is refreshed and the screen pops.
   Future<void> _confirmArrived(
       BuildContext context, WidgetRef ref, bool isThai) async {
-    final ctrl = ref.read(activeJobControllerProvider(bookingId).notifier);
     final status = ref
         .read(activeJobControllerProvider(bookingId))
         .valueOrNull
@@ -93,23 +99,55 @@ class GuardNavigationScreen extends ConsumerWidget {
               : 'The job state changed — check the job screen for the latest');
       return;
     }
-    if (status == BookingStatus.enRoute) {
-      final arrived = await ctrl.arrived();
-      if (!context.mounted) return;
-      if (!arrived) {
-        _snack(
-            context,
-            _ctrlError(ref) ??
-                (isThai ? 'ทำรายการไม่สำเร็จ' : "Couldn't update the job"));
-        return;
-      }
+    // Already arrived (advanced from another screen/frame) — nothing to send, just return.
+    if (status == BookingStatus.arrived) {
+      if (context.mounted) context.pop();
+      return;
     }
+    // en_route → attach a fresh GPS fix and mark arrived (the 120m geofence runs server-side).
+    final body = await _arrivedFix(ref);
+    try {
+      await ref
+          .read(pguardApiProvider)
+          .put('/bookings/$bookingId/arrived', data: body);
+    } on ApiException catch (e) {
+      if (!context.mounted) return;
+      _snack(context, localizeApiError(isThai, e));
+      // A 409 (geofence reject, or our snapshot disagrees) — refresh so the screen catches up
+      // with the true state rather than leaving a stale button. The guard stays on this screen.
+      if (e.statusCode == 409) {
+        ref.invalidate(activeJobControllerProvider(bookingId));
+      }
+      return;
+    } catch (_) {
+      if (!context.mounted) return;
+      _snack(context, isThai ? 'ทำรายการไม่สำเร็จ' : "Couldn't update the job");
+      return;
+    }
+    // Arrived: refresh the active-job controller so it re-pulls the arrived booking (lands on the
+    // start stage), then return to the job screen.
+    ref.invalidate(activeJobControllerProvider(bookingId));
     if (context.mounted) context.pop();
   }
 
-  /// The controller's localized transition error for this booking, if it recorded one.
-  String? _ctrlError(WidgetRef ref) =>
-      ref.read(activeJobControllerProvider(bookingId)).valueOrNull?.error;
+  /// The guard's GPS fix as the `/arrived` request body (`{ lat, lng, accuracy_m? }`), or `null`
+  /// when no fix is available — a FRESH one-shot read at the moment of pressing arrived (freshest
+  /// is what the 120m fence wants). Guarded so an unavailable/denied location source degrades to
+  /// `null` (a bodiless PUT — the backend then 409s `GPS_REQUIRED` on a pinned booking) rather
+  /// than throwing.
+  Future<Map<String, dynamic>?> _arrivedFix(WidgetRef ref) async {
+    try {
+      final gps = await ref.read(locationServiceProvider).currentSample();
+      if (gps == null) return null;
+      return {
+        'lat': gps.lat,
+        'lng': gps.lng,
+        if (gps.accuracy != null) 'accuracy_m': gps.accuracy,
+      };
+    } catch (_) {
+      return null;
+    }
+  }
 
   static void _snack(BuildContext context, String msg) =>
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
@@ -168,7 +206,7 @@ class _NavBody extends ConsumerStatefulWidget {
   final GeoPoint? dest;
   final GeoPoint? self;
   final bool busy;
-  final VoidCallback onArrive;
+  final Future<void> Function() onArrive;
 
   @override
   ConsumerState<_NavBody> createState() => _NavBodyState();
@@ -177,6 +215,18 @@ class _NavBody extends ConsumerStatefulWidget {
 class _NavBodyState extends ConsumerState<_NavBody> {
   /// The guard-selected travel mode (default รถยนต์/car) — switches the ETA label only.
   TravelMode _mode = TravelMode.car;
+
+  /// Local in-flight flag for the arrive action: the arrive PUT + its one-shot GPS fix is issued
+  /// directly (not via the controller, which sets `state.busy`), so the button spins off this.
+  bool _arriving = false;
+
+  /// Run the arrive action once, showing the button spinner while the GPS fix + PUT are in flight.
+  Future<void> _handleArrive() async {
+    if (_arriving) return;
+    setState(() => _arriving = true);
+    await widget.onArrive();
+    if (mounted) setState(() => _arriving = false);
+  }
 
   /// On-demand recenter trigger threaded into [PgMap.recenterToken]: bumped when the guard taps the
   /// sheet's ▲ to re-frame the map on the whole route after panning/zooming away. The map persists;
@@ -273,8 +323,8 @@ class _NavBodyState extends ConsumerState<_NavBody> {
             // The sheet's ▲ re-frames the map on the whole route (guard + dest + road polyline) by
             // bumping the token PgMap watches — useful after the guard pans/zooms away.
             onRecenter: () => setState(() => _recenterToken++),
-            busy: widget.busy,
-            onArrive: widget.onArrive,
+            busy: widget.busy || _arriving,
+            onArrive: _handleArrive,
           ),
         ),
       ],

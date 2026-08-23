@@ -20,6 +20,7 @@ part 'available_guard.g.dart';
 /// * [reviewCount] 
 /// * [hasDocuments] - True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown.
 /// * [documents] 
+/// * [distanceM] - Straight-line distance (meters) from the guard's LIVE position to the meetup point — present ONLY when the request supplied `lat`/`lng` AND the guard's live position is known (the list is then sorted by it ascending). Omitted otherwise.
 @BuiltValue()
 abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBuilder> {
   @BuiltValueField(wireName: r'guard_id')
@@ -49,6 +50,10 @@ abstract class AvailableGuard implements Built<AvailableGuard, AvailableGuardBui
 
   @BuiltValueField(wireName: r'documents')
   GuardDocuments? get documents;
+
+  /// Straight-line distance (meters) from the guard's LIVE position to the meetup point — present ONLY when the request supplied `lat`/`lng` AND the guard's live position is known (the list is then sorted by it ascending). Omitted otherwise.
+  @BuiltValueField(wireName: r'distance_m')
+  double? get distanceM;
 
   AvailableGuard._();
 
@@ -123,6 +128,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
       yield serializers.serialize(
         object.documents,
         specifiedType: const FullType(GuardDocuments),
+      );
+    }
+    if (object.distanceM != null) {
+      yield r'distance_m';
+      yield serializers.serialize(
+        object.distanceM,
+        specifiedType: const FullType(double),
       );
     }
   }
@@ -203,6 +215,13 @@ class _$AvailableGuardSerializer implements PrimitiveSerializer<AvailableGuard> 
             specifiedType: const FullType(GuardDocuments),
           ) as GuardDocuments;
           result.documents.replace(valueDes);
+          break;
+        case r'distance_m':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(double),
+          ) as double;
+          result.distanceM = valueDes;
           break;
         default:
           unhandled.add(key);

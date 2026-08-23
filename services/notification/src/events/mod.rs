@@ -134,12 +134,18 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     }
 
     let plan = domain::plan_for_event(&envelope.event_type, &envelope.payload);
+    // Maintain the hourly check-in reminder ledger (N3a) from the booking lifecycle events that
+    // already flow here — atomically with the event_id claim (so a redelivery is a no-op, never a
+    // double reset/wipe). Independent of `plan`: `booking.progress_reported` notifies no one yet
+    // carries a ledger op (record the check-in), `booking.arrived` carries both.
+    let ledger_op = domain::checkin::ledger_op_for_event(&envelope.event_type, &envelope.payload);
 
     match repo::process_event(
         &state.db,
         envelope.event_id,
         &envelope.event_type,
         plan.as_ref(),
+        ledger_op.as_ref(),
     )
     .await?
     {

@@ -17,7 +17,9 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
-use crate::discovery_client::{BusyGuardsReader, GuardCatalog, PresenceReader, RatingReader};
+use crate::discovery_client::{
+    BusyGuardsReader, CatalogGuard, GuardCatalog, PresenceReader, RatingReader,
+};
 use crate::domain::progress;
 use crate::domain::state::BookingStatus;
 use crate::domain::{
@@ -261,24 +263,38 @@ pub async fn en_route_booking<S: BookingDeps>(
     .await
 }
 
-/// PUT /bookings/{id}/arrived — the assigned guard has arrived (outbox event).
-#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+/// PUT /bookings/{id}/arrived — the assigned guard has arrived at the site (outbox event).
+///
+/// PROXIMITY-GATED (G4): the OPTIONAL JSON body carries the guard's GPS fix for the 120m arrive
+/// geofence (`domain::geo`, enforced inside the repo's row lock via `repo::arrive_job`). Same
+/// `Option<Json<..>>` shape + coord validation as [`start_booking`]: an old build's empty body
+/// (no JSON content-type) extracts as `None` → no fix, which 409s `GPS_REQUIRED` on a pinned
+/// booking (fail closed) and passes on a legacy address-only one; a far fix is 409 `NOT_AT_SITE`.
+/// Admin bypasses the fence. Coordinates are validated here (both-or-neither + ranges) so the
+/// repo only ever sees a sane pair.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id, booking_id = %id))]
 pub async fn arrived_booking<S: BookingDeps>(
     State(state): State<S>,
     user: AuthUser,
     Path(id): Path<Uuid>,
+    body: Option<Json<StartJobRequest>>,
 ) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
     let is_admin = require_role(&user, ROLE_GUARD)?;
-    do_transition(
-        &state,
+    let (guard_gps, accuracy_m) = match body {
+        None => (None, None),
+        Some(Json(req)) => (progress::validate_coords(req.lat, req.lng)?, req.accuracy_m),
+    };
+    let booking = repo::arrive_job(
+        state.db(),
         id,
         user.user_id,
         is_admin,
-        BookingStatus::Arrived,
-        None,
-        None,
+        guard_gps,
+        accuracy_m,
+        Uuid::new_v4(),
     )
-    .await
+    .await?;
+    Ok(Json(ApiResponse::success(booking)))
 }
 
 /// PUT /bookings/{id}/start — the assigned guard starts the job (stamps `work_started_at`,
@@ -1048,11 +1064,13 @@ pub async fn available_guards<S: DiscoveryDeps>(
         _ => state.busy_guards().busy_guard_ids().await?,
     };
 
-    // Consult presence for who is currently LIVE. `None` => FAIL-OPEN: presence was unreachable,
-    // so we do NOT apply the online filter (showing the approved list beats blocking all bookings).
-    let online: Option<std::collections::HashSet<Uuid>> =
-        match state.presence_reader().online_guard_ids().await {
-            Ok(set) => Some(set),
+    // Consult presence for who is currently LIVE and WHERE. `None` => FAIL-OPEN: presence was
+    // unreachable, so we do NOT apply the online filter (showing the approved list beats blocking
+    // all bookings) — and, with no positions, the nearest-first sort is skipped too. The value is
+    // a map guard_id → live (lat, lng): membership drives the online filter, the coords the sort.
+    let online: Option<std::collections::HashMap<Uuid, (f64, f64)>> =
+        match state.presence_reader().online_guard_locations().await {
+            Ok(map) => Some(map),
             Err(e) => {
                 tracing::warn!(
                 "presence online-guards lookup failed: {e}; FAIL-OPEN (skipping the online filter)"
@@ -1061,19 +1079,50 @@ pub async fn available_guards<S: DiscoveryDeps>(
             }
         };
 
+    // The MEETUP point (the booking's site pin), validated both-or-neither + in range. When
+    // present, the surviving guards are sorted nearest-to-meetup by their live positions (C2).
+    let meetup = progress::validate_coords(window.lat, window.lng)?;
+
     // Drop BUSY guards always; drop offline guards when presence answered (keep all online on
     // fail-open). Filtering BEFORE the rating fan-out also means we never spend rating lookups on
     // guards we're about to hide.
     let filtered: Vec<_> = guards
         .into_iter()
         .filter(|g| !busy.contains(&g.user_id))
-        .filter(|g| online.as_ref().is_none_or(|set| set.contains(&g.user_id)))
+        .filter(|g| online.as_ref().is_none_or(|m| m.contains_key(&g.user_id)))
         .collect();
+
+    // Pair each surviving guard with its distance to the meetup (None when there is no meetup
+    // point, or the guard's live position is unknown — e.g. presence fail-open), then sort
+    // NEAREST-first (C2). The sort is STABLE, so with no meetup — or on tied distances — the
+    // catalog order is preserved (backward compatible); guards with no known location sort last.
+    let mut prepared: Vec<(CatalogGuard, Option<f64>)> = filtered
+        .into_iter()
+        .map(|g| {
+            let distance_m = meetup.and_then(|(mlat, mlng)| {
+                online
+                    .as_ref()
+                    .and_then(|m| m.get(&g.user_id))
+                    .map(|&(glat, glng)| {
+                        crate::domain::geo::haversine_meters(mlat, mlng, glat, glng)
+                    })
+            });
+            (g, distance_m)
+        })
+        .collect();
+    if meetup.is_some() {
+        prepared.sort_by(|(_, da), (_, db)| match (da, db) {
+            (Some(x), Some(y)) => x.partial_cmp(y).unwrap_or(std::cmp::Ordering::Equal),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
+        });
+    }
 
     // Each entry carries whether its rating lookup fell back (best-effort), so we can emit a
     // single aggregate signal for a degraded list rather than only per-guard warns.
-    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(filtered)
-        .map(|g| async move {
+    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(prepared)
+        .map(|(g, distance_m)| async move {
             let (summary, ok) = match rater.guard_summary(g.user_id).await {
                 Ok(s) => (s, true),
                 Err(e) => {
@@ -1091,6 +1140,7 @@ pub async fn available_guards<S: DiscoveryDeps>(
                 review_count: summary.count,
                 has_documents: g.has_documents,
                 documents: g.documents,
+                distance_m,
             };
             (guard, !ok)
         })
@@ -2258,7 +2308,7 @@ mod tests {
             .await;
     }
 
-    // ----- start-work geofence (PUT /bookings/{id}/start) -----
+    // ----- proximity: start is NO LONGER geofenced; ARRIVE is (G4) -----
 
     /// A test site pin (Bangkok) + a point `meters` due north of it — pure-latitude offsets
     /// make the haversine near-exact so the fence distances are dialled in precisely
@@ -2302,173 +2352,164 @@ mod tests {
         }
     }
 
-    /// The start-work geofence, end-to-end over the router (real DB + Redis; hermetic SKIP):
-    /// a PINNED booking rejects a far fix (409 `NOT_AT_SITE`) and a missing fix (409
-    /// `GPS_REQUIRED` — an old build's EMPTY body extracts as `None`), accepts an in-fence
-    /// fix (200, `work_started_at` returned), and an idempotent GPS-less RETRY of the
-    /// already-started job stays 200 (the geofence must not re-run). An UNPINNED legacy
-    /// booking starts with no GPS at all. Run:
+    /// Drive a fresh, PAID booking to `stop_at` over the real DB via `repo::transition` (which is
+    /// NOT geofenced — the proximity gate lives only on the guard's own `PUT /arrived` handler),
+    /// so the seed lands in the requested pre-state regardless of the site pin. `coords` pins the
+    /// site. Used by both the start (→ arrived) and arrive (→ en_route) geofence tests.
+    async fn seed_to(
+        db: &sqlx::PgPool,
+        coords: Option<(f64, f64)>,
+        guard: Uuid,
+        stop_at: BookingStatus,
+    ) -> Uuid {
+        let created = repo::create_booking(
+            db,
+            Uuid::new_v4(),
+            &CreateBookingRequest {
+                address: "5 Geofence Rd".to_string(),
+                scheduled_at: chrono::Utc::now(),
+                hours: 4,
+                service_id: None,
+                target_guard_id: None,
+                guard_count: None,
+                tip: None,
+                lat: coords.map(|c| c.0),
+                lng: coords.map(|c| c.1),
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create");
+        // PRE-PAY gate: paid before en_route (the payment.completed consumer in prod).
+        sqlx::query("UPDATE booking.bookings SET paid_at = now() WHERE id = $1")
+            .bind(created.id)
+            .execute(db)
+            .await
+            .expect("mark paid");
+        // Accepted → EnRoute → (Arrived): stop once `stop_at` is reached.
+        let path = [
+            (BookingStatus::Accepted, Some(guard)),
+            (BookingStatus::EnRoute, None),
+            (BookingStatus::Arrived, None),
+        ];
+        for (status, assign) in path {
+            repo::transition(
+                db,
+                created.id,
+                guard,
+                false,
+                status,
+                assign,
+                None,
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+            if status == stop_at {
+                break;
+            }
+        }
+        created.id
+    }
+
+    /// A `{ lat, lng, accuracy_m? }` GPS body value for the start/arrive tests.
+    fn gps_body(p: (f64, f64), acc: Option<f32>) -> serde_json::Value {
+        let mut v = serde_json::json!({ "lat": p.0, "lng": p.1 });
+        if let Some(a) = acc {
+            v["accuracy_m"] = serde_json::json!(a);
+        }
+        v
+    }
+
+    /// PUT a bodiless-or-GPS transition (`/start` or `/arrived`) as `actor`/`role`; `gps` None
+    /// sends an EMPTY body with no content-type — exactly what an old app build sends (extracts as
+    /// `None`). Returns `(status, json_body)`.
+    async fn put_gps_transition(
+        app: &Router,
+        id: Uuid,
+        actor: Uuid,
+        role: &str,
+        action: &str,
+        gps: Option<serde_json::Value>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder()
+            .method("PUT")
+            .uri(format!("/bookings/{id}/{action}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", user_token_for(actor, role)),
+            );
+        let body = match gps {
+            Some(v) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(v.to_string())
+            }
+            None => Body::empty(),
+        };
+        let res = app
+            .clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        (status, v)
+    }
+
+    /// START is NO LONGER geofenced (G4 moved the proximity gate to ARRIVAL). Over the real router
+    /// (real DB + Redis; hermetic SKIP): a PINNED, arrived booking starts even from a fix FAR
+    /// outside the old 50m fence — and with NO GPS at all — as long as the start-time gate passes;
+    /// `work_started_at` is stamped and any provided fix is still persisted as audit evidence. An
+    /// UNPINNED legacy booking starts with no GPS too. Run:
     ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
     ///   TEST_REDIS_URL=redis://localhost:6379 \
-    ///     cargo test -p pguard-booking -- start_geofence --nocapture
+    ///     cargo test -p pguard-booking -- start_is_ungated --nocapture
     #[tokio::test]
-    async fn start_geofence_matrix() {
+    async fn start_is_ungated_after_arrival() {
         let Some((app, db)) = router_with_real_db().await else {
             eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
 
-        // Seed a booking driven to `arrived` (the startable state); `coords` pins the site.
-        let arrived_booking = |coords: Option<(f64, f64)>, guard: Uuid| {
-            let db = db.clone();
-            async move {
-                let created = repo::create_booking(
-                    &db,
-                    Uuid::new_v4(),
-                    &CreateBookingRequest {
-                        address: "5 Geofence Rd".to_string(),
-                        scheduled_at: chrono::Utc::now(),
-                        hours: 4,
-                        service_id: None,
-                        target_guard_id: None,
-                        guard_count: None,
-                        tip: None,
-                        lat: coords.map(|c| c.0),
-                        lng: coords.map(|c| c.1),
-                    },
-                    1,
-                    rust_decimal::Decimal::ZERO,
-                    None,
-                    Uuid::new_v4(),
-                )
-                .await
-                .expect("create");
-                // PRE-PAY gate: paid before en_route (the payment.completed consumer in prod).
-                sqlx::query("UPDATE booking.bookings SET paid_at = now() WHERE id = $1")
-                    .bind(created.id)
-                    .execute(&db)
-                    .await
-                    .expect("mark paid");
-                for (status, assign) in [
-                    (BookingStatus::Accepted, Some(guard)),
-                    (BookingStatus::EnRoute, None),
-                    (BookingStatus::Arrived, None),
-                ] {
-                    repo::transition(
-                        &db,
-                        created.id,
-                        guard,
-                        false,
-                        status,
-                        assign,
-                        None,
-                        Uuid::new_v4(),
-                    )
-                    .await
-                    .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
-                }
-                created.id
-            }
-        };
-
-        // PUT /bookings/{id}/start as `guard`; `gps` None sends an EMPTY body with no
-        // content-type — exactly what an old app build sends (extracts as `None`).
-        let start = |id: Uuid, guard: Uuid, gps: Option<serde_json::Value>| {
-            let app = app.clone();
-            async move {
-                let mut builder = Request::builder()
-                    .method("PUT")
-                    .uri(format!("/bookings/{id}/start"))
-                    .header(
-                        "authorization",
-                        format!("Bearer {}", user_token_for(guard, "guard")),
-                    );
-                let body = match gps {
-                    Some(v) => {
-                        builder = builder.header("content-type", "application/json");
-                        Body::from(v.to_string())
-                    }
-                    None => Body::empty(),
-                };
-                let res = app.oneshot(builder.body(body).unwrap()).await.unwrap();
-                let status = res.status();
-                let bytes = axum::body::to_bytes(res.into_body(), 1 << 20)
-                    .await
-                    .unwrap();
-                let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                (status, v)
-            }
-        };
-        let gps_at = |p: (f64, f64), acc: Option<f32>| {
-            let mut v = serde_json::json!({ "lat": p.0, "lng": p.1 });
-            if let Some(a) = acc {
-                v["accuracy_m"] = serde_json::json!(a);
-            }
-            v
-        };
-
         let guard = Uuid::new_v4();
-        let pinned = arrived_booking(Some(START_SITE), guard).await;
+        let pinned = seed_to(&db, Some(START_SITE), guard, BookingStatus::Arrived).await;
 
-        // OUTSIDE the fence (250m out, no accuracy) → 409 with the NOT_AT_SITE sub-code.
-        let (status, v) = start(pinned, guard, Some(gps_at(north_of_site(250.0), None))).await;
-        assert_eq!(status, StatusCode::CONFLICT, "far fix must be rejected");
-        assert_eq!(
-            v["error"]["code"],
-            crate::domain::geo::NOT_AT_SITE_CODE,
-            "geofence 409 must carry NOT_AT_SITE, got: {v}"
+        // FAR fix (500m out) that the OLD 50m start fence would have rejected → now 200 (start is
+        // ungated); `work_started_at` is stamped and the provided fix is still persisted.
+        let (status, v) = put_gps_transition(
+            &app,
+            pinned,
+            guard,
+            "guard",
+            "start",
+            Some(gps_body(north_of_site(500.0), None)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "start is no longer geofenced: {v}");
+        assert!(
+            v["data"]["work_started_at"].is_string(),
+            "work_started_at must be stamped, got: {v}"
         );
-
-        // Pinned booking + NO GPS (empty body, old build) → 409 GPS_REQUIRED (fail closed).
-        let (status, v) = start(pinned, guard, None).await;
-        assert_eq!(
-            status,
-            StatusCode::CONFLICT,
-            "pinned + no fix must be rejected"
-        );
-        assert_eq!(
-            v["error"]["code"],
-            crate::domain::geo::GPS_REQUIRED_CODE,
-            "missing-fix 409 must carry GPS_REQUIRED, got: {v}"
-        );
-        // ...and the job was NOT started by either rejection.
-        let ws: Option<chrono::DateTime<chrono::Utc>> =
-            sqlx::query_scalar("SELECT work_started_at FROM booking.bookings WHERE id = $1")
+        let started_at = v["data"]["work_started_at"].as_str().unwrap().to_string();
+        let glat: Option<f64> =
+            sqlx::query_scalar("SELECT work_started_lat FROM booking.bookings WHERE id = $1")
                 .bind(pinned)
                 .fetch_one(&db)
                 .await
-                .expect("read work_started_at");
+                .expect("read work_started_lat");
         assert!(
-            ws.is_none(),
-            "a geofence-rejected start must not stamp the clock"
+            glat.is_some(),
+            "the provided start fix is still persisted (audit)"
         );
 
-        // INSIDE the fence (60m out but ±15m accuracy widens 50 → 65) → 200; the response
-        // exposes `work_started_at` (the mobile job-clock restore) and the fix is persisted.
-        let (status, v) = start(pinned, guard, Some(gps_at(north_of_site(60.0), Some(15.0)))).await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "in-fence fix must start the job: {v}"
-        );
-        assert!(
-            v["data"]["work_started_at"].is_string(),
-            "BookingResponse must return work_started_at, got: {v}"
-        );
-        let started_at = v["data"]["work_started_at"].as_str().unwrap().to_string();
-        let (glat, gacc): (Option<f64>, Option<f32>) = sqlx::query_as(
-            "SELECT work_started_lat, work_started_accuracy_m FROM booking.bookings WHERE id = $1",
-        )
-        .bind(pinned)
-        .fetch_one(&db)
-        .await
-        .expect("read persisted fix");
-        assert!(glat.is_some(), "the accepted fix must be persisted");
-        assert_eq!(gacc, Some(15.0), "the reported accuracy must be persisted");
-
-        // IDEMPOTENT RETRY with NO GPS on the already-started booking → 200, clock unchanged
-        // (the geofence must NOT re-run on a retry of an accepted start).
-        let (status, v) = start(pinned, guard, None).await;
+        // IDEMPOTENT RETRY with NO GPS on the already-started booking → 200, clock unchanged.
+        let (status, v) = put_gps_transition(&app, pinned, guard, "guard", "start", None).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -2480,12 +2521,22 @@ mod tests {
             "the retry must not re-stamp the proration clock"
         );
 
-        // UNPINNED legacy booking (no site coordinates) + no GPS → 200 (geofence skips).
-        // A DIFFERENT guard: the first one still holds the overlapping pinned job, so the
-        // same-guard accept would 409 GUARD_BUSY at the claim's time-overlap gate.
+        // A PINNED booking started with NO GPS at all → 200 (start no longer needs a fix). A
+        // DIFFERENT guard: the first still holds the overlapping job (same-guard accept 409s).
         let guard2 = Uuid::new_v4();
-        let unpinned = arrived_booking(None, guard2).await;
-        let (status, v) = start(unpinned, guard2, None).await;
+        let pinned_no_gps = seed_to(&db, Some(START_SITE), guard2, BookingStatus::Arrived).await;
+        let (status, v) =
+            put_gps_transition(&app, pinned_no_gps, guard2, "guard", "start", None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "pinned start with no GPS is allowed now: {v}"
+        );
+
+        // UNPINNED legacy booking (no site coordinates) + no GPS → 200.
+        let guard3 = Uuid::new_v4();
+        let unpinned = seed_to(&db, None, guard3, BookingStatus::Arrived).await;
+        let (status, v) = put_gps_transition(&app, unpinned, guard3, "guard", "start", None).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -2493,7 +2544,134 @@ mod tests {
         );
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = ANY($1)")
-            .bind(vec![pinned, unpinned])
+            .bind(vec![pinned, pinned_no_gps, unpinned])
+            .execute(&db)
+            .await;
+    }
+
+    /// The ARRIVE geofence (PUT /bookings/{id}/arrived), end-to-end over the router (real DB +
+    /// Redis; hermetic SKIP): a PINNED en_route booking rejects a far fix (409 `NOT_AT_SITE`) and a
+    /// missing fix (409 `GPS_REQUIRED` — an old build's EMPTY body extracts as `None`) WITHOUT
+    /// advancing status, accepts an in-fence fix (200, status `arrived`, the fix persisted). An
+    /// UNPINNED booking arrives with no GPS. Admin BYPASSES the fence (a far fix still 200s). Run:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5433/pguard \
+    ///   TEST_REDIS_URL=redis://localhost:6379 \
+    ///     cargo test -p pguard-booking -- arrived_geofence --nocapture
+    #[tokio::test]
+    async fn arrived_geofence_matrix() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+
+        let guard = Uuid::new_v4();
+        let pinned = seed_to(&db, Some(START_SITE), guard, BookingStatus::EnRoute).await;
+
+        // OUTSIDE the fence (400m out, no accuracy) → 409 NOT_AT_SITE; status stays en_route.
+        let (status, v) = put_gps_transition(
+            &app,
+            pinned,
+            guard,
+            "guard",
+            "arrived",
+            Some(gps_body(north_of_site(400.0), None)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "far fix must be rejected");
+        assert_eq!(
+            v["error"]["code"],
+            crate::domain::geo::NOT_AT_SITE_CODE,
+            "arrive geofence 409 must carry NOT_AT_SITE, got: {v}"
+        );
+
+        // Pinned + NO GPS (empty body, old build) → 409 GPS_REQUIRED (fail closed).
+        let (status, v) = put_gps_transition(&app, pinned, guard, "guard", "arrived", None).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "pinned + no fix must be rejected"
+        );
+        assert_eq!(
+            v["error"]["code"],
+            crate::domain::geo::GPS_REQUIRED_CODE,
+            "missing-fix 409 must carry GPS_REQUIRED, got: {v}"
+        );
+        // ...neither rejection advanced the status.
+        let st: String =
+            sqlx::query_scalar("SELECT status::text FROM booking.bookings WHERE id = $1")
+                .bind(pinned)
+                .fetch_one(&db)
+                .await
+                .expect("read status");
+        assert_eq!(
+            st, "en_route",
+            "a geofence-rejected arrive must not advance status"
+        );
+
+        // INSIDE the fence (100m out but ±30m accuracy widens 120 → 150) → 200, status `arrived`,
+        // the fix persisted (audit evidence of on-site presence).
+        let (status, v) = put_gps_transition(
+            &app,
+            pinned,
+            guard,
+            "guard",
+            "arrived",
+            Some(gps_body(north_of_site(100.0), Some(30.0))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "in-fence fix must arrive: {v}");
+        assert_eq!(
+            v["data"]["status"],
+            serde_json::json!("arrived"),
+            "status must be arrived: {v}"
+        );
+        let (alat, aacc): (Option<f64>, Option<f32>) = sqlx::query_as(
+            "SELECT arrived_lat, arrived_accuracy_m FROM booking.bookings WHERE id = $1",
+        )
+        .bind(pinned)
+        .fetch_one(&db)
+        .await
+        .expect("read persisted arrived fix");
+        assert!(alat.is_some(), "the accepted arrive fix must be persisted");
+        assert_eq!(aacc, Some(30.0), "the reported accuracy must be persisted");
+
+        // UNPINNED booking (no site coordinates) + no GPS → 200 (geofence skips).
+        let guard2 = Uuid::new_v4();
+        let unpinned = seed_to(&db, None, guard2, BookingStatus::EnRoute).await;
+        let (status, v) =
+            put_gps_transition(&app, unpinned, guard2, "guard", "arrived", None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "unpinned booking arrives without GPS: {v}"
+        );
+
+        // ADMIN bypass: a far fix on a pinned booking still 200s (support acting off-site). The
+        // admin actor is not the assigned guard — is_admin bypasses participation + fence.
+        let guard3 = Uuid::new_v4();
+        let pinned_admin = seed_to(&db, Some(START_SITE), guard3, BookingStatus::EnRoute).await;
+        let (status, v) = put_gps_transition(
+            &app,
+            pinned_admin,
+            Uuid::new_v4(),
+            "admin",
+            "arrived",
+            Some(gps_body(north_of_site(999.0), None)),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "admin bypasses the arrive fence: {v}"
+        );
+        assert_eq!(
+            v["data"]["status"],
+            serde_json::json!("arrived"),
+            "admin arrive advances: {v}"
+        );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = ANY($1)")
+            .bind(vec![pinned, unpinned, pinned_admin])
             .execute(&db)
             .await;
     }
@@ -2725,7 +2903,14 @@ mod tests {
         BusyGuardsReader, CatalogGuard, GuardCatalog, GuardRatingSummary, PresenceReader,
         RatingReader,
     };
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
+
+    /// A live-set stub value from ids, all at a throwaway origin coord: the filter / order / merge
+    /// tests don't pass a meetup point, so the exact position is irrelevant (the nearest-first
+    /// sort has its own test, [`available_guards_sorts_nearest_to_meetup`], with real coordinates).
+    fn live_at_origin<const N: usize>(ids: [Uuid; N]) -> HashMap<Uuid, (f64, f64)> {
+        ids.into_iter().map(|id| (id, (0.0, 0.0))).collect()
+    }
 
     /// Catalog stub — returns a canned approved-guard list, no HTTP.
     #[derive(Clone)]
@@ -2752,15 +2937,16 @@ mod tests {
         }
     }
 
-    /// Presence stub — `online` is the LIVE id set returned by the consult; `down=true` makes
-    /// the consult ERROR so the handler's FAIL-OPEN path (unfiltered list) is exercised.
+    /// Presence stub — `online` maps each LIVE guard to its position (guard_id → (lat, lng));
+    /// `down=true` makes the consult ERROR so the handler's FAIL-OPEN path (unfiltered list) is
+    /// exercised. Membership drives the online filter; the coords drive the nearest-first sort.
     #[derive(Clone)]
     struct StubPresence {
-        online: HashSet<Uuid>,
+        online: HashMap<Uuid, (f64, f64)>,
         down: bool,
     }
     impl PresenceReader for StubPresence {
-        async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+        async fn online_guard_locations(&self) -> Result<HashMap<Uuid, (f64, f64)>, AppError> {
             if self.down {
                 Err(AppError::Internal("presence unreachable".to_string()))
             } else {
@@ -2917,7 +3103,7 @@ mod tests {
                 good: Uuid::new_v4(),
             },
             StubPresence {
-                online: HashSet::new(),
+                online: HashMap::new(),
                 down: false,
             },
         )
@@ -2964,7 +3150,7 @@ mod tests {
             ],
         };
         // Both guards are online so this test stays focused on the catalog+rating merge.
-        let online = HashSet::from([good, bad]);
+        let online = live_at_origin([good, bad]);
         let Some(app) = discovery_router(
             catalog,
             StubRater { good },
@@ -3048,7 +3234,7 @@ mod tests {
             catalog,
             StubRater { good: g },
             StubPresence {
-                online: HashSet::from([g]),
+                online: live_at_origin([g]),
                 down: false,
             },
         )
@@ -3109,7 +3295,7 @@ mod tests {
             catalog,
             StubRater { good: g },
             StubPresence {
-                online: HashSet::from([g]),
+                online: live_at_origin([g]),
                 down: false,
             },
         )
@@ -3198,7 +3384,7 @@ mod tests {
             catalog,
             StubRater { good: online_guard },
             StubPresence {
-                online: HashSet::from([online_guard]), // only the online guard is live
+                online: live_at_origin([online_guard]), // only the online guard is live
                 down: false,
             },
         )
@@ -3223,7 +3409,7 @@ mod tests {
             catalog,
             StubRater { good: a },
             StubPresence {
-                online: HashSet::new(), // would exclude EVERYONE if it were consulted...
+                online: HashMap::new(), // would exclude EVERYONE if it were consulted...
                 down: true,             // ...but presence is down → fail-open → show all
             },
         )
@@ -3295,7 +3481,7 @@ mod tests {
             StubRater { good: free },
             // Both online — so the ONLY reason busy_guard is hidden is the active-assignment filter.
             StubPresence {
-                online: HashSet::from([free, busy_guard]),
+                online: live_at_origin([free, busy_guard]),
                 down: false,
             },
             StubBusy {
@@ -3328,7 +3514,7 @@ mod tests {
             catalog,
             StubRater { good: a },
             StubPresence {
-                online: HashSet::from([a]),
+                online: live_at_origin([a]),
                 down: false,
             },
             StubBusy {
@@ -3359,6 +3545,121 @@ mod tests {
             res.status(),
             StatusCode::INTERNAL_SERVER_ERROR,
             "a busy-lookup error must fail closed (never offer a possibly-busy guard)"
+        );
+    }
+
+    /// C2: with a MEETUP point in the query, the discovery list is sorted NEAREST-first by the
+    /// guards' live positions, and each entry carries `distance_m`. The catalog lists the FAR
+    /// guard first, so a near-first result proves the server re-sorted. Redis-gated (AuthUser) →
+    /// hermetic SKIP.
+    #[tokio::test]
+    async fn available_guards_sorts_nearest_to_meetup() {
+        let near = Uuid::new_v4();
+        let far = Uuid::new_v4();
+        // Catalog lists FAR first — the server must reorder to near-first.
+        let catalog = StubCatalog {
+            guards: vec![catalog_guard(far, Some(1)), catalog_guard(near, Some(2))],
+        };
+        let presence = StubPresence {
+            online: HashMap::from([(near, north_of_site(100.0)), (far, north_of_site(2000.0))]),
+            down: false,
+        };
+        let Some(app) = discovery_router(catalog, StubRater { good: near }, presence).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!(
+                        "/available-guards?lat={}&lng={}",
+                        START_SITE.0, START_SITE.1
+                    ))
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 2);
+        // Nearest first (near before far) despite the reversed catalog order.
+        assert_eq!(
+            data[0]["guard_id"],
+            serde_json::json!(near),
+            "nearest guard sorts first"
+        );
+        assert_eq!(
+            data[1]["guard_id"],
+            serde_json::json!(far),
+            "farther guard sorts last"
+        );
+        // distance_m is present and ascending (~100m then ~2000m).
+        let d0 = data[0]["distance_m"]
+            .as_f64()
+            .expect("distance_m on nearest");
+        let d1 = data[1]["distance_m"]
+            .as_f64()
+            .expect("distance_m on farther");
+        assert!((d0 - 100.0).abs() < 5.0, "nearest ~100m, got {d0}");
+        assert!((d1 - 2000.0).abs() < 20.0, "farther ~2000m, got {d1}");
+        assert!(d0 < d1, "distances must be ascending");
+    }
+
+    /// Without a meetup point in the query, discovery keeps the CATALOG order and OMITS
+    /// `distance_m` — backward compatible, even when the guards have distinct live positions.
+    #[tokio::test]
+    async fn available_guards_omits_distance_without_meetup() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![catalog_guard(a, Some(1)), catalog_guard(b, Some(2))],
+        };
+        // Distinct coords, but no meetup in the query → the server must NOT sort or emit distance.
+        let presence = StubPresence {
+            online: HashMap::from([(a, north_of_site(2000.0)), (b, north_of_site(50.0))]),
+            down: false,
+        };
+        let Some(app) = discovery_router(catalog, StubRater { good: a }, presence).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        // Catalog order preserved (a before b) despite b being physically nearer some point.
+        assert_eq!(data[0]["guard_id"], serde_json::json!(a));
+        assert_eq!(data[1]["guard_id"], serde_json::json!(b));
+        // distance_m omitted from the JSON (skip_serializing_if), not a null key.
+        assert!(
+            data[0].get("distance_m").is_none(),
+            "no meetup → distance_m omitted"
         );
     }
 

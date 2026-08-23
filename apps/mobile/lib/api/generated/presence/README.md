@@ -92,7 +92,7 @@ Class | Method | HTTP request | Description
 [*LocationsApi*](doc/LocationsApi.md) | [**adminTrackReplay**](doc/LocationsApi.md#admintrackreplay) | **GET** /admin/track/replay | Admin route playback — by job (booking) or by guard + time range (#141)
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardHistory**](doc/LocationsApi.md#getguardhistory) | **GET** /guards/{id}/history | Get a guard&#39;s location history (own / active-booking customer / admin)
 [*LocationsApi*](doc/LocationsApi.md) | [**getGuardLocation**](doc/LocationsApi.md#getguardlocation) | **GET** /guards/{id}/location | Get a guard&#39;s latest location (own / active-booking customer / admin)
-[*LocationsApi*](doc/LocationsApi.md) | [**internalOnlineGuards**](doc/LocationsApi.md#internalonlineguards) | **GET** /internal/online-guards | Live guard ids (service-to-service)
+[*LocationsApi*](doc/LocationsApi.md) | [**internalOnlineGuards**](doc/LocationsApi.md#internalonlineguards) | **GET** /internal/online-guards | Live guards + positions (service-to-service)
 [*LocationsApi*](doc/LocationsApi.md) | [**listLocations**](doc/LocationsApi.md#listlocations) | **GET** /locations | List live guard locations (admin only)
 
 
@@ -108,6 +108,7 @@ Class | Method | HTTP request | Description
  - [InlineObject2](doc/InlineObject2.md)
  - [InlineObject3](doc/InlineObject3.md)
  - [InternalOnlineGuards200Response](doc/InternalOnlineGuards200Response.md)
+ - [OnlineGuard](doc/OnlineGuard.md)
  - [OnlineGuards](doc/OnlineGuards.md)
  - [TrackReplay](doc/TrackReplay.md)
 

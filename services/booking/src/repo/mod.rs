@@ -955,14 +955,11 @@ pub async fn transition(
 /// quirk): only the assigned guard (or admin) may start, the booking must be `arrived`, and a
 /// second start is an idempotent no-op (returns the current row). No event.
 ///
-/// GEOFENCE (inside the row lock, against the booking's own site pin): a pinned booking may
-/// only be started from within [`crate::domain::geo::START_GEOFENCE_M`] of the site
-/// (+ capped accuracy allowance) — 409 `NOT_AT_SITE`; a pinned booking with no `guard_gps`
-/// is 409 `GPS_REQUIRED`. Unpinned (legacy address-only) bookings skip the check. Order
-/// matters: the geofence runs AFTER the idempotent already-started early-return, so a
-/// network-retry of a successful start never re-fails on a drifted fix — and `is_admin`
-/// bypasses it (support acting on behalf is not on site). The accepted fix is persisted
-/// (`work_started_lat/lng/accuracy_m`) as audit evidence of on-site presence.
+/// NO proximity geofence anymore (G4): on-site presence is proven at ARRIVAL ([`arrive_job`],
+/// the 120m fence), so once a guard is `arrived`, starting is free. The only gate here is the
+/// START-TIME gate (G3) — a start pressed before `scheduled_at - 15min` is refused; `is_admin`
+/// bypasses it. The guard's GPS fix, when sent, is still persisted
+/// (`work_started_lat/lng/accuracy_m`) as audit evidence of where the job was started.
 #[tracing::instrument(skip(db), fields(booking_id = %id))]
 pub async fn start_job(
     db: &sqlx::PgPool,
@@ -993,18 +990,13 @@ pub async fn start_job(
         tx.rollback().await?;
         return get_booking(db, id).await;
     }
-    // START-TIME GATE (G3) + geofence — both pure domain rules against the row-locked booking;
-    // admin bypasses (support acts on behalf, possibly early and off-site). The time gate runs
-    // first: it needs no GPS, and "not yet time to start" is the more fundamental refusal.
+    // START-TIME GATE (G3) — a pure domain rule against the row-locked booking; admin bypasses
+    // (support acts on behalf, possibly early). NO proximity geofence here anymore (G4): on-site
+    // presence is proven at ARRIVAL (`arrive_job`, the 120m fence), so once a guard is arrived,
+    // starting the work clock is free. The guard GPS is still persisted below as audit evidence.
     if !is_admin {
         if let Err(e) =
             crate::domain::scheduling::validate_start_time(core.scheduled_at, Utc::now())
-        {
-            tx.rollback().await?;
-            return Err(e);
-        }
-        if let Err(e) =
-            crate::domain::geo::validate_start_geofence(core.site(), guard_gps, accuracy_m)
         {
             tx.rollback().await?;
             return Err(e);
@@ -1024,6 +1016,104 @@ pub async fn start_job(
         .bind(crate::domain::progress::sanitize_accuracy(accuracy_m))
         .fetch_one(&mut *tx)
         .await?;
+    tx.commit().await?;
+    Ok(updated)
+}
+
+/// Mark the job ARRIVED — the `en_route → arrived` transition WITH the proximity geofence (G4).
+///
+/// Mirrors [`start_job`]'s guarded-mutation shape but, unlike start, it IS a status transition:
+/// it emits `booking.arrived` via the outbox (the SAME envelope as [`transition`]). It is kept
+/// SEPARATE from the generic `transition` because only the guard's fresh arrival is proximity-
+/// gated — the completion-REJECT bounce (`pending_completion → arrived`) also targets `arrived`
+/// but is NOT a proximity event and keeps flowing through `transition` (no fence).
+///
+/// GEOFENCE (inside the row lock, against the booking's own site pin): a pinned booking may only
+/// be marked arrived from within [`crate::domain::geo::ARRIVED_GEOFENCE_M`] of the site
+/// (+ capped accuracy allowance) — 409 `NOT_AT_SITE`; a pinned booking with no `guard_gps` is
+/// 409 `GPS_REQUIRED`. Unpinned (legacy address-only) bookings skip the check. `is_admin`
+/// bypasses it (support acting on behalf is not on site). Authz: only the ASSIGNED guard (or
+/// admin); status must be `en_route`. The accepted fix is persisted (`arrived_lat/lng/
+/// accuracy_m`) as audit evidence of on-site presence.
+#[tracing::instrument(skip(db), fields(booking_id = %id))]
+pub async fn arrive_job(
+    db: &sqlx::PgPool,
+    id: Uuid,
+    actor: Uuid,
+    is_admin: bool,
+    guard_gps: Option<(f64, f64)>,
+    accuracy_m: Option<f32>,
+    correlation_id: Uuid,
+) -> Result<BookingResponse, AppError> {
+    let mut tx = db.begin().await?;
+    let core = locked_current(&mut tx, id).await?;
+
+    // PARTICIPATION GATE first (generic 403 — a stranger must not learn job state), then the
+    // assignment gate (only the assigned guard may mark arrived). Mirrors `transition`'s order.
+    let is_participant = core.customer_id == actor || core.guard_id == Some(actor);
+    if !is_admin && !is_participant {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "Not a participant in this booking".to_string(),
+        ));
+    }
+    if !is_admin && core.guard_id != Some(actor) {
+        tx.rollback().await?;
+        return Err(AppError::Forbidden(
+            "Only the assigned guard can update this booking".to_string(),
+        ));
+    }
+    // LEGALITY: only `en_route → arrived` runs through here (the reject bounce
+    // `pending_completion → arrived` goes through `transition`). Message mirrors `transition`'s
+    // and does NOT embed the server-side status (no state disclosure).
+    if core.status != BookingStatus::EnRoute {
+        tx.rollback().await?;
+        return Err(AppError::Conflict(
+            "Booking cannot be transitioned to arrived from its current state".to_string(),
+        ));
+    }
+    // GEOFENCE (pure domain rule, inside the row lock). Admin bypasses (off-site support action).
+    if !is_admin {
+        if let Err(e) =
+            crate::domain::geo::validate_arrived_geofence(core.site(), guard_gps, accuracy_m)
+        {
+            tx.rollback().await?;
+            return Err(e);
+        }
+    }
+
+    // 1) the business change — flip to `arrived` and persist the accepted fix (audit evidence).
+    let sql = format!(
+        "UPDATE booking.bookings SET status = 'arrived'::booking.booking_status, \
+         arrived_lat = $2, arrived_lng = $3, arrived_accuracy_m = $4, updated_at = now() \
+         WHERE id = $1 RETURNING {BOOKING_COLUMNS}"
+    );
+    let updated = sqlx::query_as::<_, BookingResponse>(&sql)
+        .bind(id)
+        .bind(guard_gps.map(|(lat, _)| lat))
+        .bind(guard_gps.map(|(_, lng)| lng))
+        // Junk accuracy (negative/NaN/absurd) is stored as NULL, not persisted noise.
+        .bind(crate::domain::progress::sanitize_accuracy(accuracy_m))
+        .fetch_one(&mut *tx)
+        .await?;
+
+    // 2) the `booking.arrived` event — same transaction (transactional outbox), same mapping as
+    // `transition` so both arrival paths emit an identical envelope.
+    if let Some(EventMapping { topic, payload }) = event_for_status(
+        BookingStatus::EnRoute,
+        BookingStatus::Arrived,
+        id,
+        core.customer_id,
+        core.guard_id,
+        None,
+        None,
+    ) {
+        let envelope = EventEnvelope::new(topic, correlation_id, payload);
+        let envelope_json = serde_json::to_value(&envelope)
+            .map_err(|e| AppError::Internal(format!("serialize event envelope: {e}")))?;
+        enqueue_outbox(&mut tx, topic, &envelope_json).await?;
+    }
+
     tx.commit().await?;
     Ok(updated)
 }

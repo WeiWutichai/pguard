@@ -86,9 +86,10 @@ channels:
     address: pguard.events.booking.progress_reported
     description: >-
       Guard hourly check-in submitted (photo + GPS persisted by booking). Producer =
-      booking (transactional outbox, atomic with the progress_reports insert). No consumer
-      yet — the notification service will use this to tell the customer their guard
-      checked in (follow-up slice). NOT a lifecycle status change: the gateway's booking
+      booking (transactional outbox, atomic with the progress_reports insert). Consumer =
+      notification → records the check-in in its hourly check-in-reminder ledger
+      (`checkin_reminders.last_checkin_at`), so the guard is not nudged again until an hour
+      after THIS check-in (N3a). NOT a lifecycle status change: the gateway's booking
       status WS ignores it (status_from_topic → None).
     messages: { progressReported: { $ref: '#/components/messages/BookingProgressReported' } }
   paymentCompleted:
@@ -161,6 +162,15 @@ operations:
       notification consumes this → push the CUSTOMER "เจ้าหน้าที่ขอปิดงาน — โปรดตรวจสอบ" (guard
       requested completion, please review). The gateway booking-status WS also forwards it live as
       the `pending_completion` status so the customer's screen updates without a manual refresh.
+  onBookingProgressReported:
+    action: receive
+    channel: { $ref: '#/channels/bookingProgressReported' }
+    summary: >-
+      notification consumes this → stamps `checkin_reminders.last_checkin_at` so the guard's next
+      hourly check-in reminder is paced an hour from THIS check-in (N3a). The same ledger is OPENED
+      by `booking.arrived` and CLOSED by `booking.completed` / `booking.cancelled`; a 5-min timer
+      pushes "ถึงเวลาเช็คอิน" to any guard ≥ 1h overdue. All maintained atomically with the event_id
+      claim (idempotent under redelivery).
   onPaymentRefundProcessed:
     action: receive
     channel: { $ref: '#/channels/paymentRefundProcessed' }

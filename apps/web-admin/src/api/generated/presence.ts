@@ -118,14 +118,15 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Live guard ids (service-to-service)
-         * @description Internal read for booking's discovery (`/available-guards`) — the ids of guards who are
+         * Live guards + positions (service-to-service)
+         * @description Internal read for booking's discovery (`/available-guards`) — the guards who are
          *     currently LIVE (`is_online` AND a fresh GPS fix within the 5-minute freshness window,
-         *     "พร้อมรับงาน"). Guarded by a **service-JWT** (`serviceAuth`, aud `pguard-internal`),
-         *     never reachable from the public edge (the gateway blocks `/internal/`). Returns ONLY ids
-         *     — no lat/lng/PII (unlike the admin `/locations` bulk read); least-privilege for the
-         *     cross-service consult. Documented here for the contract; not part of the user-facing
-         *     client.
+         *     "พร้อมรับงาน"), each with their LATEST fix position. Guarded by a **service-JWT**
+         *     (`serviceAuth`, aud `pguard-internal`), never reachable from the public edge (the gateway
+         *     blocks `/internal/`). booking uses membership for the online filter AND the coordinates to
+         *     sort the customer's list nearest-to-meetup (C2). Narrow projection — id + position only,
+         *     none of the heading/speed/accuracy the admin `/locations` bulk read carries
+         *     (least-privilege). Documented here for the contract; not part of the user-facing client.
          */
         get: operations["internalOnlineGuards"];
         put?: never;
@@ -215,8 +216,17 @@ export interface components {
             per_point_speed_heading_available: boolean;
         };
         OnlineGuards: {
-            /** @description Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII. */
-            guard_ids: string[];
+            /** @description Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position. */
+            guards: components["schemas"]["OnlineGuard"][];
+        };
+        /** @description One live guard — the id plus the latest fix coordinates (for the nearest-first sort). */
+        OnlineGuard: {
+            /** Format: uuid */
+            guard_id: string;
+            /** Format: double */
+            lat: number;
+            /** Format: double */
+            lng: number;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -414,7 +424,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The currently-live guard ids */
+            /** @description The currently-live guards with their latest positions */
             200: {
                 headers: {
                     [name: string]: unknown;

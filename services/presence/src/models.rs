@@ -95,12 +95,23 @@ pub struct TrackReplay {
     pub per_point_speed_heading_available: bool,
 }
 
-/// `GET /internal/online-guards` — the live guard ids only (service-JWT'd; consumed by
-/// booking's discovery). Deliberately NO position/PII, unlike [`GuardLocation`]: least-privilege
-/// for the cross-service "who is พร้อมรับงาน" consult.
+/// `GET /internal/online-guards` — the guards currently LIVE, each with their latest fix
+/// position (service-JWT'd; consumed by booking's discovery). booking uses membership for the
+/// "พร้อมรับงาน" online filter AND the coordinates to sort the customer's guard list
+/// nearest-to-meetup (C2). Deliberately narrow — just id + position, none of the
+/// heading/speed/accuracy the admin `/locations` bulk read carries (least-privilege).
 #[derive(Debug, Serialize)]
 pub struct OnlineGuards {
-    pub guard_ids: Vec<Uuid>,
+    pub guards: Vec<OnlineGuard>,
+}
+
+/// One live guard in [`OnlineGuards`]: the id plus the latest fix coordinates (the guard's
+/// current position, which booking measures against the meetup point for the nearest-first sort).
+#[derive(Debug, Serialize)]
+pub struct OnlineGuard {
+    pub guard_id: Uuid,
+    pub lat: f64,
+    pub lng: f64,
 }
 
 // ----- sqlx row types (DB I/O shapes) -----

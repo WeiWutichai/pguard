@@ -78,6 +78,13 @@ dependencies:
   firebase_core: ^3.15.0
   firebase_messaging: ^15.2.0
 
+  # Local notifications — creates the Android "default" channel (id must match the server's
+  # android.notification.channel_id) so pushes actually PLAY A SOUND on Android 8+, and re-presents
+  # foreground FCM messages (FCM does not auto-display those). See core/network/notification_channel.dart.
+  # NOTE for the APK builder: this plugin requires Java 8+ core-library desugaring in
+  # android/app/build.gradle (coreLibraryDesugaring) — a build-time toggle outside this change set.
+  flutter_local_notifications: ^17.2.4
+
   # i18n — bilingual TH/EN.
   intl: ^0.19.0
 

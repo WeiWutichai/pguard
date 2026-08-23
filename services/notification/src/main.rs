@@ -140,6 +140,23 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- background scheduler: hourly guard check-in reminders (N3a) every 300s ---
+    // State-changing work that owns its retry via the `checkin_reminders` ledger (a due row keeps
+    // being selected until `mark_reminded` claims it, and the 1h cooldown then paces re-fires) —
+    // not fire-and-forget. Separate interval from the broadcast tick (different cadence/concern).
+    {
+        let checkin_state = state.clone();
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(300));
+            loop {
+                tick.tick().await;
+                if let Err(e) = api::dispatch_due_checkins(&checkin_state).await {
+                    tracing::error!("check-in reminder scheduler tick failed: {e}");
+                }
+            }
+        });
+    }
+
     // --- HTTP router ---
     // Route order: register `unread-count` and `read-all` before `{id}/read`.
     let app = Router::new()

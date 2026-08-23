@@ -242,15 +242,29 @@ class ActiveJobController extends _$ActiveJobController {
   /// `PUT /v1/bookings/{id}/en-route`.
   Future<bool> enRoute() => _transition('en-route');
 
-  /// `PUT /v1/bookings/{id}/arrived`.
-  Future<bool> arrived() => _transition('arrived');
+  /// `PUT /v1/bookings/{id}/arrived` — now WITH the guard's GPS fix so the backend can enforce the
+  /// 120 m ARRIVED geofence (the proximity gate moved here from start: a guard can no longer mark
+  /// arrived while far away, then get stuck). Reuses the same fresh one-shot read as start; a missing
+  /// fix still sends the bodiless PUT and the backend decides (409 GPS_REQUIRED on a pinned booking),
+  /// so the policy lives in exactly one place.
+  Future<bool> arrived() async {
+    final gps = await _startFix();
+    return _transition(
+      'arrived',
+      body: gps == null
+          ? null
+          : {
+              'lat': gps.lat,
+              'lng': gps.lng,
+              if (gps.accuracy != null) 'accuracy_m': gps.accuracy,
+            },
+    );
+  }
 
-  /// `PUT /v1/bookings/{id}/start` — stamps the server work-start time, now WITH the guard's
-  /// GPS fix so the backend can (a) record where the job was started and (b) enforce the 50 m
-  /// start geofence. Prefers the live tracking fix (the active screen already streams while
-  /// en_route/arrived); falls back to a fresh one-shot read. A missing fix still sends the
-  /// bodiless PUT — the backend decides (409 GPS_REQUIRED on pinned bookings), so the policy
-  /// lives in exactly one place.
+  /// `PUT /v1/bookings/{id}/start` — stamps the server work-start time and still sends the guard's
+  /// GPS fix so the backend records WHERE the job was started (audit). Start no longer geofences —
+  /// the proximity gate moved to `arrived` (120 m) — but the fix is cheap and useful as an audit
+  /// trail. A missing fix still sends the bodiless PUT.
   Future<bool> start() async {
     final gps = await _startFix();
     return _transition(
@@ -266,10 +280,10 @@ class ActiveJobController extends _$ActiveJobController {
     );
   }
 
-  /// The guard's GPS fix for the start geofence — a FRESH one-shot read at the moment of
-  /// pressing start (freshest is what the 50 m fence wants; the streaming lease's last sample
-  /// can be up to the ~15 m movement gate stale). Guarded so an unavailable/denied location
-  /// source degrades to `null` (a bodiless start PUT — the backend then decides: 409
+  /// The guard's GPS fix for a geofence/audit PUT — a FRESH one-shot read at the moment of
+  /// pressing arrived/start (freshest is what the 120 m arrived fence wants; the streaming lease's
+  /// last sample can be up to the ~15 m movement gate stale). Guarded so an unavailable/denied
+  /// location source degrades to `null` (a bodiless PUT — the backend then decides: 409
   /// GPS_REQUIRED on a pinned booking) rather than throwing.
   Future<GpsSample?> _startFix() async {
     try {

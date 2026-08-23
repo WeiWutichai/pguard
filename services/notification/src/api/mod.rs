@@ -13,6 +13,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 use shared::service_jwt::ServiceCaller;
 
+use crate::domain;
 use crate::fcm::{PushMessage, Pusher};
 use crate::models::{
     Audience, AudienceCountsResponse, AutomationRule, BroadcastMode, BroadcastResponse,
@@ -461,6 +462,80 @@ pub async fn dispatch_due_broadcasts(state: &AppState) -> Result<u64, AppError> 
                 }
             }
         }
+    }
+    Ok(dispatched)
+}
+
+/// One scheduler tick for the hourly check-in reminder (N3a): scan the check-in ledger for OPEN
+/// work sessions that are DUE a nudge (the SQL mirror of `domain::checkin::is_due`), and for each
+/// push the guard "ถึงเวลาเช็คอิน". Best-effort + logged (mirrors `dispatch_due_broadcasts`): the
+/// reminder is claimed (`mark_reminded`) BEFORE the push so a transient FCM failure won't re-fire
+/// the same hour, and a per-row DB/push failure logs + continues rather than aborting the tick.
+/// Returns how many reminders were dispatched this tick.
+///
+/// The ledger itself is maintained by the event consumer (`booking.arrived/progress_reported/
+/// completed/cancelled` → open/record/close); this timer only reads DUE rows + pushes.
+pub async fn dispatch_due_checkins(state: &AppState) -> Result<u64, AppError> {
+    let now = Utc::now();
+    // Bounded per tick; the 5-min cadence + 1h cooldown make a large backlog impossible in practice.
+    let due = repo::due_checkins(&state.db, now, 100).await?;
+    let mut dispatched = 0u64;
+    for row in &due {
+        // The pure DUE rule is the single source of truth — re-verify each pre-filtered row against
+        // it (defence-in-depth over the SQL, and the one place the 1h logic lives + is unit-tested).
+        if !domain::checkin::is_due(
+            now,
+            row.in_progress_since,
+            row.last_checkin_at,
+            row.last_reminded_at,
+            row.closed_at,
+        ) {
+            continue;
+        }
+        // CLAIM before pushing (also guards a row closed between the scan and the claim).
+        match repo::mark_reminded(&state.db, row.booking_id, now).await {
+            Ok(true) => {}
+            Ok(false) => continue, // closed in the meantime → skip
+            Err(e) => {
+                tracing::error!(booking = %row.booking_id, "checkin mark_reminded failed: {e}");
+                continue;
+            }
+        }
+        let hour = domain::checkin::checkin_hour(now, row.in_progress_since);
+        let plan = domain::checkin::reminder_plan(row.guard_id, row.booking_id, hour);
+        // In-app record (best-effort) so the reminder also lands in the guard's notification list.
+        if let Err(e) = repo::insert_log(
+            &state.db,
+            plan.recipient_id,
+            &plan.title,
+            &plan.body,
+            plan.notification_type.as_db_str(),
+            &Some(plan.data.clone()),
+        )
+        .await
+        {
+            tracing::warn!(booking = %row.booking_id, "checkin reminder log insert failed: {e}");
+        }
+        // FCM push (best-effort) — a bad/absent token must not fail the tick.
+        let tokens = repo::user_tokens(&state.db, row.guard_id)
+            .await
+            .unwrap_or_default();
+        if let Err(e) = state
+            .pusher
+            .push(&PushMessage {
+                tokens,
+                title: plan.title,
+                body: plan.body,
+                data: plan.data,
+            })
+            .await
+        {
+            tracing::warn!(booking = %row.booking_id, "checkin reminder push failed: {e}");
+        }
+        dispatched += 1;
+    }
+    if dispatched > 0 {
+        tracing::info!(dispatched, "check-in reminder tick complete");
     }
     Ok(dispatched)
 }
