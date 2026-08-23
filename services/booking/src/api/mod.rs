@@ -132,6 +132,9 @@ pub async fn create_booking<S: BookingDeps>(
     if tip < rust_decimal::Decimal::ZERO {
         return Err(AppError::BadRequest("tip must not be negative".to_string()));
     }
+    // Scheduled time must be in the FUTURE (C4) — server-authoritative (the customer's device
+    // clock is never trusted). A past/now `scheduled_at` is 400 `SCHEDULED_IN_PAST`.
+    crate::domain::scheduling::validate_scheduled_at(req.scheduled_at, Utc::now())?;
     // Optional site coordinates: both-or-neither, in range (feeds open-job radius discovery).
     progress::validate_coords(req.lat, req.lng)?;
     // Optional catalog service: when picked, the booking's money is resolved SERVER-SIDE from

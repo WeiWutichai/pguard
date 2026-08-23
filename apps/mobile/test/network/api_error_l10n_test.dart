@@ -73,5 +73,31 @@ void main() {
                   message: 'x', code: 'CAPTCHA_EXPIRED', statusCode: 400)),
           'คำถามหมดอายุ ระบบออกคำถามใหม่ให้แล้ว');
     });
+
+    test(
+        'C4: SCHEDULED_IN_PAST → localized "pick a future time" message (TH + EN)',
+        () {
+      const e = ApiException(
+          message: 'scheduled_at is in the past',
+          code: 'SCHEDULED_IN_PAST',
+          statusCode: 400);
+      expect(localizeApiError(true, e),
+          'เวลาเริ่มงานที่เลือกผ่านไปแล้ว กรุณาเลือกเวลาในอนาคต');
+      expect(localizeApiError(false, e),
+          'The selected start time is in the past — please choose a future time');
+    });
+
+    test('G1/G3 guard-lifecycle codes localize by code (TH + EN)', () {
+      String th(String code) => localizeApiError(true,
+          ApiException(message: 'raw english', code: code, statusCode: 409));
+      String en(String code) => localizeApiError(false,
+          ApiException(message: 'raw english', code: code, statusCode: 409));
+      // G1 — check-in past the booked end + grace: "the window has closed" (too late).
+      expect(th('CHECK_IN_WINDOW_CLOSED'), 'หมดเวลาเช็คอินแล้ว');
+      expect(en('CHECK_IN_WINDOW_CLOSED'), 'The check-in window has closed');
+      // G3 — start pressed before the scheduled window opened.
+      expect(th('START_TOO_EARLY'), 'ยังไม่ถึงเวลาเริ่มงาน');
+      expect(en('START_TOO_EARLY'), "It's not time to start this job yet");
+    });
   });
 }

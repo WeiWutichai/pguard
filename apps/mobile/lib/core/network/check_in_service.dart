@@ -141,7 +141,18 @@ class ApiCheckInService implements CheckInService {
   ApiException _friendly(ApiException e, {required bool isThai}) {
     final status = e.statusCode;
     if (status == 409) {
-      // The non-duplicate 409 is "hour N opens once N-1 hours have elapsed" (or not started).
+      // G1: a check-in filed AFTER the booked end + 30-min grace is rejected `CHECK_IN_WINDOW_CLOSED`
+      // (an UPPER bound). Branch on the machine code — the truthful message is "the window has
+      // CLOSED" (too LATE), the opposite of the too-early copy below. Never key off the raw string.
+      if (e.code == 'CHECK_IN_WINDOW_CLOSED') {
+        return ApiException(
+          message:
+              isThai ? 'หมดเวลาเช็คอินแล้ว' : 'The check-in window has closed',
+          code: e.code,
+          statusCode: 409,
+        );
+      }
+      // The other non-duplicate 409 is "hour N opens once N-1 hours have elapsed" (or not started).
       return ApiException(
         message: isThai
             ? 'ยังไม่ถึงเวลาเช็คอินรอบนี้ ลองใหม่อีกครั้งภายหลัง'

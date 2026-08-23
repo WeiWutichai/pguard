@@ -47,8 +47,9 @@ Stream<GeoPoint?> guardSelfLocation(GuardSelfLocationRef ref) {
 }
 
 /// Guard turn-to-site navigation (design `Mobile - Guard App.html` ④): a full-bleed REAL
-/// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard pin, the destination ring
-/// and a REAL road route (a multi-point [PgPolyline] following the roads, via OSRM), an amber-dot
+/// OpenStreetMap map ([PgMap], flutter_map + OSM tiles) with the guard's current-position dot, the
+/// destination place pin and a REAL road route (a multi-point [PgPolyline] following the roads, via
+/// OSRM), an amber-dot
 /// status pill, a glass back button, a รถยนต์/มอเตอร์ไซค์/เดิน travel-mode selector, and a sheet
 /// showing the road distance + the selected-mode ETA with a single combined "arrived — start" CTA.
 ///
@@ -335,31 +336,13 @@ class _MapLayer extends StatelessWidget {
   }
 }
 
-/// Design `.pin.guard`: a green badge with a shield. Public so the inline guard travel-map
-/// preview reuses the exact same pin as the full navigation screen.
+/// The GUARD's OWN position: a current-position dot — a solid brand dot inside a soft translucent
+/// ring (the "you are here" convention). G2: this marker used to render a shield BADGE, which read
+/// like a place pin sitting on the map; its visual role is swapped with the destination so the
+/// guard's live position now reads as a moving current-position indicator, not a fixed pin. Public
+/// so the inline guard travel-map preview reuses the exact same marker as the full nav screen.
 class GuardNavGuardMarker extends StatelessWidget {
   const GuardNavGuardMarker({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: PgTokens.colorGreen800,
-        shape: BoxShape.circle,
-        border: Border.all(color: Colors.white, width: 2.5),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
-        ],
-      ),
-      child: const Icon(Icons.shield, color: Colors.white, size: 18),
-    );
-  }
-}
-
-/// Design `.dest .ring`: a brand dot inside a soft ring. Public so the inline guard travel-map
-/// preview reuses the exact same marker as the full navigation screen.
-class GuardNavDestMarker extends StatelessWidget {
-  const GuardNavDestMarker({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -383,6 +366,30 @@ class GuardNavDestMarker extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The DESTINATION (the customer's site): a place/pin marker — a green badge carrying a location
+/// pin glyph, so it reads as "the spot to reach". G2: this marker used to render a soft ring/dot,
+/// which read like a current-position indicator ("you are here"); its visual role is swapped with
+/// the guard marker so the destination now reads as a fixed place pin. Public so the inline guard
+/// travel-map preview reuses the exact same marker as the full navigation screen.
+class GuardNavDestMarker extends StatelessWidget {
+  const GuardNavDestMarker({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: PgTokens.colorGreen800,
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.white, width: 2.5),
+        boxShadow: const [
+          BoxShadow(color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
+        ],
+      ),
+      child: const Icon(Icons.place, color: Colors.white, size: 18),
     );
   }
 }

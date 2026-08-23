@@ -46,6 +46,15 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'งานนี้มีเจ้าหน้าที่รับไปแล้ว'
           : 'This job was already taken by another guard';
+    case 'CHECK_IN_WINDOW_CLOSED':
+      // G1: a check-in filed past the booked end + 30-min grace (an UPPER bound). Truthfully "the
+      // window has closed" (too LATE) — never the old "not time yet" (too early) copy.
+      return isThai ? 'หมดเวลาเช็คอินแล้ว' : 'The check-in window has closed';
+    case 'START_TOO_EARLY':
+      // G3: the guard pressed start before the booking's scheduled time (15-min early grace).
+      return isThai
+          ? 'ยังไม่ถึงเวลาเริ่มงาน'
+          : "It's not time to start this job yet";
     case 'BOOKING_NOT_PAYABLE':
       return isThai
           ? 'สถานะการจองเปลี่ยนไปแล้ว ไม่ต้องชำระเงิน'
@@ -54,6 +63,13 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน'
           : 'This booking was cancelled — a full refund is on its way';
+    case 'SCHEDULED_IN_PAST':
+      // C4: the customer tried to book a start time already in the past. The booking form's picker
+      // blocks this client-side (min = now); this is the server backstop for a stale form / skewed
+      // device clock.
+      return isThai
+          ? 'เวลาเริ่มงานที่เลือกผ่านไปแล้ว กรุณาเลือกเวลาในอนาคต'
+          : 'The selected start time is in the past — please choose a future time';
     case 'CANCEL_REASON_REQUIRED':
       // The cancel/decline body carried no reason (or one that isn't valid for that endpoint) —
       // a client bug or an old build; the screens always pre-select a code.

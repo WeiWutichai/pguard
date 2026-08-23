@@ -47,8 +47,23 @@ class CheckInSchedule {
   final DateTime startedAt;
   final int hours;
 
+  /// Grace window after the booked end during which the FINAL hour can still be back-filled.
+  /// Mirrors the booking service's G1 upper bound (`progress.rs validate_check_in`): a check-in
+  /// past `work_started_at + hours + 30min` is rejected server-side with `CHECK_IN_WINDOW_CLOSED`.
+  /// Kept here so the client stops presenting a closed slot as fileable (defense-in-depth).
+  static const Duration checkInGrace = Duration(minutes: 30);
+
   /// Total check-in slots over the shift — one per booked hour (start + each subsequent hour).
   int get totalSlots => hours;
+
+  /// The instant the whole check-in window closes: the booked end (`startedAt + hours`) plus the
+  /// 30-min back-fill grace. Past this the server rejects any check-in, so no slot is fileable.
+  DateTime get windowClosesAt =>
+      startedAt.add(Duration(hours: hours) + checkInGrace);
+
+  /// Whether the check-in window has CLOSED by [now] (strictly past booked end + grace — matching
+  /// the server's `now > worked_end + grace` reject boundary, so the exact boundary is still open).
+  bool isWindowClosed(DateTime now) => now.isAfter(windowClosesAt);
 
   /// The highest slot index whose time has arrived by [now] (0 at start, +1 each elapsed hour,
   /// capped at the last slot [hours]-1).
@@ -66,9 +81,11 @@ class CheckInSchedule {
     return startedAt.add(Duration(hours: next));
   }
 
-  /// The current slot is "due now" if it hasn't been submitted yet.
+  /// The current slot is "due now" if it hasn't been submitted yet AND the check-in window is
+  /// still open. Once the window closes (booked end + 30-min grace) the final slot is no longer
+  /// presented as due — a late file would only be rejected `CHECK_IN_WINDOW_CLOSED`.
   bool isDueNow(DateTime now, Set<int> completed) =>
-      !completed.contains(dueIndex(now));
+      !isWindowClosed(now) && !completed.contains(dueIndex(now));
 
   /// Slots strictly before the current one that were never submitted — their hour boundary has
   /// passed, so they are MISSED (the current due slot is not missed until the next boundary).

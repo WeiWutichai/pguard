@@ -10,10 +10,22 @@ import '../../booking/widgets/cancel_reason.dart';
 /// One notification row: type-coloured icon tile, title + body, relative time, and an unread
 /// highlight + dot. The relative time follows the language toggle (locale-aware).
 class NotificationTile extends ConsumerWidget {
-  const NotificationTile({super.key, required this.notification, this.onTap});
+  const NotificationTile({
+    super.key,
+    required this.notification,
+    this.onTap,
+    this.forceUnread = false,
+  });
 
   final AppNotification notification;
   final VoidCallback? onTap;
+
+  /// Keep the row painted as UNREAD even after the server flag flips to read. The notification
+  /// centre clears the bell badge on open (a server read-all), which would otherwise erase every
+  /// highlight at once; it instead snapshots the rows that were unread on open and forces their
+  /// highlight to persist here until each is individually tapped. Falls through to `!isRead` for a
+  /// freshly-arrived unread row, so a new item still highlights on its own.
+  final bool forceUnread;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -23,7 +35,7 @@ class NotificationTile extends ConsumerWidget {
         ? RelativeTime.th(notification.sentAt, now: now)
         : RelativeTime.en(notification.sentAt, now: now);
     final style = _styleFor(notification.type);
-    final unread = !notification.isRead;
+    final unread = forceUnread || !notification.isRead;
     // Localize the copy by TYPE so it follows the language toggle. The notification service sends
     // server-rendered title/body that aren't all localized (e.g. `booking_created` arrives as the
     // English "New job nearby" even in Thai mode) — for the known types we render our own locale copy

@@ -4,6 +4,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/models/booking.dart';
 import 'package:pguard_mobile/core/providers.dart';
+import 'package:pguard_mobile/features/booking/guard_discovery_screen.dart';
 import 'package:pguard_mobile/features/booking/guard_map_screen.dart';
 import 'package:pguard_mobile/features/booking/job_completion_summary_screen.dart';
 import 'package:pguard_mobile/features/booking/live_status_screen.dart';
@@ -21,6 +22,28 @@ String _jwt(String sub, {String role = 'customer'}) => fakeJwt({
           DateTime.now().add(const Duration(hours: 1)).millisecondsSinceEpoch ~/
               1000,
     });
+
+/// A router rooting the live screen at `/booking/b1/live`, plus the two destinations the C1
+/// guard-withdrew redirect builds (`/home/customer` → `/book/guards`). `/home/customer` is a bare
+/// placeholder so the test doesn't drag in the dashboard's providers.
+GoRouter _c1Router() => GoRouter(
+      initialLocation: '/booking/b1/live',
+      routes: [
+        GoRoute(
+          path: '/booking/:id/live',
+          builder: (_, s) =>
+              LiveStatusScreen(bookingId: s.pathParameters['id']!),
+        ),
+        GoRoute(
+          path: '/home/customer',
+          builder: (_, __) => const Scaffold(body: Text('home')),
+        ),
+        GoRoute(
+          path: '/book/guards',
+          builder: (_, __) => const GuardDiscoveryScreen(),
+        ),
+      ],
+    );
 
 void main() {
   testWidgets(
@@ -697,6 +720,108 @@ void main() {
         reason: 'a guard must NEVER see the Pay button (#87)');
     expect(find.text('เจ้าหน้าที่รับงานแล้ว — ชำระเงินเพื่อเริ่มงาน'),
         findsNothing);
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'C1: a declined frame (guard withdrew) redirects the customer into guard '
+      'discovery to re-search', (tester) async {
+    final feed = FakeBookingFeed();
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        // A guard had accepted (guard_id null keeps the inline live-map out of this test — the
+        // redirect depends only on the status transition).
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'accepted',
+          'guard_id': null,
+        };
+      }
+      // The discovery screen's initState loads available guards once.
+      return <Map<String, dynamic>>[];
+    });
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+      ],
+      child: MaterialApp.router(routerConfig: _c1Router()),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+    expect(find.byType(LiveStatusScreen), findsOneWidget);
+    expect(find.byType(GuardDiscoveryScreen), findsNothing);
+
+    // The guard withdraws after accepting → the booking goes `declined` over the WS.
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.declined,
+        occurredAt: DateTime.utc(2026)));
+    // Fold the event → the provider notifies → the listener fires + schedules the post-frame
+    // redirect → go(/home) + push(/book/guards) → discovery builds + loads guards. Pump generously
+    // (well past the ~300ms route transition) so the outgoing live route fully leaves the tree.
+    // Avoid pumpAndSettle: the discovery "searching" dots animate forever until guards resolve.
+    for (var i = 0; i < 16; i++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+
+    expect(find.byType(GuardDiscoveryScreen), findsOneWidget,
+        reason: 'a guard withdrawal routes the customer to find a new guard');
+    expect(find.byType(LiveStatusScreen), findsNothing,
+        reason: 'the dead live screen is left behind');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      "C1: a cancelled frame (the customer's OWN cancel) stays terminal — no "
+      'redirect', (tester) async {
+    final feed = FakeBookingFeed();
+    final api = FakeApi(onGet: (path, _) async {
+      if (path == '/bookings/b1') {
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'accepted',
+          'guard_id': null,
+        };
+      }
+      return <Map<String, dynamic>>[];
+    });
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+      ],
+      child: MaterialApp.router(routerConfig: _c1Router()),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The customer cancels their own booking pre-arrival → the booking goes `cancelled`.
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.cancelled,
+        occurredAt: DateTime.utc(2026)));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // No re-search — a self-cancel is a terminal dead-end (the refund banner), so the customer
+    // stays put on the live screen (distinct from a guard `declined` withdrawal).
+    expect(find.byType(GuardDiscoveryScreen), findsNothing,
+        reason: "the customer's own cancel must NOT trigger re-search");
+    expect(find.byType(LiveStatusScreen), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

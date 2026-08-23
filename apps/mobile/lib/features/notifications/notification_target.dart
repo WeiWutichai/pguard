@@ -50,10 +50,34 @@ String? notificationTarget(AppNotification n, {required AuthUser? user}) {
       return isGuard ? '/guard/active/$bid' : '/booking/$bid/live';
 
     case NotificationType.system:
-      // `system` covers incoming-call notifications (a call_id rides in the payload) and
-      // payment/rating/decline notices. Only the call has a screen to open.
+      // `system` is a catch-all on the wire: incoming-call notifications carry a `call_id`, while
+      // payment / rating / decline / completion notices identify their real kind via the payload's
+      // `event_type` (see `services/notification/src/domain/mapping.rs` `build_data`). An incoming
+      // call opens the call screen; everything else routes to its most sensible detail screen so the
+      // row is no longer a dead tap.
       final callId = n.callId;
       if (callId != null) return CallRoutes.incoming(callId);
-      return null;
+
+      final event = n.payload['event_type'];
+      final bid = n.bookingId;
+      switch (event is String ? event : null) {
+        case 'pguard.events.rating.submitted':
+          // A new review is always delivered to the GUARD → their own ratings & reviews list.
+          return '/guard/ratings';
+        case 'pguard.events.payment.refund_processed':
+          // A refund notice (customer) → the booking's completion summary / receipt, where the
+          // reconciled cost + refund breakdown lives.
+          return bid == null ? null : '/booking/$bid/summary';
+        case 'pguard.events.payment.completed':
+        case 'pguard.events.booking.completion_requested':
+        case 'pguard.events.booking.declined':
+          // Booking-scoped notices: the guard lands on their active-job screen, the customer on the
+          // booking live-status screen (declined auto-routes on to re-search from there).
+          if (bid == null) return null;
+          return isGuard ? '/guard/active/$bid' : '/booking/$bid/live';
+        default:
+          // A truly-unknown / screen-less kind (e.g. an ended/missed call) has no detail to open.
+          return null;
+      }
   }
 }

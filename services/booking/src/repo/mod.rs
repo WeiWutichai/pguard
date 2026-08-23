@@ -567,6 +567,9 @@ pub struct BookingCore {
     pub customer_id: Uuid,
     pub guard_id: Option<Uuid>,
     pub hours: i32,
+    /// When the customer scheduled the job to start. NOT NULL on `booking.bookings` — the
+    /// start-time gate (G3) rejects a start pressed before `scheduled_at - 15min`.
+    pub scheduled_at: DateTime<Utc>,
     /// When the guard STARTED work (set by `start_job`); the proration basis. `None` until then.
     pub work_started_at: Option<DateTime<Utc>>,
     /// When the booking was PAID (stamped by the `payment.completed` consumer). `None` = unpaid;
@@ -587,13 +590,14 @@ impl BookingCore {
 }
 
 /// Raw row shape returned by the core queries: status text, customer, guard, booked hours,
-/// work-start clock, paid-at clock, site pin. Aliased to keep the query type readable
-/// (clippy `type_complexity`).
+/// scheduled time, work-start clock, paid-at clock, site pin. Aliased to keep the query type
+/// readable (clippy `type_complexity`).
 type CoreRow = (
     String,
     Uuid,
     Option<Uuid>,
     i32,
+    DateTime<Utc>,
     Option<DateTime<Utc>>,
     Option<DateTime<Utc>>,
     Option<f64>,
@@ -601,12 +605,21 @@ type CoreRow = (
 );
 
 const CORE_QUERY: &str =
-    "SELECT status::text, customer_id, guard_id, hours, work_started_at, paid_at, lat, lng \
-     FROM booking.bookings WHERE id = $1";
+    "SELECT status::text, customer_id, guard_id, hours, scheduled_at, work_started_at, paid_at, \
+     lat, lng FROM booking.bookings WHERE id = $1";
 
 fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
-    let (status_str, customer_id, guard_id, hours, work_started_at, paid_at, lat, lng) =
-        row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
+    let (
+        status_str,
+        customer_id,
+        guard_id,
+        hours,
+        scheduled_at,
+        work_started_at,
+        paid_at,
+        lat,
+        lng,
+    ) = row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
         .map_err(AppError::Internal)?;
@@ -615,6 +628,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         customer_id,
         guard_id,
         hours,
+        scheduled_at,
         work_started_at,
         paid_at,
         lat,
@@ -939,14 +953,22 @@ pub async fn start_job(
             "Can only start a job after arriving at the location".to_string(),
         ));
     }
-    // Idempotent: already started → return the current row unchanged (BEFORE the geofence —
-    // a retry of an already-accepted start must not re-run it).
+    // Idempotent: already started → return the current row unchanged (BEFORE the time gate and
+    // geofence — a retry of an already-accepted start must not re-run either).
     if core.work_started_at.is_some() {
         tx.rollback().await?;
         return get_booking(db, id).await;
     }
-    // Geofence — pure domain rule against the row-locked site pin; admin bypass.
+    // START-TIME GATE (G3) + geofence — both pure domain rules against the row-locked booking;
+    // admin bypasses (support acts on behalf, possibly early and off-site). The time gate runs
+    // first: it needs no GPS, and "not yet time to start" is the more fundamental refusal.
     if !is_admin {
+        if let Err(e) =
+            crate::domain::scheduling::validate_start_time(core.scheduled_at, Utc::now())
+        {
+            tx.rollback().await?;
+            return Err(e);
+        }
         if let Err(e) =
             crate::domain::geo::validate_start_geofence(core.site(), guard_gps, accuracy_m)
         {
@@ -2806,6 +2828,49 @@ mod db_tests {
             .expect("mark paid");
     }
 
+    /// G1: a check-in filed AFTER the job's window closes (worked end `work_started_at + hours`,
+    /// plus the 30-min grace) is 409 `CHECK_IN_WINDOW_CLOSED` — NOT the too-early `CONFLICT`. We
+    /// backdate `work_started_at` so the whole window sits in the past. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn check_in_after_window_closed_is_rejected() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, _customer_id, guard_id) = started_booking(&pool).await;
+        let correlation = Uuid::new_v4();
+
+        // hours = 4 → worked end at start+4h, window closes at +4h30m. Backdate the work clock 5h
+        // so that boundary is already ~30min in the past (window closed, but no hour is too-early).
+        sqlx::query(
+            "UPDATE booking.bookings SET work_started_at = now() - interval '5 hours' WHERE id = $1",
+        )
+        .bind(booking_id)
+        .execute(&pool)
+        .await
+        .expect("backdate work_started_at");
+
+        let err = create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect_err("check-in after the window closes must be rejected");
+        match err {
+            AppError::ConflictCode { code, .. } => assert_eq!(
+                code,
+                crate::domain::progress::CHECK_IN_WINDOW_CLOSED_CODE,
+                "expected CHECK_IN_WINDOW_CLOSED, got {code}"
+            ),
+            other => panic!("expected CHECK_IN_WINDOW_CLOSED ConflictCode, got {other:?}"),
+        }
+
+        cleanup_booking(&pool, booking_id).await;
+    }
+
     /// The check-in's transactional outbox, end-to-end: a valid hour-1 check-in writes the
     /// report row AND exactly one `booking.progress_reported` outbox row in ONE tx (valid
     /// envelope, correct payload); a DUPLICATE hour is 409 and — atomicity of the failure
@@ -3335,6 +3400,119 @@ mod db_tests {
             second_ts,
             "second start must NOT re-stamp work_started_at"
         );
+
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// G3: a start pressed before the booking's scheduled window opens (`scheduled_at − 15min`)
+    /// is 409 `START_TOO_EARLY`; an admin bypasses the gate (support acts on behalf).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn start_before_scheduled_window_is_too_early() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        // Scheduled well in the FUTURE (+2h) → now is far before the -15min grace boundary.
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "9 Early Rd".to_string(),
+                scheduled_at: Utc::now() + chrono::Duration::hours(2),
+                hours: 4,
+                service_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+
+        // Drive to `arrived` (accept → paid → en_route → arrived). None of these gate on time.
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            None,
+            correlation,
+        )
+        .await
+        .expect("accept");
+        mark_paid_now(&pool, created.id).await;
+        for status in [BookingStatus::EnRoute, BookingStatus::Arrived] {
+            transition(
+                &pool,
+                created.id,
+                guard_id,
+                false,
+                status,
+                None,
+                None,
+                correlation,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+
+        // The assigned guard starting 2h early → 409 START_TOO_EARLY (before the geofence/GPS is
+        // even consulted; a no-coords booking would otherwise skip the fence).
+        let err = start_job(&pool, created.id, guard_id, false, None, None)
+            .await
+            .expect_err("start before scheduled window must be rejected");
+        match err {
+            AppError::ConflictCode { code, .. } => assert_eq!(
+                code,
+                crate::domain::scheduling::START_TOO_EARLY_CODE,
+                "expected START_TOO_EARLY, got {code}"
+            ),
+            other => panic!("expected START_TOO_EARLY ConflictCode, got {other:?}"),
+        }
+        // work_started_at must NOT have been stamped by the rejected start.
+        let ws: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT work_started_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read work_started_at");
+        assert!(
+            ws.is_none(),
+            "rejected start must not stamp work_started_at"
+        );
+
+        // Admin bypasses the time gate (support acts on behalf) → start succeeds even 2h early.
+        start_job(&pool, created.id, guard_id, true, None, None)
+            .await
+            .expect("admin start bypasses the time gate");
+        let ws: Option<chrono::DateTime<Utc>> =
+            sqlx::query_scalar("SELECT work_started_at FROM booking.bookings WHERE id = $1")
+                .bind(created.id)
+                .fetch_one(&pool)
+                .await
+                .expect("read work_started_at after admin start");
+        assert!(ws.is_some(), "admin start must stamp work_started_at");
 
         let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
             .bind(created.id)
