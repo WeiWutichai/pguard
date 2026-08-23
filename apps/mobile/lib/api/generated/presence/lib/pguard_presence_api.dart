@@ -22,6 +22,7 @@ export 'package:pguard_presence_api/src/model/inline_object1.dart';
 export 'package:pguard_presence_api/src/model/inline_object2.dart';
 export 'package:pguard_presence_api/src/model/inline_object3.dart';
 export 'package:pguard_presence_api/src/model/internal_online_guards200_response.dart';
+export 'package:pguard_presence_api/src/model/online_guard.dart';
 export 'package:pguard_presence_api/src/model/online_guards.dart';
 export 'package:pguard_presence_api/src/model/track_replay.dart';
 

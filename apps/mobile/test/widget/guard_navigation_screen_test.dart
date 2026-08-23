@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:pguard_mobile/core/location/routing_service.dart';
 import 'package:pguard_mobile/core/models/geo.dart';
+import 'package:pguard_mobile/core/network/api_exception.dart';
 import 'package:pguard_mobile/core/providers.dart';
 import 'package:pguard_mobile/features/guard/guard_navigation_screen.dart';
 
@@ -218,7 +219,7 @@ void main() {
         pguardApiProvider.overrideWithValue(api),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
-        // The combined CTA's start() reads a one-shot GPS fix for the 50 m geofence — stub it
+        // The arrive CTA reads a one-shot GPS fix for the 120 m arrive geofence (G4) — stub it
         // (the real geolocator has no platform channel under test).
         locationServiceProvider.overrideWithValue(FakeLocationService()),
         guardSelfLocationProvider
@@ -240,5 +241,54 @@ void main() {
     expect(api.calls, isNot(contains('PUT /bookings/b1/start')));
     // Returned to the previous screen after confirming arrival.
     expect(find.text('go'), findsOneWidget);
+  });
+
+  testWidgets(
+      'G4: arrived OUTSIDE the 120 m fence shows NOT_AT_SITE and does NOT transition',
+      (tester) async {
+    final api = FakeApi(
+      onGet: (_, __) async => _bookingJson('en_route'),
+      onPut: (path, _) async {
+        if (path == '/bookings/b1/arrived') {
+          // The backend rejects the arrival: the guard is beyond the 120 m meetup fence.
+          throw const ApiException(
+            message: 'You are 400 m from the meetup point (max 120 m)',
+            code: 'NOT_AT_SITE',
+            statusCode: 409,
+          );
+        }
+        throw StateError('unexpected PUT $path');
+      },
+    );
+    final router = GoRouter(initialLocation: '/nav', routes: [
+      GoRoute(
+        path: '/nav',
+        builder: (_, __) => const GuardNavigationScreen(bookingId: 'b1'),
+      ),
+    ]);
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        locationServiceProvider.overrideWithValue(FakeLocationService()),
+        guardSelfLocationProvider
+            .overrideWith((ref) => Stream.value(const GeoPoint(13.76, 100.50))),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ));
+    await _settle(tester);
+
+    await tester.tap(find.text('ถึงจุดนัดแล้ว'));
+    await _settle(tester);
+
+    // The arrive PUT was ATTEMPTED with the GPS body, but rejected by the geofence...
+    expect(api.calls, contains('PUT /bookings/b1/arrived'));
+    // ...the guard sees a localized "not in the meetup radius" message (NOT_AT_SITE)...
+    expect(find.textContaining('จุดนัดหมาย'), findsOneWidget);
+    // ...and stays on the nav screen (no transition / no pop — the CTA is still there).
+    expect(find.text('ถึงจุดนัดแล้ว'), findsOneWidget);
   });
 }

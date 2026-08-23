@@ -60,6 +60,22 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'ยังไม่ถึงเวลาเริ่มงาน'
           : "It's not time to start this job yet";
+    case 'NOT_AT_SITE':
+      // G4: the guard tried to mark ARRIVED while outside the 120m meetup geofence. The server
+      // message carries the measured distance ("You are {d} m from the meetup point (max 120 m)")
+      // — pull the first number for the Thai copy, degrade gracefully when it can't be parsed.
+      final d = RegExp(r'\d+').firstMatch(e.message)?.group(0);
+      return isThai
+          ? (d != null
+              ? 'คุณอยู่ห่างจากจุดนัดหมายประมาณ $d ม. — ต้องอยู่ในระยะ 120 ม. จึงจะกดถึงจุดนัดได้'
+              : 'คุณยังไม่อยู่ในรัศมีจุดนัดหมาย — เข้าใกล้อีกนิดแล้วลองใหม่')
+          : e.message;
+    case 'GPS_REQUIRED':
+      // G4: a pinned booking marked arrived with no GPS fix (location off/denied). The proximity
+      // gate is now at ARRIVAL, so the message speaks of confirming arrival (not starting).
+      return isThai
+          ? 'ต้องเปิดตำแหน่ง (GPS) เพื่อยืนยันว่าถึงจุดนัดหมายแล้ว — เปิด Location แล้วลองใหม่'
+          : 'Turn on Location (GPS) to confirm you have arrived, then try again';
     case 'BOOKING_NOT_PAYABLE':
       return isThai
           ? 'สถานะการจองเปลี่ยนไปแล้ว ไม่ต้องชำระเงิน'

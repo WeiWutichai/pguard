@@ -169,20 +169,21 @@ paths:
   /internal/online-guards:
     get:
       tags: [Locations]
-      summary: Live guard ids (service-to-service)
+      summary: Live guards + positions (service-to-service)
       description: |
-        Internal read for booking's discovery (`/available-guards`) — the ids of guards who are
+        Internal read for booking's discovery (`/available-guards`) — the guards who are
         currently LIVE (`is_online` AND a fresh GPS fix within the 5-minute freshness window,
-        "พร้อมรับงาน"). Guarded by a **service-JWT** (`serviceAuth`, aud `pguard-internal`),
-        never reachable from the public edge (the gateway blocks `/internal/`). Returns ONLY ids
-        — no lat/lng/PII (unlike the admin `/locations` bulk read); least-privilege for the
-        cross-service consult. Documented here for the contract; not part of the user-facing
-        client.
+        "พร้อมรับงาน"), each with their LATEST fix position. Guarded by a **service-JWT**
+        (`serviceAuth`, aud `pguard-internal`), never reachable from the public edge (the gateway
+        blocks `/internal/`). booking uses membership for the online filter AND the coordinates to
+        sort the customer's list nearest-to-meetup (C2). Narrow projection — id + position only,
+        none of the heading/speed/accuracy the admin `/locations` bulk read carries
+        (least-privilege). Documented here for the contract; not part of the user-facing client.
       operationId: internalOnlineGuards
       security: [{ serviceAuth: [] }]
       responses:
         '200':
-          description: The currently-live guard ids
+          description: The currently-live guards with their latest positions
           content:
             application/json:
               schema:
@@ -335,12 +336,21 @@ components:
 
     OnlineGuards:
       type: object
-      required: [guard_ids]
+      required: [guards]
       properties:
-        guard_ids:
+        guards:
           type: array
-          items: { type: string, format: uuid }
-          description: Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII.
+          description: Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position.
+          items: { $ref: '#/components/schemas/OnlineGuard' }
+
+    OnlineGuard:
+      type: object
+      required: [guard_id, lat, lng]
+      description: One live guard — the id plus the latest fix coordinates (for the nearest-first sort).
+      properties:
+        guard_id: { type: string, format: uuid }
+        lat: { type: number, format: double }
+        lng: { type: number, format: double }
 
     ApiResponseEnvelope:
       type: object

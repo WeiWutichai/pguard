@@ -8,23 +8,23 @@ import 'package:built_value/serializer.dart';
 
 part 'start_job_request.g.dart';
 
-/// The guard's GPS fix at the moment of pressing start, feeding the 50m start geofence. The whole body is OPTIONAL (older builds send none): no fix on a pinned booking → 409 `GPS_REQUIRED`; on a legacy address-only booking the geofence skips. `lat`/`lng` must come together (400 otherwise). 
+/// The guard's GPS fix, shared by PUT `/bookings/{id}/arrived` (the 120m arrive geofence, G4) and PUT `/bookings/{id}/start` (audit-only — start no longer geofences). The whole body is OPTIONAL (older builds send none): on ARRIVED, no fix on a pinned booking → 409 `GPS_REQUIRED`, and a fix beyond the fence → 409 `NOT_AT_SITE`; on a legacy address-only booking the arrive geofence skips. On START the fix is only persisted. `lat`/`lng` must come together (400 otherwise). 
 ///
 /// Properties:
-/// * [lat] - Guard latitude at start (must be paired with `lng`).
-/// * [lng] - Guard longitude at start (must be paired with `lat`).
-/// * [accuracyM] - Reported fix accuracy in meters — widens the 50m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
+/// * [lat] - Guard latitude at the fix (must be paired with `lng`).
+/// * [lng] - Guard longitude at the fix (must be paired with `lat`).
+/// * [accuracyM] - Reported fix accuracy in meters — on ARRIVED it widens the 120m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
 @BuiltValue()
 abstract class StartJobRequest implements Built<StartJobRequest, StartJobRequestBuilder> {
-  /// Guard latitude at start (must be paired with `lng`).
+  /// Guard latitude at the fix (must be paired with `lng`).
   @BuiltValueField(wireName: r'lat')
   double? get lat;
 
-  /// Guard longitude at start (must be paired with `lat`).
+  /// Guard longitude at the fix (must be paired with `lat`).
   @BuiltValueField(wireName: r'lng')
   double? get lng;
 
-  /// Reported fix accuracy in meters — widens the 50m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
+  /// Reported fix accuracy in meters — on ARRIVED it widens the 120m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
   @BuiltValueField(wireName: r'accuracy_m')
   double? get accuracyM;
 

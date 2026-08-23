@@ -4,6 +4,7 @@
 
 // ignore_for_file: unused_element
 import 'package:built_collection/built_collection.dart';
+import 'package:pguard_presence_api/src/model/online_guard.dart';
 import 'package:built_value/built_value.dart';
 import 'package:built_value/serializer.dart';
 
@@ -12,12 +13,12 @@ part 'online_guards.g.dart';
 /// OnlineGuards
 ///
 /// Properties:
-/// * [guardIds] - Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII.
+/// * [guards] - Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position.
 @BuiltValue()
 abstract class OnlineGuards implements Built<OnlineGuards, OnlineGuardsBuilder> {
-  /// Ids of guards currently LIVE (is_online AND a fresh fix). Ids only — no PII.
-  @BuiltValueField(wireName: r'guard_ids')
-  BuiltList<String> get guardIds;
+  /// Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position.
+  @BuiltValueField(wireName: r'guards')
+  BuiltList<OnlineGuard> get guards;
 
   OnlineGuards._();
 
@@ -42,10 +43,10 @@ class _$OnlineGuardsSerializer implements PrimitiveSerializer<OnlineGuards> {
     OnlineGuards object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
-    yield r'guard_ids';
+    yield r'guards';
     yield serializers.serialize(
-      object.guardIds,
-      specifiedType: const FullType(BuiltList, [FullType(String)]),
+      object.guards,
+      specifiedType: const FullType(BuiltList, [FullType(OnlineGuard)]),
     );
   }
 
@@ -70,12 +71,12 @@ class _$OnlineGuardsSerializer implements PrimitiveSerializer<OnlineGuards> {
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
-        case r'guard_ids':
+        case r'guards':
           final valueDes = serializers.deserialize(
             value,
-            specifiedType: const FullType(BuiltList, [FullType(String)]),
-          ) as BuiltList<String>;
-          result.guardIds.replace(valueDes);
+            specifiedType: const FullType(BuiltList, [FullType(OnlineGuard)]),
+          ) as BuiltList<OnlineGuard>;
+          result.guards.replace(valueDes);
           break;
         default:
           unhandled.add(key);

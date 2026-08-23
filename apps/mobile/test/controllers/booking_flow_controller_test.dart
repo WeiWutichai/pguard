@@ -505,4 +505,63 @@ void main() {
     expect(c.read(bookingFlowControllerProvider).error, 'Booking failed');
     expect(c.read(bookingFlowControllerProvider).booking, isNull);
   });
+
+  test(
+      'C2: loadGuards sends the meetup lat/lng and parses distance_m, keeping the server order',
+      () async {
+    Map<String, dynamic>? sentQuery;
+    final api = FakeApi(onGet: (path, query) async {
+      expect(path, '/available-guards');
+      sentQuery = query;
+      // The server returns the list already sorted nearest-first, each with a distance.
+      return [
+        {'guard_id': 'near-1', 'review_count': 3, 'distance_m': 350.0},
+        {'guard_id': 'far-2', 'review_count': 1, 'distance_m': 4200.0},
+      ];
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    // Picking on the map sets the meetup point that loadGuards forwards as lat/lng.
+    ctrl.setLocation(const GeoPlace(
+        point: GeoPoint(13.7401, 100.5331), placeName: 'จุดนัด'));
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    expect(await ctrl.loadGuards(), isTrue);
+
+    // The meetup point is sent so the backend can sort nearest-to-meetup.
+    expect(sentQuery?['lat'], 13.7401);
+    expect(sentQuery?['lng'], 100.5331);
+    // Server order preserved (near before far) and the distances parse onto the model.
+    expect(state().guards.map((g) => g.guardId).toList(), ['near-1', 'far-2']);
+    expect(state().guards.first.distanceMeters, 350.0);
+    expect(state().guards[1].distanceMeters, 4200.0);
+  });
+
+  test(
+      'C2: loadGuards omits lat/lng when only a typed address is used (no map pick)',
+      () async {
+    Map<String, dynamic>? sentQuery;
+    final api = FakeApi(onGet: (path, query) async {
+      expect(path, '/available-guards');
+      sentQuery = query;
+      return [
+        {'guard_id': 'g1', 'review_count': 0},
+      ];
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.setAddress('123 ถนนสุขุมวิท'); // typed only — no coordinate
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    expect(await ctrl.loadGuards(), isTrue);
+
+    // No meetup coordinate → the lat/lng keys are omitted (backward compatible).
+    expect(sentQuery?.containsKey('lat'), isFalse);
+    expect(sentQuery?.containsKey('lng'), isFalse);
+    // ...and no distance is set on the model.
+    expect(c.read(bookingFlowControllerProvider).guards.first.distanceMeters,
+        isNull);
+  });
 }

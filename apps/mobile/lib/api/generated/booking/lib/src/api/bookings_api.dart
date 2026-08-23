@@ -112,11 +112,12 @@ class BookingsApi {
     );
   }
 
-  /// Assigned guard has arrived
-  /// Status → &#x60;arrived&#x60;. Enqueues &#x60;pguard.events.booking.arrived&#x60; into the outbox in the same transaction. Assigned guard only. 
+  /// Assigned guard has arrived (120m geofence)
+  /// Status &#x60;en_route → arrived&#x60;. Enqueues &#x60;pguard.events.booking.arrived&#x60; into the outbox in the same transaction. Assigned guard only; the booking must be &#x60;en_route&#x60;.  **Geofence (G4):** the proximity gate lives HERE now (it used to be on start). The OPTIONAL body carries the guard&#39;s GPS fix at the moment of pressing \&quot;arrived\&quot;. On a booking with site coordinates (&#x60;lat&#x60;/&#x60;lng&#x60; pinned at create) the fix must be within **120m** of the pin, widened by the reported &#x60;accuracy_m&#x60; capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with &#x60;error.code &#x3D; NOT_AT_SITE&#x60; (message carries the measured distance in whole meters). A pinned booking marked arrived with NO fix (absent body/coordinates — e.g. an older app build) is 409 &#x60;error.code &#x3D; GPS_REQUIRED&#x60; (fail closed; clients branch on the code and localize). Legacy address-only bookings (no pin) skip the check entirely. Admin bypasses the geofence (support acts on behalf, off-site). The accepted fix is persisted server-side as audit evidence; body &#x60;lat&#x60;/&#x60;lng&#x60; are both-or-neither (400 otherwise, like create-booking). Once arrived, start + check-in are NO LONGER proximity-gated. 
   ///
   /// Parameters:
   /// * [id] 
+  /// * [startJobRequest] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -128,6 +129,7 @@ class BookingsApi {
   /// Throws [DioException] if API call or serialization fails
   Future<Response<InlineObject>> arrivedBooking({ 
     required String id,
+    StartJobRequest? startJobRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -151,11 +153,31 @@ class BookingsApi {
         ],
         ...?extra,
       },
+      contentType: 'application/json',
       validateStatus: validateStatus,
     );
 
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(StartJobRequest);
+      _bodyData = startJobRequest == null ? null : _serializers.serialize(startJobRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
     final _response = await _dio.request<Object>(
       _path,
+      data: _bodyData,
       options: _options,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
@@ -863,11 +885,13 @@ class BookingsApi {
   }
 
   /// Discovery — ONLINE approved guards enriched with their rating summary
-  /// booking owns discovery but none of the guard catalog (profile), reviews (rating), or live presence (presence). This lists the APPROVED guard catalog (read from profile&#39;s &#x60;/internal/guards&#x60; over a service-JWT), RESTRICTED to guards who are currently ONLINE — live per presence&#39;s &#x60;/internal/online-guards&#x60; (&#x60;is_online&#x60; AND a fresh GPS fix, \&quot;พร้อมรับงาน\&quot;) — and enriches each with the guard&#39;s live rating summary (read from rating&#39;s &#x60;/internal/guards/{id}/rating-summary&#x60;).  Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on presence: if the presence consult errors/times out, the full approved list is returned UNFILTERED (a presence hiccup must never blank discovery and block all bookings).  Best-effort on ratings: a guard whose rating lookup fails still appears with &#x60;average_rating: null&#x60; and &#x60;review_count: 0&#x60;. 
+  /// booking owns discovery but none of the guard catalog (profile), reviews (rating), or live presence (presence). This lists the APPROVED guard catalog (read from profile&#39;s &#x60;/internal/guards&#x60; over a service-JWT), RESTRICTED to guards who are currently ONLINE — live per presence&#39;s &#x60;/internal/online-guards&#x60; (&#x60;is_online&#x60; AND a fresh GPS fix, \&quot;พร้อมรับงาน\&quot;) — and enriches each with the guard&#39;s live rating summary (read from rating&#39;s &#x60;/internal/guards/{id}/rating-summary&#x60;).  Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on presence: if the presence consult errors/times out, the full approved list is returned UNFILTERED (a presence hiccup must never blank discovery and block all bookings).  Best-effort on ratings: a guard whose rating lookup fails still appears with &#x60;average_rating: null&#x60; and &#x60;review_count: 0&#x60;.  Nearest-first (C2): when the MEETUP point &#x60;lat&#x60;/&#x60;lng&#x60; is supplied, the surviving guards are sorted ASCENDING by the straight-line distance from each guard&#39;s LIVE position (per presence) to the meetup, and every entry carries &#x60;distance_m&#x60;. Omit the coordinates and the order is the catalog order with &#x60;distance_m&#x60; omitted (backward compatible). Guards with no known live position sort last. 
   ///
   /// Parameters:
   /// * [scheduledAt] - Start of the customer's chosen window. When supplied WITH `hours`, the busy-guard exclusion is scoped to this window (a guard booked for a non-overlapping time is still offered). Omit both for the coarse \"any active job\" exclusion. 
   /// * [hours] - Length of the window in hours (paired with `scheduled_at`).
+  /// * [lat] - Meetup latitude (the booking's site pin). Both-or-neither with `lng`; when present the list is sorted nearest-to-meetup and each entry carries `distance_m`. 
+  /// * [lng] - Meetup longitude (paired with `lat`).
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -880,6 +904,8 @@ class BookingsApi {
   Future<Response<ListAvailableGuards200Response>> listAvailableGuards({ 
     DateTime? scheduledAt,
     int? hours,
+    double? lat,
+    double? lng,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -909,6 +935,8 @@ class BookingsApi {
     final _queryParameters = <String, dynamic>{
       if (scheduledAt != null) r'scheduled_at': encodeQueryParameter(_serializers, scheduledAt, const FullType(DateTime)),
       if (hours != null) r'hours': encodeQueryParameter(_serializers, hours, const FullType(int)),
+      if (lat != null) r'lat': encodeQueryParameter(_serializers, lat, const FullType(double)),
+      if (lng != null) r'lng': encodeQueryParameter(_serializers, lng, const FullType(double)),
     };
 
     final _response = await _dio.request<Object>(
@@ -1482,8 +1510,8 @@ class BookingsApi {
     );
   }
 
-  /// Assigned guard starts the job (50m geofence)
-  /// Stamps &#x60;work_started_at&#x60; (the proration basis); status stays &#x60;arrived&#x60; (no event). Assigned guard only; the booking must be &#x60;arrived&#x60;. A second start is an idempotent no-op (neither the time gate nor the geofence is re-run on the retry of an already-started job). The job must be started before completion can be requested.  **Start-time gate (G3):** the start window opens at &#x60;scheduled_at − 15min&#x60; (an early grace for a guard who is on-site a touch ahead of schedule). A start before that is 409 with &#x60;error.code &#x3D; START_TOO_EARLY&#x60; (there is no upper bound — a late start is legitimate). Admin starts bypass the gate (support acts on behalf).  **Geofence:** the OPTIONAL body carries the guard&#39;s GPS fix at the moment of pressing start. On a booking with site coordinates (&#x60;lat&#x60;/&#x60;lng&#x60; pinned at create) the fix must be within **50m** of the pin, widened by the reported &#x60;accuracy_m&#x60; capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with &#x60;error.code &#x3D; NOT_AT_SITE&#x60; (message carries the measured distance in whole meters). A pinned booking started with NO fix (absent body/coordinates — e.g. an older app build) is 409 &#x60;error.code &#x3D; GPS_REQUIRED&#x60; (fail closed; clients branch on the code and localize). Legacy address-only bookings (no pin) skip the check entirely. Admin starts bypass the geofence (support acts on behalf, off-site). The accepted fix is persisted server-side as audit evidence; body &#x60;lat&#x60;/&#x60;lng&#x60; are both-or-neither (400 otherwise, like create-booking). 
+  /// Assigned guard starts the job (start-time gate only — no geofence)
+  /// Stamps &#x60;work_started_at&#x60; (the proration basis); status stays &#x60;arrived&#x60; (no event). Assigned guard only; the booking must be &#x60;arrived&#x60;. A second start is an idempotent no-op (the time gate is not re-run on the retry of an already-started job). The job must be started before completion can be requested.  **Start-time gate (G3):** the start window opens at &#x60;scheduled_at − 15min&#x60; (an early grace for a guard who is on-site a touch ahead of schedule). A start before that is 409 with &#x60;error.code &#x3D; START_TOO_EARLY&#x60; (there is no upper bound — a late start is legitimate). Admin starts bypass the gate (support acts on behalf).  **No geofence (G4):** proximity is now proven at ARRIVAL (see PUT &#x60;/bookings/{id}/arrived&#x60;, the 120m fence), so start is NO LONGER proximity-gated — a start never returns &#x60;NOT_AT_SITE&#x60;/&#x60;GPS_REQUIRED&#x60;. The OPTIONAL body still carries the guard&#39;s GPS fix, which is persisted server-side as audit evidence of where the job was started; body &#x60;lat&#x60;/&#x60;lng&#x60; are both-or-neither (400 otherwise, like create-booking). 
   ///
   /// Parameters:
   /// * [id] 

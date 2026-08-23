@@ -89,7 +89,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminOverdueCheckins**](doc/AdminApi.md#adminoverduecheckins) | **GET** /admin/checkins/overdue | Active jobs with an overdue hourly check-in (role&#x3D;admin)
 [*AdminApi*](doc/AdminApi.md) | [**adminUpdateService**](doc/AdminApi.md#adminupdateservice) | **PUT** /admin/pricing/services/{id} | Update a catalog service (role&#x3D;admin)
 [*BookingsApi*](doc/BookingsApi.md) | [**acceptBooking**](doc/BookingsApi.md#acceptbooking) | **POST** /bookings/{id}/accept | Guard accepts a request
-[*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived
+[*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived (120m geofence)
 [*BookingsApi*](doc/BookingsApi.md) | [**cancelBooking**](doc/BookingsApi.md#cancelbooking) | **PUT** /bookings/{id}/cancel | Customer/admin cancels a pre-arrival booking
 [*BookingsApi*](doc/BookingsApi.md) | [**completeBooking**](doc/BookingsApi.md#completebooking) | **PUT** /bookings/{id}/complete | Assigned guard requests completion
 [*BookingsApi*](doc/BookingsApi.md) | [**createBooking**](doc/BookingsApi.md#createbooking) | **POST** /bookings | Create a booking request (customer only)
@@ -104,7 +104,7 @@ Class | Method | HTTP request | Description
 [*BookingsApi*](doc/BookingsApi.md) | [**listServices**](doc/BookingsApi.md#listservices) | **GET** /services | List ACTIVE catalog services (customer-facing picker)
 [*BookingsApi*](doc/BookingsApi.md) | [**reviewCompletion**](doc/BookingsApi.md#reviewcompletion) | **PUT** /bookings/{id}/review-completion | Customer reviews the guard&#39;s completion request
 [*BookingsApi*](doc/BookingsApi.md) | [**skipBooking**](doc/BookingsApi.md#skipbooking) | **POST** /bookings/{id}/skip | Guard passes on an open offer (server-tracked skip)
-[*BookingsApi*](doc/BookingsApi.md) | [**startBooking**](doc/BookingsApi.md#startbooking) | **PUT** /bookings/{id}/start | Assigned guard starts the job (50m geofence)
+[*BookingsApi*](doc/BookingsApi.md) | [**startBooking**](doc/BookingsApi.md#startbooking) | **PUT** /bookings/{id}/start | Assigned guard starts the job (start-time gate only — no geofence)
 [*InternalApi*](doc/InternalApi.md) | [**getInternalBooking**](doc/InternalApi.md#getinternalbooking) | **GET** /internal/bookings/{id} | Read authoritative booking fields (service-JWT only)
 [*InternalApi*](doc/InternalApi.md) | [**internalExportUser**](doc/InternalApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 

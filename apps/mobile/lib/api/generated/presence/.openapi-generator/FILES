@@ -23,6 +23,7 @@ lib/src/model/inline_object1.dart
 lib/src/model/inline_object2.dart
 lib/src/model/inline_object3.dart
 lib/src/model/internal_online_guards200_response.dart
+lib/src/model/online_guard.dart
 lib/src/model/online_guards.dart
 lib/src/model/track_replay.dart
 lib/src/serializers.dart

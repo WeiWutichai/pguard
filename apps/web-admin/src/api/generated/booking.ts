@@ -223,6 +223,12 @@ export interface paths {
          *
          *     Best-effort on ratings: a guard whose rating lookup fails still appears with
          *     `average_rating: null` and `review_count: 0`.
+         *
+         *     Nearest-first (C2): when the MEETUP point `lat`/`lng` is supplied, the surviving guards
+         *     are sorted ASCENDING by the straight-line distance from each guard's LIVE position (per
+         *     presence) to the meetup, and every entry carries `distance_m`. Omit the coordinates and
+         *     the order is the catalog order with `distance_m` omitted (backward compatible). Guards
+         *     with no known live position sort last.
          */
         get: operations["listAvailableGuards"];
         put?: never;
@@ -426,9 +432,22 @@ export interface paths {
         };
         get?: never;
         /**
-         * Assigned guard has arrived
-         * @description Status → `arrived`. Enqueues `pguard.events.booking.arrived` into the outbox in
-         *     the same transaction. Assigned guard only.
+         * Assigned guard has arrived (120m geofence)
+         * @description Status `en_route → arrived`. Enqueues `pguard.events.booking.arrived` into the outbox in
+         *     the same transaction. Assigned guard only; the booking must be `en_route`.
+         *
+         *     **Geofence (G4):** the proximity gate lives HERE now (it used to be on start). The
+         *     OPTIONAL body carries the guard's GPS fix at the moment of pressing "arrived". On a
+         *     booking with site coordinates (`lat`/`lng` pinned at create) the fix must be within
+         *     **120m** of the pin, widened by the reported `accuracy_m` capped at **30m** (negative/NaN
+         *     accuracy counts as 0) — otherwise 409 with `error.code = NOT_AT_SITE` (message carries the
+         *     measured distance in whole meters). A pinned booking marked arrived with NO fix (absent
+         *     body/coordinates — e.g. an older app build) is 409 `error.code = GPS_REQUIRED` (fail
+         *     closed; clients branch on the code and localize). Legacy address-only bookings (no pin)
+         *     skip the check entirely. Admin bypasses the geofence (support acts on behalf, off-site).
+         *     The accepted fix is persisted server-side as audit evidence; body `lat`/`lng` are
+         *     both-or-neither (400 otherwise, like create-booking). Once arrived, start + check-in are
+         *     NO LONGER proximity-gated.
          */
         put: operations["arrivedBooking"];
         post?: never;
@@ -447,28 +466,22 @@ export interface paths {
         };
         get?: never;
         /**
-         * Assigned guard starts the job (50m geofence)
+         * Assigned guard starts the job (start-time gate only — no geofence)
          * @description Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
          *     Assigned guard only; the booking must be `arrived`. A second start is an idempotent
-         *     no-op (neither the time gate nor the geofence is re-run on the retry of an
-         *     already-started job). The job must be started before completion can be requested.
+         *     no-op (the time gate is not re-run on the retry of an already-started job). The job
+         *     must be started before completion can be requested.
          *
          *     **Start-time gate (G3):** the start window opens at `scheduled_at − 15min` (an early
          *     grace for a guard who is on-site a touch ahead of schedule). A start before that is
          *     409 with `error.code = START_TOO_EARLY` (there is no upper bound — a late start is
          *     legitimate). Admin starts bypass the gate (support acts on behalf).
          *
-         *     **Geofence:** the OPTIONAL body carries the guard's GPS fix at the moment of
-         *     pressing start. On a booking with site coordinates (`lat`/`lng` pinned at create)
-         *     the fix must be within **50m** of the pin, widened by the reported `accuracy_m`
-         *     capped at **30m** (negative/NaN accuracy counts as 0) — otherwise 409 with
-         *     `error.code = NOT_AT_SITE` (message carries the measured distance in whole meters).
-         *     A pinned booking started with NO fix (absent body/coordinates — e.g. an older app
-         *     build) is 409 `error.code = GPS_REQUIRED` (fail closed; clients branch on the code
-         *     and localize). Legacy address-only bookings (no pin) skip the check entirely.
-         *     Admin starts bypass the geofence (support acts on behalf, off-site). The accepted
-         *     fix is persisted server-side as audit evidence; body `lat`/`lng` are both-or-neither
-         *     (400 otherwise, like create-booking).
+         *     **No geofence (G4):** proximity is now proven at ARRIVAL (see PUT `/bookings/{id}/arrived`,
+         *     the 120m fence), so start is NO LONGER proximity-gated — a start never returns
+         *     `NOT_AT_SITE`/`GPS_REQUIRED`. The OPTIONAL body still carries the guard's GPS fix, which
+         *     is persisted server-side as audit evidence of where the job was started; body `lat`/`lng`
+         *     are both-or-neither (400 otherwise, like create-booking).
          */
         put: operations["startBooking"];
         post?: never;
@@ -811,25 +824,27 @@ export interface components {
             note?: string;
         };
         /**
-         * @description The guard's GPS fix at the moment of pressing start, feeding the 50m start geofence.
-         *     The whole body is OPTIONAL (older builds send none): no fix on a pinned booking →
-         *     409 `GPS_REQUIRED`; on a legacy address-only booking the geofence skips. `lat`/`lng`
-         *     must come together (400 otherwise).
+         * @description The guard's GPS fix, shared by PUT `/bookings/{id}/arrived` (the 120m arrive geofence, G4)
+         *     and PUT `/bookings/{id}/start` (audit-only — start no longer geofences). The whole body is
+         *     OPTIONAL (older builds send none): on ARRIVED, no fix on a pinned booking → 409
+         *     `GPS_REQUIRED`, and a fix beyond the fence → 409 `NOT_AT_SITE`; on a legacy address-only
+         *     booking the arrive geofence skips. On START the fix is only persisted. `lat`/`lng` must
+         *     come together (400 otherwise).
          */
         StartJobRequest: {
             /**
              * Format: double
-             * @description Guard latitude at start (must be paired with `lng`).
+             * @description Guard latitude at the fix (must be paired with `lng`).
              */
             lat?: number | null;
             /**
              * Format: double
-             * @description Guard longitude at start (must be paired with `lat`).
+             * @description Guard longitude at the fix (must be paired with `lat`).
              */
             lng?: number | null;
             /**
              * Format: float
-             * @description Reported fix accuracy in meters — widens the 50m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
+             * @description Reported fix accuracy in meters — on ARRIVED it widens the 120m fence by up to 30m (negative/NaN counts as 0). Junk values are stored as null.
              */
             accuracy_m?: number | null;
         };
@@ -1065,6 +1080,12 @@ export interface components {
             /** @description True when all five credential documents (id card, security license, training cert, criminal check, driver license) are on file with profile; omitted when unknown. */
             has_documents?: boolean;
             documents?: components["schemas"]["GuardDocuments"];
+            /**
+             * Format: double
+             * @description Straight-line distance (meters) from the guard's LIVE position to the meetup point — present ONLY when the request supplied `lat`/`lng` AND the guard's live position is known (the list is then sorted by it ascending). Omitted otherwise.
+             * @example 1234.5
+             */
+            distance_m?: number;
         };
         /** @description Per-credential PRESENCE (has / doesn''t-have), passed through from profile so the customer sees WHICH credential TYPES the guard has on file — never the files themselves. Booleans only. Omitted (not an all-false object) when profile didn''t say (older profile during a mixed-version deploy). Passbook is excluded (banking). */
         GuardDocuments: {
@@ -1547,6 +1568,13 @@ export interface operations {
                 scheduled_at?: string;
                 /** @description Length of the window in hours (paired with `scheduled_at`). */
                 hours?: number;
+                /**
+                 * @description Meetup latitude (the booking's site pin). Both-or-neither with `lng`; when present the
+                 *     list is sorted nearest-to-meetup and each entry carries `distance_m`.
+                 */
+                lat?: number;
+                /** @description Meetup longitude (paired with `lat`). */
+                lng?: number;
             };
             header?: never;
             path?: never;
@@ -1757,13 +1785,26 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["StartJobRequest"];
+            };
+        };
         responses: {
             200: components["responses"]["BookingOk"];
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            409: components["responses"]["Conflict"];
+            /** @description Conflict — `error.code` is `NOT_AT_SITE` (fix beyond the 120m fence + accuracy allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT` (booking not `en_route`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     startBooking: {
@@ -1786,7 +1827,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Conflict — `error.code` is `START_TOO_EARLY` (before the `scheduled_at − 15min` window), `NOT_AT_SITE` (fix beyond the 50m fence + accuracy allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT` (booking not `arrived`). */
+            /** @description Conflict — `error.code` is `START_TOO_EARLY` (before the `scheduled_at − 15min` window) or `CONFLICT` (booking not `arrived`). */
             409: {
                 headers: {
                     [name: string]: unknown;

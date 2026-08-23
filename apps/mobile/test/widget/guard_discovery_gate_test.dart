@@ -92,6 +92,40 @@ void main() {
   });
 
   testWidgets(
+      'C2: renders the nearest-first distance caption when the server sends distance_m',
+      (tester) async {
+    final api = FakeApi(onGet: (path, _) async {
+      expect(path, '/available-guards');
+      // Server returns the list already sorted nearest-first, each with a distance.
+      return [
+        {
+          'guard_id': 'near',
+          'display_name': 'ก ใกล้',
+          'review_count': 2,
+          'distance_m': 350.0,
+        },
+        {
+          'guard_id': 'far',
+          'display_name': 'ข ไกล',
+          'review_count': 1,
+          'distance_m': 4200.0,
+        },
+      ];
+    });
+    await pumpScreen(tester, api);
+    // Each guard shows an approximate distance caption (the `~`) with localized units.
+    expect(find.textContaining('ห่าง ~350 ม.'), findsOneWidget);
+    expect(find.textContaining('ห่าง ~4.2 กม.'), findsOneWidget);
+  });
+
+  testWidgets('C2: no distance caption when the server omits distance_m',
+      (tester) async {
+    final api = FakeApi(onGet: (_, __) async => guardsJson()); // no distance_m
+    await pumpScreen(tester, api);
+    expect(find.textContaining('ห่าง'), findsNothing);
+  });
+
+  testWidgets(
       'DIRECTED OFFER: confirming after picking a guard sends it as target_guard_id',
       (tester) async {
     Map<String, dynamic>? postBody;

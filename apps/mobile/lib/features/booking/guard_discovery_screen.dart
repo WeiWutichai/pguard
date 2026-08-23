@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../../core/controllers/booking_flow_controller.dart';
 import '../../core/controllers/locale_controller.dart';
+import '../../core/models/geo.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -169,6 +170,31 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
         ),
         const SizedBox(height: PgTokens.space3),
         for (final guard in state.guards) ...[
+          // C2: the list arrives already sorted NEAREST-first. When the server measured a
+          // distance (a meetup point was sent + the guard's live position was known), show a small
+          // "~1.2 กม." caption above the card. Straight-line → the `~` marks it approximate.
+          if (guard.distanceMeters != null)
+            Padding(
+              padding: const EdgeInsets.only(
+                  left: PgTokens.space1, bottom: PgTokens.space1),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const Icon(Icons.near_me_outlined,
+                      size: 13, color: PgTokens.colorTextMuted),
+                  const SizedBox(width: 4),
+                  Text(
+                    isThai
+                        ? 'ห่าง ~${formatDistance(guard.distanceMeters!, thai: true)}'
+                        : '~${formatDistance(guard.distanceMeters!, thai: false)} away',
+                    style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                        color: PgTokens.colorTextMuted),
+                  ),
+                ],
+              ),
+            ),
           GuardCard(
             guard: guard,
             selected: guard.guardId == state.selectedGuardId,

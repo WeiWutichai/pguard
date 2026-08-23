@@ -8,7 +8,7 @@
 //! cross-schema query. The ports decouple the handler from `reqwest` so the aggregation is
 //! unit-testable with stubs (no live services).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 
@@ -56,11 +56,21 @@ pub struct GuardRatingSummary {
     pub count: i64,
 }
 
-/// The live-guard ids from presence's `/internal/online-guards`.
+/// The live guards from presence's `/internal/online-guards` — each carrying its latest fix
+/// position, so booking can BOTH filter offline guards (membership) AND sort the customer's list
+/// nearest-to-meetup (C2).
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct OnlineGuards {
     #[serde(default)]
-    pub guard_ids: Vec<Uuid>,
+    pub guards: Vec<OnlineGuard>,
+}
+
+/// One live guard: the id + its latest fix coordinates (presence's `OnlineGuard`).
+#[derive(Debug, Clone, Deserialize)]
+pub struct OnlineGuard {
+    pub guard_id: Uuid,
+    pub lat: f64,
+    pub lng: f64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -82,13 +92,14 @@ pub trait RatingReader: Send + Sync {
     async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError>;
 }
 
-/// Read the set of guards currently LIVE per presence (the "พร้อมรับงาน" filter). A `HashSet`
-/// because the only use is membership filtering of the catalog. An `Err` here is the FAIL-OPEN
-/// signal: the discovery handler logs a warning and shows the unfiltered list rather than
-/// blocking every booking on a presence hiccup.
+/// Read the guards currently LIVE per presence (the "พร้อมรับงาน" filter), each mapped to its
+/// latest fix coordinates. A `HashMap<guard_id, (lat, lng)>` because discovery uses BOTH
+/// membership (drop offline guards) AND the position (sort the list nearest-to-meetup, C2). An
+/// `Err` here is the FAIL-OPEN signal: the discovery handler logs a warning and shows the
+/// unfiltered list rather than blocking every booking on a presence hiccup.
 #[allow(async_fn_in_trait)]
 pub trait PresenceReader: Send + Sync {
-    async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError>;
+    async fn online_guard_locations(&self) -> Result<HashMap<Uuid, (f64, f64)>, AppError>;
 }
 
 /// Read the set of guards who currently hold an ACTIVE assignment (a booking in
@@ -236,7 +247,7 @@ impl BusyGuardsReader for sqlx::PgPool {
 }
 
 impl PresenceReader for HttpDiscoveryClient {
-    async fn online_guard_ids(&self) -> Result<HashSet<Uuid>, AppError> {
+    async fn online_guard_locations(&self) -> Result<HashMap<Uuid, (f64, f64)>, AppError> {
         let token = self.mint()?;
         let url = format!("{}/internal/online-guards", self.presence_url);
         let resp = self
@@ -262,11 +273,15 @@ impl PresenceReader for HttpDiscoveryClient {
         })?;
         // A 200 with NO `data` field is malformed, not "zero guards online" — return Err so the
         // caller FAILS OPEN (shows the full approved list) instead of fail-closed (hides everyone).
-        // A present `data` with an empty `guard_ids` is a legitimate zero-online result and is kept.
+        // A present `data` with an empty `guards` is a legitimate zero-online result and is kept.
         let online = envelope.data.ok_or_else(|| {
             tracing::warn!("presence online-guards 200 but missing data field");
             AppError::Internal("Online-guards lookup failed".to_string())
         })?;
-        Ok(online.guard_ids.into_iter().collect())
+        Ok(online
+            .guards
+            .into_iter()
+            .map(|g| (g.guard_id, (g.lat, g.lng)))
+            .collect())
     }
 }

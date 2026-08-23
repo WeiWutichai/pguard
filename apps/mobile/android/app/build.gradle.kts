@@ -15,6 +15,9 @@ android {
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
+        // flutter_local_notifications (N3 check-in reminder sound) uses java.time APIs that must be
+        // backported to our minSdk via core-library desugaring, or the release build fails to link.
+        isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
@@ -44,4 +47,10 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Backports java.time.* (used by flutter_local_notifications) to our minSdk. Required whenever
+    // isCoreLibraryDesugaringEnabled = true.
+    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 }

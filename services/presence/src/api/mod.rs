@@ -17,8 +17,8 @@ use shared::service_jwt::ServiceCaller;
 
 use crate::domain;
 use crate::models::{
-    GuardLocation, GuardLocationRow, HistoryPoint, HistoryQuery, LocationsQuery, OnlineGuards,
-    ReplayQuery, TrackReplay,
+    GuardLocation, GuardLocationRow, HistoryPoint, HistoryQuery, LocationsQuery, OnlineGuard,
+    OnlineGuards, ReplayQuery, TrackReplay,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, PresenceDeps, PresenceInternalDeps};
@@ -219,22 +219,28 @@ fn build_replay(
     }
 }
 
-/// GET /internal/online-guards — the ids of guards who are currently LIVE (`is_online` AND a
-/// fresh fix; [`domain::is_live`]). Service-JWT'd ([`ServiceCaller`]) — never reachable from the
-/// public edge (the gateway blocks `/internal/`). Consumed by booking's `/available-guards`
-/// discovery to drop OFFLINE approved guards from the customer list ("พร้อมรับงาน" filter).
+/// GET /internal/online-guards — the guards who are currently LIVE (`is_online` AND a fresh
+/// fix; [`domain::is_live`]), each with their latest fix position. Service-JWT'd
+/// ([`ServiceCaller`]) — never reachable from the public edge (the gateway blocks `/internal/`).
+/// Consumed by booking's `/available-guards` discovery to (a) drop OFFLINE approved guards from
+/// the customer list ("พร้อมรับงาน" filter) and (b) sort the surviving guards nearest-to-meetup
+/// (C2) using the returned coordinates.
 ///
-/// Returns ONLY ids — no lat/lng/PII (unlike the admin `/locations` bulk read), so the discovery
-/// consult is least-privilege. The freshness window is presence's own [`domain::FRESHNESS_MINUTES`]
-/// rule applied in SQL, so callers always see the same "live" definition as the admin map.
+/// Narrow projection — id + position only, none of the heading/speed/accuracy the admin
+/// `/locations` bulk read carries (least-privilege). The freshness window is presence's own
+/// [`domain::FRESHNESS_MINUTES`] rule applied in SQL, so callers always see the same "live"
+/// definition as the admin map.
 #[tracing::instrument(skip(state), fields(caller = %caller.service))]
 pub async fn internal_online_guards<S: PresenceInternalDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
 ) -> Result<Json<ApiResponse<OnlineGuards>>, AppError> {
-    let guard_ids =
-        repo::online_guard_ids(state.db(), Utc::now(), domain::FRESHNESS_MINUTES).await?;
-    Ok(Json(ApiResponse::success(OnlineGuards { guard_ids })))
+    let guards = repo::online_guard_locations(state.db(), Utc::now(), domain::FRESHNESS_MINUTES)
+        .await?
+        .into_iter()
+        .map(|(guard_id, lat, lng)| OnlineGuard { guard_id, lat, lng })
+        .collect();
+    Ok(Json(ApiResponse::success(OnlineGuards { guards })))
 }
 
 /// The IDOR rule for a per-guard read: an admin may read any guard; a guard only its own; a
