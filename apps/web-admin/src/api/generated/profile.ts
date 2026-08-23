@@ -471,6 +471,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/support/tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * File a support ticket (any signed-in user)
+         * @description The mobile Help page ("แจ้งปัญหา / ส่งความคิดเห็น") POSTs a support ticket here. The
+         *     reporter is the AUTHENTICATED user (the caller), never taken from the body — a user can
+         *     only file on their own behalf — so this is open to ANY signed-in role (guard/customer/
+         *     admin). `kind` must be `problem` or `feedback`; `message` is the free-text body,
+         *     non-empty and ≤ 2000 chars (trimmed before storage). An invalid kind / empty / over-long
+         *     message is a typed **400**. The stored ticket (id, status `open`, created_at) is returned
+         *     for the client's success state; an admin reads the queue via `GET /admin/support/tickets`.
+         */
+        post: operations["createSupportTicket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/support/tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List support tickets, newest first (role=admin)
+         * @description The admin queue of support tickets filed from the mobile Help page — newest first
+         *     (`created_at DESC`), limit/offset paged. Admin only (else **403**). Each row carries the
+         *     reporter's `user_id`; the web admin maps it to a display name with the existing batch
+         *     name-resolver (`POST /admin/users/resolve`). Replica read.
+         */
+        get: operations["adminListSupportTickets"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/documents/expiring": {
         parameters: {
             query?: never;
@@ -1080,6 +1129,41 @@ export interface components {
             target?: string | null;
             /** Format: date-time */
             accessed_at: string;
+        };
+        /**
+         * @description The mobile Help form body (`POST /support/tickets`). `kind` is the toggle (problem =
+         *     แจ้งปัญหา, feedback = ส่งความคิดเห็น); `message` is the free-text body (non-empty,
+         *     trimmed, ≤ 2000 chars). The reporter is NOT in the body — it is the authenticated caller.
+         */
+        CreateSupportTicketRequest: {
+            /**
+             * @description problem = report an issue; feedback = a suggestion/comment.
+             * @enum {string}
+             */
+            kind: "problem" | "feedback";
+            /** @description The report body (1–2000 chars; trimmed server-side). */
+            message: string;
+        };
+        /**
+         * @description One support ticket — returned to the reporter on create and to an admin in the newest-first
+         *     list. `user_id` is the reporter (resolved to a display name by the admin name-resolver on
+         *     the web side). `status` is `open` on creation (no triage workflow yet).
+         */
+        SupportTicket: {
+            /** Format: uuid */
+            id: string;
+            /**
+             * Format: uuid
+             * @description The reporter (identity-owned id).
+             */
+            user_id: string;
+            /** @enum {string} */
+            kind: "problem" | "feedback";
+            message: string;
+            /** @description Lifecycle state; `open` on creation. */
+            status: string;
+            /** Format: date-time */
+            created_at: string;
         };
         /**
          * @description One guard-document expiry row (the admin "expiring documents" surface + the owner/admin
@@ -1943,6 +2027,61 @@ export interface operations {
                 };
             };
             400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    createSupportTicket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSupportTicketRequest"];
+            };
+        };
+        responses: {
+            /** @description The created support ticket */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["SupportTicket"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    adminListSupportTickets: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Support tickets, newest first */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["SupportTicket"][];
+                    };
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };

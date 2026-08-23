@@ -46,6 +46,13 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
   Future<void> _runVerify() async {
     final ok = await ref.read(authControllerProvider.notifier).verifyOtp(_code);
     if (!ok || !mounted) return;
+    // CHANGE-LOGIN-PHONE run (from the profile "เปลี่ยนเบอร์" flow): the NEW number is now verified.
+    // Skip the register/reset PIN paths and go to the confirm-current-PIN step, which calls
+    // `PATCH /auth/phone`. Checked FIRST so it never falls into the returning-user / add-role logic.
+    if (ref.read(authControllerProvider).phoneChange) {
+      context.push('/profile/phone/confirm');
+      return;
+    }
     // ADD-SECOND-ROLE run (from the pending screen): skip the PIN step (the account already has
     // one) — exchange the just-verified token for the second role via `POST /auth/register/add-role`
     // and go straight to that role's profile form. A normal register/reset run continues to the PIN.
@@ -150,6 +157,11 @@ class _OtpScreenState extends ConsumerState<OtpScreen> {
                   policy: _resend,
                   attempt: state.otpRequestCount.clamp(1, 3),
                   isThai: isThai,
+                  // Resend re-solves the captcha; a phone-change run lives under the authenticated
+                  // `/profile/phone/*` routes (the `/auth/*` ones are bounced when signed in).
+                  resendRoute: state.phoneChange
+                      ? '/profile/phone/captcha'
+                      : '/auth/captcha',
                 ),
               const SizedBox(height: PgTokens.space4),
               if (state.error != null)
@@ -175,12 +187,17 @@ class _ResendCountdown extends StatelessWidget {
       {required this.sentAt,
       required this.policy,
       required this.attempt,
-      required this.isThai});
+      required this.isThai,
+      this.resendRoute = '/auth/captcha'});
 
   final DateTime sentAt;
   final ResendPolicy policy;
   final int attempt;
   final bool isThai;
+
+  /// Where "Resend code" navigates to re-solve the captcha — `/auth/captcha` for registration/reset,
+  /// `/profile/phone/captcha` for the signed-in change-phone flow.
+  final String resendRoute;
 
   static const TextStyle _strong =
       TextStyle(fontWeight: FontWeight.w600, color: PgTokens.colorTextFaint);
@@ -217,7 +234,7 @@ class _ResendCountdown extends StatelessWidget {
         }
         return Center(
           child: TextButton(
-            onPressed: () => context.go('/auth/captcha'),
+            onPressed: () => context.go(resendRoute),
             child: Text(isThai ? 'ไม่ได้รับรหัส? ขอใหม่' : 'Resend code'),
           ),
         );

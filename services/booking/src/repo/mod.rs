@@ -29,8 +29,8 @@ use crate::models::{
 };
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
-     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, work_started_at, paid_at, \
-     cancellation_reason, cancellation_note, commission_percent, cancellation_fee, \
+     scheduled_at, hours, base_fee, guard_count, tip, lat, lng, target_guard_id, work_started_at, \
+     paid_at, cancellation_reason, cancellation_note, commission_percent, cancellation_fee, \
      created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
@@ -505,19 +505,22 @@ pub async fn create_booking(
     // so branch the SQL). The two snapshot columns are bound on BOTH branches — a booking made
     // today always states its terms, even when those terms are "no cut, no fee".
     let (commission_percent, cancellation_fee) = PricingSnapshot::terms_or_zero(pricing.as_ref());
+    // DIRECTED OFFER (C3): the customer's chosen guard, or NULL for an OPEN first-come booking.
+    // Bound on BOTH branches (a directed booking states its target whether or not a catalog
+    // service was picked). NULL = open; readers (discovery + accept) treat it as "anyone may claim".
     let sql = if pricing.is_some() {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, commission_percent, cancellation_fee, base_fee)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, target_guard_id, commission_percent, cancellation_fee, base_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
     } else {
         format!(
             r#"
-            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, commission_percent, cancellation_fee)
-            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            INSERT INTO booking.bookings (customer_id, status, address, scheduled_at, hours, guard_count, tip, lat, lng, target_guard_id, commission_percent, cancellation_fee)
+            VALUES ($1, 'requested'::booking.booking_status, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
             RETURNING {BOOKING_COLUMNS}
             "#
         )
@@ -531,6 +534,7 @@ pub async fn create_booking(
         .bind(tip)
         .bind(req.lat)
         .bind(req.lng)
+        .bind(req.target_guard_id)
         .bind(commission_percent)
         .bind(cancellation_fee);
     if let Some(snapshot) = pricing {
@@ -549,6 +553,10 @@ pub async fn create_booking(
         created.scheduled_at,
         created.hours,
         created.guard_count,
+        // DIRECTED OFFER (C3): rides the event so notification can push the "new job" ONLY to the
+        // targeted guard (a broadcast to all online guards would defeat the point). NULL = open →
+        // notification fans out to everyone, as today.
+        created.target_guard_id,
     );
     let envelope = EventEnvelope::new(topic, correlation_id, payload);
     let envelope_json = serde_json::to_value(&envelope)
@@ -579,6 +587,10 @@ pub struct BookingCore {
     /// start-work geofence has nothing to measure against and skips.
     pub lat: Option<f64>,
     pub lng: Option<f64>,
+    /// DIRECTED OFFER (C3): the guard this booking was offered to, or `None` for an OPEN
+    /// first-come booking. Read inside the row lock so the accept gate rejects a non-target guard
+    /// (`NOT_OFFERED_TO_YOU`) with no TOCTOU.
+    pub target_guard_id: Option<Uuid>,
 }
 
 impl BookingCore {
@@ -602,11 +614,12 @@ type CoreRow = (
     Option<DateTime<Utc>>,
     Option<f64>,
     Option<f64>,
+    Option<Uuid>,
 );
 
 const CORE_QUERY: &str =
     "SELECT status::text, customer_id, guard_id, hours, scheduled_at, work_started_at, paid_at, \
-     lat, lng FROM booking.bookings WHERE id = $1";
+     lat, lng, target_guard_id FROM booking.bookings WHERE id = $1";
 
 fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
     let (
@@ -619,6 +632,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         paid_at,
         lat,
         lng,
+        target_guard_id,
     ) = row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
@@ -633,6 +647,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         paid_at,
         lat,
         lng,
+        target_guard_id,
     })
 }
 
@@ -694,6 +709,7 @@ pub async fn transition(
         hours,
         work_started_at,
         paid_at,
+        target_guard_id,
         ..
     } = locked_current(&mut tx, id).await?;
 
@@ -732,6 +748,24 @@ pub async fn transition(
     // non-owner gets 403 (not 409) so IDOR is indistinguishable from a real permission denial.
     match actor_class {
         RequiredActor::ClaimUnassigned => {
+            // DIRECTED OFFER (C3), checked FIRST (inside the row lock → no TOCTOU). A booking
+            // targeted at ONE guard may be claimed ONLY by that guard: a non-target caller — who
+            // cannot even see it in discovery but might POST the id directly — gets a typed 403 the
+            // app localizes. Admin `/assign` overrides (support may place any guard on any booking).
+            // `assign_guard` is the guard being placed (the accepting guard on self-accept), so the
+            // target must equal it. Ordered before JOB_TAKEN/overlap so a non-target never learns
+            // whether the job is still open.
+            if !is_admin {
+                if let Some(target) = target_guard_id {
+                    if assign_guard != Some(target) {
+                        tx.rollback().await?;
+                        return Err(AppError::ForbiddenCode {
+                            code: "NOT_OFFERED_TO_YOU",
+                            message: "This booking was offered to a specific guard".to_string(),
+                        });
+                    }
+                }
+            }
             if existing_guard.is_some() {
                 tx.rollback().await?;
                 // Typed: first-come-accept means losing the race is the NORMAL contention case, so
@@ -1163,6 +1197,9 @@ pub async fn list_open_bookings(
                 SELECT {BOOKING_COLUMNS}
                 FROM booking.bookings b
                 WHERE status = 'requested'::booking.booking_status AND guard_id IS NULL
+                  -- DIRECTED OFFER (C3): a guard sees an open booking (target NULL) OR one
+                  -- targeted at THEM; a booking directed at another guard is invisible here.
+                  AND (target_guard_id IS NULL OR target_guard_id = $1)
                   AND NOT EXISTS (
                       SELECT 1 FROM booking.guard_job_skips s
                       WHERE s.booking_id = b.id AND s.guard_id = $1
@@ -1189,8 +1226,8 @@ pub async fn list_open_bookings(
                 -- row, so it must mirror BOOKING_COLUMNS field-for-field — `status` is already
                 -- text-cast + aliased by the inner select. Add new booking columns to BOTH.
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
-                       base_fee, guard_count, tip, lat, lng, work_started_at, paid_at,
-                       cancellation_reason, cancellation_note, commission_percent,
+                       base_fee, guard_count, tip, lat, lng, target_guard_id, work_started_at,
+                       paid_at, cancellation_reason, cancellation_note, commission_percent,
                        cancellation_fee, created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
@@ -1203,6 +1240,8 @@ pub async fn list_open_bookings(
                     WHERE status = 'requested'::booking.booking_status
                       AND guard_id IS NULL
                       AND lat IS NOT NULL AND lng IS NOT NULL
+                      -- DIRECTED OFFER (C3): open (target NULL) OR targeted at THIS guard ($6).
+                      AND (target_guard_id IS NULL OR target_guard_id = $6)
                       AND NOT EXISTS (
                           SELECT 1 FROM booking.guard_job_skips s
                           WHERE s.booking_id = b.id AND s.guard_id = $6
@@ -1602,6 +1641,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1714,6 +1754,7 @@ mod db_tests {
                 scheduled_at,
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: Some(2),
                 tip: None,
                 lat: Some(lat),
@@ -1798,6 +1839,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 3,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1873,6 +1915,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 3,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -1981,6 +2024,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 2,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2079,6 +2123,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2246,6 +2291,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2380,6 +2426,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 2,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2510,6 +2557,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 3,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2681,6 +2729,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 2,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -2747,6 +2796,7 @@ mod db_tests {
             tip: None,
             lat: coords.map(|c| c.0),
             lng: coords.map(|c| c.1),
+            target_guard_id: None,
         }
     }
 
@@ -3283,6 +3333,216 @@ mod db_tests {
         }
     }
 
+    /// DIRECTED OFFER (C3), end-to-end against Postgres. A booking directed at ONE guard is
+    /// (1) INVISIBLE to a non-target guard's discovery (plain AND geo), (2) VISIBLE to the target,
+    /// (3) rejects a non-target `accept` with 403 `NOT_OFFERED_TO_YOU`, and (4) accepts fine for
+    /// the target — while an OPEN (target NULL) booking stays claimable by ANY guard.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn directed_offer_is_visible_and_acceptable_only_to_the_target() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer = Uuid::new_v4();
+        let target = Uuid::new_v4();
+        let other = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+
+        // A directed CreateBookingRequest: identical to booking_req but with the chosen guard set.
+        let directed_req = |addr: &str, tgt: Uuid| CreateBookingRequest {
+            address: addr.to_string(),
+            scheduled_at: Utc::now(),
+            hours: 4,
+            service_id: None,
+            guard_count: None,
+            tip: None,
+            lat: None,
+            lng: None,
+            target_guard_id: Some(tgt),
+        };
+
+        // A DIRECTED booking (offered to `target`) and an OPEN one (legacy first-come).
+        let directed = create_booking(
+            &pool,
+            customer,
+            &directed_req("Directed Rd", target),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create directed");
+        // The persisted row carries the target (it round-trips through the response).
+        assert_eq!(
+            directed.target_guard_id,
+            Some(target),
+            "the chosen guard is persisted as target_guard_id"
+        );
+        let open = create_booking(
+            &pool,
+            customer,
+            &booking_req("Open Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create open");
+        assert_eq!(open.target_guard_id, None, "an un-directed booking is open");
+
+        // (1) DISCOVERY — a NON-target guard sees the OPEN job but NOT the directed one.
+        let other_open = list_open_bookings(&pool, other, None, 200, 0)
+            .await
+            .expect("other open list");
+        assert!(
+            other_open.iter().any(|b| b.id == open.id),
+            "a non-target guard sees the OPEN job"
+        );
+        assert!(
+            !other_open.iter().any(|b| b.id == directed.id),
+            "a non-target guard must NOT see a job directed at someone else"
+        );
+
+        // (2) DISCOVERY — the TARGET guard sees BOTH the directed job and the open one.
+        let target_open = list_open_bookings(&pool, target, None, 200, 0)
+            .await
+            .expect("target open list");
+        assert!(
+            target_open.iter().any(|b| b.id == directed.id),
+            "the target guard sees the job directed at them"
+        );
+        assert!(
+            target_open.iter().any(|b| b.id == open.id),
+            "the target guard also sees open jobs"
+        );
+
+        // (3) ACCEPT — a non-target guard is rejected with the typed 403.
+        let err = transition(
+            &pool,
+            directed.id,
+            other,
+            false,
+            BookingStatus::Accepted,
+            Some(other),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect_err("a non-target accept must be rejected");
+        match err {
+            AppError::ForbiddenCode { code, .. } => assert_eq!(code, "NOT_OFFERED_TO_YOU"),
+            other => panic!("expected NOT_OFFERED_TO_YOU 403, got {other:?}"),
+        }
+        // ...and the booking is untouched — still requested, still unassigned.
+        let still = get_booking_core(&pool, directed.id).await.expect("re-read");
+        assert_eq!(still.status, BookingStatus::Requested);
+        assert_eq!(still.guard_id, None, "the rejected accept assigned nobody");
+
+        // (4a) ACCEPT — the TARGET guard claims the directed booking fine.
+        let claimed = transition(
+            &pool,
+            directed.id,
+            target,
+            false,
+            BookingStatus::Accepted,
+            Some(target),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("the target accepts fine");
+        assert_eq!(claimed.status, "accepted");
+        assert_eq!(claimed.guard_id, Some(target));
+
+        // (4b) ACCEPT — the OPEN booking is claimable by ANY guard (here the non-target).
+        let open_claimed = transition(
+            &pool,
+            open.id,
+            other,
+            false,
+            BookingStatus::Accepted,
+            Some(other),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("any guard claims an open booking");
+        assert_eq!(open_claimed.guard_id, Some(other));
+
+        for id in [directed.id, open.id] {
+            cleanup_booking(&pool, id).await;
+        }
+    }
+
+    /// An admin may `/assign` ANY guard to a DIRECTED booking — the directed-offer gate is a
+    /// guard-vs-guard rule, and support acting on behalf overrides it (is_admin bypass).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn admin_assign_overrides_directed_offer() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer = Uuid::new_v4();
+        let target = Uuid::new_v4();
+        let someone_else = Uuid::new_v4();
+        let admin = Uuid::new_v4();
+
+        let directed = create_booking(
+            &pool,
+            customer,
+            &CreateBookingRequest {
+                address: "Admin Override Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 4,
+                service_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+                target_guard_id: Some(target),
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create directed");
+
+        // Admin (is_admin = true) assigns a DIFFERENT guard than the target — allowed.
+        let assigned = transition(
+            &pool,
+            directed.id,
+            admin,
+            true,
+            BookingStatus::Accepted,
+            Some(someone_else),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("admin overrides the directed-offer gate");
+        assert_eq!(assigned.guard_id, Some(someone_else));
+
+        cleanup_booking(&pool, directed.id).await;
+    }
+
     /// `start_job`'s three load-bearing guards, end-to-end against Postgres: (1) a second start
     /// is an idempotent no-op (work_started_at NOT re-stamped — the proration clock must not
     /// reset); (2) starting before `arrived` → Conflict; (3) a non-assigned guard → Forbidden
@@ -3312,6 +3572,7 @@ mod db_tests {
                 scheduled_at: Utc::now(),
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -3435,6 +3696,7 @@ mod db_tests {
                 scheduled_at: Utc::now() + chrono::Duration::hours(2),
                 hours: 4,
                 service_id: None,
+                target_guard_id: None,
                 guard_count: None,
                 tip: None,
                 lat: None,
@@ -3949,6 +4211,7 @@ mod db_tests {
                     scheduled_at,
                     hours: 1,
                     service_id: None,
+                    target_guard_id: None,
                     guard_count: None,
                     tip: None,
                     lat: None,

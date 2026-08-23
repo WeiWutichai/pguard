@@ -9,6 +9,8 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_profile_api/src/api_util.dart';
+import 'package:pguard_profile_api/src/model/create_support_ticket200_response.dart';
+import 'package:pguard_profile_api/src/model/create_support_ticket_request.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/get_customer_avatar200_response.dart';
 import 'package:pguard_profile_api/src/model/get_guard_avatar200_response.dart';
@@ -33,6 +35,107 @@ class ProfileApi {
   final Serializers _serializers;
 
   const ProfileApi(this._dio, this._serializers);
+
+  /// File a support ticket (any signed-in user)
+  /// The mobile Help page (\&quot;แจ้งปัญหา / ส่งความคิดเห็น\&quot;) POSTs a support ticket here. The reporter is the AUTHENTICATED user (the caller), never taken from the body — a user can only file on their own behalf — so this is open to ANY signed-in role (guard/customer/ admin). &#x60;kind&#x60; must be &#x60;problem&#x60; or &#x60;feedback&#x60;; &#x60;message&#x60; is the free-text body, non-empty and ≤ 2000 chars (trimmed before storage). An invalid kind / empty / over-long message is a typed **400**. The stored ticket (id, status &#x60;open&#x60;, created_at) is returned for the client&#39;s success state; an admin reads the queue via &#x60;GET /admin/support/tickets&#x60;. 
+  ///
+  /// Parameters:
+  /// * [createSupportTicketRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [CreateSupportTicket200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<CreateSupportTicket200Response>> createSupportTicket({ 
+    required CreateSupportTicketRequest createSupportTicketRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/support/tickets';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(CreateSupportTicketRequest);
+      _bodyData = _serializers.serialize(createSupportTicketRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    CreateSupportTicket200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(CreateSupportTicket200Response),
+      ) as CreateSupportTicket200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<CreateSupportTicket200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// A presigned URL for the customer&#39;s avatar
   /// Returns a short-lived presigned GET URL for the stored avatar. Read auth is **owner-or-admin**. 404 when no avatar is set or the customer has no profile. 

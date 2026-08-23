@@ -41,6 +41,9 @@ void main() {
         'tip': req['tip'] ?? '0',
         'lat': req['lat'],
         'lng': req['lng'],
+        // DIRECTED OFFER (C3): echo the target back so round-trip parsing is covered (null when
+        // the customer picked no guard — an OPEN booking).
+        'target_guard_id': req['target_guard_id'],
         'created_at': '2026-06-05T10:00:00Z',
         'updated_at': '2026-06-05T10:00:00Z',
       };
@@ -121,7 +124,8 @@ void main() {
     expect(state().guards.first.rating, 4.9);
     // Enriched fields parse: real name + photo on the first guard…
     expect(state().guards.first.displayName, 'สมชาย มั่นคง');
-    expect(state().guards.first.avatarUrl, 'https://cdn.example/guard-aaaa.jpg');
+    expect(
+        state().guards.first.avatarUrl, 'https://cdn.example/guard-aaaa.jpg');
     expect(state().guards.first.hasPhoto, isTrue);
     expect(state().guards.first.displayLabel(true), 'สมชาย มั่นคง');
     // …and the un-enriched guard falls back to the id handle + initials avatar.
@@ -174,7 +178,8 @@ void main() {
     expect(c2.read(bookingFlowControllerProvider).hours, 8);
   });
 
-  test('min_hours is enforced: below-min flags meetsMinHours and blocks create', () async {
+  test('min_hours is enforced: below-min flags meetsMinHours and blocks create',
+      () async {
     Map<String, dynamic>? sent;
     final api = FakeApi(onPost: (_, data) async {
       sent = data as Map<String, dynamic>;
@@ -203,7 +208,9 @@ void main() {
     expect(sent!['hours'], 4);
   });
 
-  test('selectService extends the end up to the service min_hours when too short', () {
+  test(
+      'selectService extends the end up to the service min_hours when too short',
+      () {
     final c = container(api: FakeApi());
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     BookingFlowState state() => c.read(bookingFlowControllerProvider);
@@ -228,7 +235,8 @@ void main() {
     expect(state().hours, 4);
   });
 
-  test('the composed address folds in the extra details, equipment and add-ons', () async {
+  test('the composed address folds in the extra details, equipment and add-ons',
+      () async {
     Map<String, dynamic>? sent;
     final api = FakeApi(onPost: (_, data) async {
       sent = data as Map<String, dynamic>;
@@ -317,17 +325,20 @@ void main() {
     );
   });
 
-  test('setPlaceType selects the place type and folds it into the sent address', () {
+  test('setPlaceType selects the place type and folds it into the sent address',
+      () {
     final c = container(api: FakeApi());
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     ctrl.setAddress('โรงงาน ABC');
     ctrl.setPlaceType('factory');
     final s = c.read(bookingFlowControllerProvider);
     expect(s.placeTypeId, 'factory');
-    expect(s.composedAddressFor(true).contains('ประเภทสถานที่: โรงงาน'), isTrue);
+    expect(
+        s.composedAddressFor(true).contains('ประเภทสถานที่: โรงงาน'), isTrue);
   });
 
-  test('price = base × hours × guards + tip (display estimate, exact satang)', () {
+  test('price = base × hours × guards + tip (display estimate, exact satang)',
+      () {
     final c = container(api: FakeApi());
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     ctrl.selectService(_condo); // ฿250/hr
@@ -341,7 +352,8 @@ void main() {
     expect(s.estimateWithTipSatang, 25000 * 8 * 3 + 5000); // + ฿50
   });
 
-  test('createBooking rejects an empty address before any network call', () async {
+  test('createBooking rejects an empty address before any network call',
+      () async {
     final api = FakeApi(
       onPost: (_, __) async => throw StateError('should not be called'),
     );
@@ -356,7 +368,8 @@ void main() {
     expect(api.calls, isEmpty);
   });
 
-  test('omits service_id when no service is selected (default min 1h)', () async {
+  test('omits service_id when no service is selected (default min 1h)',
+      () async {
     Map<String, dynamic>? sent;
     final api = FakeApi(onPost: (_, data) async {
       sent = data as Map<String, dynamic>;
@@ -397,14 +410,16 @@ void main() {
 
     expect(sent!['lat'], 13.7401);
     expect(sent!['lng'], 100.5331);
-    expect((sent!['address'] as String).startsWith('หมู่บ้านลัดดารมย์'), isTrue);
+    expect(
+        (sent!['address'] as String).startsWith('หมู่บ้านลัดดารมย์'), isTrue);
     // Round-trips onto the created booking (so the guard can read the site location).
     final booking = c.read(bookingFlowControllerProvider).booking;
     expect(booking?.lat, 13.7401);
     expect(booking?.lng, 100.5331);
   });
 
-  test('createBooking omits lat/lng when only a typed address is used (no map pick)',
+  test(
+      'createBooking omits lat/lng when only a typed address is used (no map pick)',
       () async {
     Map<String, dynamic>? sent;
     final api = FakeApi(onPost: (_, data) async {
@@ -423,7 +438,56 @@ void main() {
     expect(c.read(bookingFlowControllerProvider).booking?.lat, isNull);
   });
 
-  test('createBooking surfaces the server message and keeps no booking', () async {
+  test(
+      'DIRECTED OFFER: the picked guard is sent as target_guard_id and round-trips onto the booking',
+      () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (path, data) async {
+      expect(path, '/bookings');
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+
+    ctrl.setAddress('123 ลัดดารมย์ ซ.5');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    // The customer picks ONE guard in discovery — this is the offer target (screen flow: select
+    // then confirm, which calls createBooking).
+    ctrl.selectGuard('guard-aaaa-1111');
+    expect(c.read(bookingFlowControllerProvider).selectedGuardId,
+        'guard-aaaa-1111');
+
+    expect(await ctrl.createBooking(), isTrue);
+    // The create body carries the chosen guard as target_guard_id (server offers to only them).
+    expect(sent!['target_guard_id'], 'guard-aaaa-1111');
+    // ...and it round-trips onto the parsed booking.
+    expect(c.read(bookingFlowControllerProvider).booking?.targetGuardId,
+        'guard-aaaa-1111');
+  });
+
+  test('OPEN booking: target_guard_id is omitted when no guard is picked',
+      () async {
+    Map<String, dynamic>? sent;
+    final api = FakeApi(onPost: (_, data) async {
+      sent = data as Map<String, dynamic>;
+      return bookingJson(sent!);
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.setAddress('123 ลัดดารมย์ ซ.5');
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    // No guard selected → the key is omitted entirely, so the booking stays OPEN first-come.
+    expect(await ctrl.createBooking(), isTrue);
+    expect(sent!.containsKey('target_guard_id'), isFalse);
+    expect(
+        c.read(bookingFlowControllerProvider).booking?.targetGuardId, isNull);
+  });
+
+  test('createBooking surfaces the server message and keeps no booking',
+      () async {
     final api = FakeApi(
       onPost: (path, _) async {
         expect(path, '/bookings');

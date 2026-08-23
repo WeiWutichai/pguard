@@ -29,6 +29,9 @@ pub struct OtpRow {
 pub const PURPOSE_REGISTER: &str = "register";
 /// Row purpose for a FORGOT-PIN RESET code (mints a `pin_reset` token).
 pub const PURPOSE_PIN_RESET: &str = "pin_reset";
+/// Row purpose for a CHANGE-LOGIN-PHONE code (mints a `phone_change` token). The verified phone
+/// is the NEW number; identity's `PATCH /auth/phone` step-ups on the current PIN before writing.
+pub const PURPOSE_PHONE_CHANGE: &str = "phone_change";
 
 /// Invalidate any previous unused OTP for this phone (ANY purpose), then insert the new
 /// hashed code — both in one transaction so a phone can never hold two live codes. The

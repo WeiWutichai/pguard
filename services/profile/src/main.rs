@@ -217,6 +217,16 @@ async fn main() -> anyhow::Result<()> {
             "/admin/users/resolve",
             post(api::admin_resolve_names::<AppState>),
         )
+        // Support tickets (H1, mobile "แจ้งปัญหา / ส่งความคิดเห็น"): any signed-in user files a
+        // ticket for themselves; admins read the newest-first list (resolver maps reporter ids).
+        .route(
+            "/support/tickets",
+            post(api::create_support_ticket::<AppState>),
+        )
+        .route(
+            "/admin/support/tickets",
+            get(api::admin_list_support_tickets::<AppState>),
+        )
         .route(
             "/admin/documents/expiring",
             get(api::admin_list_expiring_documents::<AppState>),

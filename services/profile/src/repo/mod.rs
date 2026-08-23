@@ -25,7 +25,8 @@ use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
     GuardProfileAdminResponse, GuardProfileResponse, InternalGuardRow, OrgSettingsResponse,
     PublicCustomerProfileRow, PublicGuardProfileRow, RecruitCandidate, ResolvedNameRow,
-    UpdateOrgSettingsRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
+    SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -1214,6 +1215,51 @@ pub async fn upsert_org_settings(
     .fetch_one(db)
     .await?;
     Ok(row)
+}
+
+// ----- Support tickets (H1) — reporter-filed, admin-read -----
+
+/// Insert a support ticket for `user_id` (the authenticated reporter). `kind`/`message` are
+/// already validated by the handler (kind in the allowed set, message non-empty and bounded), so
+/// the DB CHECKs are only defence in depth. `status` defaults to `open`; returns the stored row
+/// (id + created_at) for the client's confirmation. Write → primary.
+pub async fn insert_support_ticket(
+    db: &PgPool,
+    user_id: Uuid,
+    kind: &str,
+    message: &str,
+) -> Result<SupportTicket, AppError> {
+    let row: SupportTicket = sqlx::query_as(
+        "INSERT INTO profile.support_tickets (user_id, kind, message) \
+         VALUES ($1, $2, $3) \
+         RETURNING id, user_id, kind, message, status, created_at",
+    )
+    .bind(user_id)
+    .bind(kind)
+    .bind(message)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+/// List support tickets newest-first (`created_at DESC`) for the admin surface. Bounded by the
+/// handler's clamped `limit`/`offset`. Read from the replica.
+pub async fn list_support_tickets(
+    db: &PgPool,
+    limit: i64,
+    offset: i64,
+) -> Result<Vec<SupportTicket>, AppError> {
+    let rows: Vec<SupportTicket> = sqlx::query_as(
+        "SELECT id, user_id, kind, message, status, created_at \
+         FROM profile.support_tickets \
+         ORDER BY created_at DESC, id DESC \
+         LIMIT $1 OFFSET $2",
+    )
+    .bind(limit)
+    .bind(offset)
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
 }
 
 /// The roles this user has a SUBMITTED-but-PENDING profile for (awaiting admin approval). Union of

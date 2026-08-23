@@ -265,6 +265,39 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/phone": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Change the caller's OWN login phone number
+         * @description Change the caller's LOGIN phone. Security-sensitive: the phone is `UNIQUE NOT NULL` in
+         *     `identity.users` AND is the forgot-PIN identifier, so TWO proofs are required —
+         *       (a) a STEP-UP on the current PIN (`current_pin_hash`, verified against the stored Argon2
+         *           hash → a generic `401` on mismatch, no enumeration), and
+         *       (b) OWNERSHIP of the NEW number, proven by a single-use `phone_change` OTP token (bound at
+         *           `POST /otp/request`, minted at `POST /otp/verify`) — the new phone is taken FROM the
+         *           token, NEVER the body. A `phone_verify` (registration) or `pin_reset` token is rejected
+         *           (purpose isolation on top of single-use).
+         *     A number already held by an APPROVED account → `409 PHONE_TAKEN` (the DB `UNIQUE(phone)`
+         *     constraint is the authoritative, race-proof backstop, also catching a pending/rejected
+         *     collision). On success the phone is written, EVERY session is force-revoked
+         *     (`token_revocation_version` bumped + all refresh families revoked), the change is recorded
+         *     in `identity.credential_audit`, and THIS session's cookies are cleared — the caller
+         *     re-authenticates on the NEW number. Self only.
+         */
+        patch: operations["changePhone"];
+        trace?: never;
+    };
     "/auth/reset-pin": {
         parameters: {
             query?: never;
@@ -814,6 +847,20 @@ export interface components {
             /** @description SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`). */
             new_pin_hash: string;
         };
+        ChangePhoneRequest: {
+            /**
+             * @description Single-use JWT from an OTP run bound to `purpose: "phone_change"` (set at
+             *     `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified NEW phone (the
+             *     body has NO phone field). A `phone_verify` (registration) or `pin_reset` token is
+             *     rejected (purpose isolation).
+             */
+            phone_change_token: string;
+            /**
+             * @description SHA-256 hex of the CURRENT PIN (same shape/value as login's `password`) — the step-up
+             *     proof. Verified server-side; a wrong value → a generic 401 (no enumeration).
+             */
+            current_pin_hash: string;
+        };
         ResetPinRequest: {
             /**
              * @description Single-use JWT from an OTP run bound to `purpose: "pin_reset"` (set at
@@ -1058,6 +1105,18 @@ export interface components {
          *     envelope as `Conflict`; the `error.code` is `EMAIL_TAKEN` so the client can branch on it.
          */
         EmailTaken: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ErrorBody"];
+            };
+        };
+        /**
+         * @description The NEW phone number is already in use by another account (`PATCH /auth/phone`). Same 409
+         *     envelope as `Conflict`; the `error.code` is `PHONE_TAKEN` so the client can branch on it.
+         */
+        PhoneTaken: {
             headers: {
                 [name: string]: unknown;
             };
@@ -1384,6 +1443,38 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
+        };
+    };
+    changePhone: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePhoneRequest"];
+            };
+        };
+        responses: {
+            /** @description Phone changed; every session revoked + this browser's cookies cleared */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: {
+                            /** @example true */
+                            phone_changed?: boolean;
+                        };
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            409: components["responses"]["PhoneTaken"];
         };
     };
     resetPin: {

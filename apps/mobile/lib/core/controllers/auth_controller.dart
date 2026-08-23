@@ -47,6 +47,7 @@ class AuthFlowState {
     this.phoneVerifiedToken,
     this.reset = false,
     this.addRoleTarget,
+    this.phoneChange = false,
     this.busy = false,
     this.error,
   });
@@ -68,6 +69,14 @@ class AuthFlowState {
   /// verified token, then submits that role's profile. Distinct from a normal registration or reset.
   final String? addRoleTarget;
 
+  /// True when this OTP run is a SIGNED-IN user CHANGING their login phone (started via
+  /// [AuthController.startPhoneChange]). [phone] holds the NEW number being verified; after OTP
+  /// verify the flow collects the CURRENT PIN and calls `PATCH /auth/phone` (via [changePhone])
+  /// instead of registering / resetting. The OTP is requested + verified with `purpose:
+  /// "phone_change"`, so the minted token can ONLY drive a phone change (the server rejects a
+  /// cross-flow verify). Distinct from a normal registration, a reset, or an add-role run.
+  final bool phoneChange;
+
   /// How many OTP SMS have been requested this flow (display state for the design's
   /// "พยายาม 1/5 / attempt 1/5" resend counter — the server enforces the real limit).
   final int otpRequestCount;
@@ -87,6 +96,7 @@ class AuthFlowState {
     String? phoneVerifiedToken,
     bool? reset,
     String? addRoleTarget,
+    bool? phoneChange,
     bool? busy,
     Object? error = _unset,
   }) {
@@ -104,6 +114,7 @@ class AuthFlowState {
       phoneVerifiedToken: phoneVerifiedToken ?? this.phoneVerifiedToken,
       reset: reset ?? this.reset,
       addRoleTarget: addRoleTarget ?? this.addRoleTarget,
+      phoneChange: phoneChange ?? this.phoneChange,
       busy: busy ?? this.busy,
       error: identical(error, _unset) ? this.error : error as String?,
     );
@@ -231,10 +242,11 @@ class AuthController extends _$AuthController {
         'phone': normalizeThaiPhone(state.phone) ?? state.phone,
         'challenge_id': challenge.challengeId,
         'answer': captchaAnswer,
-        // A reset run BINDS the purpose at request time: the code row stores it, the
-        // SMS says "รีเซ็ต PIN", and /otp/verify can only mint a pin_reset token from
-        // it (the server rejects a cross-flow verify). Registration sends no field.
+        // A reset / phone-change run BINDS the purpose at request time: the code row stores it,
+        // the SMS names the action, and /otp/verify can only mint a token of that purpose from it
+        // (the server rejects a cross-flow verify). Registration sends no field.
         if (state.reset) 'purpose': 'pin_reset',
+        if (state.phoneChange) 'purpose': 'phone_change',
       });
       // Requesting a fresh OTP unambiguously restarts the first onboarding segment, so discard
       // any stale state from a previous, abandoned attempt: the role-stage resume marker + raw
@@ -299,6 +311,7 @@ class AuthController extends _$AuthController {
           'phone': normalizeThaiPhone(state.phone) ?? state.phone,
           'code': code,
           if (state.reset) 'purpose': 'pin_reset',
+          if (state.phoneChange) 'purpose': 'phone_change',
         });
         final token = (data is Map<String, dynamic>)
             ? data['phone_verified_token'] as String?
@@ -414,6 +427,17 @@ class AuthController extends _$AuthController {
           {required String phone, required String targetRoleWire}) =>
       state = AuthFlowState(phone: phone, addRoleTarget: targetRoleWire);
 
+  /// Start a CHANGE-LOGIN-PHONE run for the given NEW number: reset the flow to a fresh state with
+  /// [AuthFlowState.phoneChange] set and [phone] = the new number (normalized to the national
+  /// `0XXXXXXXXX` form), so the SAME captcha → OTP screens run but verify with `purpose:
+  /// "phone_change"` and, after verify, the flow collects the CURRENT PIN and calls
+  /// `PATCH /auth/phone` ([changePhone]). The caller (the profile "เปลี่ยนเบอร์" flow) then
+  /// navigates into the captcha step.
+  void startPhoneChange(String newPhone) => state = AuthFlowState(
+        phone: normalizeThaiPhone(newPhone) ?? newPhone,
+        phoneChange: true,
+      );
+
   /// `POST /auth/reset-pin` — the forgot-PIN reset. Exchanges the single-use `phone_verified_token`
   /// (from the just-completed OTP verify) for the NEW PIN, then logs in with it so the session flips
   /// to authenticated (the router lands on the dashboard).
@@ -464,6 +488,49 @@ class AuthController extends _$AuthController {
       state = state.copyWith(busy: false);
       return ResetPinOutcome.pinChangedSignInNeeded;
     }
+  }
+
+  /// `PATCH /auth/phone` — the login-phone change. Exchanges the single-use `phone_change` token
+  /// (from the just-completed OTP verify) PLUS the CURRENT PIN (step-up) for the NEW number. On
+  /// success EVERY session is force-revoked server-side (the current access/refresh tokens
+  /// included, via a `token_revocation_version` bump), so the caller MUST re-authenticate: we
+  /// persist the new number and drop the session to [SessionStatus.returning] (PIN-login on the NEW
+  /// number — the local PIN is unchanged). Returns `null` on success, else a LOCALIZED error
+  /// message (`PHONE_TAKEN` → "เบอร์นี้ถูกใช้สมัครแล้ว"; a wrong current PIN → the generic 401 copy).
+  /// The calling screen owns the re-entrancy latch (this sets [AuthFlowState.busy] only for the
+  /// button spinner).
+  Future<String?> changePhone({required String currentPin}) async {
+    state = state.copyWith(busy: true, error: null);
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final token = state.phoneVerifiedToken;
+    if (token == null) {
+      final msg = isThai
+          ? 'การยืนยันหมดอายุ กรุณาขอ OTP ใหม่'
+          : 'Verification expired — request a new OTP';
+      state = state.copyWith(busy: false, error: msg);
+      return msg;
+    }
+    final newPhone = normalizeThaiPhone(state.phone) ?? state.phone;
+    try {
+      await ref.read(pguardApiProvider).patch('/auth/phone', data: {
+        'phone_change_token': token,
+        'current_pin_hash': const PinHasher().pinHash(currentPin),
+      });
+    } on ApiException catch (e) {
+      final msg = _localizeApiError(e);
+      state = state.copyWith(busy: false, error: msg);
+      return msg;
+    } catch (_) {
+      final msg = isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
+      state = state.copyWith(busy: false, error: msg);
+      return msg;
+    }
+    // PAST THIS LINE THE PHONE HAS CHANGED and every session was revoked server-side. Persist the
+    // new number and drop to returning-login (the local PIN is unchanged) so the user signs back in
+    // on the NEW number; the router lands on /login/pin. Clear the transient phone-change flag.
+    await ref.read(sessionProvider.notifier).toReturningLogin(phone: newPhone);
+    state = const AuthFlowState();
+    return null;
   }
 
   Future<bool> _guard(Future<bool> Function() op) async {

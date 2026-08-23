@@ -92,6 +92,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**revokeApiToken**](doc/AdminApi.md#revokeapitoken) | **DELETE** /admin/api-tokens/{id} | Revoke one of the caller&#39;s admin API tokens (role&#x3D;admin,
 [*AuthApi*](doc/AuthApi.md) | [**addRole**](doc/AuthApi.md#addrole) | **POST** /auth/register/add-role | Add a SECOND pending role to an existing account (edge-public, OTP-authorized)
 [*AuthApi*](doc/AuthApi.md) | [**changePassword**](doc/AuthApi.md#changepassword) | **PUT** /auth/password | Change the caller&#39;s OWN password (#144)
+[*AuthApi*](doc/AuthApi.md) | [**changePhone**](doc/AuthApi.md#changephone) | **PATCH** /auth/phone | Change the caller&#39;s OWN login phone number
 [*AuthApi*](doc/AuthApi.md) | [**dataExport**](doc/AuthApi.md#dataexport) | **GET** /me/data-export | Export the authenticated user&#39;s data (PDPA §19 access / §32 portability)
 [*AuthApi*](doc/AuthApi.md) | [**deleteMe**](doc/AuthApi.md#deleteme) | **DELETE** /auth/me | Erase the authenticated user&#39;s account (PDPA §33 right to erasure)
 [*AuthApi*](doc/AuthApi.md) | [**disable2fa**](doc/AuthApi.md#disable2fa) | **POST** /auth/2fa/disable | Disable TOTP 2FA (confirm with a code or password,
@@ -124,6 +125,9 @@ Class | Method | HTTP request | Description
  - [ChangePassword200Response](doc/ChangePassword200Response.md)
  - [ChangePassword200ResponseAllOfData](doc/ChangePassword200ResponseAllOfData.md)
  - [ChangePasswordRequest](doc/ChangePasswordRequest.md)
+ - [ChangePhone200Response](doc/ChangePhone200Response.md)
+ - [ChangePhone200ResponseAllOfData](doc/ChangePhone200ResponseAllOfData.md)
+ - [ChangePhoneRequest](doc/ChangePhoneRequest.md)
  - [CreateApiToken200Response](doc/CreateApiToken200Response.md)
  - [CreateApiTokenRequest](doc/CreateApiTokenRequest.md)
  - [CreateApiTokenResponse](doc/CreateApiTokenResponse.md)

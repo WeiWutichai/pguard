@@ -41,13 +41,18 @@ class _CaptchaScreenState extends ConsumerState<CaptchaScreen> {
 
   Future<void> _verify() async {
     final ctrl = ref.read(authControllerProvider.notifier);
+    // A phone-change run reuses THIS captcha screen but under the authenticated `/profile/phone/*`
+    // routes (the `/auth/*` routes are bounced for a signed-in user), so route the OTP step there.
+    final otpRoute = ref.read(authControllerProvider).phoneChange
+        ? '/profile/phone/otp'
+        : '/auth/otp';
     final ok = await ctrl.sendOtp(_answer.text.trim());
     if (ok && mounted) {
       // Await the OTP route; its Future completes when the user pops BACK. Because we PUSHed (this
       // CaptchaScreen stays mounted underneath), initState does NOT re-run on return — so refetch a
       // fresh challenge here, or the already-burned one would sit rendered as answerable and reject a
       // correct answer (deep-review; the ref.listen old→null leg clears the stale field).
-      await context.push('/auth/otp');
+      await context.push(otpRoute);
       if (mounted) ctrl.loadChallenge();
     }
   }

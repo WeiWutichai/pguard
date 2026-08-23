@@ -85,6 +85,17 @@ pub struct ChangePasswordRequest {
     pub new_pin_hash: String,
 }
 
+/// Change the caller's LOGIN PHONE (`PATCH /auth/phone`). Two proofs are required: the single-use
+/// `phone_change_token` (an otp-issued `phone_change`-purpose token proving ownership of the NEW
+/// number — the new phone is taken FROM the token, NEVER from the body) AND `current_pin_hash` (the
+/// SHA-256 hex of the CURRENT PIN, same shape as login's `password`) as a step-up. A wrong current
+/// PIN → generic 401; a new number already held by an APPROVED account → 409 `PHONE_TAKEN`.
+#[derive(Debug, Deserialize)]
+pub struct ChangePhoneRequest {
+    pub phone_change_token: String,
+    pub current_pin_hash: String,
+}
+
 /// Reset a FORGOTTEN PIN (`POST /auth/reset-pin`). The phone is taken from the single-use
 /// `phone_verified_token` (otp-issued) — NEVER from the body — so a caller can only reset the PIN
 /// of a phone they just proved they own. `new_pin_hash` is the SHA-256 hex of the new PIN (same

@@ -30,6 +30,7 @@ fn resolve_token_purpose(requested: Option<&str>) -> Result<&'static str, AppErr
     match requested {
         None | Some(shared::auth::PHONE_VERIFY_PURPOSE) => Ok(shared::auth::PHONE_VERIFY_PURPOSE),
         Some(shared::auth::PIN_RESET_PURPOSE) => Ok(shared::auth::PIN_RESET_PURPOSE),
+        Some(shared::auth::PHONE_CHANGE_PURPOSE) => Ok(shared::auth::PHONE_CHANGE_PURPOSE),
         Some(_) => Err(AppError::BadRequest("Unknown token purpose".to_string())),
     }
 }
@@ -224,10 +225,10 @@ pub async fn request(
     let code_hash = domain::sha256_hex(&code);
     let expires_at =
         chrono::Utc::now() + chrono::TimeDelta::minutes(state.otp_config.expiry_minutes);
-    let row_purpose = if purpose == shared::auth::PIN_RESET_PURPOSE {
-        repo::PURPOSE_PIN_RESET
-    } else {
-        repo::PURPOSE_REGISTER
+    let row_purpose = match purpose {
+        p if p == shared::auth::PIN_RESET_PURPOSE => repo::PURPOSE_PIN_RESET,
+        p if p == shared::auth::PHONE_CHANGE_PURPOSE => repo::PURPOSE_PHONE_CHANGE,
+        _ => repo::PURPOSE_REGISTER,
     };
     repo::store_code(&state.db, &phone, &code_hash, row_purpose, expires_at).await?;
 
@@ -239,10 +240,14 @@ pub async fn request(
     //    daily counter and clearing the short cooldown before propagating a GENERIC error.
     //    The SMS wording NAMES the flow — a reset code says "รีเซ็ต PIN", so a recipient
     //    phished into relaying "a registration code" can see what it really unlocks.
-    let message = if purpose == shared::auth::PIN_RESET_PURPOSE {
-        domain::format_pin_reset_otp_message(&code, state.otp_config.expiry_minutes)
-    } else {
-        domain::format_otp_message(&code, state.otp_config.expiry_minutes)
+    let message = match purpose {
+        p if p == shared::auth::PIN_RESET_PURPOSE => {
+            domain::format_pin_reset_otp_message(&code, state.otp_config.expiry_minutes)
+        }
+        p if p == shared::auth::PHONE_CHANGE_PURPOSE => {
+            domain::format_phone_change_otp_message(&code, state.otp_config.expiry_minutes)
+        }
+        _ => domain::format_otp_message(&code, state.otp_config.expiry_minutes),
     };
     let sms_phone = domain::to_international_format(&phone);
     if let Err(send_err) = state.sms.send(&sms_phone, &message).await {
@@ -327,10 +332,10 @@ pub async fn verify(
 
     // The AUTHORITATIVE purpose is the one bound at /otp/request (stored on the row;
     // legacy 'register' rows predate the split and are registration codes).
-    let purpose = if row.purpose == repo::PURPOSE_PIN_RESET {
-        shared::auth::PIN_RESET_PURPOSE
-    } else {
-        shared::auth::PHONE_VERIFY_PURPOSE
+    let purpose = match row.purpose.as_str() {
+        repo::PURPOSE_PIN_RESET => shared::auth::PIN_RESET_PURPOSE,
+        repo::PURPOSE_PHONE_CHANGE => shared::auth::PHONE_CHANGE_PURPOSE,
+        _ => shared::auth::PHONE_VERIFY_PURPOSE,
     };
 
     // Cross-check the verifier's declared flow against the bound one. A CORRECT code

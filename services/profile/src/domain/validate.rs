@@ -83,6 +83,32 @@ pub fn validate_tax_id(value: Option<&str>) -> Result<(), String> {
     }
 }
 
+/// Validate a support-ticket `kind` against the allowed set (`problem` | `feedback`). REQUIRED —
+/// unlike the optional profile fields, a ticket must carry a valid kind. Returns the kind's error
+/// message on a mismatch (empty / unknown value).
+pub fn validate_ticket_kind(kind: &str, allowed: &[&str]) -> Result<(), String> {
+    if allowed.contains(&kind) {
+        Ok(())
+    } else {
+        Err(format!("kind must be one of: {}", allowed.join(", ")))
+    }
+}
+
+/// Validate a REQUIRED support-ticket message: non-empty after trimming, at most `max` chars
+/// (counted, not bytes — mirrors [`validate_text`]). An empty/whitespace-only or over-long body
+/// is rejected so the reporter never files a blank ticket and the DB CHECK is never the first
+/// line of defence.
+pub fn validate_ticket_message(message: &str, max: usize) -> Result<(), String> {
+    let trimmed = message.trim();
+    if trimmed.is_empty() {
+        return Err("message must not be empty".to_string());
+    }
+    if trimmed.chars().count() > max {
+        return Err(format!("message must be at most {max} characters"));
+    }
+    Ok(())
+}
+
 /// Validate an optional Thai phone in national format: at least 10 digits starting with `0`
 /// (mirrors the otp/identity phone shape — separators are ignored, not a carrier lookup).
 /// `None`/empty → Ok (optional field).
@@ -196,5 +222,41 @@ mod tests {
         assert!(validate_tax_id(Some("12AB5678")).is_err()); // letters
         assert!(validate_tax_id(Some(&"1".repeat(MAX_TAX_ID_LEN + 1))).is_err()); // too long
         assert!(validate_tax_id(Some("123456789012345678901")).is_err()); // 21 digits
+    }
+
+    const KINDS: &[&str] = &["problem", "feedback"];
+
+    #[test]
+    fn ticket_kind_allowed_values_pass() {
+        assert!(validate_ticket_kind("problem", KINDS).is_ok());
+        assert!(validate_ticket_kind("feedback", KINDS).is_ok());
+    }
+
+    #[test]
+    fn ticket_kind_unknown_or_empty_is_rejected() {
+        assert!(validate_ticket_kind("", KINDS).is_err());
+        assert!(validate_ticket_kind("bug", KINDS).is_err());
+        assert!(validate_ticket_kind("Problem", KINDS).is_err()); // case-sensitive
+    }
+
+    #[test]
+    fn ticket_message_valid_lengths_pass() {
+        assert!(validate_ticket_message("แอปค้าง", 2000).is_ok());
+        let at_limit = "a".repeat(2000);
+        assert!(validate_ticket_message(&at_limit, 2000).is_ok());
+    }
+
+    #[test]
+    fn ticket_message_empty_or_over_limit_is_rejected() {
+        assert!(validate_ticket_message("", 2000).is_err());
+        assert!(validate_ticket_message("   ", 2000).is_err()); // whitespace-only
+        let over = "a".repeat(2001);
+        assert!(validate_ticket_message(&over, 2000).is_err());
+    }
+
+    #[test]
+    fn ticket_message_counts_chars_not_bytes() {
+        // 3 multi-byte Thai chars must NOT trip a max of 3 (would fail if counting bytes).
+        assert!(validate_ticket_message("กขค", 3).is_ok());
     }
 }

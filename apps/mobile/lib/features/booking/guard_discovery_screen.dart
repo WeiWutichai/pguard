@@ -12,10 +12,11 @@ import 'widgets/guard_card.dart';
 import 'widgets/guard_reviews_sheet.dart';
 
 /// Step 3 — guard discovery. Loads `GET /v1/available-guards` ONCE (no polling) and shows the
-/// approved guards with their rating summary. v2 is first-come-accept: choosing a guard here is
-/// a preview preference, not an assignment (no `/assign` endpoint exists); a nearby guard
-/// accepts the request later, surfaced on the live-status screen. UI per
-/// `Mobile - Customer App.html` (nearby guards).
+/// approved guards with their rating summary. DIRECTED OFFER (C3): the guard the customer picks
+/// here IS the offer target — on confirm the booking is created with `target_guard_id`, so the
+/// job is offered to ONLY that guard (no other guard sees or can accept it, server-enforced). No
+/// auto-fallback to the open pool: if the chosen guard never takes it, the customer re-books to
+/// pick someone else. Surfaced on the live-status screen. UI per `Mobile - Customer App.html`.
 class GuardDiscoveryScreen extends ConsumerStatefulWidget {
   const GuardDiscoveryScreen({super.key});
 
@@ -36,12 +37,14 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     }
   }
 
-  /// "ยืนยันการจอง" / Confirm — this is where the booking is CREATED (fixes #79: guards only see
-  /// the open job AFTER the customer confirms, not at the form step). The radio-selected guard is a
-  /// non-binding PREVIEW; v2 stays first-come, so we send no `guard_id`. On success, route to live
-  /// status; `createBooking` records its own error into the flow state for [PgErrorState] / inline.
+  /// "ยืนยันการจอง" / Confirm — this is where the booking is CREATED (fixes #79: the guard only sees
+  /// the job AFTER the customer confirms, not at the form step). DIRECTED OFFER (C3): the
+  /// radio-selected guard is sent as `target_guard_id`, so the job is offered to ONLY them. On
+  /// success, route to live status; `createBooking` records its own error into the flow state for
+  /// [PgErrorState] / inline.
   Future<void> _confirm() async {
-    final ok = await ref.read(bookingFlowControllerProvider.notifier).createBooking();
+    final ok =
+        await ref.read(bookingFlowControllerProvider.notifier).createBooking();
     if (!ok || !mounted) return;
     final id = ref.read(bookingFlowControllerProvider).booking?.id;
     // Build a POPPABLE stack (home → live) rather than a bare `context.go` that replaces the whole
@@ -62,7 +65,8 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true,
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'เลือกเจ้าหน้าที่' : 'Choose a guard',
         subtitle: state.guards.isNotEmpty
             ? (isThai
@@ -88,8 +92,8 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
               ),
             _ContinueBar(
               // Require a guard SELECTION before confirm works: enabled only once guards are
-              // loaded, one is radio-selected (the customer's first-come preference), and we are
-              // not mid-request. Confirm CREATES the booking; no pre-existing booking is required
+              // loaded, one is radio-selected (the DIRECTED offer target), and we are not
+              // mid-request. Confirm CREATES the booking; no pre-existing booking is required
               // (it doesn't exist yet by design).
               enabled: !state.busy &&
                   state.guards.isNotEmpty &&
@@ -102,8 +106,8 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
                       ? 'เลือกเจ้าหน้าที่ที่ต้องการก่อน'
                       : 'Select a guard to continue')
                   : null,
-              // Post-pay: confirm creates the booking then goes straight to live status (no up-front
-              // payment). A guard accepts first-come; billing is on completion.
+              // Post-pay: confirm creates the booking (offered to the chosen guard) then goes
+              // straight to live status (no up-front payment). Billing is on completion.
               onContinue: _confirm,
               isThai: isThai,
             ),
@@ -154,13 +158,13 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
     return ListView(
       padding: const EdgeInsets.all(PgTokens.space4),
       children: [
-        // First-come note demoted to a plain caption (the design's guard list has no banner
-        // between the header and the cards).
+        // Directed-offer note demoted to a plain caption (the design's guard list has no banner
+        // between the header and the cards): the customer picks ONE guard and the job is offered
+        // to only them.
         Text(
           isThai
-              ? 'เจ้าหน้าที่ที่ว่างจะตอบรับงานของคุณ (first-come) — เลือกคนที่สนใจไว้เพื่อดูเรตติ้งได้'
-              : 'An available guard will accept your job (first-come) — pick one '
-                  'you like to see their rating',
+              ? 'เลือกเจ้าหน้าที่ 1 คน — งานจะถูกส่งให้เฉพาะคนที่คุณเลือกเท่านั้น'
+              : 'Pick one guard — the job is offered to only the guard you choose',
           style: const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
         ),
         const SizedBox(height: PgTokens.space3),

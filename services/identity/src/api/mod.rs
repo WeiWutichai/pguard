@@ -11,8 +11,9 @@ use uuid::Uuid;
 use shared::auth::{
     build_clear_cookie, build_cookie, decode_jwt_with_key, decode_phone_verify_token,
     decode_profile_token, encode_jwt_with_key, encode_profile_token, extract_cookie_value,
-    phone_verify_jti_key, AuthUser, ACCESS_TOKEN_COOKIE, PHONE_VERIFY_PURPOSE, PIN_RESET_PURPOSE,
-    PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD, REFRESH_TOKEN_COOKIE,
+    phone_verify_jti_key, AuthUser, ACCESS_TOKEN_COOKIE, PHONE_CHANGE_PURPOSE,
+    PHONE_VERIFY_PURPOSE, PIN_RESET_PURPOSE, PROFILE_PURPOSE_CUSTOMER, PROFILE_PURPOSE_GUARD,
+    REFRESH_TOKEN_COOKIE,
 };
 use shared::error::AppError;
 use shared::models::ApiResponse;
@@ -21,7 +22,7 @@ use shared::service_jwt::ServiceCaller;
 use crate::domain::rotation::{decide, RotationDecision};
 use crate::domain::{login_throttle, mask, registration, token, twofactor};
 use crate::models::{
-    AddRoleRequest, ApiTokenView, ChangePasswordRequest, CreateApiTokenRequest,
+    AddRoleRequest, ApiTokenView, ChangePasswordRequest, ChangePhoneRequest, CreateApiTokenRequest,
     CreateApiTokenResponse, Disable2faRequest, Enable2faRequest, Enable2faResponse,
     EnrollRoleRequest, LoginRequest, LoginTokenPair, MeResponse, PhoneStatusRequest,
     PhoneStatusResponse, RefreshRequest, RegisterRequest, RegisterResult,
@@ -952,6 +953,92 @@ pub async fn change_password(
         headers,
         Json(ApiResponse::success(
             serde_json::json!({ "password_changed": true }),
+        )),
+    ))
+}
+
+// ----- PATCH /auth/phone (self change LOGIN phone) -----
+
+/// Change the CALLER'S OWN login phone number. Security-sensitive: the phone is `UNIQUE NOT NULL`
+/// in `identity.users` AND is the forgot-PIN identifier, so TWO proofs are required —
+///  (a) a STEP-UP on the current PIN (`current_pin_hash`, verified against the stored Argon2 hash →
+///      generic 401 on mismatch), and
+///  (b) OWNERSHIP of the NEW number, proven by a single-use `phone_change` OTP token (the new phone
+///      is taken FROM the token, never the body).
+/// A new number already held by an APPROVED account → 409 `PHONE_TAKEN` (advisory pre-check), and
+/// the DB `UNIQUE(phone)` 23505 is the authoritative, race-proof backstop (also catches a
+/// pending/rejected collision). On success the phone is written, `trv` is bumped + every refresh
+/// family revoked (mirroring `change_password` — a phone change kills all sessions), and this
+/// session's cookies are cleared so the caller re-authenticates on the new number. `skip_all`:
+/// never log the token, the pin hash, or the phone (PII).
+#[tracing::instrument(skip_all, fields(user = %user.user_id))]
+pub async fn change_phone(
+    State(state): State<AppState>,
+    user: AuthUser,
+    Json(req): Json<ChangePhoneRequest>,
+) -> Result<impl IntoResponse, AppError> {
+    // (a) Step-up: verify the caller's CURRENT PIN FIRST (generic 401 on mismatch). Doing this
+    //     before any token consumption means a wrong PIN never burns the single-use OTP token.
+    repo::verify_self_password(&state.db, user.user_id, &req.current_pin_hash).await?;
+
+    // (b) Decode the single-use phone_change token → the verified NEW phone (from the token, NEVER
+    //     the body). ONLY the `phone_change` purpose is accepted — a register (`phone_verify`) or
+    //     forgot-PIN (`pin_reset`) token can never drive a phone change (purpose isolation).
+    let (new_phone, jti) = decode_phone_verify_token(
+        &req.phone_change_token,
+        &state.jwt_config.decoding_key,
+        PHONE_CHANGE_PURPOSE,
+    )?;
+    // Defensive re-validation/normalization (identity never trusts a value off the wire), done
+    // BEFORE the single-use claim so a malformed-phone token isn't burned.
+    let new_phone = registration::validate_thai_phone(&new_phone)?;
+
+    // (c) Advisory pre-check BEFORE burning the token: a number already held by an APPROVED
+    //     (loginable) account → clean 409 without consuming the user's single-use OTP token. The
+    //     UNIQUE(phone) 23505 in `update_user_phone` remains the authoritative, race-proof guard
+    //     (and also catches a pending/rejected-account collision this probe deliberately ignores).
+    if repo::approved_account_exists_by_phone(&state.db, &new_phone).await? {
+        return Err(AppError::ConflictCode {
+            code: "PHONE_TAKEN",
+            message: "This phone number is already in use by another account.".to_string(),
+        });
+    }
+
+    // (d) Claim the single-use jti (GETDEL) BEFORE mutating — a phone change is a NON-idempotent,
+    //     security-sensitive change, so a reused/forged/expired token can NEVER drive a second
+    //     change (mirrors reset_pin, which likewise claims before the credential mutation). A
+    //     missing "valid" marker → reject before touching the account.
+    let mut redis = state.redis_conn.clone();
+    let jti_status: Option<String> = redis::cmd("GETDEL")
+        .arg(phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti))
+        .query_async(&mut redis)
+        .await?;
+    if jti_status.as_deref() != Some("valid") {
+        return Err(AppError::BadRequest(
+            "Phone verification token is invalid, expired, or already used".to_string(),
+        ));
+    }
+
+    // (e) Write the new phone + bump trv + revoke all refresh families (one tx). A concurrent grab
+    //     of the same number between the probe and here trips UNIQUE(phone) → 409 PHONE_TAKEN.
+    let new_version = repo::update_user_phone(&state.db, user.user_id, &new_phone).await?;
+
+    // (f) Force-revoke outstanding ACCESS tokens at once (any older trv is rejected). A persistent
+    //     marker-write failure propagates (500) so the client knows revocation isn't yet effective.
+    crate::state::mark_user_revoked(&mut redis, user.user_id, new_version).await?;
+
+    // Clear THIS session's cookies (web) — every session was revoked; the caller re-authenticates
+    // on the NEW number.
+    let mut headers = HeaderMap::new();
+    append_cookie(&mut headers, &build_clear_cookie(ACCESS_TOKEN_COOKIE, "/"));
+    append_cookie(
+        &mut headers,
+        &build_clear_cookie(REFRESH_TOKEN_COOKIE, REFRESH_COOKIE_PATH),
+    );
+    Ok((
+        headers,
+        Json(ApiResponse::success(
+            serde_json::json!({ "phone_changed": true }),
         )),
     ))
 }
@@ -2654,7 +2741,7 @@ mod multi_role_tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use axum::routing::{get, post};
+    use axum::routing::{get, patch, post};
     use axum::Router;
     use shared::auth::{encode_jwt_with_key, encode_phone_verify_token};
     use shared::config::{JwtConfig, ServiceJwtConfig};
@@ -3765,5 +3852,278 @@ mod multi_role_tests {
         );
 
         cleanup(&pool, user_id).await;
+    }
+
+    // ===================== PATCH /auth/phone (change LOGIN phone) =====================
+    //
+    // ID1: a signed-in user changes their login phone. TWO proofs are required — the current PIN
+    // (step-up) AND a single-use `phone_change` OTP token proving the NEW number. A number already
+    // held by an approved account → 409 PHONE_TAKEN; on success the phone is written, all sessions
+    // are revoked, and the token is single-use. HTTP-level over the same real-infra harness.
+
+    fn change_phone_router(st: AppState) -> Router {
+        Router::new()
+            .route("/auth/phone", patch(change_phone))
+            .with_state(st)
+    }
+
+    fn patch_change_phone(bearer: &str, token: &str, current_pin_hash: &str) -> Request<Body> {
+        Request::builder()
+            .method("PATCH")
+            .uri("/auth/phone")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "phone_change_token": token,
+                    "current_pin_hash": current_pin_hash,
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    }
+
+    /// A fresh, syntactically valid Thai phone (10 digits, leading 0) not tied to any account.
+    fn fresh_digit_phone() -> String {
+        format!(
+            "0{}",
+            Uuid::new_v4()
+                .simple()
+                .to_string()
+                .chars()
+                .filter(|c| c.is_ascii_digit())
+                .chain("000000000".chars())
+                .take(9)
+                .collect::<String>()
+        )
+    }
+
+    async fn phone_of(pool: &sqlx::PgPool, user_id: Uuid) -> String {
+        let (phone,): (String,) = sqlx::query_as("SELECT phone FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .fetch_one(pool)
+            .await
+            .expect("read phone");
+        phone
+    }
+
+    async fn live_family_tokens(pool: &sqlx::PgPool, user_id: Uuid) -> i64 {
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM identity.refresh_tokens WHERE user_id = $1 AND revoked = FALSE",
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .expect("count live tokens");
+        n
+    }
+
+    /// A WRONG current PIN → generic 401, and the single-use OTP token is NOT burned (nor the phone
+    /// changed) — so the user can retry with the correct PIN and the same token.
+    #[tokio::test]
+    async fn change_phone_wrong_pin_is_401_and_does_not_burn_token() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        let current_phone = digits_phone(&pool, user_id).await;
+        let app = change_phone_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        let new_phone = fresh_digit_phone();
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (change_tok, jti) =
+            encode_phone_verify_token(&new_phone, PHONE_CHANGE_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti),
+                "valid",
+                600,
+            )
+            .await
+            .expect("arm phone_change jti");
+
+        // "x" is the seeded PIN; anything else is wrong.
+        let res = app
+            .oneshot(patch_change_phone(&tok, &change_tok, "definitely-wrong"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a wrong current PIN must be a generic 401"
+        );
+
+        let live: Option<String> = redis
+            .get(phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti))
+            .await
+            .expect("read marker");
+        assert_eq!(
+            live.as_deref(),
+            Some("valid"),
+            "a wrong-PIN rejection must NOT consume the single-use token"
+        );
+        assert_eq!(
+            phone_of(&pool, user_id).await,
+            current_phone,
+            "the phone must be unchanged after a wrong-PIN rejection"
+        );
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// The NEW number already belongs to an APPROVED account → 409 PHONE_TAKEN, WITHOUT burning the
+    /// token (the advisory approved-exists probe runs before the jti claim) or changing the phone.
+    #[tokio::test]
+    async fn change_phone_new_number_already_taken_is_409() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        let current_phone = digits_phone(&pool, user_id).await;
+        // Another APPROVED account already holds the target number.
+        let other_id = seed_user(&pool, "guard", &["guard"]).await;
+        let taken_phone = digits_phone(&pool, other_id).await;
+
+        let app = change_phone_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (change_tok, jti) =
+            encode_phone_verify_token(&taken_phone, PHONE_CHANGE_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti),
+                "valid",
+                600,
+            )
+            .await
+            .expect("arm phone_change jti");
+
+        let res = app
+            .oneshot(patch_change_phone(&tok, &change_tok, "x"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::CONFLICT, "taken number → 409");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["error"]["code"], "PHONE_TAKEN");
+
+        let live: Option<String> = redis
+            .get(phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti))
+            .await
+            .expect("read marker");
+        assert_eq!(
+            live.as_deref(),
+            Some("valid"),
+            "the advisory taken-number probe must run BEFORE the jti burn"
+        );
+        assert_eq!(
+            phone_of(&pool, user_id).await,
+            current_phone,
+            "a rejected change leaves the phone untouched"
+        );
+
+        cleanup(&pool, user_id).await;
+        cleanup(&pool, other_id).await;
+    }
+
+    /// Happy path: correct PIN + a live `phone_change` token → 200; the phone is written to the NEW
+    /// number, every session is force-revoked (trv marker + families), the change is audited, and
+    /// the token is single-use (its jti marker is consumed).
+    #[tokio::test]
+    async fn change_phone_happy_path_updates_revokes_and_is_single_use() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        use redis::AsyncCommands;
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        let _current_phone = digits_phone(&pool, user_id).await;
+        // An open session to prove the change revokes it.
+        let _ = repo::create_refresh_family(
+            &pool,
+            user_id,
+            "customer",
+            &repo::DeviceContext::default(),
+        )
+        .await
+        .expect("open a session");
+        assert_eq!(
+            live_family_tokens(&pool, user_id).await,
+            1,
+            "one live session before the change"
+        );
+
+        let app = change_phone_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        let new_phone = fresh_digit_phone();
+        let ek = jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes());
+        let (change_tok, jti) =
+            encode_phone_verify_token(&new_phone, PHONE_CHANGE_PURPOSE, &ek, 10).unwrap();
+        let _: () = redis
+            .set_ex(
+                phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti),
+                "valid",
+                600,
+            )
+            .await
+            .expect("arm phone_change jti");
+
+        let res = app
+            .oneshot(patch_change_phone(&tok, &change_tok, "x"))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "correct PIN + token → 200");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(json["data"]["phone_changed"], true);
+
+        assert_eq!(
+            phone_of(&pool, user_id).await,
+            new_phone,
+            "the login phone is now the new number"
+        );
+        assert_eq!(
+            live_family_tokens(&pool, user_id).await,
+            0,
+            "a phone change force-revokes every refresh family"
+        );
+        let trv: Option<i64> = redis
+            .get(format!("user_trv:{user_id}"))
+            .await
+            .expect("read trv marker");
+        assert!(
+            trv.unwrap_or(0) >= 1,
+            "the force-revoke-all marker is published"
+        );
+        let live: Option<String> = redis
+            .get(phone_verify_jti_key(PHONE_CHANGE_PURPOSE, &jti))
+            .await
+            .expect("read marker");
+        assert_eq!(
+            live, None,
+            "the phone_change token is single-use (consumed)"
+        );
+        let (audits,): (i64,) = sqlx::query_as(
+            "SELECT COUNT(*) FROM identity.credential_audit WHERE user_id = $1 AND action = 'phone_changed'",
+        )
+        .bind(user_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(audits, 1, "the change writes its credential_audit row");
+
+        cleanup(&pool, user_id).await;
+        let _: () = redis.del(format!("user_trv:{user_id}")).await.unwrap_or(());
     }
 }

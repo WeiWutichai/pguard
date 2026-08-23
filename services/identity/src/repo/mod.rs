@@ -1086,6 +1086,118 @@ pub async fn change_password(
     Ok(new_version)
 }
 
+/// Verify the CALLER'S OWN current PIN as a step-up (for `PATCH /auth/phone`). Reads the stored
+/// Argon2 hash by `user_id` (live, non-deleted rows only) and constant-time verifies
+/// `current_password` (the SHA-256 hex of the current PIN, same shape as login's `password`),
+/// off-runtime via `spawn_blocking`. `Ok(())` on match; a GENERIC `Unauthorized` on a wrong PIN
+/// (mirrors login / `change_password` — never reveal whether it was the account or the PIN that
+/// failed); `NotFound` when the row is gone/soft-deleted. No enumeration concern here: the caller
+/// is already an authenticated `AuthUser` proving their OWN PIN. `skip(db, current_password)`:
+/// never log the secret.
+#[tracing::instrument(skip(db, current_password), fields(user_id = %user_id))]
+pub async fn verify_self_password(
+    db: &PgPool,
+    user_id: Uuid,
+    current_password: &str,
+) -> Result<(), AppError> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT password_hash FROM identity.users WHERE id = $1 AND deleted_at IS NULL",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    let (hash,) = row.ok_or_else(|| AppError::NotFound("User not found".to_string()))?;
+
+    let presented = current_password.to_string();
+    let ok = tokio::task::spawn_blocking(move || password::verify_secret(&presented, &hash))
+        .await
+        .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??;
+    if ok {
+        Ok(())
+    } else {
+        // Generic 401 — same as login; never reveal that the account matched but the PIN didn't.
+        Err(AppError::Unauthorized("Invalid credentials".to_string()))
+    }
+}
+
+/// Change the caller's LOGIN PHONE (`PATCH /auth/phone`) in ONE tx: write the NEW phone, bump the
+/// `token_revocation_version`, and revoke EVERY refresh family — so a phone change kills all prior
+/// sessions (parity with [`reset_password_by_phone`] / [`change_password`]; the current PIN is
+/// verified separately by the handler via [`verify_self_password`], and ownership of the NEW number
+/// is proven by the single-use `phone_change` token, so this write itself is unconditional aside
+/// from the uniqueness guard). `phone` is `UNIQUE NOT NULL`, so a number ALREADY held by another
+/// account trips the 23505 constraint → [`AppError::ConflictCode`] with code `PHONE_TAKEN` (the
+/// authoritative race-proof guard; the handler ALSO does a cheap advisory `approved`-exists probe
+/// before burning the token). Soft-deleted rows are excluded (an erased account cannot be edited).
+/// Returns the new `token_revocation_version` so the caller can publish the Redis `trv` marker.
+/// `skip(db, new_phone)`: never log the phone (PII).
+#[tracing::instrument(skip(db, new_phone), fields(user_id = %user_id))]
+pub async fn update_user_phone(
+    db: &PgPool,
+    user_id: Uuid,
+    new_phone: &str,
+) -> Result<i32, AppError> {
+    let mut tx = db.begin().await?;
+
+    // Lock the row + read the current revocation version (only a live, non-deleted account).
+    let row: Option<(i32,)> = sqlx::query_as(
+        "SELECT token_revocation_version FROM identity.users \
+         WHERE id = $1 AND deleted_at IS NULL FOR UPDATE",
+    )
+    .bind(user_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let (current_version,) = match row {
+        Some(r) => r,
+        None => {
+            tx.rollback().await?;
+            return Err(AppError::NotFound("User not found".to_string()));
+        }
+    };
+    let new_version = revocation::next_revocation_version(current_version);
+
+    // Write the new phone + bump trv in the same statement. A collision with another account's
+    // phone trips UNIQUE(phone) 23505 → PHONE_TAKEN (the authoritative, race-proof guard). The tx
+    // is dropped (rolled back) on the error path, so no trv bump / revoke leaks through.
+    let res = sqlx::query(
+        "UPDATE identity.users \
+         SET phone = $2, token_revocation_version = $3, updated_at = now() \
+         WHERE id = $1",
+    )
+    .bind(user_id)
+    .bind(new_phone)
+    .bind(new_version)
+    .execute(&mut *tx)
+    .await;
+    if let Err(sqlx::Error::Database(d)) = &res {
+        if d.code().as_deref() == Some("23505") {
+            return Err(AppError::ConflictCode {
+                code: "PHONE_TAKEN",
+                message: "This phone number is already in use by another account.".to_string(),
+            });
+        }
+    }
+    res?;
+
+    // Revoke EVERY outstanding refresh family — a phone change invalidates all prior sessions.
+    sqlx::query(
+        "UPDATE identity.refresh_tokens SET revoked = TRUE WHERE user_id = $1 AND revoked = FALSE",
+    )
+    .bind(user_id)
+    .execute(&mut *tx)
+    .await?;
+
+    // Audit the phone change in the SAME tx (append-only; parity with password_changed/pin_reset).
+    record_credential_event(&mut tx, user_id, "phone_changed", None).await?;
+
+    tx.commit().await?;
+    tracing::info!(
+        new_version,
+        "login phone changed (all sessions force-revoked)"
+    );
+    Ok(new_version)
+}
+
 /// Cheap existence probe: does a LIVE (active, non-deleted) account hold this phone?
 /// Used by `/auth/reset-pin` BEFORE it burns the single-use token jti — a reset attempt
 /// against a phone with no resettable account should fail WITHOUT consuming the token

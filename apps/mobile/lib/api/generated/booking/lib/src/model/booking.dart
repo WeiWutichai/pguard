@@ -26,6 +26,7 @@ part 'booking.g.dart';
 /// * [cancellationFee] - SNAPSHOT of the catalog's cancellation fee (฿, exact decimal string, ≥ 0) taken at creation. Charged to the CUSTOMER only when the CUSTOMER cancels before work starts, and only up to what was actually paid; a guard withdrawal is still a full refund. What was really kept is the payment's `cancellation_fee_charged`. null on pre-feature bookings → treat as 0.
 /// * [lat] - Site latitude (null when not provided at create).
 /// * [lng] - Site longitude (null when not provided at create).
+/// * [targetGuardId] - DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create — DISTINCT from `guard_id` (the guard who ACCEPTED). null = OPEN first-come (legacy rows and un-directed bookings): any online guard may claim it. When set, discovery hides the booking from every other guard and `accept` 403s a non-target `NOT_OFFERED_TO_YOU`. On a directed booking the target accepts, this and `guard_id` end up the same guard.
 /// * [workStartedAt] - When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
 /// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
 /// * [cancellationReason] - Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to \"ไม่ระบุ\"/\"Not specified\" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009).
@@ -82,6 +83,10 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// Site longitude (null when not provided at create).
   @BuiltValueField(wireName: r'lng')
   double? get lng;
+
+  /// DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create — DISTINCT from `guard_id` (the guard who ACCEPTED). null = OPEN first-come (legacy rows and un-directed bookings): any online guard may claim it. When set, discovery hides the booking from every other guard and `accept` 403s a non-target `NOT_OFFERED_TO_YOU`. On a directed booking the target accepts, this and `guard_id` end up the same guard.
+  @BuiltValueField(wireName: r'target_guard_id')
+  String? get targetGuardId;
 
   /// When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
   @BuiltValueField(wireName: r'work_started_at')
@@ -206,6 +211,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       yield serializers.serialize(
         object.lng,
         specifiedType: const FullType(double),
+      );
+    }
+    if (object.targetGuardId != null) {
+      yield r'target_guard_id';
+      yield serializers.serialize(
+        object.targetGuardId,
+        specifiedType: const FullType(String),
       );
     }
     if (object.workStartedAt != null) {
@@ -366,6 +378,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(double),
           ) as double;
           result.lng = valueDes;
+          break;
+        case r'target_guard_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.targetGuardId = valueDes;
           break;
         case r'work_started_at':
           final valueDes = serializers.deserialize(

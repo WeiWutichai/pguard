@@ -33,6 +33,11 @@ String localizeApiError(bool isThai, ApiException e) {
         : 'Too many requests — please wait a moment and try again';
   }
   switch (e.code) {
+    case 'PHONE_TAKEN':
+      // PATCH /auth/phone: the NEW number is already registered to another account.
+      return isThai
+          ? 'เบอร์นี้ถูกใช้สมัครแล้ว'
+          : 'This phone number is already in use by another account';
     case 'CAPTCHA_INVALID':
       return isThai
           ? 'คำตอบไม่ถูกต้อง กรุณาลองอีกครั้ง'

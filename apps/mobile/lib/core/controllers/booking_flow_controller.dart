@@ -87,8 +87,9 @@ class BookingFlowState {
   final Booking? booking;
   final List<AvailableGuard> guards;
 
-  /// Discovery preview selection. v2 is first-come-accept, so this does NOT assign the guard;
-  /// it only highlights the customer's preferred guard in the UI.
+  /// The guard the customer picked in discovery. DIRECTED OFFER (C3): this is sent as the create
+  /// call's `target_guard_id`, so the booking is offered to ONLY this guard — no other guard sees
+  /// or can accept it (server-enforced). `null` → the booking stays OPEN first-come.
   final String? selectedGuardId;
   final bool busy;
   final String? error;
@@ -326,6 +327,11 @@ class BookingFlowController extends _$BookingFlowController {
           // The chosen catalog service: send ONLY its id. The server prices the booking from that
           // service's base_fee and enforces its min_hours — the client never sends a price.
           if (service != null) 'service_id': service.id,
+          // DIRECTED OFFER (C3): the guard the customer picked in discovery IS the offer target —
+          // the server offers the job to ONLY this guard (no other guard sees or can accept it).
+          // Omitted when no guard was picked → the booking stays OPEN first-come.
+          if (state.selectedGuardId != null)
+            'target_guard_id': state.selectedGuardId,
           // Send the map-pinned site coordinate when the customer picked one (the contract's
           // optional lat/lng — both-or-neither). Lets the guard see the job location and feeds
           // open-job radius discovery server-side. Omitted when only a typed address was used.
@@ -371,7 +377,10 @@ class BookingFlowController extends _$BookingFlowController {
       state = state.copyWith(busy: false);
       return ok;
     } on ApiException catch (e) {
-      state = state.copyWith(busy: false, error: localizeApiError(ref.read(localeControllerProvider) == AppLocale.th, e));
+      state = state.copyWith(
+          busy: false,
+          error: localizeApiError(
+              ref.read(localeControllerProvider) == AppLocale.th, e));
       return false;
     } catch (_) {
       state = state.copyWith(

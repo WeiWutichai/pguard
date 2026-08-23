@@ -175,12 +175,13 @@ components:
         answer: { type: string, description: The captcha answer (numeric string) }
         purpose:
           type: string
-          enum: [phone_verify, pin_reset]
+          enum: [phone_verify, pin_reset, phone_change]
           description: >-
             Which flow this code is for — BOUND here, stored with the code, and named in
             the SMS wording. Omitted → `phone_verify` (registration). `pin_reset` →
-            forgot-PIN reset; `/otp/verify` will only mint a `pin_reset` token from a
-            code requested this way.
+            forgot-PIN reset; `phone_change` → a signed-in user changing their login phone
+            (identity `PATCH /auth/phone`). `/otp/verify` will only mint a token of the
+            SAME purpose as the code requested this way.
 
     RequestOtpResult:
       type: object
@@ -197,12 +198,13 @@ components:
         code: { type: string, description: The OTP code (digits), example: "123456" }
         purpose:
           type: string
-          enum: [phone_verify, pin_reset]
+          enum: [phone_verify, pin_reset, phone_change]
           description: >-
             Cross-check of the flow BOUND at `POST /otp/request` — the issued token's
             purpose comes from the stored code, never from this field. Omitted →
-            `phone_verify` (registration). A mismatch with the stored code burns the
-            code and fails generically.
+            `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change`
+            → change login phone. A mismatch with the stored code burns the code and fails
+            generically.
 
     VerifyOtpResult:
       type: object
@@ -213,7 +215,8 @@ components:
           description: >-
             Single-use JWT scoped to the requested purpose — `phone_verify` tokens are
             exchanged by identity/profile to finish registration; `pin_reset` tokens by
-            `POST /auth/reset-pin` to reset a forgotten PIN
+            `POST /auth/reset-pin` to reset a forgotten PIN; `phone_change` tokens by
+            `PATCH /auth/phone` to change the login phone
         expires_in: { type: integer, format: int64, description: Token validity in seconds }
 
     ApiResponseEnvelope:

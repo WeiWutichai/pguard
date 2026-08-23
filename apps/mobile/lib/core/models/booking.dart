@@ -118,6 +118,7 @@ class Booking {
     this.tip,
     this.lat,
     this.lng,
+    this.targetGuardId,
     this.paidAt,
     this.workStartedAt,
     this.cancellationReason,
@@ -147,6 +148,12 @@ class Booking {
   /// when no map pick was made. Lets the guard see the job location (e.g. on a map/navigation).
   final double? lat;
   final double? lng;
+
+  /// DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create (the customer's pick
+  /// in discovery), or `null` for an OPEN first-come booking. Distinct from [guardId] (the guard who
+  /// ACCEPTED). When set, only that guard sees/accepts the job; there is no auto-fallback to the open
+  /// pool. Read-only on the client — the customer sets it via the create call, never edits it after.
+  final String? targetGuardId;
 
   /// When the booking's PRE-PAY charge cleared — set server-side once the booking service
   /// consumes `pguard.events.payment.completed`. `null` until paid. THE payment gate: the
@@ -259,6 +266,7 @@ class Booking {
         tip: (json['tip'] as Object?)?.toString(),
         lat: (json['lat'] as num?)?.toDouble(),
         lng: (json['lng'] as num?)?.toDouble(),
+        targetGuardId: json['target_guard_id'] as String?,
         paidAt: json['paid_at'] != null
             ? DateTime.tryParse(json['paid_at'] as String)
             : null,
@@ -290,6 +298,7 @@ class Booking {
         tip: tip,
         lat: lat,
         lng: lng,
+        targetGuardId: targetGuardId,
         paidAt: paidAt,
         workStartedAt: workStartedAt,
         cancellationReason: cancellationReason,
@@ -319,6 +328,9 @@ class Booking {
         tip: tip,
         lat: lat,
         lng: lng,
+        // The offered guard is fixed at create and never changes over the booking's life, so it
+        // rides every WS-folded copy (like the money snapshots below).
+        targetGuardId: targetGuardId,
         paidAt: paidAt,
         workStartedAt: workStartedAt,
         // The WS frame carries only the status — a `cancelled`/`declined` push therefore lands

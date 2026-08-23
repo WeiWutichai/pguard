@@ -162,6 +162,18 @@ class _ProfileEditScreenState extends ConsumerState<ProfileEditScreen> {
                         _ReadonlyField(
                             label: isThai ? 'เบอร์โทร (เข้าสู่ระบบ)' : 'Phone',
                             value: p.phone ?? '—'),
+                        // The phone is the login identifier + forgot-PIN key, so it isn't edited
+                        // inline — changing it requires OTP-verifying the NEW number AND the current
+                        // PIN. This action starts that dedicated flow (PATCH /auth/phone).
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton.icon(
+                            onPressed: () => context.push('/profile/phone/new'),
+                            icon: const Icon(Icons.sync_alt, size: 16),
+                            label:
+                                Text(isThai ? 'เปลี่ยนเบอร์' : 'Change number'),
+                          ),
+                        ),
                         const SizedBox(height: PgTokens.space4),
                         if (p.isGuard)
                           ..._guardFields(p, isThai)

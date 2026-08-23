@@ -16,6 +16,7 @@ import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.d
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_list_support_tickets200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_pending_applicants_count200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
@@ -777,6 +778,95 @@ class AdminApi {
     }
 
     return Response<AdminListGuardProfiles200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// List support tickets, newest first (role&#x3D;admin)
+  /// The admin queue of support tickets filed from the mobile Help page — newest first (&#x60;created_at DESC&#x60;), limit/offset paged. Admin only (else **403**). Each row carries the reporter&#39;s &#x60;user_id&#x60;; the web admin maps it to a display name with the existing batch name-resolver (&#x60;POST /admin/users/resolve&#x60;). Replica read. 
+  ///
+  /// Parameters:
+  /// * [limit] 
+  /// * [offset] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [AdminListSupportTickets200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<AdminListSupportTickets200Response>> adminListSupportTickets({ 
+    int? limit = 50,
+    int? offset = 0,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/support/tickets';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _queryParameters = <String, dynamic>{
+      if (limit != null) r'limit': encodeQueryParameter(_serializers, limit, const FullType(int)),
+      if (offset != null) r'offset': encodeQueryParameter(_serializers, offset, const FullType(int)),
+    };
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      queryParameters: _queryParameters,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    AdminListSupportTickets200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(AdminListSupportTickets200Response),
+      ) as AdminListSupportTickets200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<AdminListSupportTickets200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,

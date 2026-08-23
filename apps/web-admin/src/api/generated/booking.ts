@@ -272,6 +272,10 @@ export interface paths {
          *     static segments win in the router (same precedent as calling's `/calls/ice`), and
          *     the gateway's existing `/bookings` prefix rule routes it with no gateway change.
          *
+         *     DIRECTED OFFER (C3): a booking directed at one guard (`target_guard_id` set) appears
+         *     here ONLY for that guard — every other guard sees just OPEN bookings (`target_guard_id`
+         *     null). So the returned set is `target_guard_id IS NULL OR target_guard_id = <caller>`.
+         *
          *     Filtering: with `lat`+`lng` (and optional `radius_km`, default 10) only bookings
          *     that HAVE coordinates within the radius are returned, nearest first. Without
          *     coordinates, all open bookings are returned newest-first (coordinates on bookings
@@ -319,6 +323,10 @@ export interface paths {
          *     `pguard.events.booking.job_accepted` `{ booking_id, customer_id, guard_id }` into
          *     the outbox in the SAME transaction (transactional outbox). Rejected with 409 if the
          *     booking is not in a state from which acceptance is legal.
+         *
+         *     DIRECTED OFFER (C3): if the booking was directed at ONE guard (`target_guard_id` set),
+         *     only that guard may accept — any other guard is rejected with **403 `NOT_OFFERED_TO_YOU`**
+         *     (the app localizes the code). An OPEN booking (`target_guard_id` null) stays first-come.
          */
         post: operations["acceptBooking"];
         delete?: never;
@@ -857,6 +865,11 @@ export interface components {
              * @description Optional site longitude (must be paired with `lat`).
              */
             lng?: number | null;
+            /**
+             * Format: uuid
+             * @description DIRECTED OFFER (C3): the ONE guard the customer chose. When present, the booking is offered ONLY to that guard — no other guard sees it in `GET /bookings/open` or can `accept` it (a non-target accept → 403 `NOT_OFFERED_TO_YOU`). When absent (the default), the booking is OPEN first-come (any online guard may claim it). There is NO auto-fallback to the open pool: if the chosen guard never takes it, the customer re-books. Not validated to be a real approved guard (the customer picks from `GET /available-guards`); a bogus id simply makes the booking unclaimable.
+             */
+            target_guard_id?: string | null;
         };
         Booking: {
             /** Format: uuid */
@@ -903,6 +916,11 @@ export interface components {
              * @description Site longitude (null when not provided at create).
              */
             lng?: number | null;
+            /**
+             * Format: uuid
+             * @description DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create — DISTINCT from `guard_id` (the guard who ACCEPTED). null = OPEN first-come (legacy rows and un-directed bookings): any online guard may claim it. When set, discovery hides the booking from every other guard and `accept` 403s a non-target `NOT_OFFERED_TO_YOU`. On a directed booking the target accepts, this and `guard_id` end up the same guard.
+             */
+            target_guard_id?: string | null;
             /**
              * Format: date-time
              * @description When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
@@ -1639,7 +1657,15 @@ export interface operations {
         responses: {
             200: components["responses"]["BookingOk"];
             401: components["responses"]["Unauthorized"];
-            403: components["responses"]["Forbidden"];
+            /** @description Wrong role, not a participant, OR a directed booking accepted by a non-target guard (`error.code = NOT_OFFERED_TO_YOU`). */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
         };
