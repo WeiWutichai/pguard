@@ -1301,10 +1301,13 @@ mod tests {
     }
 
     fn create_body() -> Body {
+        // A FUTURE time — the create handler rejects a past/now scheduled_at (SCHEDULED_IN_PAST),
+        // so a fixed date would go stale. now + 1 day keeps it valid forever.
+        let sched = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
         Body::from(
             serde_json::json!({
                 "address": "1 Test Rd",
-                "scheduled_at": "2026-06-04T10:00:00Z",
+                "scheduled_at": sched,
                 "hours": 4
             })
             .to_string(),
@@ -3553,9 +3556,11 @@ mod tests {
             let app = app.clone();
             let token = user_token_for(customer, "customer");
             async move {
+                // Future scheduled_at — SCHEDULED_IN_PAST rejects past/now at create.
+                let sched = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
                 let mut body = serde_json::json!({
                     "address": "1 Charge Wiring Rd",
-                    "scheduled_at": "2026-07-01T10:00:00Z",
+                    "scheduled_at": sched,
                     "hours": hours,
                 });
                 if let Some(sid) = service_id {

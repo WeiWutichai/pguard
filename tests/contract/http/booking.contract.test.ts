@@ -14,6 +14,10 @@ import { assertResponseMatchesSpec } from "../src/validate.js";
 // A deterministic seed booking owned by the test customer (seed-v2.sql: ids 11111111-0000-…-00000000000<i>).
 const SEED_BOOKING_ID = "11111111-0000-0000-0000-000000000001";
 
+// A future scheduled_at — the create handler rejects a past/now time (SCHEDULED_IN_PAST), so a
+// fixed date would rot. Tomorrow keeps every POST fixture valid.
+const futureScheduledAt = new Date(Date.now() + 86_400_000).toISOString();
+
 describe("booking contract (gateway /v1)", () => {
   it("GET /bookings returns the caller's bookings as contract-shaped list", async () => {
     const token = await accessToken(CUSTOMER);
@@ -41,7 +45,7 @@ describe("booking contract (gateway /v1)", () => {
       headers: { ...bearer(token), "content-type": "application/json" },
       body: JSON.stringify({
         address: "1 Contract Test Rd, Bangkok",
-        scheduled_at: "2026-06-15T09:00:00Z",
+        scheduled_at: futureScheduledAt,
         hours: 4,
       }),
     });
@@ -60,7 +64,7 @@ describe("booking contract (gateway /v1)", () => {
     const res = await http(gatewayUrl("/bookings"), {
       method: "POST",
       headers: { ...bearer(token), "content-type": "application/json" },
-      body: JSON.stringify({ address: "1 Bad Rd", scheduled_at: "2026-06-15T09:00:00Z", hours: 0 }),
+      body: JSON.stringify({ address: "1 Bad Rd", scheduled_at: futureScheduledAt, hours: 0 }),
     });
     expect(res.status).toBe(400);
     await assertResponseMatchesSpec("booking", "post", "/bookings", res);
