@@ -8,13 +8,15 @@ import 'package:pguard_mobile/widgets/primary_button.dart';
 
 import '../support/fakes.dart';
 
-Map<String, dynamic> bookingJson(String status) => {
+Map<String, dynamic> bookingJson(String status, {String? scheduledAt}) => {
       'id': 'b1',
       'customer_id': 'c1',
       'guard_id': 'g1',
       'status': status,
       'address': 'หมู่บ้านลัดดารมย์ ซ.5',
-      'scheduled_at': '2026-06-05T14:00:00Z',
+      // Default is well in the past so the G3 start-window gate is OPEN for the existing tests;
+      // pass a future `scheduledAt` to exercise the too-early gate.
+      'scheduled_at': scheduledAt ?? '2026-06-05T14:00:00Z',
       'hours': 8,
       'base_fee': '500.00',
       'guard_count': 1,
@@ -171,5 +173,67 @@ void main() {
         reason: 'the guard can withdraw before arriving');
 
     await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'G3: arrived BEFORE the scheduled window → start CTA is disabled with a '
+      '"ยังไม่ถึงเวลาเริ่มงาน" notice', (tester) async {
+    // Arrived early (advance booking), scheduled 2h out. The start window opens at
+    // scheduled − 15min, so the "เช็คอินเริ่มงาน" CTA must be DISABLED and the guard told why —
+    // the server would otherwise reject the start with START_TOO_EARLY.
+    final future =
+        DateTime.now().toUtc().add(const Duration(hours: 2)).toIso8601String();
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('arrived', scheduledAt: future)
+          : const <Map<String, dynamic>>[],
+    );
+    await tester.pumpWidget(ProviderScope(
+      overrides: _baseOverrides(api),
+      child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('ยังไม่ถึงเวลาเริ่มงาน'), findsOneWidget);
+    final btn = tester.widget<PgPrimaryButton>(
+        find.widgetWithText(PgPrimaryButton, 'เช็คอินเริ่มงาน'));
+    expect(btn.onPressed, isNull,
+        reason:
+            'the start CTA stays disabled until the scheduled window opens');
+
+    await tester.pumpWidget(const SizedBox()); // cancel the 1s display ticker
+  });
+
+  testWidgets(
+      'G1: past the booked end + 30-min grace, the check-in window is CLOSED — '
+      'shows "หมดเวลาเช็คอินแล้ว" and NO check-in CTA (End stays)',
+      (tester) async {
+    // Working (arrived + the start check-in filed), but the start was 9h ago on an 8h shift → the
+    // window (end + 30min = 8h30m) has closed. The bottom bar must NOT offer a check-in CTA — a
+    // late file only 409s CHECK_IN_WINDOW_CLOSED — but the truthful note + End remain.
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') return bookingJson('arrived');
+        if (path == '/bookings/b1/progress-reports') {
+          return [startCheckInReport(ago: const Duration(hours: 9))];
+        }
+        return const <Map<String, dynamic>>[];
+      },
+    );
+    await tester.pumpWidget(ProviderScope(
+      overrides: _baseOverrides(api),
+      child: const MaterialApp(home: ActiveJobScreen(bookingId: 'b1')),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // The closed-window note + End, and NO due check-in CTA (neither start nor hourly).
+    expect(find.text('หมดเวลาเช็คอินแล้ว'), findsOneWidget);
+    expect(find.textContaining('เช็คอินชั่วโมง'), findsNothing);
+    expect(find.text('เช็คอินเริ่มงาน'), findsNothing);
+    expect(find.widgetWithText(PgPrimaryButton, 'จบงาน'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox()); // cancel the 1s display tickers
   });
 }

@@ -110,20 +110,27 @@ class _BookingFormScreenState extends ConsumerState<BookingFormScreen> {
     required ValueChanged<DateTime> onPicked,
   }) async {
     final now = DateTime.now();
+    // C4: a booking may never be scheduled in the PAST (min = now). The date picker's earliest
+    // selectable day is TODAY (no yesterday), and — because [showTimePicker] has no min-time bound —
+    // the composed instant is clamped forward to `now`, so an earlier time on today's date can't
+    // slip through. `scheduled_at <= now` is also rejected server-side (SCHEDULED_IN_PAST); this
+    // keeps the customer from ever reaching that error in the first place.
+    final seed = initial.isBefore(now) ? now : initial;
     final date = await showDatePicker(
       context: context,
-      initialDate: initial.isBefore(now) ? now : initial,
-      firstDate: now.subtract(const Duration(days: 1)),
+      initialDate: seed,
+      firstDate: DateTime(now.year, now.month, now.day),
       lastDate: now.add(const Duration(days: 365)),
     );
     if (date == null || !mounted) return;
     final time = await showTimePicker(
       context: context,
-      initialTime: TimeOfDay(hour: initial.hour, minute: initial.minute),
+      initialTime: TimeOfDay(hour: seed.hour, minute: seed.minute),
     );
     if (!mounted) return;
-    final t = time ?? TimeOfDay(hour: initial.hour, minute: initial.minute);
-    onPicked(DateTime(date.year, date.month, date.day, t.hour, t.minute));
+    final t = time ?? TimeOfDay(hour: seed.hour, minute: seed.minute);
+    final picked = DateTime(date.year, date.month, date.day, t.hour, t.minute);
+    onPicked(picked.isBefore(now) ? now : picked);
   }
 
   /// "ค้นหาเจ้าหน้าที่" / Find guards — does NOT create the booking. Discovery's

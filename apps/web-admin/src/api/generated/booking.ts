@@ -21,6 +21,10 @@ export interface paths {
          * Create a booking request (customer only)
          * @description A customer creates a booking request (status `requested`). Role gating is enforced
          *     in the handler (403 for non-customers). No event is emitted for a bare request.
+         *
+         *     `scheduled_at` must be in the FUTURE — the server compares against its own clock
+         *     (never the client's), so a past-or-now `scheduled_at` is 400 with
+         *     `error.code = SCHEDULED_IN_PAST` (C4). Clients branch on the code and localize.
          */
         post: operations["createBooking"];
         delete?: never;
@@ -438,8 +442,13 @@ export interface paths {
          * Assigned guard starts the job (50m geofence)
          * @description Stamps `work_started_at` (the proration basis); status stays `arrived` (no event).
          *     Assigned guard only; the booking must be `arrived`. A second start is an idempotent
-         *     no-op (the geofence is NOT re-run on the retry of an already-started job). The job
-         *     must be started before completion can be requested.
+         *     no-op (neither the time gate nor the geofence is re-run on the retry of an
+         *     already-started job). The job must be started before completion can be requested.
+         *
+         *     **Start-time gate (G3):** the start window opens at `scheduled_at − 15min` (an early
+         *     grace for a guard who is on-site a touch ahead of schedule). A start before that is
+         *     409 with `error.code = START_TOO_EARLY` (there is no upper bound — a late start is
+         *     legitimate). Admin starts bypass the gate (support acts on behalf).
          *
          *     **Geofence:** the OPTIONAL body carries the guard's GPS fix at the moment of
          *     pressing start. On a booking with site coordinates (`lat`/`lng` pinned at create)
@@ -564,13 +573,15 @@ export interface paths {
          *     `pguard.events.booking.progress_reported` into the outbox in the SAME transaction.
          *
          *     Rules: `hour_number` must be within `1..=hours`; hour N opens once N−1 hours have
-         *     elapsed since `work_started_at` (409 `CONFLICT` too-early otherwise); one check-in
-         *     per hour — a duplicate `hour_number` is 409 `DUPLICATE_CHECK_IN` (checked BEFORE the
-         *     upload), so a client retry can never double-report and uploads nothing; clients
-         *     branch on `error.code`, not the message. Strictly the assigned guard (no admin
-         *     bypass — a report is the guard's first-person attestation of presence). GPS is
-         *     optional (the guard may be offline at capture); when sent, `lat`+`lng` must come
-         *     together.
+         *     elapsed since `work_started_at` (409 `CONFLICT` too-early otherwise); the check-in
+         *     window CLOSES 30min past the worked end (`work_started_at + hours`) — a later
+         *     check-in is 409 `CHECK_IN_WINDOW_CLOSED` (G1; the 30-min grace keeps legitimate late
+         *     back-filling of the final hour valid). One check-in per hour — a duplicate
+         *     `hour_number` is 409 `DUPLICATE_CHECK_IN` (checked BEFORE the upload), so a client
+         *     retry can never double-report and uploads nothing; clients branch on `error.code`,
+         *     not the message. Strictly the assigned guard (no admin bypass — a report is the
+         *     guard's first-person attestation of presence). GPS is optional (the guard may be
+         *     offline at capture); when sent, `lat`+`lng` must come together.
          *
          *     > **⚠️ Deployment dependency (tracked, NOT yet satisfied):** the booking service
          *     > accepts bodies up to 12 MiB on this route, but the api-gateway currently buffers
@@ -1269,7 +1280,15 @@ export interface operations {
         };
         responses: {
             200: components["responses"]["BookingOk"];
-            400: components["responses"]["BadRequest"];
+            /** @description Invalid body — `error.code` is `SCHEDULED_IN_PAST` when `scheduled_at` is not strictly in the future, otherwise `BAD_REQUEST` (bad hours/guard_count/tip/coords or an unknown/inactive service). */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
         };
@@ -1741,7 +1760,7 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
-            /** @description Conflict — `error.code` is `NOT_AT_SITE` (fix beyond the 50m fence + accuracy allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT` (booking not `arrived`). */
+            /** @description Conflict — `error.code` is `START_TOO_EARLY` (before the `scheduled_at − 15min` window), `NOT_AT_SITE` (fix beyond the 50m fence + accuracy allowance), `GPS_REQUIRED` (pinned booking, no fix supplied), or `CONFLICT` (booking not `arrived`). */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -1893,6 +1912,9 @@ export interface operations {
              *         (caught at the pre-flight before the upload, and again by the unique index
              *         inside the insert transaction). An idempotent client retry SHOULD treat
              *         this as success — the hour is already recorded and nothing was re-uploaded.
+             *       - `CHECK_IN_WINDOW_CLOSED` — the check-in window has closed (more than 30min
+             *         past the worked end, `work_started_at + hours`). Distinct from the too-early
+             *         `CONFLICT` so the app can show a truthful "window closed" message.
              *       - `CONFLICT` — the hour is not open yet (hour N opens once N−1 hours have
              *         elapsed since `work_started_at`) or the job has not been started.
              */

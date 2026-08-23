@@ -21,6 +21,9 @@ import {
 import { accessToken, bearer, gatewayUrl, http, tinyJpeg } from "../src/http.js";
 import { assertEventMatchesSchema, assertResponseMatchesSpec } from "../src/validate.js";
 
+// Future scheduled_at — create rejects past/now (SCHEDULED_IN_PAST); tomorrow never rots.
+const futureScheduledAt = new Date(Date.now() + 86_400_000).toISOString();
+
 describe("event contracts (real emissions → outbox → AsyncAPI schema)", () => {
   it("user.approved: admin approval emits a contract-shaped envelope to profile.outbox", async () => {
     const guard = createPendingGuard();
@@ -53,7 +56,7 @@ describe("event contracts (real emissions → outbox → AsyncAPI schema)", () =
       headers: { ...bearer(customerToken), "content-type": "application/json" },
       body: JSON.stringify({
         address: "1 JobAccepted Rd, Bangkok",
-        scheduled_at: "2026-06-20T09:00:00Z",
+        scheduled_at: futureScheduledAt,
         hours: 4,
       }),
     });

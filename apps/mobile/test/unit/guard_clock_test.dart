@@ -13,8 +13,8 @@ void main() {
       expect(c.remaining(start.add(const Duration(hours: 3))),
           const Duration(hours: 5));
       // before start → 0 elapsed, full remaining
-      expect(c.elapsed(start.subtract(const Duration(minutes: 5))),
-          Duration.zero);
+      expect(
+          c.elapsed(start.subtract(const Duration(minutes: 5))), Duration.zero);
       // past end → clamped
       expect(c.remaining(start.add(const Duration(hours: 9))), Duration.zero);
       expect(c.elapsed(start.add(const Duration(hours: 9))),
@@ -35,21 +35,27 @@ void main() {
   group('CheckInSchedule', () {
     final s = CheckInSchedule(startedAt: start, hours: 8);
 
-    test('totalSlots = hours (one per booked hour, 1:1 to server hour_number)', () {
+    test('totalSlots = hours (one per booked hour, 1:1 to server hour_number)',
+        () {
       // PR-#29 trade-off closed: hours slots (0..hours-1) → hours 1..hours, no end-of-shift
       // slot that would clamp/collide. An 8-hour shift has 8 check-ins, not 9.
       expect(s.totalSlots, 8);
     });
 
-    test('dueIndex grows one per elapsed hour, capped at the last slot (hours-1)', () {
+    test(
+        'dueIndex grows one per elapsed hour, capped at the last slot (hours-1)',
+        () {
       expect(s.dueIndex(start), 0);
       expect(s.dueIndex(start.add(const Duration(minutes: 59))), 0);
       expect(s.dueIndex(start.add(const Duration(hours: 1, minutes: 5))), 1);
       expect(s.dueIndex(start.add(const Duration(hours: 3))), 3);
-      expect(s.dueIndex(start.add(const Duration(hours: 99))), 7); // capped at hours-1
+      expect(s.dueIndex(start.add(const Duration(hours: 99))),
+          7); // capped at hours-1
     });
 
-    test('nextDueAt is the next boundary, null once the last slot (hours-1) is due', () {
+    test(
+        'nextDueAt is the next boundary, null once the last slot (hours-1) is due',
+        () {
       expect(s.nextDueAt(start), start.add(const Duration(hours: 1)));
       // slot 6 due at +6h → next is slot 7 at +7h.
       expect(s.nextDueAt(start.add(const Duration(hours: 6))),
@@ -67,13 +73,61 @@ void main() {
       expect(s.isDueNow(t, {0, 1, 2}), isFalse);
     });
 
-    test('missed = earlier slots never submitted (current slot not yet missed)', () {
+    test('missed = earlier slots never submitted (current slot not yet missed)',
+        () {
       final t = start.add(const Duration(hours: 3, minutes: 5)); // dueIndex 3
       // slots 0,1,2 should be done; 1 missing → missed {1}; slot 3 is "due now", not missed.
       expect(s.missed(t, {0, 2, 3}), {1});
       expect(s.missed(t, {0, 1, 2}), isEmpty);
       // at start nothing can be missed yet
       expect(s.missed(start, {}), isEmpty);
+    });
+  });
+
+  group('CheckInSchedule — check-in window upper bound (G1)', () {
+    final s = CheckInSchedule(startedAt: start, hours: 8);
+
+    test('windowClosesAt = booked end + 30-min back-fill grace', () {
+      // 14:00 + 8h + 30m = 22:30.
+      expect(
+          s.windowClosesAt, start.add(const Duration(hours: 8, minutes: 30)));
+    });
+
+    test(
+        'isWindowClosed flips STRICTLY after end+grace (the boundary is still open)',
+        () {
+      // Still within the booked window.
+      expect(s.isWindowClosed(start.add(const Duration(hours: 8))), isFalse);
+      // Exactly at end+grace → still open (server rejects on `now > worked_end + grace`).
+      expect(s.isWindowClosed(start.add(const Duration(hours: 8, minutes: 30))),
+          isFalse);
+      // One second past the grace → closed.
+      expect(
+          s.isWindowClosed(
+              start.add(const Duration(hours: 8, minutes: 30, seconds: 1))),
+          isTrue);
+      expect(s.isWindowClosed(start.add(const Duration(hours: 9))), isTrue);
+    });
+
+    test('the final slot stops being "due now" once the window closes', () {
+      const filedThrough6 = {
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6
+      }; // only the last slot (7) unfiled
+      // Within grace (+8h10m): the final slot is still legitimately due — allow the late back-fill.
+      expect(
+          s.isDueNow(
+              start.add(const Duration(hours: 8, minutes: 10)), filedThrough6),
+          isTrue);
+      // Past grace (+9h): the final slot is no longer presented as due (a late file would 409
+      // CHECK_IN_WINDOW_CLOSED server-side), so the client stops offering it.
+      expect(s.isDueNow(start.add(const Duration(hours: 9)), filedThrough6),
+          isFalse);
     });
   });
 }

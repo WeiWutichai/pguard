@@ -19,6 +19,16 @@ use crate::domain::state::BookingStatus;
 /// English message — see `AppError::ConflictCode`. Too-early / not-started keep `CONFLICT`.
 pub const DUPLICATE_CHECK_IN_CODE: &str = "DUPLICATE_CHECK_IN";
 
+/// Machine-readable `error.code` for a check-in filed AFTER the job's window has closed (G1).
+/// The window closes [`CHECK_IN_GRACE_MINUTES`] past the worked end (`work_started_at + hours`);
+/// clients branch on this to show a truthful "หมดเวลาเช็คอินแล้ว" (window closed) message
+/// instead of the too-early copy — see `AppError::ConflictCode`.
+pub const CHECK_IN_WINDOW_CLOSED_CODE: &str = "CHECK_IN_WINDOW_CLOSED";
+
+/// Grace period after the worked end (`work_started_at + hours`) during which the FINAL hour may
+/// still be back-filled. Past this the check-in window is closed ([`CHECK_IN_WINDOW_CLOSED_CODE`]).
+pub const CHECK_IN_GRACE_MINUTES: i64 = 30;
+
 // ----- check-in photo validation (images only — ported subset of chat's attachment rules) -----
 
 /// 10MB cap for check-in photos (mirrors chat's image cap).
@@ -103,6 +113,10 @@ pub fn validate_photo_upload(
 /// - `hour_number` must be `1..=hours` → 400 otherwise.
 /// - hour `N` opens once `N−1` hours have elapsed since `work_started_at` → 409 (too early)
 ///   otherwise, so future hours can never be pre-filed.
+/// - the check-in window CLOSES [`CHECK_IN_GRACE_MINUTES`] past the worked end
+///   (`work_started_at + hours`) → 409 [`CHECK_IN_WINDOW_CLOSED_CODE`] otherwise (G1). The
+///   grace keeps legitimate late back-filling of the final hour valid while refusing check-ins
+///   filed long after the job is over.
 ///
 /// Duplicate-hour (the idempotent-retry 409) is NOT decided here — it is enforced by the DB
 /// unique index inside the insert transaction (a pure function cannot see concurrent writes).
@@ -132,6 +146,17 @@ pub fn validate_check_in(
         return Err(AppError::Conflict(format!(
             "Too early to check in for hour {hour_number}"
         )));
+    }
+    // UPPER BOUND (G1): the window closes `CHECK_IN_GRACE_MINUTES` past the worked end
+    // (`started + hours`). Both operands are `started`-relative i64 math (no float drift); the
+    // "worked end" clock needs no extra query — `hours` is already in `BookingCore`.
+    let closes_at =
+        started + Duration::hours(i64::from(hours)) + Duration::minutes(CHECK_IN_GRACE_MINUTES);
+    if now > closes_at {
+        return Err(AppError::ConflictCode {
+            code: CHECK_IN_WINDOW_CLOSED_CODE,
+            message: "The check-in window for this job has closed".to_string(),
+        });
     }
     Ok(())
 }
@@ -287,9 +312,17 @@ mod tests {
                 "hour {bad}: expected BadRequest, got {err:?}"
             );
         }
-        // The last booked hour itself is valid (given enough elapsed time).
+        // The last booked hour itself is valid while the window is open (given enough elapsed
+        // time): at +3h the worked end (+4h) has not yet passed, let alone the grace.
         let late = t0() + Duration::hours(3);
         assert!(validate_check_in(BookingStatus::Arrived, Some(t0()), 4, 4, late).is_ok());
+        // Past the window (worked end +4h, +30min grace = +4h30m) even a valid hour is CLOSED.
+        let closed = t0() + Duration::hours(4) + Duration::minutes(31);
+        let err = validate_check_in(BookingStatus::Arrived, Some(t0()), 4, 4, closed).unwrap_err();
+        match err {
+            AppError::ConflictCode { code, .. } => assert_eq!(code, CHECK_IN_WINDOW_CLOSED_CODE),
+            other => panic!("expected CHECK_IN_WINDOW_CLOSED ConflictCode, got {other:?}"),
+        }
     }
 
     // ----- validate_check_in: too-early window -----
@@ -322,11 +355,38 @@ mod tests {
     }
 
     #[test]
-    fn check_in_late_filing_of_past_hours_is_allowed() {
-        // A guard who missed hour 1 can still file it later (back-filling a PAST hour is the
-        // retry/poor-connectivity path; only FUTURE hours are blocked).
-        let late = t0() + Duration::hours(3);
-        assert!(validate_check_in(BookingStatus::Arrived, Some(t0()), 4, 1, late).is_ok());
+    fn check_in_late_filing_within_window_ok_then_closes_past_grace() {
+        // A guard who missed hour 1 can still back-fill it WHILE THE WINDOW IS OPEN (the
+        // retry/poor-connectivity path; FUTURE hours stay blocked). hours = 4 → worked end at
+        // +4h, window closes at +4h30m (the 30-min grace).
+        let started = t0();
+        // Mid-job late filing of a past hour → Ok.
+        assert!(validate_check_in(
+            BookingStatus::Arrived,
+            Some(started),
+            4,
+            1,
+            started + Duration::hours(3)
+        )
+        .is_ok());
+        // Exactly at the close boundary (worked end + 30-min grace) → still Ok (inclusive), so a
+        // legitimate late back-fill of the final hour is preserved.
+        let close = started + Duration::hours(4) + Duration::minutes(30);
+        assert!(validate_check_in(BookingStatus::Arrived, Some(started), 4, 1, close).is_ok());
+        // One second past the grace → the window is CLOSED (G1 upper bound), coded so the app can
+        // show a truthful "window closed" message instead of the too-early copy.
+        let err = validate_check_in(
+            BookingStatus::Arrived,
+            Some(started),
+            4,
+            1,
+            close + Duration::seconds(1),
+        )
+        .unwrap_err();
+        match err {
+            AppError::ConflictCode { code, .. } => assert_eq!(code, CHECK_IN_WINDOW_CLOSED_CODE),
+            other => panic!("expected CHECK_IN_WINDOW_CLOSED ConflictCode, got {other:?}"),
+        }
     }
 
     // ----- photo validation -----

@@ -130,7 +130,18 @@ void main() {
       // reads the magic bytes, gets null, and rejects before any upload.
       final movFile = File('${tmp.path}/clip.mov')
         ..writeAsBytesSync(<int>[
-          0x00, 0x00, 0x00, 0x18, 0x66, 0x74, 0x79, 0x70, 0x71, 0x74, 0x20, 0x20,
+          0x00,
+          0x00,
+          0x00,
+          0x18,
+          0x66,
+          0x74,
+          0x79,
+          0x70,
+          0x71,
+          0x74,
+          0x20,
+          0x20,
         ]);
       final mov = CapturedPhoto(path: movFile.path, sizeBytes: 12);
       await expectLater(
@@ -190,6 +201,40 @@ void main() {
               .having((e) => e.statusCode, 'statusCode', 409)
               .having((e) => e.message, 'message', contains('ยังไม่ถึงเวลา')),
         ),
+      );
+    });
+
+    test(
+        '409 CHECK_IN_WINDOW_CLOSED (G1) surfaces the truthful "window closed" '
+        'message — NOT absorbed, NOT the too-early copy', () async {
+      // A late file past the booked end + 30-min grace. Branch on the CODE: the message must read
+      // "the window has CLOSED" (too late), the opposite of the generic too-early 409.
+      final service = serviceThatThrows(const ApiException(
+          message: 'Check-in window has closed',
+          code: 'CHECK_IN_WINDOW_CLOSED',
+          statusCode: 409));
+      await expectLater(
+        () => service.submit(
+            bookingId: 'b1', hourNumber: 8, photo: capturedJpg(), isThai: true),
+        throwsA(isA<ApiException>()
+            .having((e) => e.statusCode, 'statusCode', 409)
+            .having((e) => e.message, 'message', 'หมดเวลาเช็คอินแล้ว')),
+      );
+      // EN copy, and it is distinctly NOT the "not time yet" (too-early) message.
+      final en = ApiCheckInService(
+          api: FakeApi(
+              onPost: (_, __) async => throw const ApiException(
+                  message: 'x',
+                  code: 'CHECK_IN_WINDOW_CLOSED',
+                  statusCode: 409)));
+      await expectLater(
+        () => en.submit(
+            bookingId: 'b1',
+            hourNumber: 8,
+            photo: capturedJpg(),
+            isThai: false),
+        throwsA(isA<ApiException>().having(
+            (e) => e.message, 'message', 'The check-in window has closed')),
       );
     });
 

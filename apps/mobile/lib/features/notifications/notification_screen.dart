@@ -25,21 +25,34 @@ class NotificationScreen extends ConsumerStatefulWidget {
 }
 
 class _NotificationScreenState extends ConsumerState<NotificationScreen> {
-  // Fire the open-time "mark everything read" exactly once (post first loaded-with-unread build).
+  // Fire the open-time badge-clear exactly once (post first loaded-with-unread build).
   bool _autoMarked = false;
+
+  // The rows that were unread WHEN THE CENTRE OPENED. Opening clears the bell badge (a server
+  // read-all flips every row's `is_read`), but these rows stay visually highlighted until the user
+  // taps each one — so the highlight isn't erased wholesale the instant the screen appears. Ids are
+  // removed on individual tap (see [_open]).
+  final Set<String> _highlightUntilTapped = {};
 
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(notificationControllerProvider);
     final ctrl = ref.read(notificationControllerProvider.notifier);
-    final hasUnread = async.valueOrNull?.any((n) => !n.isRead) ?? false;
+    final list = async.valueOrNull;
+    final hasUnread = list?.any((n) => !n.isRead) ?? false;
 
-    // OPENING the centre = seeing everything → clear the bell badge. The reported "read them all but
-    // the number stays" happened because clearing required tapping each row (or the button); users
-    // expect opening the list to be enough. Fire once, post-frame (never mutate during build).
-    if (hasUnread && !_autoMarked) {
+    // OPENING the centre = seeing everything → clear the bell BADGE (the reported "read them all but
+    // the number stays"; users expect opening the list to be enough). We still fire the server
+    // read-all so the unread-count drops to 0, BUT first snapshot which rows were unread so their
+    // ROW highlight survives the read-all and only clears on an individual tap. Fire once, post-frame
+    // (never mutate during build).
+    if (hasUnread && !_autoMarked && list != null) {
       _autoMarked = true;
+      _highlightUntilTapped.addAll([
+        for (final n in list)
+          if (!n.isRead) n.id
+      ]);
       WidgetsBinding.instance.addPostFrameCallback((_) => ctrl.markAllRead());
     }
 
@@ -80,8 +93,11 @@ class _NotificationScreenState extends ConsumerState<NotificationScreen> {
                       final n = list[i];
                       // Every tile is tappable: mark read (no-op if already read) THEN open the
                       // notification's target screen, if any (booking / chat / call).
+                      // `forceUnread` keeps a row highlighted after the open-time badge-clear
+                      // read-all, until this row is individually tapped (see [_open]).
                       return NotificationTile(
                         notification: n,
+                        forceUnread: _highlightUntilTapped.contains(n.id),
                         onTap: () => _open(context, ref, n),
                       );
                     },
@@ -94,9 +110,11 @@ class _NotificationScreenState extends ConsumerState<NotificationScreen> {
 
   /// Mark the notification read (optimistic, no-op if already read) and navigate to its target
   /// screen, if it resolves to one. Read-first so the badge/dot clears even when there is no
-  /// destination (e.g. a payment/rating notice).
+  /// destination (e.g. a payment/rating notice). Tapping a row also drops its open-time highlight
+  /// so the unread paint clears for THIS row only (the rest stay highlighted until tapped).
   Future<void> _open(
       BuildContext context, WidgetRef ref, AppNotification n) async {
+    if (_highlightUntilTapped.remove(n.id)) setState(() {});
     if (!n.isRead) {
       // Fire-and-forget the server write; the optimistic update + count refresh happen inside.
       unawaited(

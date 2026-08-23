@@ -6,6 +6,9 @@
 //! - [`progress`] — hourly check-in rules (state gate, hour window, photo validation) +
 //!   open-job discovery query validation.
 //! - [`geo`] — start-work geofence (haversine + the 50m fence with capped accuracy allowance).
+//! - [`scheduling`] — server-authoritative time gates keyed off `scheduled_at`: reject creating a
+//!   booking in the past ([`scheduling::validate_scheduled_at`]) and starting one before its
+//!   scheduled window opens ([`scheduling::validate_start_time`]).
 //! - [`cancellation`] — the mandatory cancel/decline reason codes + their validator (the two
 //!   endpoints have DIFFERENT vocabularies).
 //! - [`pricing`] — the per-service commission + cancellation fee: what an admin may STORE
@@ -17,6 +20,7 @@ pub mod events;
 pub mod geo;
 pub mod pricing;
 pub mod progress;
+pub mod scheduling;
 pub mod state;
 
 pub use cancellation::{validate_cancellation, Cancellation, ReasonSet};

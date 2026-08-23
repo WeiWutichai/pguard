@@ -787,6 +787,10 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
     }
     final now = DateTime.now().toUtc();
     final dueIndex = schedule.dueIndex(now);
+    // G1: once the booked end + 30-min grace has passed, an unfiled slot is no longer "due" — it is
+    // simply missed. Drives the timeline label + current-row marker so they don't keep flagging the
+    // final slot as "ถึงกำหนด / Due now" after the window has closed.
+    final windowClosed = schedule.isWindowClosed(now);
     final startedAt = clock.startedAt; // clock != null ⟹ startedAt was set
 
     // The guard's own submitted reports (participants-only `GET …/progress-reports`, the same
@@ -838,16 +842,21 @@ class _WorkingPanelState extends ConsumerState<_WorkingPanel> {
                   ? (isThai ? 'เริ่มงาน · เช็คอินจุดนัด' : 'Start · check in')
                   : (isThai ? 'ตรวจรอบที่ $i' : 'Round $i check-in'),
               done: state.completedCheckIns.contains(i),
-              isCurrent: i == dueIndex && !state.completedCheckIns.contains(i),
+              isCurrent: i == dueIndex &&
+                  !state.completedCheckIns.contains(i) &&
+                  !windowClosed,
               isLast: i == schedule.totalSlots - 1,
               time: _slotTime(startedAt, i),
               statusLabel: state.completedCheckIns.contains(i)
                   ? (isThai ? 'รายงานแล้ว' : 'Reported')
-                  : i == dueIndex
-                      ? (isThai ? 'ถึงกำหนด' : 'Due now')
-                      : i < dueIndex
-                          ? (isThai ? 'พลาด' : 'Missed')
-                          : (isThai ? 'รอเช็คอิน' : 'Pending'),
+                  // Window closed → an unfiled slot is missed, not "due" (G1).
+                  : windowClosed
+                      ? (isThai ? 'พลาด' : 'Missed')
+                      : i == dueIndex
+                          ? (isThai ? 'ถึงกำหนด' : 'Due now')
+                          : i < dueIndex
+                              ? (isThai ? 'พลาด' : 'Missed')
+                              : (isThai ? 'รอเช็คอิน' : 'Pending'),
               // Slot i is server hour i+1; a submitted report opens its photo+GPS+note.
               onTap: reportsByHour[i + 1] == null
                   ? null
@@ -1065,16 +1074,12 @@ class _TransitionBar extends ConsumerWidget {
         // Arrived, not yet checked in: the ONE CTA is the START check-in (design G3, pulsing).
         // It stamps the work clock AND captures the checkpoint photo in one flow — the timer +
         // "กำลังปฏิบัติงาน" only begin once the photo lands (see [stageOf]). Replaces the old bare
-        // "เริ่มงาน" that started the clock with no photo.
-        return bar(_PulsingGlow(
-          child: PgPrimaryButton(
-            label: isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in',
-            color: PgTokens.colorAccent,
-            foreground: PgTokens.colorOnAmber,
-            busy: busy,
-            onPressed:
-                busy ? null : () => _startAndCheckIn(context, ref, isThai),
-          ),
+        // "เริ่มงาน" that started the clock with no photo. G3: the CTA is gated until the booking's
+        // scheduled window opens (server rejects an early start with START_TOO_EARLY) — the
+        // [_StartCheckInBar] owns a display ticker so it enables live when the window opens.
+        return bar(_StartCheckInBar(
+          state: state,
+          onStart: () => _startAndCheckIn(context, ref, isThai),
         ));
       case JobStage.working:
         // #98: the ONE primary working action lives here (not in the panel). It reflects the
@@ -1367,6 +1372,26 @@ class _WorkingActionBarState extends ConsumerState<_WorkingActionBar> {
     final dueIndex = schedule.dueIndex(now);
     final dueNow = schedule.isDueNow(now, state.completedCheckIns);
 
+    // G1: past the booked end + 30-min grace the check-in window is CLOSED — a late file only 409s
+    // (CHECK_IN_WINDOW_CLOSED), so we DON'T offer a check-in CTA the guard can't use. When the
+    // current slot is still unfiled, explain why ("หมดเวลาเช็คอินแล้ว") above the End action.
+    if (schedule.isWindowClosed(now)) {
+      if (state.completedCheckIns.contains(dueIndex)) return endButton;
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _GateNotice(
+            icon: Icons.timer_off_outlined,
+            label: isThai
+                ? 'หมดเวลาเช็คอินแล้ว'
+                : 'The check-in window has closed',
+          ),
+          const SizedBox(height: PgTokens.space2),
+          endButton,
+        ],
+      );
+    }
+
     if (!dueNow) return endButton;
 
     // A check-in is due → make it the PRIMARY action; keep End as the secondary so the guard can
@@ -1419,6 +1444,117 @@ class _AwaitingPaymentNotice extends StatelessWidget {
           Expanded(
             child: Text(
               isThai ? 'รอลูกค้าชำระเงิน' : 'Awaiting customer payment',
+              style: const TextStyle(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorWarning),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// G3 — the arrived-not-started bottom bar: the pulsing "เช็คอินเริ่มงาน / Start check-in" CTA,
+/// GATED until the booking's scheduled window opens. The server rejects an early start with
+/// `START_TOO_EARLY` (before `scheduled_at − 15min`); this is the honest client mirror — the CTA is
+/// disabled with a "ยังไม่ถึงเวลาเริ่มงาน / Not time to start yet" notice until the window opens.
+/// Owns a 1s DISPLAY ticker (NOT status polling — like [_WorkingActionBar]) so the CTA enables live
+/// the moment the window opens, without the guard having to leave + re-enter the screen. A booking
+/// with no `scheduled_at` (older payload) is never gated.
+class _StartCheckInBar extends ConsumerStatefulWidget {
+  const _StartCheckInBar({required this.state, required this.onStart});
+
+  final ActiveJobState state;
+  final VoidCallback onStart;
+
+  @override
+  ConsumerState<_StartCheckInBar> createState() => _StartCheckInBarState();
+}
+
+class _StartCheckInBarState extends ConsumerState<_StartCheckInBar> {
+  /// The early grace: the start window opens 15 min BEFORE the scheduled time (mirrors the
+  /// booking service's `now < scheduled_at − 15min` reject boundary for `START_TOO_EARLY`).
+  static const _earlyGrace = Duration(minutes: 15);
+
+  Timer? _ticker;
+
+  @override
+  void initState() {
+    super.initState();
+    // Display-only 1s tick so the too-early gate lifts live when the scheduled window opens. NOT
+    // status polling — it only re-reads the scheduled_at vs. now comparison.
+    _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) setState(() {});
+    });
+  }
+
+  @override
+  void dispose() {
+    _ticker?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final busy = widget.state.busy;
+    final scheduledAt = widget.state.booking.scheduledAt;
+    final startOpensAt = scheduledAt?.subtract(_earlyGrace);
+    final tooEarly =
+        startOpensAt != null && DateTime.now().toUtc().isBefore(startOpensAt);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (tooEarly) ...[
+          _GateNotice(
+            icon: Icons.schedule,
+            label: isThai ? 'ยังไม่ถึงเวลาเริ่มงาน' : 'Not time to start yet',
+          ),
+          const SizedBox(height: PgTokens.space2),
+        ],
+        _PulsingGlow(
+          child: PgPrimaryButton(
+            label: isThai ? 'เช็คอินเริ่มงาน' : 'Start check-in',
+            color: PgTokens.colorAccent,
+            foreground: PgTokens.colorOnAmber,
+            busy: busy,
+            onPressed: (busy || tooEarly) ? null : widget.onStart,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// A small inline gate notice (icon + short message) shown above a DISABLED CTA to explain, in the
+/// guard's language, WHY the action is unavailable: the start window hasn't opened yet
+/// ("ยังไม่ถึงเวลาเริ่มงาน", G3) or the check-in window has closed ("หมดเวลาเช็คอินแล้ว", G1).
+/// Warning-toned, matching [_AwaitingPaymentNotice].
+class _GateNotice extends StatelessWidget {
+  const _GateNotice({required this.icon, required this.label});
+
+  final IconData icon;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(PgTokens.space3),
+      decoration: BoxDecoration(
+        color: PgTokens.colorWarningBg,
+        borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: PgTokens.colorWarning),
+          const SizedBox(width: PgTokens.space2),
+          Expanded(
+            child: Text(
+              label,
               style: const TextStyle(
                   fontSize: 12.5,
                   fontWeight: FontWeight.w600,

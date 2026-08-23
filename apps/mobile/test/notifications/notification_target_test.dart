@@ -61,7 +61,9 @@ void main() {
         'booking_completed',
         'booking_cancelled',
       ]) {
-        expect(notificationTarget(notif(t, {'booking_id': 'bk-1'}), user: customer),
+        expect(
+            notificationTarget(notif(t, {'booking_id': 'bk-1'}),
+                user: customer),
             isNotNull,
             reason: t);
       }
@@ -72,13 +74,70 @@ void main() {
       expect(notificationTarget(n, user: customer), '/call?incoming=call-3');
     });
 
+    // N1 — the `system` catch-all used to return null for every non-call kind (a dead tap). Each is
+    // now routed to its most sensible detail via the payload's `event_type`.
+    group('system subtypes are no longer dead taps', () {
+      test('rating.submitted → the guard\'s ratings list', () {
+        final n = notif('system', {
+          'event_type': 'pguard.events.rating.submitted',
+          'rating_id': 'r1',
+          'booking_id': 'bk-1',
+        });
+        expect(notificationTarget(n, user: guard), '/guard/ratings');
+      });
+
+      test('payment.refund_processed → the booking summary/receipt', () {
+        final n = notif('system', {
+          'event_type': 'pguard.events.payment.refund_processed',
+          'booking_id': 'bk-2',
+          'payment_id': 'p1',
+        });
+        expect(notificationTarget(n, user: customer), '/booking/bk-2/summary');
+      });
+
+      test('payment.completed → guard active / customer live', () {
+        final n = notif('system', {
+          'event_type': 'pguard.events.payment.completed',
+          'booking_id': 'bk-3',
+        });
+        expect(notificationTarget(n, user: guard), '/guard/active/bk-3');
+        expect(notificationTarget(n, user: customer), '/booking/bk-3/live');
+      });
+
+      test('completion_requested → guard active / customer live', () {
+        final n = notif('system', {
+          'event_type': 'pguard.events.booking.completion_requested',
+          'booking_id': 'bk-4',
+        });
+        expect(notificationTarget(n, user: guard), '/guard/active/bk-4');
+        expect(notificationTarget(n, user: customer), '/booking/bk-4/live');
+      });
+
+      test('declined → the customer live-status screen', () {
+        final n = notif('system', {
+          'event_type': 'pguard.events.booking.declined',
+          'booking_id': 'bk-5',
+        });
+        expect(notificationTarget(n, user: customer), '/booking/bk-5/live');
+      });
+    });
+
     test('no usable reference id → null (still markable read, no nav)', () {
       expect(notificationTarget(notif('chat_message', const {}), user: guard),
           isNull);
-      expect(notificationTarget(notif('guard_assigned', const {}), user: customer),
+      expect(
+          notificationTarget(notif('guard_assigned', const {}), user: customer),
           isNull);
-      // A payment/rating notice (system, no call_id) has no screen to open.
-      expect(notificationTarget(notif('system', {'payment_id': 'p1'}), user: guard),
+      // A `system` notice with neither a call_id NOR a routable event_type has no screen to open.
+      expect(
+          notificationTarget(notif('system', {'payment_id': 'p1'}),
+              user: guard),
+          isNull);
+      // A booking-scoped system kind whose payload is missing the booking_id can't route either.
+      expect(
+          notificationTarget(
+              notif('system', {'event_type': 'pguard.events.booking.declined'}),
+              user: customer),
           isNull);
     });
   });

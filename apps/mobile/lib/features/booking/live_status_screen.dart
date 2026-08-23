@@ -53,6 +53,10 @@ class LiveStatusScreen extends ConsumerStatefulWidget {
 
 class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
     with WidgetsBindingObserver {
+  /// C1 latch: a guard-withdrew (`declined`) redirect into re-search fires AT MOST ONCE. `declined`
+  /// is terminal so no further frames follow, but this also stops a spurious rebuild re-firing.
+  bool _redirectedToRediscovery = false;
+
   @override
   void initState() {
     super.initState();
@@ -86,10 +90,38 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
     } catch (_) {}
   }
 
+  /// C1: a guard WITHDREW after accepting (booking → `declined`) is NOT a dead end for the customer
+  /// — the job details still stand, so leave the (now dead) live screen for guard discovery to find
+  /// a NEW guard. The shared keepAlive [BookingFlowController] still holds the service/place/time, so
+  /// re-search recreates the same job. Fires at most once ([_redirectedToRediscovery]). Navigation is
+  /// deferred to a post-frame callback so it never runs mid-build / mid-notification, and rebuilds a
+  /// poppable home→discovery stack (mirrors guard_discovery's _confirm) so back lands on the
+  /// dashboard, not a dead route.
+  void _redirectToRediscovery() {
+    if (_redirectedToRediscovery) return;
+    _redirectedToRediscovery = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      context.go('/home/customer');
+      context.push('/book/guards');
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(bookingStatusControllerProvider(widget.bookingId));
+
+    // C1: watch for the transition INTO `declined` (a guard withdrew) — however the frame lands (the
+    // WS push folded by the controller, or an initial snapshot that is already declined) it flows
+    // through this provider — and redirect the customer into the re-search flow. This is DISTINCT
+    // from `cancelled` (the customer's OWN pre-arrival cancel), which STAYS terminal on the refund
+    // banner. Registered in build (Riverpod dedupes across rebuilds); the redirect itself is latched.
+    ref.listen(bookingStatusControllerProvider(widget.bookingId), (_, next) {
+      if (next.valueOrNull?.status == BookingStatus.declined) {
+        _redirectToRediscovery();
+      }
+    });
 
     return Scaffold(
       appBar: PGuardHeader(
