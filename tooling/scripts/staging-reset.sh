@@ -192,6 +192,14 @@ DELETE FROM notification.notification_logs;
 DELETE FROM notification.fcm_tokens;
 DELETE FROM notification.outbox;
 DELETE FROM notification.processed_events;
+-- checkin_reminders (Aug-23 N3 hourly reminder ledger) — the in-progress rows are test-booking
+-- derived; clear them so a wiped booking can't be re-reminded. Guarded so this reset still runs
+-- against a staging that hasn't been redeployed with migration notification/0007 yet.
+DO $$ BEGIN
+  IF to_regclass('notification.checkin_reminders') IS NOT NULL THEN
+    DELETE FROM notification.checkin_reminders;
+  END IF;
+END $$;
 
 -- profile — KEEP org_settings. access_audit goes too: it records admin reads of test-user
 -- data that is itself being deleted (confirmed with the user 2026-08-04).
@@ -201,6 +209,13 @@ DELETE FROM profile.guard_profiles;
 DELETE FROM profile.customer_profiles;
 DELETE FROM profile.outbox;
 DELETE FROM profile.access_audit;
+-- support_tickets (Aug-23 H1) — test-user submitted; clear. Guarded for pre-redeploy staging
+-- (migration profile/0013).
+DO $$ BEGIN
+  IF to_regclass('profile.support_tickets') IS NOT NULL THEN
+    DELETE FROM profile.support_tickets;
+  END IF;
+END $$;
 
 DELETE FROM otp.otp_codes;
 
