@@ -17,7 +17,7 @@ mod repo;
 mod state;
 
 use anyhow::Context;
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, patch, post, put};
 use axum::{Json, Router};
 
 use shared::config::{DatabaseConfig, JwtConfig, RedisConfig, ServiceJwtConfig};
@@ -162,6 +162,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::me).put(api::update_me).delete(api::delete_me),
         )
         .route("/auth/password", put(api::change_password))
+        // Change LOGIN phone: authenticated self (bearer/cookie+CSRF). Requires the current PIN
+        // (step-up) + a single-use `phone_change` OTP token proving the NEW number; UNIQUE(phone)
+        // guards against taking a number already in use (409 PHONE_TAKEN).
+        .route("/auth/phone", patch(api::change_phone))
         // Forgot-PIN reset: edge-public (carries a single-use phone_verified_token in the body, not
         // an access token — like /auth/register). identity validates the token internally.
         .route("/auth/reset-pin", post(api::reset_pin))

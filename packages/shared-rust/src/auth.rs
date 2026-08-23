@@ -125,6 +125,14 @@ pub const PHONE_VERIFY_PURPOSE: &str = "phone_verify";
 /// flow can never drive a credential reset, and vice-versa (defense-in-depth on top
 /// of single-use).
 pub const PIN_RESET_PURPOSE: &str = "pin_reset";
+/// Purpose marker for the phone-verified token minted when a SIGNED-IN user changes their
+/// LOGIN PHONE NUMBER (otp `/otp/verify` with `purpose: "phone_change"` → identity
+/// `PATCH /auth/phone`). The token proves ownership of the NEW number; identity additionally
+/// step-ups on the current PIN before writing. Distinct from [`PHONE_VERIFY_PURPOSE`] /
+/// [`PIN_RESET_PURPOSE`] so a token minted for registration or a forgot-PIN reset can NEVER
+/// drive a phone change, and vice-versa (purpose isolation on top of single-use). The verified
+/// phone is taken FROM this token, never from the request body.
+pub const PHONE_CHANGE_PURPOSE: &str = "phone_change";
 
 /// Profile-token purpose for a GUARD registration (identity → profile `/profile/guard`).
 pub const PROFILE_PURPOSE_GUARD: &str = "guard_profile";
@@ -551,6 +559,27 @@ mod tests {
         assert!(decode_phone_verify_token(&reset_tok, &dk, PHONE_VERIFY_PURPOSE).is_err());
         // The matching purposes still decode.
         assert!(decode_phone_verify_token(&reset_tok, &dk, PIN_RESET_PURPOSE).is_ok());
+    }
+
+    #[test]
+    fn phone_verify_token_purpose_isolation_phone_change_is_distinct() {
+        let ek = EncodingKey::from_secret(TEST_SECRET.as_bytes());
+        let dk = DecodingKey::from_secret(TEST_SECRET.as_bytes());
+        // A phone_change token must NOT decode on the register or reset consumers…
+        let (change_tok, _) =
+            encode_phone_verify_token("0812345678", PHONE_CHANGE_PURPOSE, &ek, 10).unwrap();
+        assert!(decode_phone_verify_token(&change_tok, &dk, PHONE_VERIFY_PURPOSE).is_err());
+        assert!(decode_phone_verify_token(&change_tok, &dk, PIN_RESET_PURPOSE).is_err());
+        // …and a register / reset token must NOT satisfy the phone-change consumer.
+        let (register_tok, _) =
+            encode_phone_verify_token("0812345678", PHONE_VERIFY_PURPOSE, &ek, 10).unwrap();
+        let (reset_tok, _) =
+            encode_phone_verify_token("0812345678", PIN_RESET_PURPOSE, &ek, 10).unwrap();
+        assert!(decode_phone_verify_token(&register_tok, &dk, PHONE_CHANGE_PURPOSE).is_err());
+        assert!(decode_phone_verify_token(&reset_tok, &dk, PHONE_CHANGE_PURPOSE).is_err());
+        // The matching purpose still decodes, round-tripping the phone.
+        let (phone, _) = decode_phone_verify_token(&change_tok, &dk, PHONE_CHANGE_PURPOSE).unwrap();
+        assert_eq!(phone, "0812345678");
     }
 
     #[test]

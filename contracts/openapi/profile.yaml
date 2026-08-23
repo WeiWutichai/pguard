@@ -793,6 +793,75 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /support/tickets:
+    post:
+      tags: [Profile]
+      summary: File a support ticket (any signed-in user)
+      description: |
+        The mobile Help page ("แจ้งปัญหา / ส่งความคิดเห็น") POSTs a support ticket here. The
+        reporter is the AUTHENTICATED user (the caller), never taken from the body — a user can
+        only file on their own behalf — so this is open to ANY signed-in role (guard/customer/
+        admin). `kind` must be `problem` or `feedback`; `message` is the free-text body,
+        non-empty and ≤ 2000 chars (trimmed before storage). An invalid kind / empty / over-long
+        message is a typed **400**. The stored ticket (id, status `open`, created_at) is returned
+        for the client's success state; an admin reads the queue via `GET /admin/support/tickets`.
+      operationId: createSupportTicket
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CreateSupportTicketRequest' }
+      responses:
+        '200':
+          description: The created support ticket
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/SupportTicket' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /admin/support/tickets:
+    get:
+      tags: [Admin]
+      summary: List support tickets, newest first (role=admin)
+      description: |
+        The admin queue of support tickets filed from the mobile Help page — newest first
+        (`created_at DESC`), limit/offset paged. Admin only (else **403**). Each row carries the
+        reporter's `user_id`; the web admin maps it to a display name with the existing batch
+        name-resolver (`POST /admin/users/resolve`). Replica read.
+      operationId: adminListSupportTickets
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 1, maximum: 200, default: 50 }
+        - name: offset
+          in: query
+          required: false
+          schema: { type: integer, format: int64, minimum: 0, default: 0 }
+      responses:
+        '200':
+          description: Support tickets, newest first
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/SupportTicket' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
   /admin/documents/expiring:
     get:
       tags: [Admin]
@@ -1581,6 +1650,39 @@ components:
         action: { type: string }
         target: { type: string, nullable: true }
         accessed_at: { type: string, format: date-time }
+
+    CreateSupportTicketRequest:
+      type: object
+      description: |
+        The mobile Help form body (`POST /support/tickets`). `kind` is the toggle (problem =
+        แจ้งปัญหา, feedback = ส่งความคิดเห็น); `message` is the free-text body (non-empty,
+        trimmed, ≤ 2000 chars). The reporter is NOT in the body — it is the authenticated caller.
+      required: [kind, message]
+      properties:
+        kind:
+          type: string
+          enum: [problem, feedback]
+          description: 'problem = report an issue; feedback = a suggestion/comment.'
+        message:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          description: 'The report body (1–2000 chars; trimmed server-side).'
+
+    SupportTicket:
+      type: object
+      description: |
+        One support ticket — returned to the reporter on create and to an admin in the newest-first
+        list. `user_id` is the reporter (resolved to a display name by the admin name-resolver on
+        the web side). `status` is `open` on creation (no triage workflow yet).
+      required: [id, user_id, kind, message, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid, description: 'The reporter (identity-owned id).' }
+        kind: { type: string, enum: [problem, feedback] }
+        message: { type: string }
+        status: { type: string, description: 'Lifecycle state; `open` on creation.' }
+        created_at: { type: string, format: date-time }
 
     DocumentExpiry:
       type: object

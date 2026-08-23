@@ -675,6 +675,109 @@ void main() {
     expect(calls, isNot(contains('/auth/login')),
         reason: 'nothing changed, so there is no new PIN to sign in with');
   });
+
+  test(
+      'change-phone: startPhoneChange binds purpose=phone_change through OTP, then '
+      'changePhone PATCHes /auth/phone and drops to returning-login on the NEW number',
+      () async {
+    final store = InMemoryStore()..phone = '0811111111';
+    final calls = <String>[];
+    Map<String, dynamic>? patchBody;
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          {'challenge_id': 'chC', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, data) async {
+        calls.add(path);
+        switch (path) {
+          case '/otp/request':
+            expect((data as Map<String, dynamic>)['purpose'], 'phone_change',
+                reason: 'a phone-change run BINDS purpose=phone_change at '
+                    'request time (SMS names the action; the token can only '
+                    'drive a phone change)');
+            return {'message': 'sent', 'expires_in': 300};
+          case '/otp/verify':
+            expect((data as Map<String, dynamic>)['purpose'], 'phone_change');
+            return {'phone_verified_token': 'PCT'};
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+      onPatch: (path, data) async {
+        calls.add(path);
+        expect(path, '/auth/phone');
+        patchBody = data as Map<String, dynamic>;
+        return <String, dynamic>{'phone_changed': true};
+      },
+    );
+    final c = container(api: api, store: store);
+    c.listen(sessionProvider, (_, __) {});
+    final ctrl = c.read(authControllerProvider.notifier);
+
+    ctrl.startPhoneChange('0899999999');
+    expect(c.read(authControllerProvider).phoneChange, isTrue);
+    expect(c.read(authControllerProvider).phone, '0899999999');
+
+    expect(await ctrl.loadChallenge(), isTrue);
+    expect(await ctrl.sendOtp('2'), isTrue);
+    expect(await ctrl.verifyOtp('123456'), isTrue);
+    expect(c.read(authControllerProvider).phoneVerifiedToken, 'PCT');
+
+    // Confirm the current PIN → PATCH /auth/phone → success (null = no error).
+    expect(await ctrl.changePhone(currentPin: '135790'), isNull);
+    expect(patchBody!['phone_change_token'], 'PCT',
+        reason: 'the just-verified token authorises the change');
+    expect(patchBody!['current_pin_hash'], isA<String>(),
+        reason: 'the current PIN is sent as its SHA-256 hash (step-up)');
+    expect(patchBody!.containsKey('phone'), isFalse,
+        reason: 'the new phone comes from the token, never the body');
+    expect(calls, ['/otp/request', '/otp/verify', '/auth/phone']);
+
+    // Every session was revoked server-side → drop to returning-login on the NEW number (local PIN
+    // unchanged), and persist the new number for the PIN-login screen.
+    expect(c.read(sessionProvider).status, SessionStatus.returning);
+    expect(store.phone, '0899999999',
+        reason: 'the new login number is persisted for PIN-login');
+  });
+
+  test(
+      'change-phone: a PHONE_TAKEN 409 is localized and does NOT change the session',
+      () async {
+    final store = InMemoryStore()..phone = '0811111111';
+    final api = FakeApi(
+      onGet: (_, __) async =>
+          {'challenge_id': 'chC', 'question': '1 + 1 = ?', 'expires_in': 180},
+      onPost: (path, _) async {
+        switch (path) {
+          case '/otp/request':
+            return {'message': 'sent', 'expires_in': 300};
+          case '/otp/verify':
+            return {'phone_verified_token': 'PCT'};
+          default:
+            throw StateError('unexpected POST $path');
+        }
+      },
+      onPatch: (_, __) async => throw const ApiException(
+          message: 'This phone number is already in use by another account.',
+          code: 'PHONE_TAKEN',
+          statusCode: 409),
+    );
+    final c = container(api: api, store: store);
+    c.listen(sessionProvider, (_, __) {});
+    final ctrl = c.read(authControllerProvider.notifier);
+    ctrl.startPhoneChange('0899999999');
+    await ctrl.loadChallenge();
+    await ctrl.sendOtp('2');
+    await ctrl.verifyOtp('123456');
+
+    final err = await ctrl.changePhone(currentPin: '135790');
+    expect(err, 'เบอร์นี้ถูกใช้สมัครแล้ว',
+        reason: 'PHONE_TAKEN is localized to the app language (Thai default)');
+    expect(c.read(sessionProvider).status, isNot(SessionStatus.returning),
+        reason: 'a rejected change must not sign the user out');
+    expect(store.phone, '0811111111',
+        reason:
+            'the persisted login phone is unchanged after a rejected change');
+  });
 }
 
 /// Forces the English locale so the localized-error test can assert the app-language copy.

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:pguard_mobile/core/controllers/booking_flow_controller.dart';
 import 'package:pguard_mobile/core/models/available_guard.dart';
 import 'package:pguard_mobile/core/providers.dart';
@@ -90,7 +91,82 @@ void main() {
     expect(confirmButton(tester).onPressed, isNotNull);
   });
 
-  test('AvailableGuard.displayLabel prefers the real name, else the id handle', () {
+  testWidgets(
+      'DIRECTED OFFER: confirming after picking a guard sends it as target_guard_id',
+      (tester) async {
+    Map<String, dynamic>? postBody;
+    final api = FakeApi(
+      onGet: (_, __) async => guardsJson(),
+      onPost: (path, data) async {
+        expect(path, '/bookings');
+        postBody = data as Map<String, dynamic>;
+        return {
+          'id': 'bk-directed-1',
+          'customer_id': 'c1',
+          'guard_id': null,
+          'status': 'requested',
+          'address': postBody!['address'],
+          'scheduled_at': postBody!['scheduled_at'],
+          'hours': postBody!['hours'],
+          'base_fee': '500.00',
+          'guard_count': postBody!['guard_count'],
+          'tip': postBody!['tip'] ?? '0',
+          'target_guard_id': postBody!['target_guard_id'],
+          'created_at': '2026-06-05T10:00:00Z',
+          'updated_at': '2026-06-05T10:00:00Z',
+        };
+      },
+    );
+
+    final container = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+    ]);
+    addTearDown(container.dispose);
+
+    // The screen's confirm navigates (go home → push live); give it a real router with stub
+    // destinations so the tap-through doesn't throw on `context.go`/`context.push`.
+    final router = GoRouter(
+      initialLocation: '/discovery',
+      routes: [
+        GoRoute(
+            path: '/discovery',
+            builder: (_, __) => const GuardDiscoveryScreen()),
+        GoRoute(
+            path: '/home/customer',
+            builder: (_, __) => const Scaffold(body: Text('home'))),
+        GoRoute(
+            path: '/booking/:id/live',
+            builder: (_, __) => const Scaffold(body: Text('live'))),
+      ],
+    );
+    await tester.pumpWidget(UncontrolledProviderScope(
+      container: container,
+      child: MaterialApp.router(routerConfig: router),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    // An address + start/end must exist for a valid create (the form step normally sets these).
+    container.read(bookingFlowControllerProvider.notifier)
+      ..setAddress('123 ลัดดารมย์ ซ.5')
+      ..setStart(DateTime.utc(2026, 6, 6, 14))
+      ..setEnd(DateTime.utc(2026, 6, 6, 22));
+
+    // Pick the first guard via its card, then confirm.
+    await tester.tap(find.text('สมชาย มั่นคง'));
+    await tester.pump();
+    await tester.tap(find.byType(PgPrimaryButton));
+    await tester.pumpAndSettle();
+
+    // The create call carried the picked guard as the directed-offer target.
+    expect(postBody, isNotNull);
+    expect(postBody!['target_guard_id'], 'guard-aaaa-1111');
+  });
+
+  test('AvailableGuard.displayLabel prefers the real name, else the id handle',
+      () {
     const named = AvailableGuard(
       guardId: 'guard-aaaa-1111',
       displayName: 'สมหญิง ใจดี',

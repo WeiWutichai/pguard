@@ -47,6 +47,7 @@ import '../features/notifications/notification_screen.dart';
 import '../features/permissions/location_denied_screen.dart';
 import '../features/permissions/location_rationale_screen.dart';
 import '../features/ratings/guard_ratings_screen.dart';
+import '../features/profile/change_phone_screen.dart';
 import '../features/profile/guard_documents_screen.dart';
 import '../features/profile/profile_edit_screen.dart';
 import '../features/profile/profile_screen.dart';
@@ -128,6 +129,21 @@ GoRouter appRouter(AppRouterRef ref) {
       GoRoute(path: '/profile', builder: (_, __) => const ProfileScreen()),
       GoRoute(
           path: '/profile/edit', builder: (_, __) => const ProfileEditScreen()),
+      // Signed-in CHANGE-LOGIN-PHONE flow. Runs under /profile/* (allowed while authenticated —
+      // the /auth/* OTP routes are bounced for a signed-in user) and REUSES the captcha + OTP
+      // screens, which branch their navigation on AuthController's phoneChange flag. Steps:
+      // new number → captcha → OTP (purpose=phone_change) → confirm current PIN → PATCH /auth/phone.
+      GoRoute(
+          path: '/profile/phone/new',
+          builder: (_, __) => const ChangePhoneNumberScreen()),
+      GoRoute(
+          path: '/profile/phone/captcha',
+          builder: (_, __) => const CaptchaScreen()),
+      GoRoute(
+          path: '/profile/phone/otp', builder: (_, __) => const OtpScreen()),
+      GoRoute(
+          path: '/profile/phone/confirm',
+          builder: (_, __) => const ChangePhoneConfirmScreen()),
       GoRoute(
           path: '/profile/documents',
           builder: (_, __) => const GuardDocumentsScreen()),

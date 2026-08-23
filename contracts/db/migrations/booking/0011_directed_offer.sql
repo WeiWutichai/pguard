@@ -1,0 +1,33 @@
+-- pguard booking-service — DIRECTED guard offer (C3): a booking may be offered to ONE guard.
+--
+-- v2 shipped OPEN first-come: any online guard could accept any `requested` booking, and the
+-- customer's guard pick in the discovery screen was DISCARDED. This column lets the customer
+-- direct the booking at the ONE guard they chose — no other guard sees it in discovery
+-- (`list_open_bookings` filters on it) or can accept it (`accept` 403s a non-target with
+-- `NOT_OFFERED_TO_YOU`). There is NO auto-fallback to the open pool: if the chosen guard never
+-- takes it, the customer re-books to pick someone else.
+--
+-- `target_guard_id` is the OFFERED guard, and is DISTINCT from `guard_id` (the ACCEPTED guard,
+-- still stamped on accept). A directed booking that the target accepts ends with BOTH set to the
+-- same guard; `guard_id` alone remains the source of truth for "who is assigned".
+--
+-- NULLABLE, no default, and NULL means exactly one thing: an OPEN booking — either a legacy row
+-- created before this migration, or one the customer left un-directed. Readers treat NULL as
+-- "anyone may claim" (today's first-come behaviour), so applying this migration alone changes no
+-- existing booking: every current row is NULL = open. A directed booking carries a real guard id.
+--
+-- No cross-service FK (CLAUDE.md "no new foreign keys across service boundaries") — the guard id
+-- is owned by identity/profile, not booking. It is not validated to be a real approved guard here
+-- (mirrors admin `/assign`): the customer picks from `GET /available-guards`, which only lists
+-- approved guards, so the id is real; a bogus id merely makes the booking unclaimable (a
+-- self-inflicted dead booking the customer re-books), never a security issue.
+--
+-- No index: the discovery predicate already narrows to `status = 'requested' AND guard_id IS NULL`
+-- (a tiny working set), and the added `(target_guard_id IS NULL OR target_guard_id = $guard)` OR
+-- filter is not selectively indexable — an index would cost writes for no read win.
+--
+-- Statement is idempotent (ADD COLUMN IF NOT EXISTS) — migrate.sh applies files via psql WITHOUT
+-- --single-transaction (statement auto-commit), and a mid-file failure commits earlier statements
+-- without a ledger row (see tooling/scripts/migrate.sh).
+
+ALTER TABLE booking.bookings ADD COLUMN IF NOT EXISTS target_guard_id uuid;  -- the OFFERED guard (NULL = open/first-come); distinct from guard_id (the ACCEPTED guard)

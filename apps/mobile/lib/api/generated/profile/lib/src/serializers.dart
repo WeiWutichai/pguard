@@ -22,12 +22,15 @@ import 'package:pguard_profile_api/src/model/admin_list_candidates200_response.d
 import 'package:pguard_profile_api/src/model/admin_list_customer_profiles200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_expiring_documents200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_list_guard_profiles200_response.dart';
+import 'package:pguard_profile_api/src/model/admin_list_support_tickets200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_pending_applicants_count200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_resolve_user_names200_response.dart';
 import 'package:pguard_profile_api/src/model/admin_set_candidate_stage200_response.dart';
 import 'package:pguard_profile_api/src/model/api_response_envelope.dart';
 import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/avg_approval_time.dart';
+import 'package:pguard_profile_api/src/model/create_support_ticket200_response.dart';
+import 'package:pguard_profile_api/src/model/create_support_ticket_request.dart';
 import 'package:pguard_profile_api/src/model/customer_avatar_response.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
@@ -73,6 +76,7 @@ import 'package:pguard_profile_api/src/model/resolved_name.dart';
 import 'package:pguard_profile_api/src/model/set_document_expiry_request.dart';
 import 'package:pguard_profile_api/src/model/set_guard_document_expiry200_response.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
+import 'package:pguard_profile_api/src/model/support_ticket.dart';
 import 'package:pguard_profile_api/src/model/update_org_settings_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
@@ -88,12 +92,15 @@ part 'serializers.g.dart';
   AdminListCustomerProfiles200Response,
   AdminListExpiringDocuments200Response,
   AdminListGuardProfiles200Response,
+  AdminListSupportTickets200Response,
   AdminPendingApplicantsCount200Response,
   AdminResolveUserNames200Response,
   AdminSetCandidateStage200Response,
   ApiResponseEnvelope,$ApiResponseEnvelope,
   ApprovalStatus,
   AvgApprovalTime,
+  CreateSupportTicket200Response,
+  CreateSupportTicketRequest,
   CustomerAvatarResponse,
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
@@ -139,6 +146,7 @@ part 'serializers.g.dart';
   SetDocumentExpiryRequest,
   SetGuardDocumentExpiry200Response,
   StageRequest,
+  SupportTicket,
   UpdateOrgSettingsRequest,
   UpsertCustomerProfileRequest,
   UpsertGuardProfileRequest,

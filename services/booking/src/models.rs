@@ -37,6 +37,15 @@ pub struct CreateBookingRequest {
     pub lat: Option<f64>,
     #[serde(default)]
     pub lng: Option<f64>,
+    /// DIRECTED OFFER (C3): the ONE guard the customer chose in discovery. When present, the
+    /// booking is offered ONLY to that guard — no other guard sees it in `GET /bookings/open` or
+    /// can `accept` it (a non-target accept 403s `NOT_OFFERED_TO_YOU`). When absent (the default),
+    /// the booking is OPEN first-come (any online guard may claim it — the legacy behaviour). Not
+    /// validated to be a real approved guard here (mirrors admin `/assign`): the customer picks
+    /// from `GET /available-guards`, so the id is real; a bogus id just makes the booking
+    /// unclaimable, never a security issue. There is no auto-fallback to the open pool.
+    #[serde(default)]
+    pub target_guard_id: Option<Uuid>,
 }
 
 /// Customer's verdict on a guard's completion request (`pending_completion`).
@@ -111,6 +120,12 @@ pub struct BookingResponse {
     /// Site coordinates — `None` when the customer did not provide them at create.
     pub lat: Option<f64>,
     pub lng: Option<f64>,
+    /// DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create — distinct from
+    /// [`Self::guard_id`] (the guard who ACCEPTED). `None` = OPEN first-come (legacy rows, and
+    /// bookings the customer left un-directed): any online guard may claim it. When set, discovery
+    /// hides the booking from every other guard and `accept` 403s a non-target `NOT_OFFERED_TO_YOU`.
+    /// On a directed booking the target accepts, both this and `guard_id` end up the same guard.
+    pub target_guard_id: Option<Uuid>,
     /// When the assigned guard STARTED work (stamped by `PUT /bookings/{id}/start`; the
     /// proration basis). `None` until started — the client restores the job clock from this
     /// after an app restart.

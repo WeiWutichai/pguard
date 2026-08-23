@@ -19,6 +19,7 @@ part 'create_booking_request.g.dart';
 /// * [tip] - Optional up-front tip (exact decimal string); folded into the expected total.
 /// * [lat] - Optional site latitude (must be paired with `lng`) — feeds open-job radius discovery.
 /// * [lng] - Optional site longitude (must be paired with `lat`).
+/// * [targetGuardId] - DIRECTED OFFER (C3): the ONE guard the customer chose. When present, the booking is offered ONLY to that guard — no other guard sees it in `GET /bookings/open` or can `accept` it (a non-target accept → 403 `NOT_OFFERED_TO_YOU`). When absent (the default), the booking is OPEN first-come (any online guard may claim it). There is NO auto-fallback to the open pool: if the chosen guard never takes it, the customer re-books. Not validated to be a real approved guard (the customer picks from `GET /available-guards`); a bogus id simply makes the booking unclaimable.
 @BuiltValue()
 abstract class CreateBookingRequest implements Built<CreateBookingRequest, CreateBookingRequestBuilder> {
   @BuiltValueField(wireName: r'address')
@@ -49,6 +50,10 @@ abstract class CreateBookingRequest implements Built<CreateBookingRequest, Creat
   /// Optional site longitude (must be paired with `lat`).
   @BuiltValueField(wireName: r'lng')
   double? get lng;
+
+  /// DIRECTED OFFER (C3): the ONE guard the customer chose. When present, the booking is offered ONLY to that guard — no other guard sees it in `GET /bookings/open` or can `accept` it (a non-target accept → 403 `NOT_OFFERED_TO_YOU`). When absent (the default), the booking is OPEN first-come (any online guard may claim it). There is NO auto-fallback to the open pool: if the chosen guard never takes it, the customer re-books. Not validated to be a real approved guard (the customer picks from `GET /available-guards`); a bogus id simply makes the booking unclaimable.
+  @BuiltValueField(wireName: r'target_guard_id')
+  String? get targetGuardId;
 
   CreateBookingRequest._();
 
@@ -123,6 +128,13 @@ class _$CreateBookingRequestSerializer implements PrimitiveSerializer<CreateBook
       yield serializers.serialize(
         object.lng,
         specifiedType: const FullType(double),
+      );
+    }
+    if (object.targetGuardId != null) {
+      yield r'target_guard_id';
+      yield serializers.serialize(
+        object.targetGuardId,
+        specifiedType: const FullType(String),
       );
     }
   }
@@ -203,6 +215,13 @@ class _$CreateBookingRequestSerializer implements PrimitiveSerializer<CreateBook
             specifiedType: const FullType(double),
           ) as double;
           result.lng = valueDes;
+          break;
+        case r'target_guard_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.targetGuardId = valueDes;
           break;
         default:
           unhandled.add(key);

@@ -25,14 +25,16 @@ use crate::domain::mask::mask_account_number;
 use crate::domain::validate;
 use crate::identity_client::IdentityResolver;
 use crate::models::{
-    AccessAuditRow, AdminListAccessAuditQuery, CustomerAvatarResponse,
-    CustomerProfileAdminResponse, CustomerProfileResponse, ExpiringDocumentsResponse,
-    GuardAvatarResponse, GuardDocumentExpiry, GuardDocumentPresence, GuardDocumentResponse,
-    GuardProfileAdminResponse, GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard,
-    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
-    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
-    SetDocumentExpiryRequest, StageRequest, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest, WithLoginPhone, EXPIRING_DOCUMENT_TYPES, RESOLVE_NAMES_LIMIT,
+    AccessAuditRow, AdminListAccessAuditQuery, AdminListSupportTicketsQuery,
+    CreateSupportTicketRequest, CustomerAvatarResponse, CustomerProfileAdminResponse,
+    CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
+    GuardDocumentPresence, GuardDocumentResponse, GuardProfileAdminResponse, GuardProfileResponse,
+    GuardProfileSubmitResponse, InternalGuard, MyProfile, OrgSettingsResponse,
+    PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
+    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
+    StageRequest, SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    UpsertGuardProfileRequest, WithLoginPhone, EXPIRING_DOCUMENT_TYPES,
+    MAX_SUPPORT_TICKET_MESSAGE_LEN, RESOLVE_NAMES_LIMIT, SUPPORT_TICKET_KINDS,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -1329,6 +1331,49 @@ pub async fn admin_resolve_names<S: ProfileDeps>(
     Ok(Json(ApiResponse::success(map)))
 }
 
+// ----- Support tickets (H1 — mobile "แจ้งปัญหา / ส่งความคิดเห็น") -----
+
+/// POST `/support/tickets` — the authenticated caller files a support ticket for THEMSELVES.
+/// The reporter is `user.user_id` (never taken from the body — a user can't file on another's
+/// behalf), so this is open to ANY signed-in role (guard/customer/admin). Validates `kind`
+/// (must be `problem`|`feedback`) and `message` (non-empty, ≤ 2000 chars) → a typed 400 on a
+/// bad body, so the DB CHECKs never surface as a 500. Persists and returns the stored ticket
+/// (id + created_at) for the client's success state — "emit nothing fancy, just persist".
+#[tracing::instrument(skip(state, req), fields(user = %user.user_id))]
+pub async fn create_support_ticket<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Json(req): Json<CreateSupportTicketRequest>,
+) -> Result<Json<ApiResponse<SupportTicket>>, AppError> {
+    validate::validate_ticket_kind(&req.kind, &SUPPORT_TICKET_KINDS)
+        .map_err(AppError::BadRequest)?;
+    validate::validate_ticket_message(&req.message, MAX_SUPPORT_TICKET_MESSAGE_LEN)
+        .map_err(AppError::BadRequest)?;
+    // Store the trimmed body (the validator already proved it non-empty after trimming) so a
+    // leading/trailing-whitespace paste doesn't inflate the row or the admin's rendered message.
+    let ticket =
+        repo::insert_support_ticket(state.db(), user.user_id, &req.kind, req.message.trim())
+            .await?;
+    Ok(Json(ApiResponse::success(ticket)))
+}
+
+/// GET `/admin/support/tickets` — the newest-first support-ticket list for the admin surface.
+/// Admin only (else 403, before any DB access), mirroring the other `/admin/*` reads. Each row
+/// carries the reporter's `user_id`; the web admin resolves it to a display name via the existing
+/// batch name-resolver (`POST /admin/users/resolve`). Replica read; limit/offset paged.
+#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+pub async fn admin_list_support_tickets<S: ProfileDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Query(q): Query<AdminListSupportTicketsQuery>,
+) -> Result<Json<ApiResponse<Vec<SupportTicket>>>, AppError> {
+    require_role(&user, ROLE_ADMIN)?;
+    let limit = q.limit.unwrap_or(50).clamp(1, 200);
+    let offset = q.offset.unwrap_or(0).max(0);
+    let rows = repo::list_support_tickets(state.db_read(), limit, offset).await?;
+    Ok(Json(ApiResponse::success(rows)))
+}
+
 // ----- GET /internal/guards (service-to-service catalog) -----
 
 /// Internal read used by booking's discovery (`/available-guards`) to list the APPROVED
@@ -1830,6 +1875,11 @@ mod tests {
                 .route(
                     "/admin/users/resolve",
                     post(admin_resolve_names::<TestDeps>),
+                )
+                .route("/support/tickets", post(create_support_ticket::<TestDeps>))
+                .route(
+                    "/admin/support/tickets",
+                    get(admin_list_support_tickets::<TestDeps>),
                 )
                 .route(
                     "/admin/documents/expiring",
@@ -2393,6 +2443,231 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- Support tickets (H1) -----
+
+    /// A router mounting the two support-ticket routes over a real pool + Redis (the create
+    /// handler INSERTs and the admin list SELECTs, so both need a live DB).
+    fn support_router(db: sqlx::PgPool, redis: redis::aio::ConnectionManager) -> Router {
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db,
+            redis,
+            authz: StubAuthz { allow: false },
+            s3: test_s3(),
+            resolver: StubResolver::default(),
+        };
+        Router::new()
+            .route("/support/tickets", post(create_support_ticket::<TestDeps>))
+            .route(
+                "/admin/support/tickets",
+                get(admin_list_support_tickets::<TestDeps>),
+            )
+            .with_state(deps)
+    }
+
+    /// A bad `kind` (not problem|feedback) is a typed 400 — validated in the handler BEFORE the
+    /// DB, so the closed lazy pool in `router()` is never touched. Redis-gated (AuthUser).
+    #[tokio::test]
+    async fn create_support_ticket_rejects_bad_kind() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/support/tickets")
+                    .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "kind": "bug", "message": "แอปค้าง" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::BAD_REQUEST,
+            "an unknown kind must be a typed 400"
+        );
+    }
+
+    /// An empty / whitespace-only message and an over-2000-char message are both a typed 400 —
+    /// validated before the DB. Redis-gated.
+    #[tokio::test]
+    async fn create_support_ticket_rejects_bad_message() {
+        // Skip once up front if there is no Redis (the AuthUser extractor needs it).
+        if router().await.is_none() {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        }
+        let over_cap = "a".repeat(MAX_SUPPORT_TICKET_MESSAGE_LEN + 1);
+        for message in ["   ", over_cap.as_str()] {
+            // A fresh router per case — `oneshot` consumes the router.
+            let app = router().await.unwrap();
+            let res = app
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/support/tickets")
+                        .header("authorization", format!("Bearer {}", token(ROLE_CUSTOMER)))
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::json!({ "kind": "problem", "message": message })
+                                .to_string(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::BAD_REQUEST,
+                "an empty/over-long message must be a typed 400"
+            );
+        }
+    }
+
+    /// Happy path: a valid ticket is persisted and the stored row (id + created_at + status=open)
+    /// is returned to the reporter. The reporter is the AUTHENTICATED user, not the body. DB+Redis
+    /// gated.
+    #[tokio::test]
+    async fn create_support_ticket_persists_and_returns() {
+        let Some((pool, redis)) = real_db_and_redis().await else {
+            return;
+        };
+        let uid = Uuid::new_v4();
+        let ek = EncodingKey::from_secret(SECRET.as_bytes());
+        let (tok, _) = encode_jwt_with_key(uid, ROLE_CUSTOMER, 0, &ek, 60).unwrap();
+
+        let app = support_router(pool.clone(), redis);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/support/tickets")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "kind": "feedback", "message": "  ปุ่มเล็กไป  " })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let ticket = &json["data"];
+        assert_eq!(ticket["user_id"], uid.to_string(), "reporter = the caller");
+        assert_eq!(ticket["kind"], "feedback");
+        assert_eq!(
+            ticket["message"], "ปุ่มเล็กไป",
+            "message is trimmed before storage"
+        );
+        assert_eq!(ticket["status"], "open", "new tickets are open");
+        assert!(ticket["id"].is_string() && ticket["created_at"].is_string());
+
+        let _ = sqlx::query("DELETE FROM profile.support_tickets WHERE user_id = $1")
+            .bind(uid)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The admin list is newest-first: two tickets filed in order come back with the most recent
+    /// one first. DB+Redis gated.
+    #[tokio::test]
+    async fn admin_support_tickets_newest_first() {
+        let Some((pool, redis)) = real_db_and_redis().await else {
+            return;
+        };
+        let reporter = Uuid::new_v4();
+        // Insert oldest then newest with distinct created_at so the ORDER BY is deterministic.
+        let old_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO profile.support_tickets (user_id, kind, message, created_at) \
+             VALUES ($1, 'problem', 'first', now() - interval '1 minute') RETURNING id",
+        )
+        .bind(reporter)
+        .fetch_one(&pool)
+        .await
+        .expect("seed old ticket");
+        let new_id: Uuid = sqlx::query_scalar(
+            "INSERT INTO profile.support_tickets (user_id, kind, message, created_at) \
+             VALUES ($1, 'feedback', 'second', now()) RETURNING id",
+        )
+        .bind(reporter)
+        .fetch_one(&pool)
+        .await
+        .expect("seed new ticket");
+
+        let app = support_router(pool.clone(), redis);
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/support/tickets")
+                    .header("authorization", format!("Bearer {}", token(ROLE_ADMIN)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let rows = json["data"].as_array().expect("data is an array");
+        // Filter to just this test's reporter (the table may hold rows from other runs).
+        let mine: Vec<&serde_json::Value> = rows
+            .iter()
+            .filter(|r| r["user_id"] == reporter.to_string())
+            .collect();
+        assert_eq!(mine.len(), 2, "both seeded tickets are listed");
+        assert_eq!(
+            mine[0]["id"],
+            new_id.to_string(),
+            "the newest ticket sorts first"
+        );
+        assert_eq!(mine[1]["id"], old_id.to_string());
+
+        let _ = sqlx::query("DELETE FROM profile.support_tickets WHERE user_id = $1")
+            .bind(reporter)
+            .execute(&pool)
+            .await;
+    }
+
+    /// A non-admin must not read the ticket list — 403 at the role gate, before any DB access.
+    /// Redis-gated (the role gate short-circuits before the closed lazy pool in `router()`).
+    #[tokio::test]
+    async fn admin_support_tickets_rejects_non_admin() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/support/tickets")
+                    .header("authorization", format!("Bearer {}", token(ROLE_GUARD)))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::FORBIDDEN,
+            "a guard must not list support tickets"
+        );
     }
 
     #[tokio::test]

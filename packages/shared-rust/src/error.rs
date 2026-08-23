@@ -28,6 +28,15 @@ pub enum AppError {
     #[error("{0}")]
     Forbidden(String),
 
+    /// A 403 that carries a machine-readable sub-code (e.g. `NOT_OFFERED_TO_YOU`) so clients
+    /// branch on `error.code` and LOCALIZE the copy instead of matching the message text. Same
+    /// 403 status and the same `{ error: { code, message } }` envelope as [`AppError::Forbidden`];
+    /// ONLY the `code` string differs (plain `Forbidden` keeps `"FORBIDDEN"`). `code` is
+    /// `&'static str` so only a fixed, vetted set of sub-codes can be emitted. Mirrors
+    /// [`AppError::ConflictCode`].
+    #[error("{message}")]
+    ForbiddenCode { code: &'static str, message: String },
+
     #[error("{0}")]
     NotFound(String),
 
@@ -84,6 +93,8 @@ impl IntoResponse for AppError {
             // Same 401 as Unauthorized; the variant supplies its own machine-readable code.
             AppError::UnauthorizedCode { code, .. } => (StatusCode::UNAUTHORIZED, *code),
             AppError::Forbidden(_) => (StatusCode::FORBIDDEN, "FORBIDDEN"),
+            // Same 403 as Forbidden; the variant supplies its own machine-readable code.
+            AppError::ForbiddenCode { code, .. } => (StatusCode::FORBIDDEN, *code),
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, "NOT_FOUND"),
             AppError::Conflict(_) => (StatusCode::CONFLICT, "CONFLICT"),
             // Same 409 as Conflict; the variant supplies its own machine-readable code.
@@ -187,6 +198,44 @@ mod tests {
             1,
             "top-level is just `error`"
         );
+    }
+
+    #[tokio::test]
+    async fn forbidden_code_returns_403_with_custom_code_and_same_envelope() {
+        // Same status + envelope SHAPE as Forbidden; only the code differs. Lets clients branch
+        // on the sub-code and localize (e.g. booking's directed-offer NOT_OFFERED_TO_YOU).
+        let err = AppError::ForbiddenCode {
+            code: "NOT_OFFERED_TO_YOU",
+            message: "This booking was offered to a specific guard".into(),
+        };
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "NOT_OFFERED_TO_YOU");
+        assert_eq!(
+            json["error"]["message"],
+            "This booking was offered to a specific guard"
+        );
+        assert_eq!(
+            json.as_object().unwrap().len(),
+            1,
+            "top-level is just `error`"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_forbidden_keeps_generic_code_in_body() {
+        // Backward-compat guard: the plain `Forbidden` variant must still serialize the
+        // `"FORBIDDEN"` code (a sub-code must never leak into existing call sites).
+        let err = AppError::Forbidden("access denied".into());
+        let body = axum::body::to_bytes(err.into_response().into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"]["code"], "FORBIDDEN");
     }
 
     #[tokio::test]

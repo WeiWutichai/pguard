@@ -11,11 +11,11 @@ part 'verify_otp_result.g.dart';
 /// VerifyOtpResult
 ///
 /// Properties:
-/// * [phoneVerifiedToken] - Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN
+/// * [phoneVerifiedToken] - Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN; `phone_change` tokens by `PATCH /auth/phone` to change the login phone
 /// * [expiresIn] - Token validity in seconds
 @BuiltValue()
 abstract class VerifyOtpResult implements Built<VerifyOtpResult, VerifyOtpResultBuilder> {
-  /// Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN
+  /// Single-use JWT scoped to the requested purpose — `phone_verify` tokens are exchanged by identity/profile to finish registration; `pin_reset` tokens by `POST /auth/reset-pin` to reset a forgotten PIN; `phone_change` tokens by `PATCH /auth/phone` to change the login phone
   @BuiltValueField(wireName: r'phone_verified_token')
   String get phoneVerifiedToken;
 

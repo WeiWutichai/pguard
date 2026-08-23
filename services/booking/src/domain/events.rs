@@ -152,6 +152,12 @@ pub fn event_for_status(
 /// `actual_seconds` precedent) so a radius-ranking consumer reads the site coordinates without
 /// a round-trip back into booking. NOT a customer-facing lifecycle status change: the gateway's
 /// booking-status WS ignores this topic (`status_from_topic` → None).
+///
+/// `target_guard_id` (DIRECTED OFFER, C3) rides the SAME even-when-null way: `Some(g)` means the
+/// booking was offered to ONE guard, so the notification consumer must push the "new job" to ONLY
+/// that guard (a broadcast to every online guard would defeat the directed offer); `null` = OPEN
+/// first-come → notification fans out to all online guards, as today. NOTE for notification (out
+/// of scope here): branch on this key — target the one guard when present, broadcast when null.
 #[allow(clippy::too_many_arguments)]
 pub fn event_for_booking_requested(
     booking_id: Uuid,
@@ -162,6 +168,7 @@ pub fn event_for_booking_requested(
     scheduled_at: DateTime<Utc>,
     hours: i32,
     guard_count: i32,
+    target_guard_id: Option<Uuid>,
 ) -> EventMapping {
     EventMapping {
         topic: topics::BOOKING_REQUESTED,
@@ -175,6 +182,9 @@ pub fn event_for_booking_requested(
             "scheduled_at": scheduled_at,
             "hours": hours,
             "guard_count": guard_count,
+            // Carried even when None → JSON null: notification routes the "new job" to this one
+            // guard when set, or broadcasts to all online guards when null (open first-come).
+            "target_guard_id": target_guard_id,
         }),
     }
 }
@@ -533,6 +543,7 @@ mod tests {
         let booking = Uuid::new_v4();
         let customer = Uuid::new_v4();
         let scheduled_at: DateTime<Utc> = "2026-06-22T10:00:00Z".parse().unwrap();
+        let target = Uuid::new_v4();
         let m = event_for_booking_requested(
             booking,
             customer,
@@ -542,6 +553,7 @@ mod tests {
             scheduled_at,
             4,
             2,
+            Some(target),
         );
         assert_eq!(m.topic, topics::BOOKING_REQUESTED);
         assert_eq!(m.topic, "pguard.events.booking.requested");
@@ -553,6 +565,33 @@ mod tests {
         assert_eq!(m.payload["scheduled_at"], json!(scheduled_at));
         assert_eq!(m.payload["hours"], json!(4));
         assert_eq!(m.payload["guard_count"], json!(2));
+        // DIRECTED OFFER (C3): the targeted guard rides the event so notification routes to only them.
+        assert_eq!(m.payload["target_guard_id"], json!(target));
+    }
+
+    #[test]
+    fn booking_requested_carries_null_target_guard_as_present_key() {
+        // An OPEN (un-directed) booking still emits the key with a JSON null — notification reads
+        // "null" as "broadcast to all online guards" (vs. a missing key it would have to special-case).
+        let m = event_for_booking_requested(
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            "open job",
+            None,
+            None,
+            Utc::now(),
+            3,
+            1,
+            None,
+        );
+        assert!(
+            m.payload.get("target_guard_id").is_some(),
+            "target_guard_id key must be present"
+        );
+        assert!(
+            m.payload["target_guard_id"].is_null(),
+            "an open booking → JSON null target_guard_id (broadcast)"
+        );
     }
 
     #[test]
@@ -568,6 +607,7 @@ mod tests {
             Utc::now(),
             3,
             1,
+            None,
         );
         assert!(m.payload.get("lat").is_some(), "lat key must be present");
         assert!(m.payload.get("lng").is_some(), "lng key must be present");

@@ -32,6 +32,15 @@ pub fn format_pin_reset_otp_message(code: &str, expiry_minutes: i64) -> String {
     format!("OTP รีเซ็ต PIN: {code} หมดอายุใน {expiry_minutes} นาที")
 }
 
+/// Format the CHANGE-LOGIN-PHONE OTP message. Like [`format_pin_reset_otp_message`], the SMS
+/// NAMES the action ("เปลี่ยนเบอร์") so a recipient phished into relaying "a login code" can see the
+/// code changes the account's phone number — the wording is part of the purpose binding, not
+/// cosmetics. The action word "เปลี่ยนเบอร์" is longer than the reset's, so the "OTP " prefix is
+/// dropped to keep the whole message inside the ≤ 40-char single-segment (1-credit) budget.
+pub fn format_phone_change_otp_message(code: &str, expiry_minutes: i64) -> String {
+    format!("เปลี่ยนเบอร์: {code} หมดอายุใน {expiry_minutes} นาที")
+}
+
 /// Validate Thai phone number format: 10 digits starting with 0.
 /// Strips non-digit characters before validation.
 pub fn validate_thai_phone(phone: &str) -> Result<String, AppError> {
@@ -136,6 +145,31 @@ mod tests {
         assert!(
             char_count <= 40,
             "reset OTP message too long: {char_count} chars (max 40 for 1 credit)"
+        );
+    }
+
+    #[test]
+    fn format_phone_change_otp_message_names_the_action_and_fits_one_segment() {
+        let msg = format_phone_change_otp_message("123456", 10);
+        assert!(msg.contains("123456"));
+        assert!(
+            msg.contains("เปลี่ยนเบอร์"),
+            "the phone-change SMS must NAME the action — the wording is part of the purpose binding"
+        );
+        assert_ne!(
+            msg,
+            format_otp_message("123456", 10),
+            "phone-change wording must differ from the registration wording"
+        );
+        assert_ne!(
+            msg,
+            format_pin_reset_otp_message("123456", 10),
+            "phone-change wording must differ from the reset wording"
+        );
+        let char_count = msg.chars().count();
+        assert!(
+            char_count <= 40,
+            "phone-change OTP message too long: {char_count} chars (max 40 for 1 credit)"
         );
     }
 

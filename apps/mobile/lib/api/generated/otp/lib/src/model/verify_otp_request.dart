@@ -14,7 +14,7 @@ part 'verify_otp_request.g.dart';
 /// Properties:
 /// * [phone] 
 /// * [code] - The OTP code (digits)
-/// * [purpose] - Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+/// * [purpose] - Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change` → change login phone. A mismatch with the stored code burns the code and fails generically.
 @BuiltValue()
 abstract class VerifyOtpRequest implements Built<VerifyOtpRequest, VerifyOtpRequestBuilder> {
   @BuiltValueField(wireName: r'phone')
@@ -24,10 +24,10 @@ abstract class VerifyOtpRequest implements Built<VerifyOtpRequest, VerifyOtpRequ
   @BuiltValueField(wireName: r'code')
   String get code;
 
-  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change` → change login phone. A mismatch with the stored code burns the code and fails generically.
   @BuiltValueField(wireName: r'purpose')
   VerifyOtpRequestPurposeEnum? get purpose;
-  // enum purposeEnum {  phone_verify,  pin_reset,  };
+  // enum purposeEnum {  phone_verify,  pin_reset,  phone_change,  };
 
   VerifyOtpRequest._();
 
@@ -144,12 +144,15 @@ class _$VerifyOtpRequestSerializer implements PrimitiveSerializer<VerifyOtpReque
 
 class VerifyOtpRequestPurposeEnum extends EnumClass {
 
-  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change` → change login phone. A mismatch with the stored code burns the code and fails generically.
   @BuiltValueEnumConst(wireName: r'phone_verify')
   static const VerifyOtpRequestPurposeEnum phoneVerify = _$verifyOtpRequestPurposeEnum_phoneVerify;
-  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). A mismatch with the stored code burns the code and fails generically.
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change` → change login phone. A mismatch with the stored code burns the code and fails generically.
   @BuiltValueEnumConst(wireName: r'pin_reset')
   static const VerifyOtpRequestPurposeEnum pinReset = _$verifyOtpRequestPurposeEnum_pinReset;
+  /// Cross-check of the flow BOUND at `POST /otp/request` — the issued token's purpose comes from the stored code, never from this field. Omitted → `phone_verify` (registration). `pin_reset` → forgot-PIN reset; `phone_change` → change login phone. A mismatch with the stored code burns the code and fails generically.
+  @BuiltValueEnumConst(wireName: r'phone_change')
+  static const VerifyOtpRequestPurposeEnum phoneChange = _$verifyOtpRequestPurposeEnum_phoneChange;
 
   static Serializer<VerifyOtpRequestPurposeEnum> get serializer => _$verifyOtpRequestPurposeEnumSerializer;
 

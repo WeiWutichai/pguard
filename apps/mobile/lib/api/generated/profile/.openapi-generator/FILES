@@ -21,12 +21,15 @@ lib/src/model/admin_list_candidates200_response.dart
 lib/src/model/admin_list_customer_profiles200_response.dart
 lib/src/model/admin_list_expiring_documents200_response.dart
 lib/src/model/admin_list_guard_profiles200_response.dart
+lib/src/model/admin_list_support_tickets200_response.dart
 lib/src/model/admin_pending_applicants_count200_response.dart
 lib/src/model/admin_resolve_user_names200_response.dart
 lib/src/model/admin_set_candidate_stage200_response.dart
 lib/src/model/api_response_envelope.dart
 lib/src/model/approval_status.dart
 lib/src/model/avg_approval_time.dart
+lib/src/model/create_support_ticket200_response.dart
+lib/src/model/create_support_ticket_request.dart
 lib/src/model/customer_avatar_response.dart
 lib/src/model/customer_profile.dart
 lib/src/model/customer_profile_admin.dart
@@ -73,6 +76,7 @@ lib/src/model/resolved_name.dart
 lib/src/model/set_document_expiry_request.dart
 lib/src/model/set_guard_document_expiry200_response.dart
 lib/src/model/stage_request.dart
+lib/src/model/support_ticket.dart
 lib/src/model/update_org_settings_request.dart
 lib/src/model/upsert_customer_profile_request.dart
 lib/src/model/upsert_guard_profile_request.dart

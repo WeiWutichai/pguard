@@ -503,6 +503,47 @@ pub struct AdminListAccessAuditQuery {
     pub offset: Option<i64>,
 }
 
+// ----- Support tickets (H1 — mobile "แจ้งปัญหา / ส่งความคิดเห็น") -----
+
+/// The two ticket buckets the mobile toggle offers: a problem report vs. a feedback/suggestion.
+/// Mirrors the DB `CHECK (kind IN ('problem','feedback'))`; the handler rejects anything else
+/// with a typed 400 before the write.
+pub const SUPPORT_TICKET_KINDS: [&str; 2] = ["problem", "feedback"];
+
+/// Hard cap on a ticket message (mirrors the DB `CHECK (char_length(message) <= 2000)`). The
+/// handler validates length first so an over-long body is a clean 400, never a DB constraint 500.
+pub const MAX_SUPPORT_TICKET_MESSAGE_LEN: usize = 2000;
+
+/// `POST /support/tickets` body — a ticket the CALLER files for themselves (the reporter is the
+/// authenticated user, never taken from the body). `kind` is one of [`SUPPORT_TICKET_KINDS`];
+/// `message` is the free-text body (1..=[`MAX_SUPPORT_TICKET_MESSAGE_LEN`] chars). Both validated
+/// in the handler → typed 400 on a bad kind / empty / over-long message.
+#[derive(Debug, Deserialize)]
+pub struct CreateSupportTicketRequest {
+    pub kind: String,
+    pub message: String,
+}
+
+/// One support ticket. Returned to the reporter on create (`POST /support/tickets`) and to an
+/// admin in the newest-first list (`GET /admin/support/tickets`). `user_id` is the reporter —
+/// the admin name-resolver maps it to a display name on the web side (never a cross-service FK).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct SupportTicket {
+    pub id: Uuid,
+    pub user_id: Uuid,
+    pub kind: String,
+    pub message: String,
+    pub status: String,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Query params for `GET /admin/support/tickets` — limit/offset paging (newest-first).
+#[derive(Debug, Deserialize)]
+pub struct AdminListSupportTicketsQuery {
+    pub limit: Option<i64>,
+    pub offset: Option<i64>,
+}
+
 /// Either profile shape, tagged so `GET /profile/me` can return whichever the caller has
 /// without the client guessing. (`#[serde(tag = "kind")]` keeps the wire shape explicit.)
 #[derive(Debug, Serialize)]

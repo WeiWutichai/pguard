@@ -21,6 +21,9 @@ import 'package:pguard_identity_api/src/model/api_token_view.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response_all_of_data.dart';
 import 'package:pguard_identity_api/src/model/change_password_request.dart';
+import 'package:pguard_identity_api/src/model/change_phone200_response.dart';
+import 'package:pguard_identity_api/src/model/change_phone200_response_all_of_data.dart';
+import 'package:pguard_identity_api/src/model/change_phone_request.dart';
 import 'package:pguard_identity_api/src/model/create_api_token200_response.dart';
 import 'package:pguard_identity_api/src/model/create_api_token_request.dart';
 import 'package:pguard_identity_api/src/model/create_api_token_response.dart';
@@ -82,6 +85,9 @@ part 'serializers.g.dart';
   ChangePassword200Response,
   ChangePassword200ResponseAllOfData,
   ChangePasswordRequest,
+  ChangePhone200Response,
+  ChangePhone200ResponseAllOfData,
+  ChangePhoneRequest,
   CreateApiToken200Response,
   CreateApiTokenRequest,
   CreateApiTokenResponse,

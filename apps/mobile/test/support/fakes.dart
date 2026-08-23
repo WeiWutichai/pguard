@@ -190,12 +190,13 @@ class StubPush implements PushService {
 }
 
 class FakeApi implements PguardApi {
-  FakeApi({this.onGet, this.onPost, this.onPut, this.onDelete});
+  FakeApi({this.onGet, this.onPost, this.onPut, this.onPatch, this.onDelete});
 
   final Future<dynamic> Function(String path, Map<String, dynamic>? query)?
       onGet;
   final Future<dynamic> Function(String path, Object? data)? onPost;
   final Future<dynamic> Function(String path, Object? data)? onPut;
+  final Future<dynamic> Function(String path, Object? data)? onPatch;
   final Future<dynamic> Function(String path, Object? data)? onDelete;
 
   final List<String> calls = [];
@@ -221,6 +222,12 @@ class FakeApi implements PguardApi {
   Future<dynamic> put(String path, {Object? data}) {
     calls.add('PUT $path');
     return onPut!(path, data);
+  }
+
+  @override
+  Future<dynamic> patch(String path, {Object? data}) {
+    calls.add('PATCH $path');
+    return onPatch!(path, data);
   }
 
   @override

@@ -379,6 +379,50 @@ paths:
         '400': { $ref: '#/components/responses/BadRequest' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /auth/phone:
+    patch:
+      tags: [Auth]
+      summary: Change the caller's OWN login phone number
+      description: |
+        Change the caller's LOGIN phone. Security-sensitive: the phone is `UNIQUE NOT NULL` in
+        `identity.users` AND is the forgot-PIN identifier, so TWO proofs are required —
+          (a) a STEP-UP on the current PIN (`current_pin_hash`, verified against the stored Argon2
+              hash → a generic `401` on mismatch, no enumeration), and
+          (b) OWNERSHIP of the NEW number, proven by a single-use `phone_change` OTP token (bound at
+              `POST /otp/request`, minted at `POST /otp/verify`) — the new phone is taken FROM the
+              token, NEVER the body. A `phone_verify` (registration) or `pin_reset` token is rejected
+              (purpose isolation on top of single-use).
+        A number already held by an APPROVED account → `409 PHONE_TAKEN` (the DB `UNIQUE(phone)`
+        constraint is the authoritative, race-proof backstop, also catching a pending/rejected
+        collision). On success the phone is written, EVERY session is force-revoked
+        (`token_revocation_version` bumped + all refresh families revoked), the change is recorded
+        in `identity.credential_audit`, and THIS session's cookies are cleared — the caller
+        re-authenticates on the NEW number. Self only.
+      operationId: changePhone
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChangePhoneRequest' }
+      responses:
+        '200':
+          description: Phone changed; every session revoked + this browser's cookies cleared
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: object
+                        properties:
+                          phone_changed: { type: boolean, example: true }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '409': { $ref: '#/components/responses/PhoneTaken' }
+
   /auth/reset-pin:
     post:
       tags: [Auth]
@@ -968,6 +1012,13 @@ components:
       content:
         application/json:
           schema: { $ref: '#/components/schemas/ErrorBody' }
+    PhoneTaken:
+      description: |
+        The NEW phone number is already in use by another account (`PATCH /auth/phone`). Same 409
+        envelope as `Conflict`; the `error.code` is `PHONE_TAKEN` so the client can branch on it.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/ErrorBody' }
     RoleNotEnrolled:
       description: |
         `POST /auth/switch-role`: the requested role is valid but the caller is NOT enrolled in it
@@ -1181,6 +1232,23 @@ components:
         new_pin_hash:
           type: string
           description: SHA-256 hex of the NEW PIN (64 hex chars; same shape as register's `pin_hash`).
+
+    ChangePhoneRequest:
+      type: object
+      required: [phone_change_token, current_pin_hash]
+      properties:
+        phone_change_token:
+          type: string
+          description: |
+            Single-use JWT from an OTP run bound to `purpose: "phone_change"` (set at
+            `POST /otp/request`, minted at `POST /otp/verify`). Carries the verified NEW phone (the
+            body has NO phone field). A `phone_verify` (registration) or `pin_reset` token is
+            rejected (purpose isolation).
+        current_pin_hash:
+          type: string
+          description: |
+            SHA-256 hex of the CURRENT PIN (same shape/value as login's `password`) — the step-up
+            proof. Verified server-side; a wrong value → a generic 401 (no enumeration).
 
     ResetPinRequest:
       type: object

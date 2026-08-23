@@ -12,6 +12,8 @@ import 'package:pguard_identity_api/src/api_util.dart';
 import 'package:pguard_identity_api/src/model/add_role_request.dart';
 import 'package:pguard_identity_api/src/model/change_password200_response.dart';
 import 'package:pguard_identity_api/src/model/change_password_request.dart';
+import 'package:pguard_identity_api/src/model/change_phone200_response.dart';
+import 'package:pguard_identity_api/src/model/change_phone_request.dart';
 import 'package:pguard_identity_api/src/model/data_export200_response.dart';
 import 'package:pguard_identity_api/src/model/delete_me200_response.dart';
 import 'package:pguard_identity_api/src/model/disable2fa200_response.dart';
@@ -231,6 +233,107 @@ class AuthApi {
     }
 
     return Response<ChangePassword200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Change the caller&#39;s OWN login phone number
+  /// Change the caller&#39;s LOGIN phone. Security-sensitive: the phone is &#x60;UNIQUE NOT NULL&#x60; in &#x60;identity.users&#x60; AND is the forgot-PIN identifier, so TWO proofs are required —   (a) a STEP-UP on the current PIN (&#x60;current_pin_hash&#x60;, verified against the stored Argon2       hash → a generic &#x60;401&#x60; on mismatch, no enumeration), and   (b) OWNERSHIP of the NEW number, proven by a single-use &#x60;phone_change&#x60; OTP token (bound at       &#x60;POST /otp/request&#x60;, minted at &#x60;POST /otp/verify&#x60;) — the new phone is taken FROM the       token, NEVER the body. A &#x60;phone_verify&#x60; (registration) or &#x60;pin_reset&#x60; token is rejected       (purpose isolation on top of single-use). A number already held by an APPROVED account → &#x60;409 PHONE_TAKEN&#x60; (the DB &#x60;UNIQUE(phone)&#x60; constraint is the authoritative, race-proof backstop, also catching a pending/rejected collision). On success the phone is written, EVERY session is force-revoked (&#x60;token_revocation_version&#x60; bumped + all refresh families revoked), the change is recorded in &#x60;identity.credential_audit&#x60;, and THIS session&#39;s cookies are cleared — the caller re-authenticates on the NEW number. Self only. 
+  ///
+  /// Parameters:
+  /// * [changePhoneRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [ChangePhone200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<ChangePhone200Response>> changePhone({ 
+    required ChangePhoneRequest changePhoneRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/auth/phone';
+    final _options = Options(
+      method: r'PATCH',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ChangePhoneRequest);
+      _bodyData = _serializers.serialize(changePhoneRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    ChangePhone200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(ChangePhone200Response),
+      ) as ChangePhone200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<ChangePhone200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
