@@ -122,6 +122,17 @@ pub enum RequiredActor {
 pub fn required_actor(from: BookingStatus, to: BookingStatus) -> Option<RequiredActor> {
     use BookingStatus::*;
     use RequiredActor::*;
+    // CANCEL-AFTER-DECLINE (E): a guard withdrawal drives the booking to terminal `declined`
+    // (with the guard's decline reason on record). The customer must be able to ACK that into
+    // terminal `cancelled` — otherwise their live screen sits on a `declined` job with no forward
+    // action ("both cancelled" would never be a reachable end state → a redirect loop). This is
+    // the ONE outgoing edge from an otherwise-terminal status, so it is special-cased BEFORE the
+    // terminal early-return below and is allowed ONLY for the request owner. `set_for_target(
+    // Cancelled) = CustomerCancel` already maps to `RequestOwner`, so the reason-set invariant
+    // (`reason_bearing_targets_match_their_actor_class`) stays green.
+    if from == Declined && to == Cancelled {
+        return Some(RequestOwner);
+    }
     if from.is_terminal() {
         return None;
     }
@@ -223,12 +234,38 @@ mod tests {
                 Completed,
                 Cancelled,
             ] {
+                // The ONE exception (E): a customer may ACK a guard-`declined` booking into
+                // terminal `cancelled` (cancel-after-decline), so "both cancelled" is a real end
+                // state. `declined` is otherwise terminal, and every OTHER terminal edge is illegal.
+                if terminal == Declined && to == Cancelled {
+                    assert!(
+                        can_transition(terminal, to),
+                        "Declined → Cancelled is the customer's cancel-after-decline ack"
+                    );
+                    continue;
+                }
                 assert!(
                     !can_transition(terminal, to),
                     "{terminal} → {to} must be rejected (terminal)"
                 );
             }
         }
+    }
+
+    #[test]
+    fn cancel_after_decline_is_request_owner_only() {
+        // A guard-declined booking is terminal, EXCEPT the customer's ack into `cancelled`.
+        assert!(can_transition(Declined, Cancelled));
+        assert_eq!(
+            required_actor(Declined, Cancelled),
+            Some(RequiredActor::RequestOwner)
+        );
+        // No OTHER edge opens out of `declined`, and the two other terminals stay sealed.
+        assert!(!can_transition(Declined, Accepted));
+        assert!(!can_transition(Declined, EnRoute));
+        assert!(!can_transition(Declined, Completed));
+        assert!(!can_transition(Cancelled, Declined));
+        assert!(!can_transition(Completed, Cancelled));
     }
 
     #[test]

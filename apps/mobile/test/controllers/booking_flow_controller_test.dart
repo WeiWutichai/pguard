@@ -19,10 +19,18 @@ const _condo = ServiceOption(
 );
 
 void main() {
-  ProviderContainer container({required FakeApi api}) {
+  ProviderContainer container({
+    required FakeApi api,
+    FakeLocationService? location,
+  }) {
     final c = ProviderContainer(overrides: [
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 'token'),
+      // C2: loadGuards falls back to the DEVICE location when the customer didn't drop a pin.
+      // Default to a fake with NO fix so tests that don't pin a place keep the pre-C2 behaviour
+      // (lat/lng omitted); a test that wants the auto-fill passes a fake carrying a `current` fix.
+      locationServiceProvider.overrideWithValue(
+          location ?? (FakeLocationService()..current = null)),
     ]);
     addTearDown(c.dispose);
     return c;
@@ -539,8 +547,7 @@ void main() {
     expect(state().guards[1].distanceMeters, 4200.0);
   });
 
-  test(
-      'C2: loadGuards omits lat/lng when only a typed address is used (no map pick)',
+  test('C2: loadGuards omits lat/lng when there is no pin AND no device fix',
       () async {
     Map<String, dynamic>? sentQuery;
     final api = FakeApi(onGet: (path, query) async {
@@ -550,6 +557,7 @@ void main() {
         {'guard_id': 'g1', 'review_count': 0},
       ];
     });
+    // Default container → a location fake with NO fix (permission denied / GPS off).
     final c = container(api: api);
     final ctrl = c.read(bookingFlowControllerProvider.notifier);
     ctrl.setAddress('123 ถนนสุขุมวิท'); // typed only — no coordinate
@@ -557,11 +565,42 @@ void main() {
     ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
     expect(await ctrl.loadGuards(), isTrue);
 
-    // No meetup coordinate → the lat/lng keys are omitted (backward compatible).
+    // No pin and no obtainable location → the lat/lng keys are omitted (backward compatible).
     expect(sentQuery?.containsKey('lat'), isFalse);
     expect(sentQuery?.containsKey('lng'), isFalse);
     // ...and no distance is set on the model.
     expect(c.read(bookingFlowControllerProvider).guards.first.distanceMeters,
         isNull);
+  });
+
+  test(
+      'C2: loadGuards falls back to the DEVICE location as the meetup when no pin '
+      'was dropped (auto-fill), and persists it onto the booking flow state',
+      () async {
+    Map<String, dynamic>? sentQuery;
+    final api = FakeApi(onGet: (path, query) async {
+      expect(path, '/available-guards');
+      sentQuery = query;
+      return [
+        {'guard_id': 'g1', 'review_count': 0, 'distance_m': 120.0},
+      ];
+    });
+    // A device fix IS available even though the customer never dropped a pin.
+    final loc = FakeLocationService()
+      ..current = const GeoPoint(13.7367, 100.5232);
+    final c = container(api: api, location: loc);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    ctrl.setAddress('123 ถนนสุขุมวิท'); // typed only — no coordinate pinned
+    ctrl.setStart(DateTime.utc(2026, 6, 6, 14));
+    ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
+    expect(await ctrl.loadGuards(), isTrue);
+
+    // The device location is forwarded as the meetup so discovery can sort nearest-first.
+    expect(sentQuery?['lat'], 13.7367);
+    expect(sentQuery?['lng'], 100.5232);
+    // ...and it is persisted onto the flow state so the created booking carries the same site coord.
+    final place = c.read(bookingFlowControllerProvider).place;
+    expect(place?.point.lat, 13.7367);
+    expect(place?.point.lng, 100.5232);
   });
 }

@@ -13,9 +13,11 @@ v2 authz rules baked into the contract:
      history ONLY while they have an **active booking** with that guard (derived from
      `pguard.events.booking.*` — presence holds no cross-service FK and makes no synchronous
      cross-schema read). A guard may read its own; an admin may read any.
-  3. **Freshness.** A guard counts as live for discovery only when
-     `is_online = true AND recorded_at > now() - interval '5 minutes'` — surfaced as
-     `is_live` on the read DTOs.
+  3. **Freshness.** `is_live` on the read DTOs is the green-dot staleness signal —
+     `is_online = true AND recorded_at > now() - interval '5 minutes'`. It is a DISPLAY
+     signal only: discovery OFFERABILITY (`/internal/online-guards`) keys on `is_online`
+     ALONE and is NOT gated on freshness (a movement-gated mobile uplink lets a stationary
+     online guard's last fix age past the window while its socket stays up).
 
 Client-facing paths are served behind the gateway under `/v1`. Success responses use the
 standard `{ success, data }` envelope; errors use `ErrorBody`.

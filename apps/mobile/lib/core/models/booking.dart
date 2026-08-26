@@ -125,6 +125,7 @@ class Booking {
     this.cancellationNote,
     this.commissionPercent,
     this.cancellationFee,
+    this.actualSeconds,
   });
 
   final String id;
@@ -207,6 +208,14 @@ class Booking {
   int get commissionPercentHundredths =>
       Money.percentHundredths(commissionPercent);
 
+  /// The server-computed seconds ACTUALLY worked, stamped onto the booking at completion (the
+  /// reconcile basis). `null` until the job is `completed` — and on a snapshot from a backend that
+  /// predates the field. The guard-earnings math prefers this immediate, server-computed figure the
+  /// instant a job completes (`actual_seconds / 3600` hours) over the booked estimate, so the guard
+  /// sees their reconciled pay without waiting for the `GET /payments/earnings` settle row to land
+  /// ([GuardEarnings.payableHours]).
+  final int? actualSeconds;
+
   /// [cancellationFee] in satang; 0 when unset.
   int get cancellationFeeSatang => Money.satangFromString(cancellationFee);
 
@@ -279,6 +288,8 @@ class Booking {
         // from a misbehaving backend degrades instead of throwing); absent on pre-migration rows.
         commissionPercent: (json['commission_percent'] as Object?)?.toString(),
         cancellationFee: (json['cancellation_fee'] as Object?)?.toString(),
+        // Server-computed worked seconds, stamped at completion (nullable int on the wire).
+        actualSeconds: (json['actual_seconds'] as num?)?.toInt(),
       );
 
   /// A copy with [paidAt] set (everything else unchanged). Used to OPTIMISTICALLY mark a booking
@@ -305,6 +316,7 @@ class Booking {
         cancellationNote: cancellationNote,
         commissionPercent: commissionPercent,
         cancellationFee: cancellationFee,
+        actualSeconds: actualSeconds,
       );
 
   /// A copy with the status advanced by a real-time event (and guard id filled if newly known).
@@ -341,6 +353,9 @@ class Booking {
         // Money SNAPSHOTS never change over a booking's life, so they ride every WS-folded copy.
         commissionPercent: commissionPercent,
         cancellationFee: cancellationFee,
+        // The worked seconds are stamped once at completion and only arrive on a REST snapshot (the
+        // WS frame carries only the status); carry whatever we already know forward.
+        actualSeconds: actualSeconds,
       );
 }
 

@@ -215,6 +215,87 @@ class BookingsApi {
     );
   }
 
+  /// Customer acknowledges a guard withdrawal (declined → cancelled)
+  /// The customer ACKs a booking the assigned guard withdrew from (status &#x60;declined&#x60;), moving it to terminal &#x60;cancelled&#x60; so \&quot;both parties done\&quot; is a real end state — otherwise the customer&#39;s live screen sits on a &#x60;declined&#x60; job with no forward action. Allowed ONLY from &#x60;declined&#x60; and ONLY for the booking&#39;s owner (or admin); any other status is 409, a non-owner is 403.  This is a pure ACK — NO request body and NO reason. It deliberately does NOT overwrite the guard&#39;s decline reason/note (they already stand as the record of why the job did not happen). Enqueues &#x60;pguard.events.booking.cancelled&#x60;; because the earlier &#x60;booking.declined&#x60; already issued any refund, payment&#39;s cancellation consumer treats this second event as a NoOp (it only refunds a &#x60;completed&#x60; row) — no double refund. 
+  ///
+  /// Parameters:
+  /// * [id] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InlineObject>> cancelAfterDecline({ 
+    required String id,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/bookings/{id}/cancel-after-decline'.replaceAll('{' r'id' '}', encodeQueryParameter(_serializers, id, const FullType(String)).toString());
+    final _options = Options(
+      method: r'PUT',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InlineObject? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// Customer/admin cancels a pre-arrival booking
   /// Status → &#x60;cancelled&#x60;. Allowed only PRE-ARRIVAL (&#x60;requested&#x60;/&#x60;accepted&#x60;/&#x60;en_route&#x60;) — once a guard is on-site the job runs to completion review. Enqueues &#x60;pguard.events.booking.cancelled&#x60;. Customer (request owner) or admin only. Cancelling a PAID booking FULL-REFUNDS the customer via payment&#39;s cancellation-refund consumer.  **A reason is REQUIRED.** The body carries a stable &#x60;reason&#x60; code (&#x60;changed_plan&#x60; | &#x60;mistake&#x60; | &#x60;not_needed&#x60; | &#x60;other&#x60;) plus an optional &#x60;note&#x60; (≤ 500 characters). A missing reason — or one that is not a customer code — is 400 with &#x60;error.code &#x3D; CANCEL_REASON_REQUIRED&#x60;; &#x60;reason &#x3D; other&#x60; with a blank note is 400 with &#x60;error.code &#x3D; CANCEL_NOTE_REQUIRED&#x60;. Clients branch on &#x60;error.code&#x60; and localize it — never on the message. Reason + note are persisted on the booking (&#x60;cancellation_reason&#x60; / &#x60;cancellation_note&#x60;) and carried on the event. 
   ///

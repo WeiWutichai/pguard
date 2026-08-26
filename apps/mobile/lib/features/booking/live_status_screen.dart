@@ -10,6 +10,7 @@ import '../../core/controllers/booking_status_controller.dart';
 import '../../core/controllers/customer_home_controller.dart';
 import '../../core/controllers/customer_public_profile_controller.dart';
 import '../../core/controllers/guard_clock.dart';
+import '../../core/controllers/guard_earnings_controller.dart';
 import '../../core/controllers/guard_location_controller.dart';
 import '../../core/controllers/guard_public_profile_controller.dart';
 import '../../core/controllers/guard_route_controller.dart';
@@ -38,6 +39,10 @@ import 'widgets/cancel_reason.dart';
 import 'widgets/job_receipt_sheet.dart';
 import 'widgets/travel_map_preview.dart';
 
+/// The customer's response to a guard withdrawing a paid job (E): re-search for a new guard, or
+/// cancel the job outright.
+enum _GuardWithdrewChoice { research, cancel }
+
 /// THE Phase 2 vertical: the customer's live job screen. It watches the booking-status
 /// controller, whose state advances from WebSocket PUSH frames — there is NO `Timer.periodic`
 /// polling anywhere in this path (v1 polled every 3–5s; that anti-pattern is gone). UI per
@@ -53,9 +58,9 @@ class LiveStatusScreen extends ConsumerStatefulWidget {
 
 class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
     with WidgetsBindingObserver {
-  /// C1 latch: a guard-withdrew (`declined`) redirect into re-search fires AT MOST ONCE. `declined`
-  /// is terminal so no further frames follow, but this also stops a spurious rebuild re-firing.
-  bool _redirectedToRediscovery = false;
+  /// E latch: the guard-withdrew (`declined`) choice dialog fires AT MOST ONCE. `declined` is
+  /// terminal so no further frames follow, but this also stops a spurious rebuild re-showing it.
+  bool _declineDialogShown = false;
 
   @override
   void initState() {
@@ -90,21 +95,70 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
     } catch (_) {}
   }
 
-  /// C1: a guard WITHDREW after accepting (booking → `declined`) is NOT a dead end for the customer
-  /// — the job details still stand, so leave the (now dead) live screen for guard discovery to find
-  /// a NEW guard. The shared keepAlive [BookingFlowController] still holds the service/place/time, so
-  /// re-search recreates the same job. Fires at most once ([_redirectedToRediscovery]). Navigation is
-  /// deferred to a post-frame callback so it never runs mid-build / mid-notification, and rebuilds a
-  /// poppable home→discovery stack (mirrors guard_discovery's _confirm) so back lands on the
-  /// dashboard, not a dead route.
-  void _redirectToRediscovery() {
-    if (_redirectedToRediscovery) return;
-    _redirectedToRediscovery = true;
+  /// E: a guard WITHDREW after accepting (booking → `declined`) is NOT a dead end for the customer —
+  /// but silently bouncing them into discovery hid what happened. Instead NOTIFY + offer a CHOICE:
+  /// find a new guard (re-search) or cancel the job outright. Fires at most once
+  /// ([_declineDialogShown]); the dialog is deferred to a post-frame callback so it never runs
+  /// mid-build / mid-notification. Gated by the caller strictly on `status == declined` so a
+  /// `cancelled` booking (including the result of choosing "cancel" below) never re-triggers it.
+  void _promptGuardWithdrew() {
+    if (_declineDialogShown) return;
+    _declineDialogShown = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      _showGuardWithdrewDialog();
+    });
+  }
+
+  Future<void> _showGuardWithdrewDialog() async {
+    final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+    final choice = await showDialog<_GuardWithdrewChoice>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(isThai ? 'รปภ. ยกเลิกงาน' : 'The guard cancelled'),
+        content: Text(
+          isThai
+              ? 'เจ้าหน้าที่ยกเลิกงานนี้ คุณต้องการค้นหาเจ้าหน้าที่ใหม่ หรือยกเลิกงาน?'
+              : 'The guard withdrew from this job. Find a new guard, or cancel the job?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(_GuardWithdrewChoice.cancel),
+            child: Text(isThai ? 'ยกเลิกงาน' : 'Cancel job'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(_GuardWithdrewChoice.research),
+            child: Text(isThai ? 'ค้นหา Guard ใหม่' : 'Find a new guard'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == _GuardWithdrewChoice.research) {
+      // Re-search: the shared keepAlive [BookingFlowController] still holds the service/place/time,
+      // so discovery recreates the SAME job — and its live screen subscribes to the NEW booking's WS,
+      // so notifications follow the new job. Rebuild a poppable home→discovery stack (mirrors
+      // guard_discovery's _confirm) so back lands on the dashboard, not a dead route.
       context.go('/home/customer');
       context.push('/book/guards');
-    });
+    } else if (choice == _GuardWithdrewChoice.cancel) {
+      // Cancel outright: declined → cancelled (full refund). Fold the returned booking into state and
+      // STAY on the now-terminal cancelled screen — the refund banner covers it. The strict
+      // `== declined` gate above then keeps this cancelled booking from ever re-prompting.
+      final error = await ref
+          .read(bookingStatusControllerProvider(widget.bookingId).notifier)
+          .cancelAfterDecline();
+      if (!mounted) return;
+      if (error != null) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text(error)));
+      }
+    }
+    // choice == null (dismissed, e.g. hardware back) → stay on the live screen; the latch prevents a
+    // re-prompt on rebuild.
   }
 
   @override
@@ -112,20 +166,36 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final async = ref.watch(bookingStatusControllerProvider(widget.bookingId));
 
-    // C1: watch for the transition INTO `declined` (a guard withdrew) — however the frame lands (the
-    // WS push folded by the controller, or an initial snapshot that is already declined) it flows
-    // through this provider — and redirect the customer into the re-search flow. This is DISTINCT
-    // from `cancelled` (the customer's OWN pre-arrival cancel), which STAYS terminal on the refund
-    // banner. Registered in build (Riverpod dedupes across rebuilds); the redirect itself is latched.
+    // E: watch for the transition INTO `declined` (a guard withdrew a PAID job) — however the frame
+    // lands (the WS push folded by the controller, or an initial snapshot that is already declined)
+    // it flows through this provider — and PROMPT the customer with a choice (find a new guard, or
+    // cancel the job). This is DISTINCT from `cancelled` (the customer's OWN cancel, or the result of
+    // choosing "cancel" here), which STAYS terminal on the refund banner and NEVER re-prompts — the
+    // strict `== declined` gate kills the re-entry loop. Registered in build (Riverpod dedupes across
+    // rebuilds); the prompt itself is latched to fire at most once.
     ref.listen(bookingStatusControllerProvider(widget.bookingId), (_, next) {
       if (next.valueOrNull?.status == BookingStatus.declined) {
-        _redirectToRediscovery();
+        _promptGuardWithdrew();
       }
     });
 
+    // D: the header must reflect the booking's real state — a completed / terminal job is NOT "live".
+    // Show a completed/cancelled title and drop the pulsing LIVE badge once the booking is terminal
+    // (it kept saying "งานดำเนินอยู่ / Live" on a finished job). While loading (booking null) keep the
+    // live title — the snapshot lands in a beat.
+    final booking = async.valueOrNull;
+    final isTerminal =
+        booking != null && BookingLifecycle.isTerminal(booking.status);
+    // `booking` is promoted non-null in this branch (isTerminal implies booking != null).
+    final headerTitle = !isTerminal
+        ? (isThai ? 'งานดำเนินอยู่' : 'Live job status')
+        : (booking.status == BookingStatus.completed
+            ? (isThai ? 'งานเสร็จสิ้น' : 'Job completed')
+            : (isThai ? 'งานที่ยกเลิก' : 'Job cancelled'));
+
     return Scaffold(
       appBar: PGuardHeader(
-        title: isThai ? 'งานดำเนินอยู่' : 'Live job status',
+        title: headerTitle,
         showBack: true,
         // FROZEN-BACK GUARD: this screen is usually the navigator ROOT — the booking flow
         // (guard_discovery), payment success and the PromptPay panel all `context.go` HERE, which
@@ -135,7 +205,8 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
         // back to the customer home so back is never a no-op.
         onBack: () =>
             context.canPop() ? context.pop() : context.go('/home/customer'),
-        live: true,
+        // D: pulse LIVE only while the job is actually live (hidden once terminal/completed).
+        live: !isTerminal,
         background: PgTokens.colorGreen800,
       ),
       body: SafeArea(
@@ -769,25 +840,60 @@ class _Actions extends ConsumerWidget {
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
     final canCancel = BookingLifecycle.isCancellable(booking.status);
     final myUserId = ref.watch(sessionProvider).user?.userId;
+    final isCompleted = booking.status == BookingStatus.completed;
+
+    // Customer ↔ assigned guard. Chat is enabled once a guard is assigned (guard_id present) and
+    // stays reachable after completion (chat-after-completion). Call is enabled only while the
+    // booking is callable (accepted/en_route/arrived/pending_completion + guard assigned) — matching
+    // the calling service, so it is never live for a status the server would 409 (the terminals).
+    final chat = ChatEntryButton(
+      requestId: booking.id,
+      requestStatus: booking.status.wire,
+      acting: ChatRole.customer,
+      myUserId: myUserId,
+      counterpartUserId: booking.guardId,
+    );
+    final call = CallEntryButton(
+      bookingId: booking.id,
+      enabled: booking.guardId != null &&
+          BookingLifecycle.isCallable(booking.status),
+    );
+
+    // COMPLETED: the completion actions get their OWN full-width row BELOW the chat/call icons so
+    // their labels render at the normal CTA size (16.5 w600). Cramming rate + receipt into the
+    // trailing slot beside the two icon buttons squeezed them so narrow the labels shrank to an
+    // illegible size (the reported "tiny button text"). The OWNER (customer) rates the guard (Customer
+    // App ⑫) + views the receipt; a guard who deep-links here for their own job gets their earnings
+    // instead — #97: rating is CUSTOMER-ONLY, and the receipt is the customer's document (it totals
+    // their bill + tip + crew and settles against their payment, which a guard cannot read).
+    // [_RateGuardButton] gates its CTA on whether the customer has ALREADY reviewed
+    // (GET /assignments/{id}/review) so a re-open shows a passive "rated" state instead of
+    // re-entering the form; the receipt stays reachable beside it either way.
+    if (isCompleted) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(children: [chat, const SizedBox(width: PgTokens.space2), call]),
+          const SizedBox(height: PgTokens.space2),
+          if (isOwner)
+            Row(
+              children: [
+                Expanded(child: _RateGuardButton(bookingId: booking.id)),
+                const SizedBox(width: PgTokens.space2),
+                Expanded(child: _ViewReceiptButton(booking: booking)),
+              ],
+            )
+          else
+            const _MyEarningsButton(),
+        ],
+      );
+    }
+
     return Row(
       children: [
-        // Customer ↔ assigned guard. Enabled once a guard is assigned (guard_id present).
-        ChatEntryButton(
-          requestId: booking.id,
-          requestStatus: booking.status.wire,
-          acting: ChatRole.customer,
-          myUserId: myUserId,
-          counterpartUserId: booking.guardId,
-        ),
+        chat,
         const SizedBox(width: PgTokens.space2),
-        // Customer → assigned guard call (audio/video). Enabled while the booking is callable
-        // (accepted/en_route/arrived/pending_completion + guard assigned) — matching the calling
-        // service, so the button is never live for a status the server would 409 (the terminals).
-        CallEntryButton(
-          bookingId: booking.id,
-          enabled: booking.guardId != null &&
-              BookingLifecycle.isCallable(booking.status),
-        ),
+        call,
         const SizedBox(width: PgTokens.space2),
         Expanded(
           // Pre-arrival the design's cancel affordance is a GHOST (outline) button, not a
@@ -821,50 +927,23 @@ class _Actions extends ConsumerWidget {
                     ),
                   ),
                 )
-              // Once the job is completed, the CUSTOMER's next step is the review (Customer App
-              // ⑫). One review per assignment: [_RateGuardButton] gates the CTA on whether the
-              // customer has ALREADY reviewed (GET /assignments/{id}/review) so a re-open shows a
-              // "rated" state instead of re-entering the form (the 409 stays the server backstop).
-              // #97: rating is CUSTOMER-ONLY — gate by ownership so a guard who deep-links here for
-              // their own job NEVER sees a rating CTA; they get a "View receipt" action instead.
-              // The OWNER also gets the receipt as a SECONDARY action beside the rating CTA (and it
-              // stays after rating — "Rated" alone dead-ended the customer away from their settled
-              // bill, the reported "กดดูใบเสร็จไม่ได้").
-              : booking.status == BookingStatus.completed
-                  ? (isOwner
-                      ? Row(
-                          children: [
-                            Expanded(
-                                child: _RateGuardButton(bookingId: booking.id)),
-                            const SizedBox(width: PgTokens.space2),
-                            Expanded(
-                                child: _ViewReceiptButton(booking: booking)),
-                          ],
-                        )
-                      // No receipt for the guard — it is the CUSTOMER's document (it totals the
-                      // customer's bill, including the tip and the whole crew) and it can only be
-                      // settled against the customer's payment, which a guard cannot read. The
-                      // guard's own pay lives on the earnings screen.
-                      : const _MyEarningsButton())
-                  // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the
-                  // trailing action opens the booking-details sheet (address / schedule /
-                  // hours / guards / price). Was a dead `onPressed: () {}` no-op (Build #80).
-                  : PgPrimaryButton(
-                      label: isThai ? 'ดูรายละเอียด' : 'Details',
-                      onPressed: () => showBookingDetailsSheet(
-                        context,
-                        booking: booking,
-                        totalSatang: _totalSatang,
-                        isThai: isThai,
-                        // Same "Working" signal as the main timeline (the hour-1 check-in).
-                        started: ref
-                                .read(progressReportsControllerProvider(
-                                    booking.id))
-                                .valueOrNull
-                                ?.workStartedAt !=
-                            null,
-                      ),
-                    ),
+              // Otherwise (in-flight, not yet cancellable: en_route/arrived/pending) the trailing
+              // action opens the booking-details sheet (address / schedule / hours / guards / price).
+              : PgPrimaryButton(
+                  label: isThai ? 'ดูรายละเอียด' : 'Details',
+                  onPressed: () => showBookingDetailsSheet(
+                    context,
+                    booking: booking,
+                    totalSatang: _totalSatang,
+                    isThai: isThai,
+                    // Same "Working" signal as the main timeline (the hour-1 check-in).
+                    started: ref
+                            .read(progressReportsControllerProvider(booking.id))
+                            .valueOrNull
+                            ?.workStartedAt !=
+                        null,
+                  ),
+                ),
         ),
       ],
     );
@@ -992,6 +1071,11 @@ class _CompletionReviewPanelState
       // re-pulls the moment the customer lands back on home — home does NOT observe the booking-
       // status WS, so without this it stays stale until pull-to-refresh / app resume.
       ref.invalidate(customerHomeControllerProvider);
+      // G: the completion also lands the guard-earnings settle (booking.completed → payment
+      // reconcile). Invalidate the guard's settle rows so any guard-earnings screen refetches the
+      // reconciled hours/commission when it lands (best-effort: a no-op on the customer's own
+      // device where that provider isn't mounted).
+      ref.invalidate(guardEarningsRowsProvider);
       // Settle is in flight (booking.completed → payment reconcile). Move to the summary; it
       // reads the reconciled payment and forces the customer on to rate the guard.
       context.pushReplacement('/booking/${widget.bookingId}/summary');

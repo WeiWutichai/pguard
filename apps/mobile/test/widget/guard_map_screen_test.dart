@@ -133,7 +133,15 @@ void main() {
     await tester.pumpWidget(host(api: api));
     await settle(tester);
 
-    expect(find.byIcon(Icons.shield), findsOneWidget, reason: 'guard marker');
+    // A2: the guard's live position now reads as a current-position dot (no shield place-pin), and
+    // the meetup/destination reads as a place-pin (Icons.place) — the styles swapped to match the
+    // guard-nav convention.
+    expect(find.byType(GuardMapGuardMarker), findsOneWidget,
+        reason: 'guard marker (current-position dot)');
+    expect(find.byIcon(Icons.shield), findsNothing,
+        reason: 'the guard is a dot now, not a shield place-pin');
+    expect(find.byIcon(Icons.place), findsOneWidget,
+        reason: 'the meetup/destination is a place-pin now');
     expect(find.text('คุณ'), findsOneWidget, reason: 'reference marker label');
     // The profile block shows the real name + honest rating (no fake photo/ETA).
     expect(find.text('ณัฐพล วงศ์ดี'), findsOneWidget, reason: 'guard name');

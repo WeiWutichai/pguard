@@ -12,6 +12,7 @@ import '../controllers/call_controller.dart';
 import '../controllers/chat_list_controller.dart';
 import '../controllers/customer_home_controller.dart';
 import '../controllers/guard_jobs_controller.dart';
+import '../controllers/guard_ratings_controller.dart';
 import '../controllers/locale_controller.dart';
 import '../controllers/notification_controller.dart';
 import '../controllers/session_controller.dart';
@@ -162,6 +163,15 @@ class PushRegistration extends _$PushRegistration {
     if (data['event_type'] == 'pguard.events.chat.message_sent') {
       ref.invalidate(chatListControllerProvider(ChatRole.customer));
       ref.invalidate(chatListControllerProvider(ChatRole.guard));
+    }
+    // A rating.submitted push (the CUSTOMER just reviewed this guard) must refresh the guard's
+    // ratings live: guardRatingsProvider is a fetch-once FutureProvider with no WS/poll, so without
+    // this the dashboard rating stat card AND the "รีวิวที่ได้รับ" screen keep showing the stale
+    // value (or "—") until a manual reopen — and a tap-to-open on the push lands on stale data too.
+    // The provider is a family keyed by guard id; invalidating the family re-pulls whichever
+    // instance (the guard's own id, from the session) is mounted. Safe whether or not it is mounted.
+    if (data['event_type'] == 'pguard.events.rating.submitted') {
+      ref.invalidate(guardRatingsProvider);
     }
   }
 

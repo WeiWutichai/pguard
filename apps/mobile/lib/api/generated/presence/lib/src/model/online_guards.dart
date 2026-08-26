@@ -13,10 +13,10 @@ part 'online_guards.g.dart';
 /// OnlineGuards
 ///
 /// Properties:
-/// * [guards] - Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position.
+/// * [guards] - Guards currently OFFERABLE for discovery (is_online alone, NOT freshness-gated), each with their latest fix position.
 @BuiltValue()
 abstract class OnlineGuards implements Built<OnlineGuards, OnlineGuardsBuilder> {
-  /// Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position.
+  /// Guards currently OFFERABLE for discovery (is_online alone, NOT freshness-gated), each with their latest fix position.
   @BuiltValueField(wireName: r'guards')
   BuiltList<OnlineGuard> get guards;
 

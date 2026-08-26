@@ -219,23 +219,26 @@ fn build_replay(
     }
 }
 
-/// GET /internal/online-guards — the guards who are currently LIVE (`is_online` AND a fresh
-/// fix; [`domain::is_live`]), each with their latest fix position. Service-JWT'd
-/// ([`ServiceCaller`]) — never reachable from the public edge (the gateway blocks `/internal/`).
-/// Consumed by booking's `/available-guards` discovery to (a) drop OFFLINE approved guards from
-/// the customer list ("พร้อมรับงาน" filter) and (b) sort the surviving guards nearest-to-meetup
-/// (C2) using the returned coordinates.
+/// GET /internal/online-guards — the guards who are currently OFFERABLE for discovery
+/// (`is_online` alone), each with their latest fix position. Service-JWT'd ([`ServiceCaller`]) —
+/// never reachable from the public edge (the gateway blocks `/internal/`). Consumed by booking's
+/// `/available-guards` discovery to (a) drop OFFLINE approved guards from the customer list
+/// ("พร้อมรับงาน" filter) and (b) sort the surviving guards nearest-to-meetup (C2) using the
+/// returned coordinates.
 ///
-/// Narrow projection — id + position only, none of the heading/speed/accuracy the admin
-/// `/locations` bulk read carries (least-privilege). The freshness window is presence's own
-/// [`domain::FRESHNESS_MINUTES`] rule applied in SQL, so callers always see the same "live"
-/// definition as the admin map.
+/// Membership is `is_online` ONLY — NOT gated on GPS freshness. The mobile uplink is
+/// movement-gated, so a stationary online guard's last fix ages past the freshness window while
+/// the socket stays up; a freshness gate here would drop a connected, offerable guard from
+/// discovery (bug B). GPS freshness survives only as the green-dot `is_live` DISPLAY
+/// ([`domain::is_live`] in [`to_location`]), which does not gate this set. Narrow projection —
+/// id + position only, none of the heading/speed/accuracy the admin `/locations` bulk read
+/// carries (least-privilege).
 #[tracing::instrument(skip(state), fields(caller = %caller.service))]
 pub async fn internal_online_guards<S: PresenceInternalDeps>(
     State(state): State<S>,
     caller: ServiceCaller,
 ) -> Result<Json<ApiResponse<OnlineGuards>>, AppError> {
-    let guards = repo::online_guard_locations(state.db(), Utc::now(), domain::FRESHNESS_MINUTES)
+    let guards = repo::online_guard_locations(state.db())
         .await?
         .into_iter()
         .map(|(guard_id, lat, lng)| OnlineGuard { guard_id, lat, lng })

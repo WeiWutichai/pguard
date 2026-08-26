@@ -76,13 +76,15 @@
             </intent-filter>
         </activity>
         <!-- FCM fallback channel: a data/notification push that does NOT set its own channel_id is
-             auto-displayed on THIS channel. The server already tags pushes with channel_id="default"
-             (services/notification/src/fcm.rs) and the app registers a HIGH-importance "default"
-             channel at startup (core/network/notification_channel.dart), so this just guarantees the
-             same channel is used even for a push that omits it — no silent low-importance fallback. -->
+             auto-displayed on THIS channel. The server tags pushes with channel_id="pguard_alerts_v2"
+             (services/notification/src/fcm.rs) and the app registers a HIGH-importance, sound+vibrate
+             "pguard_alerts_v2" channel at startup (core/network/notification_channel.dart), so this
+             guarantees the same channel is used even for a push that omits it — no silent low-
+             importance fallback. The "_v2" id cache-busts the old silent "default" channel, whose
+             importance+sound Android froze at first creation. This value MUST match both. -->
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_channel_id"
-            android:value="default" />
+            android:value="pguard_alerts_v2" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

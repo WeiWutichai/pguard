@@ -171,33 +171,27 @@ pub async fn list_locations(
     Ok(rows)
 }
 
-/// The guards who are currently LIVE — `is_online` AND the last fix is fresh (within
-/// `freshness_minutes`): the discovery "พร้อมรับงาน" rule ([`crate::domain::is_live`]), applied
-/// in SQL so booking's `/available-guards` filter is one cheap round-trip (not a bulk PII pull).
-/// Each row is `(guard_id, lat, lng)` — the latest fix position, which booking uses BOTH to
-/// filter offline guards AND to sort the customer's list nearest-to-meetup (C2).
+/// The guards who are currently OFFERABLE for discovery — `is_online` ALONE, carrying each
+/// guard's LATEST fix position `(guard_id, lat, lng)`, which booking's `/available-guards` uses
+/// BOTH to drop OFFLINE guards from the customer list AND to sort the survivors nearest-to-meetup
+/// (C2). One cheap round-trip (not a bulk PII pull).
 ///
-/// Stricter than the `online_only` bulk read, which checks `is_online` alone: a guard who holds
-/// the socket but lost GPS (stale `recorded_at`) is online-but-not-live and is excluded here, so
-/// discovery never offers a guard whose position has gone cold. Served by the partial
-/// `idx_guard_locations_online`; the `recorded_at` recency predicate is the freshness half.
-/// Narrow projection (id + position only, no heading/speed/accuracy) — least-privilege for the
-/// cross-service consult.
-pub async fn online_guard_locations(
-    db: &PgPool,
-    now: DateTime<Utc>,
-    freshness_minutes: i64,
-) -> Result<Vec<(Uuid, f64, f64)>, AppError> {
-    let cutoff = now - chrono::Duration::minutes(freshness_minutes);
-    let rows: Vec<(Uuid, f64, f64)> = sqlx::query_as(
-        // Strict `>` to match domain::is_fresh (`now - recorded_at < freshness`): a fix exactly
-        // `freshness_minutes` old is NOT live, so the SQL cutoff and the read-time rule agree.
-        "SELECT guard_id, lat, lng FROM presence.guard_locations \
-         WHERE is_online AND recorded_at > $1",
-    )
-    .bind(cutoff)
-    .fetch_all(db)
-    .await?;
+/// Membership is `is_online` ONLY — deliberately NOT gated on `recorded_at` freshness (bug B).
+/// The mobile GPS uplink is movement-gated, so a STATIONARY online guard's `recorded_at` ages
+/// past any freshness window while the socket is still up and `is_online = true`; a freshness
+/// predicate here would drop a connected, offerable guard from discovery (the "2 เครื่องออนไลน์
+/// แต่ขึ้นแค่คนเดียว" report). `is_online` is the correct "connected & offerable" signal because
+/// [`set_offline`] reliably flips it false on any disconnect / zombie-reap (fenced by
+/// `connected_session`), so a guard is `is_online = true` iff a live session is currently held.
+/// GPS freshness survives ONLY as the green-dot `is_live` DISPLAY ([`crate::domain::is_live`] in
+/// `to_location`) — it never gates membership here. Served by the partial
+/// `idx_guard_locations_online`. Narrow projection (id + position only, no heading/speed/accuracy)
+/// — least-privilege for the cross-service consult.
+pub async fn online_guard_locations(db: &PgPool) -> Result<Vec<(Uuid, f64, f64)>, AppError> {
+    let rows: Vec<(Uuid, f64, f64)> =
+        sqlx::query_as("SELECT guard_id, lat, lng FROM presence.guard_locations WHERE is_online")
+            .fetch_all(db)
+            .await?;
     Ok(rows)
 }
 
@@ -484,14 +478,18 @@ mod tests {
             .await;
     }
 
-    /// `online_guard_locations` is the discovery "live" set: a guard with a FRESH online fix is
-    /// included (carrying its latest coordinates, for booking's nearest-first sort); a guard whose
-    /// only fix is STALE (older than the freshness window) is excluded even while `is_online` — so
-    /// booking's discovery never offers a guard whose GPS went cold.
+    /// `online_guard_locations` is the discovery OFFERABLE set: membership is `is_online` ALONE
+    /// (bug B). A connected guard is offered even when its last GPS fix has gone STALE — the
+    /// movement-gated mobile uplink means a STATIONARY online guard's `recorded_at` ages past the
+    /// freshness window while the socket is up, and dropping such a guard from discovery was the
+    /// "2 เครื่องออนไลน์แต่ขึ้นแค่คนเดียว" bug. Both a fresh AND a stale online guard are members
+    /// (each carrying its latest fix coords for the nearest-first sort); an OFFLINE guard is never
+    /// a member. GPS freshness is retained ONLY for the green-dot `is_live` DISPLAY
+    /// ([`crate::domain::is_live`]), which does NOT gate membership here.
     #[tokio::test]
-    async fn online_guard_locations_includes_fresh_excludes_stale() {
+    async fn online_guard_locations_membership_is_online_only() {
         let Some(pool) = pool().await else {
-            eprintln!("SKIP: DATABASE_URL required for the online-guards freshness test");
+            eprintln!("SKIP: DATABASE_URL required for the online-guards membership test");
             return;
         };
         let fresh_guard = Uuid::new_v4();
@@ -514,32 +512,53 @@ mod tests {
         .await
         .expect("stale upsert");
 
-        let live = online_guard_locations(&pool, now, 5)
+        let live = online_guard_locations(&pool)
             .await
             .expect("online locations");
+
+        // Membership is is_online-only: the FRESH online guard is offerable, carrying its coords.
         let fresh = live.iter().find(|(id, _, _)| *id == fresh_guard);
-        assert!(fresh.is_some(), "a fresh online guard is live");
-        // The live row carries the guard's latest fix coordinates (for the nearest-first sort).
+        assert!(fresh.is_some(), "a fresh online guard is offerable");
         let (_, lat, lng) = fresh.unwrap();
         assert!(
             (*lat - 13.75).abs() < 1e-6 && (*lng - 100.50).abs() < 1e-6,
-            "live row carries the latest fix coords, got ({lat}, {lng})"
-        );
-        assert!(
-            !live.iter().any(|(id, _, _)| *id == stale_guard),
-            "an online-but-stale guard is NOT live (lost-GPS guard excluded from discovery)"
+            "offerable row carries the latest fix coords, got ({lat}, {lng})"
         );
 
-        // Disconnect the fresh guard → no longer in the live set even though the fix is recent.
+        // The STALE online guard is STILL offerable (bug B fix): a stationary online guard whose
+        // fix went cold must not drop from discovery. It carries its last-known fix coords.
+        let stale = live.iter().find(|(id, _, _)| *id == stale_guard);
+        assert!(
+            stale.is_some(),
+            "an online-but-stale guard is STILL offerable (is_online-only membership)"
+        );
+        let (_, slat, slng) = stale.unwrap();
+        assert!(
+            (*slat - 13.76).abs() < 1e-6 && (*slng - 100.51).abs() < 1e-6,
+            "stale offerable row carries its last fix coords, got ({slat}, {slng})"
+        );
+
+        // Freshness survives ONLY for the green-dot display — is_live is false for the stale fix
+        // and true for the fresh one, but NEITHER gates membership above.
+        assert!(
+            crate::domain::is_live(true, now, now),
+            "a fresh online fix displays live"
+        );
+        assert!(
+            !crate::domain::is_live(true, now - Duration::minutes(10), now),
+            "a stale online fix displays not-live (green-dot only, does not gate offerability)"
+        );
+
+        // Disconnect the fresh guard → no longer offerable (is_online is the offerable signal).
         set_offline(&pool, fresh_guard, session)
             .await
             .expect("offline");
-        let live2 = online_guard_locations(&pool, now, 5)
+        let live2 = online_guard_locations(&pool)
             .await
             .expect("online locations 2");
         assert!(
             !live2.iter().any(|(id, _, _)| *id == fresh_guard),
-            "an offline guard is never live, even with a fresh last fix"
+            "an offline guard is never offerable, even with a fresh last fix"
         );
 
         let _ = sqlx::query("DELETE FROM presence.guard_locations WHERE guard_id = ANY($1)")
