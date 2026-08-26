@@ -134,6 +134,13 @@ pub struct BookingResponse {
     /// = unpaid — the client uses this to know the `accepted → en_route` transition is gated
     /// (show the pay-step) vs. already paid.
     pub paid_at: Option<DateTime<Utc>>,
+    /// The server-computed worked duration in SECONDS, stamped at completion
+    /// (`now() − work_started_at`) in the same UPDATE that flips the status to `completed`. `None`
+    /// until completed — and also on a completion with no `work_started_at` clock (missing start),
+    /// so `None` means "not reconciled", never "0 seconds". The guard's earnings screen reads the
+    /// reconciled worked hours from this (`actual_seconds / 3600`); payment keeps its own
+    /// `actual_hours` as the money-truth (this column is the display figure, not the ledger).
+    pub actual_seconds: Option<i64>,
     /// WHY the booking ended without work: the stable code recorded by `cancel` (customer) or
     /// `decline` (assigned guard) — never localized text, so the client renders the TH/EN label
     /// from the code. `None` for every booking that was not cancelled/declined, and for rows

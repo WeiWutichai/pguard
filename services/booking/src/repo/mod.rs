@@ -30,8 +30,8 @@ use crate::models::{
 
 const BOOKING_COLUMNS: &str = "id, customer_id, guard_id, status::text AS status, address, \
      scheduled_at, hours, base_fee, guard_count, tip, lat, lng, target_guard_id, work_started_at, \
-     paid_at, cancellation_reason, cancellation_note, commission_percent, cancellation_fee, \
-     created_at, updated_at";
+     paid_at, actual_seconds, cancellation_reason, cancellation_note, commission_percent, \
+     cancellation_fee, created_at, updated_at";
 
 const PROGRESS_REPORT_COLUMNS: &str =
     "id, booking_id, guard_id, hour_number, photo_key, lat, lng, accuracy_m, note, created_at";
@@ -885,9 +885,23 @@ pub async fn transition(
 
     let guard_id = assign_guard.or(existing_guard);
 
+    // On completion, compute the worked duration (now − work_started_at). `None` work_started_at
+    // → `None` actual_seconds (payment keeps the full charge; mirrors v1's "missing timestamps →
+    // skip proration"). Computed BEFORE the UPDATE so the SAME value is (a) STAMPED onto the row
+    // in the completion UPDATE below — the guard's earnings screen then reads the reconciled
+    // figure off any booking read immediately (feature G) — and (b) carried on the
+    // `booking.completed` event (payment's own `actual_hours` stays the money-truth).
+    let completion_actual_seconds = if new_status == BookingStatus::Completed {
+        work_started_at.map(|started| (Utc::now() - started).num_seconds())
+    } else {
+        None
+    };
+
     // 1) the business change. `work_started_at` is owned by `start_job`, never touched here.
     // The cancellation columns follow `guard_id`'s COALESCE precedent: only a transition that
     // CARRIES a reason writes one, so no other transition can blank a recorded reason.
+    // `actual_seconds` follows the SAME precedent: only a completion carrying a computed duration
+    // writes it (COALESCE keeps the existing value on every other transition).
     let sql = format!(
         r#"
         UPDATE booking.bookings
@@ -895,6 +909,7 @@ pub async fn transition(
             guard_id = COALESCE($3, guard_id),
             cancellation_reason = COALESCE($4, cancellation_reason),
             cancellation_note = COALESCE($5, cancellation_note),
+            actual_seconds = COALESCE($6, actual_seconds),
             updated_at = now()
         WHERE id = $1
         RETURNING {BOOKING_COLUMNS}
@@ -906,17 +921,16 @@ pub async fn transition(
         .bind(assign_guard)
         .bind(cancellation.as_ref().map(|c| c.reason))
         .bind(cancellation.as_ref().and_then(|c| c.note.as_deref()))
+        .bind(completion_actual_seconds)
         .fetch_one(&mut *tx)
         .await?;
 
-    // On completion, compute the worked duration (now − work_started_at) so the event
-    // carries the proration inputs. `None` work_started_at → `None` actual_seconds (payment
-    // keeps the full charge; mirrors v1's "missing timestamps → skip proration").
+    // The completion event carries the proration + pricing inputs the post-pay money path
+    // consumes (payment reconciles the charge from `actual_seconds`; its `actual_hours` is truth).
     let completion = if new_status == BookingStatus::Completed {
-        let actual_seconds = work_started_at.map(|started| (Utc::now() - started).num_seconds());
         Some(CompletionInfo {
             booked_hours: hours,
-            actual_seconds,
+            actual_seconds: completion_actual_seconds,
             // Carry booking's server-owned pricing so the post-pay consumer bills self-contained.
             base_fee: updated.base_fee,
             guard_count: updated.guard_count,
@@ -1317,8 +1331,8 @@ pub async fn list_open_bookings(
                 -- text-cast + aliased by the inner select. Add new booking columns to BOTH.
                 SELECT id, customer_id, guard_id, status, address, scheduled_at, hours,
                        base_fee, guard_count, tip, lat, lng, target_guard_id, work_started_at,
-                       paid_at, cancellation_reason, cancellation_note, commission_percent,
-                       cancellation_fee, created_at, updated_at
+                       paid_at, actual_seconds, cancellation_reason, cancellation_note,
+                       commission_percent, cancellation_fee, created_at, updated_at
                 FROM (
                     SELECT {BOOKING_COLUMNS},
                            2 * 6371 * asin(least(1, sqrt(
@@ -2325,6 +2339,23 @@ mod db_tests {
         .expect("customer approve → completed");
         assert_eq!(completed.status, "completed");
 
+        // Feature G: completion STAMPS the worked duration onto the row, so the returned snapshot
+        // (and every later booking read) carries the reconciled figure the guard's earnings screen
+        // divides by 3600. It equals the event's `actual_seconds` (same source computation).
+        let stamped = completed
+            .actual_seconds
+            .expect("actual_seconds stamped on the completed booking");
+        assert!(
+            stamped >= 0,
+            "actual_seconds is non-negative, got {stamped}"
+        );
+        let reread = get_booking(&pool, created.id).await.expect("re-read");
+        assert_eq!(
+            reread.actual_seconds,
+            Some(stamped),
+            "the stamped actual_seconds is served by every booking read"
+        );
+
         let payload: Value = sqlx::query_scalar(
             "SELECT payload->'payload' FROM booking.outbox \
              WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
@@ -2339,6 +2370,8 @@ mod db_tests {
             .as_i64()
             .expect("actual_seconds is a number");
         assert!(actual >= 0, "actual_seconds is non-negative, got {actual}");
+        // The row stamp (feature G) and the event carry the SAME computed duration.
+        assert_eq!(actual, stamped, "row stamp == event actual_seconds");
 
         // cleanup
         let _ =
@@ -2608,6 +2641,182 @@ mod db_tests {
         let payload = &cancelled_events[0].payload["payload"];
         assert_eq!(payload["cancellation_reason"], "changed_plan");
         assert_eq!(payload["cancellation_note"], "เปลี่ยนวันแล้ว");
+
+        let _ =
+            sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(created.id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM booking.bookings WHERE id = $1")
+            .bind(created.id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// CANCEL-AFTER-DECLINE (E): a guard-`declined` booking is terminal, EXCEPT the customer may
+    /// ACK it into `cancelled`. Only the request owner may (a non-participant and the assigned
+    /// guard are both Forbidden); the guard's decline reason is PRESERVED on the row (the ack
+    /// carries none); exactly one `booking.cancelled` is emitted; and a SECOND ack (now the row is
+    /// `cancelled`, a status Cancelled is illegal from) is a 409 — the endpoint is not a universal
+    /// cancel bypass. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn cancel_after_decline_is_owner_only_from_declined() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let stranger = Uuid::new_v4(); // neither the customer nor the assigned guard
+        let correlation = Uuid::new_v4();
+
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &CreateBookingRequest {
+                address: "3 Withdraw Rd".to_string(),
+                scheduled_at: Utc::now(),
+                hours: 2,
+                service_id: None,
+                target_guard_id: None,
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+
+        // Guard accepts, then WITHDRAWS pre-arrival → terminal `declined` WITH a guard reason.
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            None,
+            correlation,
+        )
+        .await
+        .expect("accept");
+        let declined = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Declined,
+            None,
+            Some(Cancellation {
+                reason: "sick",
+                note: Some("เป็นไข้".to_string()),
+            }),
+            correlation,
+        )
+        .await
+        .expect("guard decline");
+        assert_eq!(declined.status, "declined");
+        assert_eq!(declined.cancellation_reason.as_deref(), Some("sick"));
+
+        // A non-participant cannot ACK it (participation gate → Forbidden, NOT a status-leaking 409).
+        let stranger_err = transition(
+            &pool,
+            created.id,
+            stranger,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("a non-participant cannot cancel-after-decline");
+        assert!(
+            matches!(stranger_err, AppError::Forbidden(_)),
+            "expected Forbidden, got {stranger_err:?}"
+        );
+
+        // The assigned GUARD cannot ACK it either — Declined → Cancelled is the request OWNER's move.
+        let guard_err = transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("the guard cannot cancel-after-decline (owner-only)");
+        assert!(
+            matches!(guard_err, AppError::Forbidden(_)),
+            "expected Forbidden, got {guard_err:?}"
+        );
+
+        // The CUSTOMER ACKs → terminal `cancelled`. The ack carries NO reason, so the guard's
+        // decline reason/note are PRESERVED on the row (they already stand as the record of why).
+        let cancelled = transition(
+            &pool,
+            created.id,
+            customer_id,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("customer ack → cancelled");
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(
+            cancelled.cancellation_reason.as_deref(),
+            Some("sick"),
+            "the guard's decline reason is preserved, not overwritten"
+        );
+        assert_eq!(cancelled.cancellation_note.as_deref(), Some("เป็นไข้"));
+
+        // Exactly one booking.cancelled emitted (payment's cancel consumer NoOps it — the earlier
+        // booking.declined already refunded; this row is not `completed`).
+        let cancelled_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_CANCELLED)
+        .bind(created.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count cancelled events");
+        assert_eq!(cancelled_events, 1, "exactly one booking.cancelled emitted");
+
+        // A SECOND ack now finds the row `cancelled` (Cancelled → Cancelled is illegal, and only
+        // Declined → Cancelled is the special edge) → 409, so the endpoint is not a cancel bypass.
+        let repeat_err = transition(
+            &pool,
+            created.id,
+            customer_id,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("cancel-after-decline on a non-declined booking is rejected");
+        assert!(
+            matches!(repeat_err, AppError::Conflict(_)),
+            "expected Conflict, got {repeat_err:?}"
+        );
 
         let _ =
             sqlx::query("DELETE FROM booking.outbox WHERE payload->'payload'->>'booking_id' = $1")

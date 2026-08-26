@@ -125,6 +125,28 @@ class BookingStatusController extends _$BookingStatusController {
   Future<String?> decline({required String reason, String? note}) =>
       _cancelLike('decline', reason: reason, note: note);
 
+  /// `PUT /v1/bookings/{id}/cancel-after-decline` (E) — after the ASSIGNED guard WITHDREW a paid job
+  /// (booking is `declined`), the customer chooses to CANCEL the job outright rather than re-search.
+  /// Transitions the DECLINED booking to terminal `cancelled` (the backend queues the full refund —
+  /// a guard withdrawal is never the customer's fault) and returns the updated booking, folded into
+  /// state immediately (mirrors [cancel]; the WS `cancelled` frame that follows is idempotent). Takes
+  /// no body — the reason is fixed (the guard withdrew). Returns `null` on success, else a
+  /// human-readable error message for a SnackBar.
+  Future<String?> cancelAfterDecline() async {
+    try {
+      final data = await ref
+          .read(pguardApiProvider)
+          .put('/bookings/$bookingId/cancel-after-decline');
+      state = AsyncData(Booking.fromJson(data as Map<String, dynamic>));
+      return null;
+    } on ApiException catch (e) {
+      return _localizeBookingConflict(e);
+    } catch (_) {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      return isThai ? 'เกิดข้อผิดพลาด' : 'Something went wrong';
+    }
+  }
+
   /// Shared transport for the two negative-terminal transitions — identical body shape and error
   /// handling, only the path segment differs. `note` is omitted entirely when null (the server
   /// stores `None`), mirroring how the events omit it.

@@ -90,6 +90,7 @@ Class | Method | HTTP request | Description
 [*AdminApi*](doc/AdminApi.md) | [**adminUpdateService**](doc/AdminApi.md#adminupdateservice) | **PUT** /admin/pricing/services/{id} | Update a catalog service (role&#x3D;admin)
 [*BookingsApi*](doc/BookingsApi.md) | [**acceptBooking**](doc/BookingsApi.md#acceptbooking) | **POST** /bookings/{id}/accept | Guard accepts a request
 [*BookingsApi*](doc/BookingsApi.md) | [**arrivedBooking**](doc/BookingsApi.md#arrivedbooking) | **PUT** /bookings/{id}/arrived | Assigned guard has arrived (120m geofence)
+[*BookingsApi*](doc/BookingsApi.md) | [**cancelAfterDecline**](doc/BookingsApi.md#cancelafterdecline) | **PUT** /bookings/{id}/cancel-after-decline | Customer acknowledges a guard withdrawal (declined → cancelled)
 [*BookingsApi*](doc/BookingsApi.md) | [**cancelBooking**](doc/BookingsApi.md#cancelbooking) | **PUT** /bookings/{id}/cancel | Customer/admin cancels a pre-arrival booking
 [*BookingsApi*](doc/BookingsApi.md) | [**completeBooking**](doc/BookingsApi.md#completebooking) | **PUT** /bookings/{id}/complete | Assigned guard requests completion
 [*BookingsApi*](doc/BookingsApi.md) | [**createBooking**](doc/BookingsApi.md#createbooking) | **POST** /bookings | Create a booking request (customer only)

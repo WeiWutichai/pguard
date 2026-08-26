@@ -164,9 +164,10 @@ void main() {
 
     expect(find.byType(GuardMapScreen), findsOneWidget,
         reason: 'tapping the expand affordance pushes /booking/b1/map');
-    // The pushed full map renders the guard shield marker (the inline preview underneath also
-    // shows one, so at least one is on screen).
-    expect(find.byIcon(Icons.shield), findsWidgets,
+    // The pushed full map renders the guard's (current-position) marker (the inline preview
+    // underneath also shows one, so at least one is on screen). A2: the marker is a dot now, not a
+    // shield — assert on the marker widget itself.
+    expect(find.byType(GuardMapGuardMarker), findsWidgets,
         reason: 'the full map rendered the guard marker');
 
     await tester.pumpWidget(const SizedBox());
@@ -725,13 +726,13 @@ void main() {
   });
 
   testWidgets(
-      'C1: a declined frame (guard withdrew) redirects the customer into guard '
-      'discovery to re-search', (tester) async {
+      'E: a declined frame (guard withdrew) prompts a choice; "find a new guard" '
+      're-searches', (tester) async {
     final feed = FakeBookingFeed();
     final api = FakeApi(onGet: (path, _) async {
       if (path == '/bookings/b1') {
         // A guard had accepted (guard_id null keeps the inline live-map out of this test — the
-        // redirect depends only on the status transition).
+        // prompt depends only on the status transition).
         return {
           'id': 'b1',
           'customer_id': 'c1',
@@ -758,23 +759,97 @@ void main() {
     expect(find.byType(LiveStatusScreen), findsOneWidget);
     expect(find.byType(GuardDiscoveryScreen), findsNothing);
 
-    // The guard withdraws after accepting → the booking goes `declined` over the WS.
+    // The guard withdraws after accepting → the booking goes `declined` over the WS → a CHOICE dialog
+    // appears (no silent redirect).
     feed.emit(BookingStatusEvent(
         bookingId: 'b1',
         status: BookingStatus.declined,
         occurredAt: DateTime.utc(2026)));
-    // Fold the event → the provider notifies → the listener fires + schedules the post-frame
-    // redirect → go(/home) + push(/book/guards) → discovery builds + loads guards. Pump generously
-    // (well past the ~300ms route transition) so the outgoing live route fully leaves the tree.
-    // Avoid pumpAndSettle: the discovery "searching" dots animate forever until guards resolve.
+    await tester
+        .pump(); // fold the event → the listener fires + schedules the post-frame prompt
+    await tester.pump(); // post-frame → showDialog
+    await tester.pump(const Duration(milliseconds: 300)); // dialog transition
+    expect(find.text('รปภ. ยกเลิกงาน'), findsOneWidget,
+        reason: 'the guard-withdrew choice dialog, not a silent redirect');
+    expect(find.byType(GuardDiscoveryScreen), findsNothing);
+
+    // Choose "find a new guard" → re-search: go(/home) + push(/book/guards) → discovery builds +
+    // loads guards. Pump generously (past the ~300ms route transition); avoid pumpAndSettle (the
+    // discovery "searching" dots animate forever until guards resolve).
+    await tester.tap(find.text('ค้นหา Guard ใหม่'));
     for (var i = 0; i < 16; i++) {
       await tester.pump(const Duration(milliseconds: 50));
     }
 
     expect(find.byType(GuardDiscoveryScreen), findsOneWidget,
-        reason: 'a guard withdrawal routes the customer to find a new guard');
+        reason: 'a guard withdrawal + "find a new guard" routes to re-search');
     expect(find.byType(LiveStatusScreen), findsNothing,
         reason: 'the dead live screen is left behind');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+      'E: a declined frame → "cancel job" calls cancel-after-decline and stays '
+      'on the terminal cancelled screen (no re-search)', (tester) async {
+    final feed = FakeBookingFeed();
+    var putPath = '';
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings/b1') {
+          return {
+            'id': 'b1',
+            'customer_id': 'c1',
+            'status': 'accepted',
+            'guard_id': null,
+          };
+        }
+        return <Map<String, dynamic>>[];
+      },
+      onPut: (path, _) async {
+        putPath = path;
+        // The server transitions declined → cancelled and returns the updated booking.
+        return {
+          'id': 'b1',
+          'customer_id': 'c1',
+          'status': 'cancelled',
+          'guard_id': null,
+        };
+      },
+    );
+
+    await tester.pumpWidget(ProviderScope(
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        routingServiceProvider.overrideWithValue(FakeRoutingService()),
+        appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+        prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+      ],
+      child: MaterialApp.router(routerConfig: _c1Router()),
+    ));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.declined,
+        occurredAt: DateTime.utc(2026)));
+    await tester.pump();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('รปภ. ยกเลิกงาน'), findsOneWidget);
+
+    // Choose "cancel job" → PUT /bookings/b1/cancel-after-decline; the booking becomes cancelled and
+    // the customer STAYS on the (now terminal) live screen — no re-search, no re-prompt.
+    await tester.tap(find.text('ยกเลิกงาน'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(putPath, '/bookings/b1/cancel-after-decline');
+    expect(find.byType(GuardDiscoveryScreen), findsNothing,
+        reason: 'cancelling after a decline is terminal — no re-search');
+    expect(find.byType(LiveStatusScreen), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox());
   });

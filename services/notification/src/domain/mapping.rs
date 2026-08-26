@@ -122,6 +122,31 @@ fn reason_suffix(payload: &Value) -> String {
 // radius-less open-jobs query. Geo-filtering by the booking's lat/lng (carried on the event) is a
 // documented follow-up; the consumer would rank/filter the online set before calling this.
 pub fn dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> NotificationPlan {
+    new_job_plan(
+        guard_id,
+        booking_id,
+        "งานใหม่ใกล้คุณ",
+        "มีงานใหม่ใกล้คุณ แตะเพื่อดูรายละเอียด",
+    )
+}
+
+/// DIRECTED-OFFER variant of [`dispatch_plan_for_guard`] (C3): the booking was hired to ONE guard,
+/// so the consumer pushes ONLY this guard (bypassing online gating). Cosmetic copy differs ("a new
+/// job was hired to YOU") but the push `data` shape is IDENTICAL — `type: "new_job"` + `booking_id`
+/// — so the mobile deep-links to the open job exactly the same way as a broadcast alert.
+pub fn directed_dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> NotificationPlan {
+    new_job_plan(
+        guard_id,
+        booking_id,
+        "มีงานจ้างใหม่สำหรับคุณ",
+        "มีลูกค้าจ้างคุณโดยตรง แตะเพื่อดูรายละเอียด",
+    )
+}
+
+/// Shared builder for the `booking.requested` per-guard "new job" alert (broadcast + directed):
+/// same `data` shape (`type: "new_job"`, `target_role: "guard"`, `event_type`, `booking_id`) so the
+/// mobile routes both identically; only the title/body copy varies between the two callers above.
+fn new_job_plan(guard_id: Uuid, booking_id: Uuid, title: &str, body: &str) -> NotificationPlan {
     let mut data = serde_json::Map::new();
     data.insert("type".to_string(), Value::String("new_job".to_string()));
     data.insert(
@@ -139,8 +164,8 @@ pub fn dispatch_plan_for_guard(guard_id: Uuid, booking_id: Uuid) -> Notification
     NotificationPlan {
         recipient_id: guard_id,
         notification_type: NotificationType::BookingCreated,
-        title: "งานใหม่ใกล้คุณ".to_string(),
-        body: "มีงานใหม่ใกล้คุณ แตะเพื่อดูรายละเอียด".to_string(),
+        title: title.to_string(),
+        body: body.to_string(),
         data: Value::Object(data),
     }
 }
@@ -728,6 +753,26 @@ mod tests {
         assert_eq!(plan.data["event_type"], topics::BOOKING_REQUESTED);
         assert_eq!(plan.title, "งานใหม่ใกล้คุณ");
         assert_eq!(plan.body, "มีงานใหม่ใกล้คุณ แตะเพื่อดูรายละเอียด");
+    }
+
+    #[test]
+    fn directed_dispatch_uses_directed_copy_but_same_data_shape() {
+        // The directed-offer alert differs in COPY (title/body) but MUST carry the identical push
+        // `data` (type: new_job + booking_id + target_role guard) so the mobile deep-links the same.
+        let guard = Uuid::new_v4();
+        let booking = Uuid::new_v4();
+        let broadcast = dispatch_plan_for_guard(guard, booking);
+        let directed = directed_dispatch_plan_for_guard(guard, booking);
+        assert_eq!(directed.recipient_id, guard);
+        assert_eq!(directed.title, "มีงานจ้างใหม่สำหรับคุณ");
+        assert_ne!(directed.title, broadcast.title, "directed copy differs");
+        assert_ne!(directed.body, broadcast.body, "directed copy differs");
+        // Data shape identical → mobile routing is unchanged.
+        assert_eq!(directed.data, broadcast.data);
+        assert_eq!(directed.data["type"], "new_job");
+        assert_eq!(directed.data["booking_id"], json!(booking.to_string()));
+        assert_eq!(directed.data["target_role"], "guard");
+        assert_eq!(directed.notification_type, NotificationType::BookingCreated);
     }
 
     #[test]

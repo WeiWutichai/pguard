@@ -567,6 +567,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/bookings/{id}/cancel-after-decline": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Customer acknowledges a guard withdrawal (declined → cancelled)
+         * @description The customer ACKs a booking the assigned guard withdrew from (status `declined`),
+         *     moving it to terminal `cancelled` so "both parties done" is a real end state — otherwise
+         *     the customer's live screen sits on a `declined` job with no forward action. Allowed ONLY
+         *     from `declined` and ONLY for the booking's owner (or admin); any other status is 409, a
+         *     non-owner is 403.
+         *
+         *     This is a pure ACK — NO request body and NO reason. It deliberately does NOT overwrite the
+         *     guard's decline reason/note (they already stand as the record of why the job did not
+         *     happen). Enqueues `pguard.events.booking.cancelled`; because the earlier
+         *     `booking.declined` already issued any refund, payment's cancellation consumer treats this
+         *     second event as a NoOp (it only refunds a `completed` row) — no double refund.
+         */
+        put: operations["cancelAfterDecline"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/bookings/{id}/progress-reports": {
         parameters: {
             query?: never;
@@ -946,6 +976,12 @@ export interface components {
              * @description When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
              */
             paid_at?: string | null;
+            /**
+             * Format: int64
+             * @description Server-computed WORKED duration in seconds (`now() − work_started_at`), stamped onto the row in the same UPDATE that flips the status to `completed`. null until completed — and also on a completion with no `work_started_at` (missing start), so null means "not reconciled", never 0. The guard's earnings screen reads worked hours from this (`actual_seconds / 3600`); payment's own `actual_hours` remains the money-truth (this is the display figure, not the ledger).
+             * @example 7180
+             */
+            actual_seconds?: number | null;
             /** @description Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to "ไม่ระบุ"/"Not specified" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009). */
             cancellation_reason?: string | null;
             /** @description The optional free-text detail that came with `cancellation_reason` (trimmed, ≤ 500 characters). null when none was given; always present when the reason is `other`. */
@@ -1908,6 +1944,32 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    cancelAfterDecline: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["BookingId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["BookingOk"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            /** @description The booking is not in `declined` (e.g. already `cancelled`, or still active) — cancel-after-decline is legal only from the guard-withdrawn terminal state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     listProgressReports: {

@@ -255,7 +255,10 @@ impl FcmPusher {
                 "data": serde_json::Value::Object(data_map),
                 "android": {
                     "priority": "high",
-                    "notification": { "sound": "default", "channel_id": "default" }
+                    // channel_id MUST match the mobile-created channel (notification_channel.dart +
+                    // AndroidManifest default_notification_channel_id) — else Android 8+ drops the
+                    // push. `sound: "default"` = the channel's system default sound (N3).
+                    "notification": { "sound": "default", "channel_id": "pguard_alerts_v2" }
                 },
                 "apns": {
                     "headers": { "apns-priority": "10" },

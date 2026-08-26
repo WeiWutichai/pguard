@@ -405,6 +405,41 @@ pub async fn cancel_booking<S: BookingDeps>(
     .await
 }
 
+/// PUT /bookings/{id}/cancel-after-decline — the CUSTOMER acknowledges a guard withdrawal (E).
+///
+/// When the assigned guard withdraws pre-arrival the booking goes to terminal `declined` (with
+/// the guard's decline reason already recorded on the row and already delivered on the
+/// `booking.declined` event). The customer must be able to ACK that into terminal `cancelled` so
+/// "both parties done" is a real end state — otherwise their live screen sits on a `declined` job
+/// with no forward action (a redirect loop). The state machine special-cases this ONE edge out of
+/// an otherwise-terminal status (`required_actor(Declined, Cancelled) = RequestOwner`).
+///
+/// This is a pure ACK, NOT a customer cancellation: it carries NO reason from the client and
+/// passes `None` cancellation, so the transition's `COALESCE` deliberately PRESERVES the guard's
+/// decline reason/note (they "already stand" as the authoritative record of why the job did not
+/// happen — overwriting them would leave a mismatched reason/note pair). It only flips the status
+/// and emits `booking.cancelled`. That event reaches payment's cancellation consumer, which only
+/// refunds a `completed` row — the earlier `booking.declined` already issued any refund, so this
+/// second event is a NoOp (no double refund).
+#[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
+pub async fn cancel_after_decline<S: BookingDeps>(
+    State(state): State<S>,
+    user: AuthUser,
+    Path(id): Path<Uuid>,
+) -> Result<Json<ApiResponse<BookingResponse>>, AppError> {
+    let is_admin = require_role(&user, ROLE_CUSTOMER)?;
+    do_transition(
+        &state,
+        id,
+        user.user_id,
+        is_admin,
+        BookingStatus::Cancelled,
+        None,
+        None,
+    )
+    .await
+}
+
 /// GET /bookings/{id} — fetch one booking the caller participates in.
 #[tracing::instrument(skip(state), fields(user = %user.user_id, booking_id = %id))]
 pub async fn get_booking<S: BookingDeps>(
@@ -1298,6 +1333,10 @@ mod tests {
                 put(review_completion::<TestDeps>),
             )
             .route("/bookings/{id}/cancel", put(cancel_booking::<TestDeps>))
+            .route(
+                "/bookings/{id}/cancel-after-decline",
+                put(cancel_after_decline::<TestDeps>),
+            )
             .route("/bookings/{id}/skip", post(skip_booking::<TestDeps>))
             .route("/bookings/open", get(list_open_bookings::<TestDeps>))
             .route("/bookings/{id}", get(get_booking::<TestDeps>))
@@ -1517,6 +1556,20 @@ mod tests {
         // ROLE gate, not the reason validation, which runs after it)
         let status =
             lifecycle_req(app, "PUT", "cancel", "guard", reason_body("changed_plan")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn cancel_after_decline_rejects_non_customer() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // The customer ACK (E) is a no-body, customer-auth endpoint: a GUARD is rejected at the
+        // ROLE gate BEFORE any DB access (the lazy pool at a closed port is never reached). Also
+        // exercises the new route (`/bookings/{id}/cancel-after-decline`) in the prod-shaped table.
+        let status =
+            lifecycle_req(app, "PUT", "cancel-after-decline", "guard", Body::empty()).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
@@ -3736,6 +3789,7 @@ mod tests {
             target_guard_id: None,
             work_started_at: None,
             paid_at: None,
+            actual_seconds: None,
             cancellation_reason: None,
             cancellation_note: None,
             commission_percent: Some("12.50".parse().unwrap()),

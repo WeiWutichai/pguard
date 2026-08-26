@@ -255,8 +255,12 @@ class _RecenterFab extends StatelessWidget {
   }
 }
 
-/// The guard's pin: brand shield in a circle; the small arrow rotates to the reported heading.
-/// Public so the inline customer live-map preview reuses the exact same pin as the full screen.
+/// The guard's live position: a "you are here" current-position dot — a solid dot inside a soft
+/// ring; the small arrow rotates to the reported heading. A2: this used to be a brand shield in a
+/// circle, which read like a fixed place pin; its visual role is now swapped with the destination
+/// (matching the guard-nav convention [GuardNavGuardMarker]) so the guard's live position reads as a
+/// MOVING fix, not a pin. Public so the inline customer live-map preview reuses the exact same
+/// marker as the full screen.
 class GuardMapGuardMarker extends StatelessWidget {
   const GuardMapGuardMarker({super.key, this.heading});
 
@@ -271,32 +275,40 @@ class GuardMapGuardMarker extends StatelessWidget {
           width: 40,
           height: 40,
           decoration: BoxDecoration(
-            color: PgTokens.colorGreen800,
+            color: PgTokens.colorPrimary.withValues(alpha: 0.18),
             shape: BoxShape.circle,
-            border: Border.all(color: Colors.white, width: 2.5),
-            boxShadow: const [
-              BoxShadow(
-                  color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
-            ],
           ),
-          child: const Icon(Icons.shield, color: Colors.white, size: 19),
+          child: Center(
+            child: Container(
+              width: 16,
+              height: 16,
+              decoration: BoxDecoration(
+                color: PgTokens.colorPrimary,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white, width: 2.5),
+              ),
+            ),
+          ),
         ),
         if (heading != null)
           Transform.rotate(
             // Heading 0° = north (up); Icons.navigation points up, so rotate by the bearing.
             angle: heading! * 3.1415926535 / 180,
             child: const Icon(Icons.navigation,
-                size: 14, color: PgTokens.colorGreen800),
+                size: 14, color: PgTokens.colorPrimary),
           ),
       ],
     );
   }
 }
 
-/// The destination marker — a labelled dot. Labelled "ปลายทาง / Destination" when it is the
-/// booking's pinned drop-off (`GuardTrack.destination`), or "คุณ / You" when it falls back to the
-/// customer's device fix (a legacy/address-only booking with no pinned coordinate).
-/// Public so the inline customer live-map preview reuses the exact same marker as the full screen.
+/// The meetup/destination marker — a labelled place PIN. Labelled "ปลายทาง / Destination" when it is
+/// the booking's pinned drop-off (`GuardTrack.destination`), or "คุณ / You" when it falls back to the
+/// customer's device fix (a legacy/address-only booking with no pinned coordinate). A2: this used to
+/// be a plain dot, which read like a current-position indicator; its visual role is now swapped with
+/// the guard marker (matching the guard-nav convention [GuardNavDestMarker]) so the meetup spot reads
+/// as "the place to reach". Public so the inline customer live-map preview reuses the exact same
+/// marker as the full screen.
 class GuardMapReferenceMarker extends StatelessWidget {
   const GuardMapReferenceMarker(
       {super.key, required this.isThai, required this.isDestination});
@@ -310,14 +322,16 @@ class GuardMapReferenceMarker extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 16,
-          height: 16,
           decoration: BoxDecoration(
-            color: PgTokens.colorPrimary,
+            color: PgTokens.colorGreen800,
             shape: BoxShape.circle,
             border: Border.all(color: Colors.white, width: 2.5),
-            boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 4)],
+            boxShadow: const [
+              BoxShadow(
+                  color: Colors.black26, blurRadius: 6, offset: Offset(0, 2)),
+            ],
           ),
+          child: const Icon(Icons.place, color: Colors.white, size: 18),
         ),
         const SizedBox(height: 2),
         Container(

@@ -62,6 +62,10 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
       // `notification` block so the in-app handler never ran and the bell badge is stale on reopen.
       // Invalidate on resume (event-driven, NOT polling) so the badge catches up without a tap.
       ref.invalidate(unreadCountProvider);
+      // Belt-and-suspenders for the live rating card: a `rating.submitted` push delivered while
+      // backgrounded/terminated never ran the in-app handler, so re-pull the guard's ratings on
+      // resume too. Family-wide invalidate (re-pulls the mounted own-id instance). NOT polling.
+      ref.invalidate(guardRatingsProvider);
     }
   }
 

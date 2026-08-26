@@ -169,20 +169,26 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     Ok(())
 }
 
-/// FAN-OUT path for `booking.requested`: consult presence for the set of ONLINE guards, then
-/// dispatch the "new job nearby" alert to each — a `notification_logs` row + an FCM data push
-/// `{ type: "new_job", booking_id }`. IDEMPOTENT per-(booking, guard): each guard is claimed once
-/// in `dispatch_recipients`, so a JetStream redelivery of the same event re-claims nothing and
-/// double-pushes no one.
+/// Dispatch path for `booking.requested`. TWO routings, decided by `target_guard_id` on the event
+/// (always present per the producer — `Some` = DIRECTED OFFER to one guard, `null`/absent = OPEN
+/// first-come):
+///   * DIRECTED (C3): push the "new job hired to you" alert to ONLY that guard, BYPASSING presence /
+///     online gating entirely — a directed-but-offline guard must still be alerted, and no OTHER
+///     online guard may receive a directed offer (a broadcast would defeat the directed hire).
+///   * OPEN: consult presence for the set of ONLINE guards and fan the "new job nearby" alert to
+///     each. Both routings write a `notification_logs` row + an FCM data push `{ type: "new_job",
+///     booking_id }` and are IDEMPOTENT per-(booking, guard) via the `dispatch_recipients` claim, so
+///     a JetStream redelivery re-claims nothing and double-pushes no one.
 ///
-/// Resilience: if presence is UNREACHABLE we log + skip the fan-out and return `Ok(())` so the
-/// message is ACKED — never crash the consumer / nack-storm on a presence hiccup. NOTE: this means
-/// the proactive PUSH for that booking is DROPPED, not retried — the per-(event,guard) ledger only
-/// fills in guards across redeliveries when the message NACKs, which this fail-soft path does not.
-/// That is acceptable: the booking stays discoverable via the pull-based `GET /bookings/open` (the
-/// guard app also refetches on resume / go-online), so the guard still finds the job — only the
-/// push alert is missed. Per-guard push failures are likewise best-effort (logged, not fatal): the
-/// in-app log row is already committed, and one bad device token must not abort the whole fan-out.
+/// Resilience (OPEN only): if presence is UNREACHABLE we log + skip the fan-out and return `Ok(())`
+/// so the message is ACKED — never crash the consumer / nack-storm on a presence hiccup. NOTE: this
+/// means the proactive PUSH for that booking is DROPPED, not retried — the per-(event,guard) ledger
+/// only fills in guards across redeliveries when the message NACKs, which this fail-soft path does
+/// not. That is acceptable: the booking stays discoverable via the pull-based `GET /bookings/open`
+/// (the guard app also refetches on resume / go-online), so the guard still finds the job — only the
+/// push alert is missed. The DIRECTED path does not consult presence, so it has no such failure mode.
+/// Per-guard push failures are best-effort in both routings (logged, not fatal): the in-app log row
+/// is already committed, and one bad device token must not abort the whole dispatch.
 async fn fan_out_dispatch(
     state: &AppState,
     envelope: &EventEnvelope<Value>,
@@ -194,39 +200,51 @@ async fn fan_out_dispatch(
         return Ok(());
     };
 
-    // Consult presence (service-JWT'd). FAIL-SOFT: on error, log + skip the fan-out (ack), never
-    // nack-storm. Geo radius is intentionally NOT applied — broadcasting to ALL online guards
-    // matches the radius-less open-jobs query (geo-filtering by the event's lat/lng is a follow-up).
-    let online = match state.presence_client.online_guard_ids().await {
-        Ok(ids) => ids,
-        Err(e) => {
-            tracing::warn!(booking = %booking_id, "presence unreachable; skipping new-job fan-out: {e}");
+    // Resolve the recipient set + copy variant. DIRECTED short-circuits presence entirely; OPEN
+    // consults presence (fail-soft) and caps the broadcast.
+    let (targets, directed) = if let Some(target_guard) =
+        uuid_field(&envelope.payload, "target_guard_id")
+    {
+        // DIRECTED OFFER: exactly one guard, regardless of online status.
+        (vec![target_guard], true)
+    } else {
+        // OPEN first-come: consult presence (service-JWT'd). FAIL-SOFT: on error, log + skip the
+        // fan-out (ack), never nack-storm. Geo radius is intentionally NOT applied — broadcasting to
+        // ALL online guards matches the radius-less open-jobs query (geo-filtering by the event's
+        // lat/lng is a follow-up).
+        let online = match state.presence_client.online_guard_ids().await {
+            Ok(ids) => ids,
+            Err(e) => {
+                tracing::warn!(booking = %booking_id, "presence unreachable; skipping new-job fan-out: {e}");
+                return Ok(());
+            }
+        };
+
+        if online.is_empty() {
+            tracing::info!(booking = %booking_id, "no online guards; new-job dispatch is a no-op");
             return Ok(());
         }
-    };
 
-    if online.is_empty() {
-        tracing::info!(booking = %booking_id, "no online guards; new-job dispatch is a no-op");
-        return Ok(());
-    }
-
-    // Bound the broadcast: with no geo radius this fans out to EVERY online guard, so cap the batch
-    // (geo-filtering by the event's lat/lng is the real fix — a follow-up). Beyond the cap, log +
-    // truncate rather than run an unbounded per-guard DB+FCM loop.
-    const MAX_FANOUT_GUARDS: usize = 1000;
-    let online: Vec<Uuid> = if online.len() > MAX_FANOUT_GUARDS {
-        tracing::warn!(
-            booking = %booking_id, total = online.len(), cap = MAX_FANOUT_GUARDS,
-            "online-guard fan-out exceeds cap; truncating (add geo-filtering)"
-        );
-        online.into_iter().take(MAX_FANOUT_GUARDS).collect()
-    } else {
-        online
+        // Bound the broadcast: with no geo radius this fans out to EVERY online guard, so cap the
+        // batch (geo-filtering by the event's lat/lng is the real fix — a follow-up). Beyond the
+        // cap, log + truncate rather than run an unbounded per-guard DB+FCM loop.
+        const MAX_FANOUT_GUARDS: usize = 1000;
+        let online: Vec<Uuid> = if online.len() > MAX_FANOUT_GUARDS {
+            tracing::warn!(
+                booking = %booking_id, total = online.len(), cap = MAX_FANOUT_GUARDS,
+                "online-guard fan-out exceeds cap; truncating (add geo-filtering)"
+            );
+            online.into_iter().take(MAX_FANOUT_GUARDS).collect()
+        } else {
+            online
+        };
+        (online, false)
     };
 
     let (pushed, claim_failed) = dispatch_to_guards(
-        online,
+        targets,
         booking_id,
+        directed,
         // Per-guard atomic claim + log (DB). `false` → already dispatched to this guard for this
         // event (idempotent). Returns `Err` only on a real DB fault.
         |guard_id, plan: domain::NotificationPlan| async move {
@@ -256,12 +274,12 @@ async fn fan_out_dispatch(
         },
     )
     .await;
-    tracing::info!(booking = %booking_id, dispatched = pushed, "new-job dispatch fan-out complete");
+    tracing::info!(booking = %booking_id, dispatched = pushed, directed, "new-job dispatch complete");
     if claim_failed {
         // NACK so JetStream redelivers and the unclaimed guards get filled in; the per-(event,guard)
         // ledger dedupes the guards already dispatched, so redelivery only covers the gaps.
         return Err(AppError::Internal(
-            "new-job fan-out: a guard claim failed — redeliver".to_string(),
+            "new-job dispatch: a guard claim failed — redeliver".to_string(),
         ));
     }
     Ok(())
@@ -341,14 +359,17 @@ async fn payment_completed_dispatch(
     Ok(())
 }
 
-/// Pure-ish fan-out core: for each online guard, build the dispatch plan, CLAIM it (per-(event,
+/// Pure-ish dispatch core: for each target guard, build the dispatch plan, CLAIM it (per-(event,
 /// guard) idempotency), and on a won claim PUSH it. Returns the number of guards newly dispatched.
-/// Decoupled from `AppState` via the two closures so the consumer's fan-out decision (dedupe +
-/// best-effort push, one bad guard never aborts the batch) is unit-testable with in-memory doubles
-/// — the same philosophy as the `SeenSet`-backed `consume` test double for the single-recipient path.
+/// `directed` selects the copy variant — the DIRECTED-offer "hired to you" plan vs the OPEN
+/// "new job nearby" broadcast plan; the push `data` shape is identical either way. Decoupled from
+/// `AppState` via the two closures so the consumer's dispatch decision (dedupe + best-effort push,
+/// one bad guard never aborts the batch) is unit-testable with in-memory doubles — the same
+/// philosophy as the `SeenSet`-backed `consume` test double for the single-recipient path.
 async fn dispatch_to_guards<C, CF, P, PF>(
     online: Vec<Uuid>,
     booking_id: Uuid,
+    directed: bool,
     claim: C,
     push: P,
 ) -> (usize, bool)
@@ -361,7 +382,11 @@ where
     let mut pushed = 0usize;
     let mut claim_failed = false;
     for guard_id in online {
-        let plan = domain::dispatch_plan_for_guard(guard_id, booking_id);
+        let plan = if directed {
+            domain::directed_dispatch_plan_for_guard(guard_id, booking_id)
+        } else {
+            domain::dispatch_plan_for_guard(guard_id, booking_id)
+        };
         let won = match claim(guard_id, plan.clone()).await {
             Ok(won) => won,
             Err(e) => {
@@ -501,6 +526,7 @@ mod tests {
         dispatch_to_guards(
             online,
             booking_id,
+            false, // OPEN broadcast copy
             |guard_id, _plan| async move {
                 // Won the claim iff this (event, guard) was not already recorded.
                 Ok(fanout.claimed.lock().unwrap().insert((event_id, guard_id)))
@@ -582,5 +608,51 @@ mod tests {
             2,
             "each guard pushed exactly once across redelivery"
         );
+    }
+
+    #[tokio::test]
+    async fn directed_offer_pushes_only_the_target_guard_with_directed_copy() {
+        // DIRECTED path (C3): the dispatch engine is handed exactly ONE guard (the caller resolved
+        // `target_guard_id` and bypassed presence), `directed = true`. It must push that guard once
+        // with the DIRECTED copy — never any other guard, and never gated on online status.
+        let target = Uuid::new_v4();
+        let booking = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+        // Capture (guard, title, data) so we can assert the routing AND the directed copy. Bind
+        // references so the per-guard `async move` closures capture a `&Mutex` (Copy), keeping them
+        // `Fn` — the same borrowing shape as the `deliver` helper's `&Fanout`.
+        let pushed: Mutex<Vec<(Uuid, String, Value)>> = Mutex::new(Vec::new());
+        let claimed: Mutex<HashSet<(Uuid, Uuid)>> = Mutex::new(HashSet::new());
+        let pushed_ref = &pushed;
+        let claimed_ref = &claimed;
+
+        let (count, claim_failed) = dispatch_to_guards(
+            vec![target],
+            booking,
+            true, // DIRECTED
+            |guard_id, _plan| async move {
+                Ok(claimed_ref.lock().unwrap().insert((event_id, guard_id)))
+            },
+            |guard_id, plan| async move {
+                pushed_ref
+                    .lock()
+                    .unwrap()
+                    .push((guard_id, plan.title, plan.data));
+                Ok(())
+            },
+        )
+        .await;
+
+        assert_eq!(count, 1, "exactly the one directed guard is dispatched");
+        assert!(!claim_failed);
+        let pushes = pushed.lock().unwrap();
+        assert_eq!(pushes.len(), 1, "only the target guard is pushed");
+        let (g, title, data) = &pushes[0];
+        assert_eq!(*g, target, "the DIRECTED guard is the recipient");
+        assert_eq!(title, "มีงานจ้างใหม่สำหรับคุณ", "directed copy is used");
+        // Same push `data` shape as a broadcast so the mobile deep-links identically.
+        assert_eq!(data["type"], "new_job");
+        assert_eq!(data["booking_id"], json!(booking.to_string()));
+        assert_eq!(data["target_role"], "guard");
     }
 }

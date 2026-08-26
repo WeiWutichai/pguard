@@ -239,6 +239,12 @@ async fn main() -> anyhow::Result<()> {
             "/bookings/{id}/cancel",
             put(api::cancel_booking::<AppState>),
         )
+        // Customer ACK of a guard withdrawal: a terminal `declined` booking → terminal `cancelled`
+        // (E). The gateway's `/bookings` prefix already routes it (edge-reachable under /v1).
+        .route(
+            "/bookings/{id}/cancel-after-decline",
+            put(api::cancel_after_decline::<AppState>),
+        )
         // Service-to-service read (service-JWT'd) — the payment service verifies a charge
         // against the authoritative booking here. Not exposed through the public gateway.
         .route(

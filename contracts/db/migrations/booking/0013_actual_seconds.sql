@@ -1,0 +1,24 @@
+-- pguard booking-service — persist the reconciled worked duration on the booking row (feature G).
+--
+-- At completion (`arrived`/`pending_completion` → `completed`) the service already computes
+-- `actual_seconds = now() − work_started_at` and carries it on the `booking.completed` event so
+-- payment can reconcile the charge (its `actual_hours` stays the money-truth). Until now that
+-- figure lived ONLY on the event; the guard's earnings screen therefore could not read the
+-- reconciled worked time straight off the booking. This column stamps the same value onto the
+-- row in the SAME completion UPDATE, so every booking read (GET /bookings, GET /bookings/{id},
+-- the guard feed) serves it back immediately (`actual_seconds / 3600` = worked hours).
+--
+-- Nullable, no default:
+--   * every ACTIVE / pre-completion booking has no reconciled duration yet → NULL;
+--   * a completion with no `work_started_at` clock (missing start) also stamps NULL (mirrors the
+--     event's `actual_seconds = null` → payment keeps the full charge);
+--   * every row completed BEFORE this migration has no stamp either.
+-- NULL therefore means "not reconciled", never "0 seconds worked".
+--
+-- BIGINT: worked seconds comfortably fit in i32, but the service computes with chrono's
+-- `num_seconds()` (i64) and the DTO carries `Option<i64>`, so the column matches to avoid a cast.
+--
+-- Statement is idempotent (IF NOT EXISTS) — migrate.sh applies files via psql WITHOUT
+-- --single-transaction (statement auto-commit), see tooling/scripts/migrate.sh.
+
+ALTER TABLE booking.bookings ADD COLUMN IF NOT EXISTS actual_seconds BIGINT;  -- reconciled worked seconds, stamped at completion (NULL = not reconciled)

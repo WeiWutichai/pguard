@@ -120,8 +120,12 @@ export interface paths {
         /**
          * Live guards + positions (service-to-service)
          * @description Internal read for booking's discovery (`/available-guards`) — the guards who are
-         *     currently LIVE (`is_online` AND a fresh GPS fix within the 5-minute freshness window,
-         *     "พร้อมรับงาน"), each with their LATEST fix position. Guarded by a **service-JWT**
+         *     currently OFFERABLE ("พร้อมรับงาน"), each with their LATEST fix position. Membership is
+         *     `is_online` ALONE — deliberately NOT gated on GPS freshness: the mobile uplink is
+         *     movement-gated, so a stationary online guard's last fix ages past the freshness window
+         *     while its socket stays up, and a freshness gate here would drop a connected, offerable
+         *     guard from discovery (bug B). GPS freshness survives only as the green-dot `is_live`
+         *     DISPLAY on the read DTOs, which does not gate this set. Guarded by a **service-JWT**
          *     (`serviceAuth`, aud `pguard-internal`), never reachable from the public edge (the gateway
          *     blocks `/internal/`). booking uses membership for the online filter AND the coordinates to
          *     sort the customer's list nearest-to-meetup (C2). Narrow projection — id + position only,
@@ -216,7 +220,7 @@ export interface components {
             per_point_speed_heading_available: boolean;
         };
         OnlineGuards: {
-            /** @description Guards currently LIVE (is_online AND a fresh fix), each with their latest fix position. */
+            /** @description Guards currently OFFERABLE for discovery (is_online alone, NOT freshness-gated), each with their latest fix position. */
             guards: components["schemas"]["OnlineGuard"][];
         };
         /** @description One live guard — the id plus the latest fix coordinates (for the nearest-first sort). */

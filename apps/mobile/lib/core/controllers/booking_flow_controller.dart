@@ -354,13 +354,25 @@ class BookingFlowController extends _$BookingFlowController {
   /// excludes only guards already booked for an OVERLAPPING slot — a guard busy at another time is
   /// still offered. v2 is first-come-accept, so a nearby guard accepts the request later.
   ///
-  /// C2: when the customer picked a map location, its coordinate ([BookingFlowState.place]) is
-  /// sent as the meetup `lat`/`lng` so the backend sorts the list NEAREST-first (by each guard's
-  /// live position) and returns a `distance_m` per guard. Omitted when only a typed address was
-  /// used — the list then keeps the server's default order.
+  /// C2: discovery MUST sort NEAREST-first, which needs a meetup coordinate — but the customer can
+  /// reach discovery WITHOUT dropping a pin (the form doesn't require one). So a meetup coordinate is
+  /// ALWAYS resolved here: the pinned [BookingFlowState.place] when the customer picked one, else a
+  /// best-effort fallback to the DEVICE's current location (non-blocking — [currentLocation] returns
+  /// `null` without prompting when GPS/permission is unavailable). Whichever is found is sent as the
+  /// meetup `lat`/`lng` so the backend sorts by each guard's live position and returns a `distance_m`
+  /// per guard — AND is persisted onto [BookingFlowState.place] so the created booking carries the
+  /// same open-job site coordinate (C2 gated both on the pin). Only when NO location is obtainable at
+  /// all does the list fall back to the server's default order.
   Future<bool> loadGuards() => _guard(() async {
         final start = state.scheduledAt;
-        final place = state.place;
+        var place = state.place;
+        if (place == null) {
+          final fix = await ref.read(locationServiceProvider).currentLocation();
+          if (fix != null) {
+            place = GeoPlace(point: fix, placeName: fix.label);
+            state = state.copyWith(place: place);
+          }
+        }
         final query = <String, dynamic>{
           if (start != null) 'scheduled_at': start.toUtc().toIso8601String(),
           if (start != null) 'hours': state.hours,

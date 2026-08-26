@@ -100,12 +100,20 @@ class GuardEarnings {
   /// total is potentially incomplete. The UI surfaces a "ยอดอาจไม่ครบ / may be incomplete" caveat.
   static bool feedMayBeTruncated(List<Booking> all) => all.length >= feedRowCap;
 
-  /// The hours a job PAYS for: the reconciled [actualHours] when the settle recorded them (from
-  /// `GET /payments/earnings` — the clamped hours ACTUALLY worked), else the booked hours. A job
-  /// that finished early pays for the hours worked — matching the customer's reconciled net —
-  /// rather than the full booked estimate that overstated it.
-  static double payableHours(Booking b, {Map<String, double>? actualHours}) =>
-      actualHours?[b.id] ?? (b.hours ?? 0).toDouble();
+  /// The hours a job PAYS for, in preference order:
+  ///  1. the reconciled [actualHours] from `GET /payments/earnings` (the settle-time truth — the
+  ///     clamped hours ACTUALLY worked, matching the customer's reconciled net);
+  ///  2. the booking's own `actual_seconds / 3600` — the SAME server-computed figure, stamped onto
+  ///     the booking at completion, so a guard sees their reconciled pay the INSTANT the job
+  ///     completes (before the earnings settle row is fetched), with no later jump;
+  ///  3. the booked hours — the estimate, for a job not yet reconciled with neither source.
+  static double payableHours(Booking b, {Map<String, double>? actualHours}) {
+    final settled = actualHours?[b.id];
+    if (settled != null) return settled;
+    final secs = b.actualSeconds;
+    if (secs != null) return secs / 3600;
+    return (b.hours ?? 0).toDouble();
+  }
 
   /// The commission applied to this job, in HUNDREDTHS of a percent. The settle's value
   /// ([commissionPercent], keyed by booking id, from `GET /payments/earnings`) wins when present;

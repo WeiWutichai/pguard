@@ -29,6 +29,7 @@ part 'booking.g.dart';
 /// * [targetGuardId] - DIRECTED OFFER (C3): the ONE guard this booking was OFFERED to at create — DISTINCT from `guard_id` (the guard who ACCEPTED). null = OPEN first-come (legacy rows and un-directed bookings): any online guard may claim it. When set, discovery hides the booking from every other guard and `accept` 403s a non-target `NOT_OFFERED_TO_YOU`. On a directed booking the target accepts, this and `guard_id` end up the same guard.
 /// * [workStartedAt] - When the assigned guard STARTED work (stamped by PUT /bookings/{id}/start; the proration basis). null until started — clients restore the job clock from this after an app restart.
 /// * [paidAt] - When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
+/// * [actualSeconds] - Server-computed WORKED duration in seconds (`now() − work_started_at`), stamped onto the row in the same UPDATE that flips the status to `completed`. null until completed — and also on a completion with no `work_started_at` (missing start), so null means \"not reconciled\", never 0. The guard's earnings screen reads worked hours from this (`actual_seconds / 3600`); payment's own `actual_hours` remains the money-truth (this is the display figure, not the ledger).
 /// * [cancellationReason] - Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to \"ไม่ระบุ\"/\"Not specified\" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009).
 /// * [cancellationNote] - The optional free-text detail that came with `cancellation_reason` (trimmed, ≤ 500 characters). null when none was given; always present when the reason is `other`.
 /// * [createdAt] 
@@ -95,6 +96,10 @@ abstract class Booking implements Built<Booking, BookingBuilder> {
   /// When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid; the client uses this to know the accepted→en_route transition is gated (show the pay-step).
   @BuiltValueField(wireName: r'paid_at')
   DateTime? get paidAt;
+
+  /// Server-computed WORKED duration in seconds (`now() − work_started_at`), stamped onto the row in the same UPDATE that flips the status to `completed`. null until completed — and also on a completion with no `work_started_at` (missing start), so null means \"not reconciled\", never 0. The guard's earnings screen reads worked hours from this (`actual_seconds / 3600`); payment's own `actual_hours` remains the money-truth (this is the display figure, not the ledger).
+  @BuiltValueField(wireName: r'actual_seconds')
+  int? get actualSeconds;
 
   /// Why the booking ended early — the stable code supplied to cancel (`changed_plan`|`mistake`|`not_needed`|`other`) or decline (`emergency`|`sick`|`cannot_reach`|`other`); see `CancelBookingRequest` / `DeclineBookingRequest` for the labels. NEVER localized text: clients map the code to a label. Deliberately typed as a plain string, not an enum, so an unrecognized code degrades to \"ไม่ระบุ\"/\"Not specified\" instead of failing response decoding. null on active bookings, and on terminal rows created BEFORE the reason became mandatory (migration 0009).
   @BuiltValueField(wireName: r'cancellation_reason')
@@ -232,6 +237,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
       yield serializers.serialize(
         object.paidAt,
         specifiedType: const FullType(DateTime),
+      );
+    }
+    if (object.actualSeconds != null) {
+      yield r'actual_seconds';
+      yield serializers.serialize(
+        object.actualSeconds,
+        specifiedType: const FullType(int),
       );
     }
     if (object.cancellationReason != null) {
@@ -399,6 +411,13 @@ class _$BookingSerializer implements PrimitiveSerializer<Booking> {
             specifiedType: const FullType(DateTime),
           ) as DateTime;
           result.paidAt = valueDes;
+          break;
+        case r'actual_seconds':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.actualSeconds = valueDes;
           break;
         case r'cancellation_reason':
           final valueDes = serializers.deserialize(

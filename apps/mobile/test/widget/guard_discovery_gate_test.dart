@@ -36,6 +36,12 @@ void main() {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      // C2: loadGuards now resolves a meetup coordinate — falling back to the DEVICE location when no
+      // pin was dropped. This screen never pins one, so give it a fake with NO fix (deterministic: no
+      // native geolocator channel in a widget test); the fake API returns the list + distance_m
+      // regardless of the query.
+      locationServiceProvider
+          .overrideWithValue(FakeLocationService()..current = null),
     ]);
     addTearDown(container.dispose);
     await tester.pumpWidget(UncontrolledProviderScope(
@@ -156,6 +162,12 @@ void main() {
       pguardApiProvider.overrideWithValue(api),
       appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
       prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+      // C2: loadGuards now resolves a meetup coordinate — falling back to the DEVICE location when no
+      // pin was dropped. This screen never pins one, so give it a fake with NO fix (deterministic: no
+      // native geolocator channel in a widget test); the fake API returns the list + distance_m
+      // regardless of the query.
+      locationServiceProvider
+          .overrideWithValue(FakeLocationService()..current = null),
     ]);
     addTearDown(container.dispose);
 

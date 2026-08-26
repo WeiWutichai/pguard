@@ -5,9 +5,11 @@ void main() {
   group('notification channel (N3b — fix Android sound)', () {
     test('channel id EXACTLY matches the server (services/notification fcm.rs)',
         () {
-      // The server sends android.notification.channel_id="default"; a mismatch here reintroduces
-      // the silent-push bug (Android 8+ drops it onto a low-importance, soundless default channel).
-      expect(kDefaultChannelId, 'default');
+      // The server sends android.notification.channel_id="pguard_alerts_v2"; a mismatch here
+      // reintroduces the silent-push bug (Android 8+ drops an unknown channel onto a low-importance,
+      // soundless fallback). The "_v2" id cache-busts the old silent "default" channel, whose
+      // importance+sound Android froze at first creation.
+      expect(kDefaultChannelId, 'pguard_alerts_v2');
     });
 
     group('shouldPresentForeground', () {

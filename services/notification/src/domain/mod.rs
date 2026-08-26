@@ -14,5 +14,6 @@ pub mod idempotency;
 
 pub use checkin::CheckinLedgerOp;
 pub use mapping::{
-    dispatch_plan_for_guard, payment_completed_plans, plan_for_event, NotificationPlan,
+    directed_dispatch_plan_for_guard, dispatch_plan_for_guard, payment_completed_plans,
+    plan_for_event, NotificationPlan,
 };

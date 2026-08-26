@@ -817,6 +817,39 @@ paths:
         '404': { $ref: '#/components/responses/NotFound' }
         '409': { $ref: '#/components/responses/Conflict' }
 
+  /bookings/{id}/cancel-after-decline:
+    put:
+      tags: [Bookings]
+      summary: Customer acknowledges a guard withdrawal (declined → cancelled)
+      description: |
+        The customer ACKs a booking the assigned guard withdrew from (status `declined`),
+        moving it to terminal `cancelled` so "both parties done" is a real end state — otherwise
+        the customer's live screen sits on a `declined` job with no forward action. Allowed ONLY
+        from `declined` and ONLY for the booking's owner (or admin); any other status is 409, a
+        non-owner is 403.
+
+        This is a pure ACK — NO request body and NO reason. It deliberately does NOT overwrite the
+        guard's decline reason/note (they already stand as the record of why the job did not
+        happen). Enqueues `pguard.events.booking.cancelled`; because the earlier
+        `booking.declined` already issued any refund, payment's cancellation consumer treats this
+        second event as a NoOp (it only refunds a `completed` row) — no double refund.
+      operationId: cancelAfterDecline
+      security: [{ bearerAuth: [] }]
+      parameters:
+        - $ref: '#/components/parameters/BookingId'
+      responses:
+        '200': { $ref: '#/components/responses/BookingOk' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: >-
+            The booking is not in `declined` (e.g. already `cancelled`, or still active) —
+            cancel-after-decline is legal only from the guard-withdrawn terminal state.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+
   /bookings/{id}/progress-reports:
     post:
       tags: [Bookings]
@@ -1408,6 +1441,18 @@ components:
           description: >-
             When the PRE-PAY charge cleared (stamped by the payment.completed consumer). null = unpaid;
             the client uses this to know the accepted→en_route transition is gated (show the pay-step).
+        actual_seconds:
+          type: integer
+          format: int64
+          nullable: true
+          description: >-
+            Server-computed WORKED duration in seconds (`now() − work_started_at`), stamped onto the
+            row in the same UPDATE that flips the status to `completed`. null until completed — and
+            also on a completion with no `work_started_at` (missing start), so null means "not
+            reconciled", never 0. The guard's earnings screen reads worked hours from this
+            (`actual_seconds / 3600`); payment's own `actual_hours` remains the money-truth (this is
+            the display figure, not the ledger).
+          example: 7180
         cancellation_reason:
           type: string
           nullable: true
