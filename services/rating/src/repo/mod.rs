@@ -17,7 +17,7 @@ use shared_events::{topics, EventEnvelope};
 use crate::domain::{self, RatingSummary};
 use crate::models::{
     AdminReviewResponse, AdminReviewStats, AdminReviewsResponse, CreateReviewRequest,
-    ReviewResponse,
+    RatingSummaryBatchItem, ReviewResponse,
 };
 
 /// Public review projection (no customer identity exposed).
@@ -176,6 +176,44 @@ pub async fn guard_summary(db: &sqlx::PgPool, guard_id: Uuid) -> Result<RatingSu
     .await?;
     let scores: Vec<i32> = scores.into_iter().map(i32::from).collect();
     Ok(domain::compute_summary(&scores))
+}
+
+/// BATCH variant of [`guard_summary`]: aggregate the VISIBLE overall ratings for MANY guards in
+/// ONE grouped query (fixes the discovery N+1 — booking's `/available-guards` fans out one HTTP
+/// call + one service-JWT mint + one DB query per guard today). Reuses the same
+/// `is_visible = true` filter (served by the partial `idx_guard_reviews_visible`).
+///
+/// Guards with NO visible reviews are OMITTED from the result (GROUP BY only yields rows that
+/// have matches), so the caller defaults them to `{ average: None, count: 0 }`; this also means
+/// `guard_ids` need not be de-duplicated. The average is rounded to 2 dp in Rust (not SQL) so it
+/// is byte-identical to the single-guard summary, whose rounding is `Decimal::round_dp(2)`
+/// (banker's rounding) rather than Postgres `round()` (half-away-from-zero).
+pub async fn guard_summaries(
+    db: &sqlx::PgPool,
+    guard_ids: &[Uuid],
+) -> Result<Vec<RatingSummaryBatchItem>, AppError> {
+    // No ids → no query (an empty `= ANY($1)` would just return nothing anyway).
+    if guard_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(Uuid, Option<Decimal>, i64)> = sqlx::query_as(
+        "SELECT guard_id, AVG(overall_rating), COUNT(*) \
+         FROM rating.guard_reviews \
+         WHERE guard_id = ANY($1) AND is_visible = true \
+         GROUP BY guard_id",
+    )
+    .bind(guard_ids)
+    .fetch_all(db)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(guard_id, average, review_count)| RatingSummaryBatchItem {
+            guard_id,
+            average_rating: average.map(|d| d.round_dp(2)),
+            review_count,
+        })
+        .collect())
 }
 
 /// PDPA §19/§32 data export: ALL reviews AUTHORED by the user (as the reviewing customer),
@@ -597,6 +635,63 @@ mod db_tests {
 
         cleanup(&pool, a1, guard_id).await;
         cleanup(&pool, a2, guard_id).await;
+    }
+
+    /// guard_summaries aggregates MANY guards in ONE grouped query: correct per-guard avg/count,
+    /// excludes admin-hidden reviews, and OMITS guards with no visible reviews (caller defaults
+    /// them). Empty input → empty result with no query. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn guard_summaries_batches_groups_and_omits_empty() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let g1 = Uuid::new_v4();
+        let g2 = Uuid::new_v4();
+        let g3 = Uuid::new_v4(); // never reviewed → must be omitted
+        let a1 = Uuid::new_v4();
+        let a2 = Uuid::new_v4();
+        let a3 = Uuid::new_v4();
+
+        // g1: two visible reviews (5, 4) → avg 4.50, count 2.
+        submit_review_tx(&pool, g1, Uuid::new_v4(), a1, &review(5), Uuid::new_v4())
+            .await
+            .expect("g1 a1");
+        submit_review_tx(&pool, g1, Uuid::new_v4(), a2, &review(4), Uuid::new_v4())
+            .await
+            .expect("g1 a2");
+        // g2: one review (3) then HIDDEN → g2 has no VISIBLE reviews → must be omitted.
+        let r = submit_review_tx(&pool, g2, Uuid::new_v4(), a3, &review(3), Uuid::new_v4())
+            .await
+            .expect("g2 a3");
+        set_visibility(&pool, r, false).await.expect("hide g2");
+
+        let out = guard_summaries(&pool, &[g1, g2, g3])
+            .await
+            .expect("summaries");
+        assert_eq!(
+            out.len(),
+            1,
+            "g2 (all-hidden) and g3 (no reviews) are omitted"
+        );
+        let item = out.iter().find(|i| i.guard_id == g1).expect("g1 present");
+        assert_eq!(item.review_count, 2);
+        assert_eq!(item.average_rating, Some("4.50".parse().unwrap()));
+
+        // Batch result matches the single-guard summary for the same guard (no drift).
+        let single = guard_summary(&pool, g1).await.expect("single g1");
+        assert_eq!(item.average_rating, single.average);
+        assert_eq!(item.review_count, single.count);
+
+        // Empty input → empty result (no query).
+        assert!(guard_summaries(&pool, &[])
+            .await
+            .expect("empty ids")
+            .is_empty());
+
+        cleanup(&pool, a1, g1).await;
+        cleanup(&pool, a2, g1).await;
+        cleanup(&pool, a3, g2).await;
     }
 
     async fn cleanup(pool: &sqlx::PgPool, assignment_id: Uuid, guard_id: Uuid) {

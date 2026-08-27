@@ -20,9 +20,14 @@ void main() {
     if (await tempImage.exists()) await tempImage.delete();
   });
 
-  ProviderContainer container(FakeApi api) {
+  // The controller resolves its customer id from the SESSION (perf-review #3 — no `/auth/me` round
+  // trip), so seed an authenticated customer `c1` rather than stubbing `/auth/me`.
+  ProviderContainer container(FakeApi api, {Override? session}) {
     final c = ProviderContainer(
-      overrides: [pguardApiProvider.overrideWithValue(api)],
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        session ?? seededCustomerSession(),
+      ],
     );
     addTearDown(c.dispose);
     // autoDispose — keep alive across awaits.
@@ -30,10 +35,10 @@ void main() {
     return c;
   }
 
-  test('build resolves the customer id from /auth/me and returns the current avatar URL',
+  test(
+      'build resolves the customer id from the session and returns the avatar URL',
       () async {
     final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return {'user_id': 'c1'};
       if (path == '/profile/customer/c1/avatar') {
         return {'avatar_url': 'https://s3/cust-avatar.jpg'};
       }
@@ -42,11 +47,11 @@ void main() {
     final url =
         await container(api).read(customerAvatarControllerProvider.future);
     expect(url, 'https://s3/cust-avatar.jpg');
+    expect(api.calls, isNot(contains('GET /auth/me')));
   });
 
   test('no avatar yet (404 on probe) → null, never throws', () async {
     final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return {'user_id': 'c1'};
       throw const ApiException(message: 'not found', statusCode: 404);
     });
     final url =
@@ -54,25 +59,22 @@ void main() {
     expect(url, isNull);
   });
 
-  test('missing user_id in /auth/me → the load errors (own-only path needs the id)',
+  test('no session user → the load errors (own-only path needs the id)',
       () async {
-    final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return <String, dynamic>{};
-      return null;
-    });
-    final c = container(api);
+    final api = FakeApi(onGet: (path, _) async => null);
+    final c = container(api, session: seededNoUserSession());
     await expectLater(
       c.read(customerAvatarControllerProvider.future),
       throwsA(isA<ApiException>()),
     );
   });
 
-  test('upload posts multipart to the own-only customer path → state becomes the new URL',
+  test(
+      'upload posts multipart to the own-only customer path → state becomes the new URL',
       () async {
     final posted = <String>[];
     final api = FakeApi(
       onGet: (path, _) async {
-        if (path == '/auth/me') return {'user_id': 'c1'};
         throw const ApiException(
             message: 'not found', statusCode: 404); // no avatar yet
       },
@@ -94,12 +96,11 @@ void main() {
         'https://s3/new-cust-avatar.jpg');
   });
 
-  test('upload failure → friendly message and the previous URL is kept', () async {
+  test('upload failure → friendly message and the previous URL is kept',
+      () async {
     final api = FakeApi(
-      onGet: (path, _) async {
-        if (path == '/auth/me') return {'user_id': 'c1'};
-        return {'avatar_url': 'https://s3/old.jpg'}; // existing avatar
-      },
+      onGet: (path, _) async =>
+          {'avatar_url': 'https://s3/old.jpg'}, // existing avatar
       onPost: (_, __) async {
         throw const ApiException(
             message:
@@ -115,9 +116,13 @@ void main() {
         .read(customerAvatarControllerProvider.notifier)
         .upload(tempImage.path);
 
-    expect(err, isNot(contains('MIME mismatch'))); // friendly, not the raw server string
+    expect(
+        err,
+        isNot(
+            contains('MIME mismatch'))); // friendly, not the raw server string
     expect(err, contains('JPEG'));
     // The previous avatar is preserved after a failed upload.
-    expect(c.read(customerAvatarControllerProvider).value, 'https://s3/old.jpg');
+    expect(
+        c.read(customerAvatarControllerProvider).value, 'https://s3/old.jpg');
   });
 }

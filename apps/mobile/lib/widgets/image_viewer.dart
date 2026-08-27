@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import 'pg_network_image.dart';
+
 /// Open a full-screen, pinch-to-zoom viewer for [url] over a dark scrim.
 ///
 /// The shared "tap a picture to see it big" affordance — used by the profile avatar (own) and the
@@ -46,24 +48,24 @@ class _ImageViewer extends StatelessWidget {
           Flexible(
             child: InteractiveViewer(
               maxScale: 4,
-              child: Image.network(
-                url,
+              // Full-screen zoomable → keep full resolution (downsize:false) so pinch-zoom stays
+              // crisp; disk cache still applies so a reopen is a cache hit.
+              child: PgNetworkImage(
+                url: url,
                 fit: BoxFit.contain,
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return const SizedBox(
-                    height: 240,
-                    child: Center(
-                      child: SizedBox(
-                        width: 26,
-                        height: 26,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
-                      ),
+                downsize: false,
+                placeholder: const SizedBox(
+                  height: 240,
+                  child: Center(
+                    child: SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
                     ),
-                  );
-                },
-                errorBuilder: (context, _, __) => SizedBox(
+                  ),
+                ),
+                errorWidget: SizedBox(
                   height: 240,
                   child: Center(
                     child: Text(

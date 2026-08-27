@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
 import '../core/models/progress_report.dart';
+import 'pg_network_image.dart';
 
 /// Opens a full-screen viewer for one submitted hourly check-in [report]: the guard's photo
 /// (pinch-to-zoom), the capture time, the GPS coordinate + accuracy, and the optional note.
@@ -71,7 +72,8 @@ class _ProgressReportViewer extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    Flexible(child: _Photo(url: report.photoUrl, isThai: isThai)),
+                    Flexible(
+                        child: _Photo(url: report.photoUrl, isThai: isThai)),
                     Padding(
                       padding: const EdgeInsets.all(PgTokens.space4),
                       child: Column(
@@ -145,23 +147,22 @@ class _Photo extends StatelessWidget {
     }
     return InteractiveViewer(
       maxScale: 4,
-      child: Image.network(
-        url,
+      // Full-screen zoomable → keep full resolution (downsize:false); disk cache still applies.
+      child: PgNetworkImage(
+        url: url,
         fit: BoxFit.contain,
-        loadingBuilder: (context, child, progress) {
-          if (progress == null) return child;
-          return const SizedBox(
-            height: 220,
-            child: Center(
-              child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(strokeWidth: 2),
-              ),
+        downsize: false,
+        placeholder: const SizedBox(
+          height: 220,
+          child: Center(
+            child: SizedBox(
+              width: 24,
+              height: 24,
+              child: CircularProgressIndicator(strokeWidth: 2),
             ),
-          );
-        },
-        errorBuilder: (context, _, __) => _expired(isThai),
+          ),
+        ),
+        errorWidget: _expired(isThai),
       ),
     );
   }
@@ -176,9 +177,11 @@ class _Photo extends StatelessWidget {
                 size: 28, color: PgTokens.colorTextMuted),
             const SizedBox(height: PgTokens.space2),
             Text(
-              isThai ? 'รูปหมดอายุ — เปิดใหม่อีกครั้ง' : 'Image expired — reopen',
-              style: const TextStyle(
-                  fontSize: 13, color: PgTokens.colorTextMuted),
+              isThai
+                  ? 'รูปหมดอายุ — เปิดใหม่อีกครั้ง'
+                  : 'Image expired — reopen',
+              style:
+                  const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
             ),
           ],
         ),
@@ -201,8 +204,8 @@ class _MetaRow extends StatelessWidget {
         Expanded(
           child: Text(
             text,
-            style: const TextStyle(
-                fontSize: 13, color: PgTokens.colorTextMuted),
+            style:
+                const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
           ),
         ),
       ],

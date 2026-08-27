@@ -360,14 +360,18 @@ paths:
         `/internal/guards` over a service-JWT), RESTRICTED to guards who are currently ONLINE —
         live per presence's `/internal/online-guards` (`is_online` AND a fresh GPS fix,
         "พร้อมรับงาน") — and enriches each with the guard's live rating summary (read from
-        rating's `/internal/guards/{id}/rating-summary`).
+        rating's `POST /internal/guards/rating-summaries` in ONE batch call over all surviving
+        guard ids, not a per-guard lookup).
+
+        The three independent upstream reads (profile catalog, the local busy-guard DB, and
+        presence) run CONCURRENTLY, so their latencies overlap rather than add serially.
 
         Online filter: an OFFLINE approved guard is dropped from the list. FAIL-OPEN on
         presence: if the presence consult errors/times out, the full approved list is returned
         UNFILTERED (a presence hiccup must never blank discovery and block all bookings).
 
-        Best-effort on ratings: a guard whose rating lookup fails still appears with
-        `average_rating: null` and `review_count: 0`.
+        Best-effort on ratings: if the batch rating lookup fails, every guard still appears with
+        `average_rating: null` and `review_count: 0` (a guard with no visible reviews likewise).
 
         Nearest-first (C2): when the MEETUP point `lat`/`lng` is supplied, the surviving guards
         are sorted ASCENDING by the straight-line distance from each guard's LIVE position (per

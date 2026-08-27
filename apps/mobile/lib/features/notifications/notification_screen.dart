@@ -11,6 +11,7 @@ import '../../core/controllers/session_controller.dart';
 import '../../core/models/notification.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import 'notification_target.dart';
 import 'widgets/notification_tile.dart';
@@ -73,37 +74,45 @@ class _NotificationScreenState extends ConsumerState<NotificationScreen> {
               )
             : null,
       ),
+      // Stale-while-revalidate (perf-review #1): render the LAST-KNOWN notifications (`list`, already
+      // `valueOrNull`) so a re-entry never blanks; a skeleton list on a genuine first load (not a
+      // full-screen spinner); the error state only with no data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai
-                ? 'โหลดการแจ้งเตือนไม่สำเร็จ'
-                : 'Could not load notifications',
-            message: e is ApiException ? e.message : null,
-            onRetry: ctrl.refresh,
-          ),
-          data: (list) => RefreshIndicator(
-            onRefresh: ctrl.refresh,
-            child: list.isEmpty
-                ? _EmptyBody(isThai: isThai)
-                : ListView.builder(
-                    itemCount: list.length,
-                    itemBuilder: (_, i) {
-                      final n = list[i];
-                      // Every tile is tappable: mark read (no-op if already read) THEN open the
-                      // notification's target screen, if any (booking / chat / call).
-                      // `forceUnread` keeps a row highlighted after the open-time badge-clear
-                      // read-all, until this row is individually tapped (see [_open]).
-                      return NotificationTile(
-                        notification: n,
-                        forceUnread: _highlightUntilTapped.contains(n.id),
-                        onTap: () => _open(context, ref, n),
-                      );
-                    },
-                  ),
-          ),
-        ),
+        child: list == null
+            ? (async.hasError
+                ? PgErrorState(
+                    title: isThai
+                        ? 'โหลดการแจ้งเตือนไม่สำเร็จ'
+                        : 'Could not load notifications',
+                    message: async.error is ApiException
+                        ? (async.error as ApiException).message
+                        : null,
+                    onRetry: ctrl.refresh,
+                  )
+                : const Padding(
+                    padding: EdgeInsets.all(PgTokens.space4),
+                    child: PgSkeletonList(count: 6, itemHeight: 72),
+                  ))
+            : RefreshIndicator(
+                onRefresh: ctrl.refresh,
+                child: list.isEmpty
+                    ? _EmptyBody(isThai: isThai)
+                    : ListView.builder(
+                        itemCount: list.length,
+                        itemBuilder: (_, i) {
+                          final n = list[i];
+                          // Every tile is tappable: mark read (no-op if already read) THEN open the
+                          // notification's target screen, if any (booking / chat / call).
+                          // `forceUnread` keeps a row highlighted after the open-time badge-clear
+                          // read-all, until this row is individually tapped (see [_open]).
+                          return NotificationTile(
+                            notification: n,
+                            forceUnread: _highlightUntilTapped.contains(n.id),
+                            onTap: () => _open(context, ref, n),
+                          );
+                        },
+                      ),
+              ),
       ),
     );
   }

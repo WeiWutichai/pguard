@@ -179,6 +179,42 @@ void main() {
     expect(GuardJobsController.opensReadOnly(b), isFalse);
   });
 
+  test(
+      'the two feeds are fetched CONCURRENTLY (perf #2) — both fire before either resolves',
+      () async {
+    final order = <String>[];
+    final api = FakeApi(onGet: (path, _) async {
+      order.add('start $path');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      order.add('end $path');
+      return path == '/bookings'
+          ? [bookingJson('b2', 'accepted')]
+          : [bookingJson('b1', 'requested')];
+    });
+    final c = _guardContainer(api);
+    addTearDown(c.dispose);
+    await c.read(guardJobsControllerProvider.future);
+    // Both requests STARTED before either finished — proof they overlapped rather than serialized.
+    expect(order.take(2).toSet(), {'start /bookings', 'start /bookings/open'},
+        reason: 'assigned + open fire concurrently, not one-after-the-other');
+  });
+
+  test(
+      'a malformed (non-list) open feed degrades to assigned-only, never errors',
+      () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings'
+          ? [bookingJson('b2', 'accepted')]
+          : <String, dynamic>{'unexpected': 'shape'}, // not a List
+    );
+    final c = _guardContainer(api);
+    addTearDown(c.dispose);
+    final list = await c.read(guardJobsControllerProvider.future);
+    expect(list.map((b) => b.id), ['b2'],
+        reason: 'a malformed open feed must not error the whole load');
+    expect(GuardJobsController.incoming(list), isEmpty);
+  });
+
   test('open-feed failure degrades to assigned-only (no throw, incoming empty)',
       () async {
     final api = FakeApi(

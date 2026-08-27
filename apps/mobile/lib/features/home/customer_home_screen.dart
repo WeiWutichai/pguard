@@ -16,6 +16,7 @@ import '../../core/models/chat.dart';
 import '../../core/models/money.dart';
 import '../../core/models/service_catalog.dart';
 import '../../widgets/pg_bottom_nav.dart';
+import '../../widgets/pg_network_image.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../auth/widgets/switch_mode_action.dart';
@@ -243,8 +244,12 @@ class _ProfileAvatarButton extends ConsumerWidget {
           child: CircleAvatar(
             radius: 16,
             backgroundColor: PgTokens.colorGreen800,
+            // Disk-caching + stable-key provider so a re-minted presigned avatar URL is a cache
+            // hit on re-entry (not a re-download), downsized to the 32px avatar.
             foregroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
-                ? NetworkImage(avatarUrl)
+                ? pgCachedImageProvider(avatarUrl,
+                    diameterPx:
+                        (32 * MediaQuery.of(context).devicePixelRatio).round())
                 : null,
             child: initials == null
                 ? const Icon(Icons.person_outline,

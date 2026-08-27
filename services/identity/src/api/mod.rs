@@ -952,17 +952,26 @@ pub async fn me(
     State(state): State<AppState>,
     user: AuthUser,
 ) -> Result<Json<ApiResponse<MeResponse>>, AppError> {
-    let profile = repo::self_profile(&state.db, user.user_id).await?;
-    // The multi-role set (Option A). For a single-role user this is exactly `[role]`; for a
-    // dual-role user it carries both so the app can offer a role switch. The ACTIVE `role`
-    // below is still the token's role (authoritative for this session).
-    let roles = repo::list_user_roles(&state.db, user.user_id).await?;
-    // Best-effort: which roles the user has a submitted-but-pending profile for (asks profile over a
-    // service-JWT). A profile outage degrades to `[]` — the picker just falls back to "not enrolled".
-    let pending_roles = state
-        .profile_status_client
-        .pending_roles(user.user_id)
-        .await;
+    // These three are independent (all keyed only on `user.user_id`): two DB reads
+    // (`self_profile`, `list_user_roles`) and one best-effort service-JWT HTTP round-trip to profile
+    // (`pending_roles`). `/auth/me` is on the launch / role-switch critical path, so run them
+    // CONCURRENTLY rather than serially — this removes a full profile round-trip of serial wall time
+    // from every launch. Semantics are unchanged: `profile`/`roles` errors still propagate (the `?`
+    // below, `profile` first to preserve the original error precedence), and `pending_roles` is
+    // already best-effort (returns `[]` on any error), so joining it cannot alter the response.
+    let (profile, roles, pending_roles) = tokio::join!(
+        // The DB self-profile (display_name/email + authoritative primary role). A soft-deleted row → 404.
+        repo::self_profile(&state.db, user.user_id),
+        // The multi-role set (Option A). For a single-role user this is exactly `[role]`; for a
+        // dual-role user it carries both so the app can offer a role switch. The ACTIVE `role`
+        // below is still the token's role (authoritative for this session).
+        repo::list_user_roles(&state.db, user.user_id),
+        // Best-effort: which roles the user has a submitted-but-pending profile for (asks profile over a
+        // service-JWT). A profile outage degrades to `[]` — the picker just falls back to "not enrolled".
+        state.profile_status_client.pending_roles(user.user_id),
+    );
+    let profile = profile?;
+    let roles = roles?;
     Ok(Json(ApiResponse::success(MeResponse {
         user_id: user.user_id,
         // Prefer the freshly-read DB role (authoritative if it changed since the token issued);
@@ -3098,6 +3107,57 @@ mod multi_role_tests {
             .collect();
         roles.sort();
         assert_eq!(roles, vec!["customer".to_string(), "guard".to_string()]);
+
+        cleanup(&pool, user_id).await;
+    }
+
+    /// `/auth/me` now fans the two DB reads + the profile `pending_roles` HTTP call out CONCURRENTLY
+    /// (`tokio::join!`). This asserts the join preserves the fail-open contract: the test `state()`
+    /// points `profile_status_client` at `http://localhost:0` (an unreachable port), so the concurrent
+    /// `pending_roles` leg errors on transport — yet `/auth/me` still returns 200 with the correct
+    /// `role`/`roles` from the two DB legs and `pending_roles` degrades to `[]` (never a 5xx). Guards
+    /// against a regression where joining accidentally made the best-effort profile call fatal.
+    #[tokio::test]
+    async fn me_pending_roles_is_fail_open_when_profile_unreachable() {
+        let Some((pool, redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "guard", &["guard"]).await;
+        // state()'s profile_status_client base url is http://localhost:0 → the pending_roles leg of
+        // the join fails at transport, exercising the best-effort path under concurrency.
+        let app = router(state(pool.clone(), redis));
+        let tok = access_token(user_id, "guard");
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/auth/me")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "an unreachable profile must NOT fail /auth/me — pending_roles is best-effort"
+        );
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        // The two DB legs still resolve correctly under the join.
+        assert_eq!(json["data"]["role"], "guard", "active role from the DB leg");
+        assert_eq!(json["data"]["roles"][0], "guard");
+        // The best-effort HTTP leg degraded to [] rather than erroring the whole handler.
+        assert_eq!(
+            json["data"]["pending_roles"].as_array().unwrap().len(),
+            0,
+            "pending_roles degrades to [] when profile is unreachable"
+        );
 
         cleanup(&pool, user_id).await;
     }

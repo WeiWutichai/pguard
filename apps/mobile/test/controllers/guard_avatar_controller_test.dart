@@ -20,9 +20,14 @@ void main() {
     if (await tempImage.exists()) await tempImage.delete();
   });
 
-  ProviderContainer container(FakeApi api) {
+  // The controller resolves its guard id from the SESSION (perf-review #3 — no `/auth/me` round
+  // trip), so seed an authenticated guard `g1` rather than stubbing `/auth/me`.
+  ProviderContainer container(FakeApi api, {Override? session}) {
     final c = ProviderContainer(
-      overrides: [pguardApiProvider.overrideWithValue(api)],
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        session ?? seededGuardSession(),
+      ],
     );
     addTearDown(c.dispose);
     // autoDispose — keep alive across awaits.
@@ -30,9 +35,10 @@ void main() {
     return c;
   }
 
-  test('build resolves the guard id from /auth/me and returns the current avatar URL', () async {
+  test(
+      'build resolves the guard id from the session and returns the avatar URL',
+      () async {
     final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return {'user_id': 'g1'};
       if (path == '/profile/guard/g1/avatar') {
         return {'avatar_url': 'https://s3/avatar.jpg'};
       }
@@ -40,35 +46,36 @@ void main() {
     });
     final url = await container(api).read(guardAvatarControllerProvider.future);
     expect(url, 'https://s3/avatar.jpg');
+    // The redundant /auth/me round-trip is gone.
+    expect(api.calls, isNot(contains('GET /auth/me')));
   });
 
   test('no avatar yet (404 on probe) → null, never throws', () async {
     final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return {'user_id': 'g1'};
       throw const ApiException(message: 'not found', statusCode: 404);
     });
     final url = await container(api).read(guardAvatarControllerProvider.future);
     expect(url, isNull);
   });
 
-  test('missing user_id in /auth/me → the load errors (own-only path needs the id)', () async {
-    final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return <String, dynamic>{};
-      return null;
-    });
-    final c = container(api);
+  test('no session user → the load errors (own-only path needs the id)',
+      () async {
+    final api = FakeApi(onGet: (path, _) async => null);
+    final c = container(api, session: seededNoUserSession());
     await expectLater(
       c.read(guardAvatarControllerProvider.future),
       throwsA(isA<ApiException>()),
     );
   });
 
-  test('upload posts multipart to the own-only path → state becomes the new URL', () async {
+  test(
+      'upload posts multipart to the own-only path → state becomes the new URL',
+      () async {
     final posted = <String>[];
     final api = FakeApi(
       onGet: (path, _) async {
-        if (path == '/auth/me') return {'user_id': 'g1'};
-        throw const ApiException(message: 'not found', statusCode: 404); // no avatar yet
+        throw const ApiException(
+            message: 'not found', statusCode: 404); // no avatar yet
       },
       onPost: (path, data) async {
         posted.add(path);
@@ -84,29 +91,34 @@ void main() {
 
     expect(err, isNull);
     expect(posted, ['/profile/guard/g1/avatar']);
-    expect(c.read(guardAvatarControllerProvider).value, 'https://s3/new-avatar.jpg');
+    expect(c.read(guardAvatarControllerProvider).value,
+        'https://s3/new-avatar.jpg');
   });
 
-  test('upload failure → friendly message and the previous URL is kept', () async {
+  test('upload failure → friendly message and the previous URL is kept',
+      () async {
     final api = FakeApi(
-      onGet: (path, _) async {
-        if (path == '/auth/me') return {'user_id': 'g1'};
-        return {'avatar_url': 'https://s3/old.jpg'}; // existing avatar
-      },
+      onGet: (path, _) async =>
+          {'avatar_url': 'https://s3/old.jpg'}, // existing
       onPost: (_, __) async {
         throw const ApiException(
-            message: 'MIME mismatch: declared image/jpeg but content is image/png',
+            message:
+                'MIME mismatch: declared image/jpeg but content is image/png',
             statusCode: 400);
       },
     );
     final c = container(api);
-    expect(await c.read(guardAvatarControllerProvider.future), 'https://s3/old.jpg');
+    expect(await c.read(guardAvatarControllerProvider.future),
+        'https://s3/old.jpg');
 
     final err = await c
         .read(guardAvatarControllerProvider.notifier)
         .upload(tempImage.path);
 
-    expect(err, isNot(contains('MIME mismatch'))); // friendly, not the raw server string
+    expect(
+        err,
+        isNot(
+            contains('MIME mismatch'))); // friendly, not the raw server string
     expect(err, contains('JPEG'));
     // The previous avatar is preserved after a failed upload.
     expect(c.read(guardAvatarControllerProvider).value, 'https://s3/old.jpg');

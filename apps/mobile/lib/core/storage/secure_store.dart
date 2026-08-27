@@ -96,6 +96,16 @@ class SecureStore implements AppStore {
 
   final FlutterSecureStorage _s;
 
+  /// Write-through in-memory cache of the ACCESS token so the auth interceptor's per-request read
+  /// (`ApiClient._onRequest`, run on EVERY protected request) doesn't decrypt the Keychain/Keystore
+  /// each time — a non-trivial cost that multiplies with a screen that fans out several controllers
+  /// (perf-review #19). Safe because `SecureStore` is the SOLE writer of the token (every mutator —
+  /// saveTokens / clearSession / clearTokens / wipe — lives here and runs on the single app-wide
+  /// instance from `appStoreProvider`), so this cache stays authoritative. `_accessCached` guards the
+  /// "cached null" case (a cleared token) so a logged-out state doesn't re-hit storage each request.
+  String? _accessCache;
+  bool _accessCached = false;
+
   // ---- keys ----
   static const _kAccess = 'pg_access_token';
   static const _kRefresh = 'pg_refresh_token';
@@ -111,7 +121,14 @@ class SecureStore implements AppStore {
 
   // ---- tokens ----
   @override
-  Future<String?> readAccessToken() => _s.read(key: _kAccess);
+  Future<String?> readAccessToken() async {
+    if (_accessCached) return _accessCache;
+    final v = await _s.read(key: _kAccess);
+    _accessCache = v;
+    _accessCached = true;
+    return v;
+  }
+
   @override
   Future<String?> readRefreshToken() => _s.read(key: _kRefresh);
 
@@ -120,6 +137,7 @@ class SecureStore implements AppStore {
       {required String access, required String refresh}) async {
     await _s.write(key: _kAccess, value: access);
     await _s.write(key: _kRefresh, value: refresh);
+    _cacheAccess(access);
   }
 
   /// Drop the session tokens + phone + any in-flight registration tokens (logout /
@@ -131,12 +149,20 @@ class SecureStore implements AppStore {
     await _s.delete(key: _kPhone);
     await _s.delete(key: _kOnboardingPin);
     await clearRegistrationTokens();
+    _cacheAccess(null);
   }
 
   @override
   Future<void> clearTokens() async {
     await _s.delete(key: _kAccess);
     await _s.delete(key: _kRefresh);
+    _cacheAccess(null);
+  }
+
+  /// Update the write-through access-token cache after any mutation.
+  void _cacheAccess(String? value) {
+    _accessCache = value;
+    _accessCached = true;
   }
 
   // ---- phone (PII; the login identifier, shown read-only on the profile) ----
@@ -230,5 +256,8 @@ class SecureStore implements AppStore {
 
   /// Nuke everything (PIN-wipe threshold reached, or full sign-out).
   @override
-  Future<void> wipe() => _s.deleteAll();
+  Future<void> wipe() async {
+    await _s.deleteAll();
+    _cacheAccess(null);
+  }
 }

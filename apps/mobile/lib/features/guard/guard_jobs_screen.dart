@@ -10,6 +10,7 @@ import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import 'widgets/job_card.dart';
 
@@ -43,15 +44,43 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
         title: isThai ? 'งานของฉัน' : 'My Jobs',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): render the LAST-KNOWN jobs via `valueOrNull` — this
+      // provider is shared with the dashboard, so arriving from there is an instant cache hit — and
+      // fall back to the segmented tabs + a skeleton list on a genuine first load (not a full-screen
+      // spinner). The error state shows only when there is no data at all.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load jobs',
-            message: e is ApiException ? localizeApiError(isThai, e) : null,
-            onRetry: ctrl.refresh,
-          ),
-          data: (all) {
+        child: Builder(
+          builder: (context) {
+            final all = async.valueOrNull;
+            if (all == null) {
+              if (async.hasError) {
+                return PgErrorState(
+                  title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load jobs',
+                  message: async.error is ApiException
+                      ? localizeApiError(isThai, async.error as ApiException)
+                      : null,
+                  onRetry: ctrl.refresh,
+                );
+              }
+              return Column(
+                children: [
+                  PgSegmentedTabs(
+                    labels: isThai
+                        ? const ['รอตอบรับ', 'กำลังทำ', 'เสร็จ']
+                        : const ['Pending', 'Active', 'Done'],
+                    selected: _tab,
+                    counts: const [0, 0, 0],
+                    onSelect: (i) => setState(() => _tab = i),
+                  ),
+                  const Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(20, 0, 20, 20),
+                      child: PgSkeletonList(count: 4, itemHeight: 96),
+                    ),
+                  ),
+                ],
+              );
+            }
             final groups = <List<Booking>>[
               GuardJobsController.incoming(all),
               GuardJobsController.active(all),

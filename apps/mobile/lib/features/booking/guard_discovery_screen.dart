@@ -32,10 +32,19 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
     with WidgetsBindingObserver {
   Timer? _refreshTimer;
 
+  /// True while a background refresh is in flight — drives a subtle "updating…" affordance so the
+  /// silent poll is LEGIBLE (perf-review #12/#15: the on-entry/periodic refresh already updates the
+  /// count in place without blanking, but with no indicator it read as "stuck").
+  bool _updating = false;
+
+  /// When the last successful background refresh completed — shown as an "updated HH:mm" hint.
+  DateTime? _lastUpdatedAt;
+
   /// Light periodic refresh cadence WHILE the discovery screen is visible so a guard who comes
   /// online shows up without a manual pull. This refreshes the discovery LIST (available-guards) —
-  /// NOT booking/assignment STATUS — so it does not violate the WS-for-status rule.
-  static const Duration _refreshInterval = Duration(seconds: 25);
+  /// NOT booking/assignment STATUS — so it does not violate the WS-for-status rule. Shortened from
+  /// 25s → 12s (perf-review #12) so a newly-online guard surfaces sooner.
+  static const Duration _refreshInterval = Duration(seconds: 12);
 
   @override
   void initState() {
@@ -51,18 +60,30 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
       if (ref.read(bookingFlowControllerProvider).guards.isEmpty) {
         ctrl.loadGuards();
       } else {
-        ctrl.refreshGuards();
+        _runRefresh();
       }
     });
     _startAutoRefresh();
   }
 
+  /// Run a QUIET background refresh, flagging `_updating` around it so the affordance shows
+  /// "updating…" and stamps the last-updated time on completion. Never blanks the list (refreshGuards
+  /// keeps the current cards on error). Returns a Future so pull-to-refresh can await it.
+  Future<void> _runRefresh() async {
+    if (!mounted) return;
+    setState(() => _updating = true);
+    await ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
+    if (!mounted) return;
+    setState(() {
+      _updating = false;
+      _lastUpdatedAt = DateTime.now();
+    });
+  }
+
   void _startAutoRefresh() {
     _refreshTimer?.cancel();
     _refreshTimer = Timer.periodic(_refreshInterval, (_) {
-      if (mounted) {
-        ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
-      }
+      if (mounted) _runRefresh();
     });
   }
 
@@ -70,9 +91,7 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       // A guard may have come online while the app was backgrounded → refresh + restart the cadence.
-      if (mounted) {
-        ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
-      }
+      if (mounted) _runRefresh();
       _startAutoRefresh();
     } else if (state == AppLifecycleState.paused) {
       _refreshTimer?.cancel(); // don't poll for guards while backgrounded
@@ -183,7 +202,7 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
       // pull-to-refresh over a scrollable list so a customer can re-check for a just-online guard
       // even from the empty state (AlwaysScrollableScrollPhysics makes the short body draggable).
       return RefreshIndicator(
-        onRefresh: ctrl.refreshGuards,
+        onRefresh: _runRefresh,
         child: ListView(
           physics: const AlwaysScrollableScrollPhysics(),
           children: [
@@ -213,7 +232,7 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
       );
     }
     return RefreshIndicator(
-      onRefresh: ctrl.refreshGuards,
+      onRefresh: _runRefresh,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(),
         padding: const EdgeInsets.all(PgTokens.space4),
@@ -221,12 +240,23 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
           // Directed-offer note demoted to a plain caption (the design's guard list has no banner
           // between the header and the cards): the customer picks ONE guard and the job is offered
           // to only them.
-          Text(
-            isThai
-                ? 'เลือกเจ้าหน้าที่ 1 คน — งานจะถูกส่งให้เฉพาะคนที่คุณเลือกเท่านั้น'
-                : 'Pick one guard — the job is offered to only the guard you choose',
-            style:
-                const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  isThai
+                      ? 'เลือกเจ้าหน้าที่ 1 คน — งานจะถูกส่งให้เฉพาะคนที่คุณเลือกเท่านั้น'
+                      : 'Pick one guard — the job is offered to only the guard you choose',
+                  style: const TextStyle(
+                      fontSize: 12, color: PgTokens.colorTextMuted),
+                ),
+              ),
+              const SizedBox(width: PgTokens.space2),
+              _UpdatingChip(
+                  updating: _updating,
+                  lastUpdatedAt: _lastUpdatedAt,
+                  isThai: isThai),
+            ],
           ),
           const SizedBox(height: PgTokens.space3),
           for (final guard in state.guards) ...[
@@ -269,6 +299,56 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
           ],
         ],
       ),
+    );
+  }
+}
+
+/// The subtle live-refresh affordance for the discovery header: a tiny spinner + "กำลังอัปเดต…"
+/// while a background refresh runs, otherwise the last-updated clock time ("อัปเดต 14:05"). Makes
+/// the silent 12s poll legible without a jarring reload (perf-review #12/#15).
+class _UpdatingChip extends StatelessWidget {
+  const _UpdatingChip({
+    required this.updating,
+    required this.lastUpdatedAt,
+    required this.isThai,
+  });
+
+  final bool updating;
+  final DateTime? lastUpdatedAt;
+  final bool isThai;
+
+  static String _hhmm(DateTime t) {
+    final l = t.toLocal();
+    return '${l.hour.toString().padLeft(2, '0')}:${l.minute.toString().padLeft(2, '0')}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (updating) {
+      return Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 11,
+            height: 11,
+            child: CircularProgressIndicator(
+                strokeWidth: 1.6, color: PgTokens.colorTextMuted),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            isThai ? 'กำลังอัปเดต…' : 'Updating…',
+            style:
+                const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
+          ),
+        ],
+      );
+    }
+    if (lastUpdatedAt == null) return const SizedBox.shrink();
+    return Text(
+      isThai
+          ? 'อัปเดต ${_hhmm(lastUpdatedAt!)}'
+          : 'Updated ${_hhmm(lastUpdatedAt!)}',
+      style: const TextStyle(fontSize: 11.5, color: PgTokens.colorTextMuted),
     );
   }
 }

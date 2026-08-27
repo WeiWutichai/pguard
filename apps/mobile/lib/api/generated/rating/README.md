@@ -67,13 +67,13 @@ import 'package:pguard_rating_api/pguard_rating_api.dart';
 
 
 final api = PguardRatingApi().getAdminApi();
-final String id = 38400000-8cf0-11bd-b23e-10b96e4ef00d; // String | 
+final BatchRatingSummariesRequest batchRatingSummariesRequest = ; // BatchRatingSummariesRequest | 
 
 try {
-    final response = await api.getInternalRatingSummary(id);
+    final response = await api.batchInternalRatingSummaries(batchRatingSummariesRequest);
     print(response);
 } catch on DioException (e) {
-    print("Exception when calling AdminApi->getInternalRatingSummary: $e\n");
+    print("Exception when calling AdminApi->batchInternalRatingSummaries: $e\n");
 }
 
 ```
@@ -84,6 +84,7 @@ All URIs are relative to *https://api.pguard.app/v1*
 
 Class | Method | HTTP request | Description
 ------------ | ------------- | ------------- | -------------
+[*AdminApi*](doc/AdminApi.md) | [**batchInternalRatingSummaries**](doc/AdminApi.md#batchinternalratingsummaries) | **POST** /internal/guards/rating-summaries | Batch guard rating summaries (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**getInternalRatingSummary**](doc/AdminApi.md#getinternalratingsummary) | **GET** /internal/guards/{id}/rating-summary | Guard rating summary (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**internalExportUser**](doc/AdminApi.md#internalexportuser) | **GET** /internal/users/{user_id}/export | PDPA data export aggregation (service-to-service)
 [*AdminApi*](doc/AdminApi.md) | [**listAdminReviews**](doc/AdminApi.md#listadminreviews) | **GET** /admin/reviews | List reviews with filters (admin only)
@@ -99,6 +100,8 @@ Class | Method | HTTP request | Description
  - [AdminReviewStats](doc/AdminReviewStats.md)
  - [AdminReviews](doc/AdminReviews.md)
  - [ApiResponseEnvelope](doc/ApiResponseEnvelope.md)
+ - [BatchInternalRatingSummaries200Response](doc/BatchInternalRatingSummaries200Response.md)
+ - [BatchRatingSummariesRequest](doc/BatchRatingSummariesRequest.md)
  - [CreateReviewRequest](doc/CreateReviewRequest.md)
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
@@ -109,6 +112,7 @@ Class | Method | HTTP request | Description
  - [InternalExportUser200Response](doc/InternalExportUser200Response.md)
  - [ListAdminReviews200Response](doc/ListAdminReviews200Response.md)
  - [RatingSummary](doc/RatingSummary.md)
+ - [RatingSummaryBatchItem](doc/RatingSummaryBatchItem.md)
  - [Review](doc/Review.md)
  - [SetReviewVisibility200Response](doc/SetReviewVisibility200Response.md)
  - [SetReviewVisibility200ResponseAllOfData](doc/SetReviewVisibility200ResponseAllOfData.md)

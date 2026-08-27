@@ -22,6 +22,7 @@ import '../../core/models/progress_report.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
@@ -206,18 +207,24 @@ class _ActiveJobScreenState extends ConsumerState<ActiveJobScreen>
                 ],
               ),
       ),
+      // Stale-while-revalidate (perf-review #1): the header shell above already renders from
+      // `valueOrNull`; the body shows the LAST-KNOWN job on re-entry and a skeleton on a first load
+      // rather than a blank spinner. The error state shows only when there is no snapshot at all.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          // Shared hi-fi error state (Mobile - System.html) — retry re-fetches the job.
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load this job',
-            message: e is ApiException ? e.message : null,
-            onRetry: () =>
-                ref.invalidate(activeJobControllerProvider(bookingId)),
-          ),
-          data: (state) => _Body(bookingId: bookingId, state: state),
-        ),
+        child: state != null
+            ? _Body(bookingId: bookingId, state: state)
+            : (async.hasError
+                // Shared hi-fi error state (Mobile - System.html) — retry re-fetches the job.
+                ? PgErrorState(
+                    title:
+                        isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load this job',
+                    message: async.error is ApiException
+                        ? (async.error as ApiException).message
+                        : null,
+                    onRetry: () =>
+                        ref.invalidate(activeJobControllerProvider(bookingId)),
+                  )
+                : const _ActiveJobSkeleton()),
       ),
     );
   }
@@ -301,6 +308,26 @@ JobStage stageOf(ActiveJobState s) {
         subtitle: isThai ? 'งานปัจจุบัน' : 'Current job',
         background: PgTokens.colorGreen800,
       );
+  }
+}
+
+/// First-load skeleton for the active-job body (perf-review #1): a status card + timeline + CTA
+/// placeholders so the working screen shows its shape instead of a bare spinner.
+class _ActiveJobSkeleton extends StatelessWidget {
+  const _ActiveJobSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      children: const [
+        PgSkeletonCard(height: 96),
+        SizedBox(height: PgTokens.space4),
+        PgSkeletonCard(height: 160),
+        SizedBox(height: PgTokens.space4),
+        PgSkeletonCard(height: 52),
+      ],
+    );
   }
 }
 

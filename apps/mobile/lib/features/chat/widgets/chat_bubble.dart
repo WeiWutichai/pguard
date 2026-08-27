@@ -8,6 +8,7 @@ import '../../../core/media/media_host.dart';
 import '../../../core/models/call.dart';
 import '../../../core/models/chat.dart';
 import '../../../core/network/api_exception.dart';
+import '../../../widgets/pg_network_image.dart';
 import 'chat_media_viewer.dart';
 
 /// One message bubble. Side is decided by `sender_role == acting` ([ChatMessage.isFromRole]) —
@@ -362,24 +363,22 @@ class _BubbleImage extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusMd),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 220, maxHeight: 240),
-          child: Image.network(
-            url,
+          child: PgNetworkImage(
+            url: url,
+            width: 220,
             fit: BoxFit.cover,
-            loadingBuilder: (context, child, progress) {
-              if (progress == null) return child;
-              return const SizedBox(
-                width: 220,
-                height: 140,
-                child: Center(
-                  child: SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  ),
+            placeholder: const SizedBox(
+              width: 220,
+              height: 140,
+              child: Center(
+                child: SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              );
-            },
-            errorBuilder: (context, _, __) => Padding(
+              ),
+            ),
+            errorWidget: Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
                 mainAxisSize: MainAxisSize.min,

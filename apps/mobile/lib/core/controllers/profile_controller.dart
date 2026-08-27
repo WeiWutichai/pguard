@@ -20,7 +20,33 @@ class ProfileController extends _$ProfileController {
   Future<UserProfile> build() async {
     final api = ref.read(pguardApiProvider);
     final session = ref.read(sessionProvider.notifier);
-    final me = await api.get('/auth/me') as Map<String, dynamic>;
+    // Fire the three INDEPENDENT reads concurrently (perf-review #9): `/auth/me`, `/profile/me`, and
+    // the local phone read all feed the always-present header, so serializing them stacked their
+    // latency on the critical path of every home open. `/profile/me` stays best-effort — a 404 (no
+    // profile yet) resolves to null; any other error propagates (same fail path as before).
+    //
+    // Each leg is wrapped in `Future.sync` so a source that throws SYNCHRONOUSLY (e.g. a test fake)
+    // becomes a rejected FUTURE rather than throwing while the argument list is built — otherwise a
+    // sibling future created earlier would be left unobserved (an unhandled async error).
+    Future<Map<String, dynamic>?> loadProfile() async {
+      try {
+        return await api.get('/profile/me') as Map<String, dynamic>?;
+      } on ApiException catch (e) {
+        // 404 = the caller hasn't created a profile yet; surface an empty editable one. Other
+        // errors are real failures.
+        if (e.statusCode != 404) rethrow;
+        return null;
+      }
+    }
+
+    final results = await Future.wait([
+      Future.sync(() => api.get('/auth/me')),
+      Future.sync(loadProfile),
+      ref.read(appStoreProvider).readPhone(),
+    ]);
+    final me = results[0] as Map<String, dynamic>;
+    final profile = results[1] as Map<String, dynamic>?;
+    final phone = results[2] as String?;
     // `/auth/me` carries the enrolled-role SET (`roles`) — push it into the session so a role
     // approved AFTER login (the new role joins `user_roles`) starts showing up in the mode picker /
     // switch affordance without a fresh login. No-op when `roles` is absent/empty.
@@ -32,15 +58,6 @@ class ProfileController extends _$ProfileController {
     if (roles.isNotEmpty) {
       session.refreshRoles(roles, pendingRoles: pendingRoles);
     }
-    Map<String, dynamic>? profile;
-    try {
-      profile = await api.get('/profile/me') as Map<String, dynamic>?;
-    } on ApiException catch (e) {
-      // 404 = the caller hasn't created a profile yet; surface an empty editable one. Other
-      // errors are real failures.
-      if (e.statusCode != 404) rethrow;
-    }
-    final phone = await ref.read(appStoreProvider).readPhone();
     return UserProfile.from(me: me, profile: profile, phone: phone);
   }
 

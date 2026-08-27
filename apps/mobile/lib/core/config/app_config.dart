@@ -51,4 +51,11 @@ class AppConfig {
   /// Network timeouts for REST calls.
   static const Duration connectTimeout = Duration(seconds: 10);
   static const Duration receiveTimeout = Duration(seconds: 20);
+
+  /// Tighter receive timeout for INTERACTIVE reads — the GETs that gate a screen's visible content.
+  /// A slow or unreachable call should surface a retry affordance fast (~10s) instead of pinning a
+  /// spinner for the full upload-sized [receiveTimeout] window on a flaky Thai mobile network
+  /// (perf-review #13). Multipart uploads (large bodies) deliberately keep the longer
+  /// [receiveTimeout] — applied per-request in [ApiClient.get] only.
+  static const Duration interactiveReceiveTimeout = Duration(seconds: 10);
 }

@@ -772,3 +772,27 @@ class _SeededGuardSession extends Session {
         user: AuthUser(userId: 'g1', role: 'guard', roles: ['guard']),
       );
 }
+
+/// The customer sibling of [seededGuardSession] — an authenticated customer `c1`, so a controller
+/// that reads its own id from the session (e.g. the avatar controllers) resolves it without a
+/// `/auth/me` round-trip and without driving the real (storage-backed) session load.
+Override seededCustomerSession() =>
+    sessionProvider.overrideWith(_SeededCustomerSession.new);
+
+class _SeededCustomerSession extends Session {
+  @override
+  SessionState build() => const SessionState(
+        SessionStatus.authenticated,
+        user: AuthUser(userId: 'c1', role: 'customer', roles: ['customer']),
+      );
+}
+
+/// A seeded session with NO logged-in user (unauthenticated) — for asserting a session-scoped
+/// controller's fail-closed branch when there is no identity to resolve.
+Override seededNoUserSession() =>
+    sessionProvider.overrideWith(_SeededNoUserSession.new);
+
+class _SeededNoUserSession extends Session {
+  @override
+  SessionState build() => const SessionState(SessionStatus.unauthenticated);
+}

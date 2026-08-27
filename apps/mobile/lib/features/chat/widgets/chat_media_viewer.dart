@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import 'package:video_player/video_player.dart';
 
+import '../../../widgets/pg_network_image.dart';
+
 /// Full-screen viewers for a chat attachment. An IMAGE opens a pinch-to-zoom viewer
 /// ([showChatImageViewer], mirrors `progress_report_viewer`); a VIDEO opens an in-app player
 /// ([showChatVideoViewer], `video_player`). Both take a FRESH presigned URL (TTL ~1h, re-signed
@@ -75,24 +77,23 @@ class _ChatImageViewer extends StatelessWidget {
           Flexible(
             child: InteractiveViewer(
               maxScale: 4,
-              child: Image.network(
-                url,
+              // Full-screen zoomable → keep full resolution (downsize:false); disk cache still hits.
+              child: PgNetworkImage(
+                url: url,
                 fit: BoxFit.contain,
-                loadingBuilder: (context, child, progress) {
-                  if (progress == null) return child;
-                  return const SizedBox(
-                    height: 240,
-                    child: Center(
-                      child: SizedBox(
-                        width: 26,
-                        height: 26,
-                        child: CircularProgressIndicator(
-                            strokeWidth: 2, color: Colors.white),
-                      ),
+                downsize: false,
+                placeholder: const SizedBox(
+                  height: 240,
+                  child: Center(
+                    child: SizedBox(
+                      width: 26,
+                      height: 26,
+                      child: CircularProgressIndicator(
+                          strokeWidth: 2, color: Colors.white),
                     ),
-                  );
-                },
-                errorBuilder: (context, _, __) => _expired(isThai),
+                  ),
+                ),
+                errorWidget: _expired(isThai),
               ),
             ),
           ),

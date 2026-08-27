@@ -13,6 +13,7 @@ import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import '../call/call_routes.dart';
 import 'widgets/chat_bubble.dart';
@@ -264,16 +265,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         child: Column(
           children: [
             Expanded(
-              child: async.when(
-                loading: () => const Center(child: CircularProgressIndicator()),
-                error: (e, _) => PgErrorState(
-                  title: isThai
-                      ? 'โหลดข้อความไม่สำเร็จ'
-                      : 'Could not load messages',
-                  message: e is ApiException ? e.message : null,
-                  onRetry: () => ref.invalidate(provider),
-                ),
-                data: (messages) => messages.isEmpty
+              // Stale-while-revalidate (perf-review #1/#10): the chat SHELL (header + composer) is
+              // already outside this Expanded, so render skeleton bubbles here on a first load —
+              // and the LAST-KNOWN messages via `valueOrNull` on re-entry — instead of a blank
+              // full-screen spinner while history loads and the socket connects.
+              child: Builder(builder: (context) {
+                final messages = async.valueOrNull;
+                if (messages == null) {
+                  if (async.hasError) {
+                    return PgErrorState(
+                      title: isThai
+                          ? 'โหลดข้อความไม่สำเร็จ'
+                          : 'Could not load messages',
+                      message: async.error is ApiException
+                          ? (async.error as ApiException).message
+                          : null,
+                      onRetry: () => ref.invalidate(provider),
+                    );
+                  }
+                  return const _ChatSkeleton();
+                }
+                return messages.isEmpty
                     ? _EmptyBody(isThai: isThai)
                     : ListView.builder(
                         controller: _scroll,
@@ -313,8 +325,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                             ],
                           );
                         },
-                      ),
-              ),
+                      );
+              }),
             ),
             if (effectiveReadOnly)
               _LockedBanner(isThai: isThai)
@@ -419,6 +431,44 @@ class _SheetOption extends StatelessWidget {
 
 /// Empty conversation — same icon + title + subtitle hierarchy as the sibling
 /// chat-list/notification empty states (cross-state hero pattern).
+/// First-load skeleton for the message area (perf-review #10): a few placeholder bubbles alternating
+/// sides so the thread shows its shape while history loads + the socket connects, instead of blanking.
+class _ChatSkeleton extends StatelessWidget {
+  const _ChatSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.symmetric(
+          vertical: PgTokens.space3, horizontal: PgTokens.space4),
+      children: const [
+        _SkeletonBubble(alignEnd: false, width: 160),
+        SizedBox(height: PgTokens.space3),
+        _SkeletonBubble(alignEnd: true, width: 120),
+        SizedBox(height: PgTokens.space3),
+        _SkeletonBubble(alignEnd: false, width: 200),
+        SizedBox(height: PgTokens.space3),
+        _SkeletonBubble(alignEnd: true, width: 90),
+      ],
+    );
+  }
+}
+
+class _SkeletonBubble extends StatelessWidget {
+  const _SkeletonBubble({required this.alignEnd, required this.width});
+
+  final bool alignEnd;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: alignEnd ? Alignment.centerRight : Alignment.centerLeft,
+      child: PgSkeletonBox(width: width, height: 34, radius: PgTokens.radiusXl),
+    );
+  }
+}
+
 class _EmptyBody extends StatelessWidget {
   const _EmptyBody({required this.isThai});
 

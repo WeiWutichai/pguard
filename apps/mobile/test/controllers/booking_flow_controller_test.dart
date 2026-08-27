@@ -574,13 +574,13 @@ void main() {
   });
 
   test(
-      'C2: loadGuards falls back to the DEVICE location as the meetup when no pin '
-      'was dropped (auto-fill), and persists it onto the booking flow state',
+      'C2 (perf #8): loadGuards fires discovery IMMEDIATELY without a GPS wait, then re-sorts '
+      'NEAREST-first once a device fix arrives (auto-fill), persisting it onto the flow state',
       () async {
-    Map<String, dynamic>? sentQuery;
+    final queries = <Map<String, dynamic>?>[];
     final api = FakeApi(onGet: (path, query) async {
       expect(path, '/available-guards');
-      sentQuery = query;
+      queries.add(query);
       return [
         {'guard_id': 'g1', 'review_count': 0, 'distance_m': 120.0},
       ];
@@ -595,9 +595,15 @@ void main() {
     ctrl.setEnd(DateTime.utc(2026, 6, 6, 22));
     expect(await ctrl.loadGuards(), isTrue);
 
-    // The device location is forwarded as the meetup so discovery can sort nearest-first.
-    expect(sentQuery?['lat'], 13.7367);
-    expect(sentQuery?['lng'], 100.5232);
+    // The FIRST fetch fires WITHOUT waiting on a device GPS fix → no lat/lng (server default order),
+    // so the list + count appear fast instead of blocking up to ~10s acquiring GPS (perf-review #8).
+    expect(queries.first?['lat'], isNull);
+    expect(queries.first?['lng'], isNull);
+
+    // The device fix is then resolved in the BACKGROUND and the list is re-sorted nearest-first.
+    await pumpEventQueue();
+    expect(queries.last?['lat'], 13.7367);
+    expect(queries.last?['lng'], 100.5232);
     // ...and it is persisted onto the flow state so the created booking carries the same site coord.
     final place = c.read(bookingFlowControllerProvider).place;
     expect(place?.point.lat, 13.7367);

@@ -12,6 +12,7 @@ import '../../core/models/geo.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/image_viewer.dart';
+import '../../widgets/pg_network_image.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/primary_button.dart';
@@ -555,17 +556,13 @@ class _DetailRow extends StatelessWidget {
               child: GestureDetector(
                 onTap: () => showImageViewer(context,
                     url: leadingImageUrl!, isThai: isThai),
-                child: ClipRRect(
+                child: PgNetworkImage(
+                  url: leadingImageUrl!,
+                  width: 40,
+                  height: 40,
                   borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    leadingImageUrl!,
-                    width: 40,
-                    height: 40,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _iconTile(),
-                    loadingBuilder: (context, child, progress) =>
-                        progress == null ? child : _iconTile(),
-                  ),
+                  placeholder: _iconTile(),
+                  errorWidget: _iconTile(),
                 ),
               ),
             ),

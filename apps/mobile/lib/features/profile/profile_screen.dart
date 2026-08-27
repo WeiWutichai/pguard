@@ -14,6 +14,8 @@ import '../../core/models/profile.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/image_viewer.dart';
+import '../../widgets/pg_network_image.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
@@ -70,15 +72,26 @@ class ProfileScreen extends ConsumerWidget {
         subtitle: isThai ? 'โปรไฟล์และการตั้งค่า' : 'Profile & settings',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): render the last-known profile via `valueOrNull` so a
+      // re-entry never blanks; a header+settings skeleton on a genuine first load; the error state
+      // only with no data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดโปรไฟล์ไม่สำเร็จ' : 'Could not load profile',
-            message: e is ApiException ? e.message : null,
-            onRetry: () => ref.invalidate(profileControllerProvider),
-          ),
-          data: (profile) => ListView(
+        child: Builder(builder: (context) {
+          final profile = async.valueOrNull;
+          if (profile == null) {
+            if (async.hasError) {
+              return PgErrorState(
+                title:
+                    isThai ? 'โหลดโปรไฟล์ไม่สำเร็จ' : 'Could not load profile',
+                message: async.error is ApiException
+                    ? (async.error as ApiException).message
+                    : null,
+                onRetry: () => ref.invalidate(profileControllerProvider),
+              );
+            }
+            return const _ProfileSkeleton();
+          }
+          return ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
             children: [
               _Header(profile: profile, isThai: isThai),
@@ -163,9 +176,44 @@ class ProfileScreen extends ConsumerWidget {
                 ),
               ),
             ],
-          ),
-        ),
+          );
+        }),
       ),
+    );
+  }
+}
+
+/// First-load skeleton (perf-review #1): an avatar + name placeholder over two settings-card
+/// placeholders, so the profile screen shows its shape instead of a bare spinner.
+class _ProfileSkeleton extends StatelessWidget {
+  const _ProfileSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      children: const [
+        Row(
+          children: [
+            PgSkeletonBox(width: 74, height: 74, radius: 37),
+            SizedBox(width: PgTokens.space4),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  PgSkeletonBox(width: 140, height: 16),
+                  SizedBox(height: PgTokens.space2),
+                  PgSkeletonBox(width: 100, height: 12),
+                ],
+              ),
+            ),
+          ],
+        ),
+        SizedBox(height: PgTokens.space5),
+        PgSkeletonCard(height: 180),
+        SizedBox(height: PgTokens.space4),
+        PgSkeletonCard(height: 120),
+      ],
     );
   }
 }
@@ -392,13 +440,12 @@ class _EditableAvatar extends ConsumerWidget {
                   : _pickAndUpload(context, ref, isThai),
           child: ClipOval(
             child: url != null
-                ? Image.network(
-                    url,
+                ? PgNetworkImage(
+                    url: url,
                     width: 74,
                     height: 74,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                        _InitialsAvatar(initials: initials),
+                    placeholder: _InitialsAvatar(initials: initials),
+                    errorWidget: _InitialsAvatar(initials: initials),
                   )
                 : _InitialsAvatar(initials: initials),
           ),

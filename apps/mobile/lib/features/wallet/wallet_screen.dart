@@ -10,6 +10,7 @@ import '../../core/models/payment.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import '../booking/widgets/job_receipt_sheet.dart';
 
@@ -42,16 +43,45 @@ class WalletScreen extends ConsumerWidget {
         subtitle: isThai ? 'รายการชำระเงิน' : 'Your payments',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): last-known receipts via `valueOrNull` so a re-entry
+      // never blanks; a hero + skeleton-list on a genuine first load; the error state only with no
+      // data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดใบเสร็จไม่สำเร็จ' : 'Could not load receipts',
-            message: e is ApiException ? e.message : null,
-            onRetry: () =>
-                ref.read(walletControllerProvider.notifier).refresh(),
-          ),
-          data: (payments) => RefreshIndicator(
+        child: Builder(builder: (context) {
+          final payments = async.valueOrNull;
+          if (payments == null) {
+            if (async.hasError) {
+              return PgErrorState(
+                title:
+                    isThai ? 'โหลดใบเสร็จไม่สำเร็จ' : 'Could not load receipts',
+                message: async.error is ApiException
+                    ? (async.error as ApiException).message
+                    : null,
+                onRetry: () =>
+                    ref.read(walletControllerProvider.notifier).refresh(),
+              );
+            }
+            return ListView(
+              children: const [
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      PgSkeletonBox(width: 120, height: 13),
+                      SizedBox(height: PgTokens.space2),
+                      PgSkeletonBox(width: 190, height: 34),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: EdgeInsets.fromLTRB(20, 8, 20, 0),
+                  child: PgSkeletonList(count: 4, itemHeight: 72),
+                ),
+              ],
+            );
+          }
+          return RefreshIndicator(
             onRefresh: () =>
                 ref.read(walletControllerProvider.notifier).refresh(),
             child: ListView(
@@ -68,8 +98,8 @@ class WalletScreen extends ConsumerWidget {
                 const SizedBox(height: PgTokens.space4),
               ],
             ),
-          ),
-        ),
+          );
+        }),
       ),
     );
   }

@@ -16,6 +16,7 @@ import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 
 /// Guard "รายได้" tab — estimated earnings derived from the guard's COMPLETED bookings
@@ -76,97 +77,111 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
         subtitle: isThai ? 'รายได้โดยประมาณ' : 'Earnings',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): show the LAST-KNOWN earnings via `valueOrNull` (this
+      // provider is shared with the dashboard — arriving from there is an instant cache hit), a
+      // tabs+hero+chart skeleton on a genuine first load, and the error state only with no data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดรายได้ไม่สำเร็จ' : 'Could not load earnings',
-            // Localize the detail so an offline/5xx failure reads in Thai (the raw English transport
-            // string was leaking into the Thai UI — deep-review).
-            message: e is ApiException ? localizeApiError(isThai, e) : null,
-            onRetry: () =>
-                ref.read(guardJobsControllerProvider.notifier).refresh(),
-          ),
-          data: (all) {
-            final now = widget.now ?? DateTime.now();
-            // Two different sets, deliberately: the empty state and the 7-day chart are about
-            // whether this guard has ANY finished work, while the rows below are the hero's own
-            // terms — see [GuardEarnings.jobsInWindow].
-            final completed = GuardEarnings.completedJobs(all);
-            final inWindow = GuardEarnings.jobsInWindow(all, now, _window);
-            return RefreshIndicator(
-              onRefresh: () =>
-                  ref.read(guardJobsControllerProvider.notifier).refresh(),
-              child: ListView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                children: [
-                  PgSegmentedTabs(
-                    labels: isThai
-                        ? const ['วัน', 'สัปดาห์', 'เดือน']
-                        : const ['Day', 'Week', 'Month'],
-                    selected: _window.index,
-                    onSelect: (i) =>
-                        setState(() => _window = EarningsWindow.values[i]),
-                  ),
-                  _EarningsHero(
-                    isThai: isThai,
-                    window: _window,
-                    pay: GuardEarnings.payInWindow(all, now, _window,
-                        actualHours: actualHours,
-                        commissionPercent: commissionPercent),
-                    growth: GuardEarnings.growth(all, now, _window,
-                        actualHours: actualHours,
-                        commissionPercent: commissionPercent),
-                    mayBeIncomplete: GuardEarnings.feedMayBeTruncated(all),
-                  ),
-                  if (completed.isEmpty)
-                    _EmptyEarnings(isThai: isThai)
-                  else ...[
-                    _EarningsChart(
-                      series: GuardEarnings.dailySeries(all, now,
-                          actualHours: actualHours,
-                          commissionPercent: commissionPercent),
-                      dates: GuardEarnings.seriesDates(now),
-                      isThai: isThai,
-                    ),
-                    // The list is scoped to the selected window, so the rows sum to the hero.
-                    Padding(
-                      // Design separates 'รายการล่าสุด' from the chart by ~28px above.
-                      padding: const EdgeInsets.fromLTRB(PgTokens.space5, 28,
-                          PgTokens.space5, PgTokens.space2),
-                      child: Text(
-                        isThai ? 'รายการในช่วงนี้' : 'In this period',
-                        style: const TextStyle(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w600,
-                            color: PgTokens.colorTextStrong),
-                      ),
-                    ),
-                    if (inWindow.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(PgTokens.space5, 0,
-                            PgTokens.space5, PgTokens.space4),
-                        child: Text(
-                          isThai
-                              ? 'ยังไม่มีงานที่เสร็จในช่วงนี้'
-                              : 'No completed jobs in this period',
-                          style: const TextStyle(
-                              fontSize: 13, color: PgTokens.colorTextMuted),
-                        ),
-                      ),
-                    for (final b in inWindow)
-                      _EarningsRow(
-                        booking: b,
-                        isThai: isThai,
-                        actualHours: actualHours,
-                        commissionPercent: commissionPercent,
-                      ),
-                  ],
-                ],
-              ),
+        child: Builder(builder: (context) {
+          final all = async.valueOrNull;
+          if (all == null) {
+            if (async.hasError) {
+              return PgErrorState(
+                title:
+                    isThai ? 'โหลดรายได้ไม่สำเร็จ' : 'Could not load earnings',
+                // Localize the detail so an offline/5xx failure reads in Thai (the raw English
+                // transport string was leaking into the Thai UI — deep-review).
+                message: async.error is ApiException
+                    ? localizeApiError(isThai, async.error as ApiException)
+                    : null,
+                onRetry: () =>
+                    ref.read(guardJobsControllerProvider.notifier).refresh(),
+              );
+            }
+            return _EarningsSkeleton(
+              isThai: isThai,
+              windowIndex: _window.index,
+              onSelectWindow: (i) =>
+                  setState(() => _window = EarningsWindow.values[i]),
             );
-          },
-        ),
+          }
+          final now = widget.now ?? DateTime.now();
+          // Two different sets, deliberately: the empty state and the 7-day chart are about
+          // whether this guard has ANY finished work, while the rows below are the hero's own
+          // terms — see [GuardEarnings.jobsInWindow].
+          final completed = GuardEarnings.completedJobs(all);
+          final inWindow = GuardEarnings.jobsInWindow(all, now, _window);
+          return RefreshIndicator(
+            onRefresh: () =>
+                ref.read(guardJobsControllerProvider.notifier).refresh(),
+            child: ListView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              children: [
+                PgSegmentedTabs(
+                  labels: isThai
+                      ? const ['วัน', 'สัปดาห์', 'เดือน']
+                      : const ['Day', 'Week', 'Month'],
+                  selected: _window.index,
+                  onSelect: (i) =>
+                      setState(() => _window = EarningsWindow.values[i]),
+                ),
+                _EarningsHero(
+                  isThai: isThai,
+                  window: _window,
+                  pay: GuardEarnings.payInWindow(all, now, _window,
+                      actualHours: actualHours,
+                      commissionPercent: commissionPercent),
+                  growth: GuardEarnings.growth(all, now, _window,
+                      actualHours: actualHours,
+                      commissionPercent: commissionPercent),
+                  mayBeIncomplete: GuardEarnings.feedMayBeTruncated(all),
+                ),
+                if (completed.isEmpty)
+                  _EmptyEarnings(isThai: isThai)
+                else ...[
+                  _EarningsChart(
+                    series: GuardEarnings.dailySeries(all, now,
+                        actualHours: actualHours,
+                        commissionPercent: commissionPercent),
+                    dates: GuardEarnings.seriesDates(now),
+                    isThai: isThai,
+                  ),
+                  // The list is scoped to the selected window, so the rows sum to the hero.
+                  Padding(
+                    // Design separates 'รายการล่าสุด' from the chart by ~28px above.
+                    padding: const EdgeInsets.fromLTRB(
+                        PgTokens.space5, 28, PgTokens.space5, PgTokens.space2),
+                    child: Text(
+                      isThai ? 'รายการในช่วงนี้' : 'In this period',
+                      style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: PgTokens.colorTextStrong),
+                    ),
+                  ),
+                  if (inWindow.isEmpty)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(
+                          PgTokens.space5, 0, PgTokens.space5, PgTokens.space4),
+                      child: Text(
+                        isThai
+                            ? 'ยังไม่มีงานที่เสร็จในช่วงนี้'
+                            : 'No completed jobs in this period',
+                        style: const TextStyle(
+                            fontSize: 13, color: PgTokens.colorTextMuted),
+                      ),
+                    ),
+                  for (final b in inWindow)
+                    _EarningsRow(
+                      booking: b,
+                      isThai: isThai,
+                      actualHours: actualHours,
+                      commissionPercent: commissionPercent,
+                    ),
+                ],
+              ],
+            ),
+          );
+        }),
       ),
     );
   }
@@ -537,6 +552,50 @@ class _EarningsRow extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// First-load skeleton (perf-review #1): the real Day/Week/Month tabs (already interactive) over a
+/// hero + chart placeholder, so the earnings screen shows its shape instead of a bare spinner.
+class _EarningsSkeleton extends StatelessWidget {
+  const _EarningsSkeleton({
+    required this.isThai,
+    required this.windowIndex,
+    required this.onSelectWindow,
+  });
+
+  final bool isThai;
+  final int windowIndex;
+  final ValueChanged<int> onSelectWindow;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      children: [
+        PgSegmentedTabs(
+          labels: isThai
+              ? const ['วัน', 'สัปดาห์', 'เดือน']
+              : const ['Day', 'Week', 'Month'],
+          selected: windowIndex,
+          onSelect: onSelectWindow,
+        ),
+        const Padding(
+          padding: EdgeInsets.symmetric(horizontal: 20, vertical: 18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              PgSkeletonBox(width: 120, height: 13),
+              SizedBox(height: PgTokens.space2),
+              PgSkeletonBox(width: 190, height: 34),
+            ],
+          ),
+        ),
+        const Padding(
+          padding: EdgeInsets.fromLTRB(20, 14, 20, 0),
+          child: PgSkeletonCard(height: 110),
+        ),
+      ],
     );
   }
 }

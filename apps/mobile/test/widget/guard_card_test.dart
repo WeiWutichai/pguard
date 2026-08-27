@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -103,11 +104,11 @@ void main() {
       ),
     );
 
-    // The avatar is a network image (the photo) — present when avatar_url is set.
-    final img = tester.widget<Image>(find.byType(Image));
-    expect(img.image, isA<NetworkImage>());
-    expect(
-        (img.image as NetworkImage).url, 'https://cdn.example/guard-cccc.jpg');
+    // The avatar now goes through the disk-caching PgNetworkImage (CachedNetworkImage) — present
+    // with the presigned URL when avatar_url is set.
+    final img =
+        tester.widget<CachedNetworkImage>(find.byType(CachedNetworkImage));
+    expect(img.imageUrl, 'https://cdn.example/guard-cccc.jpg');
   });
 
   testWidgets(
@@ -126,7 +127,7 @@ void main() {
       onTap: () => cardTaps++,
     );
 
-    await tester.tap(find.byType(Image));
+    await tester.tap(find.byType(CachedNetworkImage));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 20));
 
