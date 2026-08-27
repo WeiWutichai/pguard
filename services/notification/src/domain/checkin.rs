@@ -33,7 +33,13 @@ pub enum CheckinLedgerOp {
     /// `booking.progress_reported`: an hourly check-in landed → push last_checkin_at forward so the
     /// next reminder is an hour from THIS check-in (not from arrival).
     RecordCheckin { booking_id: Uuid, guard_id: Uuid },
-    /// `booking.completed` / `booking.cancelled`: the job ended → close the row, stop reminding.
+    /// `booking.completed` / `booking.cancelled` / `booking.completion_requested`: the job ended
+    /// (or the guard requested completion and is now waiting on the customer) → close the row, stop
+    /// reminding. Closing on completion-REQUEST (not just the customer's final confirm) is what
+    /// stops the "keep nagging the guard to check in while the job sits in pending_completion, even
+    /// past its scheduled end" bug: the guard has finished and is done checking in. If the customer
+    /// REJECTS the completion the booking bounces back to `arrived`, which re-emits
+    /// `booking.arrived` → [`Open`] restarts a clean work session, so reminders correctly resume.
     Close { booking_id: Uuid },
 }
 
@@ -58,7 +64,9 @@ pub fn ledger_op_for_event(event_type: &str, payload: &Value) -> Option<CheckinL
             booking_id: uuid_field(payload, "booking_id")?,
             guard_id: uuid_field(payload, "guard_id")?,
         }),
-        topics::BOOKING_COMPLETED | topics::BOOKING_CANCELLED => Some(CheckinLedgerOp::Close {
+        topics::BOOKING_COMPLETED
+        | topics::BOOKING_CANCELLED
+        | topics::BOOKING_COMPLETION_REQUESTED => Some(CheckinLedgerOp::Close {
             booking_id: uuid_field(payload, "booking_id")?,
         }),
         _ => None,
@@ -172,6 +180,22 @@ mod tests {
         );
         assert_eq!(
             ledger_op_for_event(topics::BOOKING_CANCELLED, &payload),
+            Some(CheckinLedgerOp::Close {
+                booking_id: booking
+            })
+        );
+    }
+
+    #[test]
+    fn completion_request_closes_the_ledger_so_pending_completion_stops_nagging() {
+        // The guard tapped "จบงาน" → arrived → pending_completion (booking.completion_requested).
+        // The job is over from the guard's side; reminders must stop even though the customer has
+        // not yet confirmed (else the guard is nagged hourly past the scheduled end). A later
+        // customer REJECT re-emits booking.arrived → Open restarts the session (covered above).
+        let booking = Uuid::new_v4();
+        let payload = json!({ "booking_id": booking, "customer_id": Uuid::new_v4(), "guard_id": Uuid::new_v4() });
+        assert_eq!(
+            ledger_op_for_event(topics::BOOKING_COMPLETION_REQUESTED, &payload),
             Some(CheckinLedgerOp::Close {
                 booking_id: booking
             })
