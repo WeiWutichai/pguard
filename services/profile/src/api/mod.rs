@@ -649,10 +649,21 @@ pub async fn upload_guard_document<S: ProfileDeps>(
 
     state.s3().upload(&key, bytes, canonical_mime).await?;
 
-    // Persist the key; on failure compensate so the object doesn't orphan.
-    if let Err(e) = repo::update_document_key(state.db(), user_id, column, &key).await {
-        state.s3().delete_best_effort(&key).await;
-        return Err(e);
+    // Persist the key; on failure compensate so the NEW object doesn't orphan. On success the write
+    // hands back the PREVIOUS key this column held (a re-upload / staff override), which we then
+    // reclaim — otherwise the prior credential image is stranded in the private bucket forever with
+    // its DB reference destroyed (PDPA: historical PII would survive erasure).
+    let previous_key = match repo::update_document_key(state.db(), user_id, column, &key).await {
+        Ok(prev) => prev,
+        Err(e) => {
+            state.s3().delete_best_effort(&key).await;
+            return Err(e);
+        }
+    };
+    // New key is durably committed — only NOW delete the replaced object (best-effort; never before
+    // the new one is referenced). Fresh UUID keys are always distinct, but guard the self-delete.
+    if let Some(old) = previous_key.filter(|k| k != &key) {
+        state.s3().delete_best_effort(&old).await;
     }
 
     Ok(Json(ApiResponse::success(GuardDocumentResponse {
@@ -827,10 +838,18 @@ pub async fn upload_guard_avatar<S: ProfileDeps>(
     state.s3().upload(&key, bytes, canonical_mime).await?;
 
     // Persist the key (reuses the allowlisted key-column writer); compensate on DB failure so the
-    // object doesn't orphan.
-    if let Err(e) = repo::update_document_key(state.db(), user_id, AVATAR_KEY_COLUMN, &key).await {
-        state.s3().delete_best_effort(&key).await;
-        return Err(e);
+    // NEW object doesn't orphan. On success it returns the PREVIOUS avatar key (this is a replace),
+    // which we reclaim so the old picture isn't stranded in the bucket forever.
+    let previous_key =
+        match repo::update_document_key(state.db(), user_id, AVATAR_KEY_COLUMN, &key).await {
+            Ok(prev) => prev,
+            Err(e) => {
+                state.s3().delete_best_effort(&key).await;
+                return Err(e);
+            }
+        };
+    if let Some(old) = previous_key.filter(|k| k != &key) {
+        state.s3().delete_best_effort(&old).await;
     }
 
     Ok(Json(ApiResponse::success(GuardAvatarResponse {
@@ -909,12 +928,25 @@ pub async fn upload_customer_avatar<S: ProfileDeps>(
 
     state.s3().upload(&key, bytes, canonical_mime).await?;
 
-    // Persist the key (customer-table writer); compensate on DB failure so the object doesn't orphan.
-    if let Err(e) =
-        repo::update_customer_document_key(state.db(), user_id, AVATAR_KEY_COLUMN, &key).await
+    // Persist the key (customer-table writer); compensate on DB failure so the NEW object doesn't
+    // orphan. On success it returns the PREVIOUS avatar key (this is a replace), which we reclaim so
+    // the old picture isn't stranded in the bucket forever.
+    let previous_key = match repo::update_customer_document_key(
+        state.db(),
+        user_id,
+        AVATAR_KEY_COLUMN,
+        &key,
+    )
+    .await
     {
-        state.s3().delete_best_effort(&key).await;
-        return Err(e);
+        Ok(prev) => prev,
+        Err(e) => {
+            state.s3().delete_best_effort(&key).await;
+            return Err(e);
+        }
+    };
+    if let Some(old) = previous_key.filter(|k| k != &key) {
+        state.s3().delete_best_effort(&old).await;
     }
 
     Ok(Json(ApiResponse::success(CustomerAvatarResponse {

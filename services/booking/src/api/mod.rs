@@ -48,6 +48,19 @@ const MAX_BOOKING_HOURS: i32 = 168; // 1 week
 /// Guard-count bounds (mirror the DB CHECK + v1's 1..=20).
 const MAX_GUARD_COUNT: i32 = 20;
 
+/// Upper bound on the customer-supplied booking `address` (deep-review MED #10). Counted in
+/// CHARACTERS (`chars().count()`, not bytes — Thai is multi-byte, so a byte cap would give Thai
+/// users a third of the room; mirrors `domain::cancellation::MAX_CANCELLATION_NOTE_CHARS`). The
+/// address fans out to every discovering guard and into the `booking.requested` event, so an
+/// unbounded one is an amplification vector; the DB `chk_bookings_address_len` is the backstop.
+const MAX_ADDRESS_CHARS: usize = 512;
+
+/// Upper bound on the customer-supplied `tip` (deep-review LOW #33). The tip column is
+/// `NUMERIC(12,2)` (max 9,999,999,999.99); an uncapped value ≥ 10^10 passes handler validation
+/// then overflows the column (Postgres 22003) and surfaces as an opaque 500 instead of a typed
+/// 400. Mirrors `MAX_SERVICE_BASE_FEE` / `domain::pricing::MAX_CANCELLATION_FEE`.
+const MAX_TIP: i64 = 1_000_000;
+
 /// Check-in multipart body cap — a little above the 10MB photo limit for multipart framing;
 /// `domain::progress::validate_photo_upload` is the precise per-photo check. Set as
 /// `DefaultBodyLimit` on the progress-reports route in main.rs (Axum's default is ~2MB).
@@ -117,6 +130,17 @@ pub async fn create_booking<S: BookingDeps>(
             "Only customers can create bookings".to_string(),
         ));
     }
+    // Address: required + bounded (deep-review MED #10). Non-empty after trim (an all-whitespace
+    // address is no address), and capped in CHARACTERS so a ~1 MB TEXT can't fan out to every
+    // guard / into the booking.requested event. Both are typed 400s.
+    if req.address.trim().is_empty() {
+        return Err(AppError::BadRequest("address is required".to_string()));
+    }
+    if req.address.chars().count() > MAX_ADDRESS_CHARS {
+        return Err(AppError::BadRequest(format!(
+            "address must be at most {MAX_ADDRESS_CHARS} characters"
+        )));
+    }
     if req.hours <= 0 || req.hours > MAX_BOOKING_HOURS {
         return Err(AppError::BadRequest(format!(
             "hours must be between 1 and {MAX_BOOKING_HOURS}"
@@ -134,6 +158,15 @@ pub async fn create_booking<S: BookingDeps>(
     if tip < rust_decimal::Decimal::ZERO {
         return Err(AppError::BadRequest("tip must not be negative".to_string()));
     }
+    // Upper-bound the tip BEFORE it reaches the NUMERIC(12,2) column: an uncapped ≥ 10^10 value
+    // overflows to an opaque 500 (deep-review LOW #33). Then normalize to the money 2dp
+    // convention so what is stored/echoed matches every other money field.
+    if tip > rust_decimal::Decimal::from(MAX_TIP) {
+        return Err(AppError::BadRequest(format!(
+            "tip must be at most {MAX_TIP}"
+        )));
+    }
+    let tip = crate::domain::money_scale(tip);
     // Scheduled time must be in the FUTURE (C4) — server-authoritative (the customer's device
     // clock is never trusted). A past/now `scheduled_at` is 400 `SCHEDULED_IN_PAST`.
     crate::domain::scheduling::validate_scheduled_at(req.scheduled_at, Utc::now())?;
@@ -454,8 +487,16 @@ pub async fn get_booking<S: BookingDeps>(
     // `GET /bookings/open`, so any guard may read its detail to decide whether to accept — without
     // this, tapping an incoming job before accepting 403s ("Not a participant"). Once a guard claims
     // it (guard_id set) or it leaves `requested`, only the participants can read it.
-    let is_open_for_guard =
-        user.role == ROLE_GUARD && booking.guard_id.is_none() && booking.status == "requested";
+    //
+    // DIRECTED OFFER (C3, deep-review LOW #27/#28): a booking targeted at ONE guard must stay
+    // confined to that guard — discovery hides it and `accept` 403s a non-target, but the detail
+    // read used to leak the customer's address/coords/schedule to ANY guard who knew the UUID. So
+    // a directed booking is "open-readable" ONLY by its own target; an undirected (truly open)
+    // requested booking stays readable by any guard, as before.
+    let is_open_for_guard = user.role == ROLE_GUARD
+        && booking.guard_id.is_none()
+        && booking.status == "requested"
+        && (booking.target_guard_id.is_none() || booking.target_guard_id == Some(user.user_id));
     if !is_participant && !is_open_for_guard {
         return Err(AppError::Forbidden(
             "Not a participant in this booking".to_string(),
@@ -1444,6 +1485,101 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
+    /// A create-booking body with the given field overrides, otherwise valid (future
+    /// scheduled_at). Used by the input-validation tests below (they run BEFORE any DB access, so
+    /// the hermetic `router()` — closed-port lazy pool — is enough).
+    fn create_body_with(overrides: serde_json::Value) -> Body {
+        let sched = (chrono::Utc::now() + chrono::Duration::days(1)).to_rfc3339();
+        let mut body = serde_json::json!({
+            "address": "1 Test Rd",
+            "scheduled_at": sched,
+            "hours": 4,
+        });
+        for (k, v) in overrides.as_object().expect("object").clone() {
+            body[k] = v;
+        }
+        Body::from(body.to_string())
+    }
+
+    async fn create_status(app: Router, body: Body) -> StatusCode {
+        app.oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bookings")
+                .header(
+                    "authorization",
+                    format!("Bearer {}", user_token("customer")),
+                )
+                .header("content-type", "application/json")
+                .body(body)
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+    }
+
+    /// MED #10: an over-long address is a typed 400 (before any DB access), bounding the TEXT that
+    /// fans out to every guard + into the booking.requested event. Redis-gated.
+    #[tokio::test]
+    async fn create_rejects_oversized_address() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let long = "x".repeat(MAX_ADDRESS_CHARS + 1);
+        let status = create_status(
+            app,
+            create_body_with(serde_json::json!({ "address": long })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "over-cap address must be 400, not a 500/200"
+        );
+    }
+
+    /// An all-whitespace address is no address → typed 400 (before any DB access). Redis-gated.
+    #[tokio::test]
+    async fn create_rejects_blank_address() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let status = create_status(
+            app,
+            create_body_with(serde_json::json!({ "address": "   " })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "a blank address must be 400"
+        );
+    }
+
+    /// LOW #33: a tip past the cap is a typed 400 instead of the NUMERIC(12,2) overflow 500 an
+    /// uncapped value would raise on INSERT. Runs before any DB access. Redis-gated.
+    #[tokio::test]
+    async fn create_rejects_oversized_tip() {
+        let Some(app) = router().await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // 10^10 overflows NUMERIC(12,2); well past MAX_TIP. As a JSON string (money wire shape).
+        let status = create_status(
+            app,
+            create_body_with(serde_json::json!({ "tip": "10000000000" })),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "over-cap tip must be a typed 400, not a 500"
+        );
+    }
+
     #[tokio::test]
     async fn accept_rejects_missing_token() {
         let Some(app) = router().await else {
@@ -2144,6 +2280,84 @@ mod tests {
             get(user_token_for(claimer, "guard"), open.id).await,
             StatusCode::OK,
             "the assigned guard reads their job"
+        );
+    }
+
+    /// GET /bookings/{id} authz for a DIRECTED offer (C3, deep-review LOW #27/#28): a booking
+    /// targeted at ONE guard is readable ONLY by that guard (plus the owner customer), NOT by every
+    /// guard the way an UNDIRECTED open job is — mirroring the discovery + accept confinement so the
+    /// customer's address/coords/schedule don't leak to a non-target who happens to know the UUID.
+    /// DB-gated (SKIPs hermetically).
+    #[tokio::test]
+    async fn get_booking_confines_a_directed_offer_to_its_target() {
+        let Some((app, db)) = router_with_real_db().await else {
+            eprintln!("SKIP: no DATABASE_URL + Redis (hermetic default)");
+            return;
+        };
+        let customer = Uuid::new_v4();
+        let target = Uuid::new_v4();
+        let directed = repo::create_booking(
+            &db,
+            customer,
+            &CreateBookingRequest {
+                address: "11 Directed Rd".to_string(),
+                scheduled_at: chrono::Utc::now(),
+                hours: 4,
+                service_id: None,
+                target_guard_id: Some(target),
+                guard_count: None,
+                tip: None,
+                lat: None,
+                lng: None,
+            },
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create directed");
+
+        let get = |token: String, id: Uuid| {
+            let app = app.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(format!("/bookings/{id}"))
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status()
+            }
+        };
+
+        // A NON-target guard must NOT read the directed offer (the leak the fix closes) — even
+        // though an UNDIRECTED requested job of the same shape would be readable by any guard.
+        assert_eq!(
+            get(user_token_for(Uuid::new_v4(), "guard"), directed.id).await,
+            StatusCode::FORBIDDEN,
+            "a non-target guard must not read a directed offer"
+        );
+        // The DIRECTED TARGET reads it pre-accept (so tapping their directed card works).
+        assert_eq!(
+            get(user_token_for(target, "guard"), directed.id).await,
+            StatusCode::OK,
+            "the directed target may read the offer before accepting"
+        );
+        // The owner customer reads it; a stranger customer cannot.
+        assert_eq!(
+            get(user_token_for(customer, "customer"), directed.id).await,
+            StatusCode::OK,
+            "the owner reads their booking"
+        );
+        assert_eq!(
+            get(user_token_for(Uuid::new_v4(), "customer"), directed.id).await,
+            StatusCode::FORBIDDEN,
+            "a stranger customer cannot read someone's directed booking"
         );
     }
 

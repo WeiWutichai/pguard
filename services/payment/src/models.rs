@@ -68,6 +68,11 @@ pub struct PaymentResponse {
     /// Cancellation fee RETAINED when the customer cancelled (`min(fee, amount paid)`); `0` when
     /// the guard withdrew (no fault of the customer) and `None` when the booking was not cancelled.
     pub cancellation_fee_charged: Option<Decimal>,
+    /// Excess the customer transferred ABOVE the estimate on a slip payment
+    /// (`max(0, slip_amount − amount)`); `0` for simulated/exact payments. Always refundable ON TOP
+    /// of the settled bill (never platform revenue), so every refund path returns
+    /// `amount + overpaid_amount`. NOT NULL (default 0) — present on every row.
+    pub overpaid_amount: Decimal,
     pub payment_method: Option<String>,
     pub status: String,
     pub final_amount: Option<Decimal>,
@@ -244,6 +249,7 @@ mod tests {
             vat_amount: Some("28.00".parse().unwrap()),
             grand_total: "428.00".parse().unwrap(),
             cancellation_fee_charged: None,
+            overpaid_amount: Decimal::ZERO,
             payment_method: Some("promptpay".to_string()),
             status: "completed".to_string(),
             final_amount: Some("333.33".parse().unwrap()),
@@ -268,6 +274,8 @@ mod tests {
         assert_eq!(v["vat_amount"], serde_json::json!("28.00"));
         assert_eq!(v["grand_total"], serde_json::json!("428.00"));
         assert!(v["cancellation_fee_charged"].is_null());
+        // The overpay rider is exact-decimal too (never an f64) and present on every row.
+        assert_eq!(v["overpaid_amount"], serde_json::json!("0"));
     }
 
     #[test]

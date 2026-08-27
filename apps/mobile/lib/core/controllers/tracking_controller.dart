@@ -10,6 +10,11 @@ import 'session_controller.dart';
 
 part 'tracking_controller.g.dart';
 
+/// Sentinel so [TrackingState.copyWith] can distinguish "leave lastSample unchanged" from
+/// "clear it to null" (a null-coalescing copyWith cannot express the clear — the exact bug that
+/// let a stale GPS fix survive an offline/online cycle and get re-broadcast as fresh).
+const Object _unset = Object();
+
 /// Guard presence state: whether the guard is online (visible to customers), whether GPS is
 /// being streamed because of an ACTIVE JOB (independent of the manual online toggle), the live
 /// connection link, and the latest GPS fix (for the accuracy readout).
@@ -43,17 +48,22 @@ class TrackingState {
   bool get isTracking =>
       streaming && link == PresenceLink.online && lastSample != null;
 
+  /// [lastSample] uses the [_unset] sentinel so it can be CLEARED to null (pass `null` explicitly)
+  /// as well as left unchanged (omit it) — a plain null-coalescing copyWith could only keep the old
+  /// fix, so a teardown's `lastSample: null` was silently ignored and stale GPS survived.
   TrackingState copyWith({
     bool? online,
     Set<String>? jobIds,
     PresenceLink? link,
-    GpsSample? lastSample,
+    Object? lastSample = _unset,
   }) =>
       TrackingState(
         online: online ?? this.online,
         jobIds: jobIds ?? this.jobIds,
         link: link ?? this.link,
-        lastSample: lastSample ?? this.lastSample,
+        lastSample: identical(lastSample, _unset)
+            ? this.lastSample
+            : lastSample as GpsSample?,
       );
 }
 
@@ -76,6 +86,13 @@ class TrackingController extends _$TrackingController {
   /// `getCurrentPosition`, not a continuous high-rate stream). This is the GPS UPLINK cadence — NOT
   /// the forbidden booking/assignment STATUS polling.
   static const Duration _keepaliveInterval = Duration(seconds: 90);
+
+  /// The presence service drops a guard from `online-guards` once their last fix is older than
+  /// FRESHNESS_MINUTES=5. When a fresh one-shot fix is unavailable (indoors / GPS-denied) the
+  /// keepalive may fall back to the last cached sample — but ONLY if that cache is still inside this
+  /// window. Re-broadcasting an hours-old fix (guard toggled offline, drove 20 km, came back online
+  /// indoors) as the CURRENT position would advertise the guard as fresh at the wrong place.
+  static const Duration _maxCachedFixAge = Duration(minutes: 5);
 
   @override
   TrackingState build() {
@@ -137,7 +154,8 @@ class TrackingController extends _$TrackingController {
   /// manual toggle and the job lease — the feed + position subscription are reference-counted by
   /// [TrackingState.streaming], so it is safe to call on every entry path. Idempotent.
   Future<void> _ensureStreaming() async {
-    if (_feed != null) return; // already streaming (toggle or another job lease holds it open)
+    // Already streaming (the toggle or another job lease holds the feed open).
+    if (_feed != null) return;
 
     // Request location permission on EVERY streaming-start path — the card toggle, the duty FAB,
     // AND the active-job lease land here. Without it the OS allow dialog never shows, the position
@@ -192,10 +210,22 @@ class TrackingController extends _$TrackingController {
     // Re-check after the async fix: a teardown (goOffline / stopJobStreaming / logout) may have run
     // while awaiting, closing the feed — never send to a closed feed.
     if (feed == null || !state.streaming) return;
-    final sample = fresh ?? state.lastSample;
-    if (sample == null) return; // no fix and nothing cached → nothing to send
+    // Prefer a fresh one-shot fix; else fall back to the cached one ONLY while it is still inside
+    // the presence freshness window — never re-broadcast a stale fix as the guard's current spot.
+    // No fresh fix and nothing (fresh enough) cached → nothing to send.
+    final sample = fresh ?? _freshCachedSample();
+    if (sample == null) return;
     feed.sendLocation(sample);
     state = state.copyWith(lastSample: sample);
+  }
+
+  /// The last cached fix, but only if it is younger than [_maxCachedFixAge] — otherwise `null` so
+  /// the keepalive sends nothing rather than advertising a stale position as current.
+  GpsSample? _freshCachedSample() {
+    final cached = state.lastSample;
+    if (cached == null) return null;
+    final age = DateTime.now().toUtc().difference(cached.recordedAt.toUtc());
+    return age <= _maxCachedFixAge ? cached : null;
   }
 
   /// Tear down the feed/stream only when nothing wants GPS anymore (toggle off AND no job lease),

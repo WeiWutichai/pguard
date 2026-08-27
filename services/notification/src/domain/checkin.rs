@@ -29,7 +29,17 @@ pub enum CheckinLedgerOp {
     /// clock (in_progress_since = now, clear last_checkin/last_reminded/closed) — a fresh arrival
     /// starts a clean hour, and the completion-REJECT bounce (pending_completion → arrived, which
     /// re-emits `booking.arrived`) likewise restarts the guard's work session.
-    Open { booking_id: Uuid, guard_id: Uuid },
+    ///
+    /// `occurred_at` is the arrival event's producer timestamp. The repo uses it to GUARD the
+    /// reopen: an OUT-OF-ORDER redelivery of an OLD `booking.arrived` (one that predates the
+    /// completion that already closed the row) must NOT resurrect the closed session — otherwise
+    /// the finished job gets nagged hourly forever. A legitimate reject-bounce arrival occurs
+    /// AFTER the close, so `occurred_at > closed_at` and it still reopens correctly.
+    Open {
+        booking_id: Uuid,
+        guard_id: Uuid,
+        occurred_at: DateTime<Utc>,
+    },
     /// `booking.progress_reported`: an hourly check-in landed → push last_checkin_at forward so the
     /// next reminder is an hour from THIS check-in (not from arrival).
     RecordCheckin { booking_id: Uuid, guard_id: Uuid },
@@ -53,12 +63,19 @@ fn uuid_field(payload: &Value, key: &str) -> Option<Uuid> {
 
 /// Map a booking lifecycle event to the ledger mutation it drives, or `None` for any event that
 /// does not touch the check-in ledger (and `None` when a required id is missing → tolerant: the
-/// consumer simply applies no ledger op). PURE so the routing is unit-testable.
-pub fn ledger_op_for_event(event_type: &str, payload: &Value) -> Option<CheckinLedgerOp> {
+/// consumer simply applies no ledger op). PURE so the routing is unit-testable. `occurred_at` is
+/// the envelope's producer timestamp — carried onto [`CheckinLedgerOp::Open`] so the repo can
+/// refuse to reopen a row that a LATER completion already closed (out-of-order redelivery guard).
+pub fn ledger_op_for_event(
+    event_type: &str,
+    payload: &Value,
+    occurred_at: DateTime<Utc>,
+) -> Option<CheckinLedgerOp> {
     match event_type {
         topics::BOOKING_ARRIVED => Some(CheckinLedgerOp::Open {
             booking_id: uuid_field(payload, "booking_id")?,
             guard_id: uuid_field(payload, "guard_id")?,
+            occurred_at,
         }),
         topics::BOOKING_PROGRESS_REPORTED => Some(CheckinLedgerOp::RecordCheckin {
             booking_id: uuid_field(payload, "booking_id")?,
@@ -140,13 +157,15 @@ mod tests {
     fn arrived_opens_the_ledger() {
         let booking = Uuid::new_v4();
         let guard = Uuid::new_v4();
+        let occurred = t(0);
         let payload =
             json!({ "booking_id": booking, "customer_id": Uuid::new_v4(), "guard_id": guard });
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_ARRIVED, &payload),
+            ledger_op_for_event(topics::BOOKING_ARRIVED, &payload, occurred),
             Some(CheckinLedgerOp::Open {
                 booking_id: booking,
-                guard_id: guard
+                guard_id: guard,
+                occurred_at: occurred,
             })
         );
     }
@@ -160,7 +179,7 @@ mod tests {
             "report_id": Uuid::new_v4(), "hour_number": 1
         });
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_PROGRESS_REPORTED, &payload),
+            ledger_op_for_event(topics::BOOKING_PROGRESS_REPORTED, &payload, t(0)),
             Some(CheckinLedgerOp::RecordCheckin {
                 booking_id: booking,
                 guard_id: guard
@@ -173,13 +192,13 @@ mod tests {
         let booking = Uuid::new_v4();
         let payload = json!({ "booking_id": booking, "customer_id": Uuid::new_v4(), "guard_id": Uuid::new_v4() });
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_COMPLETED, &payload),
+            ledger_op_for_event(topics::BOOKING_COMPLETED, &payload, t(0)),
             Some(CheckinLedgerOp::Close {
                 booking_id: booking
             })
         );
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_CANCELLED, &payload),
+            ledger_op_for_event(topics::BOOKING_CANCELLED, &payload, t(0)),
             Some(CheckinLedgerOp::Close {
                 booking_id: booking
             })
@@ -195,7 +214,7 @@ mod tests {
         let booking = Uuid::new_v4();
         let payload = json!({ "booking_id": booking, "customer_id": Uuid::new_v4(), "guard_id": Uuid::new_v4() });
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_COMPLETION_REQUESTED, &payload),
+            ledger_op_for_event(topics::BOOKING_COMPLETION_REQUESTED, &payload, t(0)),
             Some(CheckinLedgerOp::Close {
                 booking_id: booking
             })
@@ -206,21 +225,27 @@ mod tests {
     fn unrelated_events_touch_no_ledger() {
         let payload = json!({ "booking_id": Uuid::new_v4(), "customer_id": Uuid::new_v4() });
         assert_eq!(
-            ledger_op_for_event(topics::BOOKING_JOB_ACCEPTED, &payload),
+            ledger_op_for_event(topics::BOOKING_JOB_ACCEPTED, &payload, t(0)),
             None
         );
         assert_eq!(
-            ledger_op_for_event(topics::PAYMENT_COMPLETED, &payload),
+            ledger_op_for_event(topics::PAYMENT_COMPLETED, &payload, t(0)),
             None
         );
-        assert_eq!(ledger_op_for_event("pguard.events.bogus", &payload), None);
+        assert_eq!(
+            ledger_op_for_event("pguard.events.bogus", &payload, t(0)),
+            None
+        );
     }
 
     #[test]
     fn arrived_without_guard_is_ignored() {
         // Defensive: no guard_id → no ledger op (tolerant), never a panic.
         let payload = json!({ "booking_id": Uuid::new_v4(), "customer_id": Uuid::new_v4() });
-        assert_eq!(ledger_op_for_event(topics::BOOKING_ARRIVED, &payload), None);
+        assert_eq!(
+            ledger_op_for_event(topics::BOOKING_ARRIVED, &payload, t(0)),
+            None
+        );
     }
 
     // ----- the DUE rule -----

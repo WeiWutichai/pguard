@@ -5,7 +5,7 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Bell, ChevronDown, CircleUser, LogOut, Settings } from "lucide-react";
 
-import { identityApi } from "@/lib/api";
+import { identityAuthApi } from "@/lib/api";
 import { useAuth } from "@/components/auth-provider";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
@@ -66,11 +66,13 @@ export function Topbar() {
 
   async function logout() {
     setBusy(true);
-    // Best-effort server revoke (clears the auth cookies). The CSRF middleware adds
-    // X-Requested-With; credentials:'include' sends the cookie. ALWAYS bounce to /login —
-    // even if the revoke fails the cookies may already be invalid.
+    // Server revoke via identityAuthApi (hits same-origin `/auth/logout`, NOT `/v1/auth/logout`) so
+    // the Path=/auth `refresh_token` cookie is attached — identity then revokes the whole refresh
+    // FAMILY (not just blocklists the current access jti), so the 7-day session can't be redeemed
+    // after logout. The CSRF middleware adds X-Requested-With; credentials:'include' sends the
+    // cookies. ALWAYS bounce to /login — even if the revoke fails the cookies may already be invalid.
     try {
-      await identityApi.POST("/auth/logout", {});
+      await identityAuthApi.POST("/auth/logout", {});
     } finally {
       router.replace("/login");
       router.refresh();

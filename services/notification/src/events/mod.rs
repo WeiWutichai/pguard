@@ -2,6 +2,8 @@
 //! notifications. This is the heart of Phase 1: booking et al. no longer write the
 //! notification schema; they emit events and this subscribes.
 
+use std::time::Duration;
+
 use futures::StreamExt;
 use serde_json::Value;
 use tracing::Instrument;
@@ -20,9 +22,39 @@ const STREAM: &str = "PGUARD_EVENTS";
 const SUBJECTS: &str = "pguard.events.>";
 const DURABLE: &str = "notification";
 
-/// Connect to NATS JetStream and run the consume loop until the stream ends or errors.
-/// Spawned as a background task by `main`; resilient (logs and returns on fatal error).
-pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppError> {
+/// Backoff between reconnect attempts when NATS is down or the stream ends. Matches the other
+/// services' consumers (payment/booking/presence/…), which all self-heal on the same cadence.
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Run the notification consumer FOREVER: (re)connect to NATS, drain, and on ANY connect/stream
+/// error log + back off + reconnect. NEVER returns under normal operation. notification is the
+/// SINK for every `pguard.events.*` topic (booking/payment/chat/rating pushes AND the hourly
+/// check-in reminder ledger), so a transient NATS hiccup must NOT silently kill the whole
+/// event→notification pipeline until a manual pod restart — the exact defect this supervises away:
+///   * boot-time race: notification dials NATS before it is ready → connect Err → BACK OFF + retry
+///     (previously the spawned task logged one line and exited permanently);
+///   * nats RECREATE wiping the ephemeral JetStream durable → the pull stream terminates and the
+///     inner session returns Ok(()) → we log + reconnect (get_or_create re-creates the durable),
+///     instead of the old silent `Ok(())` return that left the pipeline dead with NO log.
+///
+/// Every other service's consumer already loops like this; this makes the one universal sink
+/// match. Spawned as a background task by `main`.
+pub async fn run_consumer(state: AppState, nats_url: &str) {
+    loop {
+        match connect_and_consume(&state, nats_url).await {
+            // The message stream ended (NATS dropped the connection / the durable was deleted) —
+            // reconnect. Previously this path returned `Ok(())` with NO log and the task exited.
+            Ok(()) => tracing::warn!("notification consumer stream ended; reconnecting"),
+            Err(e) => tracing::warn!("notification consumer error: {e}; reconnecting"),
+        }
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
+    }
+}
+
+/// One connect+consume session: ensure the stream + durable, then drain until the stream ends or
+/// a fatal error. Returns to [`run_consumer`], which backs off + reconnects. A connect failure at
+/// boot (NATS not yet ready) returns `Err` here → the supervisor retries, never exits.
+async fn connect_and_consume(state: &AppState, nats_url: &str) -> Result<(), AppError> {
     let client = shared_events::connect(nats_url)
         .await
         .map_err(|e| AppError::Internal(format!("NATS connect failed: {e}")))?;
@@ -82,7 +114,7 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
             continue;
         }
 
-        match handle_event(&state, message.payload.as_ref()).await {
+        match handle_event(state, message.payload.as_ref()).await {
             Ok(()) => {
                 if let Err(e) = message.ack().await {
                     tracing::warn!("ack failed: {e}");
@@ -137,8 +169,13 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     // Maintain the hourly check-in reminder ledger (N3a) from the booking lifecycle events that
     // already flow here — atomically with the event_id claim (so a redelivery is a no-op, never a
     // double reset/wipe). Independent of `plan`: `booking.progress_reported` notifies no one yet
-    // carries a ledger op (record the check-in), `booking.arrived` carries both.
-    let ledger_op = domain::checkin::ledger_op_for_event(&envelope.event_type, &envelope.payload);
+    // carries a ledger op (record the check-in), `booking.arrived` carries both. `occurred_at` is
+    // threaded through so the repo can refuse to reopen a row an OUT-OF-ORDER completion closed.
+    let ledger_op = domain::checkin::ledger_op_for_event(
+        &envelope.event_type,
+        &envelope.payload,
+        envelope.occurred_at,
+    );
 
     match repo::process_event(
         &state.db,
@@ -151,8 +188,19 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
     {
         Processed::Created(recipient) => {
             if let Some(plan) = plan {
-                let tokens = repo::user_tokens(&state.db, recipient).await?;
-                state
+                // Push is BEST-EFFORT — mirrors the fan-out (`dispatch_to_guards`) and the
+                // payment.completed dual-recipient paths: the durable in-app `notification_logs`
+                // row is ALREADY committed under the event_id claim, so on a transient FCM/DB
+                // error we LOG and ACK rather than propagate (`?`) a NACK. NACKing here is worse
+                // than useless: the redelivery hits `Processed::Duplicate`, SKIPS the push, and
+                // acks anyway — so the old `?` both DROPPED the push AND burned a pointless
+                // redelivery cycle (deep-review LOW). The recipient still gets the in-app row;
+                // only the proactive push is missed on that rare blip. `unwrap_or_default` on the
+                // token lookup matches the sibling paths (a DB blip → no tokens → no push, logged).
+                let tokens = repo::user_tokens(&state.db, recipient)
+                    .await
+                    .unwrap_or_default();
+                if let Err(e) = state
                     .pusher
                     .push(&PushMessage {
                         tokens,
@@ -160,7 +208,13 @@ async fn process(state: &AppState, envelope: EventEnvelope<Value>) -> Result<(),
                         body: plan.body,
                         data: plan.data,
                     })
-                    .await?;
+                    .await
+                {
+                    tracing::warn!(
+                        recipient = %recipient,
+                        "single-recipient push failed (best-effort; in-app row committed): {e}"
+                    );
+                }
             }
         }
         Processed::Ignored => tracing::debug!("no notification mapping; marked processed"),

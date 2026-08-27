@@ -14,11 +14,19 @@ abstract class ChatFeed {
   /// refused send is surfaced to the user instead of vanishing silently.
   Stream<ChatWsError> get errors;
 
+  /// Connection liveness edges (`true` on open, `false` on drop). The hub replays no history on
+  /// (re)connect, so the [ChatController] re-pulls the message page on each reconnect edge to
+  /// recover frames missed while the socket was down.
+  Stream<bool> get connectionChanges;
+
   Future<void> connect();
 
   /// Send a message frame. `conversationId` travels IN the frame (it is NEVER in the URL — the
   /// contract rule). For media, `content` carries the attachment id and [type] is image/video.
-  void sendMessage({
+  ///
+  /// Returns `true` when the frame reached a live socket, `false` when the socket was down and the
+  /// frame was dropped — the caller keeps the user's text instead of silently destroying it.
+  bool sendMessage({
     required String conversationId,
     String? content,
     required ChatMessageType type,
@@ -78,16 +86,19 @@ class ChatSocket implements ChatFeed {
       .cast<ChatWsError>();
 
   @override
+  Stream<bool> get connectionChanges => _ws.connectionChanges;
+
+  @override
   Future<void> connect() => _ws.connect();
 
   @override
-  void sendMessage({
+  bool sendMessage({
     required String conversationId,
     String? content,
     required ChatMessageType type,
     required ChatRole senderRole,
   }) {
-    _ws.send({
+    return _ws.send({
       'conversation_id': conversationId,
       if (content != null) 'content': content,
       'message_type': type.wire,

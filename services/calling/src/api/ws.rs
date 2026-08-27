@@ -9,7 +9,7 @@
 //! live socket. A non-participant or unknown call is refused (IDOR protection on the wire) —
 //! the server never trusts a client-supplied recipient.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
@@ -33,11 +33,61 @@ use crate::state::{CallDeps, Registry};
 /// short-lived (≤15 min), so this bounds how long a revoked/expired socket can linger.
 const REAUTH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Upper bound on a single inbound signaling frame/message. Signaling carries opaque SDP/ICE —
+/// large enough for a full offer/answer with bundled candidates, far below tungstenite's 64 MiB
+/// default, which would otherwise let an authed socket push a memory-DoS payload on upgrade.
+const MAX_WS_FRAME_BYTES: usize = 64 * 1024;
+
+/// Per-connection inbound-frame budget: a generous burst (trickle-ICE can emit many candidates
+/// back-to-back at call setup) then [`FRAME_REFILL_PER_SEC`]/s sustained. Each signaling frame
+/// costs a DB participant lookup, so this bounds how fast one authed socket can drive that query.
+const FRAME_BURST: u32 = 120;
+const FRAME_REFILL_PER_SEC: f64 = 30.0;
+
 /// Inbound signaling frame from a client.
 #[derive(Debug, Deserialize)]
 struct ClientSignal {
     call_id: Uuid,
     signal: Value,
+}
+
+/// A per-connection token-bucket rate limiter for inbound WS data frames. Pure + time-injectable
+/// (`allow_at`) so it unit-tests without a clock. Refills `refill_per_sec` tokens/second up to
+/// `capacity`; each inbound frame consumes one. An empty bucket == abuse.
+struct FrameRateLimiter {
+    tokens: f64,
+    capacity: f64,
+    refill_per_sec: f64,
+    last: Instant,
+}
+
+impl FrameRateLimiter {
+    fn new(capacity: u32, refill_per_sec: f64) -> Self {
+        Self {
+            tokens: f64::from(capacity),
+            capacity: f64::from(capacity),
+            refill_per_sec,
+            last: Instant::now(),
+        }
+    }
+
+    /// Consume one token at the current instant. `true` = within budget, `false` = abuse.
+    fn allow(&mut self) -> bool {
+        self.allow_at(Instant::now())
+    }
+
+    /// Testable core: refill by elapsed wall-time since the last call, then take one token.
+    fn allow_at(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// GET /ws/call — authenticate the Bearer on upgrade, then run the signaling session.
@@ -56,7 +106,11 @@ pub async fn ws_call<S: CallDeps>(
     let registry = state.registry().clone();
     let redis = state.redis_conn().clone();
     let decoding_key = state.decoding_key().clone();
-    ws.on_upgrade(move |socket| session(socket, uid, token, db, registry, redis, decoding_key))
+    // Cap inbound frames hard (signaling frames are small); replaces tungstenite's 64 MiB default
+    // so an authed socket can't push a memory-pressure payload on upgrade.
+    ws.max_message_size(MAX_WS_FRAME_BYTES)
+        .max_frame_size(MAX_WS_FRAME_BYTES)
+        .on_upgrade(move |socket| session(socket, uid, token, db, registry, redis, decoding_key))
 }
 
 /// The same token the `AuthUser` extractor validated (Bearer header, else `access_token`
@@ -94,6 +148,10 @@ async fn session(
     let mut reauth = tokio::time::interval(REAUTH_INTERVAL);
     reauth.tick().await; // consume the immediate first tick
 
+    // Bound how fast this socket can drive signaling work — every inbound frame costs a DB
+    // participant lookup, so an unrate-limited flood is a write-amplified DB DoS.
+    let mut limiter = FrameRateLimiter::new(FRAME_BURST, FRAME_REFILL_PER_SEC);
+
     tracing::info!(user = %uid, "ws signaling session open");
 
     loop {
@@ -110,6 +168,13 @@ async fn session(
             // Inbound: a frame from this client.
             incoming = stream.next() => match incoming {
                 Some(Ok(Message::Text(text))) => {
+                    // Rate-limit BEFORE the DB participant lookup so a flood can't be amplified
+                    // into unbounded queries. Over budget → the socket is closed.
+                    if !limiter.allow() {
+                        tracing::warn!(user = %uid, "ws signaling inbound frame flood; closing session");
+                        let _ = sink.send(Message::Close(None)).await;
+                        break;
+                    }
                     handle_signal(&db, &registry, uid, text.as_str()).await;
                 }
                 Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
@@ -245,6 +310,32 @@ mod tests {
     use tower::ServiceExt;
 
     const SECRET: &str = "user-secret-at-least-64-characters-long-for-the-hs256-callws-test!!!!";
+
+    #[test]
+    fn frame_rate_limiter_bursts_then_throttles_then_refills() {
+        let start = Instant::now();
+        let mut rl = FrameRateLimiter::new(3, 3.0);
+        // The full burst passes at one instant…
+        for _ in 0..3 {
+            assert!(rl.allow_at(start));
+        }
+        // …then the bucket is empty → a further frame at the same instant is abuse (denied).
+        assert!(!rl.allow_at(start));
+        // After 1s at 3 tokens/s it refills, so signaling resumes.
+        assert!(rl.allow_at(start + Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn frame_rate_limiter_caps_at_capacity() {
+        let start = Instant::now();
+        let mut rl = FrameRateLimiter::new(FRAME_BURST, FRAME_REFILL_PER_SEC);
+        // Idle far past a full refill — tokens clamp at capacity, so exactly FRAME_BURST pass.
+        let later = start + Duration::from_secs(600);
+        for _ in 0..FRAME_BURST {
+            assert!(rl.allow_at(later));
+        }
+        assert!(!rl.allow_at(later));
+    }
 
     #[derive(Clone)]
     struct StubReader;

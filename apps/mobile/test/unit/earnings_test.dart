@@ -25,6 +25,50 @@ Booking booking({
     );
 
 void main() {
+  group(
+      'GuardEarnings.hoursLabel (actual payable hours, booked-estimate annotated)',
+      () {
+    test('no reconcile → the plain booked figure', () {
+      expect(
+          GuardEarnings.hoursLabel(booking(hours: 8), isThai: true), '8 ชม.');
+      expect(
+          GuardEarnings.hoursLabel(booking(hours: 8), isThai: false), '8 hrs');
+    });
+
+    test(
+        'reconciled BELOW the booked hours → actual with the booked estimate in parens',
+        () {
+      expect(
+          GuardEarnings.hoursLabel(booking(hours: 8),
+              actualHours: {'b1': 5.5}, isThai: true),
+          '5.5 ชม. (จอง 8)');
+      expect(
+          GuardEarnings.hoursLabel(booking(hours: 8),
+              actualHours: {'b1': 5.5}, isThai: false),
+          '5.5 hrs (booked 8)');
+    });
+
+    test(
+        'reconciled EQUAL to the booked hours → plain (no redundant annotation)',
+        () {
+      expect(
+          GuardEarnings.hoursLabel(booking(hours: 8),
+              actualHours: {'b1': 8.0}, isThai: true),
+          '8 ชม.');
+    });
+
+    test('the label matches the amount: base × the SAME hours the row prints',
+        () {
+      final b = booking(hours: 8); // ฿230/h
+      // 5.5h reconciled → label "5.5" and pay 230×5.5 = ฿1,265 (both off actual hours).
+      expect(
+          GuardEarnings.hoursLabel(b, actualHours: {'b1': 5.5}, isThai: true),
+          '5.5 ชม. (จอง 8)');
+      expect(
+          GuardEarnings.jobEarningsSatang(b, actualHours: {'b1': 5.5}), 126500);
+    });
+  });
+
   group('GuardEarnings.jobEarningsSatang', () {
     test('is base_fee × hours (the design row: ฿230/h × 8h = ฿1,840)', () {
       expect(GuardEarnings.jobEarningsSatang(booking()), 184000);

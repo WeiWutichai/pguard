@@ -14,6 +14,8 @@ pub mod approved;
 /// applicant sees a distinct state + can re-apply. Separate durable from [`approved`].
 pub mod rejected;
 
+use std::time::Duration;
+
 use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
@@ -32,6 +34,9 @@ use crate::state::AppState;
 const STREAM: &str = "PGUARD_EVENTS";
 const SUBJECTS: &str = "pguard.events.>";
 const DURABLE: &str = "identity-user-compromised";
+/// Backoff between reconnect attempts when NATS is down or the stream ends (mirrors
+/// [`approved`]/[`rejected`]).
+const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
 /// Payload of `pguard.events.user.compromised`.
 #[derive(Debug, Deserialize)]
@@ -39,9 +44,25 @@ struct UserCompromised {
     user_id: Uuid,
 }
 
-/// Connect to NATS JetStream and run the consume loop. Spawned as a background task by
-/// `main`; resilient (logs and returns on fatal error).
-pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppError> {
+/// Run the `user.compromised` consumer FOREVER: (re)connect to NATS, drain, and on any
+/// connect/stream error log + back off + reconnect. Never returns under normal operation —
+/// this is the force-revoke-all security control (CLAUDE.md locked decision), so a single NATS
+/// hiccup at boot must NOT silently kill it until pod restart (deep-review MED #7). Mirrors the
+/// [`approved`]/[`rejected`] consumers' reconnect wrapper (this one was the outlier that spawned
+/// `connect_and_consume` exactly once). Spawned as a background task by `main`.
+pub async fn run_consumer(state: AppState, nats_url: &str) {
+    loop {
+        match connect_and_consume(&state, nats_url).await {
+            Ok(()) => tracing::warn!("user.compromised consumer stream ended; reconnecting"),
+            Err(e) => tracing::warn!("user.compromised consumer error: {e}; reconnecting"),
+        }
+        tokio::time::sleep(RECONNECT_INTERVAL).await;
+    }
+}
+
+/// One connect+consume session: bind the durable consumer and drain until the stream ends or a
+/// fatal error. Returns to [`run_consumer`], which reconnects.
+async fn connect_and_consume(state: &AppState, nats_url: &str) -> Result<(), AppError> {
     let client = shared_events::connect(nats_url)
         .await
         .map_err(|e| AppError::Internal(format!("NATS connect failed: {e}")))?;
@@ -105,7 +126,7 @@ pub async fn run_consumer(state: AppState, nats_url: &str) -> Result<(), AppErro
             continue;
         }
 
-        match handle_event(&state, message.payload.as_ref()).await {
+        match handle_event(state, message.payload.as_ref()).await {
             Ok(()) => {
                 if let Err(e) = message.ack().await {
                     tracing::warn!("ack failed: {e}");

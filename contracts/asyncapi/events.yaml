@@ -56,11 +56,14 @@ channels:
   bookingCancelled:
     address: pguard.events.booking.cancelled
     description: >-
-      The CUSTOMER (or an admin) cancelled a PRE-ARRIVAL booking → terminal `cancelled`.
+      The CUSTOMER (or an admin) cancelled a PRE-ARRIVAL booking → terminal `cancelled` — this
+      topic also carries the customer's cancel-after-decline ACK (`declined → cancelled`).
       Producer = booking (transactional outbox, atomic with the status write). Consumers =
-      payment (FULL-REFUND when the booking was already paid) + notification. Same
-      `cancellation_reason` payload extension as `booking.declined`, differing only in the
-      code set (customer codes, not guard ones).
+      payment (refund — full, or minus the cancellation fee when `charge_cancel_fee` is true) +
+      notification. Same `cancellation_reason` payload extension as `booking.declined` (differing
+      only in the code set — customer codes, not guard ones) PLUS the `charge_cancel_fee` policy
+      flag, which decides whether payment retains the cancellation fee (only a customer's own
+      active cancel does; an admin cancel and the decline ACK are fee-free full refunds).
     messages: { cancelled: { $ref: '#/components/messages/BookingCancellation' } }
   bookingCompleted:
     address: pguard.events.booking.completed
@@ -369,6 +372,16 @@ components:
                     Free-text detail (trimmed, ≤ 500 characters). OMITTED when none was given;
                     always present when `cancellation_reason` is `other` (the API enforces it —
                     400 CANCEL_NOTE_REQUIRED).
+                charge_cancel_fee:
+                  type: boolean
+                  description: >-
+                    Cancellation-fee policy flag — present ONLY on `booking.cancelled` (never on
+                    `booking.declined`). TRUE only for a genuine CUSTOMER-initiated cancel of a
+                    still-active booking (requested/accepted/en_route) BEFORE arrival; FALSE for an
+                    ADMIN-initiated cancel and for the customer's cancel-after-decline ACK
+                    (declined → cancelled). Payment charges the cancellation fee IFF this is TRUE,
+                    and DEFAULTS it to FALSE when the key is absent (an old event) — so a guard
+                    withdrawal or an admin/ops cancel is always a full, fee-free refund.
 
     EnvelopeOf_BookingCompleted:
       allOf:

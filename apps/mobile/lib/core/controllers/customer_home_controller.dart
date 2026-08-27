@@ -4,6 +4,7 @@ import '../models/booking.dart';
 import '../models/money.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
+import 'session_controller.dart';
 
 part 'customer_home_controller.g.dart';
 
@@ -18,10 +19,20 @@ class CustomerHomeController extends _$CustomerHomeController {
   Future<List<Booking>> build() async {
     // GET /bookings returns rows where customer_id = me OR guard_id = me — i.e. BOTH roles for a
     // dual-role account. The customer surfaces (dashboard + "Hirer history") must show ONLY the
-    // user's own hires, never their accepted GUARD jobs, so scope to customer_id = me. `me` is the
-    // token subject (the current account) — read raw so it works without a live Session (+ tests).
-    final token = await ref.read(appStoreProvider).readAccessToken();
-    final me = token != null ? Jwt.subject(token) : null;
+    // user's own hires, never their accepted GUARD jobs, so scope to customer_id = me.
+    //
+    // `me` is the SESSION's user id — the single identity source the rest of the app uses. It used
+    // to be re-derived from `Jwt.subject(readAccessToken())`, a SECOND source that can diverge: a
+    // token read that returns null mid-rotation (or a token that fails to decode) yields `me == null`
+    // → the fail-closed branch below empties the customer's ENTIRE booking list (no ongoing card, an
+    // empty history) even though the fetch itself succeeded via the interceptor's proactive refresh.
+    // The guard sibling was already migrated off the raw-token source for exactly this on-device bug.
+    // Fall back to the JWT subject only when there is no live session user (e.g. a bare unit test).
+    var me = ref.read(sessionProvider).user?.userId;
+    if (me == null) {
+      final token = await ref.read(appStoreProvider).readAccessToken();
+      me = token != null ? Jwt.subject(token) : null;
+    }
     final data = await ref.read(pguardApiProvider).get('/bookings');
     // Fail CLOSED: if the subject can't be resolved, show nothing rather than the unfiltered OR-list
     // (which would leak the account's accepted GUARD jobs onto the customer surface).

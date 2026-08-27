@@ -387,4 +387,89 @@ void main() {
     expect(pullsAfter, greaterThan(pullsBefore),
         reason: 'the nudge forced a fresh progress-reports fetch');
   });
+
+  // ---- Reconnect re-pull must never rewind a newer/terminal status (deep-review) ----
+
+  test(
+      'a reconnect re-pull does NOT rewind a locally-TERMINAL booking to a stale '
+      'live snapshot (a cancelled job never springs back to arrived)',
+      () async {
+    // The server snapshot LAGS the cancel (a not-yet-consistent read still says `arrived`).
+    final feed = FakeBookingFeed();
+    final api = FakeApi(
+        onGet: (_, __) async => {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'arrived',
+              'guard_id': 'g1',
+            });
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(bookingStatusControllerProvider('b1').future);
+
+    // The customer cancels — a terminal frame folds in.
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.cancelled,
+        occurredAt: DateTime.utc(2026, 6, 5, 15)));
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.cancelled);
+
+    // The socket reconnects → the re-pull returns the STALE `arrived` snapshot.
+    feed.emitConnection(false);
+    feed.emitConnection(true);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.cancelled,
+        reason:
+            'a terminal booking must never be un-cancelled by a slower snapshot');
+  });
+
+  test(
+      'once terminal, an at-least-once REDELIVERED earlier non-terminal WS frame is '
+      'ignored (a dead job stays dead)', () async {
+    final feed = FakeBookingFeed();
+    final api = FakeApi(
+        onGet: (_, __) async => {
+              'id': 'b1',
+              'customer_id': 'c1',
+              'status': 'arrived',
+              'guard_id': 'g1',
+            });
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      bookingStatusFeedBuilderProvider.overrideWithValue((id, tp) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(bookingStatusControllerProvider('b1'), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(bookingStatusControllerProvider('b1').future);
+
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.completed,
+        occurredAt: DateTime.utc(2026, 6, 5, 16)));
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.completed);
+
+    // A redelivered EARLIER `en_route` frame must not resurrect the job.
+    feed.emit(BookingStatusEvent(
+        bookingId: 'b1',
+        status: BookingStatus.enRoute,
+        occurredAt: DateTime.utc(2026, 6, 5, 14)));
+    await Future<void>.delayed(Duration.zero);
+    expect(c.read(bookingStatusControllerProvider('b1')).value?.status,
+        BookingStatus.completed,
+        reason: 'a terminal state is final — a stale live frame is dropped');
+  });
 }

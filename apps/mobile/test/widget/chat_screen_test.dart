@@ -135,6 +135,47 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  // Deep-review: a send while the WS is DOWN must not silently destroy the message. The frame is
+  // dropped, so the composer KEEPS the text (no clear) and a "couldn't send" snackbar is shown —
+  // instead of the text vanishing from both the composer and the thread with no error.
+  testWidgets(
+      'send while the socket is down keeps the composer text + shows a hint '
+      '(no silent loss)', (tester) async {
+    final feed = FakeChatFeed()
+      ..sendResult = false; // socket down → frame dropped
+    final api = FakeApi(
+      onGet: (_, __) async => <Map<String, dynamic>>[],
+      onPut: (_, __) async => {'success': true},
+    );
+
+    await tester.pumpWidget(host(api, feed, readOnly: false));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    await tester.enterText(
+        find.byType(TextField), 'ประตูหลังเปิดไว้ เข้าทางนั้น');
+    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+
+    // The frame was attempted but reported dropped → the text is preserved for a retry.
+    expect(feed.sent, hasLength(1));
+    expect(find.text('ประตูหลังเปิดไว้ เข้าทางนั้น'), findsOneWidget,
+        reason: 'the composer must NOT be cleared when the frame was dropped');
+    expect(find.textContaining('ส่งข้อความไม่สำเร็จ'), findsOneWidget,
+        reason: 'the drop is surfaced (snackbar), never silent');
+
+    // When the socket recovers, the same send clears the composer.
+    feed.sendResult = true;
+    await tester.tap(find.byIcon(Icons.send_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 10));
+    expect(find.text('ประตูหลังเปิดไว้ เข้าทางนั้น'), findsNothing,
+        reason: 'a delivered frame clears the composer as before');
+
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('read-only conversation hides the composer + shows locked banner',
       (tester) async {
     final feed = FakeChatFeed();

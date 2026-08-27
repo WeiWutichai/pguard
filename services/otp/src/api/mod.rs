@@ -50,11 +50,18 @@ const JTI_SKEW_BUFFER_SECS: i64 = 30;
 pub async fn challenge(
     State(state): State<AppState>,
 ) -> Result<Json<ApiResponse<OtpChallengeResponse>>, AppError> {
-    // Scope the (non-Send) ThreadRng so it is dropped before any await.
+    // Scope the (non-Send) ThreadRng so it is dropped before any await. Widened operand range
+    // (10..90) + a mixed add/subtract operation (deep-review LOW #37) enlarge the answer space and
+    // break the old fixed "two small addends" pattern, keeping the two-operand accessibility.
     let challenge = {
         use rand::Rng;
         let mut rng = rand::thread_rng();
-        domain::generate_captcha(rng.gen_range(1..20), rng.gen_range(1..20))
+        let op = if rng.gen_bool(0.5) {
+            domain::CaptchaOp::Add
+        } else {
+            domain::CaptchaOp::Sub
+        };
+        domain::generate_captcha(rng.gen_range(10..90), rng.gen_range(10..90), op)
     };
     let challenge_id = uuid::Uuid::new_v4().to_string();
 

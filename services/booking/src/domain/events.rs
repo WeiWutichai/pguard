@@ -85,18 +85,30 @@ fn payload(booking_id: Uuid, customer_id: Uuid, guard_id: Option<Uuid>) -> Value
 /// client wrote one, `cancellation_note`. The note key is OMITTED when `None` (the `guard_id`
 /// precedent — an absent note is no key at all, not a JSON null), so a consumer can render
 /// "reason only" without null-checking. Other statuses ignore it.
+///
+/// `is_admin` + `from` decide the `charge_cancel_fee` boolean that rides ONLY the
+/// `booking.cancelled` event (the booking side of the shared cancellation-fee policy): it is
+/// `true` ONLY for a genuine CUSTOMER-initiated cancel of a still-active booking
+/// (`requested`/`accepted`/`en_route` → `cancelled`) BEFORE arrival, and `false` for (a) an
+/// ADMIN-initiated cancel (`is_admin`), (b) the customer's cancel-after-decline ACK
+/// (`from == Declined`), and — by construction — (c) a guard decline/withdraw (that emits
+/// `booking.declined`, a different topic that never carries the flag). Payment charges the
+/// cancellation fee IFF this boolean is `true`, defaulting to `false` when the field is absent
+/// (an old event). This is what keeps "admin cancel charges customer" and the
+/// decline-vs-ack fee reordering from ever charging a fee that was not the customer's own choice.
 #[allow(clippy::too_many_arguments)]
 pub fn event_for_status(
-    // The source status. No longer gates the topic (target status alone decides), but kept in the
-    // signature so callers stay explicit about the WHOLE transition and a future from-dependent
-    // rule needs no signature churn. Underscore-prefixed: intentionally unused today.
-    _from: BookingStatus,
+    // The source status. It no longer gates the TOPIC (target status alone decides), but it now
+    // decides the `charge_cancel_fee` flag on a `booking.cancelled` (an ACK of a decline comes
+    // FROM `declined` and must never carry a fee), so it is a live input again, not decoration.
+    from: BookingStatus,
     new_status: BookingStatus,
     booking_id: Uuid,
     customer_id: Uuid,
     guard_id: Option<Uuid>,
     completion: Option<CompletionInfo>,
     cancellation: Option<&Cancellation>,
+    is_admin: bool,
 ) -> Option<EventMapping> {
     let topic = match new_status {
         BookingStatus::Accepted => topics::BOOKING_JOB_ACCEPTED,
@@ -138,6 +150,19 @@ pub fn event_for_status(
                 payload["cancellation_note"] = json!(note);
             }
         }
+    }
+    // Cancellation-fee policy (booking side): `charge_cancel_fee` rides ONLY `booking.cancelled`.
+    // It is TRUE exclusively for a genuine CUSTOMER-initiated cancel of a still-active booking
+    // BEFORE arrival — i.e. NOT an admin cancel (`is_admin`) and NOT the ack of a guard decline
+    // (`from == Declined`, whose fee-free full refund was already issued on `booking.declined`).
+    // Payment reads this boolean and charges the fee IFF true (default false when absent).
+    if new_status == BookingStatus::Cancelled {
+        let charge_cancel_fee = !is_admin
+            && matches!(
+                from,
+                BookingStatus::Requested | BookingStatus::Accepted | BookingStatus::EnRoute
+            );
+        payload["charge_cancel_fee"] = json!(charge_cancel_fee);
     }
     Some(EventMapping { topic, payload })
 }
@@ -230,6 +255,7 @@ mod tests {
             Some(guard),
             None,
             None,
+            false,
         )
         .expect("accepted must emit");
         assert_eq!(m.topic, topics::BOOKING_JOB_ACCEPTED);
@@ -248,6 +274,7 @@ mod tests {
             None,
             None,
             None,
+            false,
         )
         .expect("declined must emit");
         assert_eq!(m.topic, topics::BOOKING_DECLINED);
@@ -271,7 +298,8 @@ mod tests {
                 c,
                 g,
                 None,
-                None
+                None,
+                false
             )
             .unwrap()
             .topic,
@@ -286,7 +314,8 @@ mod tests {
                 c,
                 g,
                 None,
-                None
+                None,
+                false
             )
             .unwrap()
             .topic,
@@ -300,7 +329,8 @@ mod tests {
                 c,
                 g,
                 None,
-                None
+                None,
+                false
             )
             .unwrap()
             .topic,
@@ -323,6 +353,7 @@ mod tests {
             Some(g),
             None,
             None,
+            false,
         )
         .expect("pending_completion must emit");
         assert_eq!(m.topic, topics::BOOKING_COMPLETION_REQUESTED);
@@ -351,6 +382,7 @@ mod tests {
             Some(g),
             None,
             None,
+            false,
         )
         .expect("completion-reject bounce must emit");
         assert_eq!(m.topic, topics::BOOKING_ARRIVED);
@@ -379,6 +411,7 @@ mod tests {
                 tip,
             }),
             None,
+            false,
         )
         .expect("completed must emit");
         assert_eq!(m.topic, topics::BOOKING_COMPLETED);
@@ -407,6 +440,7 @@ mod tests {
                 tip: Decimal::ZERO,
             }),
             None,
+            false,
         )
         .expect("completed must emit");
         assert_eq!(m.payload["booked_hours"], json!(3));
@@ -433,6 +467,7 @@ mod tests {
                 tip: Decimal::ZERO,
             }),
             None,
+            false,
         )
         .expect("accepted must emit");
         assert!(m.payload.get("booked_hours").is_none());
@@ -452,10 +487,117 @@ mod tests {
             Some(g),
             None,
             None,
+            false,
         )
         .expect("cancelled must emit");
         assert_eq!(m.topic, topics::BOOKING_CANCELLED);
         assert_eq!(m.payload["guard_id"], json!(g));
+        // A customer cancel of a still-active (pre-arrival) booking charges the cancellation fee.
+        assert_eq!(m.payload["charge_cancel_fee"], json!(true));
+    }
+
+    // ----- the cancellation-fee policy flag rides ONLY booking.cancelled -----
+
+    #[test]
+    fn customer_active_cancel_charges_the_fee() {
+        // A genuine customer-initiated cancel of a still-active pre-arrival booking
+        // (requested/accepted/en_route → cancelled) is the ONE case that carries a fee.
+        for from in [
+            BookingStatus::Requested,
+            BookingStatus::Accepted,
+            BookingStatus::EnRoute,
+        ] {
+            let m = event_for_status(
+                from,
+                BookingStatus::Cancelled,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                None,
+                Some(&Cancellation {
+                    reason: "changed_plan",
+                    note: None,
+                }),
+                false, // is_admin
+            )
+            .expect("cancelled must emit");
+            assert_eq!(
+                m.payload["charge_cancel_fee"],
+                json!(true),
+                "{from} → cancelled by the customer must charge the fee"
+            );
+        }
+    }
+
+    #[test]
+    fn admin_cancel_never_charges_the_fee() {
+        // An admin cancels on the customer's behalf (support/ops) — the customer did not choose
+        // to cancel, so no fee, even from an otherwise fee-bearing active state.
+        let m = event_for_status(
+            BookingStatus::EnRoute,
+            BookingStatus::Cancelled,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            None,
+            Some(&Cancellation {
+                reason: "changed_plan",
+                note: None,
+            }),
+            true, // is_admin
+        )
+        .expect("cancelled must emit");
+        assert_eq!(m.payload["charge_cancel_fee"], json!(false));
+    }
+
+    #[test]
+    fn cancel_after_decline_ack_never_charges_the_fee() {
+        // The customer's ACK of a guard withdrawal (declined → cancelled) full-refunds with no
+        // fee: the guard ended the job, not the customer. `from == Declined` is the tell, whoever
+        // drives it.
+        for is_admin in [false, true] {
+            let m = event_for_status(
+                BookingStatus::Declined,
+                BookingStatus::Cancelled,
+                Uuid::new_v4(),
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                None,
+                None,
+                is_admin,
+            )
+            .expect("cancelled must emit");
+            assert_eq!(
+                m.payload["charge_cancel_fee"],
+                json!(false),
+                "the decline ACK must never charge a fee (is_admin={is_admin})"
+            );
+        }
+    }
+
+    #[test]
+    fn declined_event_carries_no_fee_flag() {
+        // The guard-withdraw event is a DIFFERENT topic (booking.declined) and never carries the
+        // fee flag — payment full-refunds it, and defaults the absent flag to false.
+        let m = event_for_status(
+            BookingStatus::EnRoute,
+            BookingStatus::Declined,
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            None,
+            Some(&Cancellation {
+                reason: "sick",
+                note: None,
+            }),
+            false,
+        )
+        .expect("declined must emit");
+        assert_eq!(m.topic, topics::BOOKING_DECLINED);
+        assert!(
+            m.payload.get("charge_cancel_fee").is_none(),
+            "charge_cancel_fee rides only booking.cancelled, not booking.declined"
+        );
     }
 
     // ----- the cancellation reason rides the two terminal "did not happen" events -----
@@ -473,12 +615,15 @@ mod tests {
                 reason: "other",
                 note: Some("ลูกค้าไม่อยู่บ้าน".to_string()),
             }),
+            false,
         )
         .expect("cancelled must emit");
         assert_eq!(m.topic, topics::BOOKING_CANCELLED);
         // The stable CODE rides the wire — notification/the app localize it.
         assert_eq!(m.payload["cancellation_reason"], json!("other"));
         assert_eq!(m.payload["cancellation_note"], json!("ลูกค้าไม่อยู่บ้าน"));
+        // A customer en_route cancel carries the fee flag.
+        assert_eq!(m.payload["charge_cancel_fee"], json!(true));
     }
 
     #[test]
@@ -494,6 +639,7 @@ mod tests {
                 reason: "sick",
                 note: None,
             }),
+            false,
         )
         .expect("declined must emit");
         assert_eq!(m.topic, topics::BOOKING_DECLINED);
@@ -527,6 +673,7 @@ mod tests {
                 Some(Uuid::new_v4()),
                 None,
                 Some(&c),
+                false,
             )
             .expect("must emit");
             assert!(
@@ -639,7 +786,8 @@ mod tests {
             Uuid::new_v4(),
             None,
             None,
-            None
+            None,
+            false
         )
         .is_none());
     }

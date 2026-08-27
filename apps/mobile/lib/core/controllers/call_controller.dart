@@ -5,9 +5,11 @@ import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../calling/call_engine.dart';
 import '../models/call.dart';
+import '../network/api_error_l10n.dart';
 import '../network/api_exception.dart';
 import '../network/sockets/call_socket.dart';
 import '../providers.dart';
+import 'locale_controller.dart';
 
 part 'call_controller.g.dart';
 
@@ -63,6 +65,10 @@ class CallController extends _$CallController {
     return CallState.idle;
   }
 
+  /// Whether the app is rendering in Thai — used to localize the transport/generic failure text this
+  /// controller stores in [CallState.error] (rendered raw on the call-ended screen).
+  bool get _isThai => ref.read(localeControllerProvider) == AppLocale.th;
+
   /// The media engine for the VIEW to bind renderers to (local/remote streams). The controller
   /// owns the call lifecycle; the screen only renders the streams. `null` before a call starts.
   CallEngine? get engine => _engine;
@@ -111,11 +117,15 @@ class CallController extends _$CallController {
       // caller hangs on "calling". Idempotent: the callee dedupes a duplicate offer (_maybeAnswering).
       if (_peerReady) _resendOffer();
     } on ApiException catch (e) {
-      _fail(e.message);
+      // Localize the transport/5xx failure (offline → hardcoded English "Network error…" was leaking
+      // into the Thai call-ended screen — deep-review).
+      _fail(localizeApiError(_isThai, e));
     } on CallException catch (e) {
+      // A media/permission error carries a specific message (e.g. "Microphone permission…") — kept
+      // verbatim; localizing it into Thai codes is a larger refactor (see api_error_l10n).
       _fail(e.message);
     } catch (_) {
-      _fail('Could not start the call');
+      _fail(_isThai ? 'เริ่มการโทรไม่สำเร็จ' : 'Could not start the call');
     }
   }
 
@@ -157,11 +167,11 @@ class CallController extends _$CallController {
       _sendSignal(CallSignal.ready());
       _flushLocalIce();
     } on ApiException catch (e) {
-      _fail(e.message);
+      _fail(localizeApiError(_isThai, e));
     } on CallException catch (e) {
       _fail(e.message);
     } catch (_) {
-      _fail('Could not load the call');
+      _fail(_isThai ? 'รับสายไม่สำเร็จ' : 'Could not load the call');
     }
   }
 

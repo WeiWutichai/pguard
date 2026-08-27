@@ -17,11 +17,16 @@ import { LoginHero } from "./hero";
  * Admin sign-in — hi-fi split layout (brand hero left, 380px form card right; stacks below
  * 900px where the hero hides, per the spec).
  *
- * AUTH FLOW (unchanged): POSTs the gateway login (cookie path) — on success identity sets the
- * httpOnly `access_token` / `refresh_token` cookies (we never read tokens from the body), then
- * we soft-navigate (`router.replace` + `router.refresh`) so the (dashboard) server layout
- * re-runs and re-resolves the session from the just-set cookie. Errors are generic
- * (no account enumeration), rendered with role="alert".
+ * AUTH FLOW: POSTs the gateway login (cookie path). Two outcomes on a 200:
+ *   1. No 2FA → identity set the httpOnly `access_token` / `refresh_token` cookies (we never read
+ *      tokens from the body); we soft-navigate (`router.replace` + `router.refresh`) so the
+ *      (dashboard) server layout re-runs and re-resolves the session from the just-set cookie.
+ *   2. 2FA enabled → the body is a `TwoFactorChallenge` (`{ two_factor_required, challenge_token }`)
+ *      with NO cookies. We switch to the code step and complete login at `POST /auth/2fa/verify`
+ *      (challenge_token + a TOTP `code` OR a `recovery_code`); THAT response sets the cookies.
+ *      Without this step a 2FA-enabled admin bounced silently on the /dashboard cookie check —
+ *      a permanent self-lockout (they couldn't reach the console to disable 2FA).
+ * Errors are generic (no account enumeration), rendered with role="alert".
  *
  * Mockup deltas (honest gaps — identity exposes only /auth/{register,login,refresh,logout,me}):
  * - The mockup's tab bar (เข้าสู่ระบบ / ลืมรหัสผ่าน / ตั้งรหัสใหม่ / 2FA) and the forgot/reset/2FA
@@ -39,11 +44,24 @@ export function LoginForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(false);
 
+  // 2FA second step: set once login returns a TwoFactorChallenge (no cookies yet). While
+  // `challengeToken` is non-null we render the code step instead of the credential form.
+  const [challengeToken, setChallengeToken] = useState<string | null>(null);
+  const [code, setCode] = useState("");
+  const [useRecovery, setUseRecovery] = useState(false);
+  const [twoFaError, setTwoFaError] = useState(false);
+
+  function completeLogin() {
+    // Cookies are set by identity (login or 2fa/verify); re-run the server layout to pick them up.
+    router.replace("/dashboard");
+    router.refresh();
+  }
+
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
     setError(false);
-    const { error: apiError } = await identityApi.POST("/auth/login", {
+    const { data, error: apiError } = await identityApi.POST("/auth/login", {
       body: { identifier, password },
     });
     if (apiError) {
@@ -51,8 +69,44 @@ export function LoginForm() {
       setBusy(false);
       return;
     }
-    router.replace("/dashboard");
-    router.refresh();
+    // 200 with a TwoFactorChallenge → no cookies were set; hand off to the code step.
+    const payload = data?.data;
+    if (payload && "two_factor_required" in payload && payload.two_factor_required) {
+      setChallengeToken(payload.challenge_token);
+      setCode("");
+      setUseRecovery(false);
+      setTwoFaError(false);
+      setBusy(false);
+      return;
+    }
+    completeLogin();
+  }
+
+  async function onVerify(e: FormEvent) {
+    e.preventDefault();
+    if (!challengeToken) return;
+    setBusy(true);
+    setTwoFaError(false);
+    const trimmed = code.trim();
+    // 2fa/verify takes EITHER a TOTP `code` OR a one-time `recovery_code`.
+    const body = useRecovery
+      ? { challenge_token: challengeToken, recovery_code: trimmed }
+      : { challenge_token: challengeToken, code: trimmed };
+    const { error: apiError } = await identityApi.POST("/auth/2fa/verify", { body });
+    if (apiError) {
+      setTwoFaError(true);
+      setBusy(false);
+      return;
+    }
+    completeLogin();
+  }
+
+  function backToCredentials() {
+    setChallengeToken(null);
+    setCode("");
+    setUseRecovery(false);
+    setTwoFaError(false);
+    setBusy(false);
   }
 
   return (
@@ -67,6 +121,69 @@ export function LoginForm() {
 
       <section className="flex items-center justify-center p-10 max-[900px]:p-5">
         <div className="w-full max-w-[380px]">
+          {challengeToken ? (
+            <>
+              <h1 className="mb-1.5 text-[25px] font-semibold tracking-[-0.01em] text-text-strong">
+                {c.twoFaTitle}
+              </h1>
+              <p className="mb-7 text-sm text-muted">{c.twoFaSubtitle}</p>
+
+              <form onSubmit={onVerify}>
+                <Field label={useRecovery ? c.twoFaRecoveryLabel : c.twoFaCodeLabel}>
+                  <Input
+                    autoFocus
+                    autoComplete="one-time-code"
+                    inputMode={useRecovery ? "text" : "numeric"}
+                    maxLength={useRecovery ? 32 : 6}
+                    value={code}
+                    onChange={(e) => {
+                      setCode(useRecovery ? e.target.value : e.target.value.replace(/\D/g, ""));
+                      setTwoFaError(false);
+                    }}
+                    placeholder={useRecovery ? "xxxx-xxxx" : "123456"}
+                    className={useRecovery ? "font-mono" : "font-mono tracking-[0.3em]"}
+                    required
+                  />
+                </Field>
+
+                <div className="mb-4 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setUseRecovery((v) => !v);
+                      setCode("");
+                      setTwoFaError(false);
+                    }}
+                    className="cursor-pointer text-[13.5px] font-semibold text-brand-int"
+                  >
+                    {useRecovery ? c.twoFaUseCode : c.twoFaUseRecovery}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={backToCredentials}
+                    className="cursor-pointer text-[13.5px] text-muted"
+                  >
+                    {c.twoFaBack}
+                  </button>
+                </div>
+
+                {twoFaError && (
+                  <p className="mb-3 text-sm text-danger" role="alert">
+                    {c.twoFaError}
+                  </p>
+                )}
+
+                <Button
+                  type="submit"
+                  disabled={busy || code.trim().length === 0}
+                  className="w-full py-[13px]"
+                >
+                  {c.twoFaSubmit}
+                </Button>
+              </form>
+            </>
+          ) : (
+            <>
           <h1 className="mb-1.5 text-[25px] font-semibold tracking-[-0.01em] text-text-strong">
             {c.formTitle}
           </h1>
@@ -134,6 +251,8 @@ export function LoginForm() {
               {t("login.submit")}
             </Button>
           </form>
+            </>
+          )}
         </div>
       </section>
     </main>

@@ -37,8 +37,8 @@ use crate::models::{CustomerSpend, PaymentResponse, RefundQueueItem, RevenuePoin
 /// "the payable figure", whatever era the row is from.
 const PAYMENT_COLUMNS: &str = "id, booking_id, customer_id, guard_id, amount, expected_total, \
      subtotal, vat_amount, COALESCE(subtotal + vat_amount, amount) AS grand_total, \
-     cancellation_fee_charged, payment_method, status::text AS status, final_amount, \
-     refund_amount, actual_hours, refund_status, paid_at, created_at, updated_at";
+     cancellation_fee_charged, overpaid_amount, payment_method, status::text AS status, \
+     final_amount, refund_amount, actual_hours, refund_status, paid_at, created_at, updated_at";
 
 // ----- Outbox row (for the relay) -----
 
@@ -342,6 +342,22 @@ async fn completed_for_booking(
         .await?)
 }
 
+/// Read the existing completed payment for a booking INSIDE the caller's transaction (so the
+/// second-slip decision sees a consistent view with the ON CONFLICT probe above it).
+async fn completed_for_booking_tx(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    booking_id: Uuid,
+) -> Result<Option<PaymentResponse>, AppError> {
+    let sql = format!(
+        "SELECT {PAYMENT_COLUMNS} FROM payment.payments \
+         WHERE booking_id = $1 AND status = 'completed' LIMIT 1"
+    );
+    Ok(sqlx::query_as::<_, PaymentResponse>(&sql)
+        .bind(booking_id)
+        .fetch_optional(&mut **tx)
+        .await?)
+}
+
 // ----- Writes -----
 
 /// Outcome of an idempotent PRE-PAY: a freshly-inserted payment (we emitted `payment.completed`)
@@ -441,9 +457,14 @@ pub enum SlipPayOutcome {
     /// First slip for this booking — the payment was stamped paid + the slip recorded + the
     /// `payment.completed` event enqueued.
     Created(PaymentResponse),
-    /// Idempotent no-op: this booking was already paid (the SAME slip re-submitted, or any later
-    /// slip for an already-paid booking). The existing payment is returned; nothing re-charged.
+    /// Idempotent no-op: this booking was already paid and the SAME accepted slip was re-submitted.
+    /// The existing payment is returned; nothing re-charged.
     AlreadyPaid(PaymentResponse),
+    /// A SECOND, DIFFERENT verified transfer arrived for an already-paid booking (a customer
+    /// double-pay). The extra transfer was RECORDED as an unapplied, refundable slip (the money is
+    /// not lost) — the caller surfaces a typed conflict and KEEPS the uploaded image as evidence.
+    /// The existing (applied) payment is carried for the response.
+    ExtraTransferRecorded(PaymentResponse),
 }
 
 /// Atomically pay a booking with a VERIFIED slip — the REAL money path's write. THE MONEY PATH.
@@ -479,16 +500,23 @@ pub async fn pay_with_slip(
     correlation_id: Uuid,
 ) -> Result<SlipPayOutcome, AppError> {
     let amount = terms.breakdown.grand_total;
+    // OVERPAY: the customer may transfer MORE than the estimate (the re-validation accepts
+    // `slip_amount >= estimate`). We persist that excess so every refund path returns what was
+    // ACTUALLY transferred (`amount + overpaid_amount`), not just the estimate. `slip_amount` is
+    // rounded to the column scale; a slip below the estimate never reaches here (the handler rejects
+    // it as SLIP_AMOUNT_TOO_LOW), so this is `>= 0`.
+    let overpaid = (slip_amount.round_dp(2) - amount).max(Decimal::ZERO);
     let mut tx = db.begin().await?;
 
     // 1) idempotent payment insert. ON CONFLICT (one completed per booking) DO NOTHING. Identical
     //    money shape to the simulated pre-pay: `amount` = `expected_total` = the VAT-INCLUSIVE
-    //    grand total, with its split + the booking's commission/cancellation snapshot alongside.
+    //    grand total, with its split + the booking's commission/cancellation snapshot alongside,
+    //    plus the `overpaid_amount` rider (the excess above the estimate — always refundable).
     let sql = format!(
         "INSERT INTO payment.payments \
            (booking_id, customer_id, guard_id, amount, expected_total, subtotal, vat_amount, \
-            commission_percent, cancellation_fee, payment_method, status, paid_at) \
-         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, 'completed'::payment.payment_status, now()) \
+            commission_percent, cancellation_fee, overpaid_amount, payment_method, status, paid_at) \
+         VALUES ($1, $2, $3, $4, $4, $5, $6, $7, $8, $9, $10, 'completed'::payment.payment_status, now()) \
          ON CONFLICT (booking_id) WHERE status = 'completed' DO NOTHING \
          RETURNING {PAYMENT_COLUMNS}"
     );
@@ -501,24 +529,77 @@ pub async fn pay_with_slip(
         .bind(terms.breakdown.vat)
         .bind(terms.commission_percent)
         .bind(terms.cancellation_fee)
+        .bind(overpaid)
         .bind(SLIP_PAYMENT_METHOD)
         .fetch_optional(&mut *tx)
         .await?;
 
     let Some(payment) = inserted else {
-        // The booking already has a completed payment. Idempotent re-submit: if the recorded slip
-        // for THIS booking is the SAME slip (same trans_ref), this is a benign retry → AlreadyPaid.
-        // Otherwise the booking was paid by a DIFFERENT slip already → still AlreadyPaid (we never
-        // re-charge a paid booking; the new slip is simply not consumed). We do NOT insert the new
-        // slip row in either case (the booking-level idempotency wins). The cross-booking reuse of
-        // THIS slip is caught below at the slip INSERT for the FIRST-pay path.
-        tx.rollback().await?;
-        return completed_for_booking(db, booking_id)
+        // The booking already has a completed payment. Two cases, distinguished by the incoming
+        // trans_ref vs. the slip ALREADY APPLIED to this booking:
+        //  - SAME trans_ref → a benign re-submit of the accepted slip → AlreadyPaid (no re-charge).
+        //  - DIFFERENT trans_ref → a SECOND, REAL transfer for an already-paid booking (a double-pay).
+        //    Returning 200 here (the old behaviour) silently LOST that transfer. Instead record it as
+        //    an UNAPPLIED slip (`applied=false`, `refund_status='pending'`) so the money is tracked +
+        //    refundable and its transRef/referenceId are reserved against reuse, then surface a typed
+        //    conflict. The UNIQUE(trans_ref)/(reference_id) still guards cross-booking reuse.
+        let existing = completed_for_booking_tx(&mut tx, booking_id)
             .await?
-            .map(SlipPayOutcome::AlreadyPaid)
             .ok_or_else(|| {
                 AppError::Conflict("Payment already exists for this booking".to_string())
-            });
+            })?;
+
+        let same_slip: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM payment.payment_slips \
+             WHERE booking_id = $1 AND applied = TRUE AND trans_ref = $2)",
+        )
+        .bind(booking_id)
+        .bind(trans_ref)
+        .fetch_one(&mut *tx)
+        .await?;
+
+        if same_slip {
+            // Benign idempotent re-submit of the SAME accepted slip — no new money.
+            tx.rollback().await?;
+            return Ok(SlipPayOutcome::AlreadyPaid(existing));
+        }
+
+        // A DIFFERENT verified transfer — a real second payment. Record it as unapplied (refundable).
+        let extra_insert = sqlx::query(
+            "INSERT INTO payment.payment_slips \
+               (payment_id, booking_id, reference_id, trans_ref, amount, slip_key, applied, refund_status) \
+             VALUES ($1, $2, $3, $4, $5, $6, FALSE, 'pending')",
+        )
+        .bind(existing.id)
+        .bind(booking_id)
+        .bind(reference_id)
+        .bind(trans_ref)
+        .bind(slip_amount.round_dp(2))
+        .bind(slip_key)
+        .execute(&mut *tx)
+        .await;
+
+        return match extra_insert {
+            Ok(_) => {
+                tx.commit().await?;
+                tracing::warn!(
+                    %booking_id, %trans_ref, %slip_amount,
+                    "second DIFFERENT verified transfer for an already-paid booking — recorded as an unapplied (refundable) slip"
+                );
+                Ok(SlipPayOutcome::ExtraTransferRecorded(existing))
+            }
+            // The extra slip's transRef/referenceId already exists (this exact slip already settled
+            // ANOTHER booking, or was already recorded here) → reject as a duplicate rather than
+            // silently keep a second copy. The tx aborts on the failed INSERT and rolls back on drop.
+            Err(e) if is_unique_violation(&e) => {
+                tracing::warn!(%trans_ref, "extra-transfer slip already recorded/used (dedupe reject)");
+                Err(AppError::ConflictCode {
+                    code: crate::slip2go_client::SLIP_DUPLICATE_CODE,
+                    message: "This slip has already been used for a payment".to_string(),
+                })
+            }
+            Err(e) => Err(e.into()),
+        };
     };
 
     // 2) record the verified slip — the UNIQUE (trans_ref) / (reference_id) is the atomic dedupe.
@@ -599,11 +680,14 @@ pub enum SettleOutcome {
 /// transaction (idempotent via the `processed_events` ledger — JetStream is at-least-once).
 ///
 /// v2 PRE-PAY then SETTLE: the customer already paid the estimate up front. On completion we diff
-/// the actual-hours bill ([`crate::domain::reconcile`]) against the pre-paid `amount`:
-///  - `actual < paid` → REFUND the difference: set `final_amount`/`refund_amount` +
-///    `refund_status='pending'` and emit `pguard.events.payment.refund_processed`.
-///  - `actual > paid` → record the shortfall: set `final_amount` (the extra charge owed). The base
-///    is NEVER re-charged — only the delta is recorded.
+/// the actual-hours bill ([`crate::domain::reconcile`]) against what the customer ACTUALLY
+/// transferred — `amount + overpaid_amount` (the estimate PLUS any slip overpay, so the excess above
+/// the estimate is folded straight into the refund and never silently kept):
+///  - `actual < received` → REFUND the difference (base overpay + slip overpay): set
+///    `final_amount`/`refund_amount` + `refund_status='pending'` and emit
+///    `pguard.events.payment.refund_processed`.
+///  - `actual > received` → record the shortfall: set `final_amount` (the extra charge owed). The
+///    base is NEVER re-charged — only the delta is recorded.
 ///  - equal → record `final_amount` only.
 ///
 /// EVERY arm also rewrites `subtotal`/`vat_amount` to the SETTLED split (the prorated subtotal and
@@ -665,8 +749,12 @@ pub async fn reconcile_on_completion(
         return Ok(SettleOutcome::NoOp);
     };
 
+    // Settle against what the customer ACTUALLY transferred = the estimate + any slip overpay. This
+    // folds the overpay into the diff: a normal full-hours completion still refunds the overpay
+    // (received > settled), and a proration refund returns the base overpay AND the slip overpay.
+    let received = payment.amount + payment.overpaid_amount;
     let outcome = crate::domain::reconcile(
-        payment.amount,
+        received,
         base_fee,
         booked_hours,
         guard_count,
@@ -691,13 +779,17 @@ pub async fn reconcile_on_completion(
         Reconciliation::Even { settled } => {
             // Record the (matching) final bill for the ledger; no money moves, no event. The split
             // is still written: `amount` alone cannot tell the tax invoice how much of it was VAT.
+            // `final_amount = settled.grand_total` (the settled bill == `received`), NOT the bare
+            // `amount` column — with an overpay `received` exceeds `amount`, and the invariant
+            // `subtotal + vat_amount = final_amount` must hold against the settled split.
             sqlx::query(
                 "UPDATE payment.payments \
-                   SET final_amount = amount, subtotal = $2, vat_amount = $3, actual_hours = $4, \
+                   SET final_amount = $2, subtotal = $3, vat_amount = $4, actual_hours = $5, \
                        updated_at = now() \
                  WHERE id = $1",
             )
             .bind(payment.id)
+            .bind(settled.grand_total)
             .bind(settled.subtotal)
             .bind(settled.vat)
             .bind(actual_hours)
@@ -802,24 +894,33 @@ struct CancelSettleRow {
     customer_id: Uuid,
     guard_id: Option<Uuid>,
     amount: Decimal,
+    /// Excess transferred above the estimate (slip overpay); always refunded on top of the base.
+    overpaid_amount: Decimal,
     cancellation_fee: Option<Decimal>,
 }
 
 /// REFUND a pre-paid booking whose job was CANCELLED or DECLINED before it ran, in ONE transaction.
-/// No work was done, so nothing is charged for labour — but WHO backed out decides whether a
-/// cancellation fee is retained:
-///  - `booking.cancelled` — the CUSTOMER backed out. Retain
-///    `min(cancellation_fee, amount_paid)` ([`crate::domain::cancellation_fee_charged`] — "take
-///    what is there, never leave a debt": nothing paid → nothing charged, and the fee can never
-///    exceed the payment) and refund the rest.
-///  - `booking.declined` — the GUARD withdrew. The customer did nothing wrong → FULL refund, no
-///    fee. Anything other than the cancelled topic is treated this way (fail-open toward the
-///    customer).
+/// No work was done, so nothing is charged for labour — but WHO backed out (and whether the booking
+/// was still active) decides whether a cancellation fee is retained. That is decided by the CALLER
+/// from GROUND TRUTH — the `charge_cancel_fee` flag booking stamps on the event — NOT by the event
+/// TYPE or by which of two events settles first:
+///  - `charge_cancel_fee == true` — booking marked this a genuine CUSTOMER cancel of a still-active
+///    booking BEFORE arrival. Retain `min(cancellation_fee, amount_paid)`
+///    ([`crate::domain::cancellation_fee_charged`] — "take what is there, never leave a debt":
+///    nothing paid → nothing charged, and the fee can never exceed the estimate) and refund the rest.
+///  - `charge_cancel_fee == false` (the DEFAULT, incl. an old event missing the field) — no fee, FULL
+///    refund. This covers a GUARD decline/withdraw, the customer's cancel-after-decline ACK, and an
+///    ADMIN-initiated cancel — none of which may charge the customer. Fail-open toward the customer.
+///
+/// This closes three prior money bugs at once: (a) admin cancel charging the customer, (b) the
+/// decline→ack event reordering charging a fee on a guard withdrawal, and (c) the fee being decided
+/// by event type / arrival order under the shared durable consumer's redelivery.
 ///
 /// The row always ends `refunded` (the booking is dead; this also keeps a cancelled job out of the
 /// guard's `completed` earnings ledger). `final_amount` = the retained fee, `refund_amount` = what
-/// went back, `cancellation_fee_charged` = the fee for the audit trail, and `subtotal`/`vat_amount`
-/// are rewritten to the fee's own VAT split — the fee is carved out of VAT-INCLUSIVE money, so the
+/// went back (`amount − fee` PLUS any slip `overpaid_amount` — the overpay is never the platform's),
+/// `cancellation_fee_charged` = the fee for the audit trail, and `subtotal`/`vat_amount` are
+/// rewritten to the fee's own VAT split — the fee is carved out of VAT-INCLUSIVE money, so the
 /// platform keeps `fee − VAT`, not the whole fee. `refund_status='pending'` + the
 /// `payment.refund_processed` event are produced ONLY when money actually goes back: a fee that
 /// absorbs the entire payment must not queue a ฿0 refund or push "you were refunded ฿0".
@@ -830,12 +931,13 @@ struct CancelSettleRow {
 /// nothing to return and, per the rule above, nothing to charge either. `status = 'completed'` in
 /// the lookup already excludes an already-`refunded` row, so a double-refund is impossible even
 /// independent of the event-id claim.
-#[tracing::instrument(skip(db), fields(booking_id = %booking_id, event_id = %event_id))]
+#[tracing::instrument(skip(db), fields(booking_id = %booking_id, event_id = %event_id, charge_cancel_fee))]
 pub async fn refund_on_cancellation(
     db: &sqlx::PgPool,
     event_id: Uuid,
     event_type: &str,
     booking_id: Uuid,
+    charge_cancel_fee: bool,
     correlation_id: Uuid,
 ) -> Result<CancelRefundOutcome, AppError> {
     let mut tx = db.begin().await?;
@@ -857,7 +959,8 @@ pub async fn refund_on_cancellation(
 
     // 2) the PAID pre-pay to settle (FOR UPDATE locks it for the write).
     let Some(payment) = sqlx::query_as::<_, CancelSettleRow>(
-        "SELECT id, customer_id, guard_id, amount, cancellation_fee FROM payment.payments \
+        "SELECT id, customer_id, guard_id, amount, overpaid_amount, cancellation_fee \
+         FROM payment.payments \
          WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE",
     )
     .bind(booking_id)
@@ -871,9 +974,11 @@ pub async fn refund_on_cancellation(
         return Ok(CancelRefundOutcome::NoOp);
     };
 
-    // 3) WHO cancelled decides the fee. Only the customer's own cancellation carries one; a guard
-    //    withdrawal (`booking.declined`) — and any unexpected type — refunds in full.
-    let fee_charged = if event_type == topics::BOOKING_CANCELLED {
+    // 3) The CALLER decided (from booking's ground-truth `charge_cancel_fee` flag) whether a fee is
+    //    due. Only a genuine customer cancel of a still-active booking carries one; a guard
+    //    decline/withdraw, the cancel-after-decline ACK, and an admin cancel do NOT. The fee is
+    //    clamped to the ESTIMATE (`amount`), never the overpay — the overpay is always returned.
+    let fee_charged = if charge_cancel_fee {
         crate::domain::cancellation_fee_charged(
             payment.cancellation_fee.unwrap_or(Decimal::ZERO),
             payment.amount,
@@ -881,7 +986,9 @@ pub async fn refund_on_cancellation(
     } else {
         Decimal::ZERO
     };
-    let refund = (payment.amount - fee_charged).max(Decimal::ZERO);
+    // Refund = the estimate minus the retained fee, PLUS any slip overpay (the excess above the
+    // estimate is never the platform's, whatever the cancellation reason).
+    let refund = (payment.amount - fee_charged).max(Decimal::ZERO) + payment.overpaid_amount;
     // What we keep is VAT-INCLUSIVE money, so split the VAT back out of it (a fully-refunded
     // cancellation keeps nothing → the all-zero split).
     let kept = crate::domain::PriceBreakdown::from_gross(fee_charged);
@@ -963,7 +1070,8 @@ pub async fn refund_race_lost_prepay(
 ) -> Result<CancelRefundOutcome, AppError> {
     let mut tx = db.begin().await?;
     let Some(payment) = sqlx::query_as::<_, CancelSettleRow>(
-        "SELECT id, customer_id, guard_id, amount, cancellation_fee FROM payment.payments \
+        "SELECT id, customer_id, guard_id, amount, overpaid_amount, cancellation_fee \
+         FROM payment.payments \
          WHERE booking_id = $1 AND status = 'completed' LIMIT 1 FOR UPDATE",
     )
     .bind(booking_id)
@@ -975,7 +1083,8 @@ pub async fn refund_race_lost_prepay(
         return Ok(CancelRefundOutcome::NoOp);
     };
 
-    let refund = payment.amount;
+    // Full refund of everything the customer transferred — the estimate AND any slip overpay.
+    let refund = payment.amount + payment.overpaid_amount;
     sqlx::query(
         "UPDATE payment.payments \
            SET status = 'refunded'::payment.payment_status, final_amount = 0, \
@@ -1232,7 +1341,9 @@ mod db_tests {
     /// Unwrap the payment out of a [`SlipPayOutcome`] (tests don't care which arm here).
     fn slip_payment_of(o: SlipPayOutcome) -> PaymentResponse {
         match o {
-            SlipPayOutcome::Created(p) | SlipPayOutcome::AlreadyPaid(p) => p,
+            SlipPayOutcome::Created(p)
+            | SlipPayOutcome::AlreadyPaid(p)
+            | SlipPayOutcome::ExtraTransferRecorded(p) => p,
         }
     }
 
@@ -1919,12 +2030,14 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
-        // Guard withdraws en_route (booking.declined) → the WHOLE pre-pay is refunded, fee-free.
+        // Guard withdraws en_route (booking.declined) → the WHOLE pre-pay is refunded, fee-free
+        // (charge_cancel_fee = false: a guard withdrawal never charges the customer).
         let out = refund_on_cancellation(
             &pool,
             event_id,
             topics::BOOKING_DECLINED,
             booking_id,
+            false,
             Uuid::new_v4(),
         )
         .await
@@ -1988,6 +2101,7 @@ mod db_tests {
             event_id,
             topics::BOOKING_DECLINED,
             booking_id,
+            false,
             Uuid::new_v4(),
         )
         .await
@@ -2012,6 +2126,7 @@ mod db_tests {
             noop_event,
             topics::BOOKING_CANCELLED,
             unpaid_booking,
+            true,
             Uuid::new_v4(),
         )
         .await
@@ -2169,11 +2284,13 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
+        // charge_cancel_fee = true: booking marked this a genuine customer cancel of a live booking.
         let out = refund_on_cancellation(
             &pool,
             event_id,
             topics::BOOKING_CANCELLED,
             booking_id,
+            true,
             Uuid::new_v4(),
         )
         .await
@@ -2282,11 +2399,13 @@ mod db_tests {
             .expect("pre-pay"),
         );
 
+        // charge_cancel_fee = true: a genuine customer cancel — the fee applies but is clamped.
         let out = refund_on_cancellation(
             &pool,
             event_id,
             topics::BOOKING_CANCELLED,
             booking_id,
+            true,
             Uuid::new_v4(),
         )
         .await
@@ -2431,5 +2550,399 @@ mod db_tests {
             .bind(booking_id)
             .execute(&pool)
             .await;
+    }
+
+    /// Read one payment's `overpaid_amount` column.
+    async fn overpaid_of(pool: &sqlx::PgPool, booking_id: Uuid) -> Decimal {
+        sqlx::query_scalar("SELECT overpaid_amount FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .fetch_one(pool)
+            .await
+            .expect("read overpaid_amount")
+    }
+
+    async fn cleanup(pool: &sqlx::PgPool, booking_id: Uuid, events: &[Uuid]) {
+        let _ = sqlx::query(
+            "DELETE FROM payment.payment_slips WHERE payment_id IN \
+             (SELECT id FROM payment.payments WHERE booking_id = $1)",
+        )
+        .bind(booking_id)
+        .execute(pool)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.processed_events WHERE event_id = ANY($1)")
+            .bind(events)
+            .execute(pool)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(pool)
+            .await;
+    }
+
+    /// Real-Postgres: a slip OVERPAY (customer transferred MORE than the estimate) is LEDGERED on the
+    /// payment row (`overpaid_amount`) and, on a GUARD withdrawal, FULLY refunded on top of the
+    /// estimate — the excess is never silently kept. Estimate 2140.00, paid 2200.00 → overpaid 60.00
+    /// → refund 2200.00 (not 2140.00). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn slip_overpay_is_ledgered_and_fully_refunded_on_guard_decline() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        // Pay by slip for 2200.00 against a 2140.00 estimate → 60.00 overpay recorded.
+        slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_of("2000.00"), // grand total 2140.00
+                &Uuid::new_v4().to_string(),
+                &format!("TR-{}", Uuid::new_v4()),
+                dec("2200.00"), // OVERPAY by 60.00
+                "payment/x/slips/over.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("slip pay with overpay"),
+        );
+        assert_eq!(
+            overpaid_of(&pool, booking_id).await,
+            dec("60.00"),
+            "the slip overpay is ledgered on the payment row"
+        );
+
+        // Guard withdraws (declined, charge_cancel_fee=false) → the WHOLE transfer comes back.
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_DECLINED,
+            booking_id,
+            false,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("refund");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: dec("2200.00"),
+                fee_charged: Decimal::ZERO,
+            },
+            "refund = estimate 2140.00 + overpay 60.00 (never just the estimate)"
+        );
+        let row = {
+            let id: Uuid =
+                sqlx::query_scalar("SELECT id FROM payment.payments WHERE booking_id=$1")
+                    .bind(booking_id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            settled_row(&pool, id).await
+        };
+        assert_eq!(row.refund_amount, Some(dec("2200.00")));
+        cleanup(&pool, booking_id, &[event_id]).await;
+    }
+
+    /// Real-Postgres: a CUSTOMER cancellation (charge_cancel_fee=true) keeps the fee but STILL
+    /// returns the slip overpay: estimate 2140.00, paid 2200.00 (overpay 60.00), fee 300.00 →
+    /// refund = (2140 − 300) + 60 = 1900.00, fee kept 300.00. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn customer_cancel_with_fee_still_returns_the_slip_overpay() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_with("2000.00", "10.00", "300.00"),
+                &Uuid::new_v4().to_string(),
+                &format!("TR-{}", Uuid::new_v4()),
+                dec("2200.00"),
+                "payment/x/slips/over2.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("slip pay with overpay"),
+        );
+
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_CANCELLED,
+            booking_id,
+            true, // genuine customer cancel of a live booking → the fee applies
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("cancel settle");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: dec("1900.00"),
+                fee_charged: dec("300.00"),
+            },
+            "the fee is kept out of the ESTIMATE; the overpay is always returned"
+        );
+        cleanup(&pool, booking_id, &[event_id]).await;
+    }
+
+    /// Real-Postgres: the cancellation fee is decided by `charge_cancel_fee`, NOT the event TYPE. A
+    /// `booking.cancelled` with `charge_cancel_fee=false` (an ADMIN-initiated cancel, or the
+    /// customer's cancel-after-decline ACK) FULL-refunds with NO fee, even though the booking carries
+    /// a 300.00 fee. This is the fix for "admin cancel charges the customer" + the decline→ack fee
+    /// reorder. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn charge_cancel_fee_false_full_refunds_even_on_booking_cancelled() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        payment_of(
+            prepay_idempotent(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_with("2000.00", "10.00", "300.00"), // 2140.00 paid, 300.00 fee snapshot
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay"),
+        );
+
+        // booking.cancelled BUT charge_cancel_fee=false (admin cancel / ack) → no fee, full refund.
+        let out = refund_on_cancellation(
+            &pool,
+            event_id,
+            topics::BOOKING_CANCELLED,
+            booking_id,
+            false,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("cancel settle");
+        assert_eq!(
+            out,
+            CancelRefundOutcome::Refunded {
+                refund: dec("2140.00"),
+                fee_charged: Decimal::ZERO,
+            },
+            "a cancelled TOPIC does not charge a fee — only charge_cancel_fee=true does"
+        );
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM payment.payments WHERE booking_id=$1")
+            .bind(booking_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let row = settled_row(&pool, id).await;
+        assert_eq!(
+            row.cancellation_fee_charged,
+            Some(Decimal::ZERO),
+            "no fee retained on an admin cancel / decline ACK"
+        );
+        cleanup(&pool, booking_id, &[event_id]).await;
+    }
+
+    /// Real-Postgres: the slip overpay is refunded on COMPLETION reconcile too. Estimate 2140.00,
+    /// paid 2200.00 (overpay 60.00); the guard works the FULL 4h so the settled bill == the estimate
+    /// → the ONLY refund is the 60.00 overpay (received 2200 − settled 2140). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn reconcile_refunds_the_slip_overpay_on_completion() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let event_id = Uuid::new_v4();
+
+        slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_of("2000.00"),
+                &Uuid::new_v4().to_string(),
+                &format!("TR-{}", Uuid::new_v4()),
+                dec("2200.00"), // overpay 60.00
+                "payment/x/slips/over3.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("slip pay"),
+        );
+
+        // Full 4h worked → settled 2140.00; received 2200.00 → refund the 60.00 overpay only.
+        let out = reconcile_on_completion(
+            &pool,
+            event_id,
+            topics::BOOKING_COMPLETED,
+            booking_id,
+            dec("500"),
+            4,
+            1,
+            Decimal::ZERO,
+            Some(14400),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("reconcile");
+        assert_eq!(
+            out,
+            SettleOutcome::Refunded {
+                final_amount: dec("2140.00"),
+                refund: dec("60.00"),
+            },
+            "a full-hours completion still refunds the slip overpay (received − settled)"
+        );
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM payment.payments WHERE booking_id=$1")
+            .bind(booking_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let row = settled_row(&pool, id).await;
+        assert_eq!(row.final_amount, Some(dec("2140.00")));
+        assert_eq!(row.refund_amount, Some(dec("60.00")));
+        assert_eq!(
+            row.subtotal.unwrap() + row.vat_amount.unwrap(),
+            row.final_amount.unwrap(),
+            "the settled split still reconstructs final_amount"
+        );
+        cleanup(&pool, booking_id, &[event_id]).await;
+    }
+
+    /// Real-Postgres: a SECOND, DIFFERENT verified transfer for an already-paid booking is NOT
+    /// silently swallowed — it is recorded as an UNAPPLIED, refundable slip (`applied=false`,
+    /// `refund_status='pending'`) and returns [`SlipPayOutcome::ExtraTransferRecorded`], while a
+    /// re-submit of the SAME slip stays an idempotent no-op. The original payment is untouched.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn second_different_slip_records_unapplied_extra_transfer() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let ref_a = Uuid::new_v4().to_string();
+        let trans_a = format!("TR-{}", Uuid::new_v4());
+        let ref_b = Uuid::new_v4().to_string();
+        let trans_b = format!("TR-{}", Uuid::new_v4());
+
+        // First transfer settles the booking.
+        let first = slip_payment_of(
+            pay_with_slip(
+                &pool,
+                booking_id,
+                Uuid::new_v4(),
+                Some(Uuid::new_v4()),
+                &terms_of("2000.00"),
+                &ref_a,
+                &trans_a,
+                dec("2140.00"),
+                "payment/x/slips/a.jpg",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("first slip"),
+        );
+
+        // A SECOND, DIFFERENT real transfer (distinct trans_ref) → recorded as unapplied + typed.
+        let second = pay_with_slip(
+            &pool,
+            booking_id,
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            &terms_of("2000.00"),
+            &ref_b,
+            &trans_b,
+            dec("2140.00"),
+            "payment/x/slips/b.jpg",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("second slip");
+        assert!(
+            matches!(second, SlipPayOutcome::ExtraTransferRecorded(_)),
+            "a second DIFFERENT transfer is recorded (not a silent AlreadyPaid 200)"
+        );
+
+        // The unapplied extra slip exists, is refundable, and carries the real transfer's refs.
+        let extra: (bool, Option<String>, Decimal, String) = sqlx::query_as(
+            "SELECT applied, refund_status, amount, trans_ref FROM payment.payment_slips \
+             WHERE booking_id = $1 AND applied = FALSE",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("the extra transfer is recorded as an unapplied slip");
+        assert!(!extra.0, "the extra transfer is unapplied");
+        assert_eq!(extra.1.as_deref(), Some("pending"), "queued for refund");
+        assert_eq!(extra.2, dec("2140.00"));
+        assert_eq!(extra.3, trans_b, "carries the SECOND transfer's trans_ref");
+
+        // Still exactly ONE applied slip + ONE completed payment (the extra settled nothing).
+        let applied_count: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.payment_slips WHERE booking_id = $1 AND applied = TRUE",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("count applied slips");
+        assert_eq!(
+            applied_count, 1,
+            "the extra transfer did not settle anything"
+        );
+        let pay_count: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM payment.payments WHERE booking_id = $1")
+                .bind(booking_id)
+                .fetch_one(&pool)
+                .await
+                .expect("count payments");
+        assert_eq!(
+            pay_count, 1,
+            "one completed payment; nothing double-charged"
+        );
+
+        // Re-submitting the SAME accepted slip (trans_a) is still an idempotent no-op.
+        let again = pay_with_slip(
+            &pool,
+            booking_id,
+            Uuid::new_v4(),
+            Some(Uuid::new_v4()),
+            &terms_of("2000.00"),
+            &ref_a,
+            &trans_a,
+            dec("2140.00"),
+            "payment/x/slips/a2.jpg",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("resubmit same slip");
+        assert!(
+            matches!(again, SlipPayOutcome::AlreadyPaid(p) if p.id == first.id),
+            "the SAME slip re-submitted is a benign AlreadyPaid no-op"
+        );
+
+        cleanup(&pool, booking_id, &[]).await;
     }
 }

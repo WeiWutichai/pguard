@@ -236,6 +236,34 @@ void main() {
     expect(feed.closed, isTrue, reason: 'setup torn down on failure');
   });
 
+  test(
+      'an OFFLINE call-initiate surfaces the localized (Thai) network line, not the '
+      'raw English transport string (deep-review)', () async {
+    final feed = FakeCallSignalFeed();
+    final api = FakeApi(
+      onPost: (_, __) async => throw const ApiException(
+          message: 'Network error — please check your connection'),
+      onGet: (_, __) async => iceJson(),
+      onPut: (_, __) async => {'success': true},
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      callEngineFactoryProvider.overrideWithValue(() => FakeCallEngine()),
+      callSignalFeedBuilderProvider.overrideWithValue((_) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub = c.listen(callControllerProvider, (_, __) {});
+    addTearDown(sub.close);
+
+    await ctrl(c).startOutgoing(bookingId: 'bk1', type: CallType.audio);
+    expect(st(c).phase, CallPhase.ended);
+    expect(st(c).error, 'เครือข่ายขัดข้อง กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต',
+        reason:
+            'the ApiException catch now routes through localizeApiError (Thai)');
+    expect(st(c).error, isNot(contains('Network error')));
+  });
+
   test('caller: an inbound answer moves dialing → connecting', () async {
     final t = make(initiate: callJson('call1'));
     await ctrl(t.c).startOutgoing(bookingId: 'bk1', type: CallType.audio);

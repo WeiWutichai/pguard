@@ -423,7 +423,12 @@ class ActiveJobController extends _$ActiveJobController {
               ? 'สถานะงานเปลี่ยนไปแล้ว — อัปเดตข้อมูลล่าสุดให้แล้ว ลองอีกครั้ง'
               : 'The job state changed — refreshed to the latest, please retry';
         }
-        return e.message;
+        // NOT a mapped transition code and not a 409 — most commonly a TRANSPORT failure (offline:
+        // statusCode == null) whose hardcoded English "Network error…" was leaking into the Thai UI
+        // on every en-route/arrived/start/complete tap (deep-review). Route through the shared
+        // localizer, which translates the network/5xx/429 cross-cutting cases and otherwise falls
+        // back to the server's own already-generic message.
+        return localizeApiError(isThai, e);
     }
   }
 

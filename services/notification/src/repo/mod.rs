@@ -571,7 +571,9 @@ pub async fn process_event(
 /// Apply one [`CheckinLedgerOp`] to `notification.checkin_reminders` inside the caller's tx.
 /// All three ops are idempotent-safe under redelivery (they ride the event_id claim in
 /// [`process_event`], so they only run on the FIRST delivery of an event):
-///   * `Open` — UPSERT + RESET the clock (a re-`arrived` restarts the work session);
+///   * `Open` — UPSERT + RESET the clock (a re-`arrived` restarts the work session), BUT never
+///     resurrect a row a LATER completion already closed on an OUT-OF-ORDER redelivery (guarded by
+///     the arrival's `occurred_at` vs `closed_at` — see below);
 ///   * `RecordCheckin` — UPSERT so a check-in that somehow precedes `arrived` still opens a row,
 ///     otherwise just push `last_checkin_at` forward (never reopens a closed row);
 ///   * `Close` — stamp `closed_at` on the still-open row (no-op if missing/already closed).
@@ -583,7 +585,18 @@ async fn apply_checkin_ledger_op(
         CheckinLedgerOp::Open {
             booking_id,
             guard_id,
+            occurred_at,
         } => {
+            // UPSERT + RESET the clock on a genuine (re)arrival — but the `WHERE` on the DO UPDATE
+            // is the OUT-OF-ORDER-REDELIVERY GUARD (deep-review MED): reopen ONLY when the row is
+            // still open OR the arrival is NEWER than the close. A stale `booking.arrived` that was
+            // NACKed, overtaken by `progress_reported` + `completed` (which stamped `closed_at`),
+            // then redelivered has an `occurred_at` that PREDATES `closed_at` → the update is a
+            // no-op, so the finished job is never nagged "ถึงเวลาเช็คอิน" hourly forever. A
+            // legitimate completion-REJECT bounce re-emits `booking.arrived` AFTER the
+            // completion-request close, so `occurred_at > closed_at` and it still reopens. A fresh
+            // INSERT (no conflict) is unaffected. `in_progress_since` stays `now()` (unchanged), so
+            // the reminder cadence of a real reopen is identical to before.
             sqlx::query(
                 r#"
                 INSERT INTO notification.checkin_reminders (booking_id, guard_id, in_progress_since)
@@ -594,10 +607,13 @@ async fn apply_checkin_ledger_op(
                     last_checkin_at   = NULL,
                     last_reminded_at  = NULL,
                     closed_at         = NULL
+                WHERE checkin_reminders.closed_at IS NULL
+                   OR checkin_reminders.closed_at < $3
                 "#,
             )
             .bind(booking_id)
             .bind(guard_id)
+            .bind(occurred_at)
             .execute(&mut **tx)
             .await?;
         }
@@ -654,9 +670,10 @@ pub struct DueCheckin {
 /// Pre-filter work sessions DUE a check-in reminder AS OF `now` — the SQL mirror of
 /// `domain::checkin::is_due`: open, ≥ 1h since the later of {last check-in, work start} AND ≥ 1h
 /// since the later of {last reminder, work start}. Bounded by `limit` (the partial index on open
-/// rows keeps this cheap). A single notification instance runs the scheduler, so a plain SELECT (no
-/// row-lock) is sufficient; the scheduler re-checks each row against the pure `is_due` and then
-/// claims it via `mark_reminded` before pushing.
+/// rows keeps this cheap). This is a lock-free PRE-FILTER; concurrency-safety does NOT rely on a
+/// single scheduler instance — the scheduler re-checks each row against the pure `is_due` and then
+/// CLAIMS it via `mark_reminded`, whose compare-and-swap on `last_reminded_at` lets exactly one
+/// replica win even when two ticks select the same row (so running at >=2 replicas is safe).
 pub async fn due_checkins(
     db: &PgPool,
     now: DateTime<Utc>,
@@ -680,25 +697,40 @@ pub async fn due_checkins(
     Ok(rows)
 }
 
-/// Stamp `last_reminded_at = now` for one still-open session — the reminder CLAIM. Returns `true`
-/// if a row was updated (the caller then pushes), `false` if the row was closed between the scan
-/// and the claim (skip). Claiming BEFORE the push means a transient push failure won't re-fire the
-/// same hour (the nudge is best-effort), and the 1h cooldown in `due_checkins` won't re-select this
-/// row until the next hour.
+/// Stamp `last_reminded_at = now` for one still-open session — the reminder CLAIM, as a
+/// COMPARE-AND-SWAP on the `last_reminded_at` the scheduler OBSERVED (`prev_reminded_at`). Returns
+/// `true` if THIS caller won the claim (it then pushes), `false` if it lost — the row was closed
+/// between the scan and the claim, OR another replica already re-stamped `last_reminded_at` (so the
+/// observed value no longer matches). Claiming BEFORE the push means a transient push failure won't
+/// re-fire the same hour, and the 1h cooldown in `due_checkins` won't re-select this row until next
+/// hour.
+///
+/// The CAS is what makes running notification at >=2 replicas safe (the repo's own HPA default is
+/// `minReplicas: 2`): both replicas' 300s ticks can select the same due row on the same stale
+/// `last_reminded_at`, but only the FIRST `UPDATE` matches `IS NOT DISTINCT FROM $3` and flips it —
+/// the second re-evaluates the qual against the just-committed row (Postgres EvalPlanQual on the
+/// concurrent update), sees the new timestamp, matches 0 rows, and returns `false`. Without the CAS
+/// the plain `WHERE closed_at IS NULL` returned `rows_affected = 1` for EVERY concurrent caller, so
+/// the guard got two identical "ถึงเวลาเช็คอิน" pushes per hour (deep-review LOW). `IS NOT DISTINCT
+/// FROM` (not `=`) is required so a first-ever claim, where the observed value is `NULL`, matches.
 pub async fn mark_reminded(
     db: &PgPool,
     booking_id: Uuid,
+    prev_reminded_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Result<bool, AppError> {
     let result = sqlx::query(
         r#"
         UPDATE notification.checkin_reminders
         SET last_reminded_at = $2
-        WHERE booking_id = $1 AND closed_at IS NULL
+        WHERE booking_id = $1
+          AND closed_at IS NULL
+          AND last_reminded_at IS NOT DISTINCT FROM $3
         "#,
     )
     .bind(booking_id)
     .bind(now)
+    .bind(prev_reminded_at)
     .execute(db)
     .await?;
     Ok(result.rows_affected() > 0)
@@ -945,6 +977,7 @@ mod db_tests {
         let open = CheckinLedgerOp::Open {
             booking_id,
             guard_id,
+            occurred_at: Utc::now(),
         };
         process_event(
             &pool,
@@ -1021,8 +1054,9 @@ mod db_tests {
             "a session that just checked in is not due"
         );
 
-        // Claim + mark reminded → the 1h cooldown then blocks re-selection at +2h.
-        let claimed = mark_reminded(&pool, booking_id, two_hours_later)
+        // Claim + mark reminded → the 1h cooldown then blocks re-selection at +2h. The row has
+        // never been reminded (last_reminded_at is NULL), so the CAS observes `None`.
+        let claimed = mark_reminded(&pool, booking_id, None, two_hours_later)
             .await
             .expect("mark reminded");
         assert!(claimed, "an open session is claimable");
@@ -1063,10 +1097,208 @@ mod db_tests {
             "a closed session is never due"
         );
         assert!(
-            !mark_reminded(&pool, booking_id, two_hours_later)
+            !mark_reminded(&pool, booking_id, Some(two_hours_later), two_hours_later)
                 .await
                 .expect("mark closed"),
             "a closed session is not claimable"
+        );
+
+        // Dev-DB hygiene.
+        let _ = sqlx::query("DELETE FROM notification.checkin_reminders WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres regression for the OUT-OF-ORDER redelivery guard (deep-review MED): a stale
+    /// `booking.arrived` that predates the completion which already CLOSED the row must NOT
+    /// resurrect the finished job (else the guard is nagged "ถึงเวลาเช็คอิน" hourly forever), while
+    /// a legitimate reject-bounce arrival AFTER the close still reopens the session. No-op unless
+    /// `DATABASE_URL` is set. Run against a migrated DB (incl. 0007):
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5432/pguard_test \
+    ///     cargo test -p pguard-notification -- open_does_not_resurrect --nocapture
+    #[tokio::test]
+    async fn open_does_not_resurrect_a_session_closed_by_a_later_completion() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let booking_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+
+        // 1. arrived (event A) → OPEN the row.
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_ARRIVED,
+            None,
+            Some(&CheckinLedgerOp::Open {
+                booking_id,
+                guard_id,
+                occurred_at: Utc::now() - chrono::Duration::minutes(10),
+            }),
+        )
+        .await
+        .expect("open A");
+
+        // 2. completed → CLOSE the row (stamps closed_at = now(), later than A's arrival).
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_COMPLETED,
+            None,
+            Some(&CheckinLedgerOp::Close { booking_id }),
+        )
+        .await
+        .expect("close");
+        let (closed_at,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            "SELECT closed_at FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        let closed_at = closed_at.expect("completed closed the row");
+
+        // 3. STALE redelivery of arrived A — occurred_at PREDATES closed_at → must NOT reopen.
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_ARRIVED,
+            None,
+            Some(&CheckinLedgerOp::Open {
+                booking_id,
+                guard_id,
+                occurred_at: closed_at - chrono::Duration::minutes(1),
+            }),
+        )
+        .await
+        .expect("stale open");
+        let (still_closed,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            "SELECT closed_at FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        assert!(
+            still_closed.is_some(),
+            "a stale out-of-order arrived must NOT reopen a completed session"
+        );
+        assert!(
+            due_checkins(&pool, Utc::now() + chrono::Duration::hours(6), 50)
+                .await
+                .expect("scan +6h")
+                .iter()
+                .all(|r| r.booking_id != booking_id),
+            "the finished job is never due after a stale reopen attempt"
+        );
+
+        // 4. LEGITIMATE reject-bounce: a NEW arrived AFTER the close reopens the session.
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_ARRIVED,
+            None,
+            Some(&CheckinLedgerOp::Open {
+                booking_id,
+                guard_id,
+                occurred_at: closed_at + chrono::Duration::minutes(1),
+            }),
+        )
+        .await
+        .expect("bounce open");
+        let (reopened,): (Option<DateTime<Utc>>,) = sqlx::query_as(
+            "SELECT closed_at FROM notification.checkin_reminders WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("row present");
+        assert!(
+            reopened.is_none(),
+            "a reject-bounce arrival after the close correctly reopens the session"
+        );
+
+        // Dev-DB hygiene.
+        let _ = sqlx::query("DELETE FROM notification.checkin_reminders WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Real-Postgres regression for the reminder CLAIM being a COMPARE-AND-SWAP (deep-review LOW):
+    /// at >=2 replicas two ticks can select the same due row on the same stale `last_reminded_at`,
+    /// but only the FIRST claim (matching the observed value) may win — otherwise the guard gets two
+    /// identical pushes that hour. No-op unless `DATABASE_URL` is set. Run against a migrated DB:
+    ///   DATABASE_URL=postgres://pguard:pguard_dev_pw@localhost:5432/pguard_test \
+    ///     cargo test -p pguard-notification -- mark_reminded_is_a_compare_and_swap --nocapture
+    #[tokio::test]
+    async fn mark_reminded_is_a_compare_and_swap() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let booking_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+
+        // Open a session — last_reminded_at is NULL.
+        process_event(
+            &pool,
+            Uuid::new_v4(),
+            topics::BOOKING_ARRIVED,
+            None,
+            Some(&CheckinLedgerOp::Open {
+                booking_id,
+                guard_id,
+                occurred_at: Utc::now(),
+            }),
+        )
+        .await
+        .expect("open");
+
+        let t1 = Utc::now();
+        // Replica A observed last_reminded_at = None → WINS the CAS.
+        assert!(
+            mark_reminded(&pool, booking_id, None, t1)
+                .await
+                .expect("claim A"),
+            "the first replica (observing None) wins the claim"
+        );
+        // Replica B ALSO observed None (its scan raced A's), but the stored value is now t1 →
+        // the CAS `IS NOT DISTINCT FROM None` matches 0 rows → B LOSES (no second push this hour).
+        assert!(
+            !mark_reminded(&pool, booking_id, None, t1)
+                .await
+                .expect("claim B"),
+            "a concurrent replica that observed the same stale None loses the CAS"
+        );
+        // Next hour: a caller that observed the CURRENT value (t1) claims again.
+        let t2 = t1 + chrono::Duration::hours(1);
+        assert!(
+            mark_reminded(&pool, booking_id, Some(t1), t2)
+                .await
+                .expect("claim next hour"),
+            "observing the current last_reminded_at wins the next hour's claim"
+        );
+        // And a caller with a STALE observation of the pre-t2 value now loses.
+        assert!(
+            !mark_reminded(&pool, booking_id, Some(t1), t2)
+                .await
+                .expect("claim stale"),
+            "a stale observation of the previous last_reminded_at loses the CAS"
         );
 
         // Dev-DB hygiene.

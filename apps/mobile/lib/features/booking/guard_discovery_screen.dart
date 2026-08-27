@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -26,16 +28,62 @@ class GuardDiscoveryScreen extends ConsumerStatefulWidget {
       _GuardDiscoveryScreenState();
 }
 
-class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
+class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen>
+    with WidgetsBindingObserver {
+  Timer? _refreshTimer;
+
+  /// Light periodic refresh cadence WHILE the discovery screen is visible so a guard who comes
+  /// online shows up without a manual pull. This refreshes the discovery LIST (available-guards) —
+  /// NOT booking/assignment STATUS — so it does not violate the WS-for-status rule.
+  static const Duration _refreshInterval = Duration(seconds: 25);
+
   @override
   void initState() {
     super.initState();
-    // Single fetch on entry — NOT polling. Skip if we already have results (avoids a redundant
-    // call on back-then-forward navigation); an empty/errored list still retries.
-    if (ref.read(bookingFlowControllerProvider).guards.isEmpty) {
-      Future.microtask(
-          () => ref.read(bookingFlowControllerProvider.notifier).loadGuards());
+    WidgetsBinding.instance.addObserver(this);
+    // Refresh on every entry — NOT only when empty. [BookingFlowController] is keepAlive, so a
+    // back-then-forward navigation reuses a STALE list and a newly-online guard would never appear
+    // until the app is killed. A cold entry (no cached guards) does the searching-state [loadGuards];
+    // a re-entry with a cached list refreshes QUIETLY underneath the shown cards (no busy flicker).
+    Future.microtask(() {
+      if (!mounted) return;
+      final ctrl = ref.read(bookingFlowControllerProvider.notifier);
+      if (ref.read(bookingFlowControllerProvider).guards.isEmpty) {
+        ctrl.loadGuards();
+      } else {
+        ctrl.refreshGuards();
+      }
+    });
+    _startAutoRefresh();
+  }
+
+  void _startAutoRefresh() {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) {
+      if (mounted) {
+        ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
+      }
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      // A guard may have come online while the app was backgrounded → refresh + restart the cadence.
+      if (mounted) {
+        ref.read(bookingFlowControllerProvider.notifier).refreshGuards();
+      }
+      _startAutoRefresh();
+    } else if (state == AppLifecycleState.paused) {
+      _refreshTimer?.cancel(); // don't poll for guards while backgrounded
     }
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
   }
 
   /// "ยืนยันการจอง" / Confirm — this is where the booking is CREATED (fixes #79: the guard only sees
@@ -131,83 +179,96 @@ class _GuardDiscoveryScreenState extends ConsumerState<GuardDiscoveryScreen> {
       );
     }
     if (state.guards.isEmpty) {
-      // Cross-state hero pattern: icon + 15px w600 title + 13px muted subtitle.
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(PgTokens.space6),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.search_off_outlined,
-                  size: 48, color: PgTokens.colorTextFaint),
-              const SizedBox(height: PgTokens.space3),
-              Text(
-                isThai
-                    ? 'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้'
-                    : 'No guards available right now',
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                    color: PgTokens.colorText),
-              ),
-            ],
-          ),
+      // Cross-state hero pattern: icon + 15px w600 title + 13px muted subtitle. Wrapped in a
+      // pull-to-refresh over a scrollable list so a customer can re-check for a just-online guard
+      // even from the empty state (AlwaysScrollableScrollPhysics makes the short body draggable).
+      return RefreshIndicator(
+        onRefresh: ctrl.refreshGuards,
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(height: MediaQuery.of(context).size.height * 0.28),
+            const Icon(Icons.search_off_outlined,
+                size: 48, color: PgTokens.colorTextFaint),
+            const SizedBox(height: PgTokens.space3),
+            Text(
+              isThai
+                  ? 'ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้'
+                  : 'No guards available right now',
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: PgTokens.colorText),
+            ),
+            const SizedBox(height: PgTokens.space2),
+            Text(
+              isThai ? 'ดึงลงเพื่อรีเฟรช' : 'Pull down to refresh',
+              textAlign: TextAlign.center,
+              style:
+                  const TextStyle(fontSize: 13, color: PgTokens.colorTextMuted),
+            ),
+          ],
         ),
       );
     }
-    return ListView(
-      padding: const EdgeInsets.all(PgTokens.space4),
-      children: [
-        // Directed-offer note demoted to a plain caption (the design's guard list has no banner
-        // between the header and the cards): the customer picks ONE guard and the job is offered
-        // to only them.
-        Text(
-          isThai
-              ? 'เลือกเจ้าหน้าที่ 1 คน — งานจะถูกส่งให้เฉพาะคนที่คุณเลือกเท่านั้น'
-              : 'Pick one guard — the job is offered to only the guard you choose',
-          style: const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
-        ),
-        const SizedBox(height: PgTokens.space3),
-        for (final guard in state.guards) ...[
-          // C2: the list arrives already sorted NEAREST-first. When the server measured a
-          // distance (a meetup point was sent + the guard's live position was known), show a small
-          // "~1.2 กม." caption above the card. Straight-line → the `~` marks it approximate.
-          if (guard.distanceMeters != null)
-            Padding(
-              padding: const EdgeInsets.only(
-                  left: PgTokens.space1, bottom: PgTokens.space1),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.near_me_outlined,
-                      size: 13, color: PgTokens.colorTextMuted),
-                  const SizedBox(width: 4),
-                  Text(
-                    isThai
-                        ? 'ห่าง ~${formatDistance(guard.distanceMeters!, thai: true)}'
-                        : '~${formatDistance(guard.distanceMeters!, thai: false)} away',
-                    style: const TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: PgTokens.colorTextMuted),
-                  ),
-                ],
-              ),
-            ),
-          GuardCard(
-            guard: guard,
-            selected: guard.guardId == state.selectedGuardId,
-            onTap: () => ctrl.selectGuard(guard.guardId),
-            // Distinct affordance: opens the read-only reviews sheet without selecting the guard.
-            onViewReviews: () => showGuardReviewsSheet(
-              context: context,
-              guardId: guard.guardId,
-            ),
+    return RefreshIndicator(
+      onRefresh: ctrl.refreshGuards,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.all(PgTokens.space4),
+        children: [
+          // Directed-offer note demoted to a plain caption (the design's guard list has no banner
+          // between the header and the cards): the customer picks ONE guard and the job is offered
+          // to only them.
+          Text(
+            isThai
+                ? 'เลือกเจ้าหน้าที่ 1 คน — งานจะถูกส่งให้เฉพาะคนที่คุณเลือกเท่านั้น'
+                : 'Pick one guard — the job is offered to only the guard you choose',
+            style:
+                const TextStyle(fontSize: 12, color: PgTokens.colorTextMuted),
           ),
           const SizedBox(height: PgTokens.space3),
+          for (final guard in state.guards) ...[
+            // C2: the list arrives already sorted NEAREST-first. When the server measured a
+            // distance (a meetup point was sent + the guard's live position was known), show a small
+            // "~1.2 กม." caption above the card. Straight-line → the `~` marks it approximate.
+            if (guard.distanceMeters != null)
+              Padding(
+                padding: const EdgeInsets.only(
+                    left: PgTokens.space1, bottom: PgTokens.space1),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.near_me_outlined,
+                        size: 13, color: PgTokens.colorTextMuted),
+                    const SizedBox(width: 4),
+                    Text(
+                      isThai
+                          ? 'ห่าง ~${formatDistance(guard.distanceMeters!, thai: true)}'
+                          : '~${formatDistance(guard.distanceMeters!, thai: false)} away',
+                      style: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                          color: PgTokens.colorTextMuted),
+                    ),
+                  ],
+                ),
+              ),
+            GuardCard(
+              guard: guard,
+              selected: guard.guardId == state.selectedGuardId,
+              onTap: () => ctrl.selectGuard(guard.guardId),
+              // Distinct affordance: opens the read-only reviews sheet without selecting the guard.
+              onViewReviews: () => showGuardReviewsSheet(
+                context: context,
+                guardId: guard.guardId,
+              ),
+            ),
+            const SizedBox(height: PgTokens.space3),
+          ],
         ],
-      ],
+      ),
     );
   }
 }

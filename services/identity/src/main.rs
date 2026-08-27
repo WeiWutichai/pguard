@@ -114,14 +114,13 @@ async fn main() -> anyhow::Result<()> {
     // --- background JetStream consumers ---
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
-    // (1) user.compromised → force-revoke-all.
+    // (1) user.compromised → force-revoke-all. Loops-and-reconnects internally (never returns), so
+    //     a NATS blip at boot can't silently kill the force-revoke-all control (deep-review MED #7).
     {
         let consumer_state = state.clone();
         let nats = nats_url.clone();
         tokio::spawn(async move {
-            if let Err(e) = events::run_consumer(consumer_state, &nats).await {
-                tracing::error!("identity compromise consumer stopped: {e}");
-            }
+            events::run_consumer(consumer_state, &nats).await;
         });
     }
     // (2) user.approved → flip our own approval_status (closes the approval→login loop).

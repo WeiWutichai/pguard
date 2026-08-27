@@ -1330,7 +1330,15 @@ components:
       type: object
       required: [address, scheduled_at, hours]
       properties:
-        address: { type: string }
+        address:
+          type: string
+          minLength: 1
+          maxLength: 512
+          description: >-
+            Site address. Required and bounded — an empty/whitespace-only address is 400, and one
+            over 512 CHARACTERS is 400 (the address fans out to every discovering guard and into the
+            `booking.requested` event, so it must not be an unbounded blob). Enforced server-side and
+            backed by the `chk_bookings_address_len` DB CHECK.
         scheduled_at: { type: string, format: date-time }
         hours: { type: integer, format: int32, minimum: 1 }
         service_id:
@@ -1353,7 +1361,10 @@ components:
         tip:
           type: string
           default: "0"
-          description: Optional up-front tip (exact decimal string); folded into the expected total.
+          description: >-
+            Optional up-front tip (exact decimal string); folded into the expected total. Bounded:
+            `0 ≤ tip ≤ 1000000` — a larger value is 400 (an uncapped tip overflows the
+            NUMERIC(12,2) column into an opaque 500). Normalized to 2dp server-side.
         lat:
           type: number
           format: double

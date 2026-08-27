@@ -33,8 +33,13 @@ const DURABLE: &str = "payment-booking-cancelled";
 /// Backoff between reconnect attempts when NATS is down or the stream ends.
 const RECONNECT_INTERVAL: Duration = Duration::from_secs(2);
 
-/// The minimal payload the refund needs — just the `booking_id` to look the pre-pay up by. Both
-/// `booking.declined` and `booking.cancelled` carry `customer_id` (+ `guard_id` once assigned);
+/// The payload the refund needs. The `booking_id` looks the pre-pay up; `charge_cancel_fee` is
+/// booking's GROUND-TRUTH decision on whether a cancellation fee is due — TRUE only for a genuine
+/// CUSTOMER cancel of a still-active booking before arrival; FALSE for a guard decline/withdraw, the
+/// customer's cancel-after-decline ACK, and an admin-initiated cancel. `#[serde(default)]` = FALSE,
+/// so an OLD event missing the field (or `booking.declined`, which never carries it) NEVER charges a
+/// fee — the fee is decided by this flag, never by the event TYPE or by which event settles first.
+/// Both `booking.declined` and `booking.cancelled` carry `customer_id` (+ `guard_id` once assigned);
 /// they are parsed for contract validation but the refund reads the payment row off `booking_id`.
 #[derive(Debug, Deserialize)]
 #[allow(dead_code)] // customer_id/guard_id validate the contract; the refund keys off booking_id.
@@ -43,6 +48,9 @@ struct CancelPayload {
     customer_id: Uuid,
     #[serde(default)]
     guard_id: Option<Uuid>,
+    /// Booking's authoritative "charge the customer a cancellation fee?" flag. Absent → false.
+    #[serde(default)]
+    charge_cancel_fee: bool,
 }
 
 /// Run the cancellation-refund consumer FOREVER: (re)connect to NATS, drain, and on any
@@ -180,17 +188,22 @@ async fn process(
     refund(db, envelope).instrument(span).await
 }
 
-/// FULL-REFUND the pre-pay for a cancelled/declined booking (idempotent), logging the outcome.
+/// REFUND the pre-pay for a cancelled/declined booking (idempotent), logging the outcome. The
+/// cancellation fee (if any) is decided by booking's `charge_cancel_fee` flag off the event — never
+/// by the event type — so the decline→ack event ordering can no longer charge a fee on a guard
+/// withdrawal, and an admin cancel never charges the customer.
 async fn refund(db: &sqlx::PgPool, envelope: EventEnvelope<CancelPayload>) -> Result<(), AppError> {
     let booking_id = envelope.payload.booking_id;
+    let charge_cancel_fee = envelope.payload.charge_cancel_fee;
     let outcome = repo::refund_on_cancellation(
         db,
         envelope.event_id,
         &envelope.event_type,
         booking_id,
+        charge_cancel_fee,
         envelope.correlation_id,
     )
     .await?;
-    tracing::info!(booking_id = %booking_id, ?outcome, "processed cancellation refund");
+    tracing::info!(booking_id = %booking_id, charge_cancel_fee, ?outcome, "processed cancellation refund");
     Ok(())
 }

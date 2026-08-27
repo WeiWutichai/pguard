@@ -18,12 +18,21 @@ const nextConfig: NextConfig = {
   typedRoutes: true,
   reactStrictMode: true,
   async rewrites() {
-    // Single rule, prod + e2e alike: same-origin `/v1/*` → the gateway, which now routes EVERY
-    // service (incl. rating /admin/reviews + presence /locations, since PR #25). The httpOnly auth
-    // cookies stay first-party. The old e2e-only PGUARD_RATING_URL/PGUARD_PRESENCE_URL bypass —
-    // needed back when the gateway 404'd those routes — was removed once the gateway routed them,
-    // so the e2e suite now exercises the SAME gateway path as prod.
-    return [{ source: "/v1/:path*", destination: `${GATEWAY}/v1/:path*` }];
+    // Prod + e2e alike: same-origin `/v1/*` → the gateway, which now routes EVERY service (incl.
+    // rating /admin/reviews + presence /locations, since PR #25). The httpOnly auth cookies stay
+    // first-party. The old e2e-only PGUARD_RATING_URL/PGUARD_PRESENCE_URL bypass — needed back when
+    // the gateway 404'd those routes — was removed once the gateway routed them, so the e2e suite
+    // now exercises the SAME gateway path as prod.
+    //
+    // Second rule: a same-origin `/auth/*` alias onto the SAME gateway `/v1/auth/*` routes. Identity
+    // scopes the `refresh_token` cookie to `Path=/auth`, so the browser only attaches it to `/auth/*`
+    // URLs — the refresh/logout clients (src/lib/api.ts › identityAuthApi) hit `/auth/refresh` and
+    // `/auth/logout` through this alias so the refresh cookie is actually sent (rotate on 401, and
+    // revoke the refresh family on logout). Without it those calls would carry no refresh cookie.
+    return [
+      { source: "/v1/:path*", destination: `${GATEWAY}/v1/:path*` },
+      { source: "/auth/:path*", destination: `${GATEWAY}/v1/auth/:path*` },
+    ];
   },
   // Self-contained server bundle for the production Docker image: emits
   // `.next/standalone` (server.js + minimal node_modules) so the runtime stage

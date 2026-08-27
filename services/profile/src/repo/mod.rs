@@ -551,29 +551,38 @@ pub async fn resolve_names(db: &PgPool, ids: &[Uuid]) -> Result<Vec<ResolvedName
 
 // ----- Guard document image keys (S3 object paths) -----
 
-/// Write the S3 object key for ONE guard document into its `*_key` column. `column` MUST be a
-/// value from the closed `domain::documents::key_column_for` allowlist (never user input) — it is
-/// the one justified dynamic-column `format!`; the key is a bound parameter. 404 when the guard
-/// has no profile row yet (they must submit their profile first, like `update_guard_profile`).
+/// Write the S3 object key for ONE guard document into its `*_key` column, returning the PREVIOUS
+/// key that column held (`None` when it was NULL / first upload) so the caller can reclaim the
+/// replaced object. `column` MUST be a value from the closed `domain::documents::key_column_for`
+/// allowlist (never user input) — it is the one justified dynamic-column `format!`; the key is a
+/// bound parameter. 404 when the guard has no profile row yet (they must submit their profile
+/// first, like `update_guard_profile`).
+///
+/// The old value is read and overwritten in ONE statement (`UPDATE … FROM (SELECT old)` self-join)
+/// — the FROM sub-select sees the pre-update snapshot, so `old_key` is race-free with no separate
+/// read (no TOCTOU) and no extra round-trip.
 pub async fn update_document_key(
     db: &PgPool,
     user_id: Uuid,
     column: &'static str,
     key: &str,
-) -> Result<(), AppError> {
+) -> Result<Option<String>, AppError> {
     let sql = format!(
-        "UPDATE profile.guard_profiles SET {column} = $2, updated_at = now() WHERE user_id = $1"
+        "UPDATE profile.guard_profiles AS g \
+            SET {column} = $2, updated_at = now() \
+           FROM (SELECT user_id, {column} AS old_key FROM profile.guard_profiles WHERE user_id = $1) AS prev \
+          WHERE g.user_id = prev.user_id \
+        RETURNING prev.old_key"
     );
-    let n = sqlx::query(&sql)
+    let row: Option<(Option<String>,)> = sqlx::query_as(&sql)
         .bind(user_id)
         .bind(key)
-        .execute(db)
-        .await?
-        .rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound("Guard profile not found".to_string()));
+        .fetch_optional(db)
+        .await?;
+    match row {
+        Some((old_key,)) => Ok(old_key),
+        None => Err(AppError::NotFound("Guard profile not found".to_string())),
     }
-    Ok(())
 }
 
 /// Read the S3 object key stored in ONE guard document's `*_key` column. `column` MUST be from the
@@ -598,28 +607,34 @@ pub async fn get_document_key(
 // credential docs — so there is no `key_column_for` allowlist here: the handler passes the fixed
 // `AVATAR_KEY_COLUMN` `&'static str` (never client-controlled), the only dynamic-column `format!`.
 
-/// Write the S3 object key for the customer's avatar into its `avatar_key` column. `column` MUST be
-/// the fixed `AVATAR_KEY_COLUMN` `&'static str` (never user input); the key is a bound parameter.
-/// 404 when the customer has no profile row yet (they must submit their profile first).
+/// Write the S3 object key for the customer's avatar into its `avatar_key` column, returning the
+/// PREVIOUS key that column held (`None` when it was NULL / first upload) so the caller can reclaim
+/// the replaced object. `column` MUST be the fixed `AVATAR_KEY_COLUMN` `&'static str` (never user
+/// input); the key is a bound parameter. 404 when the customer has no profile row yet (they must
+/// submit their profile first). Race-free single-statement old-value read, mirroring
+/// [`update_document_key`].
 pub async fn update_customer_document_key(
     db: &PgPool,
     user_id: Uuid,
     column: &'static str,
     key: &str,
-) -> Result<(), AppError> {
+) -> Result<Option<String>, AppError> {
     let sql = format!(
-        "UPDATE profile.customer_profiles SET {column} = $2, updated_at = now() WHERE user_id = $1"
+        "UPDATE profile.customer_profiles AS c \
+            SET {column} = $2, updated_at = now() \
+           FROM (SELECT user_id, {column} AS old_key FROM profile.customer_profiles WHERE user_id = $1) AS prev \
+          WHERE c.user_id = prev.user_id \
+        RETURNING prev.old_key"
     );
-    let n = sqlx::query(&sql)
+    let row: Option<(Option<String>,)> = sqlx::query_as(&sql)
         .bind(user_id)
         .bind(key)
-        .execute(db)
-        .await?
-        .rows_affected();
-    if n == 0 {
-        return Err(AppError::NotFound("Customer profile not found".to_string()));
+        .fetch_optional(db)
+        .await?;
+    match row {
+        Some((old_key,)) => Ok(old_key),
+        None => Err(AppError::NotFound("Customer profile not found".to_string())),
     }
-    Ok(())
 }
 
 /// Read the S3 object key stored in the customer's `avatar_key` column. `column` MUST be the fixed
@@ -1983,6 +1998,104 @@ mod db_tests {
 
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
             .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// Orphan-reclaim: a re-upload must hand the caller the PREVIOUS object key so the handler can
+    /// delete the stranded S3 object. Proves `update_document_key` (guard) and
+    /// `update_customer_document_key` (customer) return `None` on the FIRST write and the prior key
+    /// on a REPLACE — the load-bearing behaviour behind the best-effort delete in the upload
+    /// handlers (the S3 delete itself needs no DB and is covered by the s3 unit tests).
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn update_document_key_returns_previous_key_for_reclaim() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // ----- guard credential/avatar column -----
+        let guard_id = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            guard_id,
+            &UpsertGuardProfileRequest {
+                years_of_experience: Some(1),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed guard profile");
+
+        // First upload → column was NULL → nothing to reclaim.
+        let first = format!("profile/{guard_id}/documents/{}.jpg", Uuid::new_v4());
+        assert_eq!(
+            update_document_key(&pool, guard_id, "id_card_key", &first)
+                .await
+                .expect("first write"),
+            None,
+            "first upload has no previous object to reclaim",
+        );
+
+        // Re-upload → the handler gets the PRIOR key back (the object it must delete) and the column
+        // now points at the new key.
+        let second = format!("profile/{guard_id}/documents/{}.jpg", Uuid::new_v4());
+        assert_eq!(
+            update_document_key(&pool, guard_id, "id_card_key", &second)
+                .await
+                .expect("replace write"),
+            Some(first),
+            "replace returns the previous key so it can be reclaimed",
+        );
+        assert_eq!(
+            get_document_key(&pool, guard_id, "id_card_key")
+                .await
+                .expect("get"),
+            Some(second),
+            "column now holds the new key",
+        );
+
+        // ----- customer avatar column (mirror) -----
+        let customer_id = Uuid::new_v4();
+        upsert_customer_profile(
+            &pool,
+            customer_id,
+            &UpsertCustomerProfileRequest {
+                full_name: Some("Cust".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed customer profile");
+
+        let c_first = format!("profile/{customer_id}/avatar/{}.jpg", Uuid::new_v4());
+        assert_eq!(
+            update_customer_document_key(&pool, customer_id, "avatar_key", &c_first)
+                .await
+                .expect("first customer write"),
+            None,
+        );
+        let c_second = format!("profile/{customer_id}/avatar/{}.jpg", Uuid::new_v4());
+        assert_eq!(
+            update_customer_document_key(&pool, customer_id, "avatar_key", &c_second)
+                .await
+                .expect("replace customer write"),
+            Some(c_first),
+            "customer replace also returns the previous key",
+        );
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard_id)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM profile.customer_profiles WHERE user_id = $1")
+            .bind(customer_id)
             .execute(&pool)
             .await;
     }

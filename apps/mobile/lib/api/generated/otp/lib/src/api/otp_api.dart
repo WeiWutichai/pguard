@@ -98,7 +98,7 @@ class OTPApi {
   }
 
   /// Issue a math-captcha challenge
-  /// Returns a simple addition captcha that must be solved before &#x60;POST /otp/request&#x60;. The expected answer is stored in Redis (&#x60;otp_captcha:{challenge_id}&#x60;, EX 180s) and consumed (GETDEL) when the OTP is requested. 
+  /// Returns a simple two-operand arithmetic captcha — addition OR subtraction, with a non-negative integer answer — that must be solved before &#x60;POST /otp/request&#x60;. The expected answer is stored in Redis (&#x60;otp_captcha:{challenge_id}&#x60;, EX 180s) and consumed (GETDEL) when the OTP is requested. NOTE: a math captcha is a UX / casual-bot barrier only, not a real anti-automation control (it is machine-solvable); SMS-cost abuse is bounded separately by the per-phone cooldown/burst/daily caps. 
   ///
   /// Parameters:
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation

@@ -396,6 +396,35 @@ void main() {
   });
 
   test(
+      'a TRANSPORT failure on a transition surfaces the localized Thai network line, '
+      'not the raw English string (deep-review)', () async {
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/bookings/b1'
+          ? bookingJson('b1', 'accepted')
+          : const <Map<String, dynamic>>[],
+      // Offline: an ApiException with NO code and statusCode == null (isNetwork).
+      onPut: (_, __) async => throw const ApiException(
+          message: 'Network error — please check your connection'),
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      locationServiceProvider.overrideWithValue(FakeLocationService()),
+      localeControllerProvider.overrideWith(() => _ThaiLocale()),
+    ]);
+    addTearDown(c.dispose);
+    await c.read(activeJobControllerProvider('b1').future);
+
+    expect(await c.read(activeJobControllerProvider('b1').notifier).enRoute(),
+        isFalse);
+    final err = c.read(activeJobControllerProvider('b1')).value!.error!;
+    expect(err, 'เครือข่ายขัดข้อง กรุณาตรวจสอบการเชื่อมต่ออินเทอร์เน็ต',
+        reason:
+            'the default branch now routes through localizeApiError (Thai), not raw e.message');
+    expect(err, isNot(contains('Network error')));
+  });
+
+  test(
       'applyExternalStatus folds ONLY terminals and never over an already-terminal state',
       () async {
     final api = FakeApi(

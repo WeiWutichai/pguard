@@ -6,6 +6,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
+import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
@@ -37,7 +38,8 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'งานของฉัน' : 'My Jobs',
         showBack: true,
       ),
@@ -46,7 +48,7 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
             title: isThai ? 'โหลดงานไม่สำเร็จ' : 'Could not load jobs',
-            message: e is ApiException ? e.message : null,
+            message: e is ApiException ? localizeApiError(isThai, e) : null,
             onRetry: ctrl.refresh,
           ),
           data: (all) {
@@ -64,7 +66,11 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
                       ? const ['รอตอบรับ', 'กำลังทำ', 'เสร็จ']
                       : const ['Pending', 'Active', 'Done'],
                   selected: _tab,
-                  counts: [groups[0].length, groups[1].length, groups[2].length],
+                  counts: [
+                    groups[0].length,
+                    groups[1].length,
+                    groups[2].length
+                  ],
                   onSelect: (i) => setState(() => _tab = i),
                 ),
                 Expanded(
@@ -95,7 +101,8 @@ class _GuardJobsScreenState extends ConsumerState<GuardJobsScreen> {
                                 // read-only status detail (the guard correctly can't re-end it).
                                 onTap: () => context.push(
                                     BookingLifecycle.isActive(b.status) &&
-                                            !GuardJobsController.opensReadOnly(b)
+                                            !GuardJobsController.opensReadOnly(
+                                                b)
                                         ? '/guard/active/${b.id}'
                                         : '/guard/job/${b.id}'),
                               );

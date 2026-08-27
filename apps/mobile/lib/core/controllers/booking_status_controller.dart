@@ -18,6 +18,11 @@ part 'booking_status_controller.g.dart';
 /// booking. There is no timer in this path; the feed's own reconnect is event-driven backoff.
 @riverpod
 class BookingStatusController extends _$BookingStatusController {
+  /// Monotonic count of WS frames actually FOLDED into state. The reconnect re-pull captures this
+  /// before its GET and bails if a newer live frame folded in during the fetch — so a slow snapshot
+  /// can never overwrite a fresher WS status (see [build]).
+  int _foldedEvents = 0;
+
   @override
   Future<Booking> build(String bookingId) async {
     final api = ref.read(pguardApiProvider);
@@ -35,7 +40,17 @@ class BookingStatusController extends _$BookingStatusController {
     final StreamSubscription<BookingStatusEvent> sub =
         feed.events.listen((event) {
       final current = state.valueOrNull ?? booking;
+      // A dead job stays dead: once the LOCAL status is terminal (cancelled/completed/declined),
+      // never fold a later NON-terminal frame — at-least-once redelivery can resurface an earlier
+      // live status and un-cancel a finished booking (deep-review). A refresh-only nudge (null
+      // status) still folds (it advances progress, not status).
+      if (BookingLifecycle.isTerminal(current.status) &&
+          event.status != null &&
+          !BookingLifecycle.isTerminal(event.status!)) {
+        return;
+      }
       booking = current.applyEvent(event);
+      _foldedEvents++;
       state = AsyncData(booking);
     });
     // Carry forward a `paidAt` already known to the live state (e.g. an optimistic [markPaid]
@@ -57,10 +72,24 @@ class BookingStatusController extends _$BookingStatusController {
       final reconnected = connected && !wasConnected;
       wasConnected = connected;
       if (!reconnected) return;
+      // Snapshot the fold counter BEFORE the GET so a live frame that lands while it is in flight
+      // wins over this (older) snapshot.
+      final foldedBefore = _foldedEvents;
       try {
         final fresh = await api.get('/bookings/$bookingId');
-        final merged = _mergePaid(
-            Booking.fromJson(fresh as Map<String, dynamic>), state.valueOrNull);
+        final snapshot = Booking.fromJson(fresh as Map<String, dynamic>);
+        final latest = state.valueOrNull ?? booking;
+        // A WS frame folded WHILE the GET was in flight → it is newer than this snapshot; don't
+        // clobber it (the snapshot read the server BEFORE that frame's transition).
+        if (_foldedEvents != foldedBefore) return;
+        // Never rewind a locally-TERMINAL booking back to a non-terminal snapshot (a cancelled/
+        // completed job springing back to a live state — deep-review). A not-yet-consistent read
+        // right after the terminal transition would otherwise un-cancel the screen.
+        if (BookingLifecycle.isTerminal(latest.status) &&
+            !BookingLifecycle.isTerminal(snapshot.status)) {
+          return;
+        }
+        final merged = _mergePaid(snapshot, latest);
         booking = merged;
         state = AsyncData(merged);
       } catch (_) {

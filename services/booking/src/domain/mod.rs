@@ -28,4 +28,6 @@ pub use events::{
     event_for_booking_requested, event_for_progress_report, event_for_status, CompletionInfo,
     EventMapping,
 };
-pub use pricing::{validate_cancellation_fee, validate_commission_percent, PricingSnapshot};
+pub use pricing::{
+    money_scale, validate_cancellation_fee, validate_commission_percent, PricingSnapshot,
+};

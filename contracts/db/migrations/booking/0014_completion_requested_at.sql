@@ -1,0 +1,27 @@
+-- pguard booking-service — stamp WHEN the guard requested completion, so the worked duration is
+-- measured at the request, not at the customer's later approval (deep-review HIGH #1).
+--
+-- Before this column, `actual_seconds = now() − work_started_at` was computed at the moment the
+-- CUSTOMER approves (`pending_completion → completed`). A customer who reviews the completion
+-- push hours later (asleep / offline) therefore inflated the worked duration by the whole review
+-- wait — the guard finished early at the 2h mark, but a 4h-later approval billed 4h and refunded
+-- the proration overpay to no one. The worked clock must stop when the guard presses จบงาน
+-- (`arrived → pending_completion`), which is what this column records.
+--
+-- Semantics:
+--   * stamped `now()` on `arrived → pending_completion` (the guard's completion REQUEST);
+--   * CLEARED (NULL) on the completion-REJECT bounce (`pending_completion → arrived`) so work
+--     resumed after a reject is re-measured from the NEXT request (not the stale first one);
+--   * read at approval as the worked-duration END (`completion_requested_at − work_started_at`),
+--     falling back to `now()` ONLY when unstamped (a legacy `pending_completion` row that reached
+--     that state before this column existed).
+--
+-- Nullable, no default. NULL means "no pending completion request outstanding", never a time:
+--   * every ACTIVE / pre-request booking (the whole happy path up to จบงาน);
+--   * a row bounced back to `arrived` by a completion reject;
+--   * every row already past `pending_completion` before this migration.
+--
+-- Statement is idempotent (IF NOT EXISTS) — migrate.sh applies files via psql WITHOUT
+-- --single-transaction (statement auto-commit), see tooling/scripts/migrate.sh.
+
+ALTER TABLE booking.bookings ADD COLUMN IF NOT EXISTS completion_requested_at TIMESTAMPTZ;  -- when the guard requested completion (worked-duration END; NULL = none outstanding)

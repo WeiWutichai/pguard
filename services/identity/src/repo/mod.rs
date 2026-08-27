@@ -14,7 +14,7 @@ use uuid::Uuid;
 use shared::error::AppError;
 
 use crate::domain::rotation::StoredRefresh;
-use crate::domain::{password, revocation};
+use crate::domain::{password, registration, revocation};
 use crate::models::AuthUserRow;
 
 /// Refresh-token lifetime (RFC 6749 §6 rotation; 7 days mirrors v1).
@@ -68,6 +68,25 @@ async fn find_user_by_identifier(
             token_revocation_version: trv,
         },
     ))
+}
+
+/// Resolve a login `identifier` (phone OR email) to the account's canonical `user_id`, or `None`
+/// when it matches no account. Used ONLY to key the per-account brute-force throttle on a single
+/// bucket per account (`login`), so an account with both a phone and an email cannot open two
+/// independent lockout budgets (deep-review LOW #38). Matches the SAME `phone = $1 OR email = $1`
+/// predicate `verify_credentials` authenticates against, so the throttle bucket always maps to the
+/// account that would actually log in. `skip(db, identifier)`: never log the identifier (PII).
+#[tracing::instrument(skip(db, identifier))]
+pub async fn user_id_by_identifier(
+    db: &PgPool,
+    identifier: &str,
+) -> Result<Option<Uuid>, AppError> {
+    let row: Option<(Uuid,)> =
+        sqlx::query_as("SELECT id FROM identity.users WHERE phone = $1 OR email = $1 LIMIT 1")
+            .bind(identifier)
+            .fetch_optional(db)
+            .await?;
+    Ok(row.map(|(id,)| id))
 }
 
 /// Verify credentials. Always returns a generic `Unauthorized` on any failure (no
@@ -282,6 +301,22 @@ pub async fn add_user_role<'e, E>(executor: E, user_id: Uuid, role: &str) -> Res
 where
     E: sqlx::Executor<'e, Database = sqlx::Postgres>,
 {
+    // Anti-escalation ALLOWLIST: only the two self-service roles may ever enter `user_roles` (the
+    // switchable set). 'admin' must NEVER be enrolled — `active_role_for`/`switch_role` trust an
+    // enrolled role, and the whole no-self-admin design rests on 'admin' being absent here. A
+    // malformed/forged-but-signed `user.approved` carrying role='admin' (or any non guard/customer
+    // value) is REFUSED enrolment rather than INSERTed (deep-review LOW #26). Skip with `Ok(false)`
+    // (no row, no error) rather than propagating an Err: the approval flip that drives this still
+    // commits, and the event consumer never poison-loops on a signed-but-bad payload. `validate_
+    // registration_role` is the canonical allowlist (guard/customer → Ok; admin → Forbidden;
+    // unknown → BadRequest), so `.is_err()` blocks exactly the disallowed set.
+    if registration::validate_registration_role(role).is_err() {
+        tracing::warn!(
+            role,
+            "refusing to enrol a non-allowlisted role into user_roles"
+        );
+        return Ok(false);
+    }
     let res = sqlx::query(
         r#"
         INSERT INTO identity.user_roles (user_id, role)
@@ -2213,6 +2248,61 @@ mod tests {
                 .expect("trv none"),
             None
         );
+
+        let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
+            .bind(user_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// ANTI-ESCALATION (deep-review LOW #26): `add_user_role` must REFUSE to enrol 'admin' (or any
+    /// non guard/customer value) into `user_roles` — even a signed-but-malformed approval can't seed
+    /// an admin-switchable role. The refusal is a silent skip (`Ok(false)`, no row) so the approval
+    /// flip still commits; guard/customer still enrol normally. Gated on `DATABASE_URL`.
+    #[tokio::test]
+    async fn add_user_role_refuses_admin_and_unknown_roles() {
+        let Ok(db_url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL required for the role-allowlist test");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(std::time::Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+            .expect("connect real Postgres");
+
+        let user_id = Uuid::new_v4();
+        let phone = format!("0{}", &user_id.simple().to_string()[..9]);
+        let pw = password::hash_secret("x").expect("hash");
+        sqlx::query(
+            "INSERT INTO identity.users (id, phone, password_hash, role, approval_status) \
+             VALUES ($1, $2, $3, 'customer', 'approved'::identity.approval_status)",
+        )
+        .bind(user_id)
+        .bind(&phone)
+        .bind(&pw)
+        .execute(&pool)
+        .await
+        .expect("seed user");
+
+        // 'admin' is refused (no row inserted, no error) — it can never enter the switchable set.
+        assert!(
+            !add_user_role(&pool, user_id, "admin")
+                .await
+                .expect("admin refusal must not error"),
+            "add_user_role must refuse to enrol 'admin'"
+        );
+        assert!(
+            !user_has_role(&pool, user_id, "admin").await.expect("probe"),
+            "'admin' must NOT be present in user_roles after the refused enrolment"
+        );
+        // An unknown role is likewise refused (never even reaches the enum cast).
+        assert!(!add_user_role(&pool, user_id, "superuser")
+            .await
+            .expect("unknown refusal must not error"));
+        // The two self-service roles still enrol normally.
+        assert!(add_user_role(&pool, user_id, "guard").await.expect("guard"));
+        assert!(user_has_role(&pool, user_id, "guard").await.expect("probe"));
 
         let _ = sqlx::query("DELETE FROM identity.users WHERE id = $1")
             .bind(user_id)
