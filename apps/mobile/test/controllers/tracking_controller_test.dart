@@ -25,7 +25,8 @@ class _StubSession extends Session {
 void main() {
   Future<void> flush() => Future<void>.delayed(Duration.zero);
 
-  ProviderContainer makeContainer(FakePresenceFeed feed, FakeLocationService loc) {
+  ProviderContainer makeContainer(
+      FakePresenceFeed feed, FakeLocationService loc) {
     // access + refresh present + no PIN → Session resolves to `authenticated`, so the
     // controller's logout-teardown listener stays dormant during the test.
     final c = ProviderContainer(overrides: [
@@ -36,14 +37,16 @@ void main() {
       // test exercises the connect/stream path (the real gate would hit platform channels).
       permissionGateProvider
           .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
     return c;
   }
 
-  test('goOnline connects, streams GPS to the feed, and tracks accuracy', () async {
+  test('goOnline connects, streams GPS to the feed, and tracks accuracy',
+      () async {
     final feed = FakePresenceFeed();
     final loc = FakeLocationService();
     final c = makeContainer(feed, loc);
@@ -56,7 +59,8 @@ void main() {
     expect(c.read(trackingControllerProvider).online, isTrue);
     expect(feed.connected, isTrue);
     // The immediate one-shot start fix makes the guard fresh from t=0 (before any movement).
-    expect(feed.sent, hasLength(1), reason: 'a start fix is sent on stream start');
+    expect(feed.sent, hasLength(1),
+        reason: 'a start fix is sent on stream start');
     expect(loc.sampleCount, 1, reason: 'one one-shot fix taken on start');
 
     loc.emit(GpsSample(
@@ -104,7 +108,8 @@ void main() {
     expect(c.read(trackingControllerProvider).online, isFalse);
   });
 
-  test('goOnline requests location permission (OS dialog shows on every path, incl. the duty FAB)',
+  test(
+      'goOnline requests location permission (OS dialog shows on every path, incl. the duty FAB)',
       () async {
     final gate = FakePermissionGate(PgPermissionState.granted);
     final c = ProviderContainer(overrides: [
@@ -112,13 +117,15 @@ void main() {
       locationServiceProvider.overrideWithValue(FakeLocationService()),
       pguardApiProvider.overrideWithValue(FakeApi()),
       permissionGateProvider.overrideWithValue(gate),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
     expect(gate.requestCount, 0);
     await c.read(trackingControllerProvider.notifier).goOnline();
-    expect(gate.requestCount, 1, reason: 'goOnline must request the location permission');
+    expect(gate.requestCount, 1,
+        reason: 'goOnline must request the location permission');
   });
 
   test(
@@ -167,7 +174,8 @@ void main() {
     expect(feed.sent, hasLength(sentBeforeRelease));
   });
 
-  test('going offline keeps streaming while a job lease is still held', () async {
+  test('going offline keeps streaming while a job lease is still held',
+      () async {
     final feed = FakePresenceFeed();
     final loc = FakeLocationService();
     final c = makeContainer(feed, loc);
@@ -183,14 +191,16 @@ void main() {
     final s = c.read(trackingControllerProvider);
     expect(s.online, isFalse);
     expect(s.streaming, isTrue, reason: 'the job lease outlives the toggle');
-    expect(feed.closed, isFalse, reason: 'the feed stays open for the active job');
+    expect(feed.closed, isFalse,
+        reason: 'the feed stays open for the active job');
 
     loc.emit(GpsSample(lat: 13.7, lng: 100.5, recordedAt: DateTime.utc(2026)));
     await flush();
     expect(feed.sent, isNotEmpty);
   });
 
-  test('startJobStreaming is idempotent per booking (one feed, no double-connect)',
+  test(
+      'startJobStreaming is idempotent per booking (one feed, no double-connect)',
       () async {
     var built = 0;
     final feed = FakePresenceFeed();
@@ -203,8 +213,9 @@ void main() {
       pguardApiProvider.overrideWithValue(FakeApi()),
       permissionGateProvider
           .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
     ]);
     addTearDown(c.dispose);
     final ctrl = c.read(trackingControllerProvider.notifier);
@@ -213,11 +224,13 @@ void main() {
     await ctrl.startJobStreaming('b1'); // same job again
     await ctrl.goOnline(); // toggle on top of the lease
     await flush();
-    expect(built, 1, reason: 'a single presence feed serves the toggle + all leases');
+    expect(built, 1,
+        reason: 'a single presence feed serves the toggle + all leases');
     expect(c.read(trackingControllerProvider).jobIds, {'b1'});
   });
 
-  test('logging out while a job lease is held tears it down (feed closed, state reset, late fix dropped)',
+  test(
+      'logging out while a job lease is held tears it down (feed closed, state reset, late fix dropped)',
       () async {
     // Going offline must follow the guard out of the session: if the guard logs out (or is
     // force-revoked) WHILE on an active job — holding a streaming lease — the keepAlive controller
@@ -232,8 +245,9 @@ void main() {
       pguardApiProvider.overrideWithValue(FakeApi()),
       permissionGateProvider
           .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
-      appStoreProvider
-          .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+      appStoreProvider.overrideWithValue(InMemoryStore()
+        ..access = 't'
+        ..refresh = 'r'),
       sessionProvider.overrideWith(() => session = _StubSession()),
     ]);
     addTearDown(c.dispose);
@@ -251,7 +265,8 @@ void main() {
     session.signOut();
     await flush();
 
-    expect(feed.closed, isTrue, reason: 'the presence feed is closed on logout');
+    expect(feed.closed, isTrue,
+        reason: 'the presence feed is closed on logout');
     final s = c.read(trackingControllerProvider);
     expect(s.streaming, isFalse, reason: 'the job lease is dropped on logout');
     expect(s.jobIds, isEmpty);
@@ -271,7 +286,8 @@ void main() {
   // last presence fix goes stale (>5min) and the presence service drops them from online-guards,
   // so customers can no longer be matched to them. These tests pin both halves of the fix.
 
-  test('a STATIONARY guard (no movement fixes) is sent an immediate start fix on go-online',
+  test(
+      'a STATIONARY guard (no movement fixes) is sent an immediate start fix on go-online',
       () async {
     final feed = FakePresenceFeed();
     final loc = FakeLocationService();
@@ -284,7 +300,8 @@ void main() {
     // The positionStream NEVER emits (the guard is stationary) — yet a fix is already on the wire
     // from the one-shot start fix, so the guard is fresh + discoverable from t=0.
     expect(loc.sampleCount, 1, reason: 'one one-shot fix taken on start');
-    expect(feed.sent, hasLength(1), reason: 'the start fix reached presence without movement');
+    expect(feed.sent, hasLength(1),
+        reason: 'the start fix reached presence without movement');
     expect(c.read(trackingControllerProvider).lastSample, isNotNull);
   });
 
@@ -311,7 +328,8 @@ void main() {
 
       expect(feed.sent, hasLength(4),
           reason: 'start fix + one keepalive fix per ~90s tick');
-      expect(loc.sampleCount, 4, reason: 'each tick takes a fresh one-shot fix');
+      expect(loc.sampleCount, 4,
+          reason: 'each tick takes a fresh one-shot fix');
 
       ctrl.goOffline(); // stop the timer so FakeAsync has no pending periodic timer
       async.flushMicrotasks();
@@ -319,7 +337,9 @@ void main() {
     });
   });
 
-  test('the keepalive stops on goOffline (no further fixes after going offline)', () {
+  test(
+      'the keepalive stops on goOffline (no further fixes after going offline)',
+      () {
     fakeAsync((async) {
       final feed = FakePresenceFeed();
       final loc = FakeLocationService();
@@ -348,17 +368,21 @@ void main() {
     });
   });
 
-  test('with no permission/fix, currentSample() is null and the keepalive sends nothing', () {
+  test(
+      'with no permission/fix, currentSample() is null and the keepalive sends nothing',
+      () {
     fakeAsync((async) {
       final feed = FakePresenceFeed();
-      final loc = FakeLocationService()..sample = null; // permission denied / no fix
+      final loc = FakeLocationService()
+        ..sample = null; // permission denied / no fix
       final c = makeContainer(feed, loc);
       final ctrl = c.read(trackingControllerProvider.notifier);
 
       ctrl.goOnline();
       async.flushMicrotasks();
       // The start fix found no sample (and there is no prior lastSample) → nothing is sent.
-      expect(loc.sampleCount, 1, reason: 'a one-shot fix was attempted on start');
+      expect(loc.sampleCount, 1,
+          reason: 'a one-shot fix was attempted on start');
       expect(feed.sent, isEmpty, reason: 'no fix available → nothing pushed');
 
       // Keepalive keeps attempting (the guard might regain a fix later) but sends nothing while
@@ -367,6 +391,60 @@ void main() {
       async.flushMicrotasks();
       expect(loc.sampleCount, 2, reason: 'the keepalive tick attempts a fix');
       expect(feed.sent, isEmpty, reason: 'still no fix → still nothing pushed');
+
+      ctrl.goOffline();
+      async.flushMicrotasks();
+      c.dispose();
+    });
+  });
+
+  test(
+      'teardown CLEARS lastSample so a stale fix cannot survive an offline/online '
+      'cycle (copyWith(lastSample: null) is no longer a no-op)', () async {
+    final feed = FakePresenceFeed();
+    final loc = FakeLocationService();
+    final c = makeContainer(feed, loc);
+    final ctrl = c.read(trackingControllerProvider.notifier);
+
+    await ctrl.goOnline();
+    await flush();
+    expect(c.read(trackingControllerProvider).lastSample, isNotNull,
+        reason: 'the start fix recorded a sample');
+
+    await ctrl.goOffline(); // teardown resets link + lastSample
+    expect(c.read(trackingControllerProvider).lastSample, isNull,
+        reason:
+            'a cleared last sample can never be re-broadcast as a fresh current fix');
+  });
+
+  test(
+      'the keepalive refuses to re-broadcast a STALE cached fix (>5min) as the '
+      'current position when a fresh one-shot fix is unavailable', () {
+    fakeAsync((async) {
+      final feed = FakePresenceFeed();
+      // The one-shot fix currently available is HOURS old (its recorded_at is stale).
+      final loc = FakeLocationService()
+        ..sample = GpsSample(
+            lat: 13.7,
+            lng: 100.5,
+            accuracy: 8,
+            recordedAt:
+                DateTime.now().toUtc().subtract(const Duration(hours: 2)));
+      final c = makeContainer(feed, loc);
+      final ctrl = c.read(trackingControllerProvider.notifier);
+
+      ctrl.goOnline();
+      async.flushMicrotasks(); // start fix caches the (stale-stamped) sample
+      final sentAfterStart = feed.sent.length;
+
+      // Now GPS goes fully unavailable (indoors) → currentSample() returns null, so the keepalive
+      // would fall back to the cache. That cache is >5min old → it must NOT be resent.
+      loc.sample = null;
+      async.elapse(const Duration(seconds: 90));
+      async.flushMicrotasks();
+      expect(feed.sent, hasLength(sentAfterStart),
+          reason:
+              'a stale cached fix is never advertised as the current position');
 
       ctrl.goOffline();
       async.flushMicrotasks();
@@ -385,8 +463,9 @@ void main() {
         pguardApiProvider.overrideWithValue(FakeApi()),
         permissionGateProvider
             .overrideWithValue(FakePermissionGate(PgPermissionState.granted)),
-        appStoreProvider
-            .overrideWithValue(InMemoryStore()..access = 't'..refresh = 'r'),
+        appStoreProvider.overrideWithValue(InMemoryStore()
+          ..access = 't'
+          ..refresh = 'r'),
         sessionProvider.overrideWith(() => session = _StubSession()),
       ]);
       final ctrl = c.read(trackingControllerProvider.notifier);

@@ -1,27 +1,29 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { AlertTriangle, Loader2 } from "lucide-react";
 
 import type { components as BookingComponents } from "@/api/generated/booking";
 import type { components as ProfileComponents } from "@/api/generated/profile";
+import type { components as PaymentComponents } from "@/api/generated/payment";
 import { Badge, Button, Modal } from "@/components/ui";
-import { bookingApi } from "@/lib/api";
+import { bookingApi, paymentApi } from "@/lib/api";
 import { useLanguage } from "@/lib/i18n";
 
 import {
   type BookingStatusKey,
-  bookingTotal,
   cancellationOf,
   COPY,
   fmtBaht,
   isCancelledStatus,
+  moneyView,
   reasonText,
   STATUS_TONE,
 } from "./copy";
 
 type Booking = BookingComponents["schemas"]["Booking"];
 type GuardProfile = ProfileComponents["schemas"]["GuardProfile"];
+type Payment = PaymentComponents["schemas"]["Payment"];
 
 /** Hi-fi drawer `.stat-mini` — sunken box, small label over a mono value. Page-local
  * (ui/ is single-writer; the guards detail modal uses the same shape). */
@@ -79,6 +81,33 @@ export function BookingDetailModal({
   const [assigning, setAssigning] = useState(false);
   const [failed, setFailed] = useState(false);
 
+  // Real charged amount: the payment service reconciles ACTUAL hours + refunds, so the booked-hours
+  // estimate on the booking row is NOT what was charged. Fetch this booking's payment row (the admin
+  // ledger has no booking_id filter → scope to the customer, then match booking_id) and show the
+  // reconciled figure + any refund. Falls back to the estimate (clearly labelled) if unavailable.
+  // The result is TAGGED with its booking id so a prop change to a new booking shows the estimate
+  // (not the previous booking's money) until the new fetch lands — no reset-setState in the effect.
+  const [paidRow, setPaidRow] = useState<{ bookingId: string; payment: Payment | null } | null>(null);
+  useEffect(() => {
+    let alive = true;
+    void paymentApi
+      .GET("/admin/payments", { params: { query: { customer_id: booking.customer_id } } })
+      .then((res) => {
+        if (!alive) return;
+        const match = (res.data?.data ?? []).find((p) => p.booking_id === booking.id) ?? null;
+        setPaidRow({ bookingId: booking.id, payment: match });
+      })
+      .catch(() => {
+        /* ledger read failed → keep the labelled estimate */
+      });
+    return () => {
+      alive = false;
+    };
+  }, [booking.id, booking.customer_id]);
+
+  const payment = paidRow?.bookingId === booking.id ? paidRow.payment : null;
+  const money = moneyView(booking, payment);
+
   async function assign() {
     if (!guardId) return;
     setAssigning(true);
@@ -131,15 +160,28 @@ export function BookingDetailModal({
         </Badge>
       </div>
 
-      {/* Stat line — all derived from real booking fields. */}
+      {/* Stat line. "Total" shows the RECONCILED charge from the payment row (VAT-inclusive, actual
+          hours, net of refund/cancel) — or the booked estimate, clearly labelled, when no payment
+          row is available. */}
       <div className="mt-4 grid grid-cols-3 gap-2">
-        <StatMini label={c.total} value={fmtBaht(bookingTotal(booking))} />
+        <StatMini label={money.isEstimate ? c.totalEst : c.total} value={fmtBaht(money.total)} />
         <StatMini label={c.duration} value={`${booking.hours}${c.hoursUnit}`} />
         <StatMini
           label={c.guardsCount}
           value={`${booking.guard_count}${c.peopleUnit ? ` ${c.peopleUnit}` : ""}`}
         />
       </div>
+
+      {/* Refund line — only when the customer actually got money back (overpay on an early finish, or
+          the refund on a cancel/decline). The first thing a refund dispute checks next to the reason. */}
+      {money.refunded > 0 && (
+        <div className="mt-2 flex items-center justify-between rounded-md bg-sunken px-3.5 py-2 text-[12.5px]">
+          <span className="text-muted">{c.refunded}</span>
+          <span className="font-mono font-semibold tabular-nums text-text-strong">
+            {fmtBaht(money.refunded)}
+          </span>
+        </div>
+      )}
 
       {/* Why it ended — cancelled/declined only. Sits above the parties because on a terminal
           booking it is the first thing an admin (or a refund dispute) needs. */}

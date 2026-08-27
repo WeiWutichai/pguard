@@ -136,9 +136,22 @@ class ChatController extends _$ChatController {
     // [chatSendErrors]) and flip the read-only signal on `code == read_only` instead of letting
     // the frame vanish silently.
     final errSub = feed.errors.listen(_onSendError);
+    // Recover messages MISSED during a WS gap. The hub forwards only LIVE frames and replays no
+    // history on (re)connect, so a message the counterpart sent while the socket was down reaches
+    // an OPEN thread never — it would surface only on reopen (deep-review). On each RECONNECT edge
+    // re-pull the history page and fold in anything unseen (the `_seen` id-dedupe already makes the
+    // overlap safe), mirroring BookingStatusController's reconnect re-pull. Baseline `true` so the
+    // initial connect below — whose history we JUST fetched — is not treated as a reconnect.
+    var wasConnected = true;
+    final connSub = feed.connectionChanges.listen((connected) {
+      final reconnected = connected && !wasConnected;
+      wasConnected = connected;
+      if (reconnected) unawaited(_repullOnReconnect(api));
+    });
     ref.onDispose(() {
       sub.cancel();
       errSub.cancel();
+      connSub.cancel();
       feed.close();
       // Mark read on LEAVE too. The open-time mark_read (above) captured `read_at` BEFORE any live
       // message arrived, so a message received WHILE the thread was open would re-surface as unread
@@ -149,6 +162,37 @@ class ChatController extends _$ChatController {
     await feed.connect();
 
     return messages;
+  }
+
+  /// Re-pull the history page after a reconnect and fold in any messages persisted while the socket
+  /// was down (deduped by id — an overlap with what we already have is admitted at most once).
+  /// Best-effort: a failed re-pull leaves the current list; a later live frame or a reopen recovers.
+  Future<void> _repullOnReconnect(PguardApi api) async {
+    if (_disposed) return;
+    try {
+      final data = await api.get('/conversations/$_conversationId/messages');
+      if (_disposed) return;
+      final raw = data is List ? data : const [];
+      // Newest-first on the wire → oldest-first for natural append (same parse as [build]).
+      final fresh = raw
+          .whereType<Map<String, dynamic>>()
+          .map(ChatMessage.tryParse)
+          .whereType<ChatMessage>()
+          .toList()
+          .reversed;
+      final additions = <ChatMessage>[];
+      for (final m in fresh) {
+        if (_seen.add(m.id)) additions.add(m);
+      }
+      if (additions.isEmpty) return;
+      final current = state.valueOrNull ?? const <ChatMessage>[];
+      state = AsyncData([...current, ...additions]);
+      // The thread is foregrounded → keep `read_at` current so the recovered messages don't
+      // resurface as unread on leave.
+      unawaited(_markRead(api));
+    } catch (_) {
+      // Best-effort — the socket is back, so any newer message still arrives live.
+    }
   }
 
   void _onIncoming(ChatMessage message) {
@@ -189,15 +233,19 @@ class ChatController extends _$ChatController {
     }
   }
 
-  /// Send a text message over the WS. The input is cleared by the composer immediately; the
-  /// bubble appears when the server echoes the persisted message back (deduped by id). A blank
-  /// message is ignored. Read-only conversations hide the composer, and the server also rejects.
-  void send(String text) {
+  /// Send a text message over the WS. The bubble appears when the server echoes the persisted
+  /// message back (deduped by id). Returns `true` when the frame reached a live socket — the
+  /// composer clears only then. Returns `false` for a BLANK message (nothing to send) OR when the
+  /// socket is down and the frame was dropped: the caller keeps the user's text and surfaces a
+  /// "couldn't send" hint instead of silently destroying it (deep-review — a dropped frame used to
+  /// vanish from both the composer and the thread with no error). Read-only conversations hide the
+  /// composer, and the server also rejects.
+  bool send(String text) {
     final body = text.trim();
-    if (body.isEmpty || _feed == null) return;
-    // If the socket is down (e.g. the documented gateway WS-proxy dependency) the frame is dropped
-    // by ReconnectingWebSocket and the bubble only appears on the server echo — tracked limitation.
-    _feed!.sendMessage(
+    if (body.isEmpty) return false;
+    final feed = _feed;
+    if (feed == null) return false;
+    return feed.sendMessage(
       conversationId: _conversationId,
       content: body,
       type: ChatMessageType.text,
@@ -206,10 +254,13 @@ class ChatController extends _$ChatController {
   }
 
   /// Send an already-uploaded attachment as an image/video message (the attachment id rides in
-  /// `content`; the receiver resolves a fresh presigned URL via `GET /attachments/{id}`).
-  void sendAttachment(Attachment attachment) {
-    if (_feed == null) return;
-    _feed!.sendMessage(
+  /// `content`; the receiver resolves a fresh presigned URL via `GET /attachments/{id}`). Returns
+  /// `false` when the socket was down and the frame was dropped (the attachment itself is already
+  /// persisted server-side; only the chat message frame was lost) so the caller can surface it.
+  bool sendAttachment(Attachment attachment) {
+    final feed = _feed;
+    if (feed == null) return false;
+    return feed.sendMessage(
       conversationId: _conversationId,
       content: attachment.id,
       type: attachment.messageType,

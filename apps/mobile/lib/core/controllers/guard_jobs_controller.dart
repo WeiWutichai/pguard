@@ -126,9 +126,18 @@ class GuardJobsController extends _$GuardJobsController {
     return _act(() => ref.read(pguardApiProvider).post('/bookings/$id/skip'));
   }
 
+  /// Gesture-driven re-pull (pull-to-refresh / onRetry). NEVER rethrows: the rebuild's failure is
+  /// already carried in the provider's AsyncError state (the screen renders it), so awaiting it here
+  /// must swallow — otherwise the errored future propagates into `RefreshIndicator.onRefresh` / the
+  /// fire-and-forget `onRetry` as an UNHANDLED async error on every offline pull (deep-review;
+  /// matches wallet_controller/customer_home_controller.refresh).
   Future<String?> refresh() async {
     ref.invalidateSelf();
-    await future;
+    try {
+      await future;
+    } catch (_) {
+      // state is AsyncError — the UI shows it; refresh must never rethrow.
+    }
     return null;
   }
 

@@ -10,7 +10,7 @@ mod captcha;
 mod lockout;
 mod otp;
 
-pub use captcha::generate_captcha;
+pub use captcha::{generate_captcha, CaptchaOp};
 pub use lockout::{
     existing_lock_decision, lockout_decision, ActiveLock, LockoutDecision, BURST_WINDOW_SECS,
 };

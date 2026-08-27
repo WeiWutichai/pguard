@@ -12,6 +12,7 @@ import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
+import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
@@ -80,7 +81,9 @@ class _EarningsScreenState extends ConsumerState<EarningsScreen> {
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
             title: isThai ? 'โหลดรายได้ไม่สำเร็จ' : 'Could not load earnings',
-            message: e is ApiException ? e.message : null,
+            // Localize the detail so an offline/5xx failure reads in Thai (the raw English transport
+            // string was leaking into the Thai UI — deep-review).
+            message: e is ApiException ? localizeApiError(isThai, e) : null,
             onRetry: () =>
                 ref.read(guardJobsControllerProvider.notifier).refresh(),
           ),
@@ -455,7 +458,10 @@ class _EarningsRow extends StatelessWidget {
     final when = booking.scheduledAt;
     final meta = [
       if (when != null) thaiShortDate(when, isThai: isThai),
-      '${booking.hours ?? 0} ${isThai ? 'ชม.' : 'hrs'}',
+      // ACTUAL payable hours (annotated with the booked estimate when they differ) so the row's
+      // hours never disagree with its own ฿ figure after a reconcile.
+      GuardEarnings.hoursLabel(booking,
+          actualHours: actualHours, isThai: isThai),
     ].join(' · ');
     final pay = GuardEarnings.jobPay(booking,
         actualHours: actualHours, commissionPercent: commissionPercent);

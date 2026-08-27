@@ -211,6 +211,47 @@ void main() {
     expect(postBody!['target_guard_id'], 'guard-aaaa-1111');
   });
 
+  testWidgets(
+      'a guard who comes online APPEARS via the light periodic refresh — no app '
+      'restart (deep-review: keepAlive discovery state was stale)',
+      (tester) async {
+    var guards = <Map<String, dynamic>>[]; // none online at first
+    final api = FakeApi(onGet: (path, _) async {
+      expect(path, '/available-guards');
+      return guards;
+    });
+    await pumpScreen(tester, api);
+    // Empty state: the just-arrived guard is not shown yet.
+    expect(find.text('สมชาย มั่นคง'), findsNothing);
+
+    // A guard comes online. The screen's ~25s visibility refresh must surface them WITHOUT a
+    // manual pull or an app restart (the keepAlive flow controller otherwise kept a stale list).
+    guards = guardsJson();
+    await tester.pump(const Duration(seconds: 25)); // fire the periodic refresh
+    await tester.pump(); // resolve refreshGuards
+    await tester.pump(const Duration(milliseconds: 20));
+
+    expect(find.text('สมชาย มั่นคง'), findsOneWidget,
+        reason: 'the discovery list refreshes while the screen is visible');
+  });
+
+  testWidgets('pull-to-refresh re-pulls available-guards from the empty state',
+      (tester) async {
+    var guards = <Map<String, dynamic>>[];
+    final api = FakeApi(onGet: (_, __) async => guards);
+    await pumpScreen(tester, api);
+    expect(find.text('สมชาย มั่นคง'), findsNothing);
+
+    guards = guardsJson();
+    // Drag down on the scrollable empty state to trigger the RefreshIndicator.
+    await tester.fling(find.text('ยังไม่มีเจ้าหน้าที่ว่างในขณะนี้'),
+        const Offset(0, 300), 1000);
+    await tester.pumpAndSettle();
+
+    expect(find.text('สมชาย มั่นคง'), findsOneWidget,
+        reason: 'pull-to-refresh brings in the newly-available guard');
+  });
+
   test('AvailableGuard.displayLabel prefers the real name, else the id handle',
       () {
     const named = AvailableGuard(

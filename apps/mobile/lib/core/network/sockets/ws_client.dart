@@ -63,10 +63,15 @@ class ReconnectingWebSocket {
   /// Send a frame to the server (e.g. an outbound GPS sample). JSON-encoded unless already a
   /// String. No-op (dropped) when not currently connected — ephemeral frames like GPS samples
   /// are superseded by the next one, so we never queue.
-  void send(Object data) {
+  ///
+  /// Returns `true` when the frame was handed to a live channel, `false` when it was dropped
+  /// (socket down / closed). Ephemeral callers (GPS) ignore the result; callers carrying
+  /// USER-VISIBLE payloads (chat text) inspect it so a lost frame isn't silently destroyed.
+  bool send(Object data) {
     final channel = _channel;
-    if (_closed || channel == null) return;
+    if (_closed || channel == null) return false;
     channel.sink.add(data is String ? data : jsonEncode(data));
+    return true;
   }
 
   /// Open the connection (idempotent; no-op after [close]).

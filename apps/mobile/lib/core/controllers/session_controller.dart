@@ -6,6 +6,8 @@ import '../models/registration.dart';
 import '../network/jwt.dart';
 import '../providers.dart';
 import '../push/push_registration_controller.dart';
+import '../storage/prefs_store.dart';
+import '../storage/secure_store.dart';
 import 'active_job_controller.dart';
 import 'auth_controller.dart';
 import 'terms_acceptance.dart';
@@ -75,6 +77,26 @@ class Session extends _$Session {
     // container was disposed mid-load — avoids the "use ref after dispose" footgun.
     final store = ref.read(appStoreProvider);
     final prefs = ref.read(prefsStoreProvider);
+    try {
+      await _classify(store, prefs);
+    } catch (_) {
+      // FlutterSecureStorage reads can throw (Android keystore corruption / restore-from-backup key
+      // mismatch → PlatformException/BadPaddingException). WITHOUT this the startup microtask errors
+      // unhandled, the session stays `unknown`, and the router pins the user to the splash screen
+      // FOREVER with no retry (deep-review). The stored tokens are undecryptable anyway → best-effort
+      // wipe them, then classify as `unauthenticated` so the user lands on the login flow.
+      if (_disposed || state.status != SessionStatus.unknown) return;
+      try {
+        await store.clearTokens();
+      } catch (_) {
+        // Even the wipe can fail on a wedged keystore — we still fall through to unauthenticated.
+      }
+      if (_disposed || state.status != SessionStatus.unknown) return;
+      state = const SessionState(SessionStatus.unauthenticated);
+    }
+  }
+
+  Future<void> _classify(AppStore store, PrefsStore prefs) async {
     final refresh = await store.readRefreshToken();
     // _load is the STARTUP classifier only. If an explicit transition (onLoggedIn /
     // onPendingApproval / onOnboardingExpired) already moved us off `unknown` while these

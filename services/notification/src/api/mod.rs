@@ -492,10 +492,13 @@ pub async fn dispatch_due_checkins(state: &AppState) -> Result<u64, AppError> {
         ) {
             continue;
         }
-        // CLAIM before pushing (also guards a row closed between the scan and the claim).
-        match repo::mark_reminded(&state.db, row.booking_id, now).await {
+        // CLAIM before pushing — a compare-and-swap on the `last_reminded_at` we OBSERVED in the
+        // scan (`row.last_reminded_at`), so a row closed OR already re-stamped by another replica
+        // between the scan and the claim loses (no double-push at >=2 replicas). Guards a row
+        // closed in the meantime too.
+        match repo::mark_reminded(&state.db, row.booking_id, row.last_reminded_at, now).await {
             Ok(true) => {}
-            Ok(false) => continue, // closed in the meantime → skip
+            Ok(false) => continue, // closed / claimed by another replica in the meantime → skip
             Err(e) => {
                 tracing::error!(booking = %row.booking_id, "checkin mark_reminded failed: {e}");
                 continue;

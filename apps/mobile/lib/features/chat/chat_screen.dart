@@ -97,8 +97,21 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _send() {
     final text = _input.text;
     if (text.trim().isEmpty) return;
-    _ctrl.send(text);
-    _input.clear();
+    // Clear the composer ONLY when the frame reached a live socket. If the WS is down the send is
+    // dropped (the bubble only ever comes from the server echo), so keep the text and tell the user
+    // it didn't go — a lost frame used to erase the message from both the composer and the thread
+    // with no error (deep-review).
+    final sent = _ctrl.send(text);
+    if (sent) {
+      _input.clear();
+    } else {
+      final isThai = ref.read(localeControllerProvider) == AppLocale.th;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text(isThai
+            ? 'ส่งข้อความไม่สำเร็จ — กำลังเชื่อมต่อใหม่ ลองอีกครั้ง'
+            : "Couldn't send — reconnecting, please try again"),
+      ));
+    }
   }
 
   Future<void> _attach() async {
@@ -122,7 +135,16 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       // A long upload (videos up to 200MB) can outlive this screen — touching `ref`/`_ctrl`
       // after dispose throws, so bail out first (the upload itself completed server-side).
       if (!mounted || attachment == null) return;
-      _ctrl.sendAttachment(attachment);
+      // The attachment is already persisted; only the chat message frame rides the WS. If the
+      // socket is down that frame drops, so surface it rather than leaving the user to wonder why
+      // the image never appeared.
+      if (!_ctrl.sendAttachment(attachment)) {
+        messenger.showSnackBar(SnackBar(
+          content: Text(isThai
+              ? 'ส่งไฟล์ไม่สำเร็จ — กำลังเชื่อมต่อใหม่ ลองอีกครั้ง'
+              : "Couldn't send — reconnecting, please try again"),
+        ));
+      }
     } on ApiException catch (e) {
       // A read-only conversation (booking completed/cancelled while the thread was open) makes the
       // chat service reject the upload with 409 — surface the localized "job ended" line, NOT the

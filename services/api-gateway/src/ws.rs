@@ -16,7 +16,7 @@
 //! coded against: `{ "type":"booking_status", "booking_id", "status", "occurred_at", "guard_id"? }`.
 
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{ConnectInfo, Path, State};
@@ -42,6 +42,57 @@ const REAUTH_INTERVAL: Duration = Duration::from_secs(60);
 const BOOKING_SUBJECT: &str = "pguard.events.booking.*";
 /// Hub reconnect backoff on NATS connect/subscribe failure.
 const HUB_RETRY: Duration = Duration::from_secs(2);
+
+/// Upper bound on a single inbound frame/message on THIS socket. The booking-status feed is
+/// **read-only** — a well-behaved client sends nothing but WS control frames (auto-handled) — so
+/// this only exists to cap a hostile client. Without it a frame is bounded only by tungstenite's
+/// 64 MiB default → an authed memory-DoS on upgrade. A few KiB is far above any control frame.
+const MAX_WS_FRAME_BYTES: usize = 8 * 1024;
+
+/// Per-connection inbound-frame budget: burst of [`FRAME_BURST`] then [`FRAME_REFILL_PER_SEC`]/s
+/// sustained. This feed is read-only, so a legitimate client never sends data frames at all; the
+/// bucket only bounds how fast a hostile authed socket can drive frame decode/CPU before it's cut.
+const FRAME_BURST: u32 = 20;
+const FRAME_REFILL_PER_SEC: f64 = 5.0;
+
+/// A per-connection token-bucket rate limiter for inbound WS data frames. Pure + time-injectable
+/// (`allow_at`) so it unit-tests without a clock. Refills `refill_per_sec` tokens/second up to
+/// `capacity`; each inbound data frame consumes one. An empty bucket == abuse.
+struct FrameRateLimiter {
+    tokens: f64,
+    capacity: f64,
+    refill_per_sec: f64,
+    last: Instant,
+}
+
+impl FrameRateLimiter {
+    fn new(capacity: u32, refill_per_sec: f64) -> Self {
+        Self {
+            tokens: f64::from(capacity),
+            capacity: f64::from(capacity),
+            refill_per_sec,
+            last: Instant::now(),
+        }
+    }
+
+    /// Consume one token at the current instant. `true` = within budget, `false` = abuse.
+    fn allow(&mut self) -> bool {
+        self.allow_at(Instant::now())
+    }
+
+    /// Testable core: refill by elapsed wall-time since the last call, then take one token.
+    fn allow_at(&mut self, now: Instant) -> bool {
+        let elapsed = now.saturating_duration_since(self.last).as_secs_f64();
+        self.last = now;
+        self.tokens = (self.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
 
 /// Background task: subscribe to `pguard.events.booking.*` once and fan every client-visible
 /// status update out over `tx`. Reconnects forever (a NATS outage must not kill the gateway).
@@ -146,10 +197,14 @@ pub async fn ws_bookings(
         Err(resp) => return resp,
     };
 
-    // 6) Upgrade → live session.
+    // 6) Upgrade → live session. Cap inbound frames hard: this feed is read-only, so a legit
+    // client sends only tiny control frames; the cap replaces tungstenite's 64 MiB default so a
+    // hostile authed socket can't push a memory-pressure payload on upgrade.
     let decoding_key = state.jwt_config.decoding_key.clone();
     let redis = state.redis_conn.clone();
-    ws.on_upgrade(move |socket| session(socket, id, token, snapshot, rx, decoding_key, redis))
+    ws.max_message_size(MAX_WS_FRAME_BYTES)
+        .max_frame_size(MAX_WS_FRAME_BYTES)
+        .on_upgrade(move |socket| session(socket, id, token, snapshot, rx, decoding_key, redis))
 }
 
 /// Authorize the caller as a participant AND fetch the current status, by calling booking's
@@ -245,6 +300,10 @@ async fn session(
     let mut reauth = tokio::time::interval(REAUTH_INTERVAL);
     reauth.tick().await; // consume the immediate first tick
 
+    // Bound how fast this (read-only) socket can push inbound frames — content is ignored, but
+    // frame decode still costs CPU, so a flood is cut rather than served forever.
+    let mut limiter = FrameRateLimiter::new(FRAME_BURST, FRAME_REFILL_PER_SEC);
+
     loop {
         tokio::select! {
             recv = rx.recv() => {
@@ -271,7 +330,16 @@ async fn session(
             client = stream.next() => {
                 match client {
                     Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
-                    Some(Ok(_)) => {} // read-only feed: ignore inbound client frames
+                    // Read-only feed: content is ignored, but rate-limit inbound DATA frames so an
+                    // authed socket can't be turned into a decode/CPU flood. Over budget → close.
+                    Some(Ok(Message::Text(_) | Message::Binary(_))) => {
+                        if !limiter.allow() {
+                            tracing::warn!(booking = %id_str, "status-WS inbound frame flood; closing");
+                            let _ = sink.send(Message::Close(None)).await;
+                            break;
+                        }
+                    }
+                    Some(Ok(_)) => {} // ping/pong — ignore
                 }
             }
             _ = reauth.tick() => {
@@ -302,6 +370,53 @@ fn token_from_headers(headers: &HeaderMap) -> Option<String> {
         .get(axum::http::header::COOKIE)
         .and_then(|v| v.to_str().ok())
         .and_then(|c| extract_cookie_value(c, ACCESS_TOKEN_COOKIE).map(str::to_string))
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    //! Hermetic unit tests for the per-connection inbound-frame token bucket (no infra).
+    use super::{FrameRateLimiter, FRAME_BURST, FRAME_REFILL_PER_SEC};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn allows_full_burst_then_denies_when_empty() {
+        let now = Instant::now();
+        let mut rl = FrameRateLimiter::new(5, 5.0);
+        // The whole burst is allowed at a single instant…
+        for i in 0..5 {
+            assert!(rl.allow_at(now), "burst frame {i} should be allowed");
+        }
+        // …the very next frame (bucket empty, no time elapsed) is abuse.
+        assert!(!rl.allow_at(now), "over-budget frame must be denied");
+    }
+
+    #[test]
+    fn refills_over_time() {
+        let start = Instant::now();
+        let mut rl = FrameRateLimiter::new(5, 5.0);
+        for _ in 0..5 {
+            assert!(rl.allow_at(start));
+        }
+        assert!(!rl.allow_at(start), "empty at t0");
+        // After 1s at 5 tokens/s the bucket has refilled → a frame is allowed again.
+        assert!(
+            rl.allow_at(start + Duration::from_secs(1)),
+            "refilled after 1s"
+        );
+    }
+
+    #[test]
+    fn never_exceeds_capacity_after_idle() {
+        let start = Instant::now();
+        let mut rl = FrameRateLimiter::new(FRAME_BURST, FRAME_REFILL_PER_SEC);
+        // Idle far longer than it takes to refill — tokens are clamped at capacity, so exactly
+        // FRAME_BURST frames pass and the next is denied (no unbounded accrual).
+        let later = start + Duration::from_secs(3600);
+        for _ in 0..FRAME_BURST {
+            assert!(rl.allow_at(later));
+        }
+        assert!(!rl.allow_at(later), "capacity is a hard ceiling");
+    }
 }
 
 #[cfg(test)]

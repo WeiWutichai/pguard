@@ -603,4 +603,64 @@ void main() {
     expect(place?.point.lat, 13.7367);
     expect(place?.point.lng, 100.5232);
   });
+
+  // ---- refreshGuards: the discovery-list realtime refresh (deep-review NEW BUG) ----
+
+  test(
+      'refreshGuards re-pulls available-guards WITHOUT flipping busy or surfacing an '
+      'error (so a background refresh never disables confirm mid-selection)',
+      () async {
+    var rows = <Map<String, dynamic>>[
+      {'guard_id': 'g1', 'review_count': 3},
+    ];
+    final api = FakeApi(onGet: (path, _) async {
+      expect(path, '/available-guards');
+      return rows;
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    expect(await ctrl.loadGuards(), isTrue);
+    expect(state().guards.map((g) => g.guardId), ['g1']);
+
+    // A second guard comes online between refreshes.
+    rows = [
+      {'guard_id': 'g1', 'review_count': 3},
+      {'guard_id': 'g2', 'review_count': 0},
+    ];
+    await ctrl.refreshGuards();
+
+    expect(state().guards.map((g) => g.guardId), ['g1', 'g2'],
+        reason:
+            'a newly-online guard appears without killing/rebuilding the app');
+    expect(state().busy, isFalse,
+        reason: 'a quiet refresh must not disable the confirm button');
+    expect(state().error, isNull);
+  });
+
+  test(
+      'refreshGuards keeps the current list on error (no throw, no error banner)',
+      () async {
+    var fail = false;
+    final api = FakeApi(onGet: (_, __) async {
+      if (fail) throw const ApiException(message: 'offline');
+      return [
+        {'guard_id': 'g1', 'review_count': 3},
+      ];
+    });
+    final c = container(api: api);
+    final ctrl = c.read(bookingFlowControllerProvider.notifier);
+    BookingFlowState state() => c.read(bookingFlowControllerProvider);
+
+    expect(await ctrl.loadGuards(), isTrue);
+    expect(state().guards.map((g) => g.guardId), ['g1']);
+
+    fail = true;
+    await ctrl.refreshGuards(); // must NOT throw
+    expect(state().guards.map((g) => g.guardId), ['g1'],
+        reason: 'a failed background refresh leaves the shown list intact');
+    expect(state().error, isNull,
+        reason: 'a background refresh never flashes an error banner');
+  });
 }

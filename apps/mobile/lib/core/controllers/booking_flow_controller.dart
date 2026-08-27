@@ -390,6 +390,39 @@ class BookingFlowController extends _$BookingFlowController {
         return true;
       });
 
+  /// QUIETLY re-pull `GET /v1/available-guards` — the discovery screen's pull-to-refresh, light
+  /// periodic refresh, and app-resume refresh. Unlike [loadGuards] it does NOT flip [busy] or
+  /// surface an [error]: a background refresh must never disable the confirm button mid-selection or
+  /// flash an error banner. Reuses the ALREADY-resolved meetup [place] (no fresh device-location
+  /// prompt each tick) so it stays cheap. Best-effort: a failure leaves the current list untouched.
+  ///
+  /// WHY this exists: [BookingFlowController] is `keepAlive`, so navigating back to discovery reuses
+  /// stale guard state and a newly-online guard would never appear until the app is killed. This is
+  /// a discovery LIST refresh (available-guards), NOT the forbidden booking/assignment STATUS
+  /// polling — it's driven by the screen's visibility, not a background timer on booking status.
+  Future<void> refreshGuards() async {
+    try {
+      final start = state.scheduledAt;
+      final place = state.place;
+      final query = <String, dynamic>{
+        if (start != null) 'scheduled_at': start.toUtc().toIso8601String(),
+        if (start != null) 'hours': state.hours,
+        if (place != null) 'lat': place.point.lat,
+        if (place != null) 'lng': place.point.lng,
+      };
+      final data = await ref
+          .read(pguardApiProvider)
+          .get('/available-guards', query: query);
+      final list = (data as List)
+          .whereType<Map<String, dynamic>>()
+          .map(AvailableGuard.fromJson)
+          .toList();
+      state = state.copyWith(guards: list);
+    } catch (_) {
+      // Background refresh — keep the current list on error (a manual retry / re-entry recovers).
+    }
+  }
+
   Future<bool> _guard(Future<bool> Function() op) async {
     state = state.copyWith(busy: true, error: null);
     try {

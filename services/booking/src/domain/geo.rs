@@ -12,6 +12,14 @@
 //! start step far from the site. The gate now sits at the EnRoute→Arrived transition with a
 //! roomier 120m radius (`repo::arrive_job`); once arrival is proven on-site, start / check-in
 //! are free.
+//!
+//! TRUST MODEL (deep-review LOW #42): the guard's position is CLIENT-reported and cannot be fully
+//! attested server-side. This module treats the fix as ADVISORY and rejects the easy tells — a
+//! missing fix on a pinned booking ([`GPS_REQUIRED_CODE`]) and a fix whose reported accuracy is
+//! implausibly coarse ([`GPS_INACCURATE_CODE`], beyond [`MAX_PLAUSIBLE_ACCURACY_M`]). It does NOT
+//! detect a precise-looking SPOOFED fix at the site pin; closing that needs a presence-track
+//! cross-check or device attestation (a larger feature, out of scope here). The residual risk is
+//! noted on [`validate_geofence`].
 
 use shared::error::AppError;
 
@@ -24,6 +32,21 @@ pub const NOT_AT_SITE_CODE: &str = "NOT_AT_SITE";
 /// arrival without GPS cannot be verified. Clients branch on this to prompt for location
 /// permission / a fresh fix and retry.
 pub const GPS_REQUIRED_CODE: &str = "GPS_REQUIRED";
+
+/// Machine-readable `error.code` for a fix whose reported accuracy is too coarse to attest
+/// on-site presence (deep-review LOW #42 mitigation). Clients branch on this to prompt the guard
+/// to wait for a precise GPS lock (move away from cover / basements) and retry.
+pub const GPS_INACCURATE_CODE: &str = "GPS_INACCURATE";
+
+/// The largest reported fix accuracy we will accept for the arrive geofence. Real phone GNSS fixes
+/// are typically ±5–30 m (up to ~65 m in poor urban conditions); a reported accuracy beyond this
+/// is a network/IP-geolocated (or spoofed) fix that cannot prove the guard is within the 120 m
+/// fence, so it is refused rather than trusted. This is a MITIGATION only — the server still cannot
+/// ATTEST that a precise-looking fix is genuine (a spoof tool can report a perfect ±5 m fix at the
+/// site pin); fully closing that needs a presence-track cross-check / device attestation
+/// (out of scope here). A fix with NO reported accuracy stays allowed (older builds) and simply
+/// gets no allowance, so this only ever tightens, never loosens.
+pub const MAX_PLAUSIBLE_ACCURACY_M: f64 = 100.0;
 
 /// The arrive geofence radius: the guard must be within this many meters of the site pin to
 /// mark the job arrived. Roomier than the old 50m start fence — a guard at the gate / parking
@@ -67,10 +90,19 @@ pub fn validate_arrived_geofence(
 /// - `site` `None` (legacy address-only booking — no pin) → `Ok` (nothing to measure; skip).
 /// - `site` pinned but `guard` fix missing → 409 [`GPS_REQUIRED_CODE`] (an unverifiable
 ///   proximity claim on a pinned booking must not silently pass).
+/// - `site` pinned and the fix carries a reported accuracy WORSE than
+///   [`MAX_PLAUSIBLE_ACCURACY_M`] → 409 [`GPS_INACCURATE_CODE`] (too coarse to attest on-site
+///   presence; deep-review LOW #42 mitigation). A fix with no accuracy figure is exempt.
 /// - Otherwise the fix must be within `radius_m` plus the accuracy allowance
 ///   (`min(max(accuracy_m, 0), `[`ACCURACY_ALLOWANCE_CAP_M`]`)`; negative/NaN accuracy
 ///   contributes 0) → 409 [`NOT_AT_SITE_CODE`] beyond that, with the measured distance
 ///   (whole meters) in the message.
+///
+/// RESIDUAL RISK (NOT closed here): the guard's position is still self-reported. A spoofing tool
+/// can send a precise-looking fix (small accuracy) AT the site pin and pass every check — the
+/// server cannot ATTEST GPS without a presence-track cross-check / device attestation, which is a
+/// larger feature. This validator only rejects the EASY tells (missing fix, junk/absurd accuracy)
+/// and treats client GPS as advisory; see the module header.
 pub fn validate_geofence(
     radius_m: f64,
     site: Option<(f64, f64)>,
@@ -86,6 +118,24 @@ pub fn validate_geofence(
             message: "GPS fix required to mark this job arrived".to_string(),
         });
     };
+    // MITIGATION (deep-review LOW #42): refuse a fix whose reported accuracy is too coarse to prove
+    // the guard is within the fence. A finite accuracy WORSE than the plausibility bound means the
+    // fix is network/IP-geolocated (or spoofed nonsense), not a real on-site GNSS lock — reject it
+    // rather than widen the fence off a value we don't trust. A NON-finite/absent accuracy is NOT
+    // rejected here (it simply earns 0 allowance below): older app builds legitimately send a fix
+    // with no accuracy, and failing those closed would be a regression, not a security win.
+    if accuracy_m
+        .map(f64::from)
+        .is_some_and(|a| a.is_finite() && a > MAX_PLAUSIBLE_ACCURACY_M)
+    {
+        return Err(AppError::ConflictCode {
+            code: GPS_INACCURATE_CODE,
+            message: format!(
+                "GPS fix is too imprecise (±{} m) to confirm you are at the site",
+                accuracy_m.map(f64::from).unwrap_or_default().round()
+            ),
+        });
+    }
     // Non-finite (NaN/±∞) accuracy is junk and — like a negative one — contributes 0
     // allowance (clamp alone would propagate NaN, silently failing the comparison below).
     let allowance = accuracy_m
@@ -223,15 +273,45 @@ mod tests {
         assert!(validate_arrived_geofence(Some(SITE), Some(guard), None).is_err());
         assert!(validate_arrived_geofence(Some(SITE), Some(guard), Some(30.0)).is_ok());
 
-        // The 120+30 boundary: just inside passes, past it fails even with a huge
-        // reported accuracy (the cap holds).
+        // The 120+30 boundary: just inside passes, past it fails even with a large-but-PLAUSIBLE
+        // reported accuracy (90m ≤ the plausibility bound, but the allowance still caps at 30). A
+        // beyond-plausible accuracy is a separate rejection (see `implausibly_coarse_accuracy_*`).
         let cap_edge = north_of(SITE, ARRIVED_GEOFENCE_M + ACCURACY_ALLOWANCE_CAP_M - 0.001);
         assert!(validate_arrived_geofence(Some(SITE), Some(cap_edge), Some(30.0)).is_ok());
-        assert!(validate_arrived_geofence(Some(SITE), Some(cap_edge), Some(9_999.0)).is_ok());
+        assert!(validate_arrived_geofence(Some(SITE), Some(cap_edge), Some(90.0)).is_ok());
         let past_cap = north_of(SITE, ARRIVED_GEOFENCE_M + ACCURACY_ALLOWANCE_CAP_M + 1.0);
         assert!(
-            validate_arrived_geofence(Some(SITE), Some(past_cap), Some(9_999.0)).is_err(),
+            validate_arrived_geofence(Some(SITE), Some(past_cap), Some(90.0)).is_err(),
             "accuracy allowance must cap at {ACCURACY_ALLOWANCE_CAP_M}m"
+        );
+    }
+
+    // ----- validate_geofence: implausibly-coarse accuracy is refused (LOW #42 mitigation) -----
+
+    #[test]
+    fn implausibly_coarse_accuracy_is_rejected() {
+        // A fix reporting worse-than-plausible accuracy cannot attest on-site presence, so it is
+        // refused even when the reported point IS the site pin (the true position could be far
+        // outside the 120m fence). This is the mitigation for the self-reported-GPS trust gap.
+        let over = (MAX_PLAUSIBLE_ACCURACY_M + 1.0) as f32;
+        let err = validate_arrived_geofence(Some(SITE), Some(SITE), Some(over)).unwrap_err();
+        assert_eq!(code_of(&err), GPS_INACCURATE_CODE, "at-site but ±101m");
+        // A far fix with coarse accuracy is GPS_INACCURATE too (accuracy is checked before distance).
+        let far = north_of(SITE, 400.0);
+        let err = validate_arrived_geofence(Some(SITE), Some(far), Some(over)).unwrap_err();
+        assert_eq!(code_of(&err), GPS_INACCURATE_CODE, "far + ±101m");
+        // Exactly at the bound is still accepted (≤, not <) when the fix is within the fence.
+        let at_bound = MAX_PLAUSIBLE_ACCURACY_M as f32;
+        assert!(validate_arrived_geofence(Some(SITE), Some(SITE), Some(at_bound)).is_ok());
+        // A legacy address-only booking (no pin) skips the check entirely — coarse accuracy or not.
+        assert!(validate_arrived_geofence(None, Some(SITE), Some(over)).is_ok());
+        // A coarse accuracy is rejected BEFORE the missing-fix branch is even relevant, but a
+        // missing fix with any accuracy is still GPS_REQUIRED (accuracy alone is not a fix).
+        let err = validate_arrived_geofence(Some(SITE), None, Some(over)).unwrap_err();
+        assert_eq!(
+            code_of(&err),
+            GPS_REQUIRED_CODE,
+            "no fix → GPS_REQUIRED, not INACCURATE"
         );
     }
 

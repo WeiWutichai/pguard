@@ -288,4 +288,118 @@ void main() {
         isFalse,
         reason: 'only read_only closes the composer; other errors just toast');
   });
+
+  // ---- Reconnect re-pull: messages missed during a WS gap (deep-review) ----
+
+  test(
+      'on a reconnect edge the history is re-pulled and a message sent during the '
+      'gap is folded in (deduped by id)', () async {
+    var rows = <Map<String, dynamic>>[
+      msgJson('m1', at: '2026-06-05T10:01:00Z'),
+    ];
+    final feed = FakeChatFeed();
+    final api = FakeApi(
+      onGet: (path, _) async {
+        expect(path, '/conversations/cv1/messages');
+        return rows;
+      },
+      onPut: (_, __) async => {'success': true},
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      chatFeedBuilderProvider.overrideWithValue((tokenProvider) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub =
+        c.listen(chatControllerProvider('cv1', ChatRole.guard), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(chatControllerProvider('cv1', ChatRole.guard).future);
+    expect(
+        c
+            .read(chatControllerProvider('cv1', ChatRole.guard))
+            .value!
+            .map((m) => m.id),
+        ['m1']);
+
+    // Socket drops; the counterpart sends 'm2' during the gap → it is only in the server's history.
+    rows = [
+      msgJson('m2', at: '2026-06-05T10:05:00Z'),
+      msgJson('m1', at: '2026-06-05T10:01:00Z'),
+    ];
+    feed.emitConnection(false);
+    feed.emitConnection(true); // reconnect edge → re-pull
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+
+    expect(
+        c
+            .read(chatControllerProvider('cv1', ChatRole.guard))
+            .value!
+            .map((m) => m.id),
+        ['m1', 'm2'],
+        reason:
+            'the gap message is recovered on reconnect, not lost until reopen');
+  });
+
+  test(
+      'the initial connect is NOT treated as a reconnect (no duplicate re-pull)',
+      () async {
+    final feed = FakeChatFeed();
+    final api = FakeApi(
+      onGet: (path, _) async => path == '/conversations/cv1/messages'
+          ? [msgJson('m1')]
+          : <Map<String, dynamic>>[],
+      onPut: (_, __) async => {'success': true},
+    );
+    final c = ProviderContainer(overrides: [
+      pguardApiProvider.overrideWithValue(api),
+      appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
+      chatFeedBuilderProvider.overrideWithValue((tokenProvider) => feed),
+    ]);
+    addTearDown(c.dispose);
+    final sub =
+        c.listen(chatControllerProvider('cv1', ChatRole.guard), (_, __) {});
+    addTearDown(sub.close);
+    await c.read(chatControllerProvider('cv1', ChatRole.guard).future);
+
+    // The very first `connected=true` from the socket must NOT re-fetch (baseline is connected).
+    feed.emitConnection(true);
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+    final historyFetches =
+        api.calls.where((x) => x == 'GET /conversations/cv1/messages').length;
+    expect(historyFetches, 1,
+        reason:
+            'one history fetch on open; the initial connect is not a reconnect');
+  });
+
+  // ---- Send while the socket is down: the frame drop is REPORTED (deep-review) ----
+
+  test(
+      'send() returns false when the socket is down (frame dropped) so the composer '
+      'is not cleared and the loss is surfaced', () async {
+    final t = make(history: const []);
+    await load(t.c);
+    final ctrl =
+        t.c.read(chatControllerProvider('cv1', ChatRole.guard).notifier);
+
+    // Simulate the WS being down: the underlying send drops the frame.
+    t.feed.sendResult = false;
+    expect(ctrl.send('ประตูหลังเปิดไว้ เข้าทางนั้น'), isFalse,
+        reason: 'a dropped frame is reported, not silently destroyed');
+    // The frame was still attempted (so a queued/echo path could exist) but reported as failed.
+    expect(t.feed.sent, hasLength(1));
+
+    // When the socket is back up, the same send succeeds.
+    t.feed.sendResult = true;
+    expect(ctrl.send('again'), isTrue);
+  });
+
+  test('send() returns false for a blank message (nothing to send)', () async {
+    final t = make(history: const []);
+    await load(t.c);
+    final ctrl =
+        t.c.read(chatControllerProvider('cv1', ChatRole.guard).notifier);
+    expect(ctrl.send('   '), isFalse);
+    expect(t.feed.sent, isEmpty);
+  });
 }

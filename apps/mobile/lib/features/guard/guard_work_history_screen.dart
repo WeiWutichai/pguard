@@ -11,6 +11,7 @@ import '../../core/controllers/guard_jobs_controller.dart';
 import '../../core/controllers/locale_controller.dart';
 import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
+import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/pg_segmented_tabs.dart';
@@ -67,7 +68,7 @@ class _GuardWorkHistoryScreenState
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
             title: isThai ? 'โหลดประวัติไม่สำเร็จ' : 'Could not load history',
-            message: e is ApiException ? e.message : null,
+            message: e is ApiException ? localizeApiError(isThai, e) : null,
             onRetry: ctrl.refresh,
           ),
           data: (all) {
@@ -145,7 +146,11 @@ class _HistoryRow extends StatelessWidget {
     final note = completed ? null : booking.cancellationNote?.trim();
     final meta = [
       if (when != null) thaiShortDate(when, isThai: isThai),
-      '${booking.hours ?? 0} ${isThai ? 'ชม.' : 'hrs'}',
+      // Actual payable hours (annotated with the booked estimate when they differ) so a completed
+      // row shows the SAME hours its earnings figure was computed from. Cancelled rows have no
+      // reconcile, so this collapses to the booked hours.
+      GuardEarnings.hoursLabel(booking,
+          actualHours: actualHours, isThai: isThai),
       if (reason.isNotEmpty) reason,
     ].join(' · ');
 

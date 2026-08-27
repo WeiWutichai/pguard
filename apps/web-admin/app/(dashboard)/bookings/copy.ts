@@ -5,6 +5,9 @@
 // the design's chips ("pending"/"assigned"/"started") predate the final state machine, so
 // we render the contract's statuses, not the mockup's.
 import type { Lang } from "@/lib/lang";
+import type { components as PaymentComponents } from "@/api/generated/payment";
+
+type Payment = PaymentComponents["schemas"]["Payment"];
 
 /** The real v2 lifecycle statuses (contract: booking.yaml BookingStatus). */
 export const STATUSES = [
@@ -101,6 +104,10 @@ export interface BookingsCopy {
   unassigned: string;
   detailTitle: string;
   total: string;
+  /** "Total" label when only the booked ESTIMATE is available (no reconciled payment row). */
+  totalEst: string;
+  /** Refund line in the detail drawer: "Refunded ฿X". */
+  refunded: string;
   duration: string;
   guardsCount: string;
   customer: string;
@@ -142,7 +149,9 @@ export const COPY: Record<Lang, BookingsCopy> = {
     noGuardYet: "ยังไม่มีเจ้าหน้าที่ — เลือกด้านล่างเพื่อมอบหมาย",
     unassigned: "ยังไม่มอบหมาย",
     detailTitle: "รายละเอียดงาน",
-    total: "ยอดรวม",
+    total: "ยอดที่เรียกเก็บ",
+    totalEst: "ยอดโดยประมาณ",
+    refunded: "คืนเงินแล้ว",
     duration: "ระยะเวลา",
     guardsCount: "จำนวน",
     customer: "ลูกค้า",
@@ -195,7 +204,9 @@ export const COPY: Record<Lang, BookingsCopy> = {
     noGuardYet: "No guard yet — pick one below to assign",
     unassigned: "Unassigned",
     detailTitle: "Booking detail",
-    total: "Total",
+    total: "Charged",
+    totalEst: "Est. total",
+    refunded: "Refunded",
     duration: "Duration",
     guardsCount: "Guards",
     customer: "Customer",
@@ -248,4 +259,47 @@ export function bookingTotal(b: {
 
 export function fmtBaht(n: number): string {
   return `฿${Math.round(n).toLocaleString("en-US")}`;
+}
+
+/** The money to show in the detail drawer. `bookingTotal` (base × BOOKED hours, VAT-EXCLUSIVE) is
+ * only an ESTIMATE — the payment service reconciles completed jobs to ACTUAL hours and fully
+ * refunds cancelled/declined bookings, so the real charge lives on the payment row. When we have
+ * that row we show the true figure (a refund dispute needs it); otherwise we degrade to the booked
+ * estimate and flag it so the UI can label it honestly instead of passing an estimate off as the
+ * charged amount. */
+export interface MoneyView {
+  /** The figure to render as the drawer "Total": the real charged/kept amount, or the estimate. */
+  total: number;
+  /** True when only the booked estimate was derivable (no payment row yet) — label it as such. */
+  isEstimate: boolean;
+  /** Amount refunded to the customer (overpay on early finish, or the refund on a cancel). 0 = none. */
+  refunded: number;
+}
+
+export function moneyView(
+  booking: {
+    status?: string | null;
+    base_fee?: string | number | null;
+    hours?: number | null;
+    guard_count?: number | null;
+    tip?: string | number | null;
+  },
+  payment: Payment | null | undefined,
+): MoneyView {
+  if (!payment) {
+    // No payment row (unpaid `requested` job, or the ledger read hasn't landed) → booked estimate.
+    return { total: bookingTotal(booking), isEstimate: true, refunded: 0 };
+  }
+  const amount = Number(payment.amount ?? 0); // VAT-inclusive amount actually pre-paid.
+  if (isCancelledStatus(booking.status ?? "")) {
+    // Cancelled/declined: the platform keeps only the cancellation fee (0 on a guard withdraw =
+    // full refund); the rest was refunded. Net kept is the "Total".
+    const fee = Number(payment.cancellation_fee_charged ?? 0);
+    return { total: fee, isEstimate: false, refunded: Math.max(0, amount - fee) };
+  }
+  // Live/completed: grand_total is the VAT-INCLUSIVE payable and FOLLOWS final_amount once actual
+  // hours are reconciled, so it is the true charge; refund_amount is any overpay returned.
+  const grand = Number(payment.grand_total ?? payment.amount ?? 0);
+  const refund = Number(payment.refund_amount ?? 0);
+  return { total: grand, isEstimate: false, refunded: refund };
 }

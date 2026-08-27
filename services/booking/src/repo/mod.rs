@@ -16,6 +16,7 @@ use uuid::Uuid;
 use shared::error::AppError;
 use shared_events::EventEnvelope;
 
+use crate::domain::cancellation::{set_for_target, CANCEL_REASON_REQUIRED_CODE};
 use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{
@@ -591,6 +592,11 @@ pub struct BookingCore {
     /// first-come booking. Read inside the row lock so the accept gate rejects a non-target guard
     /// (`NOT_OFFERED_TO_YOU`) with no TOCTOU.
     pub target_guard_id: Option<Uuid>,
+    /// When the guard REQUESTED completion (`arrived → pending_completion`) — the END of the
+    /// worked-duration measurement. `None` until requested (and cleared on the completion-reject
+    /// bounce). Read inside the row lock so the completion proration is measured at the request,
+    /// not at the customer's later approval (deep-review HIGH #1).
+    pub completion_requested_at: Option<DateTime<Utc>>,
 }
 
 impl BookingCore {
@@ -615,11 +621,12 @@ type CoreRow = (
     Option<f64>,
     Option<f64>,
     Option<Uuid>,
+    Option<DateTime<Utc>>,
 );
 
 const CORE_QUERY: &str =
     "SELECT status::text, customer_id, guard_id, hours, scheduled_at, work_started_at, paid_at, \
-     lat, lng, target_guard_id FROM booking.bookings WHERE id = $1";
+     lat, lng, target_guard_id, completion_requested_at FROM booking.bookings WHERE id = $1";
 
 fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
     let (
@@ -633,6 +640,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         lat,
         lng,
         target_guard_id,
+        completion_requested_at,
     ) = row.ok_or_else(|| AppError::NotFound("Booking not found".to_string()))?;
     let status = status_str
         .parse::<BookingStatus>()
@@ -648,6 +656,7 @@ fn core_from_row(row: Option<CoreRow>) -> Result<BookingCore, AppError> {
         lat,
         lng,
         target_guard_id,
+        completion_requested_at,
     })
 }
 
@@ -710,6 +719,7 @@ pub async fn transition(
         work_started_at,
         paid_at,
         target_guard_id,
+        completion_requested_at,
         ..
     } = locked_current(&mut tx, id).await?;
 
@@ -832,6 +842,37 @@ pub async fn transition(
         }
     }
 
+    // REASON DISCIPLINE for the two terminal "did not happen" targets (cancelled / declined),
+    // resolved AFTER legality/ownership so a terminal or illegal move is already rejected above:
+    //
+    //   * `current == Declined` — the ONLY edge out of `declined` is the customer's
+    //     cancel-after-decline ACK (`declined → cancelled`). It must PRESERVE the guard's recorded
+    //     decline reason, so FORCE `cancellation = None` here regardless of what the caller sent.
+    //     This closes BOTH (a) the regular `PUT /cancel` overwriting the guard's reason with a
+    //     customer code on a declined booking (deep-review LOW #29) and (b) the ACK path being
+    //     used with a stray reason.
+    //
+    //   * `current != Declined` but the target is reason-bearing — a validated reason is
+    //     MANDATORY. `PUT /cancel-after-decline` passes `None`, so pointing it at a still-active
+    //     booking (requested/accepted/en_route) would otherwise commit a reasonless money-bearing
+    //     terminal cancel that `validate_cancellation` was meant to make impossible
+    //     (deep-review MED #5). Reject it with the same typed 400 the app already localizes.
+    let cancellation = if set_for_target(new_status).is_some() {
+        if current == BookingStatus::Declined {
+            None // the ACK — never overwrite the guard's decline reason
+        } else if cancellation.is_none() {
+            tx.rollback().await?;
+            return Err(AppError::BadRequestCode {
+                code: CANCEL_REASON_REQUIRED_CODE,
+                message: "A valid cancellation reason is required".to_string(),
+            });
+        } else {
+            cancellation
+        }
+    } else {
+        cancellation
+    };
+
     // PRE-PAY gate (inside the lock → no TOCTOU). The `accepted → en_route` transition REQUIRES
     // the booking to have been PAID — `paid_at` is stamped by the `payment.completed` consumer
     // (the customer pays the server-computed estimate after a guard accepts). Until then en_route
@@ -885,16 +926,40 @@ pub async fn transition(
 
     let guard_id = assign_guard.or(existing_guard);
 
-    // On completion, compute the worked duration (now − work_started_at). `None` work_started_at
-    // → `None` actual_seconds (payment keeps the full charge; mirrors v1's "missing timestamps →
-    // skip proration"). Computed BEFORE the UPDATE so the SAME value is (a) STAMPED onto the row
-    // in the completion UPDATE below — the guard's earnings screen then reads the reconciled
-    // figure off any booking read immediately (feature G) — and (b) carried on the
-    // `booking.completed` event (payment's own `actual_hours` stays the money-truth).
+    // On completion, compute the worked duration ending at the guard's completion REQUEST, not at
+    // the customer's approval: `completion_requested_at − work_started_at` (deep-review HIGH #1).
+    // `completion_requested_at` is stamped on `arrived → pending_completion` below; falling back to
+    // `now()` ONLY when unstamped (a legacy row that reached `pending_completion` before the
+    // column existed). `None` work_started_at → `None` actual_seconds (payment keeps the full
+    // charge; mirrors v1's "missing timestamps → skip proration"). Computed BEFORE the UPDATE so
+    // the SAME value is (a) STAMPED onto the row in the completion UPDATE below — the guard's
+    // earnings screen then reads the reconciled figure off any booking read immediately (feature
+    // G) — and (b) carried on the `booking.completed` event (payment's `actual_hours` is truth).
     let completion_actual_seconds = if new_status == BookingStatus::Completed {
-        work_started_at.map(|started| (Utc::now() - started).num_seconds())
+        work_started_at.map(|started| {
+            let ended = completion_requested_at.unwrap_or_else(Utc::now);
+            (ended - started).num_seconds()
+        })
     } else {
         None
+    };
+
+    // completion_requested_at ledger, keyed on the transition:
+    //   * `arrived → pending_completion` (the guard presses จบงาน) — STAMP `now()`: this is the
+    //     moment the worked clock stops, regardless of when the customer later reviews.
+    //   * `pending_completion → arrived` (the customer REJECTS completion) — CLEAR to NULL so work
+    //     resumed after the reject is re-measured from the NEXT completion request, not the stale
+    //     first one (per the shared contract).
+    //   * every other transition leaves the column untouched.
+    // Static fragments (no user input) — safe to interpolate into the UPDATE.
+    let completion_ts_clause = match (current, new_status) {
+        (BookingStatus::Arrived, BookingStatus::PendingCompletion) => {
+            "completion_requested_at = now(),"
+        }
+        (BookingStatus::PendingCompletion, BookingStatus::Arrived) => {
+            "completion_requested_at = NULL,"
+        }
+        _ => "",
     };
 
     // 1) the business change. `work_started_at` is owned by `start_job`, never touched here.
@@ -910,6 +975,7 @@ pub async fn transition(
             cancellation_reason = COALESCE($4, cancellation_reason),
             cancellation_note = COALESCE($5, cancellation_note),
             actual_seconds = COALESCE($6, actual_seconds),
+            {completion_ts_clause}
             updated_at = now()
         WHERE id = $1
         RETURNING {BOOKING_COLUMNS}
@@ -953,6 +1019,7 @@ pub async fn transition(
         guard_id,
         completion,
         cancellation.as_ref(),
+        is_admin,
     ) {
         let envelope = EventEnvelope::new(topic, correlation_id, payload);
         let envelope_json = serde_json::to_value(&envelope)
@@ -1121,6 +1188,7 @@ pub async fn arrive_job(
         core.guard_id,
         None,
         None,
+        is_admin,
     ) {
         let envelope = EventEnvelope::new(topic, correlation_id, payload);
         let envelope_json = serde_json::to_value(&envelope)
@@ -2829,6 +2897,509 @@ mod db_tests {
             .await;
     }
 
+    /// HIGH #1: the worked duration is measured at the guard's completion REQUEST
+    /// (`arrived → pending_completion`), NOT at the customer's later approval. We drive to
+    /// `pending_completion` (which stamps `completion_requested_at`), then backdate the clocks so
+    /// the start→request interval is exactly 2h while "now" (the approval moment) sits 5h past the
+    /// start. The stamped `actual_seconds` must be ~2h — an approval-time measurement would have
+    /// billed ~5h, eating the whole review wait. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn worked_duration_measured_at_completion_request_not_approval() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, customer_id, guard_id) = started_booking(&pool).await;
+        let correlation = Uuid::new_v4();
+
+        // The start-of-work check-in gates completion.
+        create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect("start check-in");
+
+        // Guard requests completion → pending_completion → `completion_requested_at` stamped.
+        transition(
+            &pool,
+            booking_id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("request completion");
+        let stamped: Option<DateTime<Utc>> = sqlx::query_scalar(
+            "SELECT completion_requested_at FROM booking.bookings WHERE id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&pool)
+        .await
+        .expect("read completion_requested_at");
+        assert!(
+            stamped.is_some(),
+            "completion_requested_at is stamped on the completion request"
+        );
+
+        // Worked interval start→request = 2h; the approval ("now") is 5h past the start. A bug that
+        // measures now−start would bill ~5h; the fix measures request−start = ~2h.
+        sqlx::query(
+            "UPDATE booking.bookings \
+             SET work_started_at = now() - interval '5 hours', \
+                 completion_requested_at = now() - interval '3 hours' \
+             WHERE id = $1",
+        )
+        .bind(booking_id)
+        .execute(&pool)
+        .await
+        .expect("backdate the work + request clocks");
+
+        let completed = transition(
+            &pool,
+            booking_id,
+            customer_id,
+            false,
+            BookingStatus::Completed,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("customer approve → completed");
+        let secs = completed
+            .actual_seconds
+            .expect("actual_seconds stamped on completion");
+        assert!(
+            (7000..=7400).contains(&secs),
+            "worked duration measured at the request (~7200s / 2h), got {secs}s"
+        );
+        assert!(
+            secs < 4 * 3600,
+            "the pending-completion review wait must NOT be counted as worked time, got {secs}s"
+        );
+
+        cleanup_booking(&pool, booking_id).await;
+    }
+
+    /// HIGH #1 (bounce): the customer's completion REJECT (`pending_completion → arrived`) CLEARS
+    /// `completion_requested_at`, and a fresh completion request re-stamps it — so work resumed
+    /// after a reject is re-measured from the NEXT request, not the stale first one.
+    /// DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn completion_reject_clears_then_restamps_completion_requested_at() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (booking_id, customer_id, guard_id) = started_booking(&pool).await;
+        let correlation = Uuid::new_v4();
+        create_progress_report(&pool, booking_id, guard_id, &report(1), correlation)
+            .await
+            .expect("start check-in");
+
+        let read_stamp = |pool: sqlx::PgPool| async move {
+            sqlx::query_scalar::<_, Option<DateTime<Utc>>>(
+                "SELECT completion_requested_at FROM booking.bookings WHERE id = $1",
+            )
+            .bind(booking_id)
+            .fetch_one(&pool)
+            .await
+            .expect("read completion_requested_at")
+        };
+
+        // First completion request → stamped.
+        transition(
+            &pool,
+            booking_id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("first completion request");
+        let first = read_stamp(pool.clone()).await;
+        assert!(
+            first.is_some(),
+            "first request stamps completion_requested_at"
+        );
+
+        // Customer REJECTS → arrived → the stamp is CLEARED.
+        transition(
+            &pool,
+            booking_id,
+            customer_id,
+            false,
+            BookingStatus::Arrived,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("customer reject → arrived");
+        assert!(
+            read_stamp(pool.clone()).await.is_none(),
+            "the completion-reject bounce clears completion_requested_at"
+        );
+
+        // Guard requests completion AGAIN → re-stamped (a fresh, non-stale time).
+        transition(
+            &pool,
+            booking_id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("second completion request");
+        let second = read_stamp(pool.clone()).await;
+        assert!(
+            second.is_some() && second >= first,
+            "the second request re-stamps completion_requested_at, got {second:?} vs {first:?}"
+        );
+
+        cleanup_booking(&pool, booking_id).await;
+    }
+
+    /// MED #5: the cancel-after-decline ACK (a `Cancelled` target carrying NO reason) is legal
+    /// ONLY out of `declined`. Aimed at a still-active booking (here `accepted`) it must NOT commit
+    /// a reasonless money-bearing terminal cancel — it is a typed 400 `CANCEL_REASON_REQUIRED`, and
+    /// the booking is left untouched. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn ack_path_on_an_active_booking_is_rejected_reason_required() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("5 Ack Rd", 2, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            None,
+            correlation,
+        )
+        .await
+        .expect("accept");
+
+        // The ACK shape (Cancelled + None cancellation) from `accepted` — the MED #5 vector.
+        let err = transition(
+            &pool,
+            created.id,
+            customer_id,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect_err("a reasonless cancel of an ACTIVE booking must be refused");
+        match err {
+            AppError::BadRequestCode { code, .. } => {
+                assert_eq!(code, CANCEL_REASON_REQUIRED_CODE)
+            }
+            other => panic!("expected CANCEL_REASON_REQUIRED, got {other:?}"),
+        }
+
+        // Untouched: still `accepted`, no cancellation, and no booking.cancelled leaked.
+        let core = get_booking_core(&pool, created.id).await.expect("re-read");
+        assert_eq!(core.status, BookingStatus::Accepted);
+        let leaked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM booking.outbox WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2",
+        )
+        .bind(topics::BOOKING_CANCELLED)
+        .bind(created.id.to_string())
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(
+            leaked, 0,
+            "no booking.cancelled emitted for the rejected ack"
+        );
+
+        cleanup_booking(&pool, created.id).await;
+    }
+
+    /// LOW #29: the REGULAR `PUT /cancel` (which carries a validated CUSTOMER reason) sent on a
+    /// booking the guard already `declined` must PRESERVE the guard's decline reason/note — the
+    /// COALESCE used to let the customer's non-NULL reason overwrite the guard's, producing a
+    /// mismatched reason/note pair. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn regular_cancel_on_declined_preserves_the_guard_reason() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let created = create_booking(
+            &pool,
+            customer_id,
+            &booking_req("6 Preserve Rd", 2, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            None,
+            correlation,
+        )
+        .await
+        .expect("accept");
+        transition(
+            &pool,
+            created.id,
+            guard_id,
+            false,
+            BookingStatus::Declined,
+            None,
+            Some(Cancellation {
+                reason: "sick",
+                note: Some("รถเสียกลางทาง".to_string()),
+            }),
+            correlation,
+        )
+        .await
+        .expect("guard decline");
+
+        // The customer sends the REGULAR cancel WITH a customer reason (older app build / direct
+        // HTTP). It must NOT overwrite the guard's recorded decline reason.
+        let cancelled = transition(
+            &pool,
+            created.id,
+            customer_id,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            Some(Cancellation {
+                reason: "changed_plan",
+                note: None,
+            }),
+            correlation,
+        )
+        .await
+        .expect("customer cancel on a declined booking");
+        assert_eq!(cancelled.status, "cancelled");
+        assert_eq!(
+            cancelled.cancellation_reason.as_deref(),
+            Some("sick"),
+            "the guard's decline reason is preserved, not overwritten by the customer code"
+        );
+        assert_eq!(
+            cancelled.cancellation_note.as_deref(),
+            Some("รถเสียกลางทาง"),
+            "the guard's decline note is preserved too"
+        );
+
+        cleanup_booking(&pool, created.id).await;
+    }
+
+    /// Cancellation-fee policy (booking side): the `charge_cancel_fee` flag on the emitted
+    /// `booking.cancelled` event is TRUE only for a genuine customer-initiated cancel of a
+    /// still-active booking, and FALSE for an admin cancel and for the cancel-after-decline ACK.
+    /// DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn charge_cancel_fee_flag_reflects_the_initiator() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // Read the `charge_cancel_fee` on the newest booking.cancelled event for a booking.
+        async fn fee_flag(pool: &sqlx::PgPool, booking_id: Uuid) -> Value {
+            let payload: Value = sqlx::query_scalar(
+                "SELECT payload->'payload' FROM booking.outbox \
+                 WHERE topic = $1 AND payload->'payload'->>'booking_id' = $2 \
+                 ORDER BY created_at DESC LIMIT 1",
+            )
+            .bind(topics::BOOKING_CANCELLED)
+            .bind(booking_id.to_string())
+            .fetch_one(pool)
+            .await
+            .expect("read booking.cancelled payload");
+            payload["charge_cancel_fee"].clone()
+        }
+
+        // Drive a fresh booking to `accepted` and return its ids.
+        async fn accepted(pool: &sqlx::PgPool, addr: &str) -> (Uuid, Uuid, Uuid) {
+            let customer_id = Uuid::new_v4();
+            let guard_id = Uuid::new_v4();
+            let correlation = Uuid::new_v4();
+            let created = create_booking(
+                pool,
+                customer_id,
+                &booking_req(addr, 2, None),
+                1,
+                rust_decimal::Decimal::ZERO,
+                None,
+                correlation,
+            )
+            .await
+            .expect("create");
+            transition(
+                pool,
+                created.id,
+                guard_id,
+                false,
+                BookingStatus::Accepted,
+                Some(guard_id),
+                None,
+                correlation,
+            )
+            .await
+            .expect("accept");
+            (created.id, customer_id, guard_id)
+        }
+
+        let reason = || {
+            Some(Cancellation {
+                reason: "changed_plan",
+                note: None,
+            })
+        };
+
+        // (a) CUSTOMER cancels an active booking → fee flag TRUE.
+        let (id_a, cust_a, _g) = accepted(&pool, "10a Fee Rd").await;
+        transition(
+            &pool,
+            id_a,
+            cust_a,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            reason(),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("customer cancel");
+        assert_eq!(
+            fee_flag(&pool, id_a).await,
+            serde_json::json!(true),
+            "a customer cancel of an active booking charges the fee"
+        );
+
+        // (b) ADMIN cancels on the customer's behalf → fee flag FALSE.
+        let (id_b, cust_b, _g) = accepted(&pool, "10b Fee Rd").await;
+        transition(
+            &pool,
+            id_b,
+            cust_b,
+            true, // is_admin
+            BookingStatus::Cancelled,
+            None,
+            reason(),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("admin cancel");
+        assert_eq!(
+            fee_flag(&pool, id_b).await,
+            serde_json::json!(false),
+            "an admin cancel must never charge the customer a fee"
+        );
+
+        // (c) cancel-after-decline ACK (declined → cancelled) → fee flag FALSE.
+        let (id_c, cust_c, guard_c) = accepted(&pool, "10c Fee Rd").await;
+        transition(
+            &pool,
+            id_c,
+            guard_c,
+            false,
+            BookingStatus::Declined,
+            None,
+            Some(Cancellation {
+                reason: "sick",
+                note: None,
+            }),
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("guard decline");
+        transition(
+            &pool,
+            id_c,
+            cust_c,
+            false,
+            BookingStatus::Cancelled,
+            None,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("customer ack");
+        assert_eq!(
+            fee_flag(&pool, id_c).await,
+            serde_json::json!(false),
+            "the decline ACK is a fee-free full refund"
+        );
+
+        for id in [id_a, id_b, id_c] {
+            cleanup_booking(&pool, id).await;
+        }
+    }
+
     /// Customer review REJECT branch: from `pending_completion` the owner sends the job back
     /// to `arrived` (the guard finishes); a non-owner is Forbidden, and no `booking.completed`
     /// leaks on the reject path. DATABASE_URL-gated (hermetic when unset).
@@ -4338,7 +4909,12 @@ mod db_tests {
             false,
             BookingStatus::Declined,
             None,
-            None,
+            // A decline is a reason-bearing terminal — the repo now enforces the mandatory guard
+            // reason the decline_booking handler always supplies (deep-review MED #5).
+            Some(Cancellation {
+                reason: "sick",
+                note: None,
+            }),
             correlation,
         )
         .await

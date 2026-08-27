@@ -879,6 +879,7 @@ export interface components {
             accuracy_m?: number | null;
         };
         CreateBookingRequest: {
+            /** @description Site address. Required and bounded — an empty/whitespace-only address is 400, and one over 512 CHARACTERS is 400 (the address fans out to every discovering guard and into the `booking.requested` event, so it must not be an unbounded blob). Enforced server-side and backed by the `chk_bookings_address_len` DB CHECK. */
             address: string;
             /** Format: date-time */
             scheduled_at: string;
@@ -896,7 +897,7 @@ export interface components {
              */
             guard_count: number;
             /**
-             * @description Optional up-front tip (exact decimal string); folded into the expected total.
+             * @description Optional up-front tip (exact decimal string); folded into the expected total. Bounded: `0 ≤ tip ≤ 1000000` — a larger value is 400 (an uncapped tip overflows the NUMERIC(12,2) column into an opaque 500). Normalized to 2dp server-side.
              * @default 0
              */
             tip: string;

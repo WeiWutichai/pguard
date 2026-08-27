@@ -23,6 +23,7 @@ part 'payment.g.dart';
 /// * [vatAmount] - VAT charged ON TOP of `subtotal` at 7% (`subtotal × 0.07`, rounded to 2dp) — the \"ภาษีมูลค่าเพิ่ม 7%\" line of the tax invoice. Collected for the Revenue Department, so it is NOT platform revenue. null on pre-VAT payments.
 /// * [grandTotal] - `subtotal + vat_amount` — the VAT-INCLUSIVE amount the customer owes, and the \"จำนวนเงินรวมทั้งสิ้น\" line of the tax invoice. ALWAYS present (unlike the two fields it is made of): on a pre-VAT row it falls back to `amount`, so this is the payable figure for every payment ever taken. Tracks the SETTLED bill — it follows `final_amount` once the actual hours are reconciled, and equals `amount` until then.
 /// * [cancellationFeeCharged] - What was actually KEPT as a cancellation fee when the CUSTOMER cancelled before work started: `min(booking.cancellation_fee, amount_paid)` — capped at what was paid, so a cancellation can never leave the customer owing money (nothing paid → nothing charged, `\"0.00\"`). The refund is `amount_paid − cancellation_fee_charged`. Stays null/`\"0.00\"` when the GUARD withdrew (not the customer's fault → full refund) and on jobs that were never cancelled.
+/// * [overpaidAmount] - Excess the customer transferred ABOVE the estimate on a slip payment (`max(0, slip_amount − amount)`); `\"0.00\"` for simulated/exact payments. This money is never the platform's — it is ALWAYS refunded on top of the settled bill, so every refund (cancel, race-compensator, completion reconcile) returns `amount + overpaid_amount`. NOT NULL (present on every row).
 /// * [paymentMethod] - How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
 /// * [status] 
 /// * [finalAmount] - The reconciled actual-hours bill, set on the completion SETTLE (null until then). May be less than `amount` (overpay refunded) or more (shortfall recorded).
@@ -69,6 +70,10 @@ abstract class Payment implements Built<Payment, PaymentBuilder> {
   /// What was actually KEPT as a cancellation fee when the CUSTOMER cancelled before work started: `min(booking.cancellation_fee, amount_paid)` — capped at what was paid, so a cancellation can never leave the customer owing money (nothing paid → nothing charged, `\"0.00\"`). The refund is `amount_paid − cancellation_fee_charged`. Stays null/`\"0.00\"` when the GUARD withdrew (not the customer's fault → full refund) and on jobs that were never cancelled.
   @BuiltValueField(wireName: r'cancellation_fee_charged')
   String? get cancellationFeeCharged;
+
+  /// Excess the customer transferred ABOVE the estimate on a slip payment (`max(0, slip_amount − amount)`); `\"0.00\"` for simulated/exact payments. This money is never the platform's — it is ALWAYS refunded on top of the settled bill, so every refund (cancel, race-compensator, completion reconcile) returns `amount + overpaid_amount`. NOT NULL (present on every row).
+  @BuiltValueField(wireName: r'overpaid_amount')
+  String get overpaidAmount;
 
   /// How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
   @BuiltValueField(wireName: r'payment_method')
@@ -187,6 +192,11 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
         specifiedType: const FullType(String),
       );
     }
+    yield r'overpaid_amount';
+    yield serializers.serialize(
+      object.overpaidAmount,
+      specifiedType: const FullType(String),
+    );
     if (object.paymentMethod != null) {
       yield r'payment_method';
       yield serializers.serialize(
@@ -336,6 +346,13 @@ class _$PaymentSerializer implements PrimitiveSerializer<Payment> {
             specifiedType: const FullType(String),
           ) as String;
           result.cancellationFeeCharged = valueDes;
+          break;
+        case r'overpaid_amount':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.overpaidAmount = valueDes;
           break;
         case r'payment_method':
           final valueDes = serializers.deserialize(

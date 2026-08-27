@@ -63,6 +63,37 @@ fn charge_terms(booking: &crate::models::InternalBooking) -> domain::ChargeTerms
     )
 }
 
+/// The typed 409 both pay paths return when the booking has gone terminal under them and the
+/// stranded charge is being refunded — the app localizes on the code and shows the Thai message.
+fn booking_cancelled_refunding() -> AppError {
+    AppError::ConflictCode {
+        code: "BOOKING_CANCELLED",
+        message: "การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน".to_string(),
+    }
+}
+
+/// Pay-vs-cancel RACE compensation. If `status` is negative-terminal (a guard withdrew or the
+/// customer cancelled), issue the idempotent full-refund compensator for a stranded pre-pay and
+/// return `true` (the caller surfaces [`booking_cancelled_refunding`]); return `false` otherwise.
+///
+/// Safe + idempotent on EVERY call: `repo::refund_race_lost_prepay` NoOps unless a live `completed`
+/// charge exists for the booking (status='completed' guard). Called on every exit that can strand a
+/// charge on a since-terminal booking: the fresh `Created` commit, an idempotent `AlreadyPaid`, AND
+/// a retry that now finds the booking non-payable — the last one recovers the double-fault where a
+/// `Created` charge's own compensating re-read failed (booking briefly down), which no cancellation
+/// event will ever refund (it was consumed as a NoOp before the payment row existed).
+async fn compensate_if_terminal<S: PaymentDeps>(
+    state: &S,
+    booking_id: Uuid,
+    status: &str,
+) -> Result<bool, AppError> {
+    if !domain::is_negative_terminal(status) {
+        return Ok(false);
+    }
+    repo::refund_race_lost_prepay(state.db(), booking_id, Uuid::new_v4()).await?;
+    Ok(true)
+}
+
 /// POST /payments — PRE-PAY a booking's estimate (createPayment). THE MONEY PATH (write).
 ///
 /// v2 is PRE-PAY: after a guard ACCEPTS, the customer pays the estimate up front, which GATES the
@@ -110,6 +141,12 @@ pub async fn create_payment<S: PaymentDeps>(
         ));
     }
     if !domain::is_payable_status(&booking.status) {
+        // Pay-vs-cancel double-fault recovery: if the booking has gone negative-terminal but still
+        // carries a stranded live charge (an earlier Created's compensating re-read failed), refund
+        // it now so the customer's natural retry recovers the money instead of only 409ing.
+        if compensate_if_terminal(&state, req.booking_id, &booking.status).await? {
+            return Err(booking_cancelled_refunding());
+        }
         // Typed so the app localizes (a raw English 409 was showing under the Thai pay screen).
         return Err(AppError::ConflictCode {
             code: "BOOKING_NOT_PAYABLE",
@@ -142,18 +179,20 @@ pub async fn create_payment<S: PaymentDeps>(
             // (silent money limbo — deep-review HIGH). Re-read and compensate with an immediate full
             // refund, then tell the customer their money is being returned (typed → app localizes).
             let latest = state.booking_reader().get_booking(req.booking_id).await?;
-            if domain::is_negative_terminal(&latest.status) {
-                repo::refund_race_lost_prepay(state.db(), req.booking_id, Uuid::new_v4()).await?;
-                return Err(AppError::ConflictCode {
-                    code: "BOOKING_CANCELLED",
-                    message: "การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน".to_string(),
-                });
+            if compensate_if_terminal(&state, req.booking_id, &latest.status).await? {
+                return Err(booking_cancelled_refunding());
             }
             tracing::info!(payment_id = %p.id, amount = %estimate, "pre-pay charged (estimate)");
             p
         }
         PrePayOutcome::AlreadyPaid(p) => {
-            // Idempotent: the booking was already pre-paid. Return the existing payment (200).
+            // Idempotent: the booking was already pre-paid. Re-check the terminal race here too — an
+            // earlier Created's compensating re-read may have failed (booking briefly down), and a
+            // retry lands on this arm; the compensator is idempotent (status='completed' guard).
+            let latest = state.booking_reader().get_booking(req.booking_id).await?;
+            if compensate_if_terminal(&state, req.booking_id, &latest.status).await? {
+                return Err(booking_cancelled_refunding());
+            }
             tracing::info!(payment_id = %p.id, "pre-pay no-op (already paid)");
             p
         }
@@ -213,6 +252,12 @@ pub async fn pay_with_slip<S: PaymentDeps>(
         ));
     }
     if !domain::is_payable_status(&booking.status) {
+        // Pay-vs-cancel double-fault recovery (see create_payment): a stranded live charge on a
+        // now-terminal booking is refunded here, so a retry after the slip path's own compensating
+        // re-read failed recovers the money instead of only 409ing BOOKING_NOT_PAYABLE.
+        if compensate_if_terminal(&state, id, &booking.status).await? {
+            return Err(booking_cancelled_refunding());
+        }
         // Typed so the app localizes (a raw English 409 was showing under the Thai slip screen).
         return Err(AppError::ConflictCode {
             code: "BOOKING_NOT_PAYABLE",
@@ -319,22 +364,34 @@ pub async fn pay_with_slip<S: PaymentDeps>(
             // tell the customer their money is coming back, instead of leaving a live charge on a
             // dead booking that no cancellation event will ever refund (deep-review HIGH).
             let latest = state.booking_reader().get_booking(id).await?;
-            if domain::is_negative_terminal(&latest.status) {
-                repo::refund_race_lost_prepay(state.db(), id, Uuid::new_v4()).await?;
-                return Err(AppError::ConflictCode {
-                    code: "BOOKING_CANCELLED",
-                    message: "การจองถูกยกเลิกแล้ว ระบบกำลังคืนเงินให้เต็มจำนวน".to_string(),
-                });
+            if compensate_if_terminal(&state, id, &latest.status).await? {
+                return Err(booking_cancelled_refunding());
             }
             tracing::info!(payment_id = %p.id, amount = %estimate, trans_ref = %verified.trans_ref, "slip verified → paid");
             p
         }
         SlipPayOutcome::AlreadyPaid(p) => {
-            // Idempotent: the booking was already paid (the same slip re-submitted, or a later
-            // slip for an already-paid booking). The new object is unused — clean it up.
+            // Idempotent: the booking was already paid and the SAME accepted slip was re-submitted.
+            // The new object is unused — clean it up. Re-check the terminal race too (a retry may
+            // land here after a Created compensation re-read failed; the compensator is idempotent).
             state.s3().delete_best_effort(&slip_key).await;
+            let latest = state.booking_reader().get_booking(id).await?;
+            if compensate_if_terminal(&state, id, &latest.status).await? {
+                return Err(booking_cancelled_refunding());
+            }
             tracing::info!(payment_id = %p.id, "slip pay no-op (already paid)");
             p
+        }
+        SlipPayOutcome::ExtraTransferRecorded(_p) => {
+            // A SECOND, DIFFERENT verified transfer for an already-paid booking (a customer
+            // double-pay). It was recorded as an unapplied, refundable slip — do NOT delete the S3
+            // image (it is the evidence for that refund). Surface a typed conflict so the double
+            // transfer is visible + refundable, instead of a silent 200 that loses the money.
+            tracing::warn!(booking_id = %id, trans_ref = %verified.trans_ref, amount = %verified.amount, "extra transfer recorded for an already-paid booking (refundable)");
+            return Err(AppError::ConflictCode {
+                code: "ALREADY_PAID_EXTRA_TRANSFER",
+                message: "การจองนี้ชำระเงินแล้ว ระบบบันทึกยอดที่โอนเพิ่มไว้เพื่อคืนเงินให้".to_string(),
+            });
         }
     };
 

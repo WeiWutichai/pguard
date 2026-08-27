@@ -102,7 +102,10 @@ pub struct PricingSnapshot {
 /// same numbers read back from `NUMERIC(x,2)` return as `"0.00"` / `"5.00"`. A booking would then
 /// describe its own terms differently depending on whether the client asked before or after a
 /// round-trip. `round_dp` cannot fix this — it only ever removes digits; `rescale` also pads.
-fn money_scale(d: Decimal) -> Decimal {
+///
+/// Public so the create-booking handler can normalize the customer-supplied `tip` to the same
+/// 2dp convention before it is bound into the `NUMERIC(12,2)` column (deep-review LOW #33).
+pub fn money_scale(d: Decimal) -> Decimal {
     // Round FIRST with `round_dp` — half-to-even, the convention payment's proration already uses,
     // so the two services never disagree on a half. `rescale` alone would round half AWAY from
     // zero (150.005 → 150.01 instead of 150.00). Then pad, which is all `rescale` is left to do

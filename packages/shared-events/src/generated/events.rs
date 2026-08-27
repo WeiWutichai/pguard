@@ -53,6 +53,8 @@ pub struct BookingCancellation {
     pub cancellation_reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cancellation_note: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub charge_cancel_fee: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

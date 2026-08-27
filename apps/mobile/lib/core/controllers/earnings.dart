@@ -115,6 +115,32 @@ class GuardEarnings {
     return (b.hours ?? 0).toDouble();
   }
 
+  /// The hours to PRINT next to a job's pay figure — the ACTUAL payable hours the ฿ was computed
+  /// from (via [payableHours]), so the row's own arithmetic (`base × hours`) never disagrees with
+  /// its amount. When those differ from the BOOKED hours (an early finish reconciled below the
+  /// estimate), the booked figure is shown in parentheses so the guard understands the drop instead
+  /// of computing `base × booked` and reporting missing pay. Pure + testable.
+  ///
+  /// e.g. reconciled 5.5h of an 8h booking → `5.5 ชม. (จอง 8)`; not-yet-reconciled 8h → `8 ชม.`.
+  static String hoursLabel(Booking b,
+      {Map<String, double>? actualHours, required bool isThai}) {
+    final booked = b.hours ?? 0;
+    final payable = payableHours(b, actualHours: actualHours);
+    final unit = isThai ? 'ชม.' : 'hrs';
+    final payableStr = _trimHours(payable);
+    // Within a rounding epsilon of the booked estimate → just the plain figure (no annotation).
+    if ((payable - booked).abs() < 0.005) return '$payableStr $unit';
+    return isThai
+        ? '$payableStr $unit (จอง $booked)'
+        : '$payableStr $unit (booked $booked)';
+  }
+
+  /// Format hours dropping a trailing `.0` (8 not 8.0) but keeping a real fraction (5.5).
+  static String _trimHours(double h) {
+    if ((h - h.roundToDouble()).abs() < 0.005) return h.round().toString();
+    return h.toStringAsFixed(1);
+  }
+
   /// The commission applied to this job, in HUNDREDTHS of a percent. The settle's value
   /// ([commissionPercent], keyed by booking id, from `GET /payments/earnings`) wins when present;
   /// otherwise the booking's own creation-time snapshot; 0 for a pre-migration job with neither.

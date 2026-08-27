@@ -17,6 +17,7 @@ import '../../core/models/geo.dart';
 import '../../core/controllers/earnings.dart';
 import '../../core/controllers/guard_earnings_controller.dart';
 import '../../core/models/money.dart';
+import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_bottom_nav.dart';
 import '../../widgets/pguard_header.dart';
@@ -178,7 +179,7 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
                 ),
                 error: (e, _) => _JobsError(
                   message: e is ApiException
-                      ? e.message
+                      ? localizeApiError(isThai, e)
                       : isThai
                           ? 'โหลดงานไม่สำเร็จ'
                           : 'Could not load jobs',

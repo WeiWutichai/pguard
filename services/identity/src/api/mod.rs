@@ -129,6 +129,109 @@ fn append_cookie(headers: &mut HeaderMap, cookie: &str) {
     }
 }
 
+// ===================== Shared per-account brute-force throttle =====================
+//
+// One escalating failed-credential lockout, keyed on the account's canonical `user_id`, shared by
+// `login` AND every server-side credential step-up (change-password, change-phone PIN step-up,
+// 2FA-disable password). Before this, the lockout lived ONLY in `login`, so an attacker holding a
+// not-fully-trusted session could brute-force the 6-digit PIN via the unthrottled step-up
+// endpoints (deep-review HIGH #3). Keying on `user_id` (not the raw submitted identifier) also
+// collapses the phone/email double-bucket that doubled the pre-lock guess budget (deep-review
+// LOW #38). All Redis ops are best-effort and FAIL OPEN: a cache blip must never lock everyone out
+// or turn a wrong credential into a 500 — the gateway per-IP limit remains the floor.
+
+/// The `(fail_counter, lock)` Redis keys for a throttle `bucket` (a `user_id`, or a normalized
+/// identifier when no account resolves). The `login_*` prefixes are kept so login and the
+/// step-ups share ONE bucket per account (a lock armed by either surface blocks the others).
+fn throttle_keys(bucket: &str) -> (String, String) {
+    (
+        format!("login_fail:{bucket}"),
+        format!("login_lock:{bucket}"),
+    )
+}
+
+/// Is `bucket` currently locked out? Reads only (no side effect). Fail-open: a Redis error / missing
+/// key → not locked (`-2` is redis' "no key"). Callers short-circuit with the SAME generic 401 as a
+/// wrong credential BEFORE the Argon2 verify, so this is never a lock/existence oracle.
+async fn throttle_is_locked(redis: &mut redis::aio::ConnectionManager, bucket: &str) -> bool {
+    let (_, lock_key) = throttle_keys(bucket);
+    let lock_ttl: i64 = redis::cmd("TTL")
+        .arg(&lock_key)
+        .query_async(redis)
+        .await
+        .unwrap_or(-2);
+    lock_ttl > 0
+}
+
+/// Record ONE failed credential attempt for `bucket`: INCR the rolling-window fail counter, anchor
+/// the window on the FIRST failure (never refresh it on later INCRs, so an occasional fat-finger
+/// can't compound), and arm/refresh the escalating lock once over the threshold. Best-effort.
+async fn throttle_record_failure(redis: &mut redis::aio::ConnectionManager, bucket: &str) {
+    let (fail_key, lock_key) = throttle_keys(bucket);
+    let fails: i64 = redis.incr(&fail_key, 1).await.unwrap_or(0);
+    if fails >= 1 {
+        let ttl: i64 = redis::cmd("TTL")
+            .arg(&fail_key)
+            .query_async(redis)
+            .await
+            .unwrap_or(-2);
+        if ttl < 0 {
+            // Anchor the window on the first failure; never refresh it on later INCRs.
+            let _ = redis
+                .expire::<_, ()>(&fail_key, login_throttle::LOGIN_FAIL_WINDOW_SECS as i64)
+                .await;
+        }
+        if let Some(lock_secs) = login_throttle::login_lock_secs(fails) {
+            let _ = redis.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await;
+        }
+    }
+}
+
+/// Clear the fail counter + any live lock for `bucket` after a proven-legitimate verification.
+async fn throttle_clear(redis: &mut redis::aio::ConnectionManager, bucket: &str) {
+    let (fail_key, lock_key) = throttle_keys(bucket);
+    let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+        .arg(&fail_key)
+        .arg(&lock_key)
+        .query_async(redis)
+        .await;
+}
+
+/// Run a credential step-up `op` under the shared per-account throttle, keyed on the authenticated
+/// caller's `user_id`. A live lock short-circuits with the SAME generic 401 as a wrong credential
+/// (never a lock oracle); a wrong-credential result (`AppError::Unauthorized`) records a failure
+/// (arming the escalating lock); any success clears the counter. Non-credential errors
+/// (`BadRequest`, `NotFound`, `Internal`) pass through WITHOUT counting — only a genuine wrong
+/// guess advances the lockout. In `change_phone` the PIN verify runs BEFORE the single-use OTP
+/// token is consumed, so recording the failure here is exactly what makes replaying the same
+/// still-valid token over the 10^6 PIN space lock the account.
+async fn with_stepup_throttle<T, F, Fut>(
+    state: &AppState,
+    user_id: Uuid,
+    op: F,
+) -> Result<T, AppError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T, AppError>>,
+{
+    let mut redis = state.redis_conn.clone();
+    let bucket = user_id.to_string();
+    if throttle_is_locked(&mut redis, &bucket).await {
+        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
+    }
+    match op().await {
+        Ok(v) => {
+            throttle_clear(&mut redis, &bucket).await;
+            Ok(v)
+        }
+        Err(e @ AppError::Unauthorized(_)) => {
+            throttle_record_failure(&mut redis, &bucket).await;
+            Err(e)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 // ----- POST /auth/login -----
 
 // `skip_all`: never log the identifier (PII) or the password.
@@ -144,57 +247,36 @@ pub async fn login(
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
     }
 
-    // Server-side per-account brute-force throttle. The app enforces a PIN lockout/wipe ENTIRELY
-    // client-side, so an attacker who scripts POST /auth/login directly bypasses it and faced only
-    // the gateway per-IP limit — with rotating IPs the 10^6 six-digit-PIN space is exhaustible. Key
-    // on the lowercased identifier (case variants share one bucket). A live lock short-circuits
-    // BEFORE the Argon2 verify (no cost/timing amplification) and returns the SAME generic 401 as a
-    // wrong password, so it is never a lock/existence oracle. All Redis ops are best-effort and
-    // FAIL OPEN: a cache blip must never lock everyone out or turn a wrong PIN into a 500 — the
-    // gateway per-IP limit remains as a floor. A targeted lock-out DoS is bounded by the 30-min cap.
-    let throttle_key = identifier.to_ascii_lowercase();
-    let fail_key = format!("login_fail:{throttle_key}");
-    let lock_key = format!("login_lock:{throttle_key}");
+    // Server-side per-account brute-force throttle (shared helpers). The app enforces a PIN
+    // lockout/wipe ENTIRELY client-side, so an attacker who scripts POST /auth/login directly
+    // bypasses it and faced only the gateway per-IP limit — with rotating IPs the 10^6 six-digit-PIN
+    // space is exhaustible. Normalize the bucket to the account's canonical `user_id` so an account
+    // with BOTH a phone and an email cannot open two independent brute-force budgets (deep-review
+    // LOW #38: keying on the raw identifier gave phone+email two `login_fail` buckets that both
+    // authenticate the same account). An identifier that resolves to no account has nothing to
+    // brute-force → fall back to the lowercased identifier so a spray on a non-existent phone is
+    // still bounded (and can never collide with a real account's `user_id` bucket, a UUID). A live
+    // lock short-circuits BEFORE the Argon2 verify (no cost/timing amplification) and returns the
+    // SAME generic 401 as a wrong password, so it is never a lock/existence oracle.
+    let bucket = match repo::user_id_by_identifier(&state.db, identifier).await? {
+        Some(uid) => uid.to_string(),
+        None => identifier.to_ascii_lowercase(),
+    };
     let mut redis = state.redis_conn.clone();
 
-    let lock_ttl: i64 = redis::cmd("TTL")
-        .arg(&lock_key)
-        .query_async(&mut redis)
-        .await
-        .unwrap_or(-2); // -2 = no key (redis convention) → treated as unlocked (fail open)
-    if lock_ttl > 0 {
+    if throttle_is_locked(&mut redis, &bucket).await {
         return Err(AppError::Unauthorized("Invalid credentials".to_string()));
     }
 
     let user = match repo::verify_credentials(&state.db, identifier, &req.password).await {
         Ok(u) => {
             // Ownership proven — clear the failure counter and any lock.
-            let _: Result<(), redis::RedisError> = redis::cmd("DEL")
-                .arg(&fail_key)
-                .arg(&lock_key)
-                .query_async(&mut redis)
-                .await;
+            throttle_clear(&mut redis, &bucket).await;
             u
         }
         Err(AppError::Unauthorized(msg)) => {
             // Count the failure in a rolling window; arm/refresh a lock once over the threshold.
-            let fails: i64 = redis.incr(&fail_key, 1).await.unwrap_or(0);
-            if fails >= 1 {
-                let ttl: i64 = redis::cmd("TTL")
-                    .arg(&fail_key)
-                    .query_async(&mut redis)
-                    .await
-                    .unwrap_or(-2);
-                if ttl < 0 {
-                    // Anchor the window on the first failure; never refresh it on later INCRs.
-                    let _ = redis
-                        .expire::<_, ()>(&fail_key, login_throttle::LOGIN_FAIL_WINDOW_SECS as i64)
-                        .await;
-                }
-                if let Some(lock_secs) = login_throttle::login_lock_secs(fails) {
-                    let _ = redis.set_ex::<_, _, ()>(&lock_key, "1", lock_secs).await;
-                }
-            }
+            throttle_record_failure(&mut redis, &bucket).await;
             return Err(AppError::Unauthorized(msg));
         }
         Err(e) => return Err(e),
@@ -814,7 +896,17 @@ pub async fn logout(
     if let Some(presented) = presented {
         if let Some((rotation_id, _)) = token::parse(&presented) {
             if let Some(located) = repo::find_refresh_by_rotation(&state.db, rotation_id).await? {
-                repo::revoke_family(&state.db, located.family_id).await?;
+                // Scope the revoke to the CALLER'S OWN family. `logout` authorizes via the access
+                // token, but the presented refresh token is only parsed for its PUBLIC rotation_id
+                // (its secret is NOT verified here), so revoking by family_id unconditionally let any
+                // authenticated caller force-revoke an ARBITRARY session given only its rotation_id
+                // UUID (deep-review LOW #25). `revoke_own_family` filters `user_id = caller` and
+                // returns NotFound (0 rows) for a family the caller doesn't own or one already
+                // revoked — a benign no-op for logout, so swallow it; real DB errors still propagate.
+                match repo::revoke_own_family(&state.db, user.user_id, located.family_id).await {
+                    Ok(()) | Err(AppError::NotFound(_)) => {}
+                    Err(e) => return Err(e),
+                }
             }
         }
     }
@@ -928,12 +1020,17 @@ pub async fn change_password(
     // the current password is verified by the repo against the stored Argon2 hash.
     registration::validate_pin_hash(&req.new_pin_hash)?;
 
-    let new_version = repo::change_password(
-        &state.db,
-        user.user_id,
-        &req.current_password,
-        &req.new_pin_hash,
-    )
+    // Verify `current_password` + rotate the credential under the SAME per-account brute-force
+    // lockout as login (deep-review HIGH #3): change_password's wrong-password path returned a bare
+    // 401 with NO counter, so a session holder could script the 10^6 PIN space here with zero cost.
+    let new_version = with_stepup_throttle(&state, user.user_id, || {
+        repo::change_password(
+            &state.db,
+            user.user_id,
+            &req.current_password,
+            &req.new_pin_hash,
+        )
+    })
     .await?;
 
     // Force-revoke the OTHER sessions immediately: publish the new revocation marker so any
@@ -977,9 +1074,15 @@ pub async fn change_phone(
     user: AuthUser,
     Json(req): Json<ChangePhoneRequest>,
 ) -> Result<impl IntoResponse, AppError> {
-    // (a) Step-up: verify the caller's CURRENT PIN FIRST (generic 401 on mismatch). Doing this
-    //     before any token consumption means a wrong PIN never burns the single-use OTP token.
-    repo::verify_self_password(&state.db, user.user_id, &req.current_pin_hash).await?;
+    // (a) Step-up: verify the caller's CURRENT PIN FIRST (generic 401 on mismatch), under the SAME
+    //     per-account brute-force lockout as login (deep-review HIGH #3). The verify runs BEFORE the
+    //     single-use OTP token is consumed (step d), so a wrong PIN burns nothing and the same
+    //     still-valid `phone_change_token` could otherwise be replayed across the whole 10^6 PIN
+    //     space — the throttle here is what makes those replays lock the account.
+    with_stepup_throttle(&state, user.user_id, || {
+        repo::verify_self_password(&state.db, user.user_id, &req.current_pin_hash)
+    })
+    .await?;
 
     // (b) Decode the single-use phone_change token → the verified NEW phone (from the token, NEVER
     //     the body). ONLY the `phone_change` purpose is accepted — a register (`phone_verify`) or
@@ -1428,33 +1531,43 @@ pub async fn disable_2fa(
         )));
     }
 
-    // Confirm intent: a live TOTP code OR the password (at least one must verify).
-    let confirmed = match (&req.code, &req.password) {
-        (Some(code), _) if !code.trim().is_empty() => {
-            let sealed = row.totp_secret_enc.clone().ok_or_else(|| {
-                AppError::Internal("2FA enabled without a stored secret".to_string())
-            })?;
-            let secret = twofactor::open_secret(&state.totp_enc_key, &sealed)?;
-            twofactor::verify_totp(&secret, &row.phone, code)?
+    // Confirm intent: a live TOTP code OR the password (at least one must verify), under the SAME
+    // per-account brute-force lockout as login (deep-review HIGH #3). Disable-2FA required NO token
+    // and had no counter, so a session holder could script TOTP-code / password guesses to strip the
+    // second factor with zero cost. A `BadRequest` (neither field supplied) is a malformed request,
+    // not a wrong guess, so it passes through the throttle WITHOUT counting; only a genuine wrong
+    // code/password (`Unauthorized`) advances the lockout.
+    with_stepup_throttle(&state, user.user_id, || async {
+        let confirmed = match (&req.code, &req.password) {
+            (Some(code), _) if !code.trim().is_empty() => {
+                let sealed = row.totp_secret_enc.clone().ok_or_else(|| {
+                    AppError::Internal("2FA enabled without a stored secret".to_string())
+                })?;
+                let secret = twofactor::open_secret(&state.totp_enc_key, &sealed)?;
+                twofactor::verify_totp(&secret, &row.phone, code)?
+            }
+            (_, Some(password)) if !password.is_empty() => {
+                let password = password.clone();
+                let hash = row.password_hash.clone();
+                tokio::task::spawn_blocking(move || {
+                    crate::domain::password::verify_secret(&password, &hash)
+                })
+                .await
+                .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??
+            }
+            _ => {
+                return Err(AppError::BadRequest(
+                    "Provide a 2FA code or your password to disable 2FA.".to_string(),
+                ))
+            }
+        };
+        if confirmed {
+            Ok(())
+        } else {
+            Err(AppError::Unauthorized("Invalid credentials".to_string()))
         }
-        (_, Some(password)) if !password.is_empty() => {
-            let password = password.clone();
-            let hash = row.password_hash.clone();
-            tokio::task::spawn_blocking(move || {
-                crate::domain::password::verify_secret(&password, &hash)
-            })
-            .await
-            .map_err(|e| AppError::Internal(format!("verify task failed: {e}")))??
-        }
-        _ => {
-            return Err(AppError::BadRequest(
-                "Provide a 2FA code or your password to disable 2FA.".to_string(),
-            ))
-        }
-    };
-    if !confirmed {
-        return Err(AppError::Unauthorized("Invalid credentials".to_string()));
-    }
+    })
+    .await?;
 
     repo::disable_totp(&state.db, user.user_id).await?;
     tracing::info!("2FA disabled");
@@ -4123,6 +4236,250 @@ mod multi_role_tests {
         .unwrap();
         assert_eq!(audits, 1, "the change writes its credential_audit row");
 
+        cleanup(&pool, user_id).await;
+        let _: () = redis.del(format!("user_trv:{user_id}")).await.unwrap_or(());
+    }
+
+    // =================== Step-up brute-force lockout (deep-review HIGH #3) ===================
+    //
+    // The per-account failed-credential lockout login has must ALSO gate every server-side
+    // PIN/password step-up (change-phone / change-password / 2FA-disable), keyed on the SAME
+    // `user_id` bucket — otherwise a session holder brute-forces the 6-digit PIN through the
+    // (previously unthrottled) step-ups. These drive the shared `with_stepup_throttle` over real
+    // Postgres + Redis (seed_user's PIN/password is "x").
+
+    /// Router exposing every step-up under test.
+    fn stepup_router(st: AppState) -> Router {
+        Router::new()
+            .route("/auth/phone", patch(change_phone))
+            .route("/auth/password", axum::routing::put(change_password))
+            .route("/auth/2fa/disable", post(disable_2fa))
+            .with_state(st)
+    }
+
+    fn put_change_password(bearer: &str, current: &str, new_pin_hash: &str) -> Request<Body> {
+        Request::builder()
+            .method("PUT")
+            .uri("/auth/password")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "current_password": current, "new_pin_hash": new_pin_hash })
+                    .to_string(),
+            ))
+            .unwrap()
+    }
+
+    fn post_disable_2fa(bearer: &str, password: &str) -> Request<Body> {
+        Request::builder()
+            .method("POST")
+            .uri("/auth/2fa/disable")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(
+                serde_json::json!({ "password": password }).to_string(),
+            ))
+            .unwrap()
+    }
+
+    /// Best-effort wipe of the shared throttle keys for a user (tests must start clean and not
+    /// leak a lock into a later test that reuses the bucket).
+    async fn clear_throttle(conn: &mut redis::aio::ConnectionManager, user_id: Uuid) {
+        let _: Result<(), redis::RedisError> = redis::cmd("DEL")
+            .arg(format!("login_fail:{user_id}"))
+            .arg(format!("login_lock:{user_id}"))
+            .query_async(conn)
+            .await;
+    }
+
+    /// change-phone: repeated WRONG-PIN step-ups arm the account lock — even though the single-use
+    /// OTP token is (correctly) never consumed on the wrong-PIN path, so replaying the same token
+    /// over the 10^6 PIN space now locks the account instead of running free (the HIGH #3 core).
+    #[tokio::test]
+    async fn change_phone_wrong_pin_arms_the_shared_lock() {
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        clear_throttle(&mut redis, user_id).await;
+        let app = stepup_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        // Fire the threshold count of wrong-PIN attempts, each replaying the SAME dummy token (never
+        // consumed — the PIN check 401s before the token is even decoded).
+        for i in 0..crate::domain::login_throttle::LOGIN_FAIL_THRESHOLD {
+            let res = app
+                .clone()
+                .oneshot(patch_change_phone(
+                    &tok,
+                    "dummy.token",
+                    &format!("wrong{i}"),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "wrong PIN #{i} is a generic 401"
+            );
+        }
+
+        // The account is now locked: the shared login_lock key has a live TTL.
+        let lock_ttl: i64 = redis::cmd("TTL")
+            .arg(format!("login_lock:{user_id}"))
+            .query_async(&mut redis)
+            .await
+            .unwrap();
+        assert!(
+            lock_ttl > 0,
+            "the step-up must arm the shared per-account lock (TTL was {lock_ttl})"
+        );
+
+        // While locked, even the CORRECT PIN short-circuits (the lock gates it before the token is
+        // examined), so it stays a generic 401.
+        let res = app
+            .clone()
+            .oneshot(patch_change_phone(&tok, "dummy.token", "x"))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a live lock blocks even a correct step-up credential"
+        );
+
+        clear_throttle(&mut redis, user_id).await;
+        cleanup(&pool, user_id).await;
+    }
+
+    /// change-password: a lock armed on the SAME user_id bucket (as login would) blocks the step-up
+    /// even with the CORRECT current password — and the credential is NOT rotated. Without the lock a
+    /// correct password + valid new hash would 200 and change the PIN, so 401 + unchanged credential
+    /// unambiguously proves the shared lock gated it.
+    #[tokio::test]
+    async fn armed_lock_blocks_change_password_with_correct_credential() {
+        use redis::AsyncCommands;
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        clear_throttle(&mut redis, user_id).await;
+        // Simulate a lock armed by login (or a prior step-up) on the shared bucket.
+        redis
+            .set_ex::<_, _, ()>(format!("login_lock:{user_id}"), "1", 60)
+            .await
+            .unwrap();
+
+        let app = stepup_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+        let res = app
+            .oneshot(put_change_password(&tok, "x", &"b".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a live lock must block a step-up even with the correct credential"
+        );
+        // The password was NOT rotated: the original PIN still verifies.
+        assert!(
+            repo::verify_self_password(&pool, user_id, "x")
+                .await
+                .is_ok(),
+            "the credential must be unchanged when the lock short-circuited the step-up"
+        );
+
+        clear_throttle(&mut redis, user_id).await;
+        cleanup(&pool, user_id).await;
+    }
+
+    /// 2FA-disable is gated by the same shared lock: a locked account cannot strip its second factor
+    /// even with the correct password.
+    #[tokio::test]
+    async fn armed_lock_blocks_disable_2fa() {
+        use redis::AsyncCommands;
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        // Turn 2FA ON (a 1-byte dummy secret suffices — the password branch never opens it, and the
+        // lock short-circuits before the match anyway).
+        sqlx::query(
+            "UPDATE identity.users SET totp_enabled = TRUE, totp_secret_enc = $2 WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(vec![0u8])
+        .execute(&pool)
+        .await
+        .expect("enable 2fa");
+        clear_throttle(&mut redis, user_id).await;
+        redis
+            .set_ex::<_, _, ()>(format!("login_lock:{user_id}"), "1", 60)
+            .await
+            .unwrap();
+
+        let app = stepup_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+        let res = app.oneshot(post_disable_2fa(&tok, "x")).await.unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::UNAUTHORIZED,
+            "a live lock must block disabling 2FA even with the correct password"
+        );
+        // 2FA is still enabled — the factor was not stripped.
+        let row = repo::totp_row(&pool, user_id).await.expect("totp row");
+        assert!(row.totp_enabled, "2FA must remain enabled behind the lock");
+
+        clear_throttle(&mut redis, user_id).await;
+        cleanup(&pool, user_id).await;
+    }
+
+    /// A SUCCESSFUL step-up clears the shared fail counter, so earlier fat-fingers don't nudge a
+    /// legit user toward a lock once they get it right.
+    #[tokio::test]
+    async fn successful_change_password_clears_the_fail_counter() {
+        use redis::AsyncCommands;
+        let Some((pool, mut redis)) = infra().await else {
+            eprintln!("SKIP: DATABASE_URL + TEST_REDIS_URL/REDIS_CACHE_URL required");
+            return;
+        };
+        let user_id = seed_user(&pool, "customer", &["customer"]).await;
+        clear_throttle(&mut redis, user_id).await;
+        let app = stepup_router(state(pool.clone(), redis.clone()));
+        let tok = access_token(user_id, "customer");
+
+        // Two wrong attempts (below the threshold → no lock yet) build the counter.
+        for _ in 0..2 {
+            let res = app
+                .clone()
+                .oneshot(put_change_password(&tok, "wrong", &"b".repeat(64)))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+        let fails: i64 = redis
+            .get(format!("login_fail:{user_id}"))
+            .await
+            .unwrap_or(0);
+        assert_eq!(
+            fails, 2,
+            "wrong step-ups accumulate the shared fail counter"
+        );
+
+        // A correct change_password succeeds AND clears the counter.
+        let res = app
+            .clone()
+            .oneshot(put_change_password(&tok, "x", &"c".repeat(64)))
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "correct step-up succeeds");
+        let exists: bool = redis.exists(format!("login_fail:{user_id}")).await.unwrap();
+        assert!(!exists, "a proven-legit step-up clears the fail counter");
+
+        clear_throttle(&mut redis, user_id).await;
         cleanup(&pool, user_id).await;
         let _: () = redis.del(format!("user_trv:{user_id}")).await.unwrap_or(());
     }

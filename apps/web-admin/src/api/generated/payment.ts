@@ -246,10 +246,17 @@ export interface paths {
          *     → 409 `SLIP_DUPLICATE`). **Idempotent:** re-submitting the SAME accepted slip returns the
          *     existing payment (200), no double-charge.
          *
+         *     **Double-pay (a SECOND, different transfer):** if the customer transfers twice for one
+         *     booking (bank-app timeout → two real transfers with distinct `transRef`s), the second,
+         *     DIFFERENT verified slip does NOT return 200 — it is recorded as an unapplied, refundable slip
+         *     (the money is tracked, its refs are reserved against reuse) and the call returns 409
+         *     `ALREADY_PAID_EXTRA_TRANSFER` so the extra transfer is visible and can be refunded.
+         *
          *     Failure modes carry a machine-readable `error.code` (branch on it, not the message):
          *     `SLIP_VERIFY_FAILED` (Slip2Go rejected it), `SLIP_AMOUNT_TOO_LOW` (underpay),
          *     `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (already used),
-         *     `SLIP_DISABLED` (provider not slip2go).
+         *     `ALREADY_PAID_EXTRA_TRANSFER` (a second, different transfer for an already-paid booking —
+         *     recorded for refund), `SLIP_DISABLED` (provider not slip2go).
          */
         post: operations["payWithSlip"];
         delete?: never;
@@ -374,6 +381,11 @@ export interface components {
              * @example 100.00
              */
             cancellation_fee_charged?: string | null;
+            /**
+             * @description Excess the customer transferred ABOVE the estimate on a slip payment (`max(0, slip_amount − amount)`); `"0.00"` for simulated/exact payments. This money is never the platform's — it is ALWAYS refunded on top of the settled bill, so every refund (cancel, race-compensator, completion reconcile) returns `amount + overpaid_amount`. NOT NULL (present on every row).
+             * @example 0.00
+             */
+            overpaid_amount: string;
             /**
              * @description How the charge settled: `prepaid` (simulated gateway) or `promptpay_slip` (real Slip2Go-verified transfer).
              * @example promptpay_slip
@@ -567,8 +579,10 @@ export interface components {
          * @description The slip could not settle the booking. `error.code` is one of: `SLIP_VERIFY_FAILED`
          *     (Slip2Go rejected the slip), `SLIP_AMOUNT_TOO_LOW` (the slip is below the estimate),
          *     `SLIP_WRONG_RECEIVER` (paid to another account), `SLIP_DUPLICATE` (the slip was already
-         *     used for a payment), `SLIP_DISABLED` (the service is not running the slip provider), or
-         *     the booking is not in a payable state.
+         *     used for a payment), `ALREADY_PAID_EXTRA_TRANSFER` (the booking was already paid and this is
+         *     a SECOND, different real transfer — recorded as unapplied for refund, not a double-charge),
+         *     `SLIP_DISABLED` (the service is not running the slip provider), or the booking is not in a
+         *     payable state.
          */
         SlipRejected: {
             headers: {

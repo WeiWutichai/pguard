@@ -11,17 +11,18 @@ part 'create_booking_request.g.dart';
 /// CreateBookingRequest
 ///
 /// Properties:
-/// * [address] 
+/// * [address] - Site address. Required and bounded — an empty/whitespace-only address is 400, and one over 512 CHARACTERS is 400 (the address fans out to every discovering guard and into the `booking.requested` event, so it must not be an unbounded blob). Enforced server-side and backed by the `chk_bookings_address_len` DB CHECK.
 /// * [scheduledAt] 
 /// * [hours] 
 /// * [serviceId] - Optional catalog service the customer picked. When present, the booking's `base_fee` is resolved SERVER-SIDE from that ACTIVE catalog service (the client never sends a fee) and the service's `min_hours` floor is enforced (`hours` below it → 400). A missing/inactive `service_id` → 404. When absent, `base_fee` falls to the server-owned column default (back-compat).
 /// * [guardCount] - Number of guards requested. Authoritative once persisted (used by the money path).
-/// * [tip] - Optional up-front tip (exact decimal string); folded into the expected total.
+/// * [tip] - Optional up-front tip (exact decimal string); folded into the expected total. Bounded: `0 ≤ tip ≤ 1000000` — a larger value is 400 (an uncapped tip overflows the NUMERIC(12,2) column into an opaque 500). Normalized to 2dp server-side.
 /// * [lat] - Optional site latitude (must be paired with `lng`) — feeds open-job radius discovery.
 /// * [lng] - Optional site longitude (must be paired with `lat`).
 /// * [targetGuardId] - DIRECTED OFFER (C3): the ONE guard the customer chose. When present, the booking is offered ONLY to that guard — no other guard sees it in `GET /bookings/open` or can `accept` it (a non-target accept → 403 `NOT_OFFERED_TO_YOU`). When absent (the default), the booking is OPEN first-come (any online guard may claim it). There is NO auto-fallback to the open pool: if the chosen guard never takes it, the customer re-books. Not validated to be a real approved guard (the customer picks from `GET /available-guards`); a bogus id simply makes the booking unclaimable.
 @BuiltValue()
 abstract class CreateBookingRequest implements Built<CreateBookingRequest, CreateBookingRequestBuilder> {
+  /// Site address. Required and bounded — an empty/whitespace-only address is 400, and one over 512 CHARACTERS is 400 (the address fans out to every discovering guard and into the `booking.requested` event, so it must not be an unbounded blob). Enforced server-side and backed by the `chk_bookings_address_len` DB CHECK.
   @BuiltValueField(wireName: r'address')
   String get address;
 
@@ -39,7 +40,7 @@ abstract class CreateBookingRequest implements Built<CreateBookingRequest, Creat
   @BuiltValueField(wireName: r'guard_count')
   int? get guardCount;
 
-  /// Optional up-front tip (exact decimal string); folded into the expected total.
+  /// Optional up-front tip (exact decimal string); folded into the expected total. Bounded: `0 ≤ tip ≤ 1000000` — a larger value is 400 (an uncapped tip overflows the NUMERIC(12,2) column into an opaque 500). Normalized to 2dp server-side.
   @BuiltValueField(wireName: r'tip')
   String? get tip;
 

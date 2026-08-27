@@ -282,11 +282,17 @@ class FakeChatFeed implements ChatFeed {
       StreamController<ChatMessage>.broadcast();
   final StreamController<ChatWsError> _errors =
       StreamController<ChatWsError>.broadcast();
+  final StreamController<bool> _connController =
+      StreamController<bool>.broadcast();
 
   /// Frames passed to [sendMessage], in order (so tests assert the outbound payload).
   final List<Map<String, dynamic>> sent = [];
   bool connected = false;
   bool closed = false;
+
+  /// What [sendMessage] returns — flip to `false` to simulate a send while the socket is DOWN
+  /// (the frame is dropped) so tests can assert the composer keeps the text + surfaces a hint.
+  bool sendResult = true;
 
   @override
   Stream<ChatMessage> get messages => _controller.stream;
@@ -295,10 +301,13 @@ class FakeChatFeed implements ChatFeed {
   Stream<ChatWsError> get errors => _errors.stream;
 
   @override
+  Stream<bool> get connectionChanges => _connController.stream;
+
+  @override
   Future<void> connect() async => connected = true;
 
   @override
-  void sendMessage({
+  bool sendMessage({
     required String conversationId,
     String? content,
     required ChatMessageType type,
@@ -312,6 +321,7 @@ class FakeChatFeed implements ChatFeed {
       'message_type': type.wire,
       'sender_role': senderRole.wire,
     });
+    return sendResult;
   }
 
   @override
@@ -319,6 +329,7 @@ class FakeChatFeed implements ChatFeed {
     closed = true;
     if (!_controller.isClosed) await _controller.close();
     if (!_errors.isClosed) await _errors.close();
+    if (!_connController.isClosed) await _connController.close();
   }
 
   void emit(ChatMessage message) => _controller.add(message);
@@ -326,6 +337,10 @@ class FakeChatFeed implements ChatFeed {
   /// Push a server ERROR frame (a rejected send), e.g.
   /// `emitError(const ChatWsError(code: 'read_only', message: 'Conversation is read-only'))`.
   void emitError(ChatWsError error) => _errors.add(error);
+
+  /// Drive a connection-state edge (tests simulate a WS drop → reconnect to exercise the
+  /// history re-pull).
+  void emitConnection(bool connected) => _connController.add(connected);
 }
 
 /// Fake [ChatAttachmentService] — returns a canned attachment (or throws a canned error) and

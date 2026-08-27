@@ -7,6 +7,14 @@ import 'package:pguard_mobile/core/providers.dart';
 
 import '../support/fakes.dart';
 
+/// A secure store whose reads THROW (Android keystore corruption / restore-from-backup key
+/// mismatch → PlatformException/BadPaddingException) — drives the startup classifier's error path.
+class _ThrowingStore extends InMemoryStore {
+  @override
+  Future<String?> readRefreshToken() async =>
+      throw Exception('EncryptedSharedPreferences decryption failed');
+}
+
 void main() {
   ProviderContainer container(InMemoryStore store, FakePrefsStore prefs) {
     final c = ProviderContainer(overrides: [
@@ -48,6 +56,21 @@ void main() {
       () async {
     expect(await resolved(container(InMemoryStore(), FakePrefsStore())),
         SessionStatus.unauthenticated);
+  });
+
+  test(
+      'a secure-storage read failure classifies as unauthenticated (never stuck on '
+      'the splash screen forever)', () async {
+    // Before the fix, _load errored unhandled → status stayed `unknown` → the router pinned the
+    // user to /splash permanently. Now the read failure is caught → tokens best-effort wiped →
+    // land on the login flow.
+    final store = _ThrowingStore()
+      ..refresh = 'r'
+      ..pinHash = 'h';
+    expect(await resolved(container(store, FakePrefsStore())),
+        SessionStatus.unauthenticated,
+        reason:
+            'an unreadable keystore falls to the login flow, not an eternal splash');
   });
 
   test(

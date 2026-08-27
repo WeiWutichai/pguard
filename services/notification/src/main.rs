@@ -111,16 +111,19 @@ async fn main() -> anyhow::Result<()> {
     };
 
     // --- background JetStream consumer (the event → notification path) ---
-    // This is the service's event processor, not fire-and-forget side-effect work; it
-    // owns its retry via JetStream redelivery + the idempotency ledger.
+    // This is the service's event processor, not fire-and-forget side-effect work; it owns its
+    // retry via JetStream redelivery + the idempotency ledger. `run_consumer` is SUPERVISED: it
+    // loops forever (reconnect + backoff) and NEVER returns, so a transient NATS outage — a VPS
+    // reboot racing NATS readiness at boot, a nats container recreate wiping the durable, a brief
+    // dial failure — can't silently kill the entire event→notification pipeline until a manual pod
+    // restart (deep-review HIGH). notification is the sink for ALL topics, so this MUST self-heal
+    // like every other service's consumer already does.
     let nats_url =
         std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".to_string());
     {
         let consumer_state = state.clone();
         tokio::spawn(async move {
-            if let Err(e) = events::run_consumer(consumer_state, &nats_url).await {
-                tracing::error!("notification consumer stopped: {e}");
-            }
+            events::run_consumer(consumer_state, &nats_url).await;
         });
     }
 

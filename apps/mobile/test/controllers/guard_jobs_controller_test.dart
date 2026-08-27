@@ -314,6 +314,34 @@ void main() {
     expect(GuardJobsController.completed(list).map((b) => b.id), ['b4']);
   });
 
+  test(
+      'refresh() SWALLOWS a rebuild failure — never rethrows into RefreshIndicator / '
+      'onRetry (offline pull-to-refresh)', () async {
+    var bookingsCalls = 0;
+    final api = FakeApi(
+      onGet: (path, _) async {
+        if (path == '/bookings') {
+          bookingsCalls++;
+          // First build succeeds; the refresh re-fetch is offline (transport failure).
+          if (bookingsCalls >= 2) {
+            throw const ApiException(message: 'Network error');
+          }
+          return [bookingJson('b2', 'accepted')];
+        }
+        return const <Map<String, dynamic>>[];
+      },
+    );
+    final c = _guardContainer(api);
+    addTearDown(c.dispose);
+    await c.read(guardJobsControllerProvider.future);
+
+    // Must complete normally (null), NOT throw an unhandled async error.
+    final result = await c.read(guardJobsControllerProvider.notifier).refresh();
+    expect(result, isNull);
+    expect(c.read(guardJobsControllerProvider).hasError, isTrue,
+        reason: 'the error is carried in provider state for the UI to render');
+  });
+
   test('accept surfaces the server error message (and does not throw)',
       () async {
     final api = FakeApi(
