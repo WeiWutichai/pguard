@@ -459,6 +459,11 @@ paths:
         static segments win in the router (same precedent as calling's `/calls/ice`), and
         the gateway's existing `/bookings` prefix rule routes it with no gateway change.
 
+        EXPIRY (ISSUE 1): a request whose scheduled window has already ENDED
+        (`now > scheduled_at + hours`) is EXCLUDED — its job time is in the past. Accepting one
+        would 409 `BOOKING_EXPIRED` anyway, and the background scheduler cancels it shortly after
+        it lapses (reason `system_expired`).
+
         DIRECTED OFFER (C3): a booking directed at one guard (`target_guard_id` set) appears
         here ONLY for that guard — every other guard sees just OPEN bookings (`target_guard_id`
         null). So the returned set is `target_guard_id IS NULL OR target_guard_id = <caller>`.
@@ -532,6 +537,12 @@ paths:
         DIRECTED OFFER (C3): if the booking was directed at ONE guard (`target_guard_id` set),
         only that guard may accept — any other guard is rejected with **403 `NOT_OFFERED_TO_YOU`**
         (the app localizes the code). An OPEN booking (`target_guard_id` null) stays first-come.
+
+        EXPIRY (ISSUE 1): an open request whose scheduled window has already ENDED
+        (`now > scheduled_at + hours`) is no longer acceptable — **409 `BOOKING_EXPIRED`** (the app
+        localizes it, e.g. "งานนี้หมดเวลาแล้ว"). Such requests are also hidden from `GET /bookings/open`
+        and cancelled by the background scheduler (reason `system_expired`, no cancellation fee), so
+        this 409 only fires in the race between a guard's tap and the sweep.
       operationId: acceptBooking
       security: [{ bearerAuth: [] }]
       parameters:
@@ -547,7 +558,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ErrorBody' }
         '404': { $ref: '#/components/responses/NotFound' }
-        '409': { $ref: '#/components/responses/Conflict' }
+        '409':
+          description: >-
+            Conflict — `error.code` is `BOOKING_EXPIRED` (the scheduled window has already
+            passed), `JOB_TAKEN` (another guard accepted first), `GUARD_BUSY` (the caller already
+            has an overlapping active job), or `CONFLICT` (booking not in an acceptable state).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
 
   /bookings/{id}/skip:
     post:

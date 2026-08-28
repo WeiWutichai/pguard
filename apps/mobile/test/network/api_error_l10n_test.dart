@@ -62,6 +62,14 @@ void main() {
       String th(String code) => localizeApiError(
           true, ApiException(message: 'x', code: code, statusCode: 409));
       expect(th('JOB_TAKEN'), 'งานนี้มีเจ้าหน้าที่รับไปแล้ว');
+      // ISSUE 1 — accept raced the expiry sweep: the request's window had already ended.
+      expect(th('BOOKING_EXPIRED'), 'งานนี้หมดเวลาแล้ว');
+      expect(
+          localizeApiError(
+              false,
+              const ApiException(
+                  message: 'x', code: 'BOOKING_EXPIRED', statusCode: 409)),
+          'This job has expired — its scheduled time has already passed');
       expect(th('BOOKING_NOT_PAYABLE'),
           'สถานะการจองเปลี่ยนไปแล้ว ไม่ต้องชำระเงิน');
       expect(th('BOOKING_CANCELLED'),
