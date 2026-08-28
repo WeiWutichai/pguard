@@ -27,6 +27,8 @@ import '../../widgets/booking_status_pill.dart';
 import '../../widgets/booking_status_timeline.dart';
 import '../../widgets/pg_error_state.dart';
 import '../../widgets/image_viewer.dart';
+import '../../widgets/pg_network_image.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../../widgets/progress_report_viewer.dart';
@@ -209,27 +211,57 @@ class _LiveStatusScreenState extends ConsumerState<LiveStatusScreen>
         live: !isTerminal,
         background: PgTokens.colorGreen800,
       ),
+      // Stale-while-revalidate (perf-review #1/#10): the header shell above already renders from
+      // `valueOrNull`; the body shows the LAST-KNOWN snapshot on re-entry and a skeleton (status pill
+      // + timeline placeholders) on a first load rather than a blank spinner while the snapshot lands
+      // and the WS subscribes. The error state shows only when there is no snapshot at all.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          // Only surface the server's already-generic message; never leak a raw exception
-          // toString() (e.g. a parse TypeError) to the user. Shared hi-fi error state —
-          // retry re-runs the snapshot + WS subscribe; no raw booking id on screen.
-          error: (e, _) => PgErrorState(
-            title: isThai
-                ? 'ยังเชื่อมต่อสถานะงานไม่ได้'
-                : 'Could not load live status',
-            message: e is ApiException
-                ? e.message
-                : (isThai
-                    ? 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้'
-                    : 'Live status is unavailable right now'),
-            onRetry: () => ref
-                .invalidate(bookingStatusControllerProvider(widget.bookingId)),
-          ),
-          data: (booking) => _LiveBody(booking: booking, onRefresh: _refresh),
-        ),
+        child: booking != null
+            ? _LiveBody(booking: booking, onRefresh: _refresh)
+            : (async.hasError
+                // Only surface the server's already-generic message; never leak a raw exception
+                // toString() (e.g. a parse TypeError). Shared hi-fi error state — retry re-runs the
+                // snapshot + WS subscribe; no raw booking id on screen.
+                ? PgErrorState(
+                    title: isThai
+                        ? 'ยังเชื่อมต่อสถานะงานไม่ได้'
+                        : 'Could not load live status',
+                    message: async.error is ApiException
+                        ? (async.error as ApiException).message
+                        : (isThai
+                            ? 'ไม่สามารถเชื่อมต่อสถานะงานได้ในขณะนี้'
+                            : 'Live status is unavailable right now'),
+                    onRetry: () => ref.invalidate(
+                        bookingStatusControllerProvider(widget.bookingId)),
+                  )
+                : const _LiveStatusSkeleton()),
       ),
+    );
+  }
+}
+
+/// First-load skeleton for the live-status body (perf-review #10): a status-pill placeholder over
+/// a couple of card placeholders, so the screen shows its shape while the snapshot lands + the WS
+/// subscribes, instead of a blank spinner.
+class _LiveStatusSkeleton extends StatelessWidget {
+  const _LiveStatusSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.all(PgTokens.space4),
+      children: const [
+        Center(
+          child: PgSkeletonBox(
+              width: 150, height: 28, radius: PgTokens.radiusFull),
+        ),
+        SizedBox(height: PgTokens.space4),
+        PgSkeletonCard(height: 120),
+        SizedBox(height: PgTokens.space3),
+        PgSkeletonCard(height: 88),
+        SizedBox(height: PgTokens.space3),
+        PgSkeletonCard(height: 160),
+      ],
     );
   }
 }
@@ -739,16 +771,13 @@ class _GuardCard extends ConsumerWidget {
             child: GestureDetector(
               onTap: () =>
                   showImageViewer(context, url: avatarUrl, isThai: isThai),
-              child: ClipOval(
-                child: Image.network(
-                  avatarUrl,
-                  width: 42,
-                  height: 42,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => guardAvatar,
-                  loadingBuilder: (context, child, progress) =>
-                      progress == null ? child : guardAvatar,
-                ),
+              child: PgNetworkImage(
+                url: avatarUrl,
+                width: 42,
+                height: 42,
+                borderRadius: BorderRadius.circular(21),
+                placeholder: guardAvatar,
+                errorWidget: guardAvatar,
               ),
             ),
           ),

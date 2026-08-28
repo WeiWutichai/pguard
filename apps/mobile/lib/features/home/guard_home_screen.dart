@@ -20,6 +20,8 @@ import '../../core/models/money.dart';
 import '../../core/network/api_error_l10n.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_bottom_nav.dart';
+import '../../widgets/pg_network_image.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import '../../widgets/primary_button.dart';
 import '../auth/widgets/switch_mode_action.dart';
@@ -172,19 +174,12 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
               const SizedBox(height: PgTokens.space4),
               const OnlineCard(),
               const SizedBox(height: PgTokens.space4),
-              jobs.when(
-                loading: () => const Padding(
-                  padding: EdgeInsets.all(PgTokens.space6),
-                  child: Center(child: CircularProgressIndicator()),
-                ),
-                error: (e, _) => _JobsError(
-                  message: e is ApiException
-                      ? localizeApiError(isThai, e)
-                      : isThai
-                          ? 'โหลดงานไม่สำเร็จ'
-                          : 'Could not load jobs',
-                ),
-                data: (all) => Column(
+              // Stale-while-revalidate (perf-review #1): the greeting + OnlineCard chrome above ALWAYS
+              // render; the stats+jobs area shows the LAST-KNOWN data via `valueOrNull` (so a resume /
+              // re-entry never blanks), a structured SKELETON while a first load is in flight (not a
+              // bare full-screen spinner), and the error card only when there is no data at all.
+              if (jobs.valueOrNull case final all?)
+                Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     _StatsRow(bookings: all, isThai: isThai),
@@ -199,8 +194,17 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
                       onOpenDetail: (id) => context.push('/guard/job/$id'),
                     ),
                   ],
-                ),
-              ),
+                )
+              else if (jobs.hasError)
+                _JobsError(
+                  message: jobs.error is ApiException
+                      ? localizeApiError(isThai, jobs.error as ApiException)
+                      : isThai
+                          ? 'โหลดงานไม่สำเร็จ'
+                          : 'Could not load jobs',
+                )
+              else
+                const _GuardJobsSkeleton(),
             ],
           ),
         ),
@@ -363,8 +367,12 @@ class _GuardProfileAvatarButton extends ConsumerWidget {
           child: CircleAvatar(
             radius: 16,
             backgroundColor: PgTokens.colorGreen800,
+            // Disk-caching + stable-key provider so a re-minted presigned avatar URL is a cache
+            // hit on re-entry (not a re-download), downsized to the 32px avatar.
             foregroundImage: (avatarUrl != null && avatarUrl.isNotEmpty)
-                ? NetworkImage(avatarUrl)
+                ? pgCachedImageProvider(avatarUrl,
+                    diameterPx:
+                        (32 * MediaQuery.of(context).devicePixelRatio).round())
                 : null,
             child:
                 const Icon(Icons.person_outline, size: 16, color: Colors.white),
@@ -774,6 +782,33 @@ class _DashedRRectPainter extends CustomPainter {
   @override
   bool shouldRepaint(_DashedRRectPainter old) =>
       old.color != color || old.radius != radius;
+}
+
+/// The stats+jobs skeleton shown on a first load (no data yet) — three stat-card placeholders over
+/// two job-card placeholders, matching the real layout's shape so the dashboard reads as "loading"
+/// rather than blank (perf-review #1).
+class _GuardJobsSkeleton extends StatelessWidget {
+  const _GuardJobsSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Expanded(child: PgSkeletonCard(height: 74)),
+            SizedBox(width: PgTokens.space3),
+            Expanded(child: PgSkeletonCard(height: 74)),
+            SizedBox(width: PgTokens.space3),
+            Expanded(child: PgSkeletonCard(height: 74)),
+          ],
+        ),
+        SizedBox(height: PgTokens.space4),
+        PgSkeletonList(count: 2, itemHeight: 96),
+      ],
+    );
+  }
 }
 
 class _JobsError extends StatelessWidget {

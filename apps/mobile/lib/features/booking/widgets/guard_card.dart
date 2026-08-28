@@ -5,6 +5,7 @@ import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 import '../../../core/controllers/locale_controller.dart';
 import '../../../core/models/available_guard.dart';
 import '../../../widgets/image_viewer.dart';
+import '../../../widgets/pg_network_image.dart';
 
 /// One guard in the discovery list. Renders the guard's REAL NAME + PHOTO when discovery provides
 /// them (falling back to an id handle + initials avatar otherwise), plus the rating summary
@@ -136,16 +137,14 @@ class _GuardAvatar extends StatelessWidget {
         borderRadius: BorderRadius.circular(PgTokens.radiusXl),
       ),
       child: guard.hasPhoto
-          ? Image.network(
-              guard.avatarUrl!,
+          ? PgNetworkImage(
+              url: guard.avatarUrl!,
               width: 50,
               height: 50,
-              fit: BoxFit.cover,
-              // Keep the monogram visible behind the image until it decodes (no flash of empty
-              // box), and restore it if the URL fails to load.
-              loadingBuilder: (context, child, progress) =>
-                  progress == null ? child : monogram,
-              errorBuilder: (context, _, __) => monogram,
+              // Keep the monogram visible until the image decodes (no flash of empty box) and
+              // restore it if the URL fails to load — same degrade as the old Image.network.
+              placeholder: monogram,
+              errorWidget: monogram,
             )
           : monogram,
     );

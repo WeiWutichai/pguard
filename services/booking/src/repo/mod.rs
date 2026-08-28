@@ -78,6 +78,14 @@ pub async fn get_internal(db: &sqlx::PgPool, id: Uuid) -> Result<InternalBooking
 }
 
 /// List bookings the caller participates in (as customer OR assigned guard), newest first.
+///
+/// perf-review #18 (LOW): the `customer_id = $1 OR guard_id = $1` predicate spans two columns, so
+/// Postgres BitmapOrs the two single-column indexes (`idx_bookings_customer`, `idx_bookings_guard`)
+/// then sorts, rather than a single index-ordered scan. LEFT AS-IS deliberately: the result is
+/// hard-capped at `LIMIT 100` (a per-user participant list — bounded and small), so the BitmapOr +
+/// sort is negligible; splitting into a UNION ALL of the two index-satisfying branches would add
+/// SQL complexity for no measurable win at this scale. Revisit only if a single user's booking
+/// count grows large.
 pub async fn list_bookings(
     db: &sqlx::PgPool,
     user_id: Uuid,

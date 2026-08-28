@@ -9,6 +9,8 @@ import 'package:built_value/serializer.dart';
 import 'package:dio/dio.dart';
 
 import 'package:pguard_rating_api/src/api_util.dart';
+import 'package:pguard_rating_api/src/model/batch_internal_rating_summaries200_response.dart';
+import 'package:pguard_rating_api/src/model/batch_rating_summaries_request.dart';
 import 'package:pguard_rating_api/src/model/error_body.dart';
 import 'package:pguard_rating_api/src/model/get_internal_rating_summary200_response.dart';
 import 'package:pguard_rating_api/src/model/internal_export_user200_response.dart';
@@ -23,6 +25,107 @@ class AdminApi {
   final Serializers _serializers;
 
   const AdminApi(this._dio, this._serializers);
+
+  /// Batch guard rating summaries (service-to-service)
+  /// BATCH variant of &#x60;GET /internal/guards/{id}/rating-summary&#x60;, so booking&#39;s &#x60;/available-guards&#x60; discovery collapses its per-guard N+1 into ONE call: one service-JWT mint + one HTTP round-trip + one grouped DB query (&#x60;AVG&#x60; + &#x60;COUNT&#x60; … &#x60;WHERE guard_id &#x3D; ANY($ids) AND is_visible &#x3D; true GROUP BY guard_id&#x60;, served by &#x60;idx_guard_reviews_visible&#x60;) for ALL requested guards. Same **service-JWT** (&#x60;serviceAuth&#x60;) guard as the single endpoint; never reachable from the public edge.  Only guards with at least one VISIBLE review are returned — ids with no visible reviews are OMITTED (the caller defaults them to &#x60;{ average: null, count: 0 }&#x60;), so duplicate or unknown ids are harmless. 
+  ///
+  /// Parameters:
+  /// * [batchRatingSummariesRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [BatchInternalRatingSummaries200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<BatchInternalRatingSummaries200Response>> batchInternalRatingSummaries({ 
+    required BatchRatingSummariesRequest batchRatingSummariesRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/guards/rating-summaries';
+    final _options = Options(
+      method: r'POST',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(BatchRatingSummariesRequest);
+      _bodyData = _serializers.serialize(batchRatingSummariesRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    BatchInternalRatingSummaries200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(BatchInternalRatingSummaries200Response),
+      ) as BatchInternalRatingSummaries200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<BatchInternalRatingSummaries200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
 
   /// Guard rating summary (service-to-service)
   /// Internal read for booking&#39;s available-guards discovery — AVG + COUNT of the guard&#39;s VISIBLE reviews. Guarded by a **service-JWT** (&#x60;ServiceCaller&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). Documented here for the contract; not part of the public/admin client. 

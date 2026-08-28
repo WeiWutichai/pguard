@@ -32,6 +32,16 @@ part 'providers.g.dart';
 @Riverpod(keepAlive: true)
 AppStore appStore(AppStoreRef ref) => SecureStore();
 
+/// The app-bootstrap future — the fresh-install secure-store WIPE (v1 risk 3.2), kicked by `main()`
+/// off the first-paint path (perf-review #7) and overridden onto the scope there. The session
+/// classifier ([Session]) awaits it BEFORE reading any stored token, so a reinstall can never
+/// classify a session from the prior owner's Keychain tokens — the ordering is preserved even though
+/// the wipe no longer blocks the splash. The DEFAULT (used in tests) is an already-complete no-op, so
+/// unit tests that drive the real [Session] neither hit `SharedPreferences` nor wipe their seeded
+/// store. A plain (non-codegen) provider so `main()` can `overrideWithValue` the concrete future.
+final appBootstrapProvider =
+    Provider<Future<void>>((ref) => Future<void>.value(), name: 'appBootstrap');
+
 /// Non-sensitive preferences (language). Overridden with an in-memory fake in tests.
 @Riverpod(keepAlive: true)
 PrefsStore prefsStore(PrefsStoreRef ref) => const SharedPrefsStore();

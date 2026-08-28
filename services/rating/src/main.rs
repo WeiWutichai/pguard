@@ -110,6 +110,10 @@ async fn main() -> anyhow::Result<()> {
             get(api::internal_rating_summary::<AppState>),
         )
         .route(
+            "/internal/guards/rating-summaries",
+            post(api::internal_rating_summaries::<AppState>),
+        )
+        .route(
             "/internal/users/{user_id}/export",
             get(api::internal_export_user::<AppState>),
         )

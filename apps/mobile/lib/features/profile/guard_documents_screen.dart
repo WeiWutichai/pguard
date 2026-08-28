@@ -8,6 +8,7 @@ import '../../core/media/document_picker.dart';
 import '../../core/network/api_exception.dart';
 import '../../core/providers.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_network_image.dart';
 import '../../widgets/pguard_header.dart';
 
 /// Post-approval guard documents: an approved, logged-in guard uploads photos of their six
@@ -34,11 +35,9 @@ class GuardDocumentsScreen extends ConsumerWidget {
         child: async.when(
           loading: () => const Center(child: CircularProgressIndicator()),
           error: (e, _) => PgErrorState(
-            title:
-                isThai ? 'โหลดเอกสารไม่สำเร็จ' : 'Could not load documents',
+            title: isThai ? 'โหลดเอกสารไม่สำเร็จ' : 'Could not load documents',
             message: e is ApiException ? e.message : null,
-            onRetry: () =>
-                ref.invalidate(guardDocumentsControllerProvider),
+            onRetry: () => ref.invalidate(guardDocumentsControllerProvider),
           ),
           data: (docs) => ListView(
             padding: const EdgeInsets.all(PgTokens.space4),
@@ -107,13 +106,14 @@ class GuardDocumentsScreen extends ConsumerWidget {
     if (source == null) return; // user dismissed the sheet
     final path = await ref.read(documentPickerProvider).pick(source);
     if (path == null) return; // user cancelled the picker
-    if (!context.mounted) return; // screen popped during the OS picker — don't touch ref
+    if (!context.mounted) {
+      return; // screen popped during the OS picker — don't touch ref
+    }
     final err = await ref
         .read(guardDocumentsControllerProvider.notifier)
         .upload(credential, path);
     if (err != null && context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(err)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     }
   }
 
@@ -140,8 +140,7 @@ class GuardDocumentsScreen extends ConsumerWidget {
         .read(guardDocumentsControllerProvider.notifier)
         .setExpiry(credential, picked);
     if (err != null && context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(err)));
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(err)));
     }
   }
 }
@@ -215,8 +214,7 @@ class _DocRow extends StatelessWidget {
         decoration: BoxDecoration(
           border: isLast
               ? null
-              : const Border(
-                  bottom: BorderSide(color: PgTokens.colorBorder)),
+              : const Border(bottom: BorderSide(color: PgTokens.colorBorder)),
         ),
         child: Row(
           children: [
@@ -372,15 +370,13 @@ class _Thumb extends StatelessWidget {
     );
     final url = downloadUrl;
     if (url == null) return check;
-    return ClipRRect(
+    return PgNetworkImage(
+      url: url,
+      width: _w,
+      height: _h,
       borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-      child: Image.network(
-        url,
-        width: _w,
-        height: _h,
-        fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => check,
-      ),
+      placeholder: check,
+      errorWidget: check,
     );
   }
 }

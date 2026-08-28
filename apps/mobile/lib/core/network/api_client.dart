@@ -250,8 +250,15 @@ class ApiClient implements PguardApi {
   // ---------- public API ----------
 
   @override
-  Future<dynamic> get(String path, {Map<String, dynamic>? query}) =>
-      _send(() => _dio.get<dynamic>(path, queryParameters: query));
+  Future<dynamic> get(String path, {Map<String, dynamic>? query}) => _send(
+        () => _dio.get<dynamic>(
+          path,
+          queryParameters: query,
+          // Interactive reads surface a failure fast (perf-review #13) — the shorter receive window
+          // applies to GETs only; uploads keep the client's default (longer) receiveTimeout.
+          options: Options(receiveTimeout: AppConfig.interactiveReceiveTimeout),
+        ),
+      );
 
   @override
   Future<dynamic> post(String path, {Object? data, String? bearer}) => _send(

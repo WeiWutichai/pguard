@@ -22,9 +22,14 @@ void main() {
     if (await tempImage.exists()) await tempImage.delete();
   });
 
-  ProviderContainer container(FakeApi api) {
+  // The controller resolves its guard id from the SESSION (perf-review #3 — no `/auth/me` round
+  // trip), so seed an authenticated guard `g1`.
+  ProviderContainer container(FakeApi api, {Override? session}) {
     final c = ProviderContainer(
-      overrides: [pguardApiProvider.overrideWithValue(api)],
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        session ?? seededGuardSession(),
+      ],
     );
     addTearDown(c.dispose);
     // The controller is autoDispose — without a listener it would be disposed between reads (and a
@@ -67,7 +72,8 @@ void main() {
     );
   }
 
-  test('build probes every credential once → uploaded reflects server truth, no polling',
+  test(
+      'build probes every credential once → uploaded reflects server truth, no polling',
       () async {
     final api = probeApi(
       stored: {
@@ -93,11 +99,14 @@ void main() {
         DateTime.parse('2027-06-16'));
     expect(state.slotFor(GuardCredential.securityLicense).expiry, isNull);
 
-    // /auth/me once + one probe per credential + ONE expiries list — never repeated (no polling).
-    expect(api.getCount, 2 + GuardCredential.values.length);
+    // One probe per credential + ONE expiries list — never repeated (no polling). The id comes from
+    // the session now, so there is NO `/auth/me` round-trip (perf-review #3).
+    expect(api.getCount, 1 + GuardCredential.values.length);
+    expect(api.calls, isNot(contains('GET /auth/me')));
   });
 
-  test('a probe error degrades that slot to not-uploaded (load never fails)', () async {
+  test('a probe error degrades that slot to not-uploaded (load never fails)',
+      () async {
     // /auth/me ok, but every probe 500s — the whole load still resolves with empty slots.
     final api = FakeApi(onGet: (path, query) async {
       if (path == '/auth/me') return {'user_id': 'g1'};
@@ -109,17 +118,16 @@ void main() {
     expect(state.slots.every((s) => !s.uploaded), isTrue);
   });
 
-  test('missing user_id in /auth/me → the load errors (no guessing the path)', () async {
-    final api = FakeApi(onGet: (path, _) async {
-      if (path == '/auth/me') return <String, dynamic>{};
-      return null;
-    });
-    final c = container(api);
-    await expectLater(
-        c.read(guardDocumentsControllerProvider.future), throwsA(isA<ApiException>()));
+  test('no session user → the load errors (no guessing the own-only path)',
+      () async {
+    final api = FakeApi(onGet: (path, _) async => null);
+    final c = container(api, session: seededNoUserSession());
+    await expectLater(c.read(guardDocumentsControllerProvider.future),
+        throwsA(isA<ApiException>()));
   });
 
-  test('upload posts multipart to the own-only path → slot flips uploaded with the new url',
+  test(
+      'upload posts multipart to the own-only path → slot flips uploaded with the new url',
       () async {
     final posted = <String>[];
     final api = probeApi(onPost: (path, data) async {
@@ -145,10 +153,13 @@ void main() {
     expect(slot.error, isNull);
   });
 
-  test('upload failure surfaces the server message on the slot, stays not-uploaded', () async {
+  test(
+      'upload failure surfaces the server message on the slot, stays not-uploaded',
+      () async {
     final api = probeApi(onPost: (_, __) async {
       throw const ApiException(
-          message: 'MIME mismatch: declared image/jpeg but content is image/png',
+          message:
+              'MIME mismatch: declared image/jpeg but content is image/png',
           statusCode: 400);
     });
     final c = container(api);
@@ -172,7 +183,8 @@ void main() {
     expect(slot.error, contains('JPEG'));
   });
 
-  test('a second upload of the same credential while one is in flight is ignored (no double POST)',
+  test(
+      'a second upload of the same credential while one is in flight is ignored (no double POST)',
       () async {
     var posts = 0;
     final gate = Completer<void>();
@@ -187,7 +199,8 @@ void main() {
 
     final first = notifier.upload(GuardCredential.idCard, tempImage.path);
     // busy is set synchronously before the first await, so the second call sees the latch.
-    final second = await notifier.upload(GuardCredential.idCard, tempImage.path);
+    final second =
+        await notifier.upload(GuardCredential.idCard, tempImage.path);
     expect(second, isNull); // ignored, not an error
 
     gate.complete();
@@ -195,7 +208,9 @@ void main() {
     expect(posts, 1);
   });
 
-  test('setExpiry PUTs a date-only payload to the own endpoint → slot expiry updates', () async {
+  test(
+      'setExpiry PUTs a date-only payload to the own endpoint → slot expiry updates',
+      () async {
     final puts = <String>[];
     Object? body;
     final api = probeApi(onPut: (path, data) async {
@@ -222,7 +237,8 @@ void main() {
     expect(slot.error, isNull);
   });
 
-  test('setExpiry is a no-op for the passbook (no expiry) — never PUTs', () async {
+  test('setExpiry is a no-op for the passbook (no expiry) — never PUTs',
+      () async {
     var puts = 0;
     final api = probeApi(onPut: (_, __) async {
       puts++;
@@ -240,7 +256,8 @@ void main() {
     expect(GuardCredential.passbookPhoto.hasExpiry, isFalse);
   });
 
-  test('GuardCredential wire keys match the profile.yaml document_type enum exactly (drift-lock)',
+  test(
+      'GuardCredential wire keys match the profile.yaml document_type enum exactly (drift-lock)',
       () {
     // The contract's `document_type` enum (contracts/openapi/profile.yaml). If the backend adds
     // or renames a type, this test fails until the mobile enum is updated.
@@ -255,9 +272,9 @@ void main() {
     expect(GuardCredential.values.map((c) => c.key).toSet(), contractTypes);
   });
 
-  test('detectImageMime sniffs the magic bytes (mirrors the server detector)', () {
-    expect(
-        GuardDocumentsController.detectImageMime([0xFF, 0xD8, 0xFF, 0xE0]),
+  test('detectImageMime sniffs the magic bytes (mirrors the server detector)',
+      () {
+    expect(GuardDocumentsController.detectImageMime([0xFF, 0xD8, 0xFF, 0xE0]),
         'image/jpeg');
     expect(
         GuardDocumentsController.detectImageMime(
@@ -268,14 +285,16 @@ void main() {
             [0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
         'image/webp');
     // A PNG/WebP whose bytes were re-encoded to JPEG is detected as JPEG (the whole point).
-    expect(
-        GuardDocumentsController.detectImageMime([0xFF, 0xD8, 0xFF]), 'image/jpeg');
+    expect(GuardDocumentsController.detectImageMime([0xFF, 0xD8, 0xFF]),
+        'image/jpeg');
     // Non-image / too-short → null (caller defaults to JPEG; the server then rejects).
-    expect(GuardDocumentsController.detectImageMime([0x00, 0x01, 0x02]), isNull);
+    expect(
+        GuardDocumentsController.detectImageMime([0x00, 0x01, 0x02]), isNull);
     expect(GuardDocumentsController.detectImageMime(const []), isNull);
   });
 
-  test('two concurrent uploads of different credentials both succeed (no slot clobber)',
+  test(
+      'two concurrent uploads of different credentials both succeed (no slot clobber)',
       () async {
     final gates = {
       'id_card': Completer<void>(),
@@ -303,14 +322,16 @@ void main() {
 
     final st = c.read(guardDocumentsControllerProvider).value!;
     expect(st.slotFor(GuardCredential.idCard).uploaded, isTrue);
-    expect(st.slotFor(GuardCredential.idCard).downloadUrl, 'https://s3/id_card.jpg');
+    expect(st.slotFor(GuardCredential.idCard).downloadUrl,
+        'https://s3/id_card.jpg');
     expect(st.slotFor(GuardCredential.driverLicense).uploaded, isTrue);
     expect(st.slotFor(GuardCredential.driverLicense).downloadUrl,
         'https://s3/driver_license.jpg');
     expect(st.uploadedCount, 2);
   });
 
-  test('a completion AFTER the screen is disposed is a no-op (no throw, no late write)',
+  test(
+      'a completion AFTER the screen is disposed is a no-op (no throw, no late write)',
       () async {
     final gate = Completer<void>();
     final api = probeApi(onPost: (_, __) async {
@@ -319,16 +340,18 @@ void main() {
     });
     // A standalone container we dispose by hand (no addTearDown double-dispose).
     final c = ProviderContainer(
-      overrides: [pguardApiProvider.overrideWithValue(api)],
+      overrides: [
+        pguardApiProvider.overrideWithValue(api),
+        seededGuardSession(),
+      ],
     );
     c.listen(guardDocumentsControllerProvider, (_, __) {});
     await c.read(guardDocumentsControllerProvider.future);
 
-    final f =
-        c.read(guardDocumentsControllerProvider.notifier).upload(
-              GuardCredential.idCard,
-              tempImage.path,
-            );
+    final f = c.read(guardDocumentsControllerProvider.notifier).upload(
+          GuardCredential.idCard,
+          tempImage.path,
+        );
     c.dispose(); // screen popped mid-upload
     gate.complete();
     // The gated POST resolves after dispose; the controller's _disposed guard must swallow the

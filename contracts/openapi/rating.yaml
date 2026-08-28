@@ -246,6 +246,44 @@ paths:
                       data: { $ref: '#/components/schemas/RatingSummary' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  /internal/guards/rating-summaries:
+    post:
+      tags: [Admin]
+      summary: Batch guard rating summaries (service-to-service)
+      description: |
+        BATCH variant of `GET /internal/guards/{id}/rating-summary`, so booking's
+        `/available-guards` discovery collapses its per-guard N+1 into ONE call: one service-JWT
+        mint + one HTTP round-trip + one grouped DB query
+        (`AVG` + `COUNT` … `WHERE guard_id = ANY($ids) AND is_visible = true GROUP BY guard_id`,
+        served by `idx_guard_reviews_visible`) for ALL requested guards. Same **service-JWT**
+        (`serviceAuth`) guard as the single endpoint; never reachable from the public edge.
+
+        Only guards with at least one VISIBLE review are returned — ids with no visible reviews
+        are OMITTED (the caller defaults them to `{ average: null, count: 0 }`), so duplicate or
+        unknown ids are harmless.
+      operationId: batchInternalRatingSummaries
+      security: [{ serviceAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/BatchRatingSummariesRequest' }
+      responses:
+        '200':
+          description: One entry per requested guard that has ≥1 visible review (others omitted)
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data:
+                        type: array
+                        items: { $ref: '#/components/schemas/RatingSummaryBatchItem' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
   /internal/users/{user_id}/export:
     get:
       tags: [Admin]
@@ -411,6 +449,31 @@ components:
         guard_id: { type: string, format: uuid }
         average: { type: string, nullable: true, example: "4.50" }
         count: { type: integer, format: int64 }
+
+    BatchRatingSummariesRequest:
+      type: object
+      required: [ids]
+      properties:
+        ids:
+          type: array
+          description: The guard ids to summarise. Duplicate/unknown ids are harmless (omitted).
+          items: { type: string, format: uuid }
+
+    RatingSummaryBatchItem:
+      type: object
+      description: |
+        One guard's summary in the batch response. Field names (`average_rating`, `review_count`)
+        match the shared discovery contract consumed by booking's discovery_client — deliberately
+        distinct from the single-endpoint `RatingSummary` (`average`, `count`).
+      required: [guard_id, review_count]
+      properties:
+        guard_id: { type: string, format: uuid }
+        average_rating:
+          type: string
+          nullable: true
+          description: AVG of visible overall ratings, rounded to 2 dp. Present in every returned row.
+          example: "4.50"
+        review_count: { type: integer, format: int64 }
 
     ApiResponseEnvelope:
       type: object

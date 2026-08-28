@@ -9,6 +9,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/chat.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 import 'chat_routes.dart';
 import 'widgets/conversation_tile.dart';
@@ -26,6 +27,7 @@ class ChatListScreen extends ConsumerWidget {
     final async = ref.watch(chatListControllerProvider(actingRole));
     final ctrl = ref.read(chatListControllerProvider(actingRole).notifier);
     final isThai = ref.watch(localeControllerProvider) == AppLocale.th;
+    final list = async.valueOrNull;
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
@@ -35,58 +37,66 @@ class ChatListScreen extends ConsumerWidget {
         subtitle: isThai ? 'พูดคุยกับคู่สนทนา' : 'Conversations',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): render the LAST-KNOWN conversations (`valueOrNull`)
+      // so a re-entry never blanks; a skeleton list on a genuine first load (not a full-screen
+      // spinner); the error state only with no data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai ? 'โหลดแชทไม่สำเร็จ' : 'Could not load chats',
-            message: e is ApiException ? e.message : null,
-            onRetry: ctrl.refresh,
-          ),
-          data: (list) => RefreshIndicator(
-            onRefresh: ctrl.refresh,
-            child: list.isEmpty
-                ? _EmptyBody(isThai: isThai)
-                : ListView.separated(
-                    itemCount: list.length,
-                    // Design: full-bleed 1px border under each row (no avatar indent).
-                    separatorBuilder: (_, __) =>
-                        const Divider(height: 1, color: PgTokens.colorBorder),
-                    itemBuilder: (_, i) {
-                      final c = list[i];
-                      return ConversationTile(
-                        conversation: c,
-                        isThai: isThai,
-                        onTap: () async {
-                          // Thread the booking + whether it is callable RIGHT NOW so the chat
-                          // header shows the call/VDO action on the home-entry path too (not only
-                          // when opened from the booking) — gated exactly like the calling service.
-                          final status =
-                              BookingStatus.tryParse(c.requestStatus);
-                          await context.push(
-                            ChatRoutes.conversation(
-                              c.id,
-                              acting: actingRole,
-                              readOnly: c.isReadOnly,
-                              bookingId: c.requestId,
-                              callable: c.participantId != null &&
-                                  status != null &&
-                                  BookingLifecycle.isCallable(status),
-                            ),
-                            extra: c.participantName,
+        child: list == null
+            ? (async.hasError
+                ? PgErrorState(
+                    title: isThai ? 'โหลดแชทไม่สำเร็จ' : 'Could not load chats',
+                    message: async.error is ApiException
+                        ? (async.error as ApiException).message
+                        : null,
+                    onRetry: ctrl.refresh,
+                  )
+                : const Padding(
+                    padding: EdgeInsets.all(PgTokens.space4),
+                    child: PgSkeletonList(count: 6, itemHeight: 68),
+                  ))
+            : RefreshIndicator(
+                onRefresh: ctrl.refresh,
+                child: list.isEmpty
+                    ? _EmptyBody(isThai: isThai)
+                    : ListView.separated(
+                        itemCount: list.length,
+                        // Design: full-bleed 1px border under each row (no avatar indent).
+                        separatorBuilder: (_, __) => const Divider(
+                            height: 1, color: PgTokens.colorBorder),
+                        itemBuilder: (_, i) {
+                          final c = list[i];
+                          return ConversationTile(
+                            conversation: c,
+                            isThai: isThai,
+                            onTap: () async {
+                              // Thread the booking + whether it is callable RIGHT NOW so the chat
+                              // header shows the call/VDO action on the home-entry path too (not only
+                              // when opened from the booking) — gated exactly like the calling service.
+                              final status =
+                                  BookingStatus.tryParse(c.requestStatus);
+                              await context.push(
+                                ChatRoutes.conversation(
+                                  c.id,
+                                  acting: actingRole,
+                                  readOnly: c.isReadOnly,
+                                  bookingId: c.requestId,
+                                  callable: c.participantId != null &&
+                                      status != null &&
+                                      BookingLifecycle.isCallable(status),
+                                ),
+                                extra: c.participantName,
+                              );
+                              // Opening the thread marks it read server-side (ChatController._markRead);
+                              // re-pull the list on return so this row's unread badge clears and the
+                              // entry-point/nav badge (also fed by this controller) refreshes. Same
+                              // gesture-driven pattern as ChatEntryButton — no polling.
+                              ref.invalidate(
+                                  chatListControllerProvider(actingRole));
+                            },
                           );
-                          // Opening the thread marks it read server-side (ChatController._markRead);
-                          // re-pull the list on return so this row's unread badge clears and the
-                          // entry-point/nav badge (also fed by this controller) refreshes. Same
-                          // gesture-driven pattern as ChatEntryButton — no polling.
-                          ref.invalidate(
-                              chatListControllerProvider(actingRole));
                         },
-                      );
-                    },
-                  ),
-          ),
-        ),
+                      ),
+              ),
       ),
     );
   }

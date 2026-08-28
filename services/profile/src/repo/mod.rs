@@ -2182,4 +2182,70 @@ mod db_tests {
             .execute(&pool)
             .await;
     }
+
+    /// Ordering contract for the internal discovery catalog — the exact order the composite index
+    /// `idx_guard_profiles_approved_catalog` (migration 0014) serves WITHOUT a sort step: approved
+    /// guards come back newest-first by `created_at DESC`, with `user_id DESC` as the deterministic
+    /// tiebreak when timestamps tie (the stable order `list_approved_guards` promises). Seeds three
+    /// approved rows — two sharing one `created_at` (to exercise the user_id tiebreak) and a third,
+    /// strictly-newer row — with FUTURE timestamps so the seeded set is the catalog's top-3
+    /// regardless of any other approved rows in the DB, then asserts the returned relative order.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn internal_catalog_orders_by_created_at_then_user_id_desc() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // Two ids sharing one timestamp (tiebreak by user_id DESC) + a third, strictly-newer id.
+        let mut tie = [Uuid::new_v4(), Uuid::new_v4()];
+        tie.sort(); // tie[1] > tie[0]; ORDER BY user_id DESC must place tie[1] before tie[0].
+        let newer = Uuid::new_v4();
+
+        // Seed approved rows with EXPLICIT, FUTURE created_at so the tie is deterministic AND the
+        // seeded set sorts to the very top (immune to whatever else is in the test DB, and inside
+        // the LIMIT). Direct INSERT with the schema-qualified enum cast (repo write convention).
+        let older_ts = Utc::now() + chrono::Duration::hours(1);
+        let newer_ts = Utc::now() + chrono::Duration::hours(2);
+        for (uid, ts) in [(tie[0], older_ts), (tie[1], older_ts), (newer, newer_ts)] {
+            sqlx::query(
+                "INSERT INTO profile.guard_profiles (user_id, approval_status, created_at) \
+                 VALUES ($1, 'approved'::profile.approval_status, $2)",
+            )
+            .bind(uid)
+            .bind(ts)
+            .execute(&pool)
+            .await
+            .expect("seed approved guard");
+        }
+
+        let catalog = list_approved_guards(&pool, 200).await.expect("catalog");
+        // Project to just our seeded ids, PRESERVING the catalog's returned order.
+        let seen: Vec<Uuid> = catalog
+            .iter()
+            .map(|g| g.user_id)
+            .filter(|id| *id == tie[0] || *id == tie[1] || *id == newer)
+            .collect();
+
+        // Expected: newest first (`newer`), then the tie resolved by user_id DESC (tie[1] before
+        // tie[0]) — created_at DESC, user_id DESC, exactly the 0014 index order.
+        assert_eq!(
+            seen,
+            vec![newer, tie[1], tie[0]],
+            "catalog is created_at DESC then user_id DESC (the 0014 index order)"
+        );
+
+        for uid in [tie[0], tie[1], newer] {
+            let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+                .bind(uid)
+                .execute(&pool)
+                .await;
+        }
+    }
 }

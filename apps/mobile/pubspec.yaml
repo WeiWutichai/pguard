@@ -24,6 +24,12 @@ dependencies:
   dio: ^5.5.0
   web_socket_channel: ^3.0.0
 
+  # Disk-caching, downsizing network images (presigned avatars / chat thumbs / check-in photos).
+  # Replaces raw Image.network so re-entry is a cache hit and a multi-megapixel photo is decoded at
+  # the shown size, not full-res on the raster thread (perf-review 2026-08 #6). See
+  # lib/widgets/pg_network_image.dart (PgNetworkImage + pgCachedImageProvider + a stable cache key).
+  cached_network_image: ^3.4.1
+
   # Storage — secure storage for tokens + PIN hash; prefs for non-sensitive only.
   flutter_secure_storage: ^9.2.2
   shared_preferences: ^2.2.3

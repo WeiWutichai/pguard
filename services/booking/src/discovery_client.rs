@@ -14,7 +14,7 @@ use chrono::{DateTime, Utc};
 
 use jsonwebtoken::EncodingKey;
 use rust_decimal::Decimal;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use shared::error::AppError;
@@ -46,9 +46,10 @@ pub struct CatalogGuard {
     pub documents: Option<crate::models::GuardDocuments>,
 }
 
-/// A guard's rating summary from rating's `/internal/guards/{id}/rating-summary`. `Default`
-/// (no reviews) is the best-effort fallback when the rating service is unreachable for a
-/// guard, so one slow/down dependency never blanks the whole discovery list.
+/// A guard's rating summary, keyed by guard id in the map rating's batch endpoint returns.
+/// `Default` (no reviews) is the best-effort fallback for a guard ABSENT from the batch result
+/// (no visible reviews) OR when the whole batch call fails, so one slow/down dependency never
+/// blanks the discovery list.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct GuardRatingSummary {
     pub average: Option<Decimal>,
@@ -78,6 +79,27 @@ struct Envelope<T> {
     data: Option<T>,
 }
 
+/// Request body for rating's BATCH endpoint (`POST /internal/guards/rating-summaries`): the set
+/// of guard ids to summarize in ONE grouped query (replaces the per-guard N+1). Borrows the slice
+/// so no extra allocation is needed to serialize it.
+#[derive(Debug, Serialize)]
+struct BatchRatingRequest<'a> {
+    ids: &'a [Uuid],
+}
+
+/// One row of rating's batch response — `{ guard_id, average_rating, review_count }` (the shared
+/// contract). Only guards WITH a visible review are returned; a guard absent from the response has
+/// no reviews (the caller defaults it to no-rating). Mapped onto the internal [`GuardRatingSummary`]
+/// keyed by `guard_id`.
+#[derive(Debug, Deserialize)]
+struct BatchRatingSummary {
+    guard_id: Uuid,
+    #[serde(default)]
+    average_rating: Option<Decimal>,
+    #[serde(default)]
+    review_count: i64,
+}
+
 // ----- Ports -----
 
 /// Read the approved guard catalog (profile).
@@ -86,10 +108,18 @@ pub trait GuardCatalog: Send + Sync {
     async fn list_approved_guards(&self) -> Result<Vec<CatalogGuard>, AppError>;
 }
 
-/// Read one guard's rating summary (rating).
+/// Batch-read rating summaries for many guards in ONE call (rating's
+/// `POST /internal/guards/rating-summaries`) — replacing the per-guard N+1 (N HTTP round-trips + N
+/// service-JWT mints → 1 of each). Guards with no visible reviews are simply ABSENT from the
+/// returned map, so the caller defaults them to no-rating; a present-but-empty map is a legitimate
+/// "nobody has reviews yet". An `Err` is the best-effort signal: the discovery handler logs it and
+/// renders the list with every guard defaulting to no-rating rather than blanking on a rating hiccup.
 #[allow(async_fn_in_trait)]
 pub trait RatingReader: Send + Sync {
-    async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError>;
+    async fn guard_summaries_batch(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, GuardRatingSummary>, AppError>;
 }
 
 /// Read the guards currently LIVE per presence (the "พร้อมรับงาน" filter), each mapped to its
@@ -198,34 +228,53 @@ impl GuardCatalog for HttpDiscoveryClient {
 }
 
 impl RatingReader for HttpDiscoveryClient {
-    async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError> {
+    async fn guard_summaries_batch(
+        &self,
+        ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, GuardRatingSummary>, AppError> {
+        // Nothing to look up — skip the round-trip entirely (an empty batch is a no-op, and
+        // `= ANY('{}')` on rating's side returns nothing anyway).
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
         let token = self.mint()?;
-        let url = format!(
-            "{}/internal/guards/{guard_id}/rating-summary",
-            self.rating_url
-        );
+        let url = format!("{}/internal/guards/rating-summaries", self.rating_url);
         let resp = self
             .http
-            .get(&url)
+            .post(&url)
             .headers(observability::trace_headers())
             .header("Authorization", format!("Bearer {token}"))
+            .json(&BatchRatingRequest { ids })
             .send()
             .await
             .map_err(|e| {
-                tracing::warn!("rating summary transport error: {e}");
-                AppError::Internal("Rating summary lookup failed".to_string())
+                tracing::warn!("rating batch transport error: {e}");
+                AppError::Internal("Rating summaries lookup failed".to_string())
             })?;
         if !resp.status().is_success() {
-            tracing::warn!("rating summary returned {}", resp.status());
+            tracing::warn!("rating batch returned {}", resp.status());
             return Err(AppError::Internal(
-                "Rating summary lookup failed".to_string(),
+                "Rating summaries lookup failed".to_string(),
             ));
         }
-        let envelope: Envelope<GuardRatingSummary> = resp.json().await.map_err(|e| {
-            tracing::warn!("rating summary decode error: {e}");
-            AppError::Internal("Rating summary lookup failed".to_string())
+        let envelope: Envelope<Vec<BatchRatingSummary>> = resp.json().await.map_err(|e| {
+            tracing::warn!("rating batch decode error: {e}");
+            AppError::Internal("Rating summaries lookup failed".to_string())
         })?;
-        Ok(envelope.data.unwrap_or_default())
+        Ok(envelope
+            .data
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                (
+                    s.guard_id,
+                    GuardRatingSummary {
+                        average: s.average_rating,
+                        count: s.review_count,
+                    },
+                )
+            })
+            .collect())
     }
 }
 

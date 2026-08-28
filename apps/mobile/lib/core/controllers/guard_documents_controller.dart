@@ -8,6 +8,7 @@ import '../network/api_client.dart';
 import '../network/api_exception.dart';
 import '../providers.dart';
 import 'locale_controller.dart';
+import 'session_controller.dart';
 
 part 'guard_documents_controller.g.dart';
 
@@ -129,9 +130,9 @@ class GuardDocumentsController extends _$GuardDocumentsController {
     ref.onDispose(() => _disposed = true);
     final api = ref.read(pguardApiProvider);
     // The upload/read endpoints are own-only: `{user_id}` must equal the caller. Resolve it from
-    // the session (mirror ProfileController's `/auth/me`) rather than trust any client-held value.
-    final me = await api.get('/auth/me') as Map<String, dynamic>;
-    final guardId = (me['user_id'] as String?) ?? (me['sub'] as String?) ?? '';
+    // the SESSION (`sessionProvider.user.userId`) — the same identity source the rest of the app
+    // uses — instead of a redundant `/auth/me` round-trip just to learn our own id (perf-review #3).
+    final guardId = ref.read(sessionProvider).user?.userId ?? '';
     if (guardId.isEmpty) {
       final isThai = ref.read(localeControllerProvider) == AppLocale.th;
       throw ApiException(
@@ -214,7 +215,8 @@ class GuardDocumentsController extends _$GuardDocumentsController {
       // file extension is NOT reliable (image_picker may re-encode to JPEG while keeping a .png/
       // .webp name), so declare from the ACTUAL magic bytes; default to JPEG and let the server
       // reject a non-image (surfaced as a friendly message below).
-      final mime = detectImageMime(await _readFileHead(filePath, 12)) ?? 'image/jpeg';
+      final mime =
+          detectImageMime(await _readFileHead(filePath, 12)) ?? 'image/jpeg';
       final form = FormData.fromMap({
         'document_type': credential.key,
         'file': await MultipartFile.fromFile(
@@ -223,8 +225,8 @@ class GuardDocumentsController extends _$GuardDocumentsController {
           contentType: DioMediaType.parse(mime),
         ),
       });
-      final data = await api
-          .post('/profile/guard/${current.guardId}/documents', data: form);
+      final data = await api.post('/profile/guard/${current.guardId}/documents',
+          data: form);
       final url =
           data is Map<String, dynamic> ? data['download_url'] as String? : null;
       _patchSlot(
@@ -290,7 +292,9 @@ class GuardDocumentsController extends _$GuardDocumentsController {
   static String _friendlyUploadError(ApiException e, bool isThai) {
     final m = e.message.toLowerCase();
     if (m.contains('too large') || e.statusCode == 413) {
-      return isThai ? 'ไฟล์ใหญ่เกินไป (สูงสุด 10MB)' : 'Image too large (max 10MB)';
+      return isThai
+          ? 'ไฟล์ใหญ่เกินไป (สูงสุด 10MB)'
+          : 'Image too large (max 10MB)';
     }
     if (m.contains('mime') ||
         m.contains('does not match') ||

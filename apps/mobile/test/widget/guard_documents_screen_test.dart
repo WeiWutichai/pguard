@@ -40,7 +40,8 @@ void main() {
   Future<void> driveUntil(WidgetTester tester, Finder until) async {
     for (var i = 0; i < 30 && until.evaluate().isEmpty; i++) {
       await tester.pump(const Duration(milliseconds: 50));
-      await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 10)));
+      await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)));
     }
     await tester.pump();
   }
@@ -50,11 +51,15 @@ void main() {
           pguardApiProvider.overrideWithValue(api),
           documentPickerProvider.overrideWithValue(picker),
           prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+          // The documents controller resolves the guard id from the SESSION now (perf-review #3),
+          // so seed an authenticated guard `g1` (matching the fake's own-only paths).
+          seededGuardSession(),
         ],
         child: const MaterialApp(home: GuardDocumentsScreen()),
       );
 
-  testWidgets('renders all six credential rows, each not-uploaded, with a 0-of-6 count',
+  testWidgets(
+      'renders all six credential rows, each not-uploaded, with a 0-of-6 count',
       (tester) async {
     await tester.pumpWidget(host(freshGuardApi(), FakeDocumentPicker()));
     await tester.pumpAndSettle();
@@ -75,7 +80,8 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('tapping a row → camera/gallery sheet → pick → upload flips the row to uploaded',
+  testWidgets(
+      'tapping a row → camera/gallery sheet → pick → upload flips the row to uploaded',
       (tester) async {
     final picker = FakeDocumentPicker(path: tempImage.path);
     await tester.pumpWidget(host(freshGuardApi(), picker));
@@ -93,13 +99,15 @@ void main() {
     // The picker was asked for a gallery image, and exactly one credential is now uploaded.
     expect(picker.picks, [DocSource.gallery]);
     expect(find.text('อัปโหลดแล้ว 1 จาก 6'), findsOneWidget);
-    expect(find.text('อัปโหลดแล้ว'), findsOneWidget); // the id_card row's status
+    expect(
+        find.text('อัปโหลดแล้ว'), findsOneWidget); // the id_card row's status
     expect(find.text('ยังไม่อัปโหลด'), findsNWidgets(5));
 
     await tester.pumpWidget(const SizedBox());
   });
 
-  testWidgets('a cancelled picker leaves everything not-uploaded (no upload fired)',
+  testWidgets(
+      'a cancelled picker leaves everything not-uploaded (no upload fired)',
       (tester) async {
     final picker = FakeDocumentPicker(path: null); // user cancels the OS picker
     await tester.pumpWidget(host(freshGuardApi(), picker));

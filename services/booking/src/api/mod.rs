@@ -10,8 +10,6 @@ use axum::Json;
 use chrono::{TimeDelta, Utc};
 use uuid::Uuid;
 
-use futures::StreamExt;
-
 use shared::auth::AuthUser;
 use shared::error::AppError;
 use shared::models::ApiResponse;
@@ -37,10 +35,6 @@ use crate::models::{
 };
 use crate::repo;
 use crate::state::{BookingDeps, BookingInternalDeps, DiscoveryDeps};
-
-/// Max concurrent rating-summary lookups when building the discovery list (bounds fan-out
-/// to the rating service while keeping the page snappy).
-const MAX_CONCURRENT_RATING: usize = 8;
 
 /// Upper bound on a single booking's duration (defensive against absurd values flowing
 /// into proration/payment).
@@ -1115,52 +1109,68 @@ pub async fn list_progress_reports<S: BookingDeps>(
 /// BUSY filter still applies. The happy path filters by both.
 ///
 /// Best-effort on ratings: a guard whose rating lookup fails still appears (with no average /
-/// zero count) — one slow dependency never blanks the whole list. Rating lookups run
-/// concurrently (bounded) and preserve the catalog's order.
+/// zero count) — one slow dependency never blanks the whole list. The ratings are read in ONE
+/// batch call (not a per-guard N+1), and the list preserves the catalog's order.
+///
+/// CONCURRENCY: the three independent upstream reads (profile catalog, local busy-guard DB, and
+/// presence) have no data dependency, so they run CONCURRENTLY via `tokio::join!` — their
+/// latencies overlap rather than add serially (perf-review #5).
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn available_guards<S: DiscoveryDeps>(
     State(state): State<S>,
     user: AuthUser,
     Query(window): Query<AvailableGuardsQuery>,
 ) -> Result<Json<ApiResponse<Vec<AvailableGuard>>>, AppError> {
-    let guards = state.guard_catalog().list_approved_guards().await?;
-    let rater = state.rating_reader();
-
-    // The set of guards to EXCLUDE. With a time window (customer already picked the slot), exclude
-    // only guards whose assignment OVERLAPS it — a guard busy 9–18 is still offered for 19–22. Without
-    // a window, fall back to excluding any-active-job guard (back-compat). FAIL-CLOSED: propagate the
-    // error — this is a local DB read, and silently offering a busy guard would double-book them.
-    let busy = match (window.scheduled_at, window.hours) {
-        (Some(start), Some(hours)) if hours > 0 => {
-            state
-                .busy_guards()
-                .busy_guard_ids_overlapping(start, hours)
-                .await?
-        }
-        _ => state.busy_guards().busy_guard_ids().await?,
-    };
-
-    // Consult presence for who is currently LIVE and WHERE. `None` => FAIL-OPEN: presence was
-    // unreachable, so we do NOT apply the online filter (showing the approved list beats blocking
-    // all bookings) — and, with no positions, the nearest-first sort is skipped too. The value is
-    // a map guard_id → live (lat, lng): membership drives the online filter, the coords the sort.
-    let online: Option<std::collections::HashMap<Uuid, (f64, f64)>> =
-        match state.presence_reader().online_guard_locations().await {
-            Ok(map) => Some(map),
-            Err(e) => {
-                tracing::warn!(
-                "presence online-guards lookup failed: {e}; FAIL-OPEN (skipping the online filter)"
-            );
-                None
-            }
-        };
-
-    // The MEETUP point (the booking's site pin), validated both-or-neither + in range. When
-    // present, the surviving guards are sorted nearest-to-meetup by their live positions (C2).
+    // The MEETUP point (the booking's site pin), validated both-or-neither + in range. Done FIRST
+    // so a malformed coord pair is a fast 400 BEFORE any upstream call. When present, the surviving
+    // guards are sorted nearest-to-meetup by their live positions (C2).
     let meetup = progress::validate_coords(window.lat, window.lng)?;
 
+    // The three upstream reads are INDEPENDENT (no data flows between them), so run them
+    // CONCURRENTLY instead of three back-to-back round-trips (perf-review #5). `tokio::join!` polls
+    // all three on this task, overlapping their latencies. Their error policies DIFFER and are
+    // applied AFTER the join, preserving the exact fail-open/fail-closed semantics:
+    //   - catalog (profile HTTP)  — FAIL-CLOSED: propagate (no catalog → nothing to offer).
+    //   - busy (booking's OWN DB) — FAIL-CLOSED: propagate. With a time window (customer already
+    //     picked the slot), exclude only guards whose assignment OVERLAPS it (a guard busy 9–18 is
+    //     still offered for 19–22); without a window, exclude any active-job guard (back-compat).
+    //     Silently offering a busy guard would double-book them.
+    //   - presence (presence HTTP) — FAIL-OPEN: its Err is mapped to `None` after the join, so a
+    //     presence hiccup skips the online filter/sort rather than blanking discovery.
+    let catalog_fut = state.guard_catalog().list_approved_guards();
+    let busy_fut = async {
+        match (window.scheduled_at, window.hours) {
+            (Some(start), Some(hours)) if hours > 0 => {
+                state
+                    .busy_guards()
+                    .busy_guard_ids_overlapping(start, hours)
+                    .await
+            }
+            _ => state.busy_guards().busy_guard_ids().await,
+        }
+    };
+    let presence_fut = state.presence_reader().online_guard_locations();
+    let (guards_res, busy_res, presence_res) = tokio::join!(catalog_fut, busy_fut, presence_fut);
+
+    let guards = guards_res?; // FAIL-CLOSED on catalog
+    let busy = busy_res?; // FAIL-CLOSED on busy
+
+    // `None` => FAIL-OPEN: presence was unreachable, so we do NOT apply the online filter (showing
+    // the approved list beats blocking all bookings) — and, with no positions, the nearest-first
+    // sort is skipped too. The value is a map guard_id → live (lat, lng): membership drives the
+    // online filter, the coords the sort.
+    let online: Option<std::collections::HashMap<Uuid, (f64, f64)>> = match presence_res {
+        Ok(map) => Some(map),
+        Err(e) => {
+            tracing::warn!(
+                "presence online-guards lookup failed: {e}; FAIL-OPEN (skipping the online filter)"
+            );
+            None
+        }
+    };
+
     // Drop BUSY guards always; drop offline guards when presence answered (keep all online on
-    // fail-open). Filtering BEFORE the rating fan-out also means we never spend rating lookups on
+    // fail-open). Filtering BEFORE the rating lookup also means we never spend a rating slot on
     // guards we're about to hide.
     let filtered: Vec<_> = guards
         .into_iter()
@@ -1195,19 +1205,33 @@ pub async fn available_guards<S: DiscoveryDeps>(
         });
     }
 
-    // Each entry carries whether its rating lookup fell back (best-effort), so we can emit a
-    // single aggregate signal for a degraded list rather than only per-guard warns.
-    let merged: Vec<(AvailableGuard, bool)> = futures::stream::iter(prepared)
-        .map(|(g, distance_m)| async move {
-            let (summary, ok) = match rater.guard_summary(g.user_id).await {
-                Ok(s) => (s, true),
-                Err(e) => {
-                    // Best-effort: a per-guard rating failure must not fail the whole list.
-                    tracing::warn!(guard_id = %g.user_id, "rating summary failed: {e}; defaulting");
-                    (Default::default(), false)
-                }
-            };
-            let guard = AvailableGuard {
+    // Ratings in ONE batch call (perf-review #4): collapse the former per-guard N+1 (N HTTP
+    // round-trips + N service-JWT mints, run in bounded waves) into a SINGLE
+    // `POST /internal/guards/rating-summaries` over the surviving ids. Best-effort: if the WHOLE
+    // batch call fails, every guard defaults to no-rating so one slow/down rating service degrades
+    // ratings but never blanks the list (the same guarantee as the old per-guard best-effort, now
+    // at batch granularity). A guard with no visible reviews is simply ABSENT from the map → the
+    // same no-rating default.
+    let ids: Vec<Uuid> = prepared.iter().map(|(g, _)| g.user_id).collect();
+    let ratings = match state.rating_reader().guard_summaries_batch(&ids).await {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                total = ids.len(),
+                "discovery returning with degraded ratings (rating batch unreachable): {e}"
+            );
+            std::collections::HashMap::new()
+        }
+    };
+
+    // Map the batch result onto the ordered guard list (order already fixed above: catalog order,
+    // or nearest-first when a meetup was given). A guard missing from `ratings` defaults to
+    // no-rating (None average / 0 count) via `unwrap_or_default`.
+    let items: Vec<AvailableGuard> = prepared
+        .into_iter()
+        .map(|(g, distance_m)| {
+            let summary = ratings.get(&g.user_id).cloned().unwrap_or_default();
+            AvailableGuard {
                 guard_id: g.user_id,
                 display_name: g.full_name,
                 avatar_url: g.avatar_url,
@@ -1217,22 +1241,9 @@ pub async fn available_guards<S: DiscoveryDeps>(
                 has_documents: g.has_documents,
                 documents: g.documents,
                 distance_m,
-            };
-            (guard, !ok)
+            }
         })
-        .buffered(MAX_CONCURRENT_RATING)
-        .collect()
-        .await;
-
-    let rating_failures = merged.iter().filter(|(_, failed)| *failed).count();
-    if rating_failures > 0 {
-        tracing::warn!(
-            rating_failures,
-            total = merged.len(),
-            "discovery returned with degraded ratings (rating service unreachable for some guards)"
-        );
-    }
-    let items: Vec<AvailableGuard> = merged.into_iter().map(|(g, _)| g).collect();
+        .collect();
 
     Ok(Json(ApiResponse::success(items)))
 }
@@ -3249,22 +3260,51 @@ mod tests {
         }
     }
 
-    /// Rating stub — returns avg 4.50/count 2 for `good`, and ERRORS for any other guard so
-    /// the handler's best-effort default (None/0) path is exercised.
+    /// Rating stub for the BATCH endpoint. `summaries` holds the guards that HAVE a rating (avg
+    /// 4.50/count 2 via [`StubRater::good`]); any id NOT present is ABSENT from the returned map,
+    /// so the handler defaults it to no-rating. `down=true` makes the whole batch call ERROR
+    /// (exercising the handler's best-effort fallback: the list still renders, every guard
+    /// defaulting to no-rating). `calls` records each batch invocation's id list, so a test can
+    /// assert exactly ONE call is made with the full surviving-guard set (the N+1 → 1 fix).
     #[derive(Clone)]
     struct StubRater {
-        good: Uuid,
+        summaries: HashMap<Uuid, GuardRatingSummary>,
+        down: bool,
+        calls: Arc<std::sync::Mutex<Vec<Vec<Uuid>>>>,
     }
-    impl RatingReader for StubRater {
-        async fn guard_summary(&self, guard_id: Uuid) -> Result<GuardRatingSummary, AppError> {
-            if guard_id == self.good {
-                Ok(GuardRatingSummary {
+    impl StubRater {
+        /// The common case: exactly one guard `good` has a rating (avg 4.50/count 2); everyone
+        /// else is absent from the batch result → defaulted to no-rating by the handler.
+        fn good(good: Uuid) -> Self {
+            let mut summaries = HashMap::new();
+            summaries.insert(
+                good,
+                GuardRatingSummary {
                     average: Some("4.50".parse().unwrap()),
                     count: 2,
-                })
-            } else {
-                Err(AppError::Internal("rating unreachable".to_string()))
+                },
+            );
+            Self {
+                summaries,
+                down: false,
+                calls: Arc::new(std::sync::Mutex::new(Vec::new())),
             }
+        }
+    }
+    impl RatingReader for StubRater {
+        async fn guard_summaries_batch(
+            &self,
+            ids: &[Uuid],
+        ) -> Result<HashMap<Uuid, GuardRatingSummary>, AppError> {
+            self.calls.lock().unwrap().push(ids.to_vec());
+            if self.down {
+                return Err(AppError::Internal("rating batch unreachable".to_string()));
+            }
+            // Only guards WITH a summary are returned; the rest are absent (→ handler defaults).
+            Ok(ids
+                .iter()
+                .filter_map(|id| self.summaries.get(id).map(|s| (*id, s.clone())))
+                .collect())
         }
     }
 
@@ -3366,9 +3406,7 @@ mod tests {
     async fn available_guards_rejects_missing_token() {
         let app = discovery_router(
             StubCatalog { guards: vec![] },
-            StubRater {
-                good: Uuid::new_v4(),
-            },
+            StubRater::good(Uuid::new_v4()),
             StubPresence {
                 online: HashMap::new(),
                 down: false,
@@ -3395,7 +3433,7 @@ mod tests {
     #[tokio::test]
     async fn available_guards_merges_catalog_and_ratings_best_effort() {
         let good = Uuid::new_v4(); // has a rating
-        let bad = Uuid::new_v4(); // rating lookup errors → best-effort default
+        let bad = Uuid::new_v4(); // absent from the batch result → best-effort no-rating default
         let catalog = StubCatalog {
             guards: vec![
                 CatalogGuard {
@@ -3420,7 +3458,7 @@ mod tests {
         let online = live_at_origin([good, bad]);
         let Some(app) = discovery_router(
             catalog,
-            StubRater { good },
+            StubRater::good(good),
             StubPresence {
                 online,
                 down: false,
@@ -3465,7 +3503,7 @@ mod tests {
             serde_json::json!("https://minio.example/presigned-good")
         );
         assert_eq!(data[0]["has_documents"], serde_json::json!(true));
-        // The guard whose rating lookup failed still appears, with best-effort defaults.
+        // The guard absent from the batch rating result still appears, with best-effort defaults.
         assert_eq!(data[1]["guard_id"], serde_json::json!(bad));
         assert!(
             data[1]["average_rating"].is_null(),
@@ -3499,7 +3537,7 @@ mod tests {
         };
         let Some(app) = discovery_router(
             catalog,
-            StubRater { good: g },
+            StubRater::good(g),
             StubPresence {
                 online: live_at_origin([g]),
                 down: false,
@@ -3560,7 +3598,7 @@ mod tests {
         };
         let Some(app) = discovery_router(
             catalog,
-            StubRater { good: g },
+            StubRater::good(g),
             StubPresence {
                 online: live_at_origin([g]),
                 down: false,
@@ -3649,7 +3687,7 @@ mod tests {
         };
         let Some(ids) = discovery_guard_ids(
             catalog,
-            StubRater { good: online_guard },
+            StubRater::good(online_guard),
             StubPresence {
                 online: live_at_origin([online_guard]), // only the online guard is live
                 down: false,
@@ -3674,7 +3712,7 @@ mod tests {
         };
         let Some(ids) = discovery_guard_ids(
             catalog,
-            StubRater { good: a },
+            StubRater::good(a),
             StubPresence {
                 online: HashMap::new(), // would exclude EVERYONE if it were consulted...
                 down: true,             // ...but presence is down → fail-open → show all
@@ -3745,7 +3783,7 @@ mod tests {
         };
         let Some(ids) = discovery_guard_ids_with(
             catalog,
-            StubRater { good: free },
+            StubRater::good(free),
             // Both online — so the ONLY reason busy_guard is hidden is the active-assignment filter.
             StubPresence {
                 online: live_at_origin([free, busy_guard]),
@@ -3779,7 +3817,7 @@ mod tests {
         };
         let Some(app) = discovery_router_with(
             catalog,
-            StubRater { good: a },
+            StubRater::good(a),
             StubPresence {
                 online: live_at_origin([a]),
                 down: false,
@@ -3831,7 +3869,7 @@ mod tests {
             online: HashMap::from([(near, north_of_site(100.0)), (far, north_of_site(2000.0))]),
             down: false,
         };
-        let Some(app) = discovery_router(catalog, StubRater { good: near }, presence).await else {
+        let Some(app) = discovery_router(catalog, StubRater::good(near), presence).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
@@ -3896,7 +3934,7 @@ mod tests {
             online: HashMap::from([(a, north_of_site(2000.0)), (b, north_of_site(50.0))]),
             down: false,
         };
-        let Some(app) = discovery_router(catalog, StubRater { good: a }, presence).await else {
+        let Some(app) = discovery_router(catalog, StubRater::good(a), presence).await else {
             eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
             return;
         };
@@ -3928,6 +3966,160 @@ mod tests {
             data[0].get("distance_m").is_none(),
             "no meetup → distance_m omitted"
         );
+    }
+
+    /// perf-review #4: ratings are fetched in ONE batch call over ALL surviving ids (the N+1 → 1
+    /// fix), and the result is mapped back onto the ordered list — a guard WITH reviews shows its
+    /// summary, a guard with NO reviews (absent from the batch map) defaults to null/0. Asserts
+    /// EXACTLY ONE batch call was made carrying BOTH ids (never a per-guard fan-out).
+    #[tokio::test]
+    async fn available_guards_fetches_ratings_in_one_batch_call() {
+        let rated = Uuid::new_v4(); // has reviews
+        let unrated = Uuid::new_v4(); // no reviews → absent from the batch map → defaults to null/0
+        let catalog = StubCatalog {
+            guards: vec![
+                catalog_guard(rated, Some(4)),
+                catalog_guard(unrated, Some(1)),
+            ],
+        };
+        // Build the rater explicitly so we can inspect the recorded batch calls afterwards; the
+        // `calls` Arc is shared with the copy moved into the router (Arc clone), so the recorded
+        // invocation is visible here after the request.
+        let mut summaries = HashMap::new();
+        summaries.insert(
+            rated,
+            GuardRatingSummary {
+                average: Some("4.50".parse().unwrap()),
+                count: 2,
+            },
+        );
+        let rater = StubRater {
+            summaries,
+            down: false,
+            calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let calls = rater.calls.clone();
+        let presence = StubPresence {
+            online: live_at_origin([rated, unrated]),
+            down: false,
+        };
+        let Some(app) = discovery_router(catalog, rater, presence).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(data.len(), 2, "both online guards listed");
+        // Order preserved (catalog order): rated first, unrated second.
+        assert_eq!(data[0]["guard_id"], serde_json::json!(rated));
+        assert_eq!(data[0]["average_rating"], serde_json::json!("4.50"));
+        assert_eq!(data[0]["review_count"], serde_json::json!(2));
+        // The guard with no reviews (absent from the batch map) defaults to null/0.
+        assert_eq!(data[1]["guard_id"], serde_json::json!(unrated));
+        assert!(
+            data[1]["average_rating"].is_null(),
+            "no reviews → null average"
+        );
+        assert_eq!(data[1]["review_count"], serde_json::json!(0));
+        // EXACTLY ONE batch call, carrying BOTH surviving ids — the N+1 → 1 collapse.
+        let calls = calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "ratings fetched in a single batch call, not a per-guard fan-out"
+        );
+        let mut seen = calls[0].clone();
+        seen.sort();
+        let mut want = vec![rated, unrated];
+        want.sort();
+        assert_eq!(
+            seen, want,
+            "the one batch call carried every surviving guard id"
+        );
+    }
+
+    /// Best-effort at BATCH granularity: when the WHOLE rating batch call fails, every surviving
+    /// guard still appears (200, not 500) defaulting to no-rating — a rating outage degrades
+    /// ratings but never blanks the discovery list (the old per-guard best-effort guarantee,
+    /// preserved now that ratings are one call).
+    #[tokio::test]
+    async fn available_guards_degrades_when_rating_batch_down() {
+        let a = Uuid::new_v4();
+        let b = Uuid::new_v4();
+        let catalog = StubCatalog {
+            guards: vec![catalog_guard(a, Some(1)), catalog_guard(b, Some(2))],
+        };
+        let rater = StubRater {
+            summaries: HashMap::new(),
+            down: true, // the whole batch call errors
+            calls: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+        let presence = StubPresence {
+            online: live_at_origin([a, b]),
+            down: false,
+        };
+        let Some(app) = discovery_router(catalog, rater, presence).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/available-guards")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", user_token("customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "a rating batch outage must NOT fail the list (best-effort)"
+        );
+        let body = axum::body::to_bytes(res.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let data = v["data"].as_array().expect("data array");
+        assert_eq!(
+            data.len(),
+            2,
+            "both guards still listed despite the rating outage"
+        );
+        for row in data {
+            assert!(
+                row["average_rating"].is_null(),
+                "degraded → null average for every guard"
+            );
+            assert_eq!(
+                row["review_count"],
+                serde_json::json!(0),
+                "degraded → 0 count for every guard"
+            );
+        }
     }
 
     // ----- Catalog field validation (hermetic — no DB) -----

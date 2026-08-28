@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:pguard_design_tokens/pguard_design_tokens.dart';
 
+import '../../../widgets/pg_network_image.dart';
 import 'call_controls.dart';
 
 /// Pure presentational widgets for the call screen (no controller / network imports):
@@ -143,12 +144,11 @@ class _CallAvatarState extends State<CallAvatar>
       clipBehavior: Clip.antiAlias,
       child: (url == null || url.isEmpty)
           ? fallbackIcon
-          : Image.network(
-              url,
+          : PgNetworkImage(
+              url: url,
               width: widget.size,
               height: widget.size,
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => fallbackIcon,
+              errorWidget: fallbackIcon,
             ),
     );
     if (!widget.ripple) return circle;

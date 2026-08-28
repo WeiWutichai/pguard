@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 
 import '../models/available_guard.dart';
@@ -365,30 +367,57 @@ class BookingFlowController extends _$BookingFlowController {
   /// all does the list fall back to the server's default order.
   Future<bool> loadGuards() => _guard(() async {
         final start = state.scheduledAt;
-        var place = state.place;
+        final place = state.place;
+        // Fire discovery IMMEDIATELY with whatever meetup coordinate we already have (perf-review
+        // #8). When no pin was dropped this sends NO lat/lng → the server returns its DEFAULT order,
+        // so the list + "N guards available" count appear fast instead of the "Finding nearby
+        // guards" spinner sitting up to ~10s acquiring a device GPS fix BEFORE the request even
+        // fires. This is the busy/blocking path — the initial paint.
+        await _fetchGuards(start, place);
+        // No pin → resolve a device fix in the BACKGROUND (does not block the list already on
+        // screen), then persist it as the meetup coordinate and re-sort NEAREST-first via the quiet
+        // refresh. C2's nearest-first sort is preserved, just applied once GPS resolves rather than
+        // gating the first render on it. The created booking still carries this coordinate.
         if (place == null) {
-          final fix = await ref.read(locationServiceProvider).currentLocation();
-          if (fix != null) {
-            place = GeoPlace(point: fix, placeName: fix.label);
-            state = state.copyWith(place: place);
-          }
+          unawaited(_resolveLocationThenResort());
         }
-        final query = <String, dynamic>{
-          if (start != null) 'scheduled_at': start.toUtc().toIso8601String(),
-          if (start != null) 'hours': state.hours,
-          if (place != null) 'lat': place.point.lat,
-          if (place != null) 'lng': place.point.lng,
-        };
-        final data = await ref
-            .read(pguardApiProvider)
-            .get('/available-guards', query: query);
-        final list = (data as List)
-            .whereType<Map<String, dynamic>>()
-            .map(AvailableGuard.fromJson)
-            .toList();
-        state = state.copyWith(guards: list);
         return true;
       });
+
+  /// GET `/available-guards` with the given window + optional meetup coordinate → replace
+  /// [BookingFlowState.guards]. Shared by the blocking [loadGuards] first fetch and the background
+  /// re-sort so the query is built one way.
+  Future<void> _fetchGuards(DateTime? start, GeoPlace? place) async {
+    final query = <String, dynamic>{
+      if (start != null) 'scheduled_at': start.toUtc().toIso8601String(),
+      if (start != null) 'hours': state.hours,
+      if (place != null) 'lat': place.point.lat,
+      if (place != null) 'lng': place.point.lng,
+    };
+    final data = await ref
+        .read(pguardApiProvider)
+        .get('/available-guards', query: query);
+    final list = (data as List)
+        .whereType<Map<String, dynamic>>()
+        .map(AvailableGuard.fromJson)
+        .toList();
+    state = state.copyWith(guards: list);
+  }
+
+  /// Background: acquire a device GPS fix (non-blocking — [LocationService.currentLocation] returns
+  /// null without prompting when GPS/permission is unavailable), persist it as the meetup coordinate,
+  /// then quietly re-sort the already-shown list nearest-first. Best-effort: any failure leaves the
+  /// server-default-ordered list in place.
+  Future<void> _resolveLocationThenResort() async {
+    try {
+      final fix = await ref.read(locationServiceProvider).currentLocation();
+      if (fix == null) return;
+      state = state.copyWith(place: GeoPlace(point: fix, placeName: fix.label));
+      await refreshGuards();
+    } catch (_) {
+      // Keep the default-ordered list already on screen.
+    }
+  }
 
   /// QUIETLY re-pull `GET /v1/available-guards` — the discovery screen's pull-to-refresh, light
   /// periodic refresh, and app-resume refresh. Unlike [loadGuards] it does NOT flip [busy] or

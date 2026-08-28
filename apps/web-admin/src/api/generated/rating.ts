@@ -125,6 +125,35 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/guards/rating-summaries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Batch guard rating summaries (service-to-service)
+         * @description BATCH variant of `GET /internal/guards/{id}/rating-summary`, so booking's
+         *     `/available-guards` discovery collapses its per-guard N+1 into ONE call: one service-JWT
+         *     mint + one HTTP round-trip + one grouped DB query
+         *     (`AVG` + `COUNT` … `WHERE guard_id = ANY($ids) AND is_visible = true GROUP BY guard_id`,
+         *     served by `idx_guard_reviews_visible`) for ALL requested guards. Same **service-JWT**
+         *     (`serviceAuth`) guard as the single endpoint; never reachable from the public edge.
+         *
+         *     Only guards with at least one VISIBLE review are returned — ids with no visible reviews
+         *     are OMITTED (the caller defaults them to `{ average: null, count: 0 }`), so duplicate or
+         *     unknown ids are harmless.
+         */
+        post: operations["batchInternalRatingSummaries"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/users/{user_id}/export": {
         parameters: {
             query?: never;
@@ -241,6 +270,26 @@ export interface components {
             average?: string | null;
             /** Format: int64 */
             count: number;
+        };
+        BatchRatingSummariesRequest: {
+            /** @description The guard ids to summarise. Duplicate/unknown ids are harmless (omitted). */
+            ids: string[];
+        };
+        /**
+         * @description One guard's summary in the batch response. Field names (`average_rating`, `review_count`)
+         *     match the shared discovery contract consumed by booking's discovery_client — deliberately
+         *     distinct from the single-endpoint `RatingSummary` (`average`, `count`).
+         */
+        RatingSummaryBatchItem: {
+            /** Format: uuid */
+            guard_id: string;
+            /**
+             * @description AVG of visible overall ratings, rounded to 2 dp. Present in every returned row.
+             * @example 4.50
+             */
+            average_rating?: string | null;
+            /** Format: int64 */
+            review_count: number;
         };
         /** @description Standard success envelope; concrete `data` shape is composed per-endpoint. */
         ApiResponseEnvelope: {
@@ -489,6 +538,34 @@ export interface operations {
                     };
                 };
             };
+            401: components["responses"]["Unauthorized"];
+        };
+    };
+    batchInternalRatingSummaries: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BatchRatingSummariesRequest"];
+            };
+        };
+        responses: {
+            /** @description One entry per requested guard that has ≥1 visible review (others omitted) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["RatingSummaryBatchItem"][];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
         };
     };

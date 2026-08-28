@@ -36,7 +36,32 @@ class GuardJobsController extends _$GuardJobsController {
     // list and zeroes their "today" stats, while the session-based rating still renders. That was a
     // real on-device report — a guard who had just finished a job saw ฿0 / 0 jobs / no active work.
     final me = ref.read(sessionProvider).user?.userId;
-    final assignedData = await api.get('/bookings');
+    // The open-job discovery feed — best-effort: any fetch/parse failure collapses to an empty list
+    // so a discovery hiccup can never blank the guard's real assigned jobs. Self-contained so it
+    // never rejects (no dangling future) and can be awaited concurrently with the assigned feed.
+    Future<List<Booking>> openFeed() async {
+      try {
+        final openData = await api.get('/bookings/open');
+        return openData is List
+            ? openData
+                .whereType<Map<String, dynamic>>()
+                .map(Booking.fromJson)
+                .toList()
+            : <Booking>[];
+      } catch (_) {
+        // Discovery unavailable → show assigned jobs only (incoming list just stays empty).
+        return <Booking>[];
+      }
+    }
+
+    // Fire BOTH feeds CONCURRENTLY (perf-review #2): the assigned (`/bookings`) and open-discovery
+    // (`/bookings/open`) feeds are independent, so serializing them doubled the guard's primary
+    // screen wait to the SUM of two RTTs. Both start before the first await; the assigned feed is
+    // NOT caught, so its failure surfaces as the provider's error state (same fail path as before).
+    final assignedFuture = api.get('/bookings');
+    final openFuture = openFeed();
+    final assignedData = await assignedFuture;
+    final open = await openFuture;
     // Fail CLOSED: no resolvable subject → no assigned jobs (never fall through to the unfiltered
     // OR-list, which would leak the account's own customer hires into the guard's job list).
     final assigned = me == null
@@ -46,17 +71,6 @@ class GuardJobsController extends _$GuardJobsController {
             .map(Booking.fromJson)
             .where((b) => b.guardId == me)
             .toList();
-    // Open-job discovery — best-effort so a failure here leaves the assigned jobs intact.
-    var open = <Booking>[];
-    try {
-      final openData = await api.get('/bookings/open');
-      open = (openData as List)
-          .whereType<Map<String, dynamic>>()
-          .map(Booking.fromJson)
-          .toList();
-    } catch (_) {
-      // Discovery unavailable → show assigned jobs only (incoming list just stays empty).
-    }
     return [...open, ...assigned];
   }
 

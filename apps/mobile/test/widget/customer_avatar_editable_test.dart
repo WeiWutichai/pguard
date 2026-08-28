@@ -1,3 +1,4 @@
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -59,6 +60,9 @@ void main() {
         pguardApiProvider.overrideWithValue(api),
         appStoreProvider.overrideWithValue(InMemoryStore()..access = 't'),
         prefsStoreProvider.overrideWithValue(FakePrefsStore()),
+        // The avatar controller resolves its id from the SESSION now (perf-review #3), so seed an
+        // authenticated customer `c1` rather than relying on a storage-backed session load.
+        seededCustomerSession(),
       ],
       child: MaterialApp.router(routerConfig: router),
     ));
@@ -68,29 +72,25 @@ void main() {
     await tester.pump();
   }
 
-  testWidgets('customer with an avatar set → renders the photo (NetworkImage)',
+  testWidgets(
+      'customer with an avatar set → renders the photo (cached network image)',
       (tester) async {
     await pumpProfile(tester, customerApi(avatarUrl: 'https://s3/cust-c1.jpg'));
 
-    final images = tester
-        .widgetList<Image>(find.byType(Image))
-        .where((i) => i.image is NetworkImage)
-        .toList();
+    // The avatar now goes through the disk-caching PgNetworkImage (CachedNetworkImage) — assert the
+    // presigned URL is wired through it.
+    final images =
+        tester.widgetList<CachedNetworkImage>(find.byType(CachedNetworkImage));
     expect(images, isNotEmpty);
-    expect((images.first.image as NetworkImage).url, 'https://s3/cust-c1.jpg');
+    expect(images.first.imageUrl, 'https://s3/cust-c1.jpg');
   });
 
   testWidgets('customer with no avatar yet → initials fallback, no photo',
       (tester) async {
     await pumpProfile(tester, customerApi(avatarUrl: null));
 
-    // No network image (nothing uploaded) — the initials monogram stands in.
-    expect(
-      tester
-          .widgetList<Image>(find.byType(Image))
-          .where((i) => i.image is NetworkImage),
-      isEmpty,
-    );
+    // Nothing uploaded → no network image at all; the initials monogram stands in.
+    expect(find.byType(CachedNetworkImage), findsNothing);
     expect(find.text('นศ'), findsOneWidget); // initials of "นภา ศรี"
   });
 

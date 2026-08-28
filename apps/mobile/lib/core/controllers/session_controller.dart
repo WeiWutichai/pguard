@@ -77,6 +77,17 @@ class Session extends _$Session {
     // container was disposed mid-load — avoids the "use ref after dispose" footgun.
     final store = ref.read(appStoreProvider);
     final prefs = ref.read(prefsStoreProvider);
+    // Wait for the fresh-install token WIPE (main() kicked it, off the paint path) BEFORE reading any
+    // stored token below, so a reinstall can't classify a session from the prior owner's Keychain
+    // tokens (v1 risk 3.2). This orders classification after the wipe WITHOUT blocking the splash —
+    // the default provider is an already-complete no-op (tests neither hit SharedPreferences nor wipe
+    // their seeded store). Best-effort: a wipe failure must not strand startup on the splash.
+    try {
+      await ref.read(appBootstrapProvider);
+    } catch (_) {
+      // Wipe failed (wedged keystore) — proceed to classify; the catch below still fail-safes.
+    }
+    if (_disposed || state.status != SessionStatus.unknown) return;
     try {
       await _classify(store, prefs);
     } catch (_) {

@@ -18,8 +18,9 @@ use shared::service_jwt::ServiceCaller;
 use crate::booking_client::BookingReader;
 use crate::domain::{is_reviewable_status, validate_review};
 use crate::models::{
-    AdminReviewsQuery, AdminReviewsResponse, CreateReviewRequest, GuardRatingsResponse,
-    RatingSummaryResponse, ReviewResponse, SetVisibilityRequest, SubmitReviewResponse,
+    AdminReviewsQuery, AdminReviewsResponse, BatchRatingSummariesRequest, CreateReviewRequest,
+    GuardRatingsResponse, RatingSummaryBatchItem, RatingSummaryResponse, ReviewResponse,
+    SetVisibilityRequest, SubmitReviewResponse,
 };
 use crate::repo;
 use crate::state::{RatingDeps, RatingInternalDeps};
@@ -213,6 +214,21 @@ pub async fn internal_rating_summary<S: RatingInternalDeps>(
         average: summary.average,
         count: summary.count,
     })))
+}
+
+/// POST /internal/guards/rating-summaries — BATCH variant of [`internal_rating_summary`], so
+/// booking's `/available-guards` discovery collapses its per-guard N+1 into ONE call: one
+/// service-JWT mint + one HTTP round-trip + one grouped DB query for ALL online guards. Same
+/// [`ServiceCaller`] guard as the single endpoint. Guards with no visible reviews are OMITTED
+/// from the response (the caller defaults them), so unknown/duplicate ids are harmless.
+#[tracing::instrument(skip(state, req), fields(caller = %caller.service, ids = req.ids.len()))]
+pub async fn internal_rating_summaries<S: RatingInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Json(req): Json<BatchRatingSummariesRequest>,
+) -> Result<Json<ApiResponse<Vec<RatingSummaryBatchItem>>>, AppError> {
+    let summaries = repo::guard_summaries(state.db_read(), &req.ids).await?;
+    Ok(Json(ApiResponse::success(summaries)))
 }
 
 // ----- GET /internal/users/{user_id}/export (PDPA §19/§32 data export) -----
@@ -548,11 +564,17 @@ mod tests {
                 "/internal/guards/{id}/rating-summary",
                 get(internal_rating_summary::<InternalDeps>),
             )
+            .route(
+                "/internal/guards/rating-summaries",
+                post(internal_rating_summaries::<InternalDeps>),
+            )
             .with_state(deps)
     }
 
     const INTERNAL_URI: &str =
         "/internal/guards/00000000-0000-0000-0000-000000000001/rating-summary";
+
+    const INTERNAL_BATCH_URI: &str = "/internal/guards/rating-summaries";
 
     #[tokio::test]
     async fn internal_summary_rejects_missing_token() {
@@ -608,5 +630,65 @@ mod tests {
             StatusCode::UNAUTHORIZED,
             "valid service token must pass the guard"
         );
+    }
+
+    // ----- batch internal rating-summaries: same service-JWT guard as the single endpoint -----
+
+    #[tokio::test]
+    async fn internal_batch_rejects_missing_token() {
+        // The `ServiceCaller` guard runs before the body is read, so no token → 401 regardless of
+        // the request body.
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(INTERNAL_BATCH_URI)
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"ids":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_batch_rejects_invalid_token() {
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(INTERNAL_BATCH_URI)
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer not.a.valid.jwt")
+                    .body(Body::from(r#"{"ids":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn internal_batch_accepts_valid_service_token_empty_ids() {
+        // A valid service-JWT passes the guard; with an EMPTY id list the handler short-circuits
+        // before any DB access → a clean 200 (proves auth was accepted without touching the
+        // unreachable test DB).
+        use shared::service_jwt::encode_service_jwt;
+        let ek = EncodingKey::from_secret(SERVICE_SECRET.as_bytes());
+        let tok = encode_service_jwt("booking", &ek, 60).unwrap();
+        let res = internal_router()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(INTERNAL_BATCH_URI)
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {tok}"))
+                    .body(Body::from(r#"{"ids":[]}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }

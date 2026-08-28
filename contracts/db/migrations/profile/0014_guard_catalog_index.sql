@@ -1,0 +1,21 @@
+-- pguard profile-service — composite index for the internal discovery catalog read.
+--
+-- `list_approved_guards` (repo/mod.rs — booking's `GET /available-guards` critical path) runs
+--   WHERE approval_status = 'approved' ORDER BY created_at DESC, user_id DESC LIMIT 100.
+-- The only prior support was `idx_guard_profiles_approval_status ON (approval_status)`
+-- (0001_init.sql) which covers the equality filter but NOT the ordering, so Postgres read every
+-- approved row and SORTED it on each discovery load — cost that grows with the approved roster and
+-- feeds the already-hot discovery path (perf-review-2026-08 finding #17).
+--
+-- This composite index leads with the `approval_status` equality column, then `created_at DESC,
+-- user_id DESC` matching the query's ORDER BY exactly — so the approved-catalog read becomes an
+-- index-ordered scan (no sort step, and the LIMIT stops early on the index). The single-column
+-- `idx_guard_profiles_approval_status` is intentionally kept: the pending-count / turnaround
+-- queries filter on it without this ordering, so it is not made redundant here.
+--
+-- CONCURRENTLY (CLAUDE.md "Data"): profile.guard_profiles is populated in any live/staging DB, so
+-- the additive index never holds a write lock. CONCURRENTLY cannot run inside a txn block — the
+-- migration runner must apply this file with autocommit (no wrapping BEGIN/COMMIT). IF NOT EXISTS
+-- keeps re-runs idempotent.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_guard_profiles_approved_catalog
+    ON profile.guard_profiles (approval_status, created_at DESC, user_id DESC);

@@ -10,6 +10,7 @@ import '../../core/models/booking.dart';
 import '../../core/models/money.dart';
 import '../../core/network/api_exception.dart';
 import '../../widgets/pg_error_state.dart';
+import '../../widgets/pg_skeleton.dart';
 import '../../widgets/pguard_header.dart';
 
 /// Customer "การจอง" tab — the caller's bookings from `GET /v1/bookings` (customer = the
@@ -42,23 +43,46 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
 
     return Scaffold(
       backgroundColor: PgTokens.colorBg,
-      appBar: PGuardHeader(light: true, 
+      appBar: PGuardHeader(
+        light: true,
         title: isThai ? 'ประวัติการจ้าง' : 'Hirer history',
         subtitle: isThai ? 'รายการจองทั้งหมดของคุณ' : 'All your bookings',
         showBack: true,
       ),
+      // Stale-while-revalidate (perf-review #1): the last-known bookings via `valueOrNull` (shared
+      // with the dashboard — arriving from Home is an instant cache hit), the filter chips + a
+      // skeleton list on a genuine first load, and the error state only with no data.
       body: SafeArea(
-        child: async.when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => PgErrorState(
-            title: isThai
-                ? 'โหลดประวัติการจ้างไม่สำเร็จ'
-                : 'Could not load history',
-            message: e is ApiException ? e.message : null,
-            onRetry: () =>
-                ref.read(customerHomeControllerProvider.notifier).refresh(),
-          ),
-          data: (all) {
+        child: Builder(builder: (context) {
+          final all = async.valueOrNull;
+          if (all == null) {
+            if (async.hasError) {
+              return PgErrorState(
+                title: isThai
+                    ? 'โหลดประวัติการจ้างไม่สำเร็จ'
+                    : 'Could not load history',
+                message: async.error is ApiException
+                    ? (async.error as ApiException).message
+                    : null,
+                onRetry: () =>
+                    ref.read(customerHomeControllerProvider.notifier).refresh(),
+              );
+            }
+            return ListView(
+              children: [
+                _FilterChips(
+                  selected: _filter,
+                  isThai: isThai,
+                  onSelect: (f) => setState(() => _filter = f),
+                ),
+                const Padding(
+                  padding: EdgeInsets.all(PgTokens.space4),
+                  child: PgSkeletonList(count: 5, itemHeight: 64),
+                ),
+              ],
+            );
+          }
+          {
             final filtered = BookingsHistory.filter(all, _filter);
             return RefreshIndicator(
               onRefresh: () =>
@@ -92,8 +116,8 @@ class _BookingsListScreenState extends ConsumerState<BookingsListScreen> {
                 ],
               ),
             );
-          },
-        ),
+          }
+        }),
       ),
     );
   }
