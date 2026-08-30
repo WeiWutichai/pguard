@@ -177,6 +177,10 @@ class PgBottomNav extends StatelessWidget {
 class _NavTabItem extends StatelessWidget {
   const _NavTabItem({required this.tab});
 
+  /// Design tab icon box (22px). The badge Stack is sized to exactly this so the
+  /// Positioned badge anchors to the icon, not the wide nav-item cell.
+  static const double _iconSize = 22;
+
   final PgNavTab tab;
 
   @override
@@ -188,13 +192,20 @@ class _NavTabItem extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Stack tightly bounded to the 22px icon (via the SizedBox) so the badge's
+          // Positioned(top:-3, right:-7) offsets from the ICON's top-right corner —
+          // NOT the full Expanded cell, which pushed the badge floating far off (Issue 4).
+          // clipBehavior: Clip.none lets the badge overflow the icon box.
           Stack(
             clipBehavior: Clip.none,
             children: [
-              Icon(tab.icon, size: 22, color: color),
+              SizedBox(
+                width: _iconSize,
+                height: _iconSize,
+                child: Icon(tab.icon, size: _iconSize, color: color),
+              ),
               if (tab.badgeCount > 0)
-                // Design `.nbadge`: top -3, right edge 18px right of the item's centre
-                // (icon is 22 wide ⇒ right: -7 off the icon box).
+                // Design `.nbadge`: top -3, right edge 7px past the 22px icon box.
                 Positioned(
                   top: -3,
                   right: -7,

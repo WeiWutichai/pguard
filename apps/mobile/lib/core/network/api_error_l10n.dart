@@ -51,6 +51,12 @@ String localizeApiError(bool isThai, ApiException e) {
       return isThai
           ? 'งานนี้มีเจ้าหน้าที่รับไปแล้ว'
           : 'This job was already taken by another guard';
+    case 'BOOKING_EXPIRED':
+      // ISSUE 1: the guard tapped accept on a request whose scheduled window had already ended
+      // (raced the background sweep that cancels stale open jobs). It's gone — not the guard's fault.
+      return isThai
+          ? 'งานนี้หมดเวลาแล้ว'
+          : 'This job has expired — its scheduled time has already passed';
     case 'CHECK_IN_WINDOW_CLOSED':
       // G1: a check-in filed past the booked end + 30-min grace (an UPPER bound). Truthfully "the
       // window has closed" (too LATE) — never the old "not time yet" (too early) copy.

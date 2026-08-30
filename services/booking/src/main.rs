@@ -138,6 +138,44 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
+    // --- background lifecycle scheduler (time-driven state sweeps) ---
+    // Mirrors the outbox-relay spawn: a supervised, self-retrying loop, NOT fire-and-forget —
+    // each sweep drives the SAME row-locked `transition` state machine (its writes ride the
+    // transactional outbox), so a swept cancel/complete emits its events durably. Ticks every
+    // 60s and, per tick:
+    //   * ISSUE 1 — cancels OPEN requests whose scheduled window has ended (`system_expired`);
+    //   * ISSUE 2 — auto-completes `pending_completion` jobs whose confirm grace has elapsed.
+    // A DB hiccup on one tick is logged and the loop continues (never crashes booking); per-row
+    // failures are already swallowed inside the sweep fns.
+    {
+        let sweep_db = db.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(60));
+            // Skip missed ticks rather than bursting to catch up after a slow tick/pause.
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let now = chrono::Utc::now();
+                match repo::expire_stale_open_bookings(&sweep_db, now).await {
+                    Ok(n) if n > 0 => tracing::info!(count = n, "expired stale open bookings"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "expire-stale sweep failed this tick"),
+                }
+                match repo::auto_complete_overdue_pending(
+                    &sweep_db,
+                    now,
+                    domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
+                )
+                .await
+                {
+                    Ok(n) if n > 0 => tracing::info!(count = n, "auto-completed overdue pending"),
+                    Ok(_) => {}
+                    Err(e) => tracing::error!(error = %e, "auto-complete sweep failed this tick"),
+                }
+            }
+        });
+    }
+
     // --- HTTP router (resource paths; gateway adds the /v1 prefix) ---
     let app = Router::new()
         .route("/healthz", get(healthz))

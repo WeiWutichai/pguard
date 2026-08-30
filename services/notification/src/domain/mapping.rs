@@ -56,6 +56,9 @@ fn build_data(target_role: Option<&str>, event_type: &str, payload: &Value) -> V
 /// (`cancellation_reason` on the `booking.cancelled` / `booking.declined` payloads); this service
 /// renders Thai copy, so it owns its own rendering of the shared canonical table (customer:
 /// changed_plan | mistake | not_needed | other — guard: emergency | sick | cannot_reach | other).
+/// Plus the SYSTEM code `system_expired` (ISSUE 1): a booking the background scheduler cancelled
+/// because its scheduled window ended with no guard — so the customer's cancel notice reads
+/// "หมดเวลา" ("expired") rather than a change-of-mind reason or a bare code.
 ///
 /// Returns `None` for an unknown or unmapped code so callers can DEGRADE to the reason-less copy
 /// rather than pushing a raw `snake_case` code at a user.
@@ -68,6 +71,7 @@ fn reason_label_th(code: &str) -> Option<&'static str> {
         "sick" => Some("ป่วย"),
         "cannot_reach" => Some("เดินทางไปไม่ได้"),
         "other" => Some("อื่นๆ"),
+        "system_expired" => Some("หมดเวลา"),
         _ => None,
     }
 }
@@ -655,6 +659,7 @@ mod tests {
             ("sick", "ป่วย"),
             ("cannot_reach", "เดินทางไปไม่ได้"),
             ("other", "อื่นๆ"),
+            ("system_expired", "หมดเวลา"),
         ] {
             assert_eq!(reason_label_th(code), Some(label), "code {code}");
         }

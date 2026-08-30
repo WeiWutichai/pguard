@@ -16,7 +16,9 @@ use uuid::Uuid;
 use shared::error::AppError;
 use shared_events::EventEnvelope;
 
-use crate::domain::cancellation::{set_for_target, CANCEL_REASON_REQUIRED_CODE};
+use crate::domain::cancellation::{
+    set_for_target, CANCEL_REASON_REQUIRED_CODE, SYSTEM_EXPIRED_REASON,
+};
 use crate::domain::progress::GeoFilter;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{
@@ -724,6 +726,7 @@ pub async fn transition(
         customer_id,
         guard_id: existing_guard,
         hours,
+        scheduled_at,
         work_started_at,
         paid_at,
         target_guard_id,
@@ -783,6 +786,19 @@ pub async fn transition(
                         });
                     }
                 }
+            }
+            // EXPIRY gate (ISSUE 1). An OPEN request whose scheduled window has already ENDED must
+            // not be acceptable — its job time is in the past. Ordered AFTER the directed-offer
+            // check (a non-target still learns nothing about the job) but BEFORE JOB_TAKEN: an
+            // expired open booking has no guard yet, so expiry is the operative reason. The
+            // background sweep cancels these, but a guard racing the sweep is refused here too.
+            // Admin `/assign` overrides (support may place a guard on a past-window booking).
+            if !is_admin && crate::domain::scheduling::is_expired(scheduled_at, hours, Utc::now()) {
+                tx.rollback().await?;
+                return Err(AppError::ConflictCode {
+                    code: crate::domain::scheduling::BOOKING_EXPIRED_CODE,
+                    message: "This booking's scheduled time has already passed".to_string(),
+                });
             }
             if existing_guard.is_some() {
                 tx.rollback().await?;
@@ -1380,6 +1396,10 @@ pub async fn list_open_bookings(
                   -- DIRECTED OFFER (C3): a guard sees an open booking (target NULL) OR one
                   -- targeted at THEM; a booking directed at another guard is invisible here.
                   AND (target_guard_id IS NULL OR target_guard_id = $1)
+                  -- EXPIRY (ISSUE 1): an open request whose scheduled window has ENDED is not
+                  -- offered — its job time is in the past. The sweep cancels these; this hides
+                  -- them the instant they lapse, before the next sweep tick.
+                  AND scheduled_at + make_interval(hours => hours) > now()
                   AND NOT EXISTS (
                       SELECT 1 FROM booking.guard_job_skips s
                       WHERE s.booking_id = b.id AND s.guard_id = $1
@@ -1422,6 +1442,8 @@ pub async fn list_open_bookings(
                       AND lat IS NOT NULL AND lng IS NOT NULL
                       -- DIRECTED OFFER (C3): open (target NULL) OR targeted at THIS guard ($6).
                       AND (target_guard_id IS NULL OR target_guard_id = $6)
+                      -- EXPIRY (ISSUE 1): drop requests whose scheduled window has ended.
+                      AND scheduled_at + make_interval(hours => hours) > now()
                       AND NOT EXISTS (
                           SELECT 1 FROM booking.guard_job_skips s
                           WHERE s.booking_id = b.id AND s.guard_id = $6
@@ -1506,6 +1528,132 @@ pub async fn busy_guard_ids_overlapping(
     .fetch_all(db)
     .await?;
     Ok(rows.into_iter().map(|(g,)| g).collect())
+}
+
+/// System actor for the background sweeps. The sweep runs [`transition`] with `is_admin = true`,
+/// so the ownership/participation gates are bypassed and this value is never compared for authz —
+/// it stands in for "the scheduler, not a human" and keeps the `actor` slot non-optional.
+const SYSTEM_ACTOR: Uuid = Uuid::nil();
+
+/// ISSUE 1 sweep — cancel every OPEN request (`requested`, no guard) whose scheduled window has
+/// already ENDED, so a stale job neither lingers in a customer's list nor is raced onto by a guard.
+///
+/// The SQL predicate mirrors [`crate::domain::scheduling::is_expired`] exactly
+/// (`scheduled_at + hours < now`, strict) against the server's own `now` (`$1`), then each id is
+/// cancelled through [`transition`] — the SAME row-locked state machine + transactional-outbox path
+/// a human cancel takes — with a SYSTEM reason ([`SYSTEM_EXPIRED_REASON`]) and `is_admin = true`
+/// (so `charge_cancel_fee` is false: an expired open request was never paid and owes no fee). Only
+/// `requested`/unassigned rows are selected, so the sweep can never touch a job a guard has already
+/// accepted (that row is not `requested`). Per-row failures are logged and skipped — one booking a
+/// concurrent action just moved out from under the sweep must not abort the batch. Returns the
+/// number of bookings actually cancelled.
+pub async fn expire_stale_open_bookings(
+    db: &sqlx::PgPool,
+    now: DateTime<Utc>,
+) -> Result<usize, AppError> {
+    let ids: Vec<(Uuid,)> = sqlx::query_as(
+        "SELECT id FROM booking.bookings \
+         WHERE status = 'requested'::booking.booking_status \
+           AND guard_id IS NULL \
+           AND scheduled_at + make_interval(hours => hours) < $1",
+    )
+    .bind(now)
+    .fetch_all(db)
+    .await?;
+
+    let mut swept = 0usize;
+    for (id,) in ids {
+        let cancellation = Cancellation {
+            reason: SYSTEM_EXPIRED_REASON,
+            note: None,
+        };
+        match transition(
+            db,
+            id,
+            SYSTEM_ACTOR,
+            true, // is_admin — bypass owner checks; keeps charge_cancel_fee false
+            BookingStatus::Cancelled,
+            None,
+            Some(cancellation),
+            Uuid::new_v4(), // fresh correlation per swept booking
+        )
+        .await
+        {
+            Ok(_) => swept += 1,
+            // A concurrent transition (e.g. an admin/customer just cancelled, or the row moved
+            // state) makes this id no longer sweepable — log and carry on, never abort the batch.
+            Err(e) => {
+                tracing::warn!(booking_id = %id, error = %e, "expire sweep: skipping booking");
+            }
+        }
+    }
+    Ok(swept)
+}
+
+/// ISSUE 2 sweep — auto-COMPLETE every `pending_completion` booking whose customer-confirm window
+/// has elapsed, so a job the guard finished never hangs unconfirmed if the customer never taps
+/// approve.
+///
+/// The SQL predicate mirrors [`crate::domain::scheduling::auto_complete_due`]: due once `grace`
+/// (`$2` minutes) has passed the LATER of the scheduled end and the guard's completion request
+/// (`GREATEST(end, COALESCE(completion_requested_at, end)) + grace < now`). Each id is completed
+/// through [`transition`] with `is_admin = true` and NO cancellation — the completion path computes
+/// the worked duration from `completion_requested_at` (NOT `now`), so the auto-complete delay is
+/// never billed. The row lock re-checks legality, so a booking the customer just approved or
+/// rejected (bounced back to `arrived`) out from under the sweep is skipped, not force-completed.
+/// Returns the number of bookings actually completed.
+pub async fn auto_complete_overdue_pending(
+    db: &sqlx::PgPool,
+    now: DateTime<Utc>,
+    grace_minutes: i32,
+) -> Result<usize, AppError> {
+    // Fetch the (small) set of jobs awaiting customer confirm, then apply the EXACT boundary in
+    // Rust via the pure, unit-tested `auto_complete_due` — one source of truth for "is it due"
+    // shared with the accept-gate module — rather than duplicating the window arithmetic in SQL.
+    // (id, scheduled_at, hours, completion_requested_at) — the inputs `auto_complete_due` needs.
+    type PendingRow = (Uuid, DateTime<Utc>, i32, Option<DateTime<Utc>>);
+    let candidates: Vec<PendingRow> = sqlx::query_as(
+        "SELECT id, scheduled_at, hours, completion_requested_at FROM booking.bookings \
+         WHERE status = 'pending_completion'::booking.booking_status",
+    )
+    .fetch_all(db)
+    .await?;
+    let grace = chrono::Duration::minutes(i64::from(grace_minutes));
+    let ids: Vec<Uuid> = candidates
+        .into_iter()
+        .filter(|(_, scheduled_at, hours, completion_requested_at)| {
+            crate::domain::scheduling::auto_complete_due(
+                *scheduled_at,
+                *hours,
+                *completion_requested_at,
+                now,
+                grace,
+            )
+        })
+        .map(|(id, ..)| id)
+        .collect();
+
+    let mut completed = 0usize;
+    for id in ids {
+        match transition(
+            db,
+            id,
+            SYSTEM_ACTOR,
+            true, // is_admin — the scheduler completes on the customer's behalf
+            BookingStatus::Completed,
+            None,
+            None, // completion carries no cancellation reason
+            Uuid::new_v4(),
+        )
+        .await
+        {
+            Ok(_) => completed += 1,
+            Err(e) => {
+                tracing::warn!(booking_id = %id, error = %e, "auto-complete sweep: skipping booking");
+            }
+        }
+    }
+    Ok(completed)
 }
 
 /// Whether `guard_id` already holds an active assignment whose window OVERLAPS the target booking's
@@ -5428,5 +5576,274 @@ mod db_tests {
         cleanup_booking(&pool, before.id).await;
         cleanup_booking(&pool, after.id).await;
         cleanup_service(&pool, service.id).await;
+    }
+
+    /// ISSUE 1 sweep — `expire_stale_open_bookings` cancels an OPEN request whose scheduled window
+    /// has ALREADY ended (with the SYSTEM reason), while a still-FUTURE open request and an
+    /// already-ACCEPTED (assigned) booking whose window has passed are BOTH left untouched. The
+    /// swept cancel rides a `booking.cancelled` event whose `charge_cancel_fee` is FALSE — a lapsed
+    /// unpaid request owes no fee. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn expire_sweep_cancels_only_stale_open_requests() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // (a) OPEN request whose window ALREADY ended: scheduled 5h ago, 4h job → ended 1h ago.
+        let stale = create_booking(
+            &pool,
+            Uuid::new_v4(),
+            &booking_req("1 Stale Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create stale");
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() - interval '5 hours' WHERE id = $1",
+        )
+        .bind(stale.id)
+        .execute(&pool)
+        .await
+        .expect("backdate stale window");
+
+        // (b) OPEN request still in the FUTURE — must NOT be swept.
+        let fresh = create_booking(
+            &pool,
+            Uuid::new_v4(),
+            &booking_req("2 Fresh Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create fresh");
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() + interval '2 hours' WHERE id = $1",
+        )
+        .bind(fresh.id)
+        .execute(&pool)
+        .await
+        .expect("future window");
+
+        // (c) ACCEPTED (assigned) booking whose window has passed — NOT an open request; the sweep
+        //     selects only `requested`/unassigned rows, so this must remain accepted.
+        let guard_id = Uuid::new_v4();
+        let accepted = create_booking(
+            &pool,
+            Uuid::new_v4(),
+            &booking_req("3 Accepted Rd", 4, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("create accepted");
+        transition(
+            &pool,
+            accepted.id,
+            guard_id,
+            false,
+            BookingStatus::Accepted,
+            Some(guard_id),
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("accept");
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() - interval '5 hours' WHERE id = $1",
+        )
+        .bind(accepted.id)
+        .execute(&pool)
+        .await
+        .expect("backdate accepted window");
+
+        let swept = expire_stale_open_bookings(&pool, Utc::now())
+            .await
+            .expect("run expire sweep");
+        assert!(swept >= 1, "at least the one stale open request is swept");
+
+        // the stale one is now cancelled with the SYSTEM reason
+        let stale_now = get_booking(&pool, stale.id).await.expect("read stale");
+        assert_eq!(
+            stale_now.status, "cancelled",
+            "stale open request is cancelled"
+        );
+        assert_eq!(
+            stale_now.cancellation_reason.as_deref(),
+            Some(SYSTEM_EXPIRED_REASON),
+            "cancelled with the system-expired reason"
+        );
+
+        // the future request and the accepted booking are untouched
+        assert_eq!(
+            get_booking(&pool, fresh.id).await.unwrap().status,
+            "requested",
+            "future request untouched"
+        );
+        assert_eq!(
+            get_booking(&pool, accepted.id).await.unwrap().status,
+            "accepted",
+            "assigned booking untouched"
+        );
+
+        // the swept cancel enqueued a booking.cancelled event with charge_cancel_fee = false
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
+        )
+        .bind(stale.id.to_string())
+        .bind(topics::BOOKING_CANCELLED)
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one booking.cancelled event for the swept booking"
+        );
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(
+            envelope.payload["charge_cancel_fee"],
+            serde_json::json!(false),
+            "a system cancel never charges a fee"
+        );
+        assert_eq!(
+            envelope.payload["cancellation_reason"],
+            serde_json::json!(SYSTEM_EXPIRED_REASON)
+        );
+
+        cleanup_booking(&pool, stale.id).await;
+        cleanup_booking(&pool, fresh.id).await;
+        cleanup_booking(&pool, accepted.id).await;
+    }
+
+    /// ISSUE 2 sweep — `auto_complete_overdue_pending` auto-COMPLETES a `pending_completion` booking
+    /// whose confirm grace has elapsed, while one still inside its window is left pending. The
+    /// worked duration is measured from `completion_requested_at` (NOT the auto-complete moment), so
+    /// the grace delay is never billed. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn auto_complete_sweep_completes_only_overdue_pending() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // OVERDUE pending: drive to pending_completion, then backdate the clocks so start→request
+        // = 3h and the window+grace sit well in the past (scheduled 6h ago, 4h job → ended 2h ago).
+        let (overdue_id, _c1, g1) = started_booking(&pool).await;
+        create_progress_report(&pool, overdue_id, g1, &report(1), Uuid::new_v4())
+            .await
+            .expect("start check-in");
+        transition(
+            &pool,
+            overdue_id,
+            g1,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("request completion");
+        sqlx::query(
+            "UPDATE booking.bookings \
+             SET scheduled_at = now() - interval '6 hours', \
+                 work_started_at = now() - interval '5 hours', \
+                 completion_requested_at = now() - interval '2 hours' \
+             WHERE id = $1",
+        )
+        .bind(overdue_id)
+        .execute(&pool)
+        .await
+        .expect("backdate overdue clocks");
+
+        // NOT-YET-DUE pending: a fresh window (ends in the future) → still within the confirm window.
+        let (pending_id, _c2, g2) = started_booking(&pool).await;
+        create_progress_report(&pool, pending_id, g2, &report(1), Uuid::new_v4())
+            .await
+            .expect("start check-in");
+        transition(
+            &pool,
+            pending_id,
+            g2,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("request completion");
+
+        let completed = auto_complete_overdue_pending(
+            &pool,
+            Utc::now(),
+            crate::domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
+        )
+        .await
+        .expect("run auto-complete sweep");
+        assert!(
+            completed >= 1,
+            "the overdue pending booking is auto-completed"
+        );
+
+        let overdue_now = get_booking(&pool, overdue_id).await.expect("read overdue");
+        assert_eq!(
+            overdue_now.status, "completed",
+            "overdue pending is auto-completed"
+        );
+        let secs = overdue_now
+            .actual_seconds
+            .expect("actual_seconds stamped on auto-complete");
+        // start→request = 5h − 2h = 3h ≈ 10800s; the grace wait is NOT billed.
+        assert!(
+            (10600..=11000).contains(&secs),
+            "worked duration measured at the request (~3h / 10800s), got {secs}s"
+        );
+
+        // the not-yet-due one stays pending
+        assert_eq!(
+            get_booking(&pool, pending_id).await.unwrap().status,
+            "pending_completion",
+            "in-window pending is untouched"
+        );
+
+        // the auto-complete enqueued a booking.completed event
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
+        )
+        .bind(overdue_id.to_string())
+        .bind(topics::BOOKING_COMPLETED)
+        .fetch_all(&pool)
+        .await
+        .expect("query outbox");
+        assert_eq!(
+            rows.len(),
+            1,
+            "exactly one booking.completed event for the auto-completed booking"
+        );
+
+        cleanup_booking(&pool, overdue_id).await;
+        cleanup_booking(&pool, pending_id).await;
     }
 }

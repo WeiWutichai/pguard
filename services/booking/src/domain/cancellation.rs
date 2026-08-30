@@ -35,6 +35,14 @@ pub const MAX_CANCELLATION_NOTE_CHARS: usize = 500;
 /// The free-text escape hatch present in BOTH sets — the one code that REQUIRES a note.
 pub const REASON_OTHER: &str = "other";
 
+/// SYSTEM cancellation reason — a booking cancelled by the background scheduler, NOT by a human
+/// (ISSUE 1: an OPEN request whose scheduled window ended with no guard). It is deliberately in
+/// NEITHER endpoint's vocabulary (`validate_cancellation` never yields it) — only the sweep
+/// constructs a [`Cancellation`] with it directly. A system cancel never charges a fee (the sweep
+/// passes `is_admin = true`, so `charge_cancel_fee` is false) and its stable code lets the
+/// customer's cancellation notice localize to "หมดเวลา"/"expired" rather than a change-of-mind copy.
+pub const SYSTEM_EXPIRED_REASON: &str = "system_expired";
+
 /// Reasons a CUSTOMER may cancel with (`PUT /bookings/{id}/cancel`).
 pub const CUSTOMER_CANCEL_REASONS: [&str; 4] = ["changed_plan", "mistake", "not_needed", "other"];
 
