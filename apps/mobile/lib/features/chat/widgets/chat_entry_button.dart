@@ -107,29 +107,34 @@ class _ChatEntryButtonState extends ConsumerState<ChatEntryButton> {
 
   @override
   Widget build(BuildContext context) {
-    return ChatUnreadBadge(
-      acting: widget.acting,
-      requestId: widget.requestId,
-      child: Material(
-        color: PgTokens.colorSunken,
+    // Badge wraps the 20px ICON GLYPH (centred in the 44px tap box) so it anchors to the
+    // icon's top-right, not the button-box corner (which floated it well off the glyph).
+    return Material(
+      color: PgTokens.colorSunken,
+      borderRadius: BorderRadius.circular(PgTokens.radiusLg),
+      child: InkWell(
+        onTap: _enabled ? _open : null,
         borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-        child: InkWell(
-          onTap: _enabled ? _open : null,
-          borderRadius: BorderRadius.circular(PgTokens.radiusLg),
-          child: SizedBox(
-            width: 44,
-            height: 44,
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Center(
             child: _busy
-                ? const Padding(
-                    padding: EdgeInsets.all(12),
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
                     child: CircularProgressIndicator(strokeWidth: 2),
                   )
-                : Icon(
-                    Icons.chat_bubble_outline,
-                    size: 20,
-                    color: _enabled
-                        ? PgTokens.colorPrimary
-                        : PgTokens.colorTextFaint,
+                : ChatUnreadBadge(
+                    acting: widget.acting,
+                    requestId: widget.requestId,
+                    child: Icon(
+                      Icons.chat_bubble_outline,
+                      size: 20,
+                      color: _enabled
+                          ? PgTokens.colorPrimary
+                          : PgTokens.colorTextFaint,
+                    ),
                   ),
           ),
         ),

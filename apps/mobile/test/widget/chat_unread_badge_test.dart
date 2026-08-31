@@ -80,6 +80,27 @@ void main() {
     await tester.pumpWidget(const SizedBox());
   });
 
+  testWidgets(
+      'badge hugs the icon top-right (anchored to the glyph, not a wide box)',
+      (tester) async {
+    final api = FakeApi(onGet: (_, __) async => [convJson('c1', 'b1', 4)]);
+
+    await tester.pumpWidget(host(api));
+    await settle(tester);
+
+    final iconRect = tester.getRect(find.byIcon(Icons.chat_bubble_outline));
+    final badgeRect = tester.getRect(find.text('4'));
+    // Positioned(right:-4, top:-4) relative to the icon box → the badge sits a few px off the
+    // icon's own top-right corner. The float bug (badge anchored to a 44/48px tap box around a
+    // ~24px glyph) would push it >20px away; keep it hugging the glyph.
+    expect((badgeRect.right - iconRect.right).abs(), lessThan(14),
+        reason:
+            'badge right edge hugs the icon right edge, not a wide tap box');
+    expect((badgeRect.top - iconRect.top).abs(), lessThan(14),
+        reason: 'badge top hugs the icon top, not a wide tap box');
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets('caps the display at 99+', (tester) async {
     final api = FakeApi(onGet: (_, __) async => [convJson('c1', 'b1', 150)]);
 

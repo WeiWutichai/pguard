@@ -10,6 +10,11 @@ import '../../../core/models/chat.dart';
 /// no polling; entry points invalidate the controller after a conversation closes so the badge
 /// catches up). [requestId] narrows the count to one booking's conversation; `null` = total.
 /// Renders only [child] while the list is loading/failed or the count is zero.
+///
+/// [child] MUST be the tightly-sized icon GLYPH, NOT a tap target (IconButton / 44px box): the
+/// badge is `Positioned` relative to the `Stack` that sizes to `child`, so a child bigger than
+/// the glyph floats the badge to the tap-box corner, off the icon. Wrap the glyph here and put
+/// the tap target (IconButton / InkWell) AROUND this widget.
 class ChatUnreadBadge extends ConsumerWidget {
   const ChatUnreadBadge({
     super.key,
