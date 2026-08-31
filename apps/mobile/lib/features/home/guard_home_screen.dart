@@ -111,14 +111,17 @@ class _GuardHomeScreenState extends ConsumerState<GuardHomeScreen>
             // Dual-role accounts only (self-hides otherwise): jump to the mode picker, no logout.
             const SwitchModeAction(),
             const NotificationBell(),
-            ChatUnreadBadge(
-              acting: ChatRole.guard,
-              child: IconButton(
-                icon: const Icon(Icons.forum_outlined,
-                    color: Colors.white, size: 22),
-                tooltip: isThai ? 'แชท' : 'Chat',
-                onPressed: () => context.push(ChatRoutes.list(ChatRole.guard)),
+            // Badge wraps the ICON GLYPH (not the IconButton) so it anchors to the icon's
+            // top-right; the IconButton supplies the 48px tap target AROUND it. Wrapping the
+            // whole IconButton floated the badge to the tap-box corner, far from the glyph.
+            IconButton(
+              icon: const ChatUnreadBadge(
+                acting: ChatRole.guard,
+                child:
+                    Icon(Icons.forum_outlined, color: Colors.white, size: 22),
               ),
+              tooltip: isThai ? 'แชท' : 'Chat',
+              onPressed: () => context.push(ChatRoutes.list(ChatRole.guard)),
             ),
             _GuardProfileAvatarButton(isThai: isThai),
           ],
