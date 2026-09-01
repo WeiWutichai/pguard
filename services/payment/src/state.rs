@@ -9,6 +9,7 @@ use shared::service_jwt::HasServiceJwt;
 
 use crate::booking_client::{BookingReader, HttpBookingReader};
 use crate::config::SlipPaymentConfig;
+use crate::profile_client::{HttpProfileReader, ProfileReader};
 use crate::s3::S3Client;
 use crate::slip2go_client::{HttpSlipVerifier, SlipVerifier};
 
@@ -26,6 +27,9 @@ pub struct AppState {
     /// The booking-reader (MINTS a service-JWT + GETs booking's `/internal/bookings/{id}`) —
     /// the authoritative source for the PRE-PAY estimate + ownership/payability authz.
     pub booking_reader: HttpBookingReader,
+    /// The profile-reader (MINTS a service-JWT + GETs profile's internal payout reads) — the source
+    /// of guard PII (name/tax id/address/phone) + the company WHT-payer block for the payout export.
+    pub profile_reader: HttpProfileReader,
     /// Slip2Go verifier (REAL money path). Verifies an uploaded transfer slip is genuine.
     pub slip_verifier: HttpSlipVerifier,
     /// S3 presigner for the private slip-image store (PDPA — like guard documents).
@@ -84,6 +88,9 @@ pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
     /// The Slip2Go verifier (associated type → static dispatch, native `async fn`) so the slip
     /// endpoint is stub-testable with NO real API calls — mirrors `Reader`.
     type Verifier: SlipVerifier;
+    /// The profile reader (guard PII + company block for the payout export) — associated type so the
+    /// payout endpoints are stub-testable with no live profile service. Mirrors `Reader`.
+    type Profile: ProfileReader;
 
     fn db(&self) -> &PgPool;
     /// Read-replica pool for the payment list read (C5.3). Defaults to primary; the single
@@ -92,6 +99,8 @@ pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
         self.db()
     }
     fn booking_reader(&self) -> &Self::Reader;
+    /// The profile reader (guard payout PII + company WHT-payer block).
+    fn profile_reader(&self) -> &Self::Profile;
     /// The Slip2Go verifier (REAL money path — `POST /payments/{id}/slip`).
     fn slip_verifier(&self) -> &Self::Verifier;
     /// The private S3 store for slip images.
@@ -103,6 +112,7 @@ pub trait PaymentDeps: HasJwtSecret + Clone + Send + Sync + 'static {
 impl PaymentDeps for AppState {
     type Reader = HttpBookingReader;
     type Verifier = HttpSlipVerifier;
+    type Profile = HttpProfileReader;
 
     fn db(&self) -> &PgPool {
         &self.db
@@ -112,6 +122,9 @@ impl PaymentDeps for AppState {
     }
     fn booking_reader(&self) -> &Self::Reader {
         &self.booking_reader
+    }
+    fn profile_reader(&self) -> &Self::Profile {
+        &self.profile_reader
     }
     fn slip_verifier(&self) -> &Self::Verifier {
         &self.slip_verifier

@@ -29,7 +29,10 @@ use shared_events::topics;
 use shared_events::EventEnvelope;
 
 use crate::domain::ChargeTerms;
-use crate::models::{CustomerSpend, PaymentResponse, RefundQueueItem, RevenuePoint};
+use crate::models::{
+    CustomerSpend, NewPayoutBatch, PaymentResponse, PayoutConfigRow, RefundQueueItem, RevenuePoint,
+    UnpaidPayoutRow, UpdatePayoutConfigRequest,
+};
 
 /// The payment row as clients see it. `grand_total` is DERIVED, not stored: the VAT split
 /// (`subtotal + vat_amount`) always equals the currently-settled bill, and pre-VAT rows (both
@@ -105,6 +108,141 @@ pub async fn guard_earnings(
     .fetch_all(db)
     .await?;
     Ok(rows)
+}
+
+/// The UNPAID guard-payout backlog: every reconciled, guard-assigned, `completed` payment whose
+/// `booking_id` is NOT yet in `payout_batch_items` (the paid-marker). `actual_hours IS NOT NULL` is
+/// the "job finished + reconciled" signal (it is stamped at completion reconcile) — a payment is
+/// `completed` at PRE-PAY, so that status alone would include in-progress jobs. Ordered by guard so
+/// the aggregator can group. NO limit: a payout run pays the whole backlog.
+pub async fn unpaid_payout_rows(db: &sqlx::PgPool) -> Result<Vec<UnpaidPayoutRow>, AppError> {
+    let rows = sqlx::query_as::<_, UnpaidPayoutRow>(
+        "SELECT p.booking_id, p.guard_id, p.actual_hours, p.commission_percent \
+         FROM payment.payments p \
+         WHERE p.status = 'completed' \
+           AND p.guard_id IS NOT NULL \
+           AND p.actual_hours IS NOT NULL \
+           AND NOT EXISTS ( \
+               SELECT 1 FROM payment.payout_batch_items i WHERE i.booking_id = p.booking_id) \
+         ORDER BY p.guard_id, p.created_at",
+    )
+    .fetch_all(db)
+    .await?;
+    Ok(rows)
+}
+
+/// Read the single-row payout config (`GET /admin/payouts/config`); the "unset" default (blank
+/// debit accounts + the standard ภ.ง.ด.53 terms) when no row exists yet, so the GET never 404s.
+pub async fn get_payout_config(db: &sqlx::PgPool) -> Result<PayoutConfigRow, AppError> {
+    let row: Option<PayoutConfigRow> = sqlx::query_as(
+        "SELECT debit_account, fee_debit_account, wht_form_type_code, wht_pay_type_code, \
+                wht_income_type_code, wht_income_desc, wht_rate_percent, product_code, updated_at \
+         FROM payment.payout_config WHERE id = TRUE",
+    )
+    .fetch_optional(db)
+    .await?;
+    Ok(row.unwrap_or_else(PayoutConfigRow::unset))
+}
+
+/// Upsert the single-row payout config (`PUT`). `id = TRUE` + the singleton CHECK pin it to one row;
+/// each field COALESCEs to the sent value or KEEPS the stored one (`None` → unchanged), so an admin
+/// can save incrementally. On first write the unset `NOT NULL DEFAULT` columns take the schema
+/// defaults. `updated_by` records the acting admin; `updated_at = now()`.
+pub async fn upsert_payout_config(
+    db: &sqlx::PgPool,
+    req: &UpdatePayoutConfigRequest,
+    admin_id: Uuid,
+) -> Result<PayoutConfigRow, AppError> {
+    let row: PayoutConfigRow = sqlx::query_as(
+        "INSERT INTO payment.payout_config \
+             (id, debit_account, fee_debit_account, wht_form_type_code, wht_pay_type_code, \
+              wht_income_type_code, wht_income_desc, wht_rate_percent, updated_by, updated_at) \
+         VALUES (TRUE, $1, $2, \
+                 COALESCE($3, '53'), COALESCE($4, '1'), COALESCE($5, '5'), \
+                 COALESCE($6, 'ค่าบริการรักษาความปลอดภัย'), COALESCE($7, 3), $8, now()) \
+         ON CONFLICT (id) DO UPDATE SET \
+             debit_account        = COALESCE($1, payment.payout_config.debit_account), \
+             fee_debit_account    = COALESCE($2, payment.payout_config.fee_debit_account), \
+             wht_form_type_code   = COALESCE($3, payment.payout_config.wht_form_type_code), \
+             wht_pay_type_code    = COALESCE($4, payment.payout_config.wht_pay_type_code), \
+             wht_income_type_code = COALESCE($5, payment.payout_config.wht_income_type_code), \
+             wht_income_desc      = COALESCE($6, payment.payout_config.wht_income_desc), \
+             wht_rate_percent     = COALESCE($7, payment.payout_config.wht_rate_percent), \
+             updated_by           = $8, \
+             updated_at           = now() \
+         RETURNING debit_account, fee_debit_account, wht_form_type_code, wht_pay_type_code, \
+                   wht_income_type_code, wht_income_desc, wht_rate_percent, product_code, updated_at",
+    )
+    .bind(req.debit_account.as_deref())
+    .bind(req.fee_debit_account.as_deref())
+    .bind(req.wht_form_type_code.as_deref())
+    .bind(req.wht_pay_type_code.as_deref())
+    .bind(req.wht_income_type_code.as_deref())
+    .bind(req.wht_income_desc.as_deref())
+    .bind(req.wht_rate_percent)
+    .bind(admin_id)
+    .fetch_one(db)
+    .await?;
+    Ok(row)
+}
+
+/// Persist a generated payout batch: the `payout_batches` header + all `payout_batch_items` in ONE
+/// transaction. The `UNIQUE(booking_id)` on the items is the atomic paid-marker — if any booking in
+/// this batch was ALREADY paid (a concurrent export won the race), the item insert violates the
+/// unique, the whole tx ROLLS BACK, and a typed 409 is returned so nothing is double-paid. Returns
+/// the new batch id.
+pub async fn insert_payout_batch(
+    db: &sqlx::PgPool,
+    batch: &NewPayoutBatch,
+) -> Result<Uuid, AppError> {
+    let mut tx = db.begin().await?;
+    let batch_id: Uuid = sqlx::query_scalar(
+        "INSERT INTO payment.payout_batches \
+             (file_ref, system_ref, batch_ref, value_date, total_amount, recipient_count, created_by) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+    )
+    .bind(&batch.file_ref)
+    .bind(&batch.system_ref)
+    .bind(&batch.batch_ref)
+    .bind(batch.value_date)
+    .bind(batch.total_amount)
+    .bind(batch.items.len() as i32)
+    .bind(batch.created_by)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    for item in &batch.items {
+        let res = sqlx::query(
+            "INSERT INTO payment.payout_batch_items \
+                 (batch_id, booking_id, guard_id, income, wht, transfer_amount) \
+             VALUES ($1, $2, $3, $4, $5, $6)",
+        )
+        .bind(batch_id)
+        .bind(item.booking_id)
+        .bind(item.guard_id)
+        .bind(item.income)
+        .bind(item.wht)
+        .bind(item.transfer_amount)
+        .execute(&mut *tx)
+        .await;
+        if let Err(e) = res {
+            tx.rollback().await?;
+            // A unique violation means the booking was paid out by a concurrent export — refuse the
+            // whole batch rather than pay anyone twice; the admin re-previews the (now smaller) backlog.
+            if let sqlx::Error::Database(db_err) = &e {
+                if db_err.is_unique_violation() {
+                    return Err(AppError::ConflictCode {
+                        code: "PAYOUT_ALREADY_PAID",
+                        message: "One or more jobs were already paid out; re-run the preview."
+                            .to_string(),
+                    });
+                }
+            }
+            return Err(e.into());
+        }
+    }
+    tx.commit().await?;
+    Ok(batch_id)
 }
 
 /// Admin cross-user payment ledger — every payment (NO owner filter; the admin-role gate is
@@ -1327,6 +1465,119 @@ mod db_tests {
         assert_eq!(events, 1, "exactly one completed event (no double-emit)");
 
         // cleanup
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&pool)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The guard-payout backlog + double-pay guard: a reconciled completed payment appears in
+    /// `unpaid_payout_rows`; once a batch pays it, it is EXCLUDED; a second batch for the same
+    /// booking is refused `PAYOUT_ALREADY_PAID` (the UNIQUE booking marker). Plus config round-trip.
+    /// DATABASE_URL-gated.
+    #[tokio::test]
+    async fn payout_backlog_and_double_pay_guard() {
+        let Some(pool) = pool().await else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let booking_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+
+        // A completed, guard-assigned payment; then RECONCILE it (stamp actual_hours) so it counts
+        // as a finished job payable to the guard.
+        prepay_idempotent(
+            &pool,
+            booking_id,
+            Uuid::new_v4(),
+            Some(guard_id),
+            &terms_of("400.00"),
+            "promptpay",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("pre-pay");
+        sqlx::query(
+            "UPDATE payment.payments SET actual_hours = 4, commission_percent = 10 WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .execute(&pool)
+        .await
+        .expect("reconcile");
+
+        // config round-trips (upsert then read).
+        let cfg = upsert_payout_config(
+            &pool,
+            &UpdatePayoutConfigRequest {
+                debit_account: Some("1234567890".to_string()),
+                fee_debit_account: None,
+                wht_form_type_code: None,
+                wht_pay_type_code: None,
+                wht_income_type_code: None,
+                wht_income_desc: None,
+                wht_rate_percent: Some(dec("3")),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("upsert config");
+        assert_eq!(cfg.debit_account.as_deref(), Some("1234567890"));
+        assert_eq!(cfg.wht_rate_percent, dec("3"));
+        assert_eq!(cfg.wht_form_type_code, "53", "default kept");
+
+        // the reconciled job is in the unpaid backlog.
+        let rows = unpaid_payout_rows(&pool).await.expect("backlog");
+        assert!(
+            rows.iter().any(|r| r.booking_id == booking_id),
+            "reconciled completed job is payable"
+        );
+
+        // pay it — insert the batch + paid-marker item.
+        let batch = NewPayoutBatch {
+            file_ref: "SCB_file_reference_x".to_string(),
+            system_ref: "PGUARD-PAYOUT".to_string(),
+            batch_ref: "010926120000PPY".to_string(),
+            value_date: chrono::NaiveDate::from_ymd_opt(2026, 9, 1).unwrap(),
+            total_amount: dec("349.20"),
+            created_by: Some(Uuid::new_v4()),
+            items: vec![crate::models::NewPayoutItem {
+                booking_id,
+                guard_id,
+                income: dec("360.00"),
+                wht: dec("10.80"),
+                transfer_amount: dec("349.20"),
+            }],
+        };
+        insert_payout_batch(&pool, &batch).await.expect("pay");
+
+        // now it is NO LONGER in the backlog (paid-marker excludes it).
+        let after = unpaid_payout_rows(&pool).await.expect("backlog 2");
+        assert!(
+            !after.iter().any(|r| r.booking_id == booking_id),
+            "a paid job drops out of the backlog"
+        );
+
+        // a SECOND batch for the same booking is refused — never pay twice.
+        let err = insert_payout_batch(&pool, &batch)
+            .await
+            .expect_err("double pay refused");
+        assert!(
+            matches!(&err, AppError::ConflictCode { code, .. } if *code == "PAYOUT_ALREADY_PAID"),
+            "double-pay is a typed conflict, got {err:?}"
+        );
+
+        // cleanup (items cascade with the batch).
+        let _ = sqlx::query("DELETE FROM payment.payout_batches WHERE id IN (SELECT batch_id FROM payment.payout_batch_items WHERE booking_id = $1)")
+            .bind(booking_id).execute(&pool).await;
+        let _ = sqlx::query("DELETE FROM payment.payout_batch_items WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&pool)
+            .await;
         let _ =
             sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
                 .bind(booking_id.to_string())

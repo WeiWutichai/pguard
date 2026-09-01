@@ -34,6 +34,8 @@ use crate::slip2go_client::{
     SlipConditions, SlipVerifier, SLIP_AMOUNT_TOO_LOW_CODE, SLIP_WRONG_RECEIVER_CODE,
 };
 use crate::state::PaymentDeps;
+
+pub mod payouts;
 use crate::state::PaymentInternalDeps;
 
 /// The recorded `payment_method` for a PRE-PAY charge. v2's gateway is simulated and there is no
@@ -748,6 +750,34 @@ mod tests {
         }
     }
 
+    /// Stub profile reader — canned guard PII + org block, no real profile HTTP (the payout
+    /// aggregation is tested hermetically). Default = no guard / empty org.
+    #[derive(Clone, Default)]
+    struct StubProfileReader {
+        guard: Option<crate::profile_client::GuardPayoutProfile>,
+        org: Option<crate::profile_client::OrgTaxInfo>,
+    }
+    impl crate::profile_client::ProfileReader for StubProfileReader {
+        async fn get_guard_payout_profile(
+            &self,
+            _guard_id: Uuid,
+        ) -> Result<crate::profile_client::GuardPayoutProfile, AppError> {
+            self.guard
+                .clone()
+                .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))
+        }
+        async fn get_org_settings(&self) -> Result<crate::profile_client::OrgTaxInfo, AppError> {
+            Ok(self
+                .org
+                .clone()
+                .unwrap_or(crate::profile_client::OrgTaxInfo {
+                    company_name: None,
+                    tax_id: None,
+                    address: None,
+                }))
+        }
+    }
+
     /// Stub slip verifier — returns a canned [`VerifiedSlip`] or a canned typed rejection, with NO
     /// real API call (the verify endpoint's success/fail + our-side re-validation are tested
     /// hermetically). `AppError` isn't `Clone`, so the rejection is held as a Cloneable
@@ -806,6 +836,7 @@ mod tests {
         redis: redis::aio::ConnectionManager,
         reader: StubReader,
         verifier: StubVerifier,
+        profile: StubProfileReader,
         s3: S3Client,
         slip_config: SlipPaymentConfig,
     }
@@ -824,11 +855,15 @@ mod tests {
     impl PaymentDeps for TestDeps {
         type Reader = StubReader;
         type Verifier = StubVerifier;
+        type Profile = StubProfileReader;
         fn db(&self) -> &sqlx::PgPool {
             &self.db
         }
         fn booking_reader(&self) -> &StubReader {
             &self.reader
+        }
+        fn profile_reader(&self) -> &StubProfileReader {
+            &self.profile
         }
         fn slip_verifier(&self) -> &StubVerifier {
             &self.verifier
@@ -906,6 +941,7 @@ mod tests {
             redis,
             reader: StubReader { booking },
             verifier,
+            profile: StubProfileReader::default(),
             s3: stub_s3(),
             slip_config,
         };

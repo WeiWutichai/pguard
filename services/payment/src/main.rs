@@ -25,6 +25,7 @@ mod config;
 mod domain;
 mod events;
 mod models;
+mod profile_client;
 mod repo;
 mod s3;
 mod slip2go_client;
@@ -41,6 +42,7 @@ use shared::redis_client::create_connection_manager;
 
 use crate::booking_client::HttpBookingReader;
 use crate::config::SlipPaymentConfig;
+use crate::profile_client::HttpProfileReader;
 use crate::s3::S3Client;
 use crate::slip2go_client::HttpSlipVerifier;
 use crate::state::AppState;
@@ -65,6 +67,8 @@ async fn main() -> anyhow::Result<()> {
     let service_jwt_config = ServiceJwtConfig::from_env()?;
     let booking_url =
         std::env::var("BOOKING_URL").unwrap_or_else(|_| "http://localhost:3005".to_string());
+    let profile_url =
+        std::env::var("PROFILE_URL").unwrap_or_else(|_| "http://localhost:3002".to_string());
 
     // --- infrastructure ---
     let db = create_pool(&db_config).await?;
@@ -79,6 +83,12 @@ async fn main() -> anyhow::Result<()> {
     let booking_reader = HttpBookingReader::new(
         reqwest::Client::new(),
         booking_url,
+        service_jwt_config.encoding_key.clone(),
+        service_jwt_config.ttl_secs,
+    );
+    let profile_reader = HttpProfileReader::new(
+        reqwest::Client::new(),
+        profile_url,
         service_jwt_config.encoding_key.clone(),
         service_jwt_config.ttl_secs,
     );
@@ -114,6 +124,7 @@ async fn main() -> anyhow::Result<()> {
         jwt_config,
         service_decoding_key: service_jwt_config.decoding_key.clone(),
         booking_reader,
+        profile_reader,
         slip_verifier,
         s3,
         slip_config,
@@ -196,6 +207,20 @@ async fn main() -> anyhow::Result<()> {
         .route(
             "/admin/refunds/queue",
             get(api::admin_refund_queue::<AppState>),
+        )
+        // Guard-payout (SCB Business Net export): config + preview + generate the upload file.
+        // Admin-role gated in the handlers. Needs a NEW gateway `/admin/payouts` prefix rule → Payment.
+        .route(
+            "/admin/payouts/config",
+            get(api::payouts::get_config::<AppState>).put(api::payouts::put_config::<AppState>),
+        )
+        .route(
+            "/admin/payouts/preview",
+            get(api::payouts::preview::<AppState>),
+        )
+        .route(
+            "/admin/payouts/export",
+            post(api::payouts::export::<AppState>),
         )
         // Admin revenue-trend report (analytics). Needs a NEW gateway `/admin/reports/revenue`
         // prefix rule → Payment (booking owns `/admin/reports/bookings`).
