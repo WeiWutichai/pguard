@@ -26,6 +26,7 @@ import {
   UserPlus,
   Users,
   Wallet,
+  Banknote,
   Workflow,
   type LucideIcon,
 } from "lucide-react";
@@ -70,6 +71,7 @@ const GROUPS: readonly NavGroup[] = [
       { href: "/tasks", icon: ListChecks, label: "nav.tasks" },
       { href: "/bookings", icon: Briefcase, label: "nav.bookings" },
       { href: "/wallet", icon: Wallet, label: "nav.wallet" },
+      { href: "/payouts", icon: Banknote, label: "nav.payouts" },
       { href: "/pricing", icon: Tag, label: "nav.pricing" },
     ],
   },

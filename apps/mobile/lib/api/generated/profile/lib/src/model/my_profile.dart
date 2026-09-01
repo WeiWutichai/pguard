@@ -27,6 +27,7 @@ part 'my_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
+/// * [taxId] - Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard payouts. MASKED to its last 4 characters on the owner read like `account_number`; the FULL value is exposed only over the service-JWT internal payout-profile endpoint. 
 /// * [address] 
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] 

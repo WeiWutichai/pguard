@@ -116,6 +116,79 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/payouts/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Guard-payout settings (role=admin)
+         * @description The single-row company payout settings — the debit accounts the transfers come from + the
+         *     ภ.ง.ด. withholding terms (form/pay/income type + rate). Blank debit accounts + the standard
+         *     ภ.ง.ด.53 defaults when unset (never 404s). Admin only.
+         */
+        get: operations["getPayoutConfig"];
+        /**
+         * Save guard-payout settings (role=admin)
+         * @description Incremental — a field left null keeps the stored value (or the schema default on first write). Admin only.
+         */
+        put: operations["updatePayoutConfig"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Preview the guard-payout batch (role=admin)
+         * @description The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT
+         *     withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the
+         *     reason (missing name / tax id / a usable PromptPay proxy). READ ONLY: computes but persists
+         *     nothing and marks nothing paid. Admin only.
+         */
+        get: operations["previewPayout"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/payouts/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Generate + download the SCB guard-payout upload file (role=admin)
+         * @description Build the SCB Business Net bulk-upload text for the whole unpaid backlog, PERSIST the batch +
+         *     a per-booking paid-marker (so no job is ever paid twice), and return the file as
+         *     `text/plain` (UTF-8, no BOM) for download. 409 `PAYOUT_ALREADY_PAID` if a concurrent export
+         *     already claimed a booking; 400 when there is nothing payable or the company/debit config is
+         *     incomplete. Admin only.
+         */
+        post: operations["exportPayout"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/reports/revenue": {
         parameters: {
             query?: never;
@@ -517,6 +590,82 @@ export interface components {
             code: string;
             message: string;
         };
+        /** @description The single-row guard-payout settings (company debit accounts + ภ.ง.ด. terms). */
+        PayoutConfig: {
+            /** @description Company account the transfers are debited from. */
+            debit_account?: string | null;
+            /** @description Account the transfer fees are debited from (defaults to the debit account). */
+            fee_debit_account?: string | null;
+            /**
+             * @description ภ.ง.ด. form code (53 = payments to a company).
+             * @example 53
+             */
+            wht_form_type_code?: string;
+            /** @example 1 */
+            wht_pay_type_code?: string;
+            /**
+             * @description Assessable-income type (service fee).
+             * @example 5
+             */
+            wht_income_type_code?: string;
+            /** @example ค่าบริการรักษาความปลอดภัย */
+            wht_income_desc?: string;
+            /**
+             * @description Withholding rate percent (exact decimal, string).
+             * @example 3
+             */
+            wht_rate_percent?: string;
+            /**
+             * @description SCB product (PromptPay credit).
+             * @example PPY
+             */
+            product_code?: string;
+            /**
+             * Format: date-time
+             * @description null until first saved.
+             */
+            updated_at?: string | null;
+        };
+        /** @description Every field optional — a null field keeps the stored value (or the default on first write). */
+        UpdatePayoutConfigRequest: {
+            debit_account?: string | null;
+            fee_debit_account?: string | null;
+            wht_form_type_code?: string | null;
+            wht_pay_type_code?: string | null;
+            wht_income_type_code?: string | null;
+            wht_income_desc?: string | null;
+            /** @description 0–100 (exact decimal, string). */
+            wht_rate_percent?: string | null;
+        };
+        PreviewRecipient: {
+            name: string;
+            /** @description PromptPay proxy masked to its last 4 (PII). */
+            proxy_masked: string;
+            /** @description Assessable income (2dp string). */
+            income: string;
+            /** @description Withholding tax (2dp string). */
+            wht: string;
+            /** @description Net PromptPay transfer = income − WHT (2dp string). */
+            transfer: string;
+        };
+        ExcludedGuard: {
+            /** Format: uuid */
+            guard_id: string;
+            /** @description Why the guard cannot be paid this batch (missing name / tax id / proxy). */
+            reason: string;
+            /** Format: int64 */
+            job_count: number;
+        };
+        PayoutPreview: {
+            recipients: components["schemas"]["PreviewRecipient"][];
+            excluded: components["schemas"]["ExcludedGuard"][];
+            /** Format: int64 */
+            recipient_count: number;
+            /** @description Σ net transfers (2dp string). */
+            total_transfer: string;
+            /** @description Σ withholding (2dp string). */
+            total_wht: string;
+        };
     };
     responses: {
         /** @description The payment */
@@ -728,6 +877,115 @@ export interface operations {
             400: components["responses"]["BadRequest"];
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
+        };
+    };
+    getPayoutConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The payout settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutConfig"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    updatePayoutConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePayoutConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description The saved payout settings */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutConfig"];
+                    };
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    previewPayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The aggregated preview */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiResponseEnvelope"] & {
+                        data?: components["schemas"]["PayoutPreview"];
+                    };
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    exportPayout: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The SCB upload file (pipe-delimited text) */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description A job in the batch was already paid out by a concurrent export (`error.code = PAYOUT_ALREADY_PAID`). */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     adminRevenueReport: {

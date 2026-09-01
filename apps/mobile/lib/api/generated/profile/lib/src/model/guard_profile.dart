@@ -22,6 +22,7 @@ part 'guard_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
+/// * [taxId] - Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard payouts. MASKED to its last 4 characters on the owner read like `account_number`; the FULL value is exposed only over the service-JWT internal payout-profile endpoint. 
 /// * [address] 
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] 
@@ -57,6 +58,10 @@ abstract class GuardProfile  {
 
   @BuiltValueField(wireName: r'account_name')
   String? get accountName;
+
+  /// Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard payouts. MASKED to its last 4 characters on the owner read like `account_number`; the FULL value is exposed only over the service-JWT internal payout-profile endpoint. 
+  @BuiltValueField(wireName: r'tax_id')
+  String? get taxId;
 
   @BuiltValueField(wireName: r'address')
   String? get address;
@@ -148,6 +153,13 @@ class _$GuardProfileSerializer implements PrimitiveSerializer<GuardProfile> {
       yield r'account_name';
       yield serializers.serialize(
         object.accountName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.taxId != null) {
+      yield r'tax_id';
+      yield serializers.serialize(
+        object.taxId,
         specifiedType: const FullType(String),
       );
     }
@@ -309,6 +321,13 @@ class _$$GuardProfileSerializer implements PrimitiveSerializer<$GuardProfile> {
             specifiedType: const FullType(String),
           ) as String;
           result.accountName = valueDes;
+          break;
+        case r'tax_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.taxId = valueDes;
           break;
         case r'address':
           final valueDes = serializers.deserialize(

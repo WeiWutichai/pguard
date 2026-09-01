@@ -24,6 +24,7 @@ part 'my_guard_profile.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - MASKED to its last 4 characters on the owner read (`GET /profile/me`, `POST/PUT /profile/guard`); FULL on the admin endpoints. 
 /// * [accountName] 
+/// * [taxId] - Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard payouts. MASKED to its last 4 characters on the owner read like `account_number`; the FULL value is exposed only over the service-JWT internal payout-profile endpoint. 
 /// * [address] 
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] 
@@ -158,6 +159,13 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
         specifiedType: const FullType(int),
       );
     }
+    if (object.taxId != null) {
+      yield r'tax_id';
+      yield serializers.serialize(
+        object.taxId,
+        specifiedType: const FullType(String),
+      );
+    }
   }
 
   @override
@@ -285,6 +293,13 @@ class _$MyGuardProfileSerializer implements PrimitiveSerializer<MyGuardProfile> 
             specifiedType: const FullType(int),
           ) as int;
           result.yearsOfExperience = valueDes;
+          break;
+        case r'tax_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.taxId = valueDes;
           break;
         default:
           unhandled.add(key);
