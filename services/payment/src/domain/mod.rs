@@ -23,6 +23,10 @@
 pub mod pricing;
 pub mod promptpay;
 pub mod proration;
+// TODO(scb-payout): drop this allow once the `/admin/payouts/export` handler wires the generator.
+// Step 1 of the guard-payout export feature is the PURE generator + its tests; nothing calls it yet.
+#[allow(dead_code)]
+pub mod scb_export;
 pub mod slip;
 
 pub use pricing::{

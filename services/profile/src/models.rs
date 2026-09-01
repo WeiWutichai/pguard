@@ -221,6 +221,10 @@ pub struct UpsertGuardProfileRequest {
     pub bank_name: Option<String>,
     pub account_number: Option<String>,
     pub account_name: Option<String>,
+    /// Thai national/tax id (13-digit) — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for
+    /// guard payouts. PDPA-sensitive: validated (lenient 8–20 digits) + written in full on upsert,
+    /// but MASKED on read (like `account_number`); a masked value is never re-written back.
+    pub tax_id: Option<String>,
     /// Home address (v1 parity).
     pub address: Option<String>,
     /// Emergency contact (v1 parity — PII; not masked, v1 doesn't mask it either).
@@ -392,6 +396,10 @@ pub struct GuardProfileResponse {
     /// Masked (last-4) on owner reads; full on admin reads. See the constructors.
     pub account_number: Option<String>,
     pub account_name: Option<String>,
+    /// Thai national/tax id (ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy). MASKED (last-4) on the
+    /// owner read (`GET /profile/me`) exactly like `account_number`; the FULL value is exposed only
+    /// over the service-JWT'd internal payout-profile endpoint.
+    pub tax_id: Option<String>,
     pub address: Option<String>,
     pub emergency_contact_name: Option<String>,
     pub emergency_contact_phone: Option<String>,
@@ -588,4 +596,51 @@ impl OrgSettingsResponse {
             updated_at: None,
         }
     }
+}
+
+// ----- Guard payout (SCB Business Net bulk file + ภ.ง.ด.53 WHT) — service-JWT internal reads -----
+
+/// The guard PII the payment aggregator needs to build ONE payout recipient
+/// (`GET /internal/guards/{id}/payout-profile`, service-JWT only): the ภ.ง.ด.53 recipient name +
+/// FULL (UNMASKED) tax id + address, plus the guard's contact `phone`. `tax_id` is the 13-digit
+/// Thai TIN → PromptPay NAT proxy + WHT-cert recipient id; `phone` is the guard's LOGIN number
+/// (`identity.users.phone`, resolved best-effort from identity) → PromptPay MOB fallback proxy when
+/// no tax id is on file. This is the ONLY surface that returns the tax id in the clear (every
+/// owner/admin read masks it), so the endpoint is gated by a valid service-JWT and never reachable
+/// from the public edge.
+///
+/// `full_name` is `Option` because the column is nullable — a guard who never supplied a name comes
+/// back `null`; the payment side then EXCLUDES them from the WHT batch with a warning (the WHT cert
+/// legally requires the recipient's name), never silently drops or fabricates one.
+#[derive(Debug, Serialize)]
+pub struct GuardPayoutProfile {
+    pub full_name: Option<String>,
+    /// FULL (unmasked) 13-digit Thai TIN — `null` when the guard has none on file.
+    pub tax_id: Option<String>,
+    pub address: Option<String>,
+    /// The guard's login/contact phone (`identity.users.phone`), resolved best-effort from
+    /// identity → `null` when identity did not answer (NOT proof the guard has no phone).
+    pub phone: Option<String>,
+}
+
+/// Raw guard payout row read from `profile.guard_profiles`: full_name + FULL tax_id + address +
+/// the guard's own `contact_phone` (a valid PromptPay MOB fallback proxy when no tax id is on file).
+/// Using the profile's contact phone keeps this a single self-contained read — no identity round-trip.
+#[derive(Debug, sqlx::FromRow)]
+pub struct GuardPayoutRow {
+    pub full_name: Option<String>,
+    pub tax_id: Option<String>,
+    pub address: Option<String>,
+    pub contact_phone: Option<String>,
+}
+
+/// The company (WHT payer) block the payment aggregator stamps onto the SCB file + ภ.ง.ด.53 header
+/// (`GET /internal/org-settings`, service-JWT only): the legal company_name / tax_id / address from
+/// `profile.org_settings`. A slim mirror of [`OrgSettingsResponse`] WITHOUT `updated_at` (the payer
+/// block has no use for the bookkeeping timestamp), matching the exact shape payment expects.
+#[derive(Debug, Serialize)]
+pub struct InternalOrgSettings {
+    pub company_name: Option<String>,
+    pub tax_id: Option<String>,
+    pub address: Option<String>,
 }

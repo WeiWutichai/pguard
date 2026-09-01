@@ -1324,6 +1324,7 @@ components:
         bank_name: { type: string, nullable: true }
         account_number: { type: string, nullable: true, description: 'Stored in full; masked on owner reads (PDPA).' }
         account_name: { type: string, nullable: true }
+        tax_id: { type: string, nullable: true, description: 'Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA).' }
         address: { type: string, nullable: true, description: 'Home address (v1 parity).' }
         emergency_contact_name: { type: string, nullable: true }
         emergency_contact_phone: { type: string, nullable: true, description: 'Thai national format (≥10 digits, leading 0).' }
@@ -1552,6 +1553,13 @@ components:
             MASKED to its last 4 characters on the owner read (`GET /profile/me`,
             `POST/PUT /profile/guard`); FULL on the admin endpoints.
         account_name: { type: string, nullable: true }
+        tax_id:
+          type: string
+          nullable: true
+          description: |
+            Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard
+            payouts. MASKED to its last 4 characters on the owner read like `account_number`; the
+            FULL value is exposed only over the service-JWT internal payout-profile endpoint.
         address: { type: string, nullable: true }
         emergency_contact_name: { type: string, nullable: true }
         emergency_contact_phone: { type: string, nullable: true }

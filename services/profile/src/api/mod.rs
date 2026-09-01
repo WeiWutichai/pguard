@@ -28,13 +28,14 @@ use crate::models::{
     AccessAuditRow, AdminListAccessAuditQuery, AdminListSupportTicketsQuery,
     CreateSupportTicketRequest, CustomerAvatarResponse, CustomerProfileAdminResponse,
     CustomerProfileResponse, ExpiringDocumentsResponse, GuardAvatarResponse, GuardDocumentExpiry,
-    GuardDocumentPresence, GuardDocumentResponse, GuardProfileAdminResponse, GuardProfileResponse,
-    GuardProfileSubmitResponse, InternalGuard, MyProfile, OrgSettingsResponse,
-    PublicCustomerProfile, PublicGuardProfile, RecipientsQuery, RecipientsResponse,
-    RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName, SetDocumentExpiryRequest,
-    StageRequest, SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest, WithLoginPhone, EXPIRING_DOCUMENT_TYPES,
-    MAX_SUPPORT_TICKET_MESSAGE_LEN, RESOLVE_NAMES_LIMIT, SUPPORT_TICKET_KINDS,
+    GuardDocumentPresence, GuardDocumentResponse, GuardPayoutProfile, GuardProfileAdminResponse,
+    GuardProfileResponse, GuardProfileSubmitResponse, InternalGuard, InternalOrgSettings,
+    MyProfile, OrgSettingsResponse, PublicCustomerProfile, PublicGuardProfile, RecipientsQuery,
+    RecipientsResponse, RecruitCandidate, RejectRequest, ResolveNamesRequest, ResolvedName,
+    SetDocumentExpiryRequest, StageRequest, SupportTicket, UpdateOrgSettingsRequest,
+    UpsertCustomerProfileRequest, UpsertGuardProfileRequest, WithLoginPhone,
+    EXPIRING_DOCUMENT_TYPES, MAX_SUPPORT_TICKET_MESSAGE_LEN, RESOLVE_NAMES_LIMIT,
+    SUPPORT_TICKET_KINDS,
 };
 use crate::repo;
 use crate::state::{BookingAuthz, ProfileDeps, ProfileInternalDeps};
@@ -296,6 +297,9 @@ fn validate_guard_req(req: &UpsertGuardProfileRequest) -> Result<(), AppError> {
 /// reads skip this and return the full value.
 fn mask_guard_response(mut profile: GuardProfileResponse) -> GuardProfileResponse {
     profile.account_number = profile.account_number.as_deref().map(mask_account_number);
+    // tax_id (national/tax id) is PDPA-sensitive like the account number: last-4 only on an
+    // owner-facing read. The FULL value is exposed only over the service-JWT internal payout endpoint.
+    profile.tax_id = profile.tax_id.as_deref().map(mask_account_number);
     profile
 }
 
@@ -1479,6 +1483,48 @@ pub async fn internal_pending_roles<S: ProfileInternalDeps>(
 ) -> Result<Json<ApiResponse<Vec<String>>>, AppError> {
     let roles = repo::pending_roles_for_user(state.db_read(), user_id).await?;
     Ok(Json(ApiResponse::success(roles)))
+}
+
+// ----- GET /internal/guards/{id}/payout-profile (service-JWT — guard payout PII) -----
+
+/// The guard PII the payment aggregator needs to build ONE SCB payout recipient: name + FULL
+/// (unmasked) tax id + address + contact phone. This is the ONLY surface that returns `tax_id` in
+/// the clear (every owner/admin profile read masks it), so it is `ServiceCaller`-gated and never
+/// reachable from the public edge. 404 when there is no guard profile for the id (payment then
+/// excludes that guard from the batch with a warning rather than paying a stranger).
+#[tracing::instrument(skip(state), fields(caller = %caller.service, guard = %guard_id))]
+pub async fn internal_guard_payout_profile<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+    Path(guard_id): Path<Uuid>,
+) -> Result<Json<ApiResponse<GuardPayoutProfile>>, AppError> {
+    let row = repo::guard_payout_row(state.db_read(), guard_id)
+        .await?
+        .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))?;
+    Ok(Json(ApiResponse::success(GuardPayoutProfile {
+        full_name: row.full_name,
+        tax_id: row.tax_id,
+        address: row.address,
+        phone: row.contact_phone,
+    })))
+}
+
+// ----- GET /internal/org-settings (service-JWT — the WHT payer / company block) -----
+
+/// The company (WHT payer) block payment stamps onto the SCB file + ภ.ง.ด.53 header. Reuses the
+/// single-row org profile; returns the "unset" default (all `null`) rather than 404 so payment can
+/// surface a clear "configure the company profile first" error instead of a not-found.
+#[tracing::instrument(skip(state), fields(caller = %caller.service))]
+pub async fn internal_org_settings<S: ProfileInternalDeps>(
+    State(state): State<S>,
+    caller: ServiceCaller,
+) -> Result<Json<ApiResponse<InternalOrgSettings>>, AppError> {
+    let org = repo::get_org_settings(state.db_read()).await?;
+    Ok(Json(ApiResponse::success(InternalOrgSettings {
+        company_name: org.company_name,
+        tax_id: org.tax_id,
+        address: org.address,
+    })))
 }
 
 /// Allowed `window` values (days) for the expiring-documents list filter — the same urgency
