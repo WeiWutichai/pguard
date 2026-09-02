@@ -1505,7 +1505,9 @@ pub async fn internal_guard_payout_profile<S: ProfileInternalDeps>(
         full_name: row.full_name,
         tax_id: row.tax_id,
         address: row.address,
-        phone: row.contact_phone,
+        // The guard's own phone lives on identity.users, not the profile — left null here; the
+        // PromptPay proxy uses the tax id (NAT). A MOB fallback via identity is a tracked follow-up.
+        phone: None,
     })))
 }
 

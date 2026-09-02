@@ -602,10 +602,8 @@ impl OrgSettingsResponse {
 
 /// The guard PII the payment aggregator needs to build ONE payout recipient
 /// (`GET /internal/guards/{id}/payout-profile`, service-JWT only): the ภ.ง.ด.53 recipient name +
-/// FULL (UNMASKED) tax id + address, plus the guard's contact `phone`. `tax_id` is the 13-digit
-/// Thai TIN → PromptPay NAT proxy + WHT-cert recipient id; `phone` is the guard's LOGIN number
-/// (`identity.users.phone`, resolved best-effort from identity) → PromptPay MOB fallback proxy when
-/// no tax id is on file. This is the ONLY surface that returns the tax id in the clear (every
+/// FULL (UNMASKED) tax id + address. `tax_id` is the 13-digit Thai TIN → PromptPay NAT proxy +
+/// WHT-cert recipient id. This is the ONLY surface that returns the tax id in the clear (every
 /// owner/admin read masks it), so the endpoint is gated by a valid service-JWT and never reachable
 /// from the public edge.
 ///
@@ -618,20 +616,22 @@ pub struct GuardPayoutProfile {
     /// FULL (unmasked) 13-digit Thai TIN — `null` when the guard has none on file.
     pub tax_id: Option<String>,
     pub address: Option<String>,
-    /// The guard's login/contact phone (`identity.users.phone`), resolved best-effort from
-    /// identity → `null` when identity did not answer (NOT proof the guard has no phone).
+    /// The guard's own phone for a PromptPay MOB fallback proxy. Always `null` for now — the
+    /// guard's number lives on `identity.users`, not the profile (only `emergency_contact_phone`
+    /// is here, which is someone else's). Resolving it from identity is a tracked follow-up; until
+    /// then the proxy is the tax id (NAT), so a guard with no tax id is excluded from the batch.
     pub phone: Option<String>,
 }
 
-/// Raw guard payout row read from `profile.guard_profiles`: full_name + FULL tax_id + address +
-/// the guard's own `contact_phone` (a valid PromptPay MOB fallback proxy when no tax id is on file).
-/// Using the profile's contact phone keeps this a single self-contained read — no identity round-trip.
+/// Raw guard payout row read from `profile.guard_profiles`: full_name + FULL tax_id + address. The
+/// guard's OWN phone is NOT on the profile (only `emergency_contact_phone`, which is someone else's
+/// number and must never be paid to) — it lives on `identity.users`. The PromptPay proxy therefore
+/// uses the tax id (`NAT`); a phone (`MOB`) fallback would need an identity read (tracked follow-up).
 #[derive(Debug, sqlx::FromRow)]
 pub struct GuardPayoutRow {
     pub full_name: Option<String>,
     pub tax_id: Option<String>,
     pub address: Option<String>,
-    pub contact_phone: Option<String>,
 }
 
 /// The company (WHT payer) block the payment aggregator stamps onto the SCB file + ภ.ง.ด.53 header

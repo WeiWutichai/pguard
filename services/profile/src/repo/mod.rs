@@ -1222,7 +1222,7 @@ pub async fn guard_payout_row(
     guard_id: Uuid,
 ) -> Result<Option<GuardPayoutRow>, AppError> {
     let row: Option<GuardPayoutRow> = sqlx::query_as(
-        "SELECT full_name, tax_id, address, contact_phone \
+        "SELECT full_name, tax_id, address \
          FROM profile.guard_profiles WHERE user_id = $1",
     )
     .bind(guard_id)
@@ -1927,14 +1927,6 @@ mod db_tests {
         )
         .await
         .expect("upsert guard");
-        // contact_phone is set on the registration path, not this upsert body — stamp it directly.
-        sqlx::query(
-            "UPDATE profile.guard_profiles SET contact_phone = '0812345678' WHERE user_id = $1",
-        )
-        .bind(guard)
-        .execute(&pool)
-        .await
-        .expect("set contact phone");
 
         let row = guard_payout_row(&pool, guard)
             .await
@@ -1947,7 +1939,6 @@ mod db_tests {
             "tax id is FULL (unmasked) on the internal payout read"
         );
         assert_eq!(row.address.as_deref(), Some("99 Rama IX Rd"));
-        assert_eq!(row.contact_phone.as_deref(), Some("0812345678"));
 
         // Unknown guard → None (payment excludes them with a warning, never pays a stranger).
         assert!(guard_payout_row(&pool, Uuid::new_v4())
