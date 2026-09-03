@@ -536,6 +536,10 @@ services:
       NATS_PASSWORD: ${NATS_PAYMENT_PASSWORD:?NATS_PAYMENT_PASSWORD is required}
       SERVICE_JWT_SECRET: ${SERVICE_JWT_SECRET:?SERVICE_JWT_SECRET is required}
       BOOKING_URL: http://booking:3005
+      # Guard-payout export reads guard PII + the company WHT-payer block from profile's
+      # service-JWT'd internal endpoints (mirrors BOOKING_URL). Without this the reader defaults
+      # to localhost and the preview/export profile calls fail in the container.
+      PROFILE_URL: http://profile:3002
       # ── REAL money path (Slip2Go) — these belong to the PAYMENT service (NOT another block;
       #    cf. the IDENTITY_URL placement footgun). The feature flag defaults to `simulated`, so
       #    the stack STARTS without the Slip2Go secret / receiving account (they are wired as plain
