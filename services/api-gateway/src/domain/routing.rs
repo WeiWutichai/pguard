@@ -327,6 +327,14 @@ const RULES: &[Rule] = &[
         tier: Tier::Api,
     },
     Rule {
+        // Admin guard-payout (SCB export): the single prefix routes /config, /preview, /export.
+        // Admin authz is the payment service's own job.
+        prefix: "/admin/payouts",
+        suffix: None,
+        upstream: Upstream::Payment,
+        tier: Tier::Api,
+    },
+    Rule {
         // Admin service-catalog (pricing) CRUD — hosted by booking. The single prefix also
         // routes the `/services/{id}` subpath. Admin authz is the booking service's job.
         prefix: "/admin/pricing",
@@ -1366,6 +1374,22 @@ mod tests {
         assert_eq!(fwd, "/admin/payments");
         assert!(!public, "admin routes are edge-protected");
         assert_eq!(tier, Tier::Api);
+    }
+
+    #[test]
+    fn admin_payouts_subpaths_route_to_payment() {
+        // The single `/admin/payouts` prefix routes config / preview / export to payment.
+        for path in [
+            "/v1/admin/payouts/config",
+            "/v1/admin/payouts/preview",
+            "/v1/admin/payouts/export",
+        ] {
+            let (up, fwd, public, tier) = proxy(resolve(path));
+            assert_eq!(up, Upstream::Payment, "{path}");
+            assert_eq!(fwd, path.trim_start_matches("/v1"), "{path}");
+            assert!(!public, "admin routes are edge-protected");
+            assert_eq!(tier, Tier::Api);
+        }
     }
 
     #[test]
