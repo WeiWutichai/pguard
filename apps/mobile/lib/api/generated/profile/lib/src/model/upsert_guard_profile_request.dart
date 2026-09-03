@@ -22,6 +22,7 @@ part 'upsert_guard_profile_request.g.dart';
 /// * [bankName] 
 /// * [accountNumber] - Stored in full; masked on owner reads (PDPA).
 /// * [accountName] 
+/// * [taxId] - Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA).
 /// * [address] - Home address (v1 parity).
 /// * [emergencyContactName] 
 /// * [emergencyContactPhone] - Thai national format (≥10 digits, leading 0).
@@ -55,6 +56,10 @@ abstract class UpsertGuardProfileRequest implements Built<UpsertGuardProfileRequ
 
   @BuiltValueField(wireName: r'account_name')
   String? get accountName;
+
+  /// Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA).
+  @BuiltValueField(wireName: r'tax_id')
+  String? get taxId;
 
   /// Home address (v1 parity).
   @BuiltValueField(wireName: r'address')
@@ -150,6 +155,13 @@ class _$UpsertGuardProfileRequestSerializer implements PrimitiveSerializer<Upser
       yield r'account_name';
       yield serializers.serialize(
         object.accountName,
+        specifiedType: const FullType(String),
+      );
+    }
+    if (object.taxId != null) {
+      yield r'tax_id';
+      yield serializers.serialize(
+        object.taxId,
         specifiedType: const FullType(String),
       );
     }
@@ -266,6 +278,13 @@ class _$UpsertGuardProfileRequestSerializer implements PrimitiveSerializer<Upser
             specifiedType: const FullType(String),
           ) as String;
           result.accountName = valueDes;
+          break;
+        case r'tax_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.taxId = valueDes;
           break;
         case r'address':
           final valueDes = serializers.deserialize(

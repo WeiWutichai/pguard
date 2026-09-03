@@ -20,9 +20,11 @@
 //!   the booking onto the payment row.
 //! - [`proration`] — `compute_proration` (ported verbatim from v1), reused by the settle subtotal.
 
+pub mod payout;
 pub mod pricing;
 pub mod promptpay;
 pub mod proration;
+pub mod scb_export;
 pub mod slip;
 
 pub use pricing::{

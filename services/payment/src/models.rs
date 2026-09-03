@@ -228,6 +228,91 @@ pub struct CustomerSpend {
     pub total: Decimal,
 }
 
+// ----- Guard payout (SCB Business Net bulk file + ภ.ง.ด.53 WHT) -----
+
+/// One UNPAID, reconciled, guard-assigned job the payout aggregator will pay. Read from
+/// `payment.payments` (a `completed` payment with `guard_id` + `actual_hours` set — i.e. the job
+/// finished and reconciled — whose `booking_id` is NOT yet in `payout_batch_items`). The pay basis
+/// `base_fee` is NOT here: it is fetched per booking from booking's authoritative internal read.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UnpaidPayoutRow {
+    pub booking_id: Uuid,
+    pub guard_id: Uuid,
+    pub actual_hours: Option<Decimal>,
+    pub commission_percent: Option<Decimal>,
+}
+
+/// The single-row company payout settings (`GET`/`PUT /admin/payouts/config`). The WHT-term columns
+/// are `NOT NULL DEFAULT` in the schema, so a read always has them; the debit accounts are nullable
+/// (blank until an admin configures them — the export refuses to run until they are set). `updated_at`
+/// is `None` until the row is first written (honest "unset" state, like `org_settings`).
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct PayoutConfigRow {
+    pub debit_account: Option<String>,
+    pub fee_debit_account: Option<String>,
+    pub wht_form_type_code: String,
+    pub wht_pay_type_code: String,
+    pub wht_income_type_code: String,
+    pub wht_income_desc: String,
+    pub wht_rate_percent: Decimal,
+    pub product_code: String,
+    pub updated_at: Option<DateTime<Utc>>,
+}
+
+impl PayoutConfigRow {
+    /// The "unset" default returned before any row exists — the schema DEFAULTs mirrored so a fresh
+    /// install shows the standard ภ.ง.ด.53 terms with blank debit accounts (GET never 404s).
+    pub fn unset() -> Self {
+        Self {
+            debit_account: None,
+            fee_debit_account: None,
+            wht_form_type_code: "53".to_string(),
+            wht_pay_type_code: "1".to_string(),
+            wht_income_type_code: "5".to_string(),
+            wht_income_desc: "ค่าบริการรักษาความปลอดภัย".to_string(),
+            wht_rate_percent: Decimal::from(3),
+            product_code: "PPY".to_string(),
+            updated_at: None,
+        }
+    }
+}
+
+/// `PUT /admin/payouts/config` body — every field optional (the admin saves incrementally). A field
+/// left `None` keeps the stored value (or the schema default on first write).
+#[derive(Debug, Deserialize)]
+pub struct UpdatePayoutConfigRequest {
+    pub debit_account: Option<String>,
+    pub fee_debit_account: Option<String>,
+    pub wht_form_type_code: Option<String>,
+    pub wht_pay_type_code: Option<String>,
+    pub wht_income_type_code: Option<String>,
+    pub wht_income_desc: Option<String>,
+    pub wht_rate_percent: Option<Decimal>,
+}
+
+/// The persisted record of a generated batch + its per-booking items (the paid-marker rows). Passed
+/// to [`crate::repo::insert_payout_batch`], which writes the batch header + all items in ONE tx; the
+/// `UNIQUE(booking_id)` on the items is the atomic guard against paying a job twice.
+#[derive(Debug, Clone)]
+pub struct NewPayoutBatch {
+    pub file_ref: String,
+    pub system_ref: String,
+    pub batch_ref: String,
+    pub value_date: NaiveDate,
+    pub total_amount: Decimal,
+    pub created_by: Option<Uuid>,
+    pub items: Vec<NewPayoutItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct NewPayoutItem {
+    pub booking_id: Uuid,
+    pub guard_id: Uuid,
+    pub income: Decimal,
+    pub wht: Decimal,
+    pub transfer_amount: Decimal,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

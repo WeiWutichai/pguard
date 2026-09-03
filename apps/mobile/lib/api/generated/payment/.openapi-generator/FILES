@@ -22,6 +22,8 @@ lib/src/model/customer_spend.dart
 lib/src/model/date.dart
 lib/src/model/error_body.dart
 lib/src/model/error_detail.dart
+lib/src/model/excluded_guard.dart
+lib/src/model/get_payout_config200_response.dart
 lib/src/model/get_prompt_pay200_response.dart
 lib/src/model/guard_earning.dart
 lib/src/model/internal_export_user200_response.dart
@@ -30,11 +32,16 @@ lib/src/model/list_payments200_response.dart
 lib/src/model/pay_with_slip200_response.dart
 lib/src/model/payment.dart
 lib/src/model/payment_status.dart
+lib/src/model/payout_config.dart
+lib/src/model/payout_preview.dart
+lib/src/model/preview_payout200_response.dart
+lib/src/model/preview_recipient.dart
 lib/src/model/prompt_pay_info.dart
 lib/src/model/refund_queue_item.dart
 lib/src/model/refund_queue_response.dart
 lib/src/model/refund_status.dart
 lib/src/model/revenue_point.dart
 lib/src/model/revenue_report.dart
+lib/src/model/update_payout_config_request.dart
 lib/src/serializers.dart
 pubspec.yaml

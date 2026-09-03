@@ -22,6 +22,8 @@ import 'package:pguard_payment_api/src/model/create_payment_request.dart';
 import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
+import 'package:pguard_payment_api/src/model/excluded_guard.dart';
+import 'package:pguard_payment_api/src/model/get_payout_config200_response.dart';
 import 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
 import 'package:pguard_payment_api/src/model/guard_earning.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
@@ -30,12 +32,17 @@ import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
 import 'package:pguard_payment_api/src/model/pay_with_slip200_response.dart';
 import 'package:pguard_payment_api/src/model/payment.dart';
 import 'package:pguard_payment_api/src/model/payment_status.dart';
+import 'package:pguard_payment_api/src/model/payout_config.dart';
+import 'package:pguard_payment_api/src/model/payout_preview.dart';
+import 'package:pguard_payment_api/src/model/preview_payout200_response.dart';
+import 'package:pguard_payment_api/src/model/preview_recipient.dart';
 import 'package:pguard_payment_api/src/model/prompt_pay_info.dart';
 import 'package:pguard_payment_api/src/model/refund_queue_item.dart';
 import 'package:pguard_payment_api/src/model/refund_queue_response.dart';
 import 'package:pguard_payment_api/src/model/refund_status.dart';
 import 'package:pguard_payment_api/src/model/revenue_point.dart';
 import 'package:pguard_payment_api/src/model/revenue_report.dart';
+import 'package:pguard_payment_api/src/model/update_payout_config_request.dart';
 
 part 'serializers.g.dart';
 
@@ -48,6 +55,8 @@ part 'serializers.g.dart';
   CustomerSpend,
   ErrorBody,
   ErrorDetail,
+  ExcludedGuard,
+  GetPayoutConfig200Response,
   GetPromptPay200Response,
   GuardEarning,
   InternalExportUser200Response,
@@ -56,12 +65,17 @@ part 'serializers.g.dart';
   PayWithSlip200Response,
   Payment,
   PaymentStatus,
+  PayoutConfig,
+  PayoutPreview,
+  PreviewPayout200Response,
+  PreviewRecipient,
   PromptPayInfo,
   RefundQueueItem,
   RefundQueueResponse,
   RefundStatus,
   RevenuePoint,
   RevenueReport,
+  UpdatePayoutConfigRequest,
 ])
 Serializers serializers = (_$serializers.toBuilder()
       ..add(ApiResponseEnvelope.serializer)

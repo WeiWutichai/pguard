@@ -281,6 +281,14 @@ async fn main() -> anyhow::Result<()> {
             "/internal/users/{user_id}/pending-roles",
             get(api::internal_pending_roles::<AppState>),
         )
+        .route(
+            "/internal/guards/{guard_id}/payout-profile",
+            get(api::internal_guard_payout_profile::<AppState>),
+        )
+        .route(
+            "/internal/org-settings",
+            get(api::internal_org_settings::<AppState>),
+        )
         .route("/metrics", get(observability::metrics_handler))
         .layer(shared::config::build_cors_layer())
         .layer(axum::middleware::from_fn(

@@ -23,9 +23,9 @@ use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
     AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardProfileAdminResponse, GuardProfileResponse, InternalGuardRow, OrgSettingsResponse,
-    PublicCustomerProfileRow, PublicGuardProfileRow, RecruitCandidate, ResolvedNameRow,
-    SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
+    GuardPayoutRow, GuardProfileAdminResponse, GuardProfileResponse, InternalGuardRow,
+    OrgSettingsResponse, PublicCustomerProfileRow, PublicGuardProfileRow, RecruitCandidate,
+    ResolvedNameRow, SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
     UpsertGuardProfileRequest,
 };
 
@@ -266,6 +266,7 @@ struct GuardRow {
     bank_name: Option<String>,
     account_number: Option<String>,
     account_name: Option<String>,
+    tax_id: Option<String>,
     address: Option<String>,
     emergency_contact_name: Option<String>,
     emergency_contact_phone: Option<String>,
@@ -289,6 +290,7 @@ impl GuardRow {
             bank_name: self.bank_name,
             account_number: self.account_number,
             account_name: self.account_name,
+            tax_id: self.tax_id,
             address: self.address,
             emergency_contact_name: self.emergency_contact_name,
             emergency_contact_phone: self.emergency_contact_phone,
@@ -299,11 +301,13 @@ impl GuardRow {
 }
 
 /// Columns selected for a guard profile (approval_status cast to text for decoding). Order is
-/// positional — it MUST match `GuardTuple` + `guard_row_from_tuple`.
+/// positional — it MUST match `GuardTuple` + `guard_row_from_tuple`. `tax_id` is appended LAST
+/// (after `approval_status`) so the pre-existing positional indices are unchanged — only the new
+/// trailing element is added (mirrors how `created_at` is appended for the admin tuple).
 const GUARD_COLUMNS: &str = "user_id, full_name, gender, date_of_birth, years_of_experience, \
      previous_workplace, bank_name, account_number, account_name, address, \
      emergency_contact_name, emergency_contact_phone, emergency_contact_relationship, \
-     approval_status::text";
+     approval_status::text, tax_id";
 
 type GuardTuple = (
     Uuid,
@@ -320,6 +324,7 @@ type GuardTuple = (
     Option<String>, // emergency_contact_phone
     Option<String>, // emergency_contact_relationship
     String,         // approval_status
+    Option<String>, // tax_id (appended LAST)
 );
 
 /// [`GuardTuple`] + the admin queue's `created_at` (appended LAST — see [`list_guard_profiles`]).
@@ -338,6 +343,7 @@ type GuardAdminTuple = (
     Option<String>, // emergency_contact_phone
     Option<String>, // emergency_contact_relationship
     String,         // approval_status
+    Option<String>, // tax_id
     DateTime<Utc>,  // created_at
 );
 
@@ -357,6 +363,7 @@ fn guard_row_from_tuple(t: GuardTuple) -> GuardRow {
         emergency_contact_phone: t.11,
         emergency_contact_relationship: t.12,
         approval_status: t.13,
+        tax_id: t.14,
     }
 }
 
@@ -376,8 +383,9 @@ pub async fn upsert_guard_profile(
         INSERT INTO profile.guard_profiles
             (user_id, full_name, gender, date_of_birth, years_of_experience, previous_workplace,
              bank_name, account_number, account_name, address,
-             emergency_contact_name, emergency_contact_phone, emergency_contact_relationship)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+             emergency_contact_name, emergency_contact_phone, emergency_contact_relationship,
+             tax_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         ON CONFLICT (user_id) DO UPDATE SET
             full_name                      = EXCLUDED.full_name,
             gender                         = EXCLUDED.gender,
@@ -391,6 +399,7 @@ pub async fn upsert_guard_profile(
             emergency_contact_name         = EXCLUDED.emergency_contact_name,
             emergency_contact_phone        = EXCLUDED.emergency_contact_phone,
             emergency_contact_relationship = EXCLUDED.emergency_contact_relationship,
+            tax_id                         = EXCLUDED.tax_id,
             updated_at                     = now()
         RETURNING {GUARD_COLUMNS}
         "#
@@ -409,6 +418,7 @@ pub async fn upsert_guard_profile(
         .bind(&req.emergency_contact_name)
         .bind(&req.emergency_contact_phone)
         .bind(&req.emergency_contact_relationship)
+        .bind(&req.tax_id)
         .fetch_one(db)
         .await?;
     guard_row_from_tuple(row).into_response()
@@ -733,10 +743,10 @@ pub async fn list_guard_profiles(
     let rows = query.fetch_all(db).await?;
     rows.into_iter()
         .map(|row| {
-            let created_at = row.14;
+            let created_at = row.15;
             let base: GuardTuple = (
                 row.0, row.1, row.2, row.3, row.4, row.5, row.6, row.7, row.8, row.9, row.10,
-                row.11, row.12, row.13,
+                row.11, row.12, row.13, row.14,
             );
             Ok(GuardProfileAdminResponse {
                 profile: guard_row_from_tuple(base).into_response()?,
@@ -1200,6 +1210,25 @@ pub async fn get_org_settings(db: &PgPool) -> Result<OrgSettingsResponse, AppErr
     .fetch_optional(db)
     .await?;
     Ok(row.unwrap_or_else(OrgSettingsResponse::unset))
+}
+
+/// Read the guard-payout PII the payment aggregator needs to build one recipient (name + FULL
+/// tax id + address + contact phone), by the guard's `user_id`. `None` when there is no guard
+/// profile for that id (payment then excludes the guard from the batch with a warning). The tax id
+/// is returned IN THE CLEAR here — this read is only reachable over a service-JWT internal route,
+/// never the public edge. Read from the replica.
+pub async fn guard_payout_row(
+    db: &PgPool,
+    guard_id: Uuid,
+) -> Result<Option<GuardPayoutRow>, AppError> {
+    let row: Option<GuardPayoutRow> = sqlx::query_as(
+        "SELECT full_name, tax_id, address \
+         FROM profile.guard_profiles WHERE user_id = $1",
+    )
+    .bind(guard_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
 }
 
 /// Upsert the single-row org (company) profile (PUT). The fixed `id = TRUE` primary key plus
@@ -1867,6 +1896,58 @@ mod db_tests {
         }
         let _ = sqlx::query("DELETE FROM profile.outbox WHERE payload->'payload'->>'user_id' = $1")
             .bind(approved.to_string())
+            .execute(&pool)
+            .await;
+    }
+
+    /// `guard_payout_row` returns the guard's name + FULL (unmasked) tax id + address + contact phone
+    /// for the service-JWT payout read; `None` for an unknown guard. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn guard_payout_row_returns_unmasked_pii() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let guard = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                full_name: Some("สมชาย รปภ".to_string()),
+                tax_id: Some("1234567890123".to_string()),
+                address: Some("99 Rama IX Rd".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("upsert guard");
+
+        let row = guard_payout_row(&pool, guard)
+            .await
+            .expect("read")
+            .expect("guard exists");
+        assert_eq!(row.full_name.as_deref(), Some("สมชาย รปภ"));
+        assert_eq!(
+            row.tax_id.as_deref(),
+            Some("1234567890123"),
+            "tax id is FULL (unmasked) on the internal payout read"
+        );
+        assert_eq!(row.address.as_deref(), Some("99 Rama IX Rd"));
+
+        // Unknown guard → None (payment excludes them with a warning, never pays a stranger).
+        assert!(guard_payout_row(&pool, Uuid::new_v4())
+            .await
+            .expect("read")
+            .is_none());
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard)
             .execute(&pool)
             .await;
     }

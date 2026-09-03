@@ -227,6 +227,107 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
 
+  /admin/payouts/config:
+    get:
+      tags: [Admin]
+      summary: Guard-payout settings (role=admin)
+      description: |
+        The single-row company payout settings — the debit accounts the transfers come from + the
+        ภ.ง.ด. withholding terms (form/pay/income type + rate). Blank debit accounts + the standard
+        ภ.ง.ด.53 defaults when unset (never 404s). Admin only.
+      operationId: getPayoutConfig
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The payout settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PayoutConfig' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    put:
+      tags: [Admin]
+      summary: Save guard-payout settings (role=admin)
+      description: Incremental — a field left null keeps the stored value (or the schema default on first write). Admin only.
+      operationId: updatePayoutConfig
+      security: [{ bearerAuth: [] }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UpdatePayoutConfigRequest' }
+      responses:
+        '200':
+          description: The saved payout settings
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PayoutConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/payouts/preview:
+    get:
+      tags: [Admin]
+      summary: Preview the guard-payout batch (role=admin)
+      description: |
+        The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT
+        withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the
+        reason (missing name / tax id / a usable PromptPay proxy). READ ONLY: computes but persists
+        nothing and marks nothing paid. Admin only.
+      operationId: previewPayout
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The aggregated preview
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ApiResponseEnvelope'
+                  - type: object
+                    properties:
+                      data: { $ref: '#/components/schemas/PayoutPreview' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /admin/payouts/export:
+    post:
+      tags: [Admin]
+      summary: Generate + download the SCB guard-payout upload file (role=admin)
+      description: |
+        Build the SCB Business Net bulk-upload text for the whole unpaid backlog, PERSIST the batch +
+        a per-booking paid-marker (so no job is ever paid twice), and return the file as
+        `text/plain` (UTF-8, no BOM) for download. 409 `PAYOUT_ALREADY_PAID` if a concurrent export
+        already claimed a booking; 400 when there is nothing payable or the company/debit config is
+        incomplete. Admin only.
+      operationId: exportPayout
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: The SCB upload file (pipe-delimited text)
+          content:
+            text/plain:
+              schema: { type: string }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409':
+          description: A job in the batch was already paid out by a concurrent export (`error.code = PAYOUT_ALREADY_PAID`).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorBody' }
+
   /admin/reports/revenue:
     get:
       tags: [Admin]
@@ -779,3 +880,61 @@ components:
       properties:
         code: { type: string, example: CONFLICT }
         message: { type: string }
+
+    PayoutConfig:
+      type: object
+      description: The single-row guard-payout settings (company debit accounts + ภ.ง.ด. terms).
+      properties:
+        debit_account: { type: string, nullable: true, description: Company account the transfers are debited from. }
+        fee_debit_account: { type: string, nullable: true, description: Account the transfer fees are debited from (defaults to the debit account). }
+        wht_form_type_code: { type: string, example: '53', description: 'ภ.ง.ด. form code (53 = payments to a company).' }
+        wht_pay_type_code: { type: string, example: '1' }
+        wht_income_type_code: { type: string, example: '5', description: Assessable-income type (service fee). }
+        wht_income_desc: { type: string, example: 'ค่าบริการรักษาความปลอดภัย' }
+        wht_rate_percent: { type: string, example: '3', description: 'Withholding rate percent (exact decimal, string).' }
+        product_code: { type: string, example: 'PPY', description: SCB product (PromptPay credit). }
+        updated_at: { type: string, format: date-time, nullable: true, description: null until first saved. }
+
+    UpdatePayoutConfigRequest:
+      type: object
+      description: Every field optional — a null field keeps the stored value (or the default on first write).
+      properties:
+        debit_account: { type: string, nullable: true }
+        fee_debit_account: { type: string, nullable: true }
+        wht_form_type_code: { type: string, nullable: true }
+        wht_pay_type_code: { type: string, nullable: true }
+        wht_income_type_code: { type: string, nullable: true }
+        wht_income_desc: { type: string, nullable: true }
+        wht_rate_percent: { type: string, nullable: true, description: '0–100 (exact decimal, string).' }
+
+    PreviewRecipient:
+      type: object
+      required: [name, proxy_masked, income, wht, transfer]
+      properties:
+        name: { type: string }
+        proxy_masked: { type: string, description: PromptPay proxy masked to its last 4 (PII). }
+        income: { type: string, description: Assessable income (2dp string). }
+        wht: { type: string, description: Withholding tax (2dp string). }
+        transfer: { type: string, description: Net PromptPay transfer = income − WHT (2dp string). }
+
+    ExcludedGuard:
+      type: object
+      required: [guard_id, reason, job_count]
+      properties:
+        guard_id: { type: string, format: uuid }
+        reason: { type: string, description: Why the guard cannot be paid this batch (missing name / tax id / proxy). }
+        job_count: { type: integer, format: int64 }
+
+    PayoutPreview:
+      type: object
+      required: [recipients, excluded, recipient_count, total_transfer, total_wht]
+      properties:
+        recipients:
+          type: array
+          items: { $ref: '#/components/schemas/PreviewRecipient' }
+        excluded:
+          type: array
+          items: { $ref: '#/components/schemas/ExcludedGuard' }
+        recipient_count: { type: integer, format: int64 }
+        total_transfer: { type: string, description: Σ net transfers (2dp string). }
+        total_wht: { type: string, description: Σ withholding (2dp string). }

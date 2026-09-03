@@ -826,6 +826,8 @@ export interface components {
             /** @description Stored in full; masked on owner reads (PDPA). */
             account_number?: string | null;
             account_name?: string | null;
+            /** @description Thai national/tax id (ภ.ง.ด.53 TIN + PromptPay NAT). Stored in full; masked on owner reads (PDPA). */
+            tax_id?: string | null;
             /** @description Home address (v1 parity). */
             address?: string | null;
             emergency_contact_name?: string | null;
@@ -1037,6 +1039,12 @@ export interface components {
              */
             account_number?: string | null;
             account_name?: string | null;
+            /**
+             * @description Thai national/tax id — the ภ.ง.ด.53 recipient TIN + PromptPay NAT proxy for guard
+             *     payouts. MASKED to its last 4 characters on the owner read like `account_number`; the
+             *     FULL value is exposed only over the service-JWT internal payout-profile endpoint.
+             */
+            tax_id?: string | null;
             address?: string | null;
             emergency_contact_name?: string | null;
             emergency_contact_phone?: string | null;
