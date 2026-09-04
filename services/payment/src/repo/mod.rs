@@ -28,6 +28,7 @@ use shared::error::AppError;
 use shared_events::topics;
 use shared_events::EventEnvelope;
 
+use crate::domain::payout::PayoutSelection;
 use crate::domain::ChargeTerms;
 use crate::models::{
     CustomerSpend, NewPayoutBatch, PaymentResponse, PayoutConfigRow, RefundQueueItem, RevenuePoint,
@@ -114,18 +115,33 @@ pub async fn guard_earnings(
 /// `booking_id` is NOT yet in `payout_batch_items` (the paid-marker). `actual_hours IS NOT NULL` is
 /// the "job finished + reconciled" signal (it is stamped at completion reconcile) — a payment is
 /// `completed` at PRE-PAY, so that status alone would include in-progress jobs. Ordered by guard so
-/// the aggregator can group. NO limit: a payout run pays the whole backlog.
-pub async fn unpaid_payout_rows(db: &sqlx::PgPool) -> Result<Vec<UnpaidPayoutRow>, AppError> {
+/// the aggregator can group.
+///
+/// `sel` narrows the run (see [`PayoutSelection`]): to the guards the admin ticked, and/or to jobs
+/// finished within a day window. An all-`None` selection is the default whole-backlog run (NO
+/// limit — one file pays every payable guard). The window is compared in **Thai local days**
+/// (`Asia/Bangkok`), inclusive on both ends, against `updated_at` — the timestamp the completion
+/// reconcile stamps when it writes `actual_hours`, i.e. when the job became payable.
+pub async fn unpaid_payout_rows(
+    db: &sqlx::PgPool,
+    sel: &PayoutSelection,
+) -> Result<Vec<UnpaidPayoutRow>, AppError> {
     let rows = sqlx::query_as::<_, UnpaidPayoutRow>(
         "SELECT p.booking_id, p.guard_id, p.actual_hours, p.commission_percent \
          FROM payment.payments p \
          WHERE p.status = 'completed' \
            AND p.guard_id IS NOT NULL \
            AND p.actual_hours IS NOT NULL \
+           AND ($1::uuid[] IS NULL OR p.guard_id = ANY($1)) \
+           AND ($2::date IS NULL OR (p.updated_at AT TIME ZONE 'Asia/Bangkok')::date >= $2) \
+           AND ($3::date IS NULL OR (p.updated_at AT TIME ZONE 'Asia/Bangkok')::date <= $3) \
            AND NOT EXISTS ( \
                SELECT 1 FROM payment.payout_batch_items i WHERE i.booking_id = p.booking_id) \
          ORDER BY p.guard_id, p.created_at",
     )
+    .bind(sel.guard_ids.as_deref())
+    .bind(sel.from)
+    .bind(sel.to)
     .fetch_all(db)
     .await?;
     Ok(rows)
@@ -1531,10 +1547,74 @@ mod db_tests {
         assert_eq!(cfg.wht_form_type_code, "53", "default kept");
 
         // the reconciled job is in the unpaid backlog.
-        let rows = unpaid_payout_rows(&pool).await.expect("backlog");
+        let all = PayoutSelection::default();
+        let rows = unpaid_payout_rows(&pool, &all).await.expect("backlog");
         assert!(
             rows.iter().any(|r| r.booking_id == booking_id),
             "reconciled completed job is payable"
+        );
+
+        // ----- selection: WHO gets paid + WHICH days -----
+        let today = chrono::Utc::now()
+            .with_timezone(&chrono::FixedOffset::east_opt(7 * 3600).unwrap())
+            .date_naive();
+        let picked = |sel: &PayoutSelection| {
+            let pool = pool.clone();
+            let sel = sel.clone();
+            async move {
+                unpaid_payout_rows(&pool, &sel)
+                    .await
+                    .expect("filtered backlog")
+                    .iter()
+                    .any(|r| r.booking_id == booking_id)
+            }
+        };
+
+        // ticking THIS guard includes the job; ticking only someone else excludes it.
+        assert!(
+            picked(&PayoutSelection {
+                guard_ids: Some(vec![guard_id, Uuid::new_v4()]),
+                ..Default::default()
+            })
+            .await,
+            "a selection naming the guard (among others) pays them"
+        );
+        assert!(
+            !picked(&PayoutSelection {
+                guard_ids: Some(vec![Uuid::new_v4()]),
+                ..Default::default()
+            })
+            .await,
+            "an unselected guard's job is NOT in the run"
+        );
+
+        // the day window is inclusive on both ends, in Thai local days.
+        assert!(
+            picked(&PayoutSelection {
+                guard_ids: None,
+                from: Some(today),
+                to: Some(today),
+            })
+            .await,
+            "a job reconciled today is inside today's window"
+        );
+        assert!(
+            !picked(&PayoutSelection {
+                guard_ids: None,
+                from: Some(today + chrono::Duration::days(1)),
+                to: None,
+            })
+            .await,
+            "a window starting tomorrow excludes today's job"
+        );
+        assert!(
+            !picked(&PayoutSelection {
+                guard_ids: None,
+                from: None,
+                to: Some(today - chrono::Duration::days(1)),
+            })
+            .await,
+            "a window ending yesterday excludes today's job"
         );
 
         // pay it — insert the batch + paid-marker item.
@@ -1556,7 +1636,7 @@ mod db_tests {
         insert_payout_batch(&pool, &batch).await.expect("pay");
 
         // now it is NO LONGER in the backlog (paid-marker excludes it).
-        let after = unpaid_payout_rows(&pool).await.expect("backlog 2");
+        let after = unpaid_payout_rows(&pool, &all).await.expect("backlog 2");
         assert!(
             !after.iter().any(|r| r.booking_id == booking_id),
             "a paid job drops out of the backlog"

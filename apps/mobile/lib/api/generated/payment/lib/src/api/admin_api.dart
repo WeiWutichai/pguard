@@ -12,7 +12,9 @@ import 'package:pguard_payment_api/src/api_util.dart';
 import 'package:pguard_payment_api/src/model/admin_customer_spend_report200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_refund_queue200_response.dart';
 import 'package:pguard_payment_api/src/model/admin_revenue_report200_response.dart';
+import 'package:pguard_payment_api/src/model/date.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
+import 'package:pguard_payment_api/src/model/export_payout_request.dart';
 import 'package:pguard_payment_api/src/model/get_payout_config200_response.dart';
 import 'package:pguard_payment_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_payment_api/src/model/list_payments200_response.dart';
@@ -385,9 +387,10 @@ class AdminApi {
   }
 
   /// Generate + download the SCB guard-payout upload file (role&#x3D;admin)
-  /// Build the SCB Business Net bulk-upload text for the whole unpaid backlog, PERSIST the batch + a per-booking paid-marker (so no job is ever paid twice), and return the file as &#x60;text/plain&#x60; (UTF-8, no BOM) for download. 409 &#x60;PAYOUT_ALREADY_PAID&#x60; if a concurrent export already claimed a booking; 400 when there is nothing payable or the company/debit config is incomplete. Admin only. 
+  /// Build ONE SCB Business Net bulk-upload file that pays MANY guards — one &#x60;TXNDET&#x60; (+ &#x60;WHTCER&#x60; when tax is withheld) per guard inside a single &#x60;BCHDET&#x60; batch, whose totals are the sum of every transfer. PERSIST the batch + a per-booking paid-marker (so no job is ever paid twice), and return the file as &#x60;text/plain&#x60; (UTF-8, no BOM) for download.  The request body is OPTIONAL: send none to pay the whole unpaid backlog (every payable guard), or narrow the run with &#x60;guard_ids&#x60; (the admin&#39;s tick list) and/or a &#x60;from&#x60;/&#x60;to&#x60; day window. Guards left out are neither written to the file nor marked paid.  409 &#x60;PAYOUT_ALREADY_PAID&#x60; if a concurrent export already claimed a booking; 400 when the selection is empty/invalid, nothing is payable, or the company/debit config is incomplete. Admin only. 
   ///
   /// Parameters:
+  /// * [exportPayoutRequest] 
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -398,6 +401,7 @@ class AdminApi {
   /// Returns a [Future] containing a [Response] with a [String] as data
   /// Throws [DioException] if API call or serialization fails
   Future<Response<String>> exportPayout({ 
+    ExportPayoutRequest? exportPayoutRequest,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -421,11 +425,31 @@ class AdminApi {
         ],
         ...?extra,
       },
+      contentType: 'application/json',
       validateStatus: validateStatus,
     );
 
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(ExportPayoutRequest);
+      _bodyData = exportPayoutRequest == null ? null : _serializers.serialize(exportPayoutRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
     final _response = await _dio.request<Object>(
       _path,
+      data: _bodyData,
       options: _options,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
@@ -621,9 +645,11 @@ class AdminApi {
   }
 
   /// Preview the guard-payout batch (role&#x3D;admin)
-  /// The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the reason (missing name / tax id / a usable PromptPay proxy). READ ONLY: computes but persists nothing and marks nothing paid. Admin only. 
+  /// The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the reason (missing name / tax id / a usable PromptPay proxy). Every row carries its &#x60;guard_id&#x60; so the screen can tick a subset and pass those ids to the export. Optional &#x60;from&#x60;/&#x60;to&#x60; narrow the backlog to jobs finished within a day window. READ ONLY: computes but persists nothing and marks nothing paid. Admin only. 
   ///
   /// Parameters:
+  /// * [from] - Inclusive first day the jobs were finished (Thai local day, `YYYY-MM-DD`).
+  /// * [to] - Inclusive last day the jobs were finished (Thai local day, `YYYY-MM-DD`).
   /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
   /// * [headers] - Can be used to add additional headers to the request
   /// * [extras] - Can be used to add flags to the request
@@ -634,6 +660,8 @@ class AdminApi {
   /// Returns a [Future] containing a [Response] with a [PreviewPayout200Response] as data
   /// Throws [DioException] if API call or serialization fails
   Future<Response<PreviewPayout200Response>> previewPayout({ 
+    Date? from,
+    Date? to,
     CancelToken? cancelToken,
     Map<String, dynamic>? headers,
     Map<String, dynamic>? extra,
@@ -660,9 +688,15 @@ class AdminApi {
       validateStatus: validateStatus,
     );
 
+    final _queryParameters = <String, dynamic>{
+      if (from != null) r'from': encodeQueryParameter(_serializers, from, const FullType(Date)),
+      if (to != null) r'to': encodeQueryParameter(_serializers, to, const FullType(Date)),
+    };
+
     final _response = await _dio.request<Object>(
       _path,
       options: _options,
+      queryParameters: _queryParameters,
       cancelToken: cancelToken,
       onSendProgress: onSendProgress,
       onReceiveProgress: onReceiveProgress,

@@ -755,15 +755,20 @@ mod tests {
     #[derive(Clone, Default)]
     struct StubProfileReader {
         guard: Option<crate::profile_client::GuardPayoutProfile>,
+        /// Per-guard PII, keyed by guard id — a payout batch pays MANY different people, each with
+        /// their own name/tax id. Falls back to `guard` for the single-guard cases.
+        guards: std::collections::HashMap<Uuid, crate::profile_client::GuardPayoutProfile>,
         org: Option<crate::profile_client::OrgTaxInfo>,
     }
     impl crate::profile_client::ProfileReader for StubProfileReader {
         async fn get_guard_payout_profile(
             &self,
-            _guard_id: Uuid,
+            guard_id: Uuid,
         ) -> Result<crate::profile_client::GuardPayoutProfile, AppError> {
-            self.guard
-                .clone()
+            self.guards
+                .get(&guard_id)
+                .cloned()
+                .or_else(|| self.guard.clone())
                 .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))
         }
         async fn get_org_settings(&self) -> Result<crate::profile_client::OrgTaxInfo, AppError> {
@@ -959,6 +964,14 @@ mod tests {
                 .route(
                     "/admin/reports/customer-spend",
                     get(admin_customer_spend_report::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/preview",
+                    get(crate::api::payouts::preview::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/export",
+                    post(crate::api::payouts::export::<TestDeps>),
                 )
                 .with_state(deps),
         )
@@ -1669,5 +1682,364 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- guard payout: WHO gets paid in one SCB file -----
+
+    /// POST /admin/payouts/export with an optional JSON body (None = no body at all).
+    async fn post_payout_export(app: Router, token: &str, body: Option<&str>) -> StatusCode {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/payouts/export")
+            .header("authorization", format!("Bearer {token}"));
+        let req = match body {
+            Some(json) => req
+                .header("content-type", "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn payout_endpoints_reject_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not see who the platform pays — nor trigger a money file.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/payouts/preview")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let guard_tok = customer_token(Uuid::new_v4(), "guard");
+        assert_eq!(
+            post_payout_export(app, &guard_tok, None).await,
+            StatusCode::FORBIDDEN,
+            "a guard cannot pay themselves"
+        );
+    }
+
+    #[tokio::test]
+    async fn payout_export_rejects_an_empty_or_oversized_guard_selection() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        // Ticking NOBODY must not silently fall back to paying the whole backlog → 400, decided
+        // before any DB read (the test pool is intentionally unusable).
+        assert_eq!(
+            post_payout_export(app.clone(), &admin, Some(r#"{"guard_ids":[]}"#)).await,
+            StatusCode::BAD_REQUEST
+        );
+        let too_many: Vec<String> = (0..crate::domain::payout::MAX_SELECTED_GUARDS + 1)
+            .map(|_| format!("\"{}\"", Uuid::new_v4()))
+            .collect();
+        assert_eq!(
+            post_payout_export(
+                app,
+                &admin,
+                Some(&format!("{{\"guard_ids\":[{}]}}", too_many.join(","))),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "an absurdly long selection is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn payout_export_rejects_an_inverted_window() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        assert_eq!(
+            post_payout_export(
+                app.clone(),
+                &admin,
+                Some(r#"{"from":"2026-09-30","to":"2026-09-01"}"#),
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        // Same gate on the read-only preview (query params).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/payouts/preview?from=2026-09-30&to=2026-09-01")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    /// END-TO-END, real Postgres: ONE export file pays MANY guards. Three guards have unpaid
+    /// reconciled jobs; the admin ticks two of them; the generated SCB text must carry one TXNDET
+    /// (+ WHTCER) PER TICKED GUARD inside a single batch whose BCHDET/TRAILR totals sum every
+    /// transfer — and only the ticked guards' bookings may be marked paid. DATABASE_URL + test
+    /// Redis gated.
+    #[tokio::test]
+    async fn payout_export_pays_many_guards_in_one_file() {
+        let (Ok(db_url), Ok(redis_url)) = (
+            std::env::var("DATABASE_URL"),
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL")),
+        ) else {
+            eprintln!("SKIP: DATABASE_URL / TEST_REDIS_URL not set (hermetic default)");
+            return;
+        };
+        let Ok(db) = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+        else {
+            eprintln!("SKIP: DATABASE_URL not reachable");
+            return;
+        };
+        let Ok(redis) = shared::redis_client::create_connection_manager(&redis_url).await else {
+            eprintln!("SKIP: test Redis not reachable");
+            return;
+        };
+
+        // ── seed: guard A with TWO finished jobs, guard B with one, guard C (no tax id) with one.
+        let (guard_a, guard_b, guard_c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        let jobs = [
+            (Uuid::new_v4(), guard_a, "2", "10"),
+            (Uuid::new_v4(), guard_a, "1", "10"),
+            (Uuid::new_v4(), guard_b, "3", "0"),
+            (Uuid::new_v4(), guard_c, "2", "0"),
+        ];
+        for (booking_id, guard_id, hours, commission) in jobs {
+            crate::repo::prepay_idempotent(
+                &db,
+                booking_id,
+                Uuid::new_v4(),
+                Some(guard_id),
+                &crate::domain::ChargeTerms::new(
+                    crate::domain::PriceBreakdown::from_subtotal("2000".parse().unwrap()),
+                    commission.parse().unwrap(),
+                    rust_decimal::Decimal::ZERO,
+                ),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay");
+            // RECONCILE: stamp the actual hours worked → the job becomes payable to the guard.
+            sqlx::query(
+                "UPDATE payment.payments SET actual_hours = $2::numeric, commission_percent = $3::numeric \
+                 WHERE booking_id = $1",
+            )
+            .bind(booking_id)
+            .bind(hours)
+            .bind(commission)
+            .execute(&db)
+            .await
+            .expect("reconcile");
+        }
+
+        // company debit account + a 3% withholding rate.
+        crate::repo::upsert_payout_config(
+            &db,
+            &crate::models::UpdatePayoutConfigRequest {
+                debit_account: Some("1234567890".to_string()),
+                fee_debit_account: None,
+                wht_form_type_code: None,
+                wht_pay_type_code: None,
+                wht_income_type_code: None,
+                wht_income_desc: None,
+                wht_rate_percent: Some("3".parse().unwrap()),
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("payout config");
+
+        let pii = |name: &str, tax_id: Option<&str>| crate::profile_client::GuardPayoutProfile {
+            full_name: Some(name.to_string()),
+            tax_id: tax_id.map(str::to_string),
+            address: Some("99 Rama IX Rd, Bangkok".to_string()),
+            phone: None,
+        };
+        let profile = StubProfileReader {
+            guard: None,
+            guards: [
+                (guard_a, pii("รปภ เอ", Some("1111111111111"))),
+                (guard_b, pii("รปภ บี", Some("2222222222222"))),
+                (guard_c, pii("รปภ ซี", None)), // no tax id, no phone → not payable
+            ]
+            .into_iter()
+            .collect(),
+            org: Some(crate::profile_client::OrgTaxInfo {
+                company_name: Some("PGuard Co., Ltd.".to_string()),
+                tax_id: Some("0105551234567".to_string()),
+                address: Some("1 Sathorn Rd, Bangkok".to_string()),
+            }),
+        };
+        let deps = TestDeps {
+            dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+            db: db.clone(),
+            redis,
+            reader: StubReader {
+                booking: Some(payable_booking(Uuid::new_v4())), // base_fee 500/hr
+            },
+            verifier: StubVerifier::ok(sample_verified("0140315796")),
+            profile,
+            s3: stub_s3(),
+            slip_config: sim_config(),
+        };
+        let app = Router::new()
+            .route(
+                "/admin/payouts/export",
+                post(crate::api::payouts::export::<TestDeps>),
+            )
+            .with_state(deps);
+
+        // ── export, ticking A and B only (C is unpayable AND unticked).
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/payouts/export")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"guard_ids":["{guard_a}","{guard_b}"]}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK, "the batch generates");
+        let bytes = axum::body::to_bytes(res.into_body(), 256 * 1024)
+            .await
+            .expect("body");
+        let file = String::from_utf8(bytes.to_vec()).expect("UTF-8, no BOM");
+        let lines: Vec<&str> = file.split("\r\n").collect();
+
+        // HEADER, BCHDET, (TXNDET + WHTCER) × 2 guards, TRAILR
+        assert_eq!(lines.len(), 7, "two guards ride ONE file: {file}");
+        let txn: Vec<&Vec<&str>> = Vec::new();
+        let _ = txn;
+        let credits: Vec<Vec<&str>> = lines
+            .iter()
+            .filter(|l| l.starts_with("TXNDET"))
+            .map(|l| l.split('|').collect())
+            .collect();
+        assert_eq!(credits.len(), 2, "one credit line PER GUARD");
+
+        // A: (500×2−10%) + (500×1−10%) = 900 + 450 = 1350 income; 3% WHT 27.00 + 13.50 = 40.50;
+        //    transfer 1309.50 — the guard's TWO jobs are summed into ONE transfer.
+        // B: 500×3 = 1500 income; 45.00 WHT; 1455.00 transfer.
+        let by_proxy = |proxy: &str| -> Vec<&str> {
+            credits
+                .iter()
+                .find(|c| c[2] == proxy)
+                .unwrap_or_else(|| panic!("no credit for {proxy} in {file}"))
+                .clone()
+        };
+        let a = by_proxy("1111111111111");
+        assert_eq!(a[6], "1309.50", "guard A: both jobs in one transfer");
+        assert_eq!(a[13], "รปภ เอ");
+        assert_eq!(a[19], "40.50", "guard A withheld tax");
+        let b = by_proxy("2222222222222");
+        assert_eq!(b[6], "1455.00");
+        assert_eq!(b[19], "45.00");
+
+        let bch: Vec<&str> = lines[1].split('|').collect();
+        assert_eq!(bch[6], "2764.50", "batch total = 1309.50 + 1455.00");
+        assert_eq!(bch[7], "2", "two credits in the batch");
+        let trailer: Vec<&str> = lines[6].split('|').collect();
+        assert_eq!(trailer, vec!["TRAILR", "1", "2", "2764.50"]);
+        assert_eq!(
+            file.matches("WHTCER").count(),
+            2,
+            "one ภ.ง.ด. certificate per paid guard"
+        );
+
+        // ── paid-markers: only the TICKED guards' jobs (3 of them) are marked paid; C stays unpaid.
+        let paid: Vec<(Uuid, Uuid)> = sqlx::query_as(
+            "SELECT booking_id, guard_id FROM payment.payout_batch_items WHERE guard_id = ANY($1)",
+        )
+        .bind(vec![guard_a, guard_b, guard_c])
+        .fetch_all(&db)
+        .await
+        .expect("markers");
+        assert_eq!(paid.len(), 3, "A's two jobs + B's one job are marked paid");
+        assert!(
+            !paid.iter().any(|(_, g)| *g == guard_c),
+            "an unticked guard is never marked paid"
+        );
+
+        // ── re-running the same selection pays nothing twice (the backlog is empty for A+B).
+        let again = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/payouts/export")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"guard_ids":["{guard_a}","{guard_b}"]}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            again.status(),
+            StatusCode::BAD_REQUEST,
+            "nothing left to pay for those guards"
+        );
+
+        // cleanup (items cascade with their batch).
+        let booking_ids: Vec<Uuid> = jobs.iter().map(|(b, _, _, _)| *b).collect();
+        let _ = sqlx::query(
+            "DELETE FROM payment.payout_batches WHERE id IN \
+             (SELECT batch_id FROM payment.payout_batch_items WHERE booking_id = ANY($1))",
+        )
+        .bind(&booking_ids)
+        .execute(&db)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payout_batch_items WHERE booking_id = ANY($1)")
+            .bind(&booking_ids)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
+        )
+        .bind(
+            booking_ids
+                .iter()
+                .map(|b| b.to_string())
+                .collect::<Vec<_>>(),
+        )
+        .execute(&db)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
+            .bind(&booking_ids)
+            .execute(&db)
+            .await;
     }
 }

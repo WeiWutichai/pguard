@@ -125,6 +125,7 @@ Class | Method | HTTP request | Description
  - [ErrorBody](doc/ErrorBody.md)
  - [ErrorDetail](doc/ErrorDetail.md)
  - [ExcludedGuard](doc/ExcludedGuard.md)
+ - [ExportPayoutRequest](doc/ExportPayoutRequest.md)
  - [GetPayoutConfig200Response](doc/GetPayoutConfig200Response.md)
  - [GetPromptPay200Response](doc/GetPromptPay200Response.md)
  - [GuardEarning](doc/GuardEarning.md)

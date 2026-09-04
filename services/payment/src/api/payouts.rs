@@ -4,20 +4,26 @@
 //! - `GET /admin/payouts/config` — the single-row payout settings (debit accounts + WHT terms).
 //! - `PUT /admin/payouts/config` — save them (incremental).
 //! - `GET /admin/payouts/preview` — the unpaid backlog aggregated per guard (who gets paid what) +
-//!   the guards EXCLUDED (missing tax id / PromptPay proxy).
+//!   the guards EXCLUDED (missing tax id / PromptPay proxy). Optional `from`/`to` day window.
 //! - `POST /admin/payouts/export` — build the file, PERSIST the batch (marking those bookings paid),
-//!   return the text as UTF-8 (no BOM) for download.
+//!   return the text as UTF-8 (no BOM) for download. Optional body selects WHICH guards (and which
+//!   day window) to pay; no body = the whole unpaid backlog, every payable guard.
+//!
+//! ONE file pays MANY guards: the aggregation groups the backlog per guard, and the SCB writer emits
+//! one `TXNDET` (+ `WHTCER`) per guard inside a single `BCHDET` batch. Narrowing the selection only
+//! narrows WHO is in the file — the per-booking paid-markers are written from the SAME filtered rows,
+//! so a guard left unticked stays unpaid and simply shows up in the next run.
 //!
 //! The aggregation reads the authoritative `base_fee` per booking from booking's internal read, the
 //! guard PII + the company WHT-payer block from profile's internal reads, and computes the payout
 //! with the pure [`crate::domain::payout`] math + the pure [`crate::domain::scb_export`] file writer.
 
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::http::header;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use chrono::Utc;
-use serde::Serialize;
+use chrono::{NaiveDate, Utc};
+use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use shared::auth::AuthUser;
@@ -25,7 +31,7 @@ use shared::error::AppError;
 use shared::models::ApiResponse;
 
 use crate::booking_client::BookingReader;
-use crate::domain::payout::compute_payout;
+use crate::domain::payout::{compute_payout, PayoutSelection};
 use crate::domain::promptpay::{classify_proxy, PromptPayProxy};
 use crate::domain::scb_export::{
     self, format_amount, PayoutBatch, PayoutConfig, PayoutRecipient, WhtPayer,
@@ -78,6 +84,26 @@ pub async fn put_config<S: PaymentDeps>(
 
 // ----- preview + export shared aggregation -----
 
+/// The `from`/`to` day window a preview may be narrowed to (both optional, inclusive, Thai days).
+#[derive(Debug, Default, Deserialize)]
+pub struct PayoutWindowQuery {
+    pub from: Option<NaiveDate>,
+    pub to: Option<NaiveDate>,
+}
+
+/// `POST /admin/payouts/export` body — ALL fields optional, and an absent body means the historical
+/// default: pay the whole unpaid backlog for every payable guard. `guard_ids` is the admin's tick
+/// list from the preview screen (MANY guards ride one file); `from`/`to` bound the finished-job days.
+#[derive(Debug, Default, Deserialize)]
+pub struct ExportPayoutRequest {
+    #[serde(default)]
+    pub guard_ids: Option<Vec<Uuid>>,
+    #[serde(default)]
+    pub from: Option<NaiveDate>,
+    #[serde(default)]
+    pub to: Option<NaiveDate>,
+}
+
 /// One guard EXCLUDED from the batch, with why (so the admin can fix the profile and re-run).
 #[derive(Debug, Serialize)]
 pub struct ExcludedGuard {
@@ -86,10 +112,18 @@ pub struct ExcludedGuard {
     pub job_count: usize,
 }
 
+/// One payable guard: the SCB recipient plus the identity the preview screen needs to let an admin
+/// tick them (`guard_id` is what `export`'s `guard_ids` selects on) and how many jobs they cover.
+struct AggregatedRecipient {
+    guard_id: Uuid,
+    job_count: usize,
+    recipient: PayoutRecipient,
+}
+
 /// The aggregation result: the SCB recipients to pay, the per-booking paid-marker items, and the
 /// guards excluded with reasons.
 struct Aggregated {
-    recipients: Vec<PayoutRecipient>,
+    recipients: Vec<AggregatedRecipient>,
     items: Vec<NewPayoutItem>,
     excluded: Vec<ExcludedGuard>,
 }
@@ -110,15 +144,18 @@ fn resolve_proxy(tax_id: Option<&str>, phone: Option<&str>) -> Option<(String, P
     None
 }
 
-/// Build the payout recipients + paid-marker items from the unpaid backlog. `wht_rate` drives the
-/// withholding (0 → no WHT). Fetches `base_fee` per booking (booking reader) + guard PII (profile
-/// reader); groups by guard; EXCLUDES a guard missing a name, a valid proxy, or — when withholding
-/// — a tax id (the ภ.ง.ด. recipient TIN), never silently paying blanks.
+/// Build the payout recipients + paid-marker items from the unpaid backlog, narrowed by `sel` (the
+/// ticked guards and/or the finished-job day window; an all-`None` selection = the whole backlog).
+/// `wht_rate` drives the withholding (0 → no WHT). Fetches `base_fee` per booking (booking reader) +
+/// guard PII (profile reader); groups by guard — MANY guards in one run — and EXCLUDES a guard
+/// missing a name, a valid proxy, or — when withholding — a tax id (the ภ.ง.ด. recipient TIN),
+/// never silently paying blanks.
 async fn aggregate<S: PaymentDeps>(
     state: &S,
     wht_rate: rust_decimal::Decimal,
+    sel: &PayoutSelection,
 ) -> Result<Aggregated, AppError> {
-    let rows = repo::unpaid_payout_rows(state.db_read()).await?;
+    let rows = repo::unpaid_payout_rows(state.db_read(), sel).await?;
 
     // Group consecutive rows by guard (the query orders by guard_id).
     let mut by_guard: Vec<(Uuid, Vec<crate::models::UnpaidPayoutRow>)> = Vec::new();
@@ -191,16 +228,20 @@ async fn aggregate<S: PaymentDeps>(
         }
 
         let (proxy_value, _) = proxy.expect("checked above");
-        recipients.push(PayoutRecipient {
-            transaction_ref: format!("PO-{}", &guard_id.simple().to_string()[..12]),
-            proxy: proxy_value,
-            tax_id: pii.tax_id.clone().unwrap_or_default(),
-            name: name.expect("checked above").to_string(),
-            address: pii.address.clone().unwrap_or_default(),
-            income,
-            wht,
-            phone: pii.phone.clone(),
-            email: None,
+        recipients.push(AggregatedRecipient {
+            guard_id,
+            job_count: jobs.len(),
+            recipient: PayoutRecipient {
+                transaction_ref: format!("PO-{}", &guard_id.simple().to_string()[..12]),
+                proxy: proxy_value,
+                tax_id: pii.tax_id.clone().unwrap_or_default(),
+                name: name.expect("checked above").to_string(),
+                address: pii.address.clone().unwrap_or_default(),
+                income,
+                wht,
+                phone: pii.phone.clone(),
+                email: None,
+            },
         });
         items.extend(guard_items);
     }
@@ -216,8 +257,13 @@ async fn aggregate<S: PaymentDeps>(
 
 #[derive(Debug, Serialize)]
 pub struct PreviewRecipient {
+    /// The guard this row pays — the id an admin sends back in `export`'s `guard_ids` to pay
+    /// exactly this subset.
+    pub guard_id: Uuid,
     pub name: String,
     pub proxy_masked: String,
+    /// How many finished jobs this row's amounts add up (one `TXNDET` covers all of them).
+    pub job_count: usize,
     pub income: String,
     pub wht: String,
     pub transfer: String,
@@ -243,28 +289,42 @@ fn mask_proxy(proxy: &str) -> String {
 }
 
 /// GET /admin/payouts/preview — the unpaid backlog aggregated per guard (who gets paid what) +
-/// the excluded guards. Read-only: computes but does NOT persist or mark anything paid.
+/// the excluded guards, optionally narrowed to a finished-job day window (`from`/`to`). Read-only:
+/// computes but does NOT persist or mark anything paid. Each row carries its `guard_id` so the
+/// screen can tick a subset and pass those ids to `export`.
 #[tracing::instrument(skip(state), fields(user = %user.user_id))]
 pub async fn preview<S: PaymentDeps>(
     State(state): State<S>,
     user: AuthUser,
+    Query(window): Query<PayoutWindowQuery>,
 ) -> Result<Json<ApiResponse<PayoutPreview>>, AppError> {
     require_admin(&user)?;
+    let sel = PayoutSelection {
+        guard_ids: None,
+        from: window.from,
+        to: window.to,
+    };
+    sel.validate()?;
     let cfg = repo::get_payout_config(state.db()).await?;
-    let agg = aggregate(&state, cfg.wht_rate_percent).await?;
+    let agg = aggregate(&state, cfg.wht_rate_percent, &sel).await?;
 
-    let total_transfer: rust_decimal::Decimal =
-        agg.recipients.iter().map(|r| r.transfer_amount()).sum();
-    let total_wht: rust_decimal::Decimal = agg.recipients.iter().map(|r| r.wht).sum();
+    let total_transfer: rust_decimal::Decimal = agg
+        .recipients
+        .iter()
+        .map(|r| r.recipient.transfer_amount())
+        .sum();
+    let total_wht: rust_decimal::Decimal = agg.recipients.iter().map(|r| r.recipient.wht).sum();
     let recipients = agg
         .recipients
         .iter()
         .map(|r| PreviewRecipient {
-            name: r.name.clone(),
-            proxy_masked: mask_proxy(&r.proxy),
-            income: format_amount(r.income),
-            wht: format_amount(r.wht),
-            transfer: format_amount(r.transfer_amount()),
+            guard_id: r.guard_id,
+            name: r.recipient.name.clone(),
+            proxy_masked: mask_proxy(&r.recipient.proxy),
+            job_count: r.job_count,
+            income: format_amount(r.recipient.income),
+            wht: format_amount(r.recipient.wht),
+            transfer: format_amount(r.recipient.transfer_amount()),
         })
         .collect();
 
@@ -333,21 +393,37 @@ fn build_payer_and_config(
     Ok((payer, config))
 }
 
-/// POST /admin/payouts/export — build the SCB upload file for the whole unpaid backlog, PERSIST the
-/// batch + its per-booking paid-markers (so no job is ever paid twice), and return the file text as
-/// UTF-8 (no BOM) for download. 409 `PAYOUT_ALREADY_PAID` if a concurrent export won a booking; 400
-/// when there is nothing to pay or the company/debit config is incomplete.
-#[tracing::instrument(skip(state), fields(user = %user.user_id))]
+/// POST /admin/payouts/export — build ONE SCB upload file paying MANY guards (one `TXNDET` +
+/// `WHTCER` per guard inside a single batch), PERSIST the batch + its per-booking paid-markers (so
+/// no job is ever paid twice), and return the file text as UTF-8 (no BOM) for download.
+///
+/// The optional body narrows the run: `guard_ids` = pay only these guards (the preview screen's tick
+/// list), `from`/`to` = only jobs finished in that day window. No body (or an all-null one) keeps the
+/// original behaviour: the whole unpaid backlog, every payable guard. Unselected guards are neither
+/// written to the file NOR marked paid — they simply stay in the backlog for the next run.
+///
+/// 409 `PAYOUT_ALREADY_PAID` if a concurrent export won a booking; 400 when the selection is empty/
+/// invalid, there is nothing to pay, or the company/debit config is incomplete.
+#[tracing::instrument(skip(state, body), fields(user = %user.user_id))]
 pub async fn export<S: PaymentDeps>(
     State(state): State<S>,
     user: AuthUser,
+    body: Option<Json<ExportPayoutRequest>>,
 ) -> Result<Response, AppError> {
     require_admin(&user)?;
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let sel = PayoutSelection {
+        guard_ids: req.guard_ids,
+        from: req.from,
+        to: req.to,
+    };
+    sel.validate()?;
+
     let cfg = repo::get_payout_config(state.db()).await?;
     let org = state.profile_reader().get_org_settings().await?;
     let (payer, config) = build_payer_and_config(&cfg, &org)?;
 
-    let agg = aggregate(&state, cfg.wht_rate_percent).await?;
+    let agg = aggregate(&state, cfg.wht_rate_percent, &sel).await?;
     if agg.recipients.is_empty() {
         return Err(AppError::BadRequest(
             "ไม่มีรายการค้างจ่ายที่จ่ายได้ในขณะนี้".to_string(),
@@ -372,7 +448,8 @@ pub async fn export<S: PaymentDeps>(
         batch_ref: batch_ref.clone(),
         payer,
         config: config.clone(),
-        recipients: agg.recipients,
+        // One recipient per guard — the file is a BULK payment covering every selected guard.
+        recipients: agg.recipients.into_iter().map(|r| r.recipient).collect(),
     };
     let file_text = scb_export::generate(&batch);
     let total_transfer: rust_decimal::Decimal =

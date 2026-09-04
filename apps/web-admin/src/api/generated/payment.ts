@@ -153,7 +153,9 @@ export interface paths {
          * Preview the guard-payout batch (role=admin)
          * @description The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT
          *     withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the
-         *     reason (missing name / tax id / a usable PromptPay proxy). READ ONLY: computes but persists
+         *     reason (missing name / tax id / a usable PromptPay proxy). Every row carries its `guard_id`
+         *     so the screen can tick a subset and pass those ids to the export. Optional `from`/`to`
+         *     narrow the backlog to jobs finished within a day window. READ ONLY: computes but persists
          *     nothing and marks nothing paid. Admin only.
          */
         get: operations["previewPayout"];
@@ -176,11 +178,18 @@ export interface paths {
         put?: never;
         /**
          * Generate + download the SCB guard-payout upload file (role=admin)
-         * @description Build the SCB Business Net bulk-upload text for the whole unpaid backlog, PERSIST the batch +
-         *     a per-booking paid-marker (so no job is ever paid twice), and return the file as
-         *     `text/plain` (UTF-8, no BOM) for download. 409 `PAYOUT_ALREADY_PAID` if a concurrent export
-         *     already claimed a booking; 400 when there is nothing payable or the company/debit config is
-         *     incomplete. Admin only.
+         * @description Build ONE SCB Business Net bulk-upload file that pays MANY guards — one `TXNDET` (+ `WHTCER`
+         *     when tax is withheld) per guard inside a single `BCHDET` batch, whose totals are the sum of
+         *     every transfer. PERSIST the batch + a per-booking paid-marker (so no job is ever paid twice),
+         *     and return the file as `text/plain` (UTF-8, no BOM) for download.
+         *
+         *     The request body is OPTIONAL: send none to pay the whole unpaid backlog (every payable
+         *     guard), or narrow the run with `guard_ids` (the admin's tick list) and/or a `from`/`to` day
+         *     window. Guards left out are neither written to the file nor marked paid.
+         *
+         *     409 `PAYOUT_ALREADY_PAID` if a concurrent export already claimed a booking; 400 when the
+         *     selection is empty/invalid, nothing is payable, or the company/debit config is incomplete.
+         *     Admin only.
          */
         post: operations["exportPayout"];
         delete?: never;
@@ -637,10 +646,40 @@ export interface components {
             /** @description 0–100 (exact decimal, string). */
             wht_rate_percent?: string | null;
         };
+        /**
+         * @description Optional narrowing of the export run. Omit the body entirely (or leave every field null) to
+         *     pay the WHOLE unpaid backlog for every payable guard. `guard_ids` is the preview screen's
+         *     tick list — MANY guards ride one file; guards left out stay unpaid and reappear in the next
+         *     run (they are not marked paid). `from`/`to` bound the days the jobs were finished.
+         */
+        ExportPayoutRequest: {
+            /** @description Pay only these guards (1–500). Null = every payable guard in the window. */
+            guard_ids?: string[] | null;
+            /**
+             * Format: date
+             * @description Inclusive first day jobs were finished (Thai local day).
+             */
+            from?: string | null;
+            /**
+             * Format: date
+             * @description Inclusive last day jobs were finished (Thai local day).
+             */
+            to?: string | null;
+        };
         PreviewRecipient: {
+            /**
+             * Format: uuid
+             * @description Send this id back in `ExportPayoutRequest.guard_ids` to pay exactly this guard.
+             */
+            guard_id: string;
             name: string;
             /** @description PromptPay proxy masked to its last 4 (PII). */
             proxy_masked: string;
+            /**
+             * Format: int64
+             * @description Finished jobs this row's amounts cover (one TXNDET pays them all).
+             */
+            job_count: number;
             /** @description Assessable income (2dp string). */
             income: string;
             /** @description Withholding tax (2dp string). */
@@ -934,7 +973,12 @@ export interface operations {
     };
     previewPayout: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Inclusive first day the jobs were finished (Thai local day, `YYYY-MM-DD`). */
+                from?: string;
+                /** @description Inclusive last day the jobs were finished (Thai local day, `YYYY-MM-DD`). */
+                to?: string;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -963,7 +1007,11 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: never;
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ExportPayoutRequest"];
+            };
+        };
         responses: {
             /** @description The SCB upload file (pipe-delimited text) */
             200: {
