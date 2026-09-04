@@ -22,6 +22,7 @@ export 'package:pguard_payment_api/src/model/customer_spend.dart';
 export 'package:pguard_payment_api/src/model/error_body.dart';
 export 'package:pguard_payment_api/src/model/error_detail.dart';
 export 'package:pguard_payment_api/src/model/excluded_guard.dart';
+export 'package:pguard_payment_api/src/model/export_payout_request.dart';
 export 'package:pguard_payment_api/src/model/get_payout_config200_response.dart';
 export 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
 export 'package:pguard_payment_api/src/model/guard_earning.dart';

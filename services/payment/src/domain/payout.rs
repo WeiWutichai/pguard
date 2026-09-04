@@ -11,7 +11,59 @@
 //! Every figure is rounded to 2 dp (banker's, matching the rest of the money path). `hours` is the
 //! ACTUAL worked hours when reconciled (else the booked hours — resolved by the caller, not here).
 
+use chrono::NaiveDate;
 use rust_decimal::Decimal;
+use shared::error::AppError;
+use uuid::Uuid;
+
+/// WHICH guards, over WHICH finished-job window, this payout run covers. Both parts are optional
+/// and independent: `None`/`None` = the default "pay the WHOLE unpaid backlog, everyone" the export
+/// has always done. `guard_ids = Some([..])` is the admin cherry-picking recipients on the preview
+/// screen; `from`/`to` bound the jobs by the day they were finished + reconciled (inclusive, Thai
+/// calendar days). A guard the admin did NOT tick keeps their jobs unpaid and in the next backlog —
+/// selection never marks anything paid outside it (the paid-markers are written from the same
+/// filtered rows).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PayoutSelection {
+    /// The guards to pay; `None` = every guard with an unpaid, payable job.
+    pub guard_ids: Option<Vec<Uuid>>,
+    /// Inclusive first day of the finished-job window (Thai local date).
+    pub from: Option<NaiveDate>,
+    /// Inclusive last day of the finished-job window (Thai local date).
+    pub to: Option<NaiveDate>,
+}
+
+/// Upper bound on how many guards ONE export may name — a longer list is a client bug, not an
+/// admin action (and the file is uploaded to SCB by hand). The backlog-wide default is unbounded.
+pub const MAX_SELECTED_GUARDS: usize = 500;
+
+impl PayoutSelection {
+    /// Reject a selection that cannot mean anything: an EXPLICIT but empty guard list (the admin
+    /// ticked nobody — silently paying everyone would be a money bug), an absurdly long list, or an
+    /// inverted date window. PURE: no I/O, so the API layer can validate before touching the DB.
+    pub fn validate(&self) -> Result<(), AppError> {
+        if let Some(ids) = &self.guard_ids {
+            if ids.is_empty() {
+                return Err(AppError::BadRequest(
+                    "เลือก รปภ อย่างน้อย 1 คนก่อนสร้างไฟล์".to_string(),
+                ));
+            }
+            if ids.len() > MAX_SELECTED_GUARDS {
+                return Err(AppError::BadRequest(format!(
+                    "เลือก รปภ ได้ไม่เกิน {MAX_SELECTED_GUARDS} คนต่อไฟล์"
+                )));
+            }
+        }
+        if let (Some(from), Some(to)) = (self.from, self.to) {
+            if from > to {
+                return Err(AppError::BadRequest(
+                    "ช่วงวันที่ไม่ถูกต้อง (วันเริ่มต้องไม่เกินวันสิ้นสุด)".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+}
 
 /// The three payout figures for one completed job. `transfer` is what is actually PromptPay-ed to
 /// the guard; `income`/`wht` are what the ภ.ง.ด.53 certificate records.
@@ -100,6 +152,80 @@ mod tests {
         assert_eq!(a.income, d("242.81"));
         assert_eq!(a.wht, d("7.28"));
         assert_eq!(a.transfer, d("235.53"));
+    }
+
+    // ----- selection (which guards / which window) -----
+
+    fn day(y: i32, m: u32, d: u32) -> NaiveDate {
+        NaiveDate::from_ymd_opt(y, m, d).unwrap()
+    }
+
+    #[test]
+    fn default_selection_is_everyone_whole_backlog() {
+        let sel = PayoutSelection::default();
+        assert_eq!(sel.guard_ids, None);
+        assert_eq!((sel.from, sel.to), (None, None));
+        assert!(sel.validate().is_ok());
+    }
+
+    #[test]
+    fn many_guards_and_a_valid_window_are_accepted() {
+        let sel = PayoutSelection {
+            guard_ids: Some(vec![Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()]),
+            from: Some(day(2026, 9, 1)),
+            to: Some(day(2026, 9, 30)),
+        };
+        assert!(sel.validate().is_ok(), "a multi-guard batch is the point");
+        // a single-day window (from == to) is a legitimate "pay today's finished jobs" run.
+        let same_day = PayoutSelection {
+            guard_ids: None,
+            from: Some(day(2026, 9, 4)),
+            to: Some(day(2026, 9, 4)),
+        };
+        assert!(same_day.validate().is_ok());
+    }
+
+    #[test]
+    fn explicit_empty_guard_list_is_rejected() {
+        // Ticking nobody must NOT silently fall back to paying the whole backlog.
+        let sel = PayoutSelection {
+            guard_ids: Some(vec![]),
+            ..Default::default()
+        };
+        assert!(matches!(sel.validate(), Err(AppError::BadRequest(_))));
+    }
+
+    #[test]
+    fn oversized_guard_list_is_rejected() {
+        let sel = PayoutSelection {
+            guard_ids: Some(vec![Uuid::new_v4(); MAX_SELECTED_GUARDS + 1]),
+            ..Default::default()
+        };
+        assert!(matches!(sel.validate(), Err(AppError::BadRequest(_))));
+        let at_limit = PayoutSelection {
+            guard_ids: Some(vec![Uuid::new_v4(); MAX_SELECTED_GUARDS]),
+            ..Default::default()
+        };
+        assert!(at_limit.validate().is_ok(), "the limit itself is allowed");
+    }
+
+    #[test]
+    fn inverted_window_is_rejected() {
+        let sel = PayoutSelection {
+            guard_ids: None,
+            from: Some(day(2026, 9, 30)),
+            to: Some(day(2026, 9, 1)),
+        };
+        assert!(matches!(sel.validate(), Err(AppError::BadRequest(_))));
+        // one-sided windows stay valid (open start / open end).
+        for (from, to) in [(Some(day(2026, 9, 1)), None), (None, Some(day(2026, 9, 1)))] {
+            let sel = PayoutSelection {
+                guard_ids: None,
+                from,
+                to,
+            };
+            assert!(sel.validate().is_ok());
+        }
     }
 
     #[test]

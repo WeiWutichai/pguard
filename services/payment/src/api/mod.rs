@@ -960,6 +960,14 @@ mod tests {
                     "/admin/reports/customer-spend",
                     get(admin_customer_spend_report::<TestDeps>),
                 )
+                .route(
+                    "/admin/payouts/preview",
+                    get(crate::api::payouts::preview::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/export",
+                    post(crate::api::payouts::export::<TestDeps>),
+                )
                 .with_state(deps),
         )
     }
@@ -1669,5 +1677,114 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    // ----- guard payout: WHO gets paid in one SCB file -----
+
+    /// POST /admin/payouts/export with an optional JSON body (None = no body at all).
+    async fn post_payout_export(app: Router, token: &str, body: Option<&str>) -> StatusCode {
+        let req = Request::builder()
+            .method("POST")
+            .uri("/admin/payouts/export")
+            .header("authorization", format!("Bearer {token}"));
+        let req = match body {
+            Some(json) => req
+                .header("content-type", "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    #[tokio::test]
+    async fn payout_endpoints_reject_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not see who the platform pays — nor trigger a money file.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/payouts/preview")
+                    .header(
+                        "authorization",
+                        format!("Bearer {}", customer_token(Uuid::new_v4(), "customer")),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let guard_tok = customer_token(Uuid::new_v4(), "guard");
+        assert_eq!(
+            post_payout_export(app, &guard_tok, None).await,
+            StatusCode::FORBIDDEN,
+            "a guard cannot pay themselves"
+        );
+    }
+
+    #[tokio::test]
+    async fn payout_export_rejects_an_empty_or_oversized_guard_selection() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        // Ticking NOBODY must not silently fall back to paying the whole backlog → 400, decided
+        // before any DB read (the test pool is intentionally unusable).
+        assert_eq!(
+            post_payout_export(app.clone(), &admin, Some(r#"{"guard_ids":[]}"#)).await,
+            StatusCode::BAD_REQUEST
+        );
+        let too_many: Vec<String> = (0..crate::domain::payout::MAX_SELECTED_GUARDS + 1)
+            .map(|_| format!("\"{}\"", Uuid::new_v4()))
+            .collect();
+        assert_eq!(
+            post_payout_export(
+                app,
+                &admin,
+                Some(&format!("{{\"guard_ids\":[{}]}}", too_many.join(","))),
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "an absurdly long selection is refused"
+        );
+    }
+
+    #[tokio::test]
+    async fn payout_export_rejects_an_inverted_window() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        assert_eq!(
+            post_payout_export(
+                app.clone(),
+                &admin,
+                Some(r#"{"from":"2026-09-30","to":"2026-09-01"}"#),
+            )
+            .await,
+            StatusCode::BAD_REQUEST
+        );
+        // Same gate on the read-only preview (query params).
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/payouts/preview?from=2026-09-30&to=2026-09-01")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 }

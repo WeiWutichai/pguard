@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Download, Loader2, RefreshCw, Save } from "lucide-react";
 
 import type { components } from "@/api/generated/payment";
@@ -28,6 +28,21 @@ import { COPY } from "./copy";
 type PayoutConfig = components["schemas"]["PayoutConfig"];
 type PayoutPreview = components["schemas"]["PayoutPreview"];
 
+/** The finished-job day window the preview/export are narrowed to ("" = open end). */
+type Window = { from: string; to: string };
+
+const EMPTY_WINDOW: Window = { from: "", to: "" };
+
+/** Sum a 2dp decimal string column over the picked rows (the API sends exact strings). */
+const sum = (values: string[]) =>
+  values.reduce((acc, v) => acc + (Number(v) || 0), 0).toFixed(2);
+
+/** The typed message a 400/409 carries (e.g. "ยังไม่ได้ตั้งเลขผู้เสียภาษีบริษัท"), when present. */
+const apiMessage = (err: unknown): string | null => {
+  const message = (err as { error?: { message?: unknown } } | undefined)?.error?.message;
+  return typeof message === "string" && message.trim() ? message : null;
+};
+
 export default function PayoutsPage() {
   const { lang } = useLanguage();
   const c = COPY[lang];
@@ -40,11 +55,19 @@ export default function PayoutsPage() {
   const [savedFlash, setSavedFlash] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [banner, setBanner] = useState<string | null>(null);
+  /** The window being edited in the filter row. */
+  const [window, setWindow] = useState<Window>(EMPTY_WINDOW);
+  /** The window the loaded preview actually reflects — what an export must be run with. */
+  const [appliedWindow, setAppliedWindow] = useState<Window>(EMPTY_WINDOW);
+  /** The guards ticked to pay — many guards ride ONE SCB file. */
+  const [selected, setSelected] = useState<Set<string>>(new Set());
 
-  const load = useCallback((alive: () => boolean = () => true) => {
+  const load = useCallback((win: Window, alive: () => boolean = () => true) => {
     return Promise.all([
       paymentApi.GET("/admin/payouts/config"),
-      paymentApi.GET("/admin/payouts/preview"),
+      paymentApi.GET("/admin/payouts/preview", {
+        params: { query: { from: win.from || undefined, to: win.to || undefined } },
+      }),
     ])
       .then(([cfg, prev]) => {
         if (!alive()) return;
@@ -53,7 +76,11 @@ export default function PayoutsPage() {
         } else {
           setLoadError(false);
           setConfig(cfg.data?.data ?? null);
-          setPreview(prev.data?.data ?? null);
+          const data = prev.data?.data ?? null;
+          setPreview(data);
+          setAppliedWindow(win);
+          // Default to paying everyone payable in the window; the admin unticks to narrow.
+          setSelected(new Set((data?.recipients ?? []).map((r) => r.guard_id)));
         }
         setLoading(false);
       })
@@ -66,15 +93,16 @@ export default function PayoutsPage() {
 
   useEffect(() => {
     let alive = true;
-    void load(() => alive);
+    void load(EMPTY_WINDOW, () => alive);
     return () => {
       alive = false;
     };
   }, [load]);
 
-  const reload = () => {
+  const reload = (win: Window = appliedWindow) => {
     setLoading(true);
-    void load();
+    setBanner(null);
+    void load(win);
   };
 
   const field = (key: keyof PayoutConfig, value: string) =>
@@ -96,22 +124,51 @@ export default function PayoutsPage() {
     });
     setSaving(false);
     if (res.error) {
-      setBanner(c.saveError);
+      setBanner(apiMessage(res.error) ?? c.saveError);
     } else {
       setConfig(res.data?.data ?? config);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 2000);
-      void load();
+      reload();
     }
   };
 
+  const recipients = useMemo(() => preview?.recipients ?? [], [preview]);
+  const excluded = preview?.excluded ?? [];
+  const picked = useMemo(
+    () => recipients.filter((r) => selected.has(r.guard_id)),
+    [recipients, selected],
+  );
+  const allPicked = recipients.length > 0 && picked.length === recipients.length;
+  const nothingPicked = picked.length === 0;
+
+  const toggle = (guardId: string) =>
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(guardId)) next.add(guardId);
+      return next;
+    });
+
+  const toggleAll = () =>
+    setSelected(allPicked ? new Set() : new Set(recipients.map((r) => r.guard_id)));
+
   const runExport = async () => {
+    if (nothingPicked) return;
     setExporting(true);
     setBanner(null);
-    const res = await paymentApi.POST("/admin/payouts/export", { parseAs: "text" });
+    // One file, many guards: send exactly the ticked ids + the window the preview was built with,
+    // so the persisted paid-markers cover the same rows the admin just saw.
+    const res = await paymentApi.POST("/admin/payouts/export", {
+      body: {
+        guard_ids: picked.map((r) => r.guard_id),
+        from: appliedWindow.from || null,
+        to: appliedWindow.to || null,
+      },
+      parseAs: "text",
+    });
     setExporting(false);
     if (res.error || typeof res.data !== "string") {
-      setBanner(c.exportError);
+      setBanner(apiMessage(res.error) ?? c.exportError);
       return;
     }
     const blob = new Blob([res.data], { type: "text/plain;charset=utf-8" });
@@ -123,12 +180,8 @@ export default function PayoutsPage() {
     a.click();
     a.remove();
     URL.revokeObjectURL(url);
-    void load(); // the paid jobs drop out of the backlog
+    reload(); // the paid jobs drop out of the backlog
   };
-
-  const recipients = preview?.recipients ?? [];
-  const excluded = preview?.excluded ?? [];
-  const nothingToPay = recipients.length === 0;
 
   return (
     <div className="space-y-6">
@@ -205,11 +258,11 @@ export default function PayoutsPage() {
       <Panel>
         <PanelHead title={c.preview}>
           <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={reload} disabled={loading}>
+            <Button variant="ghost" onClick={() => reload()} disabled={loading}>
               <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
               {c.refresh}
             </Button>
-            <Button onClick={runExport} disabled={exporting || loading || nothingToPay}>
+            <Button onClick={runExport} disabled={exporting || loading || nothingPicked}>
               {exporting ? (
                 <Loader2 className="size-4 animate-spin" />
               ) : (
@@ -220,10 +273,59 @@ export default function PayoutsPage() {
           </div>
         </PanelHead>
         <PanelBody>
+          {/* Day window — which finished jobs the run covers */}
+          <div className="mb-5 flex flex-wrap items-end gap-3">
+            <Field label={c.dateFrom} className="mb-0">
+              <Input
+                type="date"
+                value={window.from}
+                max={window.to || undefined}
+                onChange={(e) => setWindow((w) => ({ ...w, from: e.target.value }))}
+                className="w-44"
+              />
+            </Field>
+            <Field label={c.dateTo} className="mb-0">
+              <Input
+                type="date"
+                value={window.to}
+                min={window.from || undefined}
+                onChange={(e) => setWindow((w) => ({ ...w, to: e.target.value }))}
+                className="w-44"
+              />
+            </Field>
+            <Button variant="secondary" onClick={() => reload(window)} disabled={loading}>
+              {c.applyFilter}
+            </Button>
+            {(appliedWindow.from || appliedWindow.to) && (
+              <Button
+                variant="ghost"
+                onClick={() => {
+                  setWindow(EMPTY_WINDOW);
+                  reload(EMPTY_WINDOW);
+                }}
+                disabled={loading}
+              >
+                {c.clearFilter}
+              </Button>
+            )}
+          </div>
+
           <KpiGrid>
-            <KpiCard label={c.recipients} value={String(preview?.recipient_count ?? 0)} />
-            <KpiCard label={c.totalTransfer} value={`฿${preview?.total_transfer ?? "0.00"}`} />
-            <KpiCard label={c.totalWht} value={`฿${preview?.total_wht ?? "0.00"}`} />
+            <KpiCard
+              label={c.recipients}
+              value={String(picked.length)}
+              caption={c.ofTotal(preview?.recipient_count ?? 0)}
+            />
+            <KpiCard
+              label={c.totalTransfer}
+              value={`฿${sum(picked.map((r) => r.transfer))}`}
+              caption={c.selectedOnly}
+            />
+            <KpiCard
+              label={c.totalWht}
+              value={`฿${sum(picked.map((r) => r.wht))}`}
+              caption={c.selectedOnly}
+            />
           </KpiGrid>
 
           <p className="mt-2 text-xs text-neutral-500">{c.exportHint}</p>
@@ -232,33 +334,58 @@ export default function PayoutsPage() {
             <div className="flex items-center justify-center py-10 text-neutral-400">
               <Loader2 className="size-6 animate-spin" />
             </div>
-          ) : nothingToPay ? (
+          ) : recipients.length === 0 ? (
             <p className="py-8 text-center text-sm text-neutral-500">{c.nobody}</p>
           ) : (
-            <Table className="mt-4">
-              <thead>
-                <Tr>
-                  <Th>{c.guard}</Th>
-                  <Th>{c.proxy}</Th>
-                  <Th className="text-right">{c.income}</Th>
-                  <Th className="text-right">{c.wht}</Th>
-                  <Th className="text-right">{c.transfer}</Th>
-                </Tr>
-              </thead>
-              <tbody>
-                {recipients.map((r, i) => (
-                  <Tr key={i}>
-                    <Td>{r.name}</Td>
-                    <Td className="font-mono text-xs">{r.proxy_masked}</Td>
-                    <Td className="text-right tabular-nums">฿{r.income}</Td>
-                    <Td className="text-right tabular-nums text-amber-600 dark:text-amber-400">
-                      ฿{r.wht}
-                    </Td>
-                    <Td className="text-right font-semibold tabular-nums">฿{r.transfer}</Td>
+            <>
+              <Table className="mt-4">
+                <thead>
+                  <Tr>
+                    <Th className="w-10">
+                      <input
+                        type="checkbox"
+                        aria-label={c.selectAll}
+                        checked={allPicked}
+                        onChange={toggleAll}
+                        className="size-4 accent-brand-int"
+                      />
+                    </Th>
+                    <Th>{c.guard}</Th>
+                    <Th>{c.proxy}</Th>
+                    <Th className="text-right">{c.jobs}</Th>
+                    <Th className="text-right">{c.income}</Th>
+                    <Th className="text-right">{c.wht}</Th>
+                    <Th className="text-right">{c.transfer}</Th>
                   </Tr>
-                ))}
-              </tbody>
-            </Table>
+                </thead>
+                <tbody>
+                  {recipients.map((r) => (
+                    <Tr key={r.guard_id}>
+                      <Td>
+                        <input
+                          type="checkbox"
+                          aria-label={`${c.selectOne} ${r.name}`}
+                          checked={selected.has(r.guard_id)}
+                          onChange={() => toggle(r.guard_id)}
+                          className="size-4 accent-brand-int"
+                        />
+                      </Td>
+                      <Td>{r.name}</Td>
+                      <Td className="font-mono text-xs">{r.proxy_masked}</Td>
+                      <Td className="text-right tabular-nums">{r.job_count}</Td>
+                      <Td className="text-right tabular-nums">฿{r.income}</Td>
+                      <Td className="text-right tabular-nums text-amber-600 dark:text-amber-400">
+                        ฿{r.wht}
+                      </Td>
+                      <Td className="text-right font-semibold tabular-nums">฿{r.transfer}</Td>
+                    </Tr>
+                  ))}
+                </tbody>
+              </Table>
+              {nothingPicked && (
+                <p className="mt-3 text-sm text-amber-700 dark:text-amber-400">{c.pickSomeone}</p>
+              )}
+            </>
           )}
 
           {excluded.length > 0 && (

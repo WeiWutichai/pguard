@@ -11,19 +11,29 @@ part 'preview_recipient.g.dart';
 /// PreviewRecipient
 ///
 /// Properties:
+/// * [guardId] - Send this id back in `ExportPayoutRequest.guard_ids` to pay exactly this guard.
 /// * [name] 
 /// * [proxyMasked] - PromptPay proxy masked to its last 4 (PII).
+/// * [jobCount] - Finished jobs this row's amounts cover (one TXNDET pays them all).
 /// * [income] - Assessable income (2dp string).
 /// * [wht] - Withholding tax (2dp string).
 /// * [transfer] - Net PromptPay transfer = income − WHT (2dp string).
 @BuiltValue()
 abstract class PreviewRecipient implements Built<PreviewRecipient, PreviewRecipientBuilder> {
+  /// Send this id back in `ExportPayoutRequest.guard_ids` to pay exactly this guard.
+  @BuiltValueField(wireName: r'guard_id')
+  String get guardId;
+
   @BuiltValueField(wireName: r'name')
   String get name;
 
   /// PromptPay proxy masked to its last 4 (PII).
   @BuiltValueField(wireName: r'proxy_masked')
   String get proxyMasked;
+
+  /// Finished jobs this row's amounts cover (one TXNDET pays them all).
+  @BuiltValueField(wireName: r'job_count')
+  int get jobCount;
 
   /// Assessable income (2dp string).
   @BuiltValueField(wireName: r'income')
@@ -60,6 +70,11 @@ class _$PreviewRecipientSerializer implements PrimitiveSerializer<PreviewRecipie
     PreviewRecipient object, {
     FullType specifiedType = FullType.unspecified,
   }) sync* {
+    yield r'guard_id';
+    yield serializers.serialize(
+      object.guardId,
+      specifiedType: const FullType(String),
+    );
     yield r'name';
     yield serializers.serialize(
       object.name,
@@ -69,6 +84,11 @@ class _$PreviewRecipientSerializer implements PrimitiveSerializer<PreviewRecipie
     yield serializers.serialize(
       object.proxyMasked,
       specifiedType: const FullType(String),
+    );
+    yield r'job_count';
+    yield serializers.serialize(
+      object.jobCount,
+      specifiedType: const FullType(int),
     );
     yield r'income';
     yield serializers.serialize(
@@ -108,6 +128,13 @@ class _$PreviewRecipientSerializer implements PrimitiveSerializer<PreviewRecipie
       final key = serializedList[i] as String;
       final value = serializedList[i + 1];
       switch (key) {
+        case r'guard_id':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(String),
+          ) as String;
+          result.guardId = valueDes;
+          break;
         case r'name':
           final valueDes = serializers.deserialize(
             value,
@@ -121,6 +148,13 @@ class _$PreviewRecipientSerializer implements PrimitiveSerializer<PreviewRecipie
             specifiedType: const FullType(String),
           ) as String;
           result.proxyMasked = valueDes;
+          break;
+        case r'job_count':
+          final valueDes = serializers.deserialize(
+            value,
+            specifiedType: const FullType(int),
+          ) as int;
+          result.jobCount = valueDes;
           break;
         case r'income':
           final valueDes = serializers.deserialize(

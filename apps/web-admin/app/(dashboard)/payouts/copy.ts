@@ -17,6 +17,15 @@ export const COPY: Record<
     saved: string;
     preview: string;
     refresh: string;
+    dateFrom: string;
+    dateTo: string;
+    applyFilter: string;
+    clearFilter: string;
+    selectAll: string;
+    selectOne: string;
+    pickSomeone: string;
+    selectedOnly: string;
+    ofTotal: (total: number) => string;
     guard: string;
     proxy: string;
     income: string;
@@ -53,6 +62,15 @@ export const COPY: Record<
     saved: "บันทึกแล้ว",
     preview: "พรีวิวรายการจ่าย",
     refresh: "รีเฟรช",
+    dateFrom: "งานที่เสร็จตั้งแต่",
+    dateTo: "ถึงวันที่",
+    applyFilter: "ใช้ตัวกรอง",
+    clearFilter: "ล้างตัวกรอง",
+    selectAll: "เลือกทั้งหมด",
+    selectOne: "เลือก",
+    pickSomeone: "ยังไม่ได้เลือก รปภ — ติ๊กอย่างน้อย 1 คนเพื่อสร้างไฟล์",
+    selectedOnly: "เฉพาะที่เลือก",
+    ofTotal: (total) => `จากทั้งหมด ${total} คน`,
     guard: "รปภ",
     proxy: "พร้อมเพย์",
     income: "เงินได้",
@@ -67,7 +85,8 @@ export const COPY: Record<
     nobody: "ไม่มีรายการค้างจ่ายในขณะนี้",
     exportBtn: "สร้างไฟล์อัปโหลด SCB",
     exporting: "กำลังสร้างไฟล์…",
-    exportHint: "กดแล้วจะดาวน์โหลดไฟล์ .txt และบันทึกว่าจ่ายแล้ว (กันจ่ายซ้ำ)",
+    exportHint:
+      "ไฟล์เดียวจ่ายได้หลายคน — 1 รปภ = 1 รายการโอน (รวมทุกงานของคนนั้น). กดแล้วจะดาวน์โหลดไฟล์ .txt และบันทึกเฉพาะคนที่เลือกว่าจ่ายแล้ว (กันจ่ายซ้ำ) คนที่ไม่ได้เลือกจะยังค้างอยู่ในรอบถัดไป",
     loadError: "โหลดข้อมูลไม่สำเร็จ",
     saveError: "บันทึกไม่สำเร็จ",
     exportError: "สร้างไฟล์ไม่สำเร็จ",
@@ -88,6 +107,15 @@ export const COPY: Record<
     saved: "Saved",
     preview: "Payout preview",
     refresh: "Refresh",
+    dateFrom: "Jobs finished from",
+    dateTo: "to",
+    applyFilter: "Apply filter",
+    clearFilter: "Clear filter",
+    selectAll: "Select all",
+    selectOne: "Select",
+    pickSomeone: "No guards ticked — select at least one to generate the file",
+    selectedOnly: "selected only",
+    ofTotal: (total) => `of ${total} payable`,
     guard: "Guard",
     proxy: "PromptPay",
     income: "Income",
@@ -102,7 +130,8 @@ export const COPY: Record<
     nobody: "No unpaid payouts right now",
     exportBtn: "Generate SCB upload file",
     exporting: "Generating…",
-    exportHint: "Downloads a .txt file and records these jobs as paid (prevents double-pay).",
+    exportHint:
+      "One file pays many guards — one transfer line per guard (all their jobs summed). Downloads a .txt and marks ONLY the selected guards' jobs as paid (prevents double-pay); unticked guards stay in the next run.",
     loadError: "Failed to load",
     saveError: "Failed to save",
     exportError: "Failed to generate the file",

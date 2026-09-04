@@ -283,10 +283,23 @@ paths:
       description: |
         The UNPAID guard-payout backlog aggregated PER GUARD — who would be paid what (income / WHT
         withheld / net transfer via PromptPay) — PLUS the guards EXCLUDED from the batch with the
-        reason (missing name / tax id / a usable PromptPay proxy). READ ONLY: computes but persists
+        reason (missing name / tax id / a usable PromptPay proxy). Every row carries its `guard_id`
+        so the screen can tick a subset and pass those ids to the export. Optional `from`/`to`
+        narrow the backlog to jobs finished within a day window. READ ONLY: computes but persists
         nothing and marks nothing paid. Admin only.
       operationId: previewPayout
       security: [{ bearerAuth: [] }]
+      parameters:
+        - name: from
+          in: query
+          required: false
+          description: Inclusive first day the jobs were finished (Thai local day, `YYYY-MM-DD`).
+          schema: { type: string, format: date }
+        - name: to
+          in: query
+          required: false
+          description: Inclusive last day the jobs were finished (Thai local day, `YYYY-MM-DD`).
+          schema: { type: string, format: date }
       responses:
         '200':
           description: The aggregated preview
@@ -306,13 +319,25 @@ paths:
       tags: [Admin]
       summary: Generate + download the SCB guard-payout upload file (role=admin)
       description: |
-        Build the SCB Business Net bulk-upload text for the whole unpaid backlog, PERSIST the batch +
-        a per-booking paid-marker (so no job is ever paid twice), and return the file as
-        `text/plain` (UTF-8, no BOM) for download. 409 `PAYOUT_ALREADY_PAID` if a concurrent export
-        already claimed a booking; 400 when there is nothing payable or the company/debit config is
-        incomplete. Admin only.
+        Build ONE SCB Business Net bulk-upload file that pays MANY guards — one `TXNDET` (+ `WHTCER`
+        when tax is withheld) per guard inside a single `BCHDET` batch, whose totals are the sum of
+        every transfer. PERSIST the batch + a per-booking paid-marker (so no job is ever paid twice),
+        and return the file as `text/plain` (UTF-8, no BOM) for download.
+
+        The request body is OPTIONAL: send none to pay the whole unpaid backlog (every payable
+        guard), or narrow the run with `guard_ids` (the admin's tick list) and/or a `from`/`to` day
+        window. Guards left out are neither written to the file nor marked paid.
+
+        409 `PAYOUT_ALREADY_PAID` if a concurrent export already claimed a booking; 400 when the
+        selection is empty/invalid, nothing is payable, or the company/debit config is incomplete.
+        Admin only.
       operationId: exportPayout
       security: [{ bearerAuth: [] }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ExportPayoutRequest' }
       responses:
         '200':
           description: The SCB upload file (pipe-delimited text)
@@ -907,12 +932,31 @@ components:
         wht_income_desc: { type: string, nullable: true }
         wht_rate_percent: { type: string, nullable: true, description: '0–100 (exact decimal, string).' }
 
+    ExportPayoutRequest:
+      type: object
+      description: |
+        Optional narrowing of the export run. Omit the body entirely (or leave every field null) to
+        pay the WHOLE unpaid backlog for every payable guard. `guard_ids` is the preview screen's
+        tick list — MANY guards ride one file; guards left out stay unpaid and reappear in the next
+        run (they are not marked paid). `from`/`to` bound the days the jobs were finished.
+      properties:
+        guard_ids:
+          type: array
+          nullable: true
+          maxItems: 500
+          description: Pay only these guards (1–500). Null = every payable guard in the window.
+          items: { type: string, format: uuid }
+        from: { type: string, format: date, nullable: true, description: 'Inclusive first day jobs were finished (Thai local day).' }
+        to: { type: string, format: date, nullable: true, description: 'Inclusive last day jobs were finished (Thai local day).' }
+
     PreviewRecipient:
       type: object
-      required: [name, proxy_masked, income, wht, transfer]
+      required: [guard_id, name, proxy_masked, job_count, income, wht, transfer]
       properties:
+        guard_id: { type: string, format: uuid, description: Send this id back in `ExportPayoutRequest.guard_ids` to pay exactly this guard. }
         name: { type: string }
         proxy_masked: { type: string, description: PromptPay proxy masked to its last 4 (PII). }
+        job_count: { type: integer, format: int64, description: Finished jobs this row's amounts cover (one TXNDET pays them all). }
         income: { type: string, description: Assessable income (2dp string). }
         wht: { type: string, description: Withholding tax (2dp string). }
         transfer: { type: string, description: Net PromptPay transfer = income − WHT (2dp string). }

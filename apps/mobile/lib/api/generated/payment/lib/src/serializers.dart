@@ -23,6 +23,7 @@ import 'package:pguard_payment_api/src/model/customer_spend.dart';
 import 'package:pguard_payment_api/src/model/error_body.dart';
 import 'package:pguard_payment_api/src/model/error_detail.dart';
 import 'package:pguard_payment_api/src/model/excluded_guard.dart';
+import 'package:pguard_payment_api/src/model/export_payout_request.dart';
 import 'package:pguard_payment_api/src/model/get_payout_config200_response.dart';
 import 'package:pguard_payment_api/src/model/get_prompt_pay200_response.dart';
 import 'package:pguard_payment_api/src/model/guard_earning.dart';
@@ -56,6 +57,7 @@ part 'serializers.g.dart';
   ErrorBody,
   ErrorDetail,
   ExcludedGuard,
+  ExportPayoutRequest,
   GetPayoutConfig200Response,
   GetPromptPay200Response,
   GuardEarning,
