@@ -32,6 +32,7 @@ import 'package:pguard_profile_api/src/model/avg_approval_time.dart';
 import 'package:pguard_profile_api/src/model/create_support_ticket200_response.dart';
 import 'package:pguard_profile_api/src/model/create_support_ticket_request.dart';
 import 'package:pguard_profile_api/src/model/customer_avatar_response.dart';
+import 'package:pguard_profile_api/src/model/customer_payout_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile.dart';
 import 'package:pguard_profile_api/src/model/customer_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/document_expiry.dart';
@@ -51,15 +52,20 @@ import 'package:pguard_profile_api/src/model/guard_avatar_response.dart';
 import 'package:pguard_profile_api/src/model/guard_document_expiry.dart';
 import 'package:pguard_profile_api/src/model/guard_document_presence.dart';
 import 'package:pguard_profile_api/src/model/guard_document_response.dart';
+import 'package:pguard_profile_api/src/model/guard_payout_profile.dart';
 import 'package:pguard_profile_api/src/model/guard_profile.dart';
 import 'package:pguard_profile_api/src/model/guard_profile_admin.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object1.dart';
 import 'package:pguard_profile_api/src/model/inline_object1_all_of_data.dart';
 import 'package:pguard_profile_api/src/model/inline_object2.dart';
+import 'package:pguard_profile_api/src/model/internal_customer_payout_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_guard.dart';
+import 'package:pguard_profile_api/src/model/internal_guard_payout_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
+import 'package:pguard_profile_api/src/model/internal_org_settings.dart';
+import 'package:pguard_profile_api/src/model/internal_org_settings200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_pending_roles200_response.dart';
 import 'package:pguard_profile_api/src/model/list_guard_document_expiries200_response.dart';
 import 'package:pguard_profile_api/src/model/my_customer_profile.dart';
@@ -77,6 +83,7 @@ import 'package:pguard_profile_api/src/model/set_document_expiry_request.dart';
 import 'package:pguard_profile_api/src/model/set_guard_document_expiry200_response.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
 import 'package:pguard_profile_api/src/model/support_ticket.dart';
+import 'package:pguard_profile_api/src/model/update_guard_payout_request.dart';
 import 'package:pguard_profile_api/src/model/update_org_settings_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_customer_profile_request.dart';
 import 'package:pguard_profile_api/src/model/upsert_guard_profile_request.dart';
@@ -102,6 +109,7 @@ part 'serializers.g.dart';
   CreateSupportTicket200Response,
   CreateSupportTicketRequest,
   CustomerAvatarResponse,
+  CustomerPayoutProfile,
   CustomerProfile,$CustomerProfile,
   CustomerProfileAdmin,
   DocumentExpiry,
@@ -121,15 +129,20 @@ part 'serializers.g.dart';
   GuardDocumentExpiry,
   GuardDocumentPresence,
   GuardDocumentResponse,
+  GuardPayoutProfile,
   GuardProfile,$GuardProfile,
   GuardProfileAdmin,
   InlineObject,
   InlineObject1,
   InlineObject1AllOfData,
   InlineObject2,
+  InternalCustomerPayoutProfile200Response,
   InternalExportUser200Response,
   InternalGuard,
+  InternalGuardPayoutProfile200Response,
   InternalListGuards200Response,
+  InternalOrgSettings,
+  InternalOrgSettings200Response,
   InternalPendingRoles200Response,
   ListGuardDocumentExpiries200Response,
   MyCustomerProfile,
@@ -147,6 +160,7 @@ part 'serializers.g.dart';
   SetGuardDocumentExpiry200Response,
   StageRequest,
   SupportTicket,
+  UpdateGuardPayoutRequest,
   UpdateOrgSettingsRequest,
   UpsertCustomerProfileRequest,
   UpsertGuardProfileRequest,

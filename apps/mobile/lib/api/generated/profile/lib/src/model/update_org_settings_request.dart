@@ -8,11 +8,11 @@ import 'package:built_value/serializer.dart';
 
 part 'update_org_settings_request.g.dart';
 
-/// The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the admin saves incrementally). `tax_id` is validated leniently (8–20 digits, spaces/hyphens allowed — not a checksum); `company_name`/`address` are bounded to 500 chars. Sending `null` CLEARS a field — which also removes it from every receipt issued afterwards. 
+/// The org (company) profile body for `PUT /admin/org-settings`. All fields optional (the admin saves incrementally). `tax_id` is validated LENIENTLY — shape only, no checksum (see the field); `company_name`/`address` are bounded to 500 chars. Sending `null` CLEARS a field — which also removes it from every receipt issued afterwards. 
 ///
 /// Properties:
 /// * [companyName] - Legal entity name as registered — the issuer line of the tax invoice (ผู้ประกอบการ).
-/// * [taxId] - 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice.
+/// * [taxId] - The COMPANY's เลขประจำตัวผู้เสียภาษี. Legally required on a full tax invoice, and required before `POST /admin/payouts/export` will produce a file.  **Validation (COMPANY rule — lenient, and deliberately NOT the guard rule):** 8–20 digits, spaces/hyphens allowed, **no checksum**. A Thai company TIN is 13 digits but is a juristic-person number, so the citizen mod-11 check that gates the guard `tax_id` (`UpsertGuardProfileRequest` / `UpdateGuardPayoutRequest`) has no authority over it. Enforcing it here would also be self-defeating: the admin form re-sends the value it loaded, so an install holding a non-conforming TIN could not save the company profile at all — which blocks the payout export. Nothing is ever transferred TO this number; it is a tax REFERENCE (ภ.ง.ด. payer block + receipts), never a payment destination. 
 /// * [address] - Registered address of the issuer — legally required on a full tax invoice.
 @BuiltValue()
 abstract class UpdateOrgSettingsRequest implements Built<UpdateOrgSettingsRequest, UpdateOrgSettingsRequestBuilder> {
@@ -20,7 +20,7 @@ abstract class UpdateOrgSettingsRequest implements Built<UpdateOrgSettingsReques
   @BuiltValueField(wireName: r'company_name')
   String? get companyName;
 
-  /// 8–20 digits (spaces/hyphens allowed); a Thai TIN is 13 digits. Legally required on a full tax invoice.
+  /// The COMPANY's เลขประจำตัวผู้เสียภาษี. Legally required on a full tax invoice, and required before `POST /admin/payouts/export` will produce a file.  **Validation (COMPANY rule — lenient, and deliberately NOT the guard rule):** 8–20 digits, spaces/hyphens allowed, **no checksum**. A Thai company TIN is 13 digits but is a juristic-person number, so the citizen mod-11 check that gates the guard `tax_id` (`UpsertGuardProfileRequest` / `UpdateGuardPayoutRequest`) has no authority over it. Enforcing it here would also be self-defeating: the admin form re-sends the value it loaded, so an install holding a non-conforming TIN could not save the company profile at all — which blocks the payout export. Nothing is ever transferred TO this number; it is a tax REFERENCE (ภ.ง.ด. payer block + receipts), never a payment destination. 
   @BuiltValueField(wireName: r'tax_id')
   String? get taxId;
 

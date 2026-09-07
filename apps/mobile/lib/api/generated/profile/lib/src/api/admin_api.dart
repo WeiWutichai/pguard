@@ -24,12 +24,16 @@ import 'package:pguard_profile_api/src/model/approval_status.dart';
 import 'package:pguard_profile_api/src/model/error_body.dart';
 import 'package:pguard_profile_api/src/model/inline_object.dart';
 import 'package:pguard_profile_api/src/model/inline_object2.dart';
+import 'package:pguard_profile_api/src/model/internal_customer_payout_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_export_user200_response.dart';
+import 'package:pguard_profile_api/src/model/internal_guard_payout_profile200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_list_guards200_response.dart';
+import 'package:pguard_profile_api/src/model/internal_org_settings200_response.dart';
 import 'package:pguard_profile_api/src/model/internal_pending_roles200_response.dart';
 import 'package:pguard_profile_api/src/model/reject_request.dart';
 import 'package:pguard_profile_api/src/model/resolve_names_request.dart';
 import 'package:pguard_profile_api/src/model/stage_request.dart';
+import 'package:pguard_profile_api/src/model/update_guard_payout_request.dart';
 import 'package:pguard_profile_api/src/model/update_org_settings_request.dart';
 
 class AdminApi {
@@ -1367,8 +1371,111 @@ class AdminApi {
     );
   }
 
+  /// Set a guard&#39;s payout fields — tax id + bank (role&#x3D;admin)
+  /// Sets the fields a guard PAYOUT needs but the guard&#39;s own registration never captures: &#x60;tax_id&#x60; (the Thai national/tax id — both the PromptPay **NAT** proxy and the ภ.ง.ด. recipient TIN) and the bank block. Without a &#x60;tax_id&#x60; no guard is payable, so &#x60;POST /admin/payouts/export&#x60; returned 400 for every guard until an operator filled this in.  **Incremental (COALESCE-merge)** — a field that is ABSENT *or* &#x60;null&#x60; keeps the stored value, exactly like &#x60;PUT /admin/payouts/config&#x60;: typing in a tax id can never blank out bank details the operator never saw. Clearing a field is therefore NOT expressible here; that belongs to the guard&#39;s own &#x60;PUT /profile/guard&#x60;.  &#x60;tax_id&#x60; carries the GUARD validation rule — 8–20 digits with separators, PLUS a Thai national-id **mod-11 checksum on exactly 13 digits** (400 otherwise). 13 digits is the PromptPay &#x60;NAT&#x60; proxy the payout file credits and PromptPay is irreversible, so a well-shaped but mistyped id is rejected here rather than paid to a stranger. This is STRICTER than the company &#x60;tax_id&#x60; on &#x60;PUT /admin/org-settings&#x60; — see that operation for why the two rules must stay separate.  Admin only (else 403). 404 when that user has no guard profile — this never INSERTS one. Returns the FULL (unmasked) profile so the operator can verify what they typed. The write is PDPA §30-audited (&#x60;admin_update_guard_payout&#x60;) — it touches the two most sensitive columns on the row, so \&quot;who set this national id\&quot; must be answerable. 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [updateGuardPayoutRequest] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InlineObject] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InlineObject>> adminUpdateGuardPayout({ 
+    required String userId,
+    required UpdateGuardPayoutRequest updateGuardPayoutRequest,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/admin/guard-profiles/{user_id}/payout'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'PUT',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'bearerAuth',
+          },
+        ],
+        ...?extra,
+      },
+      contentType: 'application/json',
+      validateStatus: validateStatus,
+    );
+
+    dynamic _bodyData;
+
+    try {
+      const _type = FullType(UpdateGuardPayoutRequest);
+      _bodyData = _serializers.serialize(updateGuardPayoutRequest, specifiedType: _type);
+
+    } catch(error, stackTrace) {
+      throw DioException(
+         requestOptions: _options.compose(
+          _dio.options,
+          _path,
+        ),
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    final _response = await _dio.request<Object>(
+      _path,
+      data: _bodyData,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InlineObject? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InlineObject),
+      ) as InlineObject;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InlineObject>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// Set/replace the organization (company) profile (role&#x3D;admin)
-  /// Upsert the single-row org (company) profile. Admin only (else 403). All fields optional (the admin saves incrementally). Validates a LENIENT &#x60;tax_id&#x60; (8–20 digits, spaces/hyphens allowed — not a checksum) and bounded &#x60;company_name&#x60;/&#x60;address&#x60; lengths (≤ 500 chars); an invalid value → 400. The acting admin is recorded server-side (&#x60;updated_by&#x60;). Returns the stored row for read-back. 
+  /// Upsert the single-row org (company) profile. Admin only (else 403). All fields optional (the admin saves incrementally). Validates a LENIENT &#x60;tax_id&#x60; (8–20 digits, spaces/hyphens allowed — **shape only, no checksum**) and bounded &#x60;company_name&#x60;/&#x60;address&#x60; lengths (≤ 500 chars); an invalid value → 400. The acting admin is recorded server-side (&#x60;updated_by&#x60;). Returns the stored row for read-back.  The lenient rule is load-bearing, not an oversight: this is a JURISTIC-PERSON TIN, so the citizen mod-11 checksum that gates a GUARD&#39;s &#x60;tax_id&#x60; does not apply — and because this form re-sends the value it loaded, enforcing it would make the screen unsavable for any install holding a non-conforming TIN, which in turn blocks the payout export (it 400s with no company tax id). See &#x60;UpdateOrgSettingsRequest.tax_id&#x60;. 
   ///
   /// Parameters:
   /// * [updateOrgSettingsRequest] 
@@ -1468,6 +1575,87 @@ class AdminApi {
     );
   }
 
+  /// Customer REFUND destination (service-to-service)
+  /// The customer PII payment needs to build ONE recipient row in the **customer refund** SCB file (stream ①, ยอดที่ต้องโอนคืนคนจ้าง, &#x60;PPY&#x60;): name, PromptPay phone, address.  **Auth:** service-JWT only (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;); blocked at the public edge like every &#x60;/internal/&#x60; route.  **Deliberately narrower than the guard twin: NO &#x60;tax_id&#x60; is returned at all.** A refund is the customer&#39;s own money coming back, not income — no withholding, therefore no recipient TIN, therefore nothing here that could leak one. Per the locked product decision the refund destination is whatever REGISTRATION already captured; no new PII is collected for refunds.  **404 semantics:** &#x60;404&#x60; when there is NO customer profile row for &#x60;user_id&#x60;. Same rule as the guard read — exclude that ONE customer from the batch with a reason and carry on; a 404 must never fail the refund run or become a transfer to a blank destination.  **&#x60;phone&#x60; is BEST-EFFORT and never an error.** &#x60;customer_profiles.contact_phone&#x60; wins when set (it is the number the customer chose to be contacted on, so the refund and its notification land in the same place); a blank/whitespace value falls back to the account&#39;s LOGIN phone from identity, which is &#x60;NOT NULL&#x60; over there. The identity hop is only made when &#x60;contact_phone&#x60; is blank. An identity outage degrades &#x60;phone&#x60; to whatever the profile row holds — possibly &#x60;null&#x60; — and this endpoint still returns **200**. &#x60;phone: null&#x60; means UNREFUNDABLE: exclude that customer, do not substitute anything.  **No normalisation** — RAW as stored, same contract as the guard read (see above for why). 
+  ///
+  /// Parameters:
+  /// * [userId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InternalCustomerPayoutProfile200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InternalCustomerPayoutProfile200Response>> internalCustomerPayoutProfile({ 
+    required String userId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/customers/{user_id}/payout-profile'.replaceAll('{' r'user_id' '}', encodeQueryParameter(_serializers, userId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InternalCustomerPayoutProfile200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InternalCustomerPayoutProfile200Response),
+      ) as InternalCustomerPayoutProfile200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InternalCustomerPayoutProfile200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// PDPA data export aggregation (service-to-service)
   /// Internal read for identity&#39;s &#x60;ExportClient&#x60; fan-out — aggregates this service&#39;s slice of a user&#39;s PDPA data export. Guarded by a **service-JWT** (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). Returns this service&#39;s per-user export blob (an opaque object). 
   ///
@@ -1549,6 +1737,87 @@ class AdminApi {
     );
   }
 
+  /// Guard payout destination + WHT recipient block (service-to-service)
+  /// The guard PII payment needs to build ONE recipient row in the **guard payout** SCB file (stream ③, &#x60;PPY&#x60;) and its ภ.ง.ด.53 recipient block: name, FULL tax id, address, phone.  **Auth:** service-JWT only (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;). The gateway blocks &#x60;/internal/&#x60; at the public edge, so this is unreachable from a user token.  **This is one of only TWO surfaces in the system that return an UNMASKED tax id** (the other being the customer twin below, which returns none at all — so in practice it is the only one). Every owner- and admin-facing profile read masks &#x60;tax_id&#x60; to its last 4 digits under PDPA. Treat the response as PII: do not log it, do not forward it to a user-facing payload.  **404 semantics:** &#x60;404&#x60; when there is NO guard profile row for &#x60;guard_id&#x60; — it does NOT mean \&quot;unpayable\&quot; and does not distinguish a deleted user from a never-onboarded one. The caller must exclude that ONE guard from the batch with a reason and continue; a 404 must never fail the whole payout run, and must never be retried into a blank recipient.  **&#x60;phone&#x60; is BEST-EFFORT and never an error.** It is the guard&#39;s LOGIN phone, resolved from identity (profile does not store it — &#x60;emergency_contact_phone&#x60; is someone ELSE&#39;s number and must never be paid to). It is the PromptPay &#x60;MOB&#x60; fallback proxy used when the guard has no tax id (a Thai login number is 10 digits — &#x60;CPX_Toolkit_Reverse_Engineering.md&#x60;:2055, PPY proxy by length: 15→&#x60;EWL&#x60;, 13→&#x60;NAT&#x60;, 10→&#x60;MOB&#x60;). If identity is unreachable, degraded, or mid-rollout on an older build, &#x60;phone&#x60; comes back &#x60;null&#x60; and this endpoint still returns **200** — an unrelated service being down must not fail a payout batch. The caller then excludes that one guard (no tax id AND no phone ⇒ no destination).  **No normalisation.** Values are returned RAW, exactly as stored; payment owns &#x60;digits_only&#x60; at its writer boundary. Two internal reads disagreeing on who normalises is how a proxy silently changes LENGTH — and therefore proxy TYPE — between streams. 
+  ///
+  /// Parameters:
+  /// * [guardId] 
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InternalGuardPayoutProfile200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InternalGuardPayoutProfile200Response>> internalGuardPayoutProfile({ 
+    required String guardId,
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/guards/{guard_id}/payout-profile'.replaceAll('{' r'guard_id' '}', encodeQueryParameter(_serializers, guardId, const FullType(String)).toString());
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InternalGuardPayoutProfile200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InternalGuardPayoutProfile200Response),
+      ) as InternalGuardPayoutProfile200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InternalGuardPayoutProfile200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
   /// Approved guard catalog (service-to-service)
   /// Internal read for booking&#39;s discovery (&#x60;/available-guards&#x60;) — the APPROVED guard catalog. Guarded by a **service-JWT** (&#x60;ServiceCaller&#x60;), never reachable from the public edge (the gateway blocks &#x60;/internal/&#x60;). Returns ONLY &#x60;{ user_id, years_of_experience }&#x60; — least-privilege; the PDPA-sensitive bank/PII columns never cross the wire. Documented here for the contract; not part of the user-facing client. 
   ///
@@ -1617,6 +1886,85 @@ class AdminApi {
     }
 
     return Response<InternalListGuards200Response>(
+      data: _responseData,
+      headers: _response.headers,
+      isRedirect: _response.isRedirect,
+      requestOptions: _response.requestOptions,
+      redirects: _response.redirects,
+      statusCode: _response.statusCode,
+      statusMessage: _response.statusMessage,
+      extra: _response.extra,
+    );
+  }
+
+  /// Company (WHT payer) block for the bank files (service-to-service)
+  /// The company block payment stamps onto every SCB file header and the ภ.ง.ด.53 payer section: legal &#x60;company_name&#x60;, the company &#x60;tax_id&#x60; (payer TIN) and the registered &#x60;address&#x60;, read from the single &#x60;profile.org_settings&#x60; row.  **Auth:** service-JWT only (&#x60;serviceAuth&#x60;, aud &#x60;pguard-internal&#x60;); blocked at the public edge.  **NEVER 404 — that is the point.** When the org profile has never been saved this returns **200** with all three fields &#x60;null&#x60; (the \&quot;unset\&quot; state), not a not-found. The caller can then surface an actionable \&quot;configure the company profile first\&quot; error instead of a bare 404 that reads as a bug. A &#x60;tax_id&#x60; of &#x60;null&#x60; here is what makes &#x60;POST /admin/payouts/export&#x60; refuse to produce a file.  The &#x60;tax_id&#x60; returned is the COMPANY (juristic-person) number, validated shape-only — see &#x60;UpdateOrgSettingsRequest.tax_id&#x60; for why the citizen mod-11 checksum deliberately does not apply to it. It is a tax REFERENCE, never a transfer destination, and is not masked on any read (unlike a guard&#39;s). 
+  ///
+  /// Parameters:
+  /// * [cancelToken] - A [CancelToken] that can be used to cancel the operation
+  /// * [headers] - Can be used to add additional headers to the request
+  /// * [extras] - Can be used to add flags to the request
+  /// * [validateStatus] - A [ValidateStatus] callback that can be used to determine request success based on the HTTP status of the response
+  /// * [onSendProgress] - A [ProgressCallback] that can be used to get the send progress
+  /// * [onReceiveProgress] - A [ProgressCallback] that can be used to get the receive progress
+  ///
+  /// Returns a [Future] containing a [Response] with a [InternalOrgSettings200Response] as data
+  /// Throws [DioException] if API call or serialization fails
+  Future<Response<InternalOrgSettings200Response>> internalOrgSettings({ 
+    CancelToken? cancelToken,
+    Map<String, dynamic>? headers,
+    Map<String, dynamic>? extra,
+    ValidateStatus? validateStatus,
+    ProgressCallback? onSendProgress,
+    ProgressCallback? onReceiveProgress,
+  }) async {
+    final _path = r'/internal/org-settings';
+    final _options = Options(
+      method: r'GET',
+      headers: <String, dynamic>{
+        ...?headers,
+      },
+      extra: <String, dynamic>{
+        'secure': <Map<String, String>>[
+          {
+            'type': 'http',
+            'scheme': 'bearer',
+            'name': 'serviceAuth',
+          },
+        ],
+        ...?extra,
+      },
+      validateStatus: validateStatus,
+    );
+
+    final _response = await _dio.request<Object>(
+      _path,
+      options: _options,
+      cancelToken: cancelToken,
+      onSendProgress: onSendProgress,
+      onReceiveProgress: onReceiveProgress,
+    );
+
+    InternalOrgSettings200Response? _responseData;
+
+    try {
+      final rawResponse = _response.data;
+      _responseData = rawResponse == null ? null : _serializers.deserialize(
+        rawResponse,
+        specifiedType: const FullType(InternalOrgSettings200Response),
+      ) as InternalOrgSettings200Response;
+
+    } catch (error, stackTrace) {
+      throw DioException(
+        requestOptions: _response.requestOptions,
+        response: _response,
+        type: DioExceptionType.unknown,
+        error: error,
+        stackTrace: stackTrace,
+      );
+    }
+
+    return Response<InternalOrgSettings200Response>(
       data: _responseData,
       headers: _response.headers,
       isRedirect: _response.isRedirect,
