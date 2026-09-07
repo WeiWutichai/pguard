@@ -58,7 +58,9 @@ pub struct AppState {
     /// S3/MinIO presigner for guard-document images (upload + presigned download).
     pub s3: S3Client,
     /// Service-JWT'd client to identity's `/internal/users/names` — the admin name-resolver merges
-    /// admin names (which live ONLY in identity) for ids it can't resolve from its own profiles.
+    /// admin names (which live ONLY in identity) for ids it can't resolve from its own profiles,
+    /// the approval queues attach each applicant's login phone, and the guard payout-profile read
+    /// fills in the PromptPay MOB fallback number.
     pub identity_resolver: HttpIdentityResolver,
 }
 
@@ -131,6 +133,12 @@ impl ProfileDeps for AppState {
 /// lightweight state — the rejection path short-circuits before the DB is touched (mirrors
 /// booking's `BookingInternalDeps`).
 pub trait ProfileInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
+    /// The identity name-resolver (associated type → static dispatch), mirroring
+    /// [`ProfileDeps::Resolver`]. The guard payout-profile read needs the guard's LOGIN phone —
+    /// the PromptPay MOB fallback proxy — which lives on `identity.users`, not here. A test stub
+    /// makes that merge (and the identity-outage degradation) hermetic.
+    type Resolver: IdentityResolver;
+
     fn db(&self) -> &PgPool;
     /// Read-replica pool for the internal catalog + data-export reads (C5.3). Defaults to primary.
     fn db_read(&self) -> &PgPool {
@@ -140,9 +148,13 @@ pub trait ProfileInternalDeps: HasServiceJwt + Clone + Send + Sync + 'static {
     /// short-lived `avatar_url` (the raw key never leaves profile), reusing the same
     /// `download_url` the owner/admin avatar path uses.
     fn s3(&self) -> &S3Client;
+    /// The identity resolver — the guard payout-profile read fills in the MOB fallback phone.
+    fn identity_resolver(&self) -> &Self::Resolver;
 }
 
 impl ProfileInternalDeps for AppState {
+    type Resolver = HttpIdentityResolver;
+
     fn db(&self) -> &PgPool {
         &self.db
     }
@@ -151,5 +163,8 @@ impl ProfileInternalDeps for AppState {
     }
     fn s3(&self) -> &S3Client {
         &self.s3
+    }
+    fn identity_resolver(&self) -> &Self::Resolver {
+        &self.identity_resolver
     }
 }

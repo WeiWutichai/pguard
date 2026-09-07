@@ -22,11 +22,11 @@ use shared::models::ApprovalStatus;
 use shared_events::{topics, EventEnvelope};
 
 use crate::models::{
-    AccessAuditRow, CustomerProfileAdminResponse, CustomerProfileResponse, DocumentExpiryRow,
-    GuardPayoutRow, GuardProfileAdminResponse, GuardProfileResponse, InternalGuardRow,
-    OrgSettingsResponse, PublicCustomerProfileRow, PublicGuardProfileRow, RecruitCandidate,
-    ResolvedNameRow, SupportTicket, UpdateOrgSettingsRequest, UpsertCustomerProfileRequest,
-    UpsertGuardProfileRequest,
+    AccessAuditRow, CustomerPayoutRow, CustomerProfileAdminResponse, CustomerProfileResponse,
+    DocumentExpiryRow, GuardPayoutRow, GuardProfileAdminResponse, GuardProfileResponse,
+    InternalGuardRow, OrgSettingsResponse, PublicCustomerProfileRow, PublicGuardProfileRow,
+    RecruitCandidate, ResolvedNameRow, SupportTicket, UpdateGuardPayoutRequest,
+    UpdateOrgSettingsRequest, UpsertCustomerProfileRequest, UpsertGuardProfileRequest,
 };
 
 /// Valid pre-approval pipeline stages (matches the `profile.recruitment_stage` enum).
@@ -373,6 +373,14 @@ fn guard_row_from_tuple(t: GuardTuple) -> GuardRow {
 /// (the column default); a later upsert by the SAME guard updates the editable fields but
 /// MUST NOT silently change the approval decision — so the `ON CONFLICT` clause leaves
 /// `approval_status` untouched (only an admin moves it via [`set_approval_status`]).
+///
+/// `tax_id` is the ONE column merged with `COALESCE` instead of overwritten. It is written by an
+/// ADMIN (`PUT /admin/guard-profiles/{id}/payout` — the national/tax id is both the PromptPay NAT
+/// proxy and the ภ.ง.ด. recipient TIN, so a payout is impossible without it), while the mobile
+/// client that re-upserts this row on every profile save has never heard of the key and omits it.
+/// A plain `EXCLUDED.tax_id` therefore NULLed the admin's entry the next time the guard tapped
+/// บันทึก, making them silently unpayable again. Every other column is genuinely owned by this
+/// form, so it keeps overwrite semantics (an omitted field there is the user clearing it).
 pub async fn upsert_guard_profile(
     db: &PgPool,
     user_id: Uuid,
@@ -399,7 +407,8 @@ pub async fn upsert_guard_profile(
             emergency_contact_name         = EXCLUDED.emergency_contact_name,
             emergency_contact_phone        = EXCLUDED.emergency_contact_phone,
             emergency_contact_relationship = EXCLUDED.emergency_contact_relationship,
-            tax_id                         = EXCLUDED.tax_id,
+            -- COALESCE, not overwrite: an omitted tax_id must PRESERVE what an admin entered.
+            tax_id                         = COALESCE(EXCLUDED.tax_id, profile.guard_profiles.tax_id),
             updated_at                     = now()
         RETURNING {GUARD_COLUMNS}
         "#
@@ -426,6 +435,11 @@ pub async fn upsert_guard_profile(
 
 /// Update an EXISTING guard profile's editable fields (PUT). Unlike the upsert this never
 /// inserts: a missing profile is a 404 (the guard must create it first).
+///
+/// `tax_id` was missing from this SET list entirely — the DTO carried it and the handler validated
+/// it, but the column was never written, so a guard editing their profile could not supply the one
+/// value that makes them payable. It is written here with the SAME `COALESCE` merge as the upsert
+/// (an omitted key preserves the admin's entry); see [`upsert_guard_profile`] for the rationale.
 pub async fn update_guard_profile(
     db: &PgPool,
     user_id: Uuid,
@@ -446,6 +460,8 @@ pub async fn update_guard_profile(
             emergency_contact_name         = $11,
             emergency_contact_phone        = $12,
             emergency_contact_relationship = $13,
+            -- COALESCE, not overwrite: an omitted tax_id must PRESERVE what an admin entered.
+            tax_id                         = COALESCE($14, profile.guard_profiles.tax_id),
             updated_at                     = now()
         WHERE user_id = $1
         RETURNING {GUARD_COLUMNS}
@@ -465,6 +481,50 @@ pub async fn update_guard_profile(
         .bind(&req.emergency_contact_name)
         .bind(&req.emergency_contact_phone)
         .bind(&req.emergency_contact_relationship)
+        .bind(&req.tax_id)
+        .fetch_optional(db)
+        .await?;
+    row.map(guard_row_from_tuple)
+        .ok_or_else(|| AppError::NotFound("Guard profile not found".to_string()))?
+        .into_response()
+}
+
+/// ADMIN write of a guard's PAYOUT fields only (`PUT /admin/guard-profiles/{user_id}/payout`):
+/// `tax_id` + the three bank fields. Never inserts — a guard with no profile row is a 404 (there is
+/// nothing to pay yet), exactly like [`update_guard_profile`].
+///
+/// EVERY field is `COALESCE`-merged, so an absent (or `null`) key leaves the stored value UNCHANGED
+/// — the same convention payment's `PUT /admin/payouts/config` uses. That is deliberate for an
+/// admin-facing correction form: the operator typing in a national id they read off a copy of the
+/// guard's ID card must not blank out the bank details the guard themselves entered at
+/// registration. Clearing a field is therefore NOT expressible here; that is the guard's own
+/// `PUT /profile/guard` (which owns the bank block outright).
+///
+/// Returns the UNMASKED profile — this is an admin surface, and the caller has already been
+/// role-gated and §30-audited.
+pub async fn update_guard_payout_fields(
+    db: &PgPool,
+    user_id: Uuid,
+    req: &UpdateGuardPayoutRequest,
+) -> Result<GuardProfileResponse, AppError> {
+    let sql = format!(
+        r#"
+        UPDATE profile.guard_profiles SET
+            tax_id         = COALESCE($2, profile.guard_profiles.tax_id),
+            bank_name      = COALESCE($3, profile.guard_profiles.bank_name),
+            account_number = COALESCE($4, profile.guard_profiles.account_number),
+            account_name   = COALESCE($5, profile.guard_profiles.account_name),
+            updated_at     = now()
+        WHERE user_id = $1
+        RETURNING {GUARD_COLUMNS}
+        "#
+    );
+    let row: Option<GuardTuple> = sqlx::query_as(&sql)
+        .bind(user_id)
+        .bind(&req.tax_id)
+        .bind(&req.bank_name)
+        .bind(&req.account_number)
+        .bind(&req.account_name)
         .fetch_optional(db)
         .await?;
     row.map(guard_row_from_tuple)
@@ -1231,6 +1291,27 @@ pub async fn guard_payout_row(
     Ok(row)
 }
 
+/// Read the customer-refund destination the payment aggregator needs to build one recipient for
+/// stream ① (name + address + the customer's chosen `contact_phone`), by the customer's `user_id`.
+/// `None` when there is no customer profile row — payment then excludes that customer from the
+/// batch with a reason, because money must never be sent to a blank.
+///
+/// No tax id is selected: a refund returns the customer's OWN money, so there is no withholding and
+/// no TIN to leak. Read from the replica; only reachable over a service-JWT internal route.
+pub async fn customer_payout_row(
+    db: &PgPool,
+    user_id: Uuid,
+) -> Result<Option<CustomerPayoutRow>, AppError> {
+    let row: Option<CustomerPayoutRow> = sqlx::query_as(
+        "SELECT full_name, address, contact_phone \
+         FROM profile.customer_profiles WHERE user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_optional(db)
+    .await?;
+    Ok(row)
+}
+
 /// Upsert the single-row org (company) profile (PUT). The fixed `id = TRUE` primary key plus
 /// the `CHECK (id)` constraint pins the table to at most one row; `ON CONFLICT (id)` overwrites
 /// it. `updated_by` records the acting admin (no cross-service FK), `updated_at = now()`. All
@@ -1945,6 +2026,199 @@ mod db_tests {
             .await
             .expect("read")
             .is_none());
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    /// THE bug that made the guard-payout export return 400 on every install: an admin enters the
+    /// guard's national/tax id, the guard then taps บันทึก in the app (a payload that has never
+    /// carried `tax_id`), and the plain `EXCLUDED.tax_id` NULLed it — silently unpayable again.
+    /// Proves the `COALESCE` merge on BOTH self-serve write paths (upsert + the PUT update), and
+    /// that a guard who DOES send a tax id can still set it. DATABASE_URL-gated.
+    #[tokio::test]
+    async fn guard_writes_preserve_an_admin_entered_tax_id() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let guard = Uuid::new_v4();
+        // 1) the guard registers — no tax id anywhere in the mobile payload.
+        upsert_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                full_name: Some("สมชาย รปภ".to_string()),
+                bank_name: Some("SCB".to_string()),
+                account_number: Some("1234567890".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("register");
+
+        // 2) an admin fills in the national id (the only way it can ever be set today).
+        let after_admin = update_guard_payout_fields(
+            &pool,
+            guard,
+            &UpdateGuardPayoutRequest {
+                tax_id: Some("1234567890123".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("admin payout write");
+        assert_eq!(after_admin.tax_id.as_deref(), Some("1234567890123"));
+        assert_eq!(
+            after_admin.account_number.as_deref(),
+            Some("1234567890"),
+            "an omitted bank field must be MERGED, not blanked"
+        );
+
+        // 3) the guard edits their profile again — the payload still has no tax_id key.
+        let after_upsert = upsert_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                full_name: Some("สมชาย ใจดี".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("guard re-upsert");
+        assert_eq!(
+            after_upsert.tax_id.as_deref(),
+            Some("1234567890123"),
+            "the guard's own upsert must NOT wipe the admin-entered tax id"
+        );
+        assert_eq!(after_upsert.full_name.as_deref(), Some("สมชาย ใจดี"));
+
+        // 4) …and neither does the PUT path.
+        let after_put = update_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                full_name: Some("สมชาย รปภ".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("guard PUT");
+        assert_eq!(
+            after_put.tax_id.as_deref(),
+            Some("1234567890123"),
+            "PUT /profile/guard must NOT wipe the admin-entered tax id"
+        );
+
+        // 5) but a guard who DOES supply one still sets it — the PUT used to drop the column
+        //    entirely (validated in the handler, never written).
+        let explicit = update_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                tax_id: Some("9876543210987".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("guard PUT with tax id");
+        assert_eq!(explicit.tax_id.as_deref(), Some("9876543210987"));
+
+        let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
+            .bind(guard)
+            .execute(&pool)
+            .await;
+    }
+
+    /// The admin payout write MERGES every field and 404s on a guard with no profile row (there is
+    /// nothing to pay yet — it must never conjure one). DATABASE_URL-gated.
+    #[tokio::test]
+    async fn admin_payout_write_merges_and_404s_on_a_missing_profile() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        // No row → 404, and nothing inserted.
+        let missing = Uuid::new_v4();
+        assert!(matches!(
+            update_guard_payout_fields(
+                &pool,
+                missing,
+                &UpdateGuardPayoutRequest {
+                    tax_id: Some("1234567890123".to_string()),
+                    ..Default::default()
+                },
+            )
+            .await,
+            Err(AppError::NotFound(_))
+        ));
+        let (count,): (i64,) = sqlx::query_as(
+            "SELECT count(*)::bigint FROM profile.guard_profiles WHERE user_id = $1",
+        )
+        .bind(missing)
+        .fetch_one(&pool)
+        .await
+        .expect("count");
+        assert_eq!(count, 0, "the admin write must never INSERT a profile");
+
+        let guard = Uuid::new_v4();
+        upsert_guard_profile(
+            &pool,
+            guard,
+            &UpsertGuardProfileRequest {
+                bank_name: Some("SCB".to_string()),
+                account_number: Some("1234567890".to_string()),
+                account_name: Some("Somchai".to_string()),
+                tax_id: Some("1111111111111".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("seed");
+
+        // An all-empty body is a no-op merge — it must not blank the row (the operator opened the
+        // form, changed nothing, and saved).
+        let untouched =
+            update_guard_payout_fields(&pool, guard, &UpdateGuardPayoutRequest::default())
+                .await
+                .expect("no-op merge");
+        assert_eq!(untouched.tax_id.as_deref(), Some("1111111111111"));
+        assert_eq!(untouched.bank_name.as_deref(), Some("SCB"));
+        assert_eq!(untouched.account_number.as_deref(), Some("1234567890"));
+        assert_eq!(untouched.account_name.as_deref(), Some("Somchai"));
+
+        // A partial body changes only what it carries, and returns the FULL (unmasked) row — the
+        // operator must be able to read back exactly what they typed.
+        let updated = update_guard_payout_fields(
+            &pool,
+            guard,
+            &UpdateGuardPayoutRequest {
+                account_number: Some("9998887770".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("partial merge");
+        assert_eq!(updated.account_number.as_deref(), Some("9998887770"));
+        assert_eq!(
+            updated.tax_id.as_deref(),
+            Some("1111111111111"),
+            "an omitted tax_id keeps its stored value"
+        );
 
         let _ = sqlx::query("DELETE FROM profile.guard_profiles WHERE user_id = $1")
             .bind(guard)
