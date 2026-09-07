@@ -11,6 +11,7 @@ import { useLanguage } from "@/lib/i18n";
 
 import { COPY } from "./copy";
 import { GuardDocumentsPanel } from "./guard-documents-panel";
+import { GuardPayoutPanel } from "./guard-payout-panel";
 import { initialsOf } from "./guard-identity";
 
 type GuardProfile = components["schemas"]["GuardProfile"];
@@ -36,6 +37,7 @@ export function GuardDetailModal({
   onClose,
   onApprove,
   onReject,
+  onPayoutSaved,
   acting = false,
 }: {
   guard: GuardProfile;
@@ -44,6 +46,9 @@ export function GuardDetailModal({
    *  disabled job-history/suspend actions — so a reviewer can decide without re-finding the row. */
   onApprove?: () => void;
   onReject?: () => void;
+  /** Saved (unmasked) profile after a payout edit — lets the caller refresh the row it opened
+   *  this from, so the list behind the modal doesn't keep showing the pre-edit bank block. */
+  onPayoutSaved?: (profile: GuardProfile) => void;
   acting?: boolean;
 }) {
   const { t, lang } = useLanguage();
@@ -193,22 +198,11 @@ export function GuardDetailModal({
           GET; uploads happen on the guard's mobile screen). Honest "not uploaded" until present. */}
       <GuardDocumentsPanel key={guard.user_id} userId={guard.user_id} />
 
-      {/* Bank panel — real data. Admin detail keeps showing the FULL account number the
-          contract returns to admins (the at-a-glance list stays masked — PDPA). */}
-      <div className="mt-3 rounded-lg border border-border px-4 py-3">
-        <div className="text-xs font-semibold uppercase tracking-[0.04em] text-muted">
-          {t("guards.col.bank")}
-        </div>
-        <div className="mt-1.5 text-sm font-semibold text-text-strong">
-          {guard.bank_name ?? t("common.none")}
-          {guard.account_number ? (
-            <span className="font-mono font-medium"> · {guard.account_number}</span>
-          ) : null}
-        </div>
-        <div className="mt-0.5 text-[12.5px] text-muted">
-          {t("guards.detail.accountName")}: {guard.account_name ?? t("common.none")}
-        </div>
-      </div>
+      {/* Payout panel — the bank block PLUS the national/tax id, now EDITABLE (it replaced the
+          read-only bank box: same admin-scoped FULL values the contract returns, but `tax_id` had
+          no writer anywhere in the product, so no guard was payable). Keyed by user so switching
+          guards re-seeds the form instead of carrying the previous person's digits over. */}
+      <GuardPayoutPanel key={guard.user_id} guard={guard} onSaved={onPayoutSaved} />
     </Modal>
   );
 }
