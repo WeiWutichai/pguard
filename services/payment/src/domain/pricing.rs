@@ -77,14 +77,38 @@ pub fn vat_within(gross: Decimal) -> Decimal {
     (gross * VAT_RATE / (Decimal::ONE + VAT_RATE)).round_dp(2)
 }
 
-/// The money terms a charge is written with: the VAT split the customer is billed, plus the
-/// booking's commission / cancellation-fee SNAPSHOT carried onto the payment row.
+/// The four booking facts a bill is MULTIPLIED OUT of — `base_fee × hours × guard_count + tip`.
 ///
-/// Snapshotting matters twice over: editing the service catalog later must never rewrite the money
-/// of a job already booked, and the refund path (an event consumer, no HTTP) must be able to price
-/// a cancellation without reading booking's schema.
+/// They are snapshotted onto `payment.payments` (migration 0013) because the total alone cannot be
+/// taken apart again: `subtotal` is one equation in four unknowns, so without these no report can
+/// ever say how much of a customer's money became a guard's pay and how much the platform kept — and
+/// re-reading them from booking months later would answer with TODAY's booking row, which is not
+/// what the job was billed on. See `domain::settlement`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PricingInputs {
+    /// ฿ per hour per guard (server-owned; VAT-exclusive).
+    pub base_fee: Decimal,
+    /// The duration the customer booked and is billed for.
+    pub booked_hours: i32,
+    /// How many guards the customer is BILLED for (only one is ever paid today — a known, deferred
+    /// bug that `domain::settlement` prices as `unpaid_guard_share`).
+    pub guard_count: i32,
+    /// The flat gratuity. Never prorated, and — today — never paid to the guard (the other half of
+    /// the same deferred bug).
+    pub tip: Decimal,
+}
+
+/// The money terms a charge is written with: the four pricing multiplicands, the VAT split they
+/// produce, and the booking's commission / cancellation-fee SNAPSHOT carried onto the payment row.
+///
+/// Snapshotting matters three times over: editing the service catalog later must never rewrite the
+/// money of a job already booked; the refund path (an event consumer, no HTTP) must be able to price
+/// a cancellation without reading booking's schema; and the platform-cut sweep must be able to
+/// reproduce a HISTORICAL export from what payment itself stored.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChargeTerms {
+    /// The multiplicands behind `breakdown`, persisted alongside it.
+    pub inputs: PricingInputs,
     /// What the customer is charged now, split for the tax invoice.
     pub breakdown: PriceBreakdown,
     /// Per-service commission %, deducted from the GUARD's pay (the customer pays the same either
@@ -95,22 +119,53 @@ pub struct ChargeTerms {
 }
 
 impl ChargeTerms {
-    /// Assemble the terms, CLAMPING the booking-supplied snapshot defensively (`commission_percent`
-    /// into `0..=100`, `cancellation_fee` to `>= 0`). booking enforces the same via CHECK
-    /// constraints, but payment must not depend on another service for its own integrity — and a
-    /// pre-migration booking sends nothing at all, which the caller maps to zero.
+    /// Assemble the terms from the booking's own inputs, DERIVING the VAT split rather than taking
+    /// it, and CLAMPING the snapshot defensively (`commission_percent` into `0..=100`,
+    /// `cancellation_fee` to `>= 0`). booking enforces the same via CHECK constraints, but payment
+    /// must not depend on another service for its own integrity — and a pre-migration booking sends
+    /// nothing at all, which the caller maps to zero.
+    ///
+    /// The breakdown is DERIVED here on purpose: it used to be passed in alongside, which meant a
+    /// caller could persist a `subtotal` that did not match the multiplicands stored next to it, and
+    /// every downstream report would then disagree with the bill. Taking the inputs makes writing a
+    /// payment row without its snapshot — or with a snapshot that contradicts the amount charged —
+    /// unrepresentable.
     pub fn new(
-        breakdown: PriceBreakdown,
+        inputs: PricingInputs,
         commission_percent: Decimal,
         cancellation_fee: Decimal,
     ) -> Self {
         ChargeTerms {
-            breakdown,
+            breakdown: price_breakdown(
+                inputs.base_fee,
+                inputs.booked_hours,
+                inputs.guard_count,
+                inputs.tip,
+            ),
+            inputs,
             commission_percent: commission_percent
                 .clamp(Decimal::ZERO, Decimal::ONE_HUNDRED)
                 .round_dp(2),
             cancellation_fee: cancellation_fee.max(Decimal::ZERO).round_dp(2),
         }
+    }
+
+    /// The commission in BAHT this charge would deduct at its BOOKED hours — the pre-pay estimate of
+    /// `payments.commission_amount`. The completion reconcile rewrites it from the ACTUAL worked
+    /// hours; a cancellation zeroes it (no guard was paid, so nothing was deducted).
+    ///
+    /// It goes through [`crate::domain::settlement`]'s two helpers, the same pair the payout deducts
+    /// with, so the money the guard is not paid and the money the platform sweeps are provably one
+    /// number.
+    pub fn commission_amount(&self) -> Decimal {
+        use crate::domain::settlement::{commission_on, guard_gross};
+        commission_on(
+            guard_gross(
+                self.inputs.base_fee,
+                Decimal::from(self.inputs.booked_hours.max(0)),
+            ),
+            Some(self.commission_percent),
+        )
     }
 }
 
@@ -706,11 +761,20 @@ mod tests {
 
     // ----- charge terms (the booking snapshot payment persists) -----
 
+    /// The four multiplicands of the standard fixture: 500 ฿/h, 4 booked hours, 1 guard, no tip.
+    fn inputs() -> PricingInputs {
+        PricingInputs {
+            base_fee: dec("500"),
+            booked_hours: 4,
+            guard_count: 1,
+            tip: Decimal::ZERO,
+        }
+    }
+
     #[test]
     fn charge_terms_clamp_the_booking_snapshot() {
-        let b = price_breakdown(dec("500"), 4, 1, Decimal::ZERO);
         // A sane snapshot passes through (rounded to the column's scale).
-        let t = ChargeTerms::new(b, dec("12.5"), dec("300"));
+        let t = ChargeTerms::new(inputs(), dec("12.5"), dec("300"));
         assert_eq!(t.commission_percent, dec("12.50"));
         assert_eq!(t.cancellation_fee, dec("300.00"));
         assert_eq!(t.breakdown.grand_total, dec("2140.00"));
@@ -718,26 +782,53 @@ mod tests {
         // Out-of-range values are clamped rather than trusted (payment does not depend on
         // booking's CHECK constraints for its own integrity).
         assert_eq!(
-            ChargeTerms::new(b, dec("-5"), dec("-1")).commission_percent,
+            ChargeTerms::new(inputs(), dec("-5"), dec("-1")).commission_percent,
             Decimal::ZERO
         );
         assert_eq!(
-            ChargeTerms::new(b, dec("-5"), dec("-1")).cancellation_fee,
+            ChargeTerms::new(inputs(), dec("-5"), dec("-1")).cancellation_fee,
             Decimal::ZERO
         );
         assert_eq!(
-            ChargeTerms::new(b, dec("140"), Decimal::ZERO).commission_percent,
+            ChargeTerms::new(inputs(), dec("140"), Decimal::ZERO).commission_percent,
             dec("100")
         );
+    }
+
+    /// The split can no longer contradict the multiplicands stored beside it: `new` DERIVES the
+    /// breakdown from the inputs, so there is no second value a caller could pass in.
+    #[test]
+    fn the_breakdown_is_derived_from_the_inputs_it_is_stored_with() {
+        let t = ChargeTerms::new(
+            PricingInputs {
+                base_fee: dec("500"),
+                booked_hours: 4,
+                guard_count: 2,
+                tip: dec("100"),
+            },
+            dec("10"),
+            Decimal::ZERO,
+        );
+        assert_eq!(
+            t.breakdown,
+            price_breakdown(dec("500"), 4, 2, dec("100")),
+            "the persisted split IS the multiplicands multiplied out"
+        );
+        assert_eq!(t.breakdown.subtotal, dec("4100.00"));
+        // The pre-pay commission estimate is priced off the BOOKED hours and ONE guard's share —
+        // the same basis the payout later pays on, so the sweep and the payout cannot disagree.
+        assert_eq!(t.commission_amount(), dec("200.00"), "10% of 500 × 4h");
     }
 
     #[test]
     fn commission_never_changes_what_the_customer_pays() {
         // The commission is deducted from the GUARD's pay; the customer's grand total is identical
         // at 0% and at 30% (the split lives entirely on the payout side).
-        let b = price_breakdown(dec("500"), 4, 1, Decimal::ZERO);
-        let free = ChargeTerms::new(b, Decimal::ZERO, Decimal::ZERO);
-        let taxed = ChargeTerms::new(b, dec("30"), dec("300"));
+        let free = ChargeTerms::new(inputs(), Decimal::ZERO, Decimal::ZERO);
+        let taxed = ChargeTerms::new(inputs(), dec("30"), dec("300"));
         assert_eq!(free.breakdown.grand_total, taxed.breakdown.grand_total);
+        // …but the commission AMOUNT does change, and that is the figure the sweep takes.
+        assert_eq!(free.commission_amount(), Decimal::ZERO);
+        assert_eq!(taxed.commission_amount(), dec("600.00"));
     }
 }

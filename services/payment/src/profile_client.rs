@@ -1,14 +1,18 @@
-//! profile-client adapter — the cross-service read the GUARD-PAYOUT aggregator uses to build the
-//! SCB file. THE MONEY PATH (payout side). payment mints a short-lived service-JWT
+//! profile-client adapter — the cross-service reads the BANK-EXPORT aggregators use to build an SCB
+//! file. THE MONEY PATH (payout + refund sides). payment mints a short-lived service-JWT
 //! (`encode_service_jwt("payment", ...)`) and GETs profile's service-JWT'd internal reads:
 //!   * `/internal/guards/{id}/payout-profile` → the guard's name + FULL tax id + address + phone
 //!     (the ภ.ง.ด.53 recipient + PromptPay proxy). This is the ONLY surface returning the tax id in
 //!     the clear; every owner/admin profile read masks it.
+//!   * `/internal/customers/{user_id}/payout-profile` → the customer's name + phone + address — the
+//!     stream-① REFUND destination, captured at REGISTRATION. Deliberately narrower: no tax id,
+//!     because a refund withholds nothing.
 //!   * `/internal/org-settings` → the company (WHT payer) block. profile returns the "unset" default
 //!     (all null) rather than 404 when unconfigured, so the caller surfaces a clear config error.
+//!     Read by the PAYOUT export only — a refund file carries no certificate to put a payer on.
 //!
-//! A trait ([`ProfileReader`]) decouples the handler from `reqwest` so the payout aggregation tests
-//! are hermetic. Mirrors [`crate::booking_client`].
+//! A trait ([`ProfileReader`]) decouples the handler from `reqwest` so the aggregation tests are
+//! hermetic. Mirrors [`crate::booking_client`].
 
 use jsonwebtoken::EncodingKey;
 use serde::Deserialize;
@@ -28,6 +32,29 @@ pub struct GuardPayoutProfile {
     pub address: Option<String>,
     /// The guard's contact phone — the PromptPay MOB fallback proxy when no tax id is on file.
     pub phone: Option<String>,
+}
+
+/// The customer PII for ONE refund recipient (profile
+/// `/internal/customers/{user_id}/payout-profile`) — stream ① *ยอดที่ต้องโอนคืนกับคนจ้าง*.
+///
+/// Deliberately NARROWER than [`GuardPayoutProfile`]: there is no `tax_id`, because a refund is the
+/// customer's own money coming back rather than assessable income — nothing is withheld, so no
+/// ภ.ง.ด. certificate is issued and no TIN is needed (or exposed) to send one.
+///
+/// Every field is `Option`, and each missing one means something different to the aggregator: no
+/// `phone` is UNREFUNDABLE (there is no PromptPay destination at all), no `full_name` fails SCB's
+/// mandatory recipient-name column, and `address` is genuinely optional on a credit line. All three
+/// come back RAW, exactly as stored — payment owns normalisation (`digits_only` at the writer
+/// boundary), the same contract as the guard read; two internal endpoints disagreeing about who
+/// normalises is how a proxy silently changes length, and therefore proxy TYPE, between streams.
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomerPayoutProfile {
+    pub full_name: Option<String>,
+    /// The PromptPay **MOB** proxy — `customer_profiles.contact_phone` when the customer set one,
+    /// else the account's LOGIN phone, which profile resolves from identity on our behalf. That hop
+    /// is why payment needs no `IDENTITY_URL` of its own.
+    pub phone: Option<String>,
+    pub address: Option<String>,
 }
 
 /// The company (WHT payer) block (profile `/internal/org-settings`).
@@ -53,6 +80,14 @@ pub trait ProfileReader: Send + Sync {
         &self,
         guard_id: Uuid,
     ) -> Result<GuardPayoutProfile, AppError>;
+    /// The customer's REFUND destination, or `NotFound` when profile has no customer row for
+    /// `customer_id`. A `NotFound` excludes that ONE customer from the batch (with a Thai reason);
+    /// any other error fails the run loudly — silently skipping a customer on a network blip would
+    /// leave them unrefunded with nobody told.
+    async fn get_customer_payout_profile(
+        &self,
+        customer_id: Uuid,
+    ) -> Result<CustomerPayoutProfile, AppError>;
     /// The company WHT-payer block (never 404 — profile returns an all-null default when unset).
     async fn get_org_settings(&self) -> Result<OrgTaxInfo, AppError>;
 }
@@ -135,6 +170,18 @@ impl ProfileReader for HttpProfileReader {
             self.profile_url
         );
         self.get_json(&url, Some("Guard profile not found")).await
+    }
+
+    async fn get_customer_payout_profile(
+        &self,
+        customer_id: Uuid,
+    ) -> Result<CustomerPayoutProfile, AppError> {
+        let url = format!(
+            "{}/internal/customers/{customer_id}/payout-profile",
+            self.profile_url
+        );
+        self.get_json(&url, Some("Customer profile not found"))
+            .await
     }
 
     async fn get_org_settings(&self) -> Result<OrgTaxInfo, AppError> {

@@ -35,7 +35,10 @@ use crate::slip2go_client::{
 };
 use crate::state::PaymentDeps;
 
+pub mod deductions;
 pub mod payouts;
+pub mod refunds;
+pub mod reports;
 use crate::state::PaymentInternalDeps;
 
 /// The recorded `payment_method` for a PRE-PAY charge. v2's gateway is simulated and there is no
@@ -54,12 +57,14 @@ const PREPAID_METHOD: &str = "prepaid";
 /// cross-service read.
 fn charge_terms(booking: &crate::models::InternalBooking) -> domain::ChargeTerms {
     domain::ChargeTerms::new(
-        domain::price_breakdown(
-            booking.base_fee,
-            booking.hours,
-            booking.guard_count,
-            booking.tip,
-        ),
+        // The four multiplicands, carried through verbatim — `ChargeTerms` derives the VAT split
+        // from them, so the persisted `subtotal` can never contradict the snapshot stored beside it.
+        domain::PricingInputs {
+            base_fee: booking.base_fee,
+            booked_hours: booking.hours,
+            guard_count: booking.guard_count,
+            tip: booking.tip,
+        },
         booking.commission_percent.unwrap_or(Decimal::ZERO),
         booking.cancellation_fee.unwrap_or(Decimal::ZERO),
     )
@@ -574,9 +579,12 @@ pub async fn guard_earnings<S: PaymentDeps>(
 const PAYMENT_STATUSES: &[&str] = &["pending", "completed", "refunded"];
 
 /// GET /admin/payments — admin cross-user payment ledger (READ-ONLY). Admin only (the edge
-/// proves identity, not role). Optional `status` filter + limit/offset; replica read. This is
-/// a reporting surface prepared ahead of a real payment integration — there is intentionally
-/// NO manual refund-process endpoint here (v2 refunds are event-driven; see PROGRESS notes).
+/// proves identity, not role). Optional `status` filter + limit/offset; replica read.
+///
+/// READ-ONLY because refunds LEAVE AS A BATCH, not because they are automatic: they are sent
+/// through `POST /admin/refunds/export` ([`crate::api::refunds`]) — one SCB upload file — which is
+/// also the only thing that advances a refund to `processed`. There is deliberately no per-row
+/// refund action on this ledger; [`admin_refund_queue`] below is the refund READ surface.
 #[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
 pub async fn admin_list_payments<S: PaymentDeps>(
     State(state): State<S>,
@@ -607,9 +615,14 @@ const REFUND_STATUSES: &[&str] = &["pending", "processed"];
 /// (`refund_status` set), newest first. Admin only (the edge proves identity, not role). Optional
 /// `status` filter (`pending` = awaiting action, `processed` = done; omitted → both) + limit/offset;
 /// replica read. Returns the page of refunds PLUS the total `count` matching the same filter (the
-/// dashboard "แจ้งเตือน / คิวคืนเงิน" badge — independent of the page window). v2 refunds are
-/// event-driven (a settle sets `refund_status='pending'`); this is the READ surface that surfaces
-/// them — there is intentionally no manual refund-process action here yet.
+/// dashboard "แจ้งเตือน / คิวคืนเงิน" badge — independent of the page window).
+///
+/// This is the READ surface only, and it shows LANE A alone (`payment.payments`). The money actually
+/// LEAVES through `/admin/refunds/export` ([`crate::api::refunds`]), which covers both lanes —
+/// lane B is the duplicate-transfer `payment.payment_slips` row, which this queue has never listed.
+/// A settle still only ever sets `refund_status = 'pending'`; the export is what advances it to
+/// `'processed'`. (This doc used to claim v2 refunds were "event-driven" and needed no manual step.
+/// They were not: nothing wrote `'processed'` at all, so the queue could only ever grow.)
 #[tracing::instrument(skip(state, q), fields(user = %user.user_id))]
 pub async fn admin_refund_queue<S: PaymentDeps>(
     State(state): State<S>,
@@ -750,14 +763,19 @@ mod tests {
         }
     }
 
-    /// Stub profile reader — canned guard PII + org block, no real profile HTTP (the payout
-    /// aggregation is tested hermetically). Default = no guard / empty org.
+    /// Stub profile reader — canned guard/customer PII + org block, no real profile HTTP (both the
+    /// payout and the refund aggregation are tested hermetically). Default = nobody on file / empty
+    /// org, so an aggregation over an unseeded id exercises the NotFound exclusion arm.
     #[derive(Clone, Default)]
     struct StubProfileReader {
         guard: Option<crate::profile_client::GuardPayoutProfile>,
         /// Per-guard PII, keyed by guard id — a payout batch pays MANY different people, each with
         /// their own name/tax id. Falls back to `guard` for the single-guard cases.
         guards: std::collections::HashMap<Uuid, crate::profile_client::GuardPayoutProfile>,
+        /// Per-customer refund PII, keyed by customer id. No `customer` fallback on purpose: a
+        /// refund test that forgets to seed a customer must hit the EXCLUSION path, not silently
+        /// borrow someone else's phone and send them the money.
+        customers: std::collections::HashMap<Uuid, crate::profile_client::CustomerPayoutProfile>,
         org: Option<crate::profile_client::OrgTaxInfo>,
     }
     impl crate::profile_client::ProfileReader for StubProfileReader {
@@ -770,6 +788,15 @@ mod tests {
                 .cloned()
                 .or_else(|| self.guard.clone())
                 .ok_or_else(|| AppError::NotFound("Guard not found".to_string()))
+        }
+        async fn get_customer_payout_profile(
+            &self,
+            customer_id: Uuid,
+        ) -> Result<crate::profile_client::CustomerPayoutProfile, AppError> {
+            self.customers
+                .get(&customer_id)
+                .cloned()
+                .ok_or_else(|| AppError::NotFound("Customer not found".to_string()))
         }
         async fn get_org_settings(&self) -> Result<crate::profile_client::OrgTaxInfo, AppError> {
             Ok(self
@@ -957,6 +984,40 @@ mod tests {
                 .route("/payments/{id}/slip", post(pay_with_slip::<TestDeps>))
                 .route("/admin/payments", get(admin_list_payments::<TestDeps>))
                 .route("/admin/refunds/queue", get(admin_refund_queue::<TestDeps>))
+                // Stream ① customer refunds, mounted exactly as main.rs does, so the admin gate on
+                // each route is exercised by the same router the service serves.
+                .route(
+                    "/admin/refunds/preview",
+                    get(crate::api::refunds::preview::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/export",
+                    post(crate::api::refunds::export::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches",
+                    get(crate::api::refunds::list_batches::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches/{id}",
+                    get(crate::api::refunds::get_batch::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches/{id}/file",
+                    get(crate::api::refunds::get_batch_file::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches/{id}/status",
+                    post(crate::api::refunds::set_batch_status::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches/{id}/void",
+                    post(crate::api::refunds::void_batch::<TestDeps>),
+                )
+                .route(
+                    "/admin/refunds/batches/{id}/items/void",
+                    post(crate::api::refunds::void_batch_items::<TestDeps>),
+                )
                 .route(
                     "/admin/reports/revenue",
                     get(admin_revenue_report::<TestDeps>),
@@ -966,12 +1027,42 @@ mod tests {
                     get(admin_customer_spend_report::<TestDeps>),
                 )
                 .route(
+                    "/admin/payouts/config",
+                    axum::routing::put(crate::api::payouts::put_config::<TestDeps>),
+                )
+                .route(
                     "/admin/payouts/preview",
                     get(crate::api::payouts::preview::<TestDeps>),
                 )
                 .route(
                     "/admin/payouts/export",
                     post(crate::api::payouts::export::<TestDeps>),
+                )
+                // The batch-lifecycle routes, mounted exactly as main.rs does, so the role gate on
+                // each of them is exercised by the same router the service serves.
+                .route(
+                    "/admin/payouts/batches",
+                    get(crate::api::payouts::list_batches::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/batches/{id}",
+                    get(crate::api::payouts::get_batch::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/batches/{id}/file",
+                    get(crate::api::payouts::get_batch_file::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/batches/{id}/status",
+                    post(crate::api::payouts::set_batch_status::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/batches/{id}/void",
+                    post(crate::api::payouts::void_batch::<TestDeps>),
+                )
+                .route(
+                    "/admin/payouts/batches/{id}/items/void",
+                    post(crate::api::payouts::void_batch_items::<TestDeps>),
                 )
                 .with_state(deps),
         )
@@ -1702,6 +1793,51 @@ mod tests {
         app.oneshot(req).await.unwrap().status()
     }
 
+    /// POST an export (`uri` — the payout's or the refund's) and hand back the whole response,
+    /// retrying into the next second if the file-ref unique refused it.
+    ///
+    /// `batch_ref` is a timestamp at ONE-SECOND resolution, so two exports committed in the same
+    /// Bangkok second collide on `uq_payout_batches_file_ref` / `uq_refund_batches_file_ref` — BY
+    /// DESIGN: two files must never share the customer transaction refs SCB de-dups on. These tests
+    /// run in PARALLEL against one database, so they hit exactly that collision, and the honest
+    /// remedy is the admin's own — the loser's transaction rolled back with nothing marked, so
+    /// clicking again a moment later is safe. The retry lives HERE, in the test, and deliberately not
+    /// in the request path. Both streams share the helper so neither can quietly stop retrying.
+    async fn export_retrying_ref_collision(
+        app: &Router,
+        uri: &str,
+        token: &str,
+        body: String,
+    ) -> axum::response::Response {
+        const ATTEMPTS: u32 = 4;
+        let mut last = None;
+        for attempt in 0..ATTEMPTS {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {token}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body.clone()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            if res.status() != StatusCode::CONFLICT || attempt == ATTEMPTS - 1 {
+                return res;
+            }
+            last = Some(res.status());
+            // Past the second boundary — plus JITTER, because two colliding callers that both sleep
+            // exactly one second simply collide again in the next one. A UUID is the randomness
+            // already to hand; `% 900` keeps the whole wait inside 1.0-1.9s.
+            let jitter = (Uuid::new_v4().as_u128() % 900) as u64;
+            tokio::time::sleep(Duration::from_millis(1000 + jitter)).await;
+        }
+        unreachable!("the loop returns on the last attempt, got {last:?}")
+    }
+
     #[tokio::test]
     async fn payout_endpoints_reject_non_admin() {
         let Some(app) = router(None).await else {
@@ -1731,6 +1867,116 @@ mod tests {
             post_payout_export(app, &guard_tok, None).await,
             StatusCode::FORBIDDEN,
             "a guard cannot pay themselves"
+        );
+    }
+
+    /// GET/POST one of the batch-lifecycle routes with a bearer token (and a body for the POSTs —
+    /// axum runs the `Json` extractor before the handler's role gate, so an empty body would be a
+    /// 415 that proves nothing about the gate).
+    async fn call_batch_route(
+        app: Router,
+        method: &str,
+        uri: &str,
+        token: &str,
+        body: Option<&str>,
+    ) -> StatusCode {
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {token}"));
+        let req = match body {
+            Some(json) => req
+                .header("content-type", "application/json")
+                .body(Body::from(json.to_string()))
+                .unwrap(),
+            None => req.body(Body::empty()).unwrap(),
+        };
+        app.oneshot(req).await.unwrap().status()
+    }
+
+    /// The payout HISTORY is the record of who the platform paid, and the lifecycle actions move
+    /// money back into the payable backlog — neither may be reachable by a customer or a guard.
+    #[tokio::test]
+    async fn payout_batch_endpoints_reject_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let id = Uuid::new_v4();
+        for role in ["customer", "guard"] {
+            let tok = customer_token(Uuid::new_v4(), role);
+            for (method, uri, body) in [
+                ("GET", "/admin/payouts/batches".to_string(), None),
+                ("GET", format!("/admin/payouts/batches/{id}"), None),
+                ("GET", format!("/admin/payouts/batches/{id}/file"), None),
+                (
+                    "POST",
+                    format!("/admin/payouts/batches/{id}/status"),
+                    Some(r#"{"status":"uploaded"}"#),
+                ),
+                (
+                    "POST",
+                    format!("/admin/payouts/batches/{id}/void"),
+                    Some(r#"{"reason":"ยกเลิก"}"#),
+                ),
+            ] {
+                assert_eq!(
+                    call_batch_route(app.clone(), method, &uri, &tok, body).await,
+                    StatusCode::FORBIDDEN,
+                    "{role} must not reach {method} {uri}"
+                );
+            }
+        }
+    }
+
+    /// The two request-body rules that must hold BEFORE any DB read (the test pool is deliberately
+    /// unusable, so a 400 here proves the check ran first): a void needs a real reason, and `voided`
+    /// is not a status the generic endpoint may set.
+    #[tokio::test]
+    async fn payout_batch_lifecycle_validates_the_body_before_touching_the_db() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        let id = Uuid::new_v4();
+        let status_uri = format!("/admin/payouts/batches/{id}/status");
+        let void_uri = format!("/admin/payouts/batches/{id}/void");
+
+        // A blank reason is useless six months later — and the void it would justify puts every
+        // booking in the batch back in the payable backlog.
+        for blank in [r#"{"reason":""}"#, r#"{"reason":"   "}"#] {
+            assert_eq!(
+                call_batch_route(app.clone(), "POST", &void_uri, &admin, Some(blank)).await,
+                StatusCode::BAD_REQUEST,
+                "a void needs a reason"
+            );
+        }
+        // Voiding through the generic status endpoint would flip the header WITHOUT un-marking the
+        // items — the bookings would be unpayable forever, which is the bug void exists to fix.
+        assert_eq!(
+            call_batch_route(
+                app.clone(),
+                "POST",
+                &status_uri,
+                &admin,
+                Some(r#"{"status":"voided"}"#)
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "voiding has its own endpoint"
+        );
+        assert_eq!(
+            call_batch_route(
+                app,
+                "POST",
+                &status_uri,
+                &admin,
+                Some(r#"{"status":"settled"}"#)
+            )
+            .await,
+            StatusCode::BAD_REQUEST,
+            "an unknown status is refused, not stored"
         );
     }
 
@@ -1793,6 +2039,369 @@ mod tests {
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
     }
 
+    #[tokio::test]
+    async fn payout_config_rejects_an_unknown_wht_form_code() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        let put = |body: &str| {
+            let req = Request::builder()
+                .method("PUT")
+                .uri("/admin/payouts/config")
+                .header("authorization", format!("Bearer {admin}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            app.clone().oneshot(req)
+        };
+        // The seven ภ.ง.ด. codes are NOT a range (01/03/04/11/12/13/53) — `02` looks plausible and
+        // is not one of them. Rejected BEFORE the DB write (the test pool is unusable), so reaching
+        // a 400 here also proves the validation runs at save time.
+        for bad in [
+            r#"{"wht_form_type_code":"02"}"#,
+            r#"{"wht_form_type_code":"3"}"#,
+        ] {
+            assert_eq!(
+                put(bad).await.unwrap().status(),
+                StatusCode::BAD_REQUEST,
+                "{bad} must not be storable"
+            );
+        }
+        // A negative per-transaction cap would exclude every guard from every future batch.
+        assert_eq!(
+            put(r#"{"max_transfer_per_txn":"-1"}"#)
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
+
+    #[tokio::test]
+    async fn payout_export_rejects_a_back_dated_value_date() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        let admin = customer_token(Uuid::new_v4(), "admin");
+        // Two days back is in the past in EVERY timezone reading (Bangkok is never more than a day
+        // ahead of UTC). SCB rejects a back-dated batch outright, so we refuse before generating.
+        let past = (Utc::now() - chrono::Duration::days(2)).date_naive();
+        assert_eq!(
+            post_payout_export(app, &admin, Some(&format!(r#"{{"value_date":"{past}"}}"#))).await,
+            StatusCode::BAD_REQUEST,
+            "a back-dated value date is refused before any DB read"
+        );
+    }
+
+    /// END-TO-END, real Postgres + Redis: the guard's LOGIN PHONE only reaches SCB when an operator
+    /// opted in, a VOID is visible to the very next export, and one bounced credit line can be
+    /// returned to the backlog on its own — over the real HTTP routes.
+    ///
+    /// Three defects meet here, which is why they share a test: the phone populated for the
+    /// PromptPay `MOB` fallback was silently also being sent as an SMS-notify number (SCB bills per
+    /// SMS, and nobody asked the guard); the backlog was read from the read REPLICA, so a void
+    /// followed by an immediate export could not see the bookings it had just released; and a single
+    /// failed credit line had no remedy short of voiding the whole file. DATABASE_URL + test Redis
+    /// gated.
+    #[tokio::test]
+    async fn payout_sms_opt_in_void_visibility_and_single_item_return() {
+        let (Ok(db_url), Ok(redis_url)) = (
+            std::env::var("DATABASE_URL"),
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL")),
+        ) else {
+            eprintln!("SKIP: DATABASE_URL / TEST_REDIS_URL not set (hermetic default)");
+            return;
+        };
+        let Ok(db) = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+        else {
+            eprintln!("SKIP: DATABASE_URL not reachable");
+            return;
+        };
+        let Ok(redis) = shared::redis_client::create_connection_manager(&redis_url).await else {
+            eprintln!("SKIP: test Redis not reachable");
+            return;
+        };
+
+        // ── one guard, one finished job: 500/hr × 2h, no commission → income 1000, 3% WHT 30.00,
+        //    transfer 970.00.
+        let guard_id = Uuid::new_v4();
+        let booking_id = Uuid::new_v4();
+        crate::repo::prepay_idempotent(
+            &db,
+            booking_id,
+            Uuid::new_v4(),
+            Some(guard_id),
+            &crate::domain::ChargeTerms::new(
+                // 500 ฿/h × 4h × 1 guard, no tip → a VAT-exclusive subtotal of 2000.
+                crate::domain::PricingInputs {
+                    base_fee: "500".parse().unwrap(),
+                    booked_hours: 4,
+                    guard_count: 1,
+                    tip: rust_decimal::Decimal::ZERO,
+                },
+                rust_decimal::Decimal::ZERO,
+                rust_decimal::Decimal::ZERO,
+            ),
+            "promptpay",
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("pre-pay");
+        sqlx::query(
+            "UPDATE payment.payments SET actual_hours = 2, commission_percent = 0 \
+             WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .execute(&db)
+        .await
+        .expect("reconcile");
+
+        /// Save the payout config with the SMS opt-in either way (everything else stays as stored).
+        async fn set_sms(db: &sqlx::PgPool, on: bool) {
+            crate::repo::upsert_payout_config(
+                db,
+                &crate::models::UpdatePayoutConfigRequest {
+                    debit_account: Some("1234567896".to_string()),
+                    fee_debit_account: None,
+                    revenue_account: None,
+                    wht_form_type_code: None,
+                    wht_pay_type_code: None,
+                    wht_income_type_code: None,
+                    wht_income_desc: None,
+                    wht_rate_percent: Some("3".parse().unwrap()),
+                    max_transfer_per_txn: None,
+                    fee_charge_code: None,
+                    sms_notify: Some(on),
+                },
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("payout config");
+        }
+        set_sms(&db, false).await;
+
+        // The guard has BOTH a valid national id (→ the `NAT` destination) and a phone. The phone is
+        // the thing under test: it must address nothing and notify nobody unless asked.
+        let profile = StubProfileReader {
+            guard: None,
+            customers: Default::default(),
+            guards: [(
+                guard_id,
+                crate::profile_client::GuardPayoutProfile {
+                    full_name: Some("รปภ มีเบอร์".to_string()),
+                    // 111111111111 → sum 90, 90 mod 11 = 2, check (11−2) mod 10 = 9.
+                    tax_id: Some("1111111111119".to_string()),
+                    address: Some("99 Rama IX Rd, Bangkok".to_string()),
+                    phone: Some("081-234-5678".to_string()),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            org: Some(crate::profile_client::OrgTaxInfo {
+                company_name: Some("PGuard Co., Ltd.".to_string()),
+                tax_id: Some("0105551234567".to_string()),
+                address: Some("1 Sathorn Rd, Bangkok".to_string()),
+            }),
+        };
+        let app = Router::new()
+            .route(
+                "/admin/payouts/export",
+                post(crate::api::payouts::export::<TestDeps>),
+            )
+            .route(
+                "/admin/payouts/batches/{id}/items/void",
+                post(crate::api::payouts::void_batch_items::<TestDeps>),
+            )
+            .with_state(TestDeps {
+                dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+                db: db.clone(),
+                redis,
+                reader: StubReader {
+                    booking: Some(payable_booking(Uuid::new_v4())),
+                },
+                verifier: StubVerifier::ok(sample_verified("0140315796")),
+                profile,
+                s3: stub_s3(),
+                slip_config: sim_config(),
+            });
+        let admin = customer_token(Uuid::new_v4(), "admin");
+
+        /// Export just this guard and return the file's single TXNDET, split into fields.
+        async fn credit_line(app: &Router, admin: &str, guard_id: Uuid) -> Vec<String> {
+            let res = export_retrying_ref_collision(
+                app,
+                "/admin/payouts/export",
+                admin,
+                format!(r#"{{"guard_ids":["{guard_id}"]}}"#),
+            )
+            .await;
+            assert_eq!(res.status(), StatusCode::OK, "the batch generates");
+            let bytes = axum::body::to_bytes(res.into_body(), 256 * 1024)
+                .await
+                .expect("body");
+            let file = String::from_utf8(bytes.to_vec()).expect("UTF-8, no BOM");
+            file.split("\r\n")
+                .find(|l| l.starts_with("TXNDET"))
+                .unwrap_or_else(|| panic!("no credit line in {file}"))
+                .split('|')
+                .map(str::to_string)
+                .collect()
+        }
+
+        // ── opted OUT (the default): the money is addressed by the national id, and the phone
+        //    appears NOWHERE — no notify flag, no number. SCB bills per SMS, and that number is the
+        //    guard's login phone.
+        let txn = credit_line(&app, &admin, guard_id).await;
+        assert_eq!(txn[2], "1111111111119", "addressed by the NAT proxy");
+        assert_eq!(txn[3], "NAT");
+        assert_eq!(
+            txn[8], "OUR",
+            "field 8 (fee charge) is mandatory on every credit row and must not be blank"
+        );
+        assert_eq!(txn[9], "N", "SMS notify OFF by default");
+        assert_eq!(
+            txn[10], "",
+            "…and the login phone never leaves the platform"
+        );
+        assert!(
+            !txn.iter().any(|f| f.contains("0812345678")),
+            "the phone appears nowhere in the credit line: {txn:?}"
+        );
+
+        // ── void the batch, then export again IMMEDIATELY. Read from a lagging replica this would
+        //    find nothing to pay (400) — the void would look like it did nothing.
+        let batch_id: Uuid = sqlx::query_scalar(
+            "SELECT batch_id FROM payment.payout_batch_items WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_one(&db)
+        .await
+        .expect("the first batch");
+        crate::repo::void_payout_batch(&db, batch_id, Uuid::new_v4(), "ยังไม่ได้อัปโหลด")
+            .await
+            .expect("void");
+
+        // ── now opted IN: the same phone that could not be sent before rides fields 9/10.
+        set_sms(&db, true).await;
+        let txn = credit_line(&app, &admin, guard_id).await;
+        assert_eq!(txn[9], "Y", "the operator asked for the SMS");
+        assert_eq!(txn[10], "0812345678", "digits only, dashes stripped");
+        assert_eq!(txn[2], "1111111111119", "…and the destination is unchanged");
+
+        // ── the PER-ITEM return, over the real route, on the batch just generated.
+        let second_batch: Uuid = sqlx::query_scalar(
+            "SELECT batch_id FROM payment.payout_batch_items \
+              WHERE booking_id = $1 AND voided_at IS NULL",
+        )
+        .bind(booking_id)
+        .fetch_one(&db)
+        .await
+        .expect("the second batch");
+        let items_void = |body: String| {
+            let app = app.clone();
+            let admin = admin.clone();
+            async move {
+                app.oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/admin/payouts/batches/{second_batch}/items/void"))
+                        .header("authorization", format!("Bearer {admin}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+            }
+        };
+        // An empty tick-list must NOT be read as "all of them" — that is the whole-batch action.
+        assert_eq!(
+            items_void(r#"{"booking_ids":[],"reason":"ว่าง"}"#.to_string())
+                .await
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        // …and the reason is mandatory, exactly like the whole-batch void's.
+        assert_eq!(
+            items_void(format!(
+                r#"{{"booking_ids":["{booking_id}"],"reason":"   "}}"#
+            ))
+            .await
+            .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let ok = items_void(format!(
+            r#"{{"booking_ids":["{booking_id}"],"reason":"ธนาคารแจ้งว่าพร้อมเพย์ปลายทางไม่ผูกบัญชี"}}"#
+        ))
+        .await;
+        assert_eq!(ok.status(), StatusCode::OK, "the failed line goes back");
+        // A second attempt is a typed 409, not a silent success (their page may be stale).
+        assert_eq!(
+            items_void(format!(
+                r#"{{"booking_ids":["{booking_id}"],"reason":"กดซ้ำ"}}"#
+            ))
+            .await
+            .status(),
+            StatusCode::CONFLICT
+        );
+        // The booking really is payable again — and its batch was left alone.
+        let (live, status): (i64, String) = sqlx::query_as(
+            "SELECT (SELECT count(*) FROM payment.payout_batch_items \
+                      WHERE booking_id = $1 AND voided_at IS NULL), \
+                    (SELECT status FROM payment.payout_batches WHERE id = $2)",
+        )
+        .bind(booking_id)
+        .bind(second_batch)
+        .fetch_one(&db)
+        .await
+        .expect("state");
+        assert_eq!(live, 0, "no live paid-marker → back in the backlog");
+        assert_eq!(status, "generated", "the batch's own status is untouched");
+
+        // Leave the shared singleton config as we found it (other tests read the same row).
+        set_sms(&db, false).await;
+        let batches: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT batch_id FROM payment.payout_batch_items WHERE booking_id = $1",
+        )
+        .bind(booking_id)
+        .fetch_all(&db)
+        .await
+        .unwrap_or_default();
+        let _ = sqlx::query("DELETE FROM payment.money_audit WHERE target_id = ANY($1)")
+            .bind(&batches)
+            .execute(&db)
+            .await;
+        // The SHARED bank-reference reservation (migration 0012) is polymorphic, so no FK cascade
+        // releases it — a test deleting its batches releases their references by hand.
+        let _ = sqlx::query("DELETE FROM payment.scb_file_refs WHERE batch_id = ANY($1)")
+            .bind(&batches)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM payment.payout_batches WHERE id = ANY($1)")
+            .bind(&batches)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM payment.payout_batch_items WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&db)
+            .await;
+        let _ =
+            sqlx::query("DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = $1")
+                .bind(booking_id.to_string())
+                .execute(&db)
+                .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = $1")
+            .bind(booking_id)
+            .execute(&db)
+            .await;
+    }
+
     /// END-TO-END, real Postgres: ONE export file pays MANY guards. Three guards have unpaid
     /// reconciled jobs; the admin ticks two of them; the generated SCB text must carry one TXNDET
     /// (+ WHTCER) PER TICKED GUARD inside a single batch whose BCHDET/TRAILR totals sum every
@@ -1820,13 +2429,30 @@ mod tests {
             return;
         };
 
-        // ── seed: guard A with TWO finished jobs, guard B with one, guard C (no tax id) with one.
-        let (guard_a, guard_b, guard_c) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+        // ── seed: guard A with TWO finished jobs, guard B with one, guard C (no tax id) with one,
+        //    guard D with one ABSURD job (500/hr × 5000h) that busts the ฿2,000,000 per-transaction
+        //    cap — D is ticked but must be excluded, not written as a line SCB would reject.
+        //    Guard F is ticked too and has a perfectly-shaped 13-digit tax id whose CHECK DIGIT is
+        //    wrong — PromptPay would credit whoever really owns that number, so F must be excluded.
+        //    Guard E has NO tax id but DOES have a phone — the PromptPay `MOB` fallback. Under a
+        //    withholding rate (3% here) they are still excluded, but for the TAX reason, never for
+        //    "no PromptPay": see the preview assertion at the end.
+        let (guard_a, guard_b, guard_c, guard_d, guard_e, guard_f) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
         let jobs = [
             (Uuid::new_v4(), guard_a, "2", "10"),
             (Uuid::new_v4(), guard_a, "1", "10"),
             (Uuid::new_v4(), guard_b, "3", "0"),
             (Uuid::new_v4(), guard_c, "2", "0"),
+            (Uuid::new_v4(), guard_d, "5000", "0"),
+            (Uuid::new_v4(), guard_e, "2", "0"),
+            (Uuid::new_v4(), guard_f, "2", "0"),
         ];
         for (booking_id, guard_id, hours, commission) in jobs {
             crate::repo::prepay_idempotent(
@@ -1835,7 +2461,13 @@ mod tests {
                 Uuid::new_v4(),
                 Some(guard_id),
                 &crate::domain::ChargeTerms::new(
-                    crate::domain::PriceBreakdown::from_subtotal("2000".parse().unwrap()),
+                    // 500 ฿/h × 4h × 1 guard, no tip → a VAT-exclusive subtotal of 2000.
+                    crate::domain::PricingInputs {
+                        base_fee: "500".parse().unwrap(),
+                        booked_hours: 4,
+                        guard_count: 1,
+                        tip: rust_decimal::Decimal::ZERO,
+                    },
                     commission.parse().unwrap(),
                     rust_decimal::Decimal::ZERO,
                 ),
@@ -1857,17 +2489,23 @@ mod tests {
             .expect("reconcile");
         }
 
-        // company debit account + a 3% withholding rate.
+        // company debit account + a 3% withholding rate. The account must pass SCB's §14 check
+        // digit (`scb_export::is_valid_scb_account`) — the export refuses to build a file on an
+        // account the bank would bounce at the batch header, so filler like `1234567890` fails.
         crate::repo::upsert_payout_config(
             &db,
             &crate::models::UpdatePayoutConfigRequest {
-                debit_account: Some("1234567890".to_string()),
+                debit_account: Some("1234567896".to_string()),
                 fee_debit_account: None,
+                revenue_account: None,
                 wht_form_type_code: None,
                 wht_pay_type_code: None,
                 wht_income_type_code: None,
                 wht_income_desc: None,
                 wht_rate_percent: Some("3".parse().unwrap()),
+                max_transfer_per_txn: None, // keeps the stored/default ฿2,000,000 cap
+                fee_charge_code: None,      // keeps the stored/default `OUR`
+                sms_notify: None,           // keeps the stored/default OFF
             },
             Uuid::new_v4(),
         )
@@ -1882,10 +2520,33 @@ mod tests {
         };
         let profile = StubProfileReader {
             guard: None,
+            customers: Default::default(),
             guards: [
-                (guard_a, pii("รปภ เอ", Some("1111111111111"))),
-                (guard_b, pii("รปภ บี", Some("2222222222222"))),
+                // The tax ids are GENUINELY VALID Thai national ids — the export re-checks the
+                // mod-11 digit before it will send money to one (a mistyped id credits a stranger),
+                // so a lazy `111…1` fixture would now be excluded rather than paid. Working:
+                //   111111111111 → sum 90,  90 mod 11 = 2 → check (11−2) mod 10 = 9
+                //   222222222222 → sum 180, 180 mod 11 = 4 → check 7
+                //   333333333333 → sum 270, 270 mod 11 = 6 → check 5
+                (guard_a, pii("รปภ เอ", Some("1111111111119"))),
+                (guard_b, pii("รปภ บี", Some("2222222222227"))),
                 (guard_c, pii("รปภ ซี", None)), // no tax id, no phone → not payable
+                (guard_d, pii("รปภ ดี", Some("3333333333335"))), // payable PII, over-cap amount
+                // E: no tax id but a PHONE. `resolve_proxy` falls back to the `MOB` proxy, so the
+                // money HAS a destination — the only thing missing is the TIN the ภ.ง.ด.
+                // certificate needs. The SMS-notify opt-in must never touch this: the phone here
+                // ADDRESSES the transfer, it does not notify anyone.
+                (
+                    guard_e,
+                    crate::profile_client::GuardPayoutProfile {
+                        full_name: Some("รปภ อี".to_string()),
+                        tax_id: None,
+                        address: Some("99 Rama IX Rd, Bangkok".to_string()),
+                        phone: Some("081-234-5678".to_string()),
+                    },
+                ),
+                // …and the typo: `123456789012` needs check digit 1, not 3.
+                (guard_f, pii("รปภ เอฟ", Some("1234567890123"))),
             ]
             .into_iter()
             .collect(),
@@ -1899,8 +2560,20 @@ mod tests {
             dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
             db: db.clone(),
             redis,
+            // **B2**: booking's LIVE row deliberately carries a DIFFERENT `base_fee` (฿9,999/h) from
+            // the ฿500/h every payment row snapshotted at pre-pay. The payout must price off the
+            // SNAPSHOT — payment's own column, the very one stream ② sweeps the cut from — so every
+            // amount asserted below stays a ฿500/h figure. If the aggregation ever went back to
+            // booking's current column, the guard would be paid off one number while the sweep took
+            // `subtotal − guard_income` off another, and this whole file's totals would move.
+            //
+            // In fact the stub is never CALLED here: `aggregate` only asks booking about rows whose
+            // snapshot is NULL, and there are none.
             reader: StubReader {
-                booking: Some(payable_booking(Uuid::new_v4())), // base_fee 500/hr
+                booking: Some(InternalBooking {
+                    base_fee: "9999".parse().unwrap(),
+                    ..payable_booking(Uuid::new_v4())
+                }),
             },
             verifier: StubVerifier::ok(sample_verified("0140315796")),
             profile,
@@ -1912,25 +2585,27 @@ mod tests {
                 "/admin/payouts/export",
                 post(crate::api::payouts::export::<TestDeps>),
             )
+            // The preview is mounted on the SAME state so the exclusion REASONS can be read back:
+            // the file alone only shows who was paid, and "excluded" is where a guard whose
+            // PromptPay resolved fine is told apart from one who has no destination at all.
+            .route(
+                "/admin/payouts/preview",
+                get(crate::api::payouts::preview::<TestDeps>),
+            )
             .with_state(deps);
 
-        // ── export, ticking A and B only (C is unpayable AND unticked).
+        // ── export, ticking A, B and D (C is unpayable AND unticked; D is ticked but over the cap;
+        //    E is ticked and has a MOB-only destination but no TIN).
         let admin = customer_token(Uuid::new_v4(), "admin");
-        let res = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/admin/payouts/export")
-                    .header("authorization", format!("Bearer {admin}"))
-                    .header("content-type", "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"guard_ids":["{guard_a}","{guard_b}"]}}"#
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = export_retrying_ref_collision(
+            &app,
+            "/admin/payouts/export",
+            &admin,
+            format!(
+                r#"{{"guard_ids":["{guard_a}","{guard_b}","{guard_d}","{guard_e}","{guard_f}"]}}"#
+            ),
+        )
+        .await;
         assert_eq!(res.status(), StatusCode::OK, "the batch generates");
         let bytes = axum::body::to_bytes(res.into_body(), 256 * 1024)
             .await
@@ -1938,8 +2613,9 @@ mod tests {
         let file = String::from_utf8(bytes.to_vec()).expect("UTF-8, no BOM");
         let lines: Vec<&str> = file.split("\r\n").collect();
 
-        // HEADER, BCHDET, (TXNDET + WHTCER) × 2 guards, TRAILR
-        assert_eq!(lines.len(), 7, "two guards ride ONE file: {file}");
+        // HEADER, BCHDET, (TXNDET + WHTCER + WHTDET) × 2 guards, TRAILR. The certificate is TWO
+        // physical records (doc line 2592), so a paid guard contributes three lines, not two.
+        assert_eq!(lines.len(), 9, "two guards ride ONE file: {file}");
         let txn: Vec<&Vec<&str>> = Vec::new();
         let _ = txn;
         let credits: Vec<Vec<&str>> = lines
@@ -1947,7 +2623,15 @@ mod tests {
             .filter(|l| l.starts_with("TXNDET"))
             .map(|l| l.split('|').collect())
             .collect();
-        assert_eq!(credits.len(), 2, "one credit line PER GUARD");
+        assert_eq!(credits.len(), 2, "one credit line PER PAYABLE GUARD");
+        assert!(
+            !file.contains("3333333333335"),
+            "the over-cap guard is EXCLUDED, never written as an over-limit line: {file}"
+        );
+        assert!(
+            !file.contains("1234567890123"),
+            "a national id that fails the check digit never becomes a destination: {file}"
+        );
 
         // A: (500×2−10%) + (500×1−10%) = 900 + 450 = 1350 income; 3% WHT 27.00 + 13.50 = 40.50;
         //    transfer 1309.50 — the guard's TWO jobs are summed into ONE transfer.
@@ -1959,30 +2643,53 @@ mod tests {
                 .unwrap_or_else(|| panic!("no credit for {proxy} in {file}"))
                 .clone()
         };
-        let a = by_proxy("1111111111111");
+        let a = by_proxy("1111111111119");
         assert_eq!(a[6], "1309.50", "guard A: both jobs in one transfer");
         assert_eq!(a[13], "รปภ เอ");
         assert_eq!(a[19], "40.50", "guard A withheld tax");
-        let b = by_proxy("2222222222222");
+        let b = by_proxy("2222222222227");
         assert_eq!(b[6], "1455.00");
         assert_eq!(b[19], "45.00");
 
         let bch: Vec<&str> = lines[1].split('|').collect();
         assert_eq!(bch[6], "2764.50", "batch total = 1309.50 + 1455.00");
         assert_eq!(bch[7], "2", "two credits in the batch");
-        let trailer: Vec<&str> = lines[6].split('|').collect();
+        assert!(
+            bch[1].chars().count() <= 12,
+            "the customer batch ref is capped at 12 chars: {}",
+            bch[1]
+        );
+        // HEADER field 1 = batchRef & productCode (doc line 1420), NOT the download filename.
+        let header: Vec<&str> = lines[0].split('|').collect();
+        assert_eq!(header[1], format!("{}PPY", bch[1]));
+        let trailer: Vec<&str> = lines[8].split('|').collect();
         assert_eq!(trailer, vec!["TRAILR", "1", "2", "2764.50"]);
         assert_eq!(
             file.matches("WHTCER").count(),
             2,
             "one ภ.ง.ด. certificate per paid guard"
         );
+        assert_eq!(
+            file.matches("\r\nWHTDET|").count(),
+            2,
+            "each certificate's income detail is its OWN record"
+        );
+        // Every customer transaction ref is unique within the file (the batch ref is folded in).
+        let refs: std::collections::HashSet<&str> = credits.iter().map(|c| c[1]).collect();
+        assert_eq!(refs.len(), 2, "customer txn refs are unique per file");
+        // sms_notify is OFF (the stored default), so no credit line may carry a notify number —
+        // asserted on the FIELDS, not on the whole text, because field 2 of a phone-addressed
+        // (`MOB`) line legitimately IS a phone number.
+        for c in &credits {
+            assert_eq!(c[9], "N", "SMS notify off by default: {c:?}");
+            assert_eq!(c[10], "", "…and no notify number: {c:?}");
+        }
 
         // ── paid-markers: only the TICKED guards' jobs (3 of them) are marked paid; C stays unpaid.
         let paid: Vec<(Uuid, Uuid)> = sqlx::query_as(
             "SELECT booking_id, guard_id FROM payment.payout_batch_items WHERE guard_id = ANY($1)",
         )
-        .bind(vec![guard_a, guard_b, guard_c])
+        .bind(vec![guard_a, guard_b, guard_c, guard_d, guard_e, guard_f])
         .fetch_all(&db)
         .await
         .expect("markers");
@@ -1991,6 +2698,107 @@ mod tests {
             !paid.iter().any(|(_, g)| *g == guard_c),
             "an unticked guard is never marked paid"
         );
+        for (label, excluded) in [
+            ("over-cap", guard_d),
+            ("MOB proxy, no TIN", guard_e),
+            ("bad check digit", guard_f),
+        ] {
+            assert!(
+                !paid.iter().any(|(_, g)| *g == excluded),
+                "an EXCLUDED guard ({label}) is never marked paid — their job stays in the backlog"
+            );
+        }
+
+        // ── THE MOB FALLBACK IS ALIVE. Guard E has no tax id, only a phone. The SMS-notify opt-in
+        //    gates the NOTIFY fields and nothing else, so `resolve_proxy` must still fall back to
+        //    that phone as the `MOB` DESTINATION — had the gate been applied one line too early
+        //    (`resolve_proxy(tax_id, sms_notify.then(phone))`), E would lose their destination and
+        //    the money with it.
+        //
+        //    The proof is WHICH reason the preview gives. E is excluded either way under a 3%
+        //    withholding rate — `ValidWHTMandatory` requires the recipient's TIN on every
+        //    certificate (doc line 2582), so paying them would bounce the whole file — but the
+        //    reason must be the TAX one. "ไม่มีพร้อมเพย์" here would mean the destination never
+        //    resolved, i.e. the fallback is broken.
+        let preview = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/admin/payouts/preview")
+                    .header("authorization", format!("Bearer {admin}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(preview.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(preview.into_body(), 4 * 1024 * 1024)
+            .await
+            .expect("preview body");
+        let preview: serde_json::Value = serde_json::from_slice(&body).expect("preview json");
+        let reason_for = |guard: Uuid| -> String {
+            preview["data"]["excluded"]
+                .as_array()
+                .expect("excluded list")
+                .iter()
+                .find(|e| e["guard_id"].as_str() == Some(&guard.to_string()))
+                .unwrap_or_else(|| panic!("no exclusion for {guard} in {preview}"))
+                .get("reason")
+                .and_then(|r| r.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let e_reason = reason_for(guard_e);
+        assert!(
+            e_reason.contains("หัก ณ ที่จ่าย"),
+            "guard E is held back by the WHT certificate, not by the transfer rail: {e_reason}"
+        );
+        assert!(
+            !e_reason.contains("ไม่มีพร้อมเพย์"),
+            "the phone STILL addresses the money — the MOB fallback is not gated by sms_notify: \
+             {e_reason}"
+        );
+        // …and the contrast: guard C has neither id nor phone, so THEY are the "no PromptPay" case.
+        let c_reason = reason_for(guard_c);
+        assert!(
+            c_reason.contains("ไม่มีพร้อมเพย์"),
+            "no id and no phone = no destination at all: {c_reason}"
+        );
+
+        // ── the batch STORED the exact bytes it streamed. This is what closes the one-way door:
+        //    the download the admin just lost can be fetched again from
+        //    `/admin/payouts/batches/{id}/file` instead of the bookings being paid-forever with no
+        //    file. `recipient_count` counts GUARDS (2), not the bookings they cover (3).
+        let (batch_id, stored, recipients, status): (Uuid, Option<String>, i32, String) =
+            sqlx::query_as(
+                "SELECT b.id, b.file_text, b.recipient_count, b.status FROM payment.payout_batches b \
+                 WHERE b.id = (SELECT batch_id FROM payment.payout_batch_items WHERE guard_id = $1)",
+            )
+            .bind(guard_b)
+            .fetch_one(&db)
+            .await
+            .expect("the generated batch");
+        assert_eq!(
+            stored.as_deref(),
+            Some(file.as_str()),
+            "the stored file is byte-for-byte what was downloaded"
+        );
+        assert_eq!(
+            recipients, 2,
+            "two GUARDS, though they cover three bookings"
+        );
+        assert_eq!(status, "generated");
+        // …and the money-action log has the export, written in the batch's own transaction.
+        let audits: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM payment.money_audit \
+             WHERE target_kind = 'payout_batch' AND target_id = $1 AND action = 'payout_batch_exported'",
+        )
+        .bind(batch_id)
+        .fetch_one(&db)
+        .await
+        .expect("audit");
+        assert_eq!(audits, 1, "one audit row per export");
 
         // ── re-running the same selection pays nothing twice (the backlog is empty for A+B).
         let again = app
@@ -2013,8 +2821,20 @@ mod tests {
             "nothing left to pay for those guards"
         );
 
-        // cleanup (items cascade with their batch).
+        // cleanup (items cascade with their batch; the audit log is append-only in the service, so
+        // the test clears its own rows by hand).
         let booking_ids: Vec<Uuid> = jobs.iter().map(|(b, _, _, _)| *b).collect();
+        let _ = sqlx::query("DELETE FROM payment.money_audit WHERE target_id = $1")
+            .bind(batch_id)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM payment.scb_file_refs WHERE batch_id IN \
+             (SELECT batch_id FROM payment.payout_batch_items WHERE booking_id = ANY($1))",
+        )
+        .bind(&booking_ids)
+        .execute(&db)
+        .await;
         let _ = sqlx::query(
             "DELETE FROM payment.payout_batches WHERE id IN \
              (SELECT batch_id FROM payment.payout_batch_items WHERE booking_id = ANY($1))",
@@ -2039,6 +2859,484 @@ mod tests {
         .await;
         let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
             .bind(&booking_ids)
+            .execute(&db)
+            .await;
+    }
+
+    // ----- customer refunds: the queue that money can finally leave -----
+
+    #[tokio::test]
+    async fn refund_endpoints_reject_non_admin() {
+        let Some(app) = router(None).await else {
+            eprintln!("SKIP: no TEST_REDIS_URL/REDIS_CACHE_URL (hermetic default)");
+            return;
+        };
+        // A customer must not be able to see who is owed money — nor trigger a money file, nor walk
+        // one through the bank, nor un-settle one. Every route the service mounts is listed, so a new
+        // one added without a role gate fails here rather than in production.
+        let customer = customer_token(Uuid::new_v4(), "customer");
+        let batch = Uuid::new_v4();
+        // The bodies are WELL-FORMED on purpose: a body that fails to deserialize would 422 before
+        // the handler runs, so the test would pass without ever proving the role gate exists.
+        for (method, uri, body) in [
+            ("GET", "/admin/refunds/preview".to_string(), "{}"),
+            ("POST", "/admin/refunds/export".to_string(), "{}"),
+            ("GET", "/admin/refunds/batches".to_string(), "{}"),
+            ("GET", format!("/admin/refunds/batches/{batch}"), "{}"),
+            ("GET", format!("/admin/refunds/batches/{batch}/file"), "{}"),
+            (
+                "POST",
+                format!("/admin/refunds/batches/{batch}/status"),
+                r#"{"status":"uploaded"}"#,
+            ),
+            (
+                "POST",
+                format!("/admin/refunds/batches/{batch}/void"),
+                r#"{"reason":"ยกเลิก"}"#,
+            ),
+            (
+                "POST",
+                format!("/admin/refunds/batches/{batch}/items/void"),
+                r#"{"sources":[{"source_kind":"payment","source_id":"00000000-0000-0000-0000-000000000001"}],"reason":"ตีกลับ"}"#,
+            ),
+        ] {
+            let uri = uri.as_str();
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(uri)
+                        .header("authorization", format!("Bearer {customer}"))
+                        .header("content-type", "application/json")
+                        .body(Body::from(body))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN, "{method} {uri}");
+        }
+    }
+
+    /// END-TO-END, real Postgres: ONE refund file returns money to MANY customers, over BOTH lanes,
+    /// and actually DRAINS the queue.
+    ///
+    /// This is the test the whole phase exists for. Before it, `refund_status` only ever moved to
+    /// `'pending'` — the customer got a push saying their money was on the way and nothing ever left
+    /// the building. So the assertions walk the entire money path over the real routes:
+    ///  * a LANE-A obligation (a settle's `payments.refund_amount`) and a LANE-B one (a duplicate
+    ///    `payment_slips` transfer) both ride the SAME file — a lane left out is unrefunded money;
+    ///  * a customer with two obligations gets ONE credit line summing them;
+    ///  * a customer with no resolvable phone is EXCLUDED with a Thai reason and their obligation is
+    ///    NOT marked processed;
+    ///  * the emitted file carries NO `WHTCER` and NO `WHTDET` — a refund is returned capital, not
+    ///    assessable income, and issuing a tax certificate for it would be a wrong filing;
+    ///  * a second export finds nothing left to send.
+    /// DATABASE_URL + test Redis gated.
+    #[tokio::test]
+    async fn refund_export_returns_money_to_many_customers_over_both_lanes() {
+        let (Ok(db_url), Ok(redis_url)) = (
+            std::env::var("DATABASE_URL"),
+            std::env::var("TEST_REDIS_URL").or_else(|_| std::env::var("REDIS_CACHE_URL")),
+        ) else {
+            eprintln!("SKIP: DATABASE_URL / TEST_REDIS_URL not set (hermetic default)");
+            return;
+        };
+        let Ok(db) = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&db_url)
+            .await
+        else {
+            eprintln!("SKIP: DATABASE_URL not reachable");
+            return;
+        };
+        let Ok(redis) = shared::redis_client::create_connection_manager(&redis_url).await else {
+            eprintln!("SKIP: test Redis not reachable");
+            return;
+        };
+
+        // ── seed. A: a lane-A overpay AND a lane-B duplicate transfer (one credit line, summed).
+        //    B: a lane-B duplicate only. C: a lane-A refund but NO phone on file — unrefundable, and
+        //    the whole point of the exclusion ladder. D: a lane-A refund whose stored phone carries a
+        //    country code, so it normalises to THIRTEEN digits — the value SCB would stamp `NAT` and
+        //    PromptPay to whoever owns that national id.
+        let (cust_a, cust_b, cust_c, cust_d) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let (bk_a1, bk_a2, bk_b, bk_c, bk_d) = (
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+            Uuid::new_v4(),
+        );
+        let bookings = [bk_a1, bk_a2, bk_b, bk_c, bk_d];
+
+        /// Insert a completed pre-pay for `booking` owned by `customer`; returns the payment id.
+        async fn prepay(db: &sqlx::PgPool, booking: Uuid, customer: Uuid) -> Uuid {
+            let out = crate::repo::prepay_idempotent(
+                db,
+                booking,
+                customer,
+                Some(Uuid::new_v4()),
+                &crate::domain::ChargeTerms::new(
+                    // 500 ฿/h × 4h × 1 guard, no tip → a VAT-exclusive subtotal of 2000.
+                    crate::domain::PricingInputs {
+                        base_fee: "500".parse().unwrap(),
+                        booked_hours: 4,
+                        guard_count: 1,
+                        tip: rust_decimal::Decimal::ZERO,
+                    },
+                    rust_decimal::Decimal::ZERO,
+                    rust_decimal::Decimal::ZERO,
+                ),
+                "promptpay",
+                Uuid::new_v4(),
+            )
+            .await
+            .expect("pre-pay");
+            match out {
+                crate::repo::PrePayOutcome::Created(p)
+                | crate::repo::PrePayOutcome::AlreadyPaid(p) => p.id,
+            }
+        }
+        // Lane A: the settle left money owed (what `reconcile_on_completion` /
+        // `refund_on_cancellation` / `refund_race_lost_prepay` all leave behind).
+        async fn owe(db: &sqlx::PgPool, payment_id: Uuid, amount: &str) {
+            sqlx::query(
+                "UPDATE payment.payments SET refund_amount = $2::numeric, \
+                        refund_status = 'pending' WHERE id = $1",
+            )
+            .bind(payment_id)
+            .bind(amount)
+            .execute(db)
+            .await
+            .expect("queue the refund");
+        }
+        // Lane B: a SECOND, real transfer for an already-paid booking, recorded UNAPPLIED.
+        async fn duplicate_transfer(
+            db: &sqlx::PgPool,
+            payment_id: Uuid,
+            booking: Uuid,
+            amount: &str,
+        ) -> Uuid {
+            let unique = Uuid::new_v4().simple().to_string();
+            sqlx::query_scalar(
+                "INSERT INTO payment.payment_slips \
+                     (payment_id, booking_id, reference_id, trans_ref, amount, slip_key, applied, refund_status) \
+                 VALUES ($1, $2, $3, $4, $5::numeric, $6, FALSE, 'pending') RETURNING id",
+            )
+            .bind(payment_id)
+            .bind(booking)
+            .bind(format!("ref-{unique}"))
+            .bind(format!("txn-{unique}"))
+            .bind(amount)
+            .bind(format!("slips/{unique}.jpg"))
+            .fetch_one(db)
+            .await
+            .expect("record the duplicate transfer")
+        }
+
+        let pay_a1 = prepay(&db, bk_a1, cust_a).await;
+        owe(&db, pay_a1, "640.00").await;
+        let pay_a2 = prepay(&db, bk_a2, cust_a).await;
+        let slip_a = duplicate_transfer(&db, pay_a2, bk_a2, "2140.00").await;
+        let pay_b = prepay(&db, bk_b, cust_b).await;
+        let slip_b = duplicate_transfer(&db, pay_b, bk_b, "500.00").await;
+        let pay_c = prepay(&db, bk_c, cust_c).await;
+        owe(&db, pay_c, "120.00").await;
+        let pay_d = prepay(&db, bk_d, cust_d).await;
+        owe(&db, pay_d, "77.00").await;
+
+        // The company debit account must pass SCB's §14 check digit — the export refuses to build a
+        // file on an account the bank would bounce at the batch header.
+        crate::repo::upsert_payout_config(
+            &db,
+            &crate::models::UpdatePayoutConfigRequest {
+                debit_account: Some("1234567896".to_string()),
+                fee_debit_account: None,
+                revenue_account: None,
+                wht_form_type_code: None,
+                wht_pay_type_code: None,
+                wht_income_type_code: None,
+                wht_income_desc: None,
+                wht_rate_percent: None,
+                max_transfer_per_txn: None,
+                fee_charge_code: None,
+                sms_notify: None,
+            },
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("payout config");
+
+        let customer_pii =
+            |name: &str, phone: Option<&str>| crate::profile_client::CustomerPayoutProfile {
+                full_name: Some(name.to_string()),
+                phone: phone.map(str::to_string),
+                address: Some("99 Rama IX Rd, Bangkok".to_string()),
+            };
+        let profile = StubProfileReader {
+            guard: None,
+            guards: Default::default(),
+            customers: [
+                (cust_a, customer_pii("ลูกค้า เอ", Some("081-234-5678"))),
+                (cust_b, customer_pii("ลูกค้า บี", Some("0899999999"))),
+                // C has no `contact_phone` and identity resolved nothing either — profile returns
+                // `phone: null`, so there is no PromptPay destination at all.
+                (cust_c, customer_pii("ลูกค้า ซี", None)),
+                // D's phone was saved with the country code. Digits-only it is `0066812345678` —
+                // THIRTEEN digits. SCB stamps a proxy type from the length alone, so this would have
+                // gone out as a `NAT` credit to the citizen who really owns that id: irreversible,
+                // with D's obligation marked `processed` and D no longer even visible in the queue.
+                (cust_d, customer_pii("ลูกค้า ดี", Some("0066-81-234-5678"))),
+            ]
+            .into_iter()
+            .collect(),
+            // Deliberately UNSET: a refund file emits no certificate, so it must build with no
+            // company tax block whatsoever. If the export ever starts reading org-settings, this
+            // test fails — which is the intent.
+            org: None,
+        };
+        let app = Router::new()
+            .route(
+                "/admin/refunds/export",
+                post(crate::api::refunds::export::<TestDeps>),
+            )
+            .route(
+                "/admin/refunds/preview",
+                get(crate::api::refunds::preview::<TestDeps>),
+            )
+            .with_state(TestDeps {
+                dec: Arc::new(DecodingKey::from_secret(SECRET.as_bytes())),
+                db: db.clone(),
+                redis,
+                reader: StubReader {
+                    booking: Some(payable_booking(Uuid::new_v4())),
+                },
+                verifier: StubVerifier::ok(sample_verified("0140315796")),
+                profile,
+                s3: stub_s3(),
+                slip_config: sim_config(),
+            });
+        let admin = customer_token(Uuid::new_v4(), "admin");
+
+        // ── PREVIEW first: it is what the admin ticks from, and it must describe exactly the backlog
+        //    the export then writes.
+        let preview: serde_json::Value = {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/admin/refunds/preview")
+                        .header("authorization", format!("Bearer {admin}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024)
+                .await
+                .expect("body");
+            serde_json::from_slice(&bytes).expect("json")
+        };
+        let excluded = preview["data"]["excluded"]
+            .as_array()
+            .expect("excluded array");
+        let c_row = excluded
+            .iter()
+            .find(|e| e["customer_id"] == serde_json::json!(cust_c.to_string()))
+            .unwrap_or_else(|| panic!("customer C must be excluded: {preview}"));
+        assert!(
+            c_row["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("พร้อมเพย์")),
+            "the reason names the missing destination, in Thai: {c_row}"
+        );
+        // …and D — whose phone EXISTS but is not a Thai mobile — is excluded too, with a reason that
+        // tells the admin to CORRECT the number rather than to chase the customer.
+        let d_row = excluded
+            .iter()
+            .find(|e| e["customer_id"] == serde_json::json!(cust_d.to_string()))
+            .unwrap_or_else(|| panic!("customer D must be excluded: {preview}"));
+        assert!(
+            d_row["reason"].as_str().is_some_and(|r| r.contains("มือถือ")),
+            "a 13-digit stored phone must be refused as a destination, in Thai: {d_row}"
+        );
+        assert!(
+            !preview["data"]["recipients"]
+                .as_array()
+                .expect("recipients")
+                .iter()
+                .any(|r| r["customer_id"] == serde_json::json!(cust_d.to_string())),
+            "a customer whose phone cannot receive PromptPay is never a recipient: {preview}"
+        );
+        // The proxy is PII and this is a list screen — it is masked to its last 4.
+        let a_preview = preview["data"]["recipients"]
+            .as_array()
+            .expect("recipients")
+            .iter()
+            .find(|r| r["customer_id"] == serde_json::json!(cust_a.to_string()))
+            .unwrap_or_else(|| panic!("customer A is refundable: {preview}"))
+            .clone();
+        assert_eq!(a_preview["amount"], serde_json::json!("2780.00"));
+        assert_eq!(a_preview["obligation_count"], serde_json::json!(2));
+        assert_eq!(a_preview["proxy_masked"], serde_json::json!("******5678"));
+
+        // ── EXPORT, ticking A, B, C and D. C and D are unrefundable and must simply drop out —
+        //    including from the paid-markers, which are built from the same filtered pass.
+        let res = export_retrying_ref_collision(
+            &app,
+            "/admin/refunds/export",
+            &admin,
+            format!(r#"{{"customer_ids":["{cust_a}","{cust_b}","{cust_c}","{cust_d}"]}}"#),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "the batch generates");
+        let bytes = axum::body::to_bytes(res.into_body(), 256 * 1024)
+            .await
+            .expect("body");
+        let file = String::from_utf8(bytes.to_vec()).expect("UTF-8, no BOM");
+        let lines: Vec<&str> = file.split("\r\n").collect();
+
+        // NO CERTIFICATE ANYWHERE. A refund is returned capital, not assessable income — issuing a
+        // ภ.ง.ด. for it would be a wrong government filing, and this is exactly the kind of thing a
+        // future refactor "restores for completeness".
+        assert!(
+            !file.contains("WHTCER") && !file.contains("WHTDET"),
+            "a refund file must carry no withholding records at all: {file}"
+        );
+        // HEADER + BCHDET + one TXNDET per refundable customer + TRAILR.
+        assert_eq!(lines.len(), 5, "two customers ride ONE file: {file}");
+        let credits: Vec<Vec<&str>> = lines
+            .iter()
+            .filter(|l| l.starts_with("TXNDET"))
+            .map(|l| l.split('|').collect())
+            .collect();
+        assert_eq!(credits.len(), 2, "one credit line PER REFUNDABLE CUSTOMER");
+
+        let by_proxy = |proxy: &str| -> Vec<&str> {
+            credits
+                .iter()
+                .find(|c| c[2] == proxy)
+                .unwrap_or_else(|| panic!("no credit for {proxy} in {file}"))
+                .clone()
+        };
+        // A: 640.00 (lane A) + 2140.00 (lane B) = 2780.00 in ONE credit line, addressed by the
+        // registration phone as a 10-digit `MOB` proxy.
+        let a = by_proxy("0812345678");
+        assert_eq!(a[3], "MOB", "a customer is refunded on their phone");
+        assert_eq!(a[6], "2780.00", "BOTH lanes summed into one transfer");
+        assert_eq!(a[13], "ลูกค้า เอ");
+        assert_eq!(a[17], "N", "no withholding flag");
+        assert_eq!(a[19], "", "…and no withheld amount");
+        assert!(
+            a[1].starts_with("RF"),
+            "the refund stream's own transaction-ref prefix keeps it distinct from a payout \
+             generated in the same second: {a:?}"
+        );
+        let b = by_proxy("0899999999");
+        assert_eq!(b[6], "500.00", "customer B's duplicate transfer alone");
+
+        let bch: Vec<&str> = lines[1].split('|').collect();
+        assert_eq!(bch[6], "3280.00", "batch total = 2780.00 + 500.00");
+        assert_eq!(bch[7], "2", "two credits in the batch");
+        let trailer: Vec<&str> = lines[4].split('|').collect();
+        assert_eq!(trailer[3], "3280.00", "the trailer agrees with the batch");
+
+        // ── THE QUEUE IS ACTUALLY DRAINED — the thing that never used to happen.
+        for id in [pay_a1] {
+            let status: Option<String> =
+                sqlx::query_scalar("SELECT refund_status FROM payment.payments WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+                    .expect("read");
+            assert_eq!(status.as_deref(), Some("processed"), "lane A closed");
+        }
+        for id in [slip_a, slip_b] {
+            let status: Option<String> =
+                sqlx::query_scalar("SELECT refund_status FROM payment.payment_slips WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+                    .expect("read");
+            assert_eq!(status.as_deref(), Some("processed"), "lane B closed");
+        }
+        // …and the EXCLUDED customer's money is untouched: still owed, still visible in the queue.
+        for (label, id) in [("C (no phone)", pay_c), ("D (13-digit phone)", pay_d)] {
+            let status: Option<String> =
+                sqlx::query_scalar("SELECT refund_status FROM payment.payments WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&db)
+                    .await
+                    .expect("read");
+            assert_eq!(
+                status.as_deref(),
+                Some("pending"),
+                "excluded customer {label} must NEVER be marked refunded — that would lose their money"
+            );
+            let marked: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM payment.refund_batch_items \
+                  WHERE source_kind = 'payment' AND source_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&db)
+            .await
+            .expect("count markers");
+            assert_eq!(marked, 0, "excluded customer {label} contributes NO item");
+        }
+
+        // ── a SECOND export of the same tick-list has nothing left to send.
+        let again = export_retrying_ref_collision(
+            &app,
+            "/admin/refunds/export",
+            &admin,
+            format!(r#"{{"customer_ids":["{cust_a}","{cust_b}"]}}"#),
+        )
+        .await;
+        assert_eq!(
+            again.status(),
+            StatusCode::BAD_REQUEST,
+            "the backlog is empty — no second file, and certainly no second transfer"
+        );
+
+        // Clean up everything this test wrote.
+        let batch_ids: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT DISTINCT batch_id FROM payment.refund_batch_items WHERE booking_id = ANY($1)",
+        )
+        .bind(&bookings[..])
+        .fetch_all(&db)
+        .await
+        .unwrap_or_default();
+        let _ = sqlx::query("DELETE FROM payment.money_audit WHERE target_id = ANY($1)")
+            .bind(&batch_ids)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM payment.scb_file_refs WHERE batch_id = ANY($1)")
+            .bind(&batch_ids)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM payment.refund_batches WHERE id = ANY($1)")
+            .bind(&batch_ids)
+            .execute(&db)
+            .await;
+        let _ = sqlx::query("DELETE FROM payment.payment_slips WHERE booking_id = ANY($1)")
+            .bind(&bookings[..])
+            .execute(&db)
+            .await;
+        let _ = sqlx::query(
+            "DELETE FROM payment.outbox WHERE payload->'payload'->>'booking_id' = ANY($1)",
+        )
+        .bind(bookings.iter().map(|b| b.to_string()).collect::<Vec<_>>())
+        .execute(&db)
+        .await;
+        let _ = sqlx::query("DELETE FROM payment.payments WHERE booking_id = ANY($1)")
+            .bind(&bookings[..])
             .execute(&db)
             .await;
     }
