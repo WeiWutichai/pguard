@@ -122,11 +122,15 @@ pub trait RatingReader: Send + Sync {
     ) -> Result<HashMap<Uuid, GuardRatingSummary>, AppError>;
 }
 
-/// Read the guards currently LIVE per presence (the "พร้อมรับงาน" filter), each mapped to its
-/// latest fix coordinates. A `HashMap<guard_id, (lat, lng)>` because discovery uses BOTH
-/// membership (drop offline guards) AND the position (sort the list nearest-to-meetup, C2). An
-/// `Err` here is the FAIL-OPEN signal: the discovery handler logs a warning and shows the
-/// unfiltered list rather than blocking every booking on a presence hiccup.
+/// Read the guards presence currently reports as OFFERABLE — they switched "พร้อมรับงาน" on and
+/// hold a live tracking session — each mapped to its latest fix coordinates. A
+/// `HashMap<guard_id, (lat, lng)>` because discovery uses BOTH membership (drop guards who are
+/// not available) AND the position (sort the list nearest-to-meetup, C2).
+///
+/// An `Err` here FAILS THE REQUEST (503 `PRESENCE_UNAVAILABLE`). It used to be a fail-open signal;
+/// see [`crate::api::available_guards`] for why that was reversed — in short, an unfiltered list
+/// breaks a hard product rule silently and routes a PRE-PAYING customer to a guard who is not
+/// there.
 #[allow(async_fn_in_trait)]
 pub trait PresenceReader: Send + Sync {
     async fn online_guard_locations(&self) -> Result<HashMap<Uuid, (f64, f64)>, AppError>;
@@ -137,9 +141,9 @@ pub trait PresenceReader: Send + Sync {
 /// `/available-guards` must hide so a guard already working a job is never offered for another.
 /// Unlike the other readers this is a LOCAL read of booking's OWN schema (booking owns its
 /// bookings), not a cross-service call — but it is modelled as a port so the discovery handler
-/// stays unit-testable with stubs. FAIL-CLOSED on error (unlike presence's fail-open): a DB
-/// hiccup means we cannot prove a guard is free, so the handler hides nobody EXTRA but propagates
-/// the error — see the handler for the exact policy.
+/// stays unit-testable with stubs. FAIL-CLOSED on error (as presence now is too): a DB hiccup
+/// means we cannot prove a guard is free, so the handler propagates rather than risk a
+/// double-booking — see the handler for the exact policy.
 #[allow(async_fn_in_trait)]
 pub trait BusyGuardsReader: Send + Sync {
     /// Guards holding ANY active assignment (the coarse, window-agnostic set — used as a fallback
@@ -320,9 +324,10 @@ impl PresenceReader for HttpDiscoveryClient {
             tracing::warn!("presence online-guards decode error: {e}");
             AppError::Internal("Online-guards lookup failed".to_string())
         })?;
-        // A 200 with NO `data` field is malformed, not "zero guards online" — return Err so the
-        // caller FAILS OPEN (shows the full approved list) instead of fail-closed (hides everyone).
-        // A present `data` with an empty `guards` is a legitimate zero-online result and is kept.
+        // A 200 with NO `data` field is malformed, not "zero guards available" — return Err so the
+        // caller fails CLOSED with a retryable 503 rather than silently reading a broken reply as
+        // "nobody is working" and sending the customer away. A present `data` with an empty
+        // `guards` IS a legitimate zero-available result and is kept as such.
         let online = envelope.data.ok_or_else(|| {
             tracing::warn!("presence online-guards 200 but missing data field");
             AppError::Internal("Online-guards lookup failed".to_string())

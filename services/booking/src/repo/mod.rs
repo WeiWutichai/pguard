@@ -17,9 +17,10 @@ use shared::error::AppError;
 use shared_events::EventEnvelope;
 
 use crate::domain::cancellation::{
-    set_for_target, CANCEL_REASON_REQUIRED_CODE, SYSTEM_EXPIRED_REASON,
+    set_for_target, CANCEL_REASON_REQUIRED_CODE, SYSTEM_EXPIRED_REASON, SYSTEM_NOT_STARTED_REASON,
 };
 use crate::domain::progress::GeoFilter;
+use crate::domain::scheduling::ArrivedClosure;
 use crate::domain::state::{required_actor, BookingStatus, RequiredActor};
 use crate::domain::{
     event_for_booking_requested, event_for_progress_report, event_for_status, Cancellation,
@@ -708,12 +709,45 @@ pub async fn get_booking_core(db: &sqlx::PgPool, id: Uuid) -> Result<BookingCore
 /// `declined`). It is persisted on the row AND rides the emitted event; `None` on every other
 /// transition (and on legacy/admin paths), where it is simply not written.
 #[allow(clippy::too_many_arguments)] // per-transition extras (assign_guard, cancellation) + correlation
-#[tracing::instrument(skip(db, cancellation), fields(booking_id = %id, new_status = %new_status))]
 pub async fn transition(
     db: &sqlx::PgPool,
     id: Uuid,
     actor: Uuid,
     is_admin: bool,
+    new_status: BookingStatus,
+    assign_guard: Option<Uuid>,
+    cancellation: Option<Cancellation>,
+    correlation_id: Uuid,
+) -> Result<BookingResponse, AppError> {
+    // EVERY caller that can be reached from an HTTP handler comes through here, and this is the
+    // only definition of `system` they get: false. The scheduler's `system = true` entry point is
+    // private to this module ([`transition_as`]), so no request — not even an admin's — can drive
+    // a [`RequiredActor::System`] edge. See QA #25.
+    transition_as(
+        db,
+        id,
+        actor,
+        is_admin,
+        false,
+        new_status,
+        assign_guard,
+        cancellation,
+        correlation_id,
+    )
+    .await
+}
+
+/// [`transition`] plus the SYSTEM switch (QA #25). Private: `system = true` is reachable only from
+/// this module's background sweeps, which is what makes [`RequiredActor::System`] mean "the
+/// scheduler, and nothing else".
+#[allow(clippy::too_many_arguments)] // per-transition extras (assign_guard, cancellation) + correlation
+#[tracing::instrument(skip(db, cancellation), fields(booking_id = %id, new_status = %new_status, system))]
+async fn transition_as(
+    db: &sqlx::PgPool,
+    id: Uuid,
+    actor: Uuid,
+    is_admin: bool,
+    system: bool,
     new_status: BookingStatus,
     assign_guard: Option<Uuid>,
     cancellation: Option<Cancellation>,
@@ -764,6 +798,20 @@ pub async fn transition(
             )));
         }
     };
+
+    // The SYSTEM sweep drives ONLY `RequiredActor::System` edges (QA #25). Its candidate set is
+    // read outside the lock, so a row can move underneath it — most importantly `arrived →
+    // pending_completion`, when the guard finally presses จบงาน in that window. That edge's
+    // closure belongs to the CUSTOMER (`RequestOwner`), and `is_admin = true` would sail straight
+    // through the ownership check below and complete a booking the customer still has a 30-minute
+    // grace to review. Refuse instead: the row is left to the human, and to the sweep that owns
+    // `pending_completion` and applies its own due rule.
+    if system && actor_class != RequiredActor::System {
+        tx.rollback().await?;
+        return Err(AppError::Conflict(format!(
+            "Booking is no longer in a state the scheduler may close to {new_status}"
+        )));
+    }
 
     // Ownership authz (inside the lock → no TOCTOU). admin overrides the owner checks; a
     // non-owner gets 403 (not 409) so IDOR is indistinguishable from a real permission denial.
@@ -864,6 +912,38 @@ pub async fn transition(
                 ));
             }
         }
+        RequiredActor::System => {
+            // QA #25 — the two `arrived` closure edges belong to the background scheduler alone.
+            // `is_admin` does NOT unlock them: admin means "acting on a participant's behalf",
+            // and there is no participant whose behalf this is. To a human caller the edge must
+            // look exactly as it did before it existed — the SAME 409 wording an illegal
+            // transition produces — so `PUT /cancel` on an on-site job still reads "you cannot do
+            // that from this state" rather than turning into a 403 permission error the app has
+            // never seen from this endpoint.
+            if !system {
+                tx.rollback().await?;
+                return Err(AppError::Conflict(format!(
+                    "Booking cannot be transitioned to {new_status} from its current state"
+                )));
+            }
+        }
+    }
+
+    // NO-EXTENSION gate (QA #25), inside the lock → no TOCTOU. The customer's completion REJECT
+    // (`pending_completion → arrived`, "ให้ทำต่อ") sends the guard back to work; past the booked
+    // window that is an EXTENSION of the original job, which the product forbids — more service
+    // means a NEW booking. It also used to be unbounded: the reject removes the row from
+    // `pending_completion`, the only status `auto_complete_overdue_pending` sweeps, so guard-asks /
+    // customer-rejects could cycle forever with the job running on indefinitely. Refused with the
+    // typed `JOB_WINDOW_CLOSED` 409 the app localizes; `approve` stays available, and the
+    // `arrived` sweep below closes the job if the customer does nothing at all.
+    if current == BookingStatus::PendingCompletion && new_status == BookingStatus::Arrived {
+        if let Err(e) =
+            crate::domain::scheduling::validate_keep_working(scheduled_at, hours, Utc::now())
+        {
+            tx.rollback().await?;
+            return Err(e);
+        }
     }
 
     // REASON DISCIPLINE for the two terminal "did not happen" targets (cancelled / declined),
@@ -916,7 +996,17 @@ pub async fn transition(
 
     // Completing (the guard's request) requires the job to have been STARTED — otherwise there
     // is no factual basis for the worked-hours proration the completion event carries.
-    if new_status == BookingStatus::PendingCompletion && work_started_at.is_none() {
+    //
+    // The SYSTEM closure of a stranded `arrived` job (QA #25) is held to the SAME bar, re-checked
+    // here inside the lock rather than trusted from the sweep's candidate read: an unstarted job
+    // completed anyway would carry `actual_seconds = None`, which payment reads as "keep the FULL
+    // charge" — the customer billed in full for a job with zero worked time. The sweep routes
+    // that shape to a cancel (full refund) instead; this is the backstop that makes billing it
+    // impossible even if that routing were ever wrong.
+    if work_started_at.is_none()
+        && (new_status == BookingStatus::PendingCompletion
+            || (current == BookingStatus::Arrived && new_status == BookingStatus::Completed))
+    {
         tx.rollback().await?;
         return Err(AppError::Conflict(
             "Job has not been started; cannot request completion".to_string(),
@@ -931,7 +1021,14 @@ pub async fn transition(
     // `work_started_at`, so an EXISTS check can never wrongly ALLOW a zero-report completion.
     // Gate on ANY report (not hour 1 specifically): a guard who filed only a later hour has still
     // attested presence, and there is no UI path to backfill hour 1 once a later slot is due.
-    if new_status == BookingStatus::PendingCompletion {
+    //
+    // Applies to the SYSTEM closure of a stranded `arrived` job too (QA #25) — a background sweep
+    // must not be a way around the attestation rule, or a guard could get paid by simply never
+    // pressing จบงาน and never checking in. The sweep already routes that shape to `Review` (left
+    // for a human); this is the lock-level backstop that makes it unbillable regardless.
+    if new_status == BookingStatus::PendingCompletion
+        || (current == BookingStatus::Arrived && new_status == BookingStatus::Completed)
+    {
         let (has_check_in,): (bool,) = sqlx::query_as(
             "SELECT EXISTS(SELECT 1 FROM booking.progress_reports WHERE booking_id = $1)",
         )
@@ -959,10 +1056,27 @@ pub async fn transition(
     // the SAME value is (a) STAMPED onto the row in the completion UPDATE below — the guard's
     // earnings screen then reads the reconciled figure off any booking read immediately (feature
     // G) — and (b) carried on the `booking.completed` event (payment's `actual_hours` is truth).
+    //
+    // QA #25 adds a SECOND basis, keyed on where the completion came FROM (read inside the lock,
+    // so a row that moved out from under the sweep is billed by its real path):
+    //   * from `pending_completion` — a human completion. The guard stated when they stopped;
+    //     measure to `completion_requested_at` exactly as before.
+    //   * from `arrived` — the SYSTEM closing a job nobody ended. There is no stated stop time,
+    //     and the `now()` fallback must NOT be used: `now` here is a sweep-tick instant that
+    //     drifts with scheduler health (restart, failed tick, backlog), and this one number sets
+    //     BOTH the customer's refund and the guard's PromptPay transfer. `worked_seconds_within_
+    //     _window` caps it at the scheduled end instead — deterministic, never bills the 30-minute
+    //     confirm grace, and credits a late-starting guard only the part of the paid window they
+    //     were actually on site (see its doc for why neither `now` nor `started + hours` works).
     let completion_actual_seconds = if new_status == BookingStatus::Completed {
-        work_started_at.map(|started| {
-            let ended = completion_requested_at.unwrap_or_else(Utc::now);
-            (ended - started).num_seconds()
+        work_started_at.map(|started| match current {
+            BookingStatus::Arrived => crate::domain::scheduling::worked_seconds_within_window(
+                scheduled_at,
+                hours,
+                started,
+                Utc::now(),
+            ),
+            _ => (completion_requested_at.unwrap_or_else(Utc::now) - started).num_seconds(),
         })
     } else {
         None
@@ -1654,6 +1768,122 @@ pub async fn auto_complete_overdue_pending(
         }
     }
     Ok(completed)
+}
+
+/// How many bookings one [`close_overdue_arrived`] tick closed, split by outcome.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ArrivedSweepCounts {
+    /// Closed as done (worked + attested) — billed on the scheduled window.
+    pub completed: usize,
+    /// Closed as did-not-happen (never started) — the customer is full-refunded.
+    pub cancelled: usize,
+    /// Left alone: started, but with no check-in to attest it. Needs a human.
+    pub needs_review: usize,
+}
+
+/// QA #25 sweep — close every booking still sitting in `arrived` past its scheduled window plus
+/// `grace`, so a job whose guard never pressed จบงาน (app backgrounded, or the customer bounced
+/// them back with "ให้ทำต่อ") cannot run on indefinitely with the customer's PRE-PAY held.
+///
+/// This is the SAFETY NET behind the no-extension gate in [`transition`], not the primary rule:
+/// the gate stops the customer prolonging the job in the first place, and this closes whatever
+/// still ends up stranded. `arrived` was the one active status nothing time-driven reached —
+/// [`expire_stale_open_bookings`] takes only OPEN `requested` rows and
+/// [`auto_complete_overdue_pending`] only `pending_completion`.
+///
+/// Per row the pure, unit-tested [`close_arrived`] decides — the same shape as the sibling sweep
+/// (fetch the candidates, apply the boundary in Rust so the window arithmetic has ONE definition):
+///   * [`ArrivedClosure::Complete`] — work started AND attested by at least one check-in. Closed
+///     through [`transition_as`] with `system = true`, which computes the worked duration capped
+///     at the scheduled end (never at this tick's `now` — see the completion money comment there).
+///   * [`ArrivedClosure::Cancel`] — the guard never started, so there is no worked time to bill.
+///     Cancelled with [`SYSTEM_NOT_STARTED_REASON`]; payment's cancellation consumer full-refunds.
+///   * [`ArrivedClosure::Review`] — started but never attested. Deliberately UNTOUCHED: billing it
+///     would pay a guard who bypassed the check-in rule, cancelling it would write off the pay of
+///     a guard whose photo uploads merely failed. Counted and logged once per tick, not per row,
+///     so a permanently stuck booking cannot spam the log every 60s.
+///
+/// The candidate set is read WITHOUT the row lock and re-validated inside it: `work_started_at`
+/// and progress reports are append-only (never unset/deleted), so the evidence can only grow
+/// between the two reads — a row can be skipped this tick and caught on the next, never closed on
+/// evidence that has since disappeared. A row a concurrent action moved out of `arrived` fails the
+/// legality check inside the lock and is logged and skipped, exactly as the sibling sweeps do.
+pub async fn close_overdue_arrived(
+    db: &sqlx::PgPool,
+    now: DateTime<Utc>,
+    grace_minutes: i32,
+) -> Result<ArrivedSweepCounts, AppError> {
+    // (id, scheduled_at, hours, work_started_at, has_check_in) — `close_arrived`'s inputs. The
+    // `arrived` set is every job currently on site, so it is bounded by concurrent work in
+    // progress, not by history; the EXISTS sub-select rides along rather than costing a
+    // per-candidate round trip.
+    type ArrivedRow = (Uuid, DateTime<Utc>, i32, Option<DateTime<Utc>>, bool);
+    let candidates: Vec<ArrivedRow> = sqlx::query_as(
+        "SELECT b.id, b.scheduled_at, b.hours, b.work_started_at, \
+                EXISTS(SELECT 1 FROM booking.progress_reports r WHERE r.booking_id = b.id) \
+         FROM booking.bookings b \
+         WHERE b.status = 'arrived'::booking.booking_status",
+    )
+    .fetch_all(db)
+    .await?;
+
+    let grace = chrono::Duration::minutes(i64::from(grace_minutes));
+    let mut counts = ArrivedSweepCounts::default();
+    for (id, scheduled_at, hours, work_started_at, has_check_in) in candidates {
+        let decision = crate::domain::scheduling::close_arrived(
+            scheduled_at,
+            hours,
+            work_started_at,
+            has_check_in,
+            now,
+            grace,
+        );
+        let (target, cancellation) = match decision {
+            ArrivedClosure::NotDue => continue,
+            ArrivedClosure::Review => {
+                counts.needs_review += 1;
+                continue;
+            }
+            ArrivedClosure::Complete => (BookingStatus::Completed, None),
+            ArrivedClosure::Cancel => (
+                BookingStatus::Cancelled,
+                Some(Cancellation {
+                    reason: SYSTEM_NOT_STARTED_REASON,
+                    note: None,
+                }),
+            ),
+        };
+        match transition_as(
+            db,
+            id,
+            SYSTEM_ACTOR,
+            true, // is_admin — bypasses the owner checks; keeps charge_cancel_fee false
+            true, // system — the ONLY place a RequiredActor::System edge is admitted
+            target,
+            None,
+            cancellation,
+            Uuid::new_v4(), // fresh correlation per swept booking
+        )
+        .await
+        {
+            Ok(_) if target == BookingStatus::Completed => counts.completed += 1,
+            Ok(_) => counts.cancelled += 1,
+            // A concurrent transition (the guard finally pressed จบงาน, the customer approved)
+            // moved the row out from under us — log and carry on, never abort the batch.
+            Err(e) => {
+                tracing::warn!(booking_id = %id, error = %e, "arrived sweep: skipping booking");
+            }
+        }
+    }
+    if counts.needs_review > 0 {
+        // ONE line per tick, never one per row: these rows stay stuck until a human acts, so a
+        // per-row warn would repeat forever every 60 seconds.
+        tracing::warn!(
+            count = counts.needs_review,
+            "arrived jobs past their window with no check-in — left for manual review"
+        );
+    }
+    Ok(counts)
 }
 
 /// Whether `guard_id` already holds an active assignment whose window OVERLAPS the target booking's
@@ -5845,5 +6075,428 @@ mod db_tests {
 
         cleanup_booking(&pool, overdue_id).await;
         cleanup_booking(&pool, pending_id).await;
+    }
+
+    /// Drive a fresh booking to `arrived` (optionally started, optionally check-in'd) and then
+    /// BACKDATE its whole window into the past: `scheduled_at = now − 5h`, 3 booked hours, so the
+    /// window ended 2h ago — well past the 30-min grace. `work_started_at` is backdated to
+    /// `scheduled_at` (an on-time start) AFTER the check-in is filed, because a check-in is itself
+    /// rejected once `work_started_at + hours + 30min` has passed (G1).
+    ///
+    /// Returns (booking_id, customer_id, guard_id). The expected paid-window duration for a row
+    /// built with `start = true` is exactly 3h = 10800s, independent of when the sweep runs.
+    async fn stranded_arrived_booking(
+        pool: &sqlx::PgPool,
+        address: &str,
+        start: bool,
+        check_in: bool,
+    ) -> (Uuid, Uuid, Uuid) {
+        let customer_id = Uuid::new_v4();
+        let guard_id = Uuid::new_v4();
+        let correlation = Uuid::new_v4();
+        let created = create_booking(
+            pool,
+            customer_id,
+            &booking_req(address, 3, None),
+            1,
+            rust_decimal::Decimal::ZERO,
+            None,
+            correlation,
+        )
+        .await
+        .expect("create");
+        mark_paid_now(pool, created.id).await;
+        for (status, assign) in [
+            (BookingStatus::Accepted, Some(guard_id)),
+            (BookingStatus::EnRoute, None),
+            (BookingStatus::Arrived, None),
+        ] {
+            transition(
+                pool,
+                created.id,
+                guard_id,
+                false,
+                status,
+                assign,
+                None,
+                correlation,
+            )
+            .await
+            .unwrap_or_else(|e| panic!("transition to {status}: {e:?}"));
+        }
+        if start {
+            start_job(pool, created.id, guard_id, false, None, None)
+                .await
+                .expect("start");
+        }
+        if check_in {
+            create_progress_report(pool, created.id, guard_id, &report(1), correlation)
+                .await
+                .expect("start check-in");
+        }
+        // Backdate LAST: the whole window (and the on-time start) moves into the past together.
+        sqlx::query(
+            "UPDATE booking.bookings \
+             SET scheduled_at = now() - interval '5 hours', \
+                 work_started_at = CASE WHEN work_started_at IS NULL THEN NULL \
+                                        ELSE now() - interval '5 hours' END \
+             WHERE id = $1",
+        )
+        .bind(created.id)
+        .execute(pool)
+        .await
+        .expect("backdate window");
+        (created.id, customer_id, guard_id)
+    }
+
+    /// QA #25 — the NO-EXTENSION gate. A customer may bounce the guard back to work while the
+    /// booked window is still open, but NOT after it has closed: that reject is what used to
+    /// extend the original job without limit (and lifted the booking out of the only sweep that
+    /// watched it). Approving is still available. DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn keep_working_reject_is_refused_once_the_window_has_closed() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+        let correlation = Uuid::new_v4();
+
+        // (a) IN-WINDOW: the guard finished early on a job whose window still has hours to run.
+        //     The customer's "ให้ทำต่อ" is legitimate — they are spending time they paid for.
+        let (open_id, open_customer, open_guard) =
+            stranded_arrived_booking(&pool, "1 Keep Working Rd", true, true).await;
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() - interval '30 minutes' WHERE id = $1",
+        )
+        .bind(open_id)
+        .execute(&pool)
+        .await
+        .expect("re-open the window");
+        transition(
+            &pool,
+            open_id,
+            open_guard,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("guard requests completion");
+        let bounced = transition(
+            &pool,
+            open_id,
+            open_customer,
+            false,
+            BookingStatus::Arrived,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("in-window reject is allowed");
+        assert_eq!(bounced.status, "arrived");
+
+        // (b) WINDOW CLOSED: the same reject, on a booking whose window ended 2h ago.
+        let (closed_id, closed_customer, closed_guard) =
+            stranded_arrived_booking(&pool, "2 Keep Working Rd", true, true).await;
+        transition(
+            &pool,
+            closed_id,
+            closed_guard,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("guard requests completion");
+        // Rejecting three times in a row models the unbounded loop: each attempt is refused with
+        // the SAME typed code, so the bounce can never carry the job past its own window.
+        for attempt in 1..=3 {
+            let err = transition(
+                &pool,
+                closed_id,
+                closed_customer,
+                false,
+                BookingStatus::Arrived,
+                None,
+                None,
+                correlation,
+            )
+            .await
+            .expect_err("a reject past the window must be refused");
+            match err {
+                AppError::ConflictCode { code, .. } => assert_eq!(
+                    code,
+                    crate::domain::scheduling::JOB_WINDOW_CLOSED_CODE,
+                    "reject #{attempt} must carry the localizable code"
+                ),
+                other => panic!("reject #{attempt}: expected a typed 409, got {other:?}"),
+            }
+            // The booking never left `pending_completion`, so the guard is not sent back out and
+            // the auto-complete sweep still owns it.
+            assert_eq!(
+                get_booking(&pool, closed_id).await.unwrap().status,
+                "pending_completion"
+            );
+        }
+        // APPROVE is still available — the customer is bounded, not locked out of their own job.
+        let approved = transition(
+            &pool,
+            closed_id,
+            closed_customer,
+            false,
+            BookingStatus::Completed,
+            None,
+            None,
+            correlation,
+        )
+        .await
+        .expect("approve is still allowed after the window closes");
+        assert_eq!(approved.status, "completed");
+
+        cleanup_booking(&pool, open_id).await;
+        cleanup_booking(&pool, closed_id).await;
+    }
+
+    /// QA #25 — the `arrived` sweep, all three branches at once (one shared DB, so per-booking
+    /// assertions are by id and the counters only assert `>= 1`, like the sibling sweep tests):
+    ///   * worked + attested → COMPLETED, billed on the PAID WINDOW (3h), never on the sweep's
+    ///     own `now` (which is 2h+ later here — the whole point of the cap);
+    ///   * never started → CANCELLED with `system_not_started` and no fee, so payment full-refunds;
+    ///   * started but never attested → LEFT ALONE for a human.
+    /// DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn arrived_sweep_closes_stranded_jobs_on_the_evidence_of_work() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (worked_id, ..) = stranded_arrived_booking(&pool, "1 Stranded Rd", true, true).await;
+        let (unstarted_id, ..) =
+            stranded_arrived_booking(&pool, "2 Stranded Rd", false, false).await;
+        let (unattested_id, ..) =
+            stranded_arrived_booking(&pool, "3 Stranded Rd", true, false).await;
+        // A live job whose window is still open — must survive the sweep untouched.
+        let (live_id, _, live_guard) =
+            stranded_arrived_booking(&pool, "4 Stranded Rd", true, true).await;
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() + interval '1 hour' WHERE id = $1",
+        )
+        .bind(live_id)
+        .execute(&pool)
+        .await
+        .expect("future window");
+        let _ = live_guard;
+
+        let counts = close_overdue_arrived(
+            &pool,
+            Utc::now(),
+            crate::domain::scheduling::AUTO_COMPLETE_GRACE_MINUTES as i32,
+        )
+        .await
+        .expect("run arrived sweep");
+        assert!(counts.completed >= 1, "the worked job is completed");
+        assert!(counts.cancelled >= 1, "the never-started job is cancelled");
+        assert!(counts.needs_review >= 1, "the unattested job needs review");
+
+        // --- worked + attested → completed, billed on the paid window ---
+        let worked = get_booking(&pool, worked_id).await.expect("read worked");
+        assert_eq!(worked.status, "completed");
+        assert_eq!(
+            worked.actual_seconds,
+            Some(3 * 3600),
+            "billed on scheduled_at → scheduled end (3 booked hours), NOT on the sweep's `now` \
+             which is 2h+ past the window — the grace is never billed and a late tick never \
+             inflates the bill"
+        );
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
+        )
+        .bind(worked_id.to_string())
+        .bind(topics::BOOKING_COMPLETED)
+        .fetch_all(&pool)
+        .await
+        .expect("query completed outbox");
+        assert_eq!(rows.len(), 1, "exactly one booking.completed");
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(
+            envelope.payload["actual_seconds"],
+            serde_json::json!(3 * 3600),
+            "payment prorates the customer's refund AND the guard's payout off this one number"
+        );
+
+        // --- never started → cancelled, full refund (no fee), no billable duration ---
+        let unstarted = get_booking(&pool, unstarted_id)
+            .await
+            .expect("read unstarted");
+        assert_eq!(unstarted.status, "cancelled");
+        assert_eq!(
+            unstarted.cancellation_reason.as_deref(),
+            Some(SYSTEM_NOT_STARTED_REASON)
+        );
+        assert!(
+            unstarted.actual_seconds.is_none(),
+            "a job that never started has no worked duration to bill"
+        );
+        let rows: Vec<OutboxRow> = sqlx::query_as(
+            "SELECT id, topic, payload FROM booking.outbox \
+             WHERE payload->'payload'->>'booking_id' = $1 AND topic = $2",
+        )
+        .bind(unstarted_id.to_string())
+        .bind(topics::BOOKING_CANCELLED)
+        .fetch_all(&pool)
+        .await
+        .expect("query cancelled outbox");
+        assert_eq!(rows.len(), 1, "exactly one booking.cancelled");
+        let envelope: EventEnvelope<Value> =
+            serde_json::from_value(rows[0].payload.clone()).expect("valid envelope");
+        assert_eq!(
+            envelope.payload["charge_cancel_fee"],
+            serde_json::json!(false),
+            "a system cancel never charges the customer a no-show fee"
+        );
+
+        // --- started, no attestation → untouched, and NOT billed by any other path ---
+        let unattested = get_booking(&pool, unattested_id)
+            .await
+            .expect("read unattested");
+        assert_eq!(
+            unattested.status, "arrived",
+            "an unattested job is left for a human, never silently billed or written off"
+        );
+
+        // --- still inside its window → untouched ---
+        assert_eq!(
+            get_booking(&pool, live_id).await.unwrap().status,
+            "arrived",
+            "a live job is never closed early"
+        );
+
+        cleanup_booking(&pool, worked_id).await;
+        cleanup_booking(&pool, unstarted_id).await;
+        cleanup_booking(&pool, unattested_id).await;
+        cleanup_booking(&pool, live_id).await;
+    }
+
+    /// QA #25 — the two `arrived` closure edges are the SCHEDULER's alone. Neither the assigned
+    /// guard, nor the customer, nor an ADMIN acting through the ordinary endpoints can drive
+    /// them: a guard must not skip the customer's completion review, and nobody may cancel an
+    /// on-site job by hand. The refusal is the same 409 those edges gave before they existed, not
+    /// a 403 — the app has never seen a permission error from these endpoints.
+    /// DATABASE_URL-gated (hermetic when unset).
+    #[tokio::test]
+    async fn arrived_closure_edges_are_refused_to_every_human_caller() {
+        let Ok(url) = std::env::var("DATABASE_URL") else {
+            eprintln!("SKIP: DATABASE_URL not set (hermetic default)");
+            return;
+        };
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_secs(5))
+            .connect(&url)
+            .await
+            .expect("connect real Postgres");
+
+        let (id, customer_id, guard_id) =
+            stranded_arrived_booking(&pool, "1 System Only Rd", true, true).await;
+        // Push the window into the FUTURE. The edges are system-only regardless of timing, and
+        // this keeps the row out of reach of a `close_overdue_arrived` running in a sibling test
+        // on the same shared database (which would otherwise close it mid-assertion).
+        sqlx::query(
+            "UPDATE booking.bookings SET scheduled_at = now() + interval '1 hour' WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&pool)
+        .await
+        .expect("future window");
+
+        for (actor, is_admin, who) in [
+            (guard_id, false, "assigned guard"),
+            (customer_id, false, "customer"),
+            (customer_id, true, "admin"),
+        ] {
+            for target in [BookingStatus::Completed, BookingStatus::Cancelled] {
+                let cancellation = (target == BookingStatus::Cancelled).then_some(Cancellation {
+                    reason: "mistake",
+                    note: None,
+                });
+                let err = transition(
+                    &pool,
+                    id,
+                    actor,
+                    is_admin,
+                    target,
+                    None,
+                    cancellation,
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap_err();
+                assert!(
+                    matches!(err, AppError::Conflict(_)),
+                    "{who} → {target} must be a plain 409 conflict, got {err:?}"
+                );
+            }
+        }
+        // …and the booking is exactly where it was.
+        assert_eq!(get_booking(&pool, id).await.unwrap().status, "arrived");
+
+        // The mirror case: the SWEEP must not drive a HUMAN's edge either. Its candidates are read
+        // outside the row lock, so a booking can move to `pending_completion` (the guard finally
+        // pressed จบงาน) between the read and the write — and `is_admin = true` would otherwise
+        // sail through the owner check and complete a job the customer still has 30 minutes to
+        // review. Refused, so that row stays with the customer and with the sweep that owns it.
+        transition(
+            &pool,
+            id,
+            guard_id,
+            false,
+            BookingStatus::PendingCompletion,
+            None,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect("guard requests completion");
+        let err = transition_as(
+            &pool,
+            id,
+            SYSTEM_ACTOR,
+            true,
+            true, // system
+            BookingStatus::Completed,
+            None,
+            None,
+            Uuid::new_v4(),
+        )
+        .await
+        .expect_err("the sweep must not complete a pending_completion row");
+        assert!(
+            matches!(err, AppError::Conflict(_)),
+            "expected a plain 409, got {err:?}"
+        );
+        assert_eq!(
+            get_booking(&pool, id).await.unwrap().status,
+            "pending_completion",
+            "the customer's confirm grace is intact"
+        );
+
+        cleanup_booking(&pool, id).await;
     }
 }

@@ -19,6 +19,9 @@
 //!   approves (`→ completed`, emits `booking.completed`) or rejects (`→ arrived`).
 //! - `cancel` is allowed only PRE-ARRIVAL (requested/accepted/en_route) — once work has begun
 //!   at the site the booking runs to completion review.
+//! - the SCHEDULER (and only it — [`RequiredActor::System`]) closes an `arrived` booking that
+//!   outlived its window: `arrived → completed` when work was started and attested, or
+//!   `arrived → cancelled` (full refund) when the guard never started. QA #25.
 //! - `start` (set `work_started_at`) does NOT change status (stays `arrived`); it is a guarded
 //!   side-effect in the repo, not a status transition.
 
@@ -114,6 +117,16 @@ pub enum RequiredActor {
     AssignedGuard,
     /// Only the booking's owner — the customer (cancel / review-completion).
     RequestOwner,
+    /// The background SCHEDULER only — no human, admin included, may drive it (QA #25).
+    ///
+    /// These are the closure edges out of `arrived`: a booking whose paid window has ended plus
+    /// the confirm grace must not stay open forever just because the guard never pressed จบงาน
+    /// (app backgrounded) or the customer bounced them back. The repo admits a `System` edge ONLY
+    /// on the sweep's private entry point; every other caller — customer, guard, admin endpoint —
+    /// is refused with the same "not from this state" 409 the edge produced before it existed, so
+    /// `arrived → completed` still cannot skip the customer's review and `arrived → cancelled`
+    /// still cannot be a human's cancel of an on-site job.
+    System,
 }
 
 /// The actor class permitted to drive `from → to`, or `None` if the transition is ILLEGAL.
@@ -150,6 +163,12 @@ pub fn required_actor(from: BookingStatus, to: BookingStatus) -> Option<Required
         (PendingCompletion, Completed) | (PendingCompletion, Arrived) => Some(RequestOwner),
         // cancellation: PRE-ARRIVAL active states only (a guard is not yet on-site)
         (Requested, Cancelled) | (Accepted, Cancelled) | (EnRoute, Cancelled) => Some(RequestOwner),
+        // SYSTEM closure of a stranded `arrived` job (QA #25) — the scheduler's safety net, never
+        // a human's action (see `RequiredActor::System`). `Completed` when there is evidence of
+        // work, `Cancelled` (→ full refund) when the guard never started. Both were `None` before
+        // and stay unreachable for every human caller; they are listed here so `required_actor`
+        // remains the WHOLE truth about the lifecycle rather than quietly excluding the sweep.
+        (Arrived, Completed) | (Arrived, Cancelled) => Some(System),
         _ => None,
     }
 }
@@ -195,18 +214,62 @@ mod tests {
     fn customer_review_branches() {
         assert!(can_transition(PendingCompletion, Completed)); // approve
         assert!(can_transition(PendingCompletion, Arrived)); // reject → guard finishes
-                                                             // a guard cannot jump arrived straight to completed (must go via review)
-        assert!(!can_transition(Arrived, Completed));
+                                                             // A guard cannot jump arrived straight to completed: that edge exists (QA #25) but is
+                                                             // SYSTEM-only — the sweep's, never the guard's, so the customer's review is not skippable.
+        assert_eq!(
+            required_actor(Arrived, Completed),
+            Some(RequiredActor::System)
+        );
+        assert_ne!(
+            required_actor(Arrived, Completed),
+            Some(RequiredActor::AssignedGuard)
+        );
     }
 
     #[test]
-    fn cancel_is_pre_arrival_only() {
+    fn cancel_is_pre_arrival_only_for_humans() {
         assert!(can_transition(Requested, Cancelled));
         assert!(can_transition(Accepted, Cancelled));
         assert!(can_transition(EnRoute, Cancelled));
-        // once on-site / in review, no cancel — the job runs to completion review.
-        assert!(!can_transition(Arrived, Cancelled));
+        // Once on-site, no HUMAN cancel — the job runs to completion review. The only way out of
+        // `arrived` into `cancelled` is the scheduler closing a job whose guard never started
+        // (QA #25), which the repo admits solely on the sweep's private entry point.
+        assert_eq!(
+            required_actor(Arrived, Cancelled),
+            Some(RequiredActor::System)
+        );
         assert!(!can_transition(PendingCompletion, Cancelled));
+    }
+
+    #[test]
+    fn system_edges_are_exactly_the_two_arrived_closures() {
+        // SECURITY INVARIANT, the mirror of `claim_unassigned_maps_to_exactly_one_transition`:
+        // the repo gates the `System` class on a flag no HTTP handler can set. If a future edit
+        // hands `System` to another edge, that edge silently becomes scheduler-drivable and
+        // human-undrivable — fail loudly here so it is a deliberate choice.
+        let all = [
+            Requested,
+            Accepted,
+            Declined,
+            EnRoute,
+            Arrived,
+            PendingCompletion,
+            Completed,
+            Cancelled,
+        ];
+        let mut system = Vec::new();
+        for from in all {
+            for to in all {
+                if required_actor(from, to) == Some(RequiredActor::System) {
+                    system.push((from, to));
+                }
+            }
+        }
+        assert_eq!(
+            system,
+            vec![(Arrived, Completed), (Arrived, Cancelled)],
+            "System must map to exactly the two arrived-closure edges; got {system:?}"
+        );
     }
 
     #[test]
@@ -217,7 +280,6 @@ mod tests {
         assert!(!can_transition(Accepted, PendingCompletion));
         assert!(!can_transition(EnRoute, PendingCompletion));
         assert!(!can_transition(EnRoute, Completed));
-        assert!(!can_transition(Arrived, Completed));
     }
 
     #[test]
@@ -302,10 +364,12 @@ mod tests {
             Some(RequestOwner)
         );
         assert_eq!(required_actor(Accepted, Cancelled), Some(RequestOwner));
+        // scheduler-only closure of a stranded on-site job (QA #25)
+        assert_eq!(required_actor(Arrived, Completed), Some(System));
+        assert_eq!(required_actor(Arrived, Cancelled), Some(System));
         // illegal → None (and therefore can_transition false)
-        assert_eq!(required_actor(Arrived, Completed), None);
-        assert_eq!(required_actor(Arrived, Cancelled), None);
         assert_eq!(required_actor(Completed, Cancelled), None);
+        assert_eq!(required_actor(Arrived, Declined), None);
     }
 
     #[test]
@@ -362,6 +426,14 @@ mod tests {
                 let Some(actor) = required_actor(from, to) else {
                     continue;
                 };
+                // A SYSTEM edge has no endpoint behind it, so no reason SET is ever handed to
+                // `validate_cancellation` for it — the sweep constructs its `Cancellation`
+                // directly from a system code that is in neither vocabulary (the
+                // `SYSTEM_EXPIRED_REASON` precedent). The invariant below is about which HUMAN
+                // may drive a reason-bearing edge, so system edges are outside it.
+                if actor == RequiredActor::System {
+                    continue;
+                }
                 match set_for_target(to) {
                     Some(ReasonSet::CustomerCancel) => assert_eq!(
                         actor,
